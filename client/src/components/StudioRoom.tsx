@@ -658,7 +658,7 @@ export function StudioRoom() {
       {/* Main Area */}
       <div style={styles.main}>
         {/* Stage */}
-        <div style={{ ...styles.stage, ...stageBackgroundStyle }}>
+        <div style={styles.stage}>
           {/* Screen share overlay */}
           {isScreenSharing && (
             <div style={styles.screenShareBanner}>
@@ -668,149 +668,161 @@ export function StudioRoom() {
             </div>
           )}
 
-          <div style={{ ...styles.grid, ...gridStyle, position: 'relative' }}>
-            {layout === 'single' && videoItems.length > 0 ? (
-              <div style={styles.singleTile}>
-                <VideoTile
-                  stream={videoItems[0].stream}
-                  name={videoItems[0].name}
-                  isLocal={videoItems[0].isLocal}
-                  audioEnabled={videoItems[0].audioEnabled}
-                  videoEnabled={videoItems[0].videoEnabled}
-                  brandColor={brandColor}
-                />
-              </div>
-            ) : layout === 'featured' && videoItems.length >= 2 ? (
-              <>
-                <div style={styles.featuredMain}>
-                  <VideoTile
-                    stream={videoItems[0].stream}
-                    name={videoItems[0].name}
-                    isLocal={videoItems[0].isLocal}
-                    audioEnabled={videoItems[0].audioEnabled}
-                    videoEnabled={videoItems[0].videoEnabled}
-                    brandColor={brandColor}
-                  />
-                </div>
-                <div style={styles.featuredSide}>
-                  {videoItems.slice(1).map((item) => (
-                    <div key={item.id} style={styles.featuredSideTile}>
+          {/* Fixed 16:9 Canvas */}
+          <div style={styles.canvasWrapper}>
+            <div style={{ ...styles.canvas, ...stageBackgroundStyle }}>
+              <div style={{ ...styles.grid, ...gridStyle, position: 'relative' }}>
+                {layout === 'single' && videoItems.length > 0 ? (
+                  <div style={styles.singleTile}>
+                    <VideoTile
+                      stream={videoItems[0].stream}
+                      name={videoItems[0].name}
+                      isLocal={videoItems[0].isLocal}
+                      audioEnabled={videoItems[0].audioEnabled}
+                      videoEnabled={videoItems[0].videoEnabled}
+                      brandColor={brandColor}
+                    />
+                  </div>
+                ) : layout === 'featured' && videoItems.length >= 2 ? (
+                  <>
+                    <div style={styles.featuredMain}>
                       <VideoTile
-                        stream={item.stream}
-                        name={item.name}
-                        isLocal={item.isLocal}
-                        audioEnabled={item.audioEnabled}
-                        videoEnabled={item.videoEnabled}
+                        stream={videoItems[0].stream}
+                        name={videoItems[0].name}
+                        isLocal={videoItems[0].isLocal}
+                        audioEnabled={videoItems[0].audioEnabled}
+                        videoEnabled={videoItems[0].videoEnabled}
                         brandColor={brandColor}
                       />
                     </div>
-                  ))}
-                </div>
-              </>
-            ) : layout === 'spotlight' && videoItems.length > 1 ? (
-              <>
-                <VideoTile
-                  stream={videoItems[0].stream}
-                  name={videoItems[0].name}
-                  isLocal={videoItems[0].isLocal}
-                  audioEnabled={videoItems[0].audioEnabled}
-                  videoEnabled={videoItems[0].videoEnabled}
-                  brandColor={brandColor}
-                />
-                <div style={styles.spotlightRow}>
-                  {videoItems.slice(1).map((item) => (
-                    <div key={item.id} style={styles.spotlightThumb}>
+                    <div style={styles.featuredSide}>
+                      {videoItems.slice(1).map((item) => (
+                        <div key={item.id} style={styles.featuredSideTile}>
+                          <VideoTile
+                            stream={item.stream}
+                            name={item.name}
+                            isLocal={item.isLocal}
+                            audioEnabled={item.audioEnabled}
+                            videoEnabled={item.videoEnabled}
+                            brandColor={brandColor}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : layout === 'spotlight' && videoItems.length > 1 ? (
+                  <>
+                    <VideoTile
+                      stream={videoItems[0].stream}
+                      name={videoItems[0].name}
+                      isLocal={videoItems[0].isLocal}
+                      audioEnabled={videoItems[0].audioEnabled}
+                      videoEnabled={videoItems[0].videoEnabled}
+                      brandColor={brandColor}
+                    />
+                    <div style={styles.spotlightRow}>
+                      {videoItems.slice(1).map((item) => (
+                        <div key={item.id} style={styles.spotlightThumb}>
+                          <VideoTile
+                            stream={item.stream}
+                            name={item.name}
+                            isLocal={item.isLocal}
+                            audioEnabled={item.audioEnabled}
+                            videoEnabled={item.videoEnabled}
+                            brandColor={brandColor}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : layout === 'pip' && videoItems.length >= 2 ? (
+                  <>
+                    <VideoTile
+                      stream={videoItems[0].stream}
+                      name={videoItems[0].name}
+                      isLocal={videoItems[0].isLocal}
+                      audioEnabled={videoItems[0].audioEnabled}
+                      videoEnabled={videoItems[0].videoEnabled}
+                      brandColor={brandColor}
+                    />
+                    <div style={styles.pipOverlay}>
                       <VideoTile
-                        stream={item.stream}
-                        name={item.name}
-                        isLocal={item.isLocal}
-                        audioEnabled={item.audioEnabled}
-                        videoEnabled={item.videoEnabled}
+                        stream={videoItems[1].stream}
+                        name={videoItems[1].name}
+                        isLocal={videoItems[1].isLocal}
+                        audioEnabled={videoItems[1].audioEnabled}
+                        videoEnabled={videoItems[1].videoEnabled}
                         brandColor={brandColor}
                       />
                     </div>
-                  ))}
-                </div>
-              </>
-            ) : layout === 'pip' && videoItems.length >= 2 ? (
-              <>
-                <VideoTile
-                  stream={videoItems[0].stream}
-                  name={videoItems[0].name}
-                  isLocal={videoItems[0].isLocal}
-                  audioEnabled={videoItems[0].audioEnabled}
-                  videoEnabled={videoItems[0].videoEnabled}
-                  brandColor={brandColor}
-                />
-                <div style={styles.pipOverlay}>
-                  <VideoTile
-                    stream={videoItems[1].stream}
-                    name={videoItems[1].name}
-                    isLocal={videoItems[1].isLocal}
-                    audioEnabled={videoItems[1].audioEnabled}
-                    videoEnabled={videoItems[1].videoEnabled}
-                    brandColor={brandColor}
-                  />
-                </div>
-              </>
-            ) : (
-              videoItems.map((item) => (
-                <VideoTile
-                  key={item.id}
-                  stream={item.stream}
-                  name={item.name}
-                  isLocal={item.isLocal}
-                  audioEnabled={item.audioEnabled}
-                  videoEnabled={item.videoEnabled}
-                  brandColor={brandColor}
-                />
-              ))
-            )}
-
-            {/* Media overlay on stage */}
-            {activeMedia && (
-              <div style={styles.mediaOverlay}>
-                {activeMedia.type === 'video' ? (
-                  <video src={activeMedia.url} style={styles.mediaContent} autoPlay controls />
-                ) : activeMedia.type === 'image' ? (
-                  <img src={activeMedia.url} alt="Media" style={styles.mediaContent} />
+                  </>
                 ) : (
-                  <iframe src={activeMedia.url} style={styles.mediaContent} title="PDF" />
+                  videoItems.map((item) => (
+                    <VideoTile
+                      key={item.id}
+                      stream={item.stream}
+                      name={item.name}
+                      isLocal={item.isLocal}
+                      audioEnabled={item.audioEnabled}
+                      videoEnabled={item.videoEnabled}
+                      brandColor={brandColor}
+                    />
+                  ))
                 )}
-                <button style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close media overlay">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
+
+                {/* Media overlay on stage */}
+                {activeMedia && (
+                  <div style={styles.mediaOverlay}>
+                    {activeMedia.type === 'video' ? (
+                      <video src={activeMedia.url} style={styles.mediaContent} autoPlay controls />
+                    ) : activeMedia.type === 'image' ? (
+                      <img src={activeMedia.url} alt="Media" style={styles.mediaContent} />
+                    ) : (
+                      <iframe src={activeMedia.url} style={styles.mediaContent} title="PDF" />
+                    )}
+                    <button style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close media overlay">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+
+                {/* Lower Third Overlay */}
+                {visibleLowerThird && <LowerThirdOverlay data={visibleLowerThird} />}
+
+                {/* Banner Overlays */}
+                {banners.filter((b) => b.visible).map((b) => (
+                  <BannerOverlayDisplay key={b.id} data={b} />
+                ))}
+
+                {/* Timer Overlays */}
+                {timers.filter((t) => t.visible).map((t) => (
+                  <TimerOverlayDisplay key={t.id} data={t} />
+                ))}
+
+                {/* Ticker Overlays */}
+                {tickers.filter((t) => t.visible).map((t) => (
+                  <TickerOverlayDisplay key={t.id} data={t} />
+                ))}
+
+                {/* Comment Highlight Overlay */}
+                <CommentHighlightOverlay comment={highlightedComment} />
+
+                {/* Webinar Q&A Overlay */}
+                <WebinarQAOverlay question={qaQuestions.find(q => q.highlighted) || null} />
               </div>
-            )}
 
-            {/* Lower Third Overlay */}
-            {visibleLowerThird && <LowerThirdOverlay data={visibleLowerThird} />}
-
-            {/* Banner Overlays */}
-            {banners.filter((b) => b.visible).map((b) => (
-              <BannerOverlayDisplay key={b.id} data={b} />
-            ))}
-
-            {/* Timer Overlays */}
-            {timers.filter((t) => t.visible).map((t) => (
-              <TimerOverlayDisplay key={t.id} data={t} />
-            ))}
-
-            {/* Ticker Overlays */}
-            {tickers.filter((t) => t.visible).map((t) => (
-              <TickerOverlayDisplay key={t.id} data={t} />
-            ))}
-
-            {/* Comment Highlight Overlay */}
-            <CommentHighlightOverlay comment={highlightedComment} />
-
-            {/* Webinar Q&A Overlay */}
-            <WebinarQAOverlay question={qaQuestions.find(q => q.highlighted) || null} />
+              {/* Logo watermark */}
+              {logoUrl && (
+                <div style={styles.logoWatermark}>
+                  <img src={logoUrl} alt="Logo" style={styles.logoWatermarkImg} />
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Floating layout switcher (like StreamYard) */}
+          {/* Floating layout switcher (like StreamYard) — below canvas */}
           {isHostOrCoHost && (
             <div style={styles.layoutBar}>
               <LayoutSwitcher
@@ -818,13 +830,6 @@ export function StudioRoom() {
                 onLayoutChange={setLayout}
                 participantCount={videoItems.length}
               />
-            </div>
-          )}
-
-          {/* Logo watermark */}
-          {logoUrl && (
-            <div style={styles.logoWatermark}>
-              <img src={logoUrl} alt="Logo" style={styles.logoWatermarkImg} />
             </div>
           )}
 
@@ -913,6 +918,8 @@ export function StudioRoom() {
             myParticipantId={myParticipant?.id || ''}
             myRole={myParticipant?.role || 'guest'}
             onStageAction={onStageAction}
+            remoteStreams={remoteStreams}
+            localStream={localStream}
           />
         )}
 
@@ -1149,23 +1156,40 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     padding: 12,
+    gap: 8,
     overflow: 'hidden',
     position: 'relative',
+    background: 'rgba(0, 0, 0, 0.15)',
+  },
+  canvasWrapper: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    minHeight: 0,
+  },
+  canvas: {
+    position: 'relative',
+    width: '100%',
+    maxHeight: '100%',
+    aspectRatio: '16 / 9',
+    borderRadius: 14,
+    overflow: 'hidden',
+    border: '2px solid rgba(255, 255, 255, 0.08)',
+    boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
+    background: '#0f172a',
   },
   grid: {
     display: 'grid',
     gap: 6,
     width: '100%',
-    maxWidth: 1400,
-    maxHeight: '100%',
-    flex: 1,
+    height: '100%',
+    padding: 6,
     transition: 'all 0.3s ease',
   },
   layoutBar: {
-    position: 'absolute',
-    bottom: 12,
-    left: '50%',
-    transform: 'translateX(-50%)',
+    flexShrink: 0,
     zIndex: 10,
   },
   // Spotlight layout

@@ -64,6 +64,9 @@ interface SidebarProps {
   myParticipantId: string;
   myRole: 'host' | 'co-host' | 'guest';
   onStageAction: (action: StageActionPayload['action'], targetId: string) => void;
+  // Streams for live previews in People tab
+  remoteStreams: Map<string, MediaStream>;
+  localStream: MediaStream | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +168,8 @@ export function Sidebar(props: SidebarProps) {
               myParticipantId={props.myParticipantId}
               myRole={props.myRole}
               onStageAction={props.onStageAction}
+              remoteStreams={props.remoteStreams}
+              localStream={props.localStream}
             />
           )}
 
@@ -296,12 +301,53 @@ export function Sidebar(props: SidebarProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Mini video preview for the People tab
+// ---------------------------------------------------------------------------
+function MiniVideoPreview({ stream, videoEnabled, name }: { stream: MediaStream | null; videoEnabled: boolean; name: string }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  const initial = (name || '?').charAt(0).toUpperCase();
+
+  if (!stream || !videoEnabled) {
+    return (
+      <div style={st.miniPreview}>
+        <div style={st.miniPreviewPlaceholder}>
+          <span style={st.miniPreviewInitial}>{initial}</span>
+        </div>
+        {!videoEnabled && (
+          <div style={st.miniCamOff}>
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="1" y1="1" x2="23" y2="23" />
+              <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" />
+            </svg>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={st.miniPreview}>
+      <video ref={videoRef} autoPlay playsInline muted style={st.miniPreviewVideo} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // People sub-component
 // ---------------------------------------------------------------------------
-function PeopleContent({ participants, myParticipantId, myRole, onStageAction }: {
+function PeopleContent({ participants, myParticipantId, myRole, onStageAction, remoteStreams, localStream }: {
   participants: Map<string, Participant>; myParticipantId: string;
   myRole: 'host' | 'co-host' | 'guest';
   onStageAction: (action: StageActionPayload['action'], targetId: string) => void;
+  remoteStreams: Map<string, MediaStream>;
+  localStream: MediaStream | null;
 }) {
   const isHostOrCoHost = myRole === 'host' || myRole === 'co-host';
   type PStatus = 'on-stage' | 'backstage' | 'green-room';
@@ -311,6 +357,11 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction }:
   }
   const myP = participants.get(myParticipantId);
 
+  const getStream = (id: string): MediaStream | null => {
+    if (id === myParticipantId) return localStream;
+    return remoteStreams.get(id) || null;
+  };
+
   return (
     <div style={st.panelFull}>
       <div style={st.panelHeader}><h3 style={st.panelTitle}>People</h3><span style={st.panelSub}>{participants.size}/12 in session</span></div>
@@ -318,8 +369,8 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction }:
         {myP && (
           <div style={st.personItem}>
             <div style={st.personLeft}>
-              <div style={st.personAvatar}>{myP.name.charAt(0).toUpperCase()}</div>
-              <div>
+              <MiniVideoPreview stream={localStream} videoEnabled={myP.videoEnabled} name={myP.name} />
+              <div style={st.personInfo}>
                 <span style={st.personName}>{myP.name}</span>
                 <div style={st.badges}>
                   <span style={{ ...st.roleBadge, background: 'var(--accent-subtle)', color: 'var(--accent)' }}>{myP.role}</span>
@@ -327,19 +378,35 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction }:
                 </div>
               </div>
             </div>
+            <div style={st.mediaIndicators}>
+              <div style={{ ...st.mediaIcon, color: myP.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                {myP.audioEnabled ? (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
+                ) : (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
+                )}
+              </div>
+              <div style={{ ...st.mediaIcon, color: myP.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                {myP.videoEnabled ? (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
+                ) : (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
+                )}
+              </div>
+            </div>
           </div>
         )}
         {grouped['green-room'].length > 0 && (
-          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} actions={(p) => (<><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /></>)} />
+          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /></>)} />
         )}
-        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} actions={(p) => (<>
+        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<>
           {p.audioEnabled && <SmallBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />}
           <SmallBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
           {p.role === 'guest' && <SmallBtn label="Co-host" color="var(--accent)" onClick={() => onStageAction('promote-co-host', p.id)} />}
           {p.role === 'co-host' && <SmallBtn label="Demote" color="var(--text-muted)" onClick={() => onStageAction('demote-to-guest', p.id)} />}
         </>)} />
         {grouped['backstage'].length > 0 && (
-          <PeopleSection title="Backstage" subtitle="Can hear but not visible" color="var(--accent)" participants={grouped['backstage']} isHostOrCoHost={isHostOrCoHost} actions={(p) => (<><SmallBtn label="To Stage" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /></>)} />
+          <PeopleSection title="Backstage" subtitle="Can hear but not visible" color="var(--accent)" participants={grouped['backstage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="To Stage" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /></>)} />
         )}
         {grouped['green-room'].length > 1 && isHostOrCoHost && (
           <button className="btn-primary" style={st.admitAllBtn} onClick={() => grouped['green-room'].forEach((p) => onStageAction('move-to-stage', p.id))}>
@@ -351,9 +418,10 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction }:
   );
 }
 
-function PeopleSection({ title, subtitle, color, participants, isHostOrCoHost, actions }: {
+function PeopleSection({ title, subtitle, color, participants, isHostOrCoHost, getStream, actions }: {
   title: string; subtitle: string; color: string; participants: Participant[];
-  isHostOrCoHost: boolean; actions: (p: Participant) => React.ReactNode;
+  isHostOrCoHost: boolean; getStream: (id: string) => MediaStream | null;
+  actions: (p: Participant) => React.ReactNode;
 }) {
   return (
     <div style={st.pSection}>
@@ -364,16 +432,33 @@ function PeopleSection({ title, subtitle, color, participants, isHostOrCoHost, a
           {participants.map((p) => (
             <div key={p.id} style={st.personItem}>
               <div style={st.personLeft}>
-                <div style={st.personAvatar}>{p.name.charAt(0).toUpperCase()}</div>
-                <div>
+                <MiniVideoPreview stream={getStream(p.id)} videoEnabled={p.videoEnabled} name={p.name} />
+                <div style={st.personInfo}>
                   <span style={st.personName}>{p.name}</span>
                   <div style={st.badges}>
                     {p.role !== 'guest' && <span style={{ ...st.roleBadge, background: p.role === 'host' ? 'var(--accent-subtle)' : 'var(--success-subtle)', color: p.role === 'host' ? 'var(--accent)' : 'var(--success)' }}>{p.role}</span>}
-                    {!p.audioEnabled && <span style={st.muteBadge}>muted</span>}
                   </div>
                 </div>
               </div>
-              {isHostOrCoHost && p.role !== 'host' && <div style={st.personActions}>{actions(p)}</div>}
+              <div style={st.personRight}>
+                <div style={st.mediaIndicators}>
+                  <div style={{ ...st.mediaIcon, color: p.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                    {p.audioEnabled ? (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
+                    ) : (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
+                    )}
+                  </div>
+                  <div style={{ ...st.mediaIcon, color: p.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                    {p.videoEnabled ? (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
+                    ) : (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
+                    )}
+                  </div>
+                </div>
+                {isHostOrCoHost && p.role !== 'host' && <div style={st.personActions}>{actions(p)}</div>}
+              </div>
             </div>
           ))}
         </div>
@@ -476,7 +561,18 @@ const st: Record<string, React.CSSProperties> = {
   personItem: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'rgba(255, 255, 255, 0.03)', borderRadius: 10, gap: 8, margin: '0 0 4px', border: '1px solid rgba(255, 255, 255, 0.04)' },
   personLeft: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 },
   personAvatar: { width: 30, height: 30, borderRadius: '50%', background: 'rgba(167, 139, 250, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, color: '#c4b5fd', flexShrink: 0 },
+  personInfo: { minWidth: 0, flex: 1 },
+  personRight: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 },
   personName: { fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', display: 'block' },
+  // Mini video preview
+  miniPreview: { width: 48, height: 36, borderRadius: 6, overflow: 'hidden', flexShrink: 0, position: 'relative', background: 'rgba(0, 0, 0, 0.3)', border: '1px solid rgba(255, 255, 255, 0.08)' },
+  miniPreviewVideo: { width: '100%', height: '100%', objectFit: 'cover', display: 'block', transform: 'scaleX(-1)' },
+  miniPreviewPlaceholder: { width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(167, 139, 250, 0.1)' },
+  miniPreviewInitial: { fontSize: 13, fontWeight: 600, color: '#c4b5fd' },
+  miniCamOff: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 3, background: 'rgba(239, 68, 68, 0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' },
+  // Media indicators
+  mediaIndicators: { display: 'flex', gap: 4, alignItems: 'center' },
+  mediaIcon: { width: 20, height: 20, borderRadius: 4, background: 'rgba(255, 255, 255, 0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   badges: { display: 'flex', gap: 4, marginTop: 2 },
   roleBadge: { fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.04em' },
   qualityBadge: { fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'var(--bg-surface)', color: 'var(--text-muted)' },
