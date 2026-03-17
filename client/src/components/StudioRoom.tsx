@@ -11,9 +11,7 @@ import { VideoTile } from './VideoTile.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
 import { Sidebar } from './Sidebar.tsx';
-import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
-import { ParticipantManager } from './ParticipantManager.tsx';
 import { StreamDestinations } from './StreamDestinations.tsx';
 import { MediaPanel } from './MediaPanel.tsx';
 import { SoundBoard } from './SoundBoard.tsx';
@@ -41,7 +39,6 @@ export function StudioRoom() {
 
   // UI panels
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
-  const [showChat, setShowChat] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showParticipants, setShowParticipants] = useState(false);
   const [showStreamDest, setShowStreamDest] = useState(false);
@@ -271,15 +268,30 @@ export function StudioRoom() {
   };
   const onAudioOutputDeviceChange = (id: string) => { setSelectedAudioOutputDeviceId(id); };
 
-  // Screen sharing
+  // Screen sharing — replace the camera video track on all peer connections
+  // so remote participants actually receive the screen feed.
   const onToggleScreenShare = async () => {
     if (isScreenSharing) {
       stopScreenShare();
+      // Restore the camera video track on all peer connections
+      const cameraTrack = localStream?.getVideoTracks()[0];
+      if (cameraTrack) await replaceTrack(cameraTrack);
       if (myParticipant) send({ type: 'media-state-changed', payload: { participantId: myParticipant.id, audioEnabled, videoEnabled, screenSharing: false } });
     } else {
       try {
         const stream = await startScreenShare();
         if (stream && myParticipant) {
+          // Replace the camera video track with the screen video track on all peers
+          const screenTrack = stream.getVideoTracks()[0];
+          if (screenTrack) {
+            await replaceTrack(screenTrack);
+            // When the user stops sharing via the browser's native button,
+            // restore the camera track automatically
+            screenTrack.addEventListener('ended', async () => {
+              const camTrack = localStream?.getVideoTracks()[0];
+              if (camTrack) await replaceTrack(camTrack);
+            });
+          }
           send({ type: 'media-state-changed', payload: { participantId: myParticipant.id, audioEnabled, videoEnabled, screenSharing: true } });
         }
       } catch (err) {
@@ -501,18 +513,24 @@ export function StudioRoom() {
   };
 
   // Build video items (only show on-stage participants) - memoized
+  // When someone is screen sharing, the screen share replaces their camera track
+  // on the WebRTC connection. Locally, we show the screen share as a separate tile.
   const videoItems = useMemo(() => {
-    const items: Array<{ id: string; name: string; stream: MediaStream | null; isLocal: boolean; audioEnabled: boolean; videoEnabled: boolean }> = [];
+    const items: Array<{ id: string; name: string; stream: MediaStream | null; isLocal: boolean; audioEnabled: boolean; videoEnabled: boolean; isScreenShare?: boolean }> = [];
     if (myParticipant) {
       items.push({ id: myParticipant.id, name: myParticipant.name, stream: localStream, isLocal: true, audioEnabled, videoEnabled });
+      // Add local screen share as a separate tile
+      if (isScreenSharing && screenStream) {
+        items.push({ id: `${myParticipant.id}-screen`, name: `${myParticipant.name}'s Screen`, stream: screenStream, isLocal: true, audioEnabled: false, videoEnabled: true, isScreenShare: true });
+      }
     }
     for (const [id, p] of participants) {
       if (p.status === 'on-stage') {
-        items.push({ id, name: p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.audioEnabled, videoEnabled: p.videoEnabled });
+        items.push({ id, name: p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.audioEnabled, videoEnabled: p.screenSharing ? true : p.videoEnabled });
       }
     }
     return items;
-  }, [myParticipant, participants, localStream, audioEnabled, videoEnabled, remoteStreams]);
+  }, [myParticipant, participants, localStream, audioEnabled, videoEnabled, remoteStreams, isScreenSharing, screenStream]);
 
   // All participants for the manager - memoized
   const allParticipantsMap = useMemo(() => {
@@ -614,16 +632,6 @@ export function StudioRoom() {
           )}
         </div>
         <div style={styles.headerRight}>
-          <button
-            style={{ ...styles.headerBtn, ...(showChat ? styles.headerBtnActive : {}) }}
-            onClick={() => setShowChat(!showChat)}
-            aria-label="Toggle chat panel"
-            aria-pressed={showChat}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-          </button>
           {isHostOrCoHost && (
             <button
               style={{ ...styles.headerBtn, ...(showSidebar ? styles.headerBtnActive : {}) }}
@@ -643,16 +651,6 @@ export function StudioRoom() {
 
       {/* Main Area */}
       <div style={styles.main}>
-        {/* Chat Panel (left) */}
-        {showChat && (
-          <ChatPanel
-            messages={chatMessages}
-            onSend={onSendChat}
-            onClose={() => setShowChat(false)}
-            senderName={userName}
-          />
-        )}
-
         {/* Stage */}
         <div style={{ ...styles.stage, ...stageBackgroundStyle }}>
           {/* Screen share overlay */}
@@ -830,17 +828,6 @@ export function StudioRoom() {
           )}
         </div>
 
-        {/* Participant Manager Panel */}
-        {showParticipants && (
-          <ParticipantManager
-            participants={allParticipantsMap}
-            myParticipantId={myParticipant?.id || ''}
-            myRole={myParticipant?.role || 'guest'}
-            onStageAction={onStageAction}
-            onClose={() => setShowParticipants(false)}
-          />
-        )}
-
         {/* Stream Destinations Panel */}
         {showStreamDest && (
           <StreamDestinations
@@ -903,6 +890,13 @@ export function StudioRoom() {
             highlightedComment={highlightedComment}
             onHighlightComment={onHighlightComment}
             onDismissComment={onDismissComment}
+            chatPanelMessages={chatMessages}
+            onSendChat={onSendChat}
+            chatSenderName={userName}
+            allParticipants={allParticipantsMap}
+            myParticipantId={myParticipant?.id || ''}
+            myRole={myParticipant?.role || 'guest'}
+            onStageAction={onStageAction}
           />
         )}
 
@@ -1042,6 +1036,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
+    overflow: 'hidden',
     background: 'var(--bg-primary)',
   },
   loading: {
