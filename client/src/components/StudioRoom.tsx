@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload } from '@studio/shared';
+import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground } from '@studio/shared';
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
 import { useRecording } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
+import { useLocalRecording } from '../hooks/useLocalRecording.ts';
 import { VideoTile } from './VideoTile.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
@@ -20,6 +21,7 @@ import { Teleprompter } from './Teleprompter.tsx';
 import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { BackgroundMusic } from './BackgroundMusic.tsx';
+import { RecordingPanel } from './RecordingPanel.tsx';
 
 export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -42,6 +44,7 @@ export function StudioRoom() {
   const [showSoundBoard, setShowSoundBoard] = useState(false);
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [showBackgroundMusic, setShowBackgroundMusic] = useState(false);
+  const [showRecordingPanel, setShowRecordingPanel] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   // Layout
@@ -67,6 +70,11 @@ export function StudioRoom() {
   // Media overlay
   const [activeMedia, setActiveMedia] = useState<{ type: 'video' | 'image' | 'pdf'; url: string } | null>(null);
 
+  // Brand state (lifted from Sidebar so it can drive stage appearance)
+  const [stageBackground, setStageBackground] = useState<StageBackground>({ type: 'none', value: '' });
+  const [brandColor, setBrandColor] = useState('#7c3aed');
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+
   // Hooks
   const { connect, send, addHandler, connected } = useSignaling();
   const {
@@ -85,7 +93,13 @@ export function StudioRoom() {
   });
 
   const { isRecording, formattedTime, startRecording, downloadRecordings } = useRecording();
-  const { isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
+  const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
+  const {
+    isRecording: isLocalRecording,
+    formattedTime: localRecFormattedTime,
+    startRecording: startLocalRecording,
+    stopRecording: stopLocalRecording,
+  } = useLocalRecording();
 
   const joinedRef = useRef(false);
   const myParticipantRef = useRef<Participant | null>(null);
@@ -271,6 +285,13 @@ export function StudioRoom() {
     }
   };
 
+  // Local recording (separate tracks)
+  const onStartLocalRecording = () => {
+    if (localStream) {
+      startLocalRecording(localStream, screenStream);
+    }
+  };
+
   // Chat
   const onSendChat = (content: string) => {
     if (!myParticipant) return;
@@ -386,6 +407,26 @@ export function StudioRoom() {
     return map;
   }, [myParticipant, participants]);
 
+  // Stage background style - memoized
+  const stageBackgroundStyle = useMemo((): React.CSSProperties => {
+    switch (stageBackground.type) {
+      case 'color':
+        return { background: stageBackground.value };
+      case 'gradient':
+        return { background: stageBackground.value };
+      case 'image':
+        return {
+          backgroundImage: `url(${stageBackground.value})`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+        };
+      case 'none':
+      default:
+        return {};
+    }
+  }, [stageBackground]);
+
   // Layout logic - memoized
   const gridStyle = useMemo((): React.CSSProperties => {
     const count = videoItems.length;
@@ -396,6 +437,10 @@ export function StudioRoom() {
         return { gridTemplateColumns: count >= 2 ? '1fr 1fr' : '1fr' };
       case 'pip':
         return { gridTemplateColumns: '1fr', position: 'relative' as const };
+      case 'single':
+        return { gridTemplateColumns: '1fr', gridTemplateRows: '1fr' };
+      case 'featured':
+        return { gridTemplateColumns: count >= 2 ? '2fr 1fr' : '1fr' };
       case 'grid':
       default: {
         const cols = count <= 1 ? 1 : count <= 4 ? 2 : count <= 9 ? 3 : 4;
@@ -492,7 +537,7 @@ export function StudioRoom() {
         )}
 
         {/* Stage */}
-        <div style={styles.stage}>
+        <div style={{ ...styles.stage, ...stageBackgroundStyle }}>
           {/* Screen share overlay */}
           {isScreenSharing && (
             <div style={styles.screenShareBanner}>
@@ -503,7 +548,45 @@ export function StudioRoom() {
           )}
 
           <div style={{ ...styles.grid, ...gridStyle, position: 'relative' }}>
-            {layout === 'spotlight' && videoItems.length > 1 ? (
+            {layout === 'single' && videoItems.length > 0 ? (
+              <div style={styles.singleTile}>
+                <VideoTile
+                  stream={videoItems[0].stream}
+                  name={videoItems[0].name}
+                  isLocal={videoItems[0].isLocal}
+                  audioEnabled={videoItems[0].audioEnabled}
+                  videoEnabled={videoItems[0].videoEnabled}
+                  brandColor={brandColor}
+                />
+              </div>
+            ) : layout === 'featured' && videoItems.length >= 2 ? (
+              <>
+                <div style={styles.featuredMain}>
+                  <VideoTile
+                    stream={videoItems[0].stream}
+                    name={videoItems[0].name}
+                    isLocal={videoItems[0].isLocal}
+                    audioEnabled={videoItems[0].audioEnabled}
+                    videoEnabled={videoItems[0].videoEnabled}
+                    brandColor={brandColor}
+                  />
+                </div>
+                <div style={styles.featuredSide}>
+                  {videoItems.slice(1).map((item) => (
+                    <div key={item.id} style={styles.featuredSideTile}>
+                      <VideoTile
+                        stream={item.stream}
+                        name={item.name}
+                        isLocal={item.isLocal}
+                        audioEnabled={item.audioEnabled}
+                        videoEnabled={item.videoEnabled}
+                        brandColor={brandColor}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : layout === 'spotlight' && videoItems.length > 1 ? (
               <>
                 <VideoTile
                   stream={videoItems[0].stream}
@@ -511,6 +594,7 @@ export function StudioRoom() {
                   isLocal={videoItems[0].isLocal}
                   audioEnabled={videoItems[0].audioEnabled}
                   videoEnabled={videoItems[0].videoEnabled}
+                  brandColor={brandColor}
                 />
                 <div style={styles.spotlightRow}>
                   {videoItems.slice(1).map((item) => (
@@ -521,6 +605,7 @@ export function StudioRoom() {
                         isLocal={item.isLocal}
                         audioEnabled={item.audioEnabled}
                         videoEnabled={item.videoEnabled}
+                        brandColor={brandColor}
                       />
                     </div>
                   ))}
@@ -534,6 +619,7 @@ export function StudioRoom() {
                   isLocal={videoItems[0].isLocal}
                   audioEnabled={videoItems[0].audioEnabled}
                   videoEnabled={videoItems[0].videoEnabled}
+                  brandColor={brandColor}
                 />
                 <div style={styles.pipOverlay}>
                   <VideoTile
@@ -542,6 +628,7 @@ export function StudioRoom() {
                     isLocal={videoItems[1].isLocal}
                     audioEnabled={videoItems[1].audioEnabled}
                     videoEnabled={videoItems[1].videoEnabled}
+                    brandColor={brandColor}
                   />
                 </div>
               </>
@@ -554,6 +641,7 @@ export function StudioRoom() {
                   isLocal={item.isLocal}
                   audioEnabled={item.audioEnabled}
                   videoEnabled={item.videoEnabled}
+                  brandColor={brandColor}
                 />
               ))
             )}
@@ -589,6 +677,13 @@ export function StudioRoom() {
               <TimerOverlayDisplay key={t.id} data={t} />
             ))}
           </div>
+
+          {/* Logo watermark */}
+          {logoUrl && (
+            <div style={styles.logoWatermark}>
+              <img src={logoUrl} alt="Logo" style={styles.logoWatermarkImg} />
+            </div>
+          )}
 
           {/* Teleprompter overlay */}
           {showTeleprompter && (
@@ -651,6 +746,24 @@ export function StudioRoom() {
             onToggleTimer={onToggleTimer}
             onRemoveTimer={onRemoveTimer}
             onUpdateTimer={onUpdateTimer}
+            stageBackground={stageBackground}
+            onStageBackgroundChange={setStageBackground}
+            brandColor={brandColor}
+            onBrandColorChange={setBrandColor}
+            logoUrl={logoUrl}
+            onLogoUrlChange={setLogoUrl}
+          />
+        )}
+
+        {/* Recording Panel */}
+        {showRecordingPanel && (
+          <RecordingPanel
+            isRecording={isLocalRecording}
+            formattedTime={localRecFormattedTime}
+            onStartRecording={onStartLocalRecording}
+            onStopRecording={stopLocalRecording}
+            roomName={room?.name || 'Studio'}
+            onClose={() => setShowRecordingPanel(false)}
           />
         )}
       </div>
@@ -676,6 +789,7 @@ export function StudioRoom() {
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
         onOpenMediaPanel={() => setShowMediaPanel(!showMediaPanel)}
         onOpenBackgroundMusic={() => setShowBackgroundMusic(!showBackgroundMusic)}
+        onOpenRecordingPanel={() => setShowRecordingPanel(!showRecordingPanel)}
         participantCount={allParticipantsMap.size}
         isLive={isLive}
       />
@@ -838,7 +952,7 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: 1200,
     maxHeight: '100%',
     flex: 1,
-    transition: 'all var(--transition-slow)',
+    transition: 'all 0.3s ease',
   },
   // Spotlight layout
   spotlightRow: {
@@ -849,6 +963,32 @@ const styles: Record<string, React.CSSProperties> = {
   spotlightThumb: {
     flex: 1,
     minWidth: 0,
+  },
+  // Single layout
+  singleTile: {
+    width: '100%',
+    height: '100%',
+    transition: 'all 0.3s ease',
+  },
+  // Featured layout
+  featuredMain: {
+    height: '100%',
+    minHeight: 0,
+    transition: 'all 0.3s ease',
+  },
+  featuredSide: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 8,
+    height: '100%',
+    minHeight: 0,
+    overflow: 'auto',
+    transition: 'all 0.3s ease',
+  },
+  featuredSideTile: {
+    flex: 1,
+    minHeight: 80,
+    transition: 'all 0.3s ease',
   },
   // PiP layout
   pipOverlay: {
@@ -988,5 +1128,19 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--accent)',
     borderRadius: 2,
     transition: 'width 1s linear',
+  },
+  // Logo watermark
+  logoWatermark: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    zIndex: 6,
+    opacity: 0.85,
+    pointerEvents: 'none',
+  },
+  logoWatermarkImg: {
+    maxHeight: 32,
+    maxWidth: 100,
+    objectFit: 'contain',
   },
 };

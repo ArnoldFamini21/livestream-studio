@@ -51,6 +51,25 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
       </svg>
     ),
   },
+  {
+    mode: 'single',
+    label: 'Single',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+    ),
+  },
+  {
+    mode: 'featured',
+    label: 'Featured',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <rect x="1" y="2" width="11" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+        <rect x="13.5" y="2" width="3.5" height="14" rx="1" stroke="currentColor" strokeWidth="1.2" />
+      </svg>
+    ),
+  },
 ];
 
 export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount }: LayoutSwitcherProps) {
@@ -60,7 +79,7 @@ export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount
       <div style={styles.options}>
         {layouts.map(({ mode, label, icon }) => {
           const isActive = currentLayout === mode;
-          const isDisabled = participantCount < 2 && (mode === 'side-by-side' || mode === 'pip' || mode === 'spotlight');
+          const isDisabled = participantCount < 2 && (mode === 'side-by-side' || mode === 'pip' || mode === 'spotlight' || mode === 'featured');
           return (
             <button
               key={mode}

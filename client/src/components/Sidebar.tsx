@@ -1,9 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
-import type { LayoutMode } from '@studio/shared';
+import { useState, useRef } from 'react';
+import type { LayoutMode, StageBackground } from '@studio/shared';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
+import { BackgroundPicker } from './BackgroundPicker.tsx';
 
 type SidebarTab = 'layout' | 'overlays' | 'brand';
 
@@ -24,6 +25,13 @@ interface SidebarProps {
   onToggleTimer: (id: string) => void;
   onRemoveTimer: (id: string) => void;
   onUpdateTimer: (id: string, updates: Partial<TimerData>) => void;
+  // Controlled brand state
+  stageBackground: StageBackground;
+  onStageBackgroundChange: (bg: StageBackground) => void;
+  brandColor: string;
+  onBrandColorChange: (color: string) => void;
+  logoUrl: string | null;
+  onLogoUrlChange: (url: string | null) => void;
 }
 
 export function Sidebar({
@@ -43,37 +51,21 @@ export function Sidebar({
   onToggleTimer,
   onRemoveTimer,
   onUpdateTimer,
+  stageBackground,
+  onStageBackgroundChange,
+  brandColor,
+  onBrandColorChange,
+  logoUrl,
+  onLogoUrlChange,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('layout');
-  const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [bgImageUrl, setBgImageUrl] = useState<string | null>(null);
-  const [brandColor, setBrandColor] = useState('#7c3aed');
   const logoInputRef = useRef<HTMLInputElement>(null);
-  const bgInputRef = useRef<HTMLInputElement>(null);
-
-  // Revoke logo/bg URLs on unmount
-  useEffect(() => {
-    return () => {
-      if (logoUrl) URL.revokeObjectURL(logoUrl);
-      if (bgImageUrl) URL.revokeObjectURL(bgImageUrl);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (logoUrl) URL.revokeObjectURL(logoUrl);
-      setLogoUrl(URL.createObjectURL(file));
-    }
-    e.target.value = '';
-  };
-
-  const handleBgUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (bgImageUrl) URL.revokeObjectURL(bgImageUrl);
-      setBgImageUrl(URL.createObjectURL(file));
+      onLogoUrlChange(URL.createObjectURL(file));
     }
     e.target.value = '';
   };
@@ -207,7 +199,7 @@ export function Sidebar({
                   <img src={logoUrl} alt="Logo" style={styles.logoImg} />
                   <button
                     style={styles.removeImgBtn}
-                    onClick={() => { URL.revokeObjectURL(logoUrl); setLogoUrl(null); }}
+                    onClick={() => { URL.revokeObjectURL(logoUrl); onLogoUrlChange(null); }}
                   >
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                       <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
@@ -229,41 +221,13 @@ export function Sidebar({
               )}
             </div>
 
-            {/* Background Image */}
+            {/* Stage Background (BackgroundPicker) */}
             <div style={styles.brandGroup}>
-              <span style={styles.brandLabel}>Background</span>
-              <input
-                ref={bgInputRef}
-                type="file"
-                accept="image/*,video/*"
-                style={{ display: 'none' }}
-                onChange={handleBgUpload}
+              <span style={styles.brandLabel}>Stage Background</span>
+              <BackgroundPicker
+                value={stageBackground}
+                onChange={onStageBackgroundChange}
               />
-              {bgImageUrl ? (
-                <div style={styles.bgPreview}>
-                  <img src={bgImageUrl} alt="Background" style={styles.bgImg} />
-                  <button
-                    style={styles.removeImgBtn}
-                    onClick={() => { URL.revokeObjectURL(bgImageUrl); setBgImageUrl(null); }}
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
-                </div>
-              ) : (
-                <button
-                  style={styles.uploadBtn}
-                  onClick={() => bgInputRef.current?.click()}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                    <circle cx="8.5" cy="8.5" r="1.5" />
-                    <polyline points="21 15 16 10 5 21" />
-                  </svg>
-                  Upload Background
-                </button>
-              )}
             </div>
 
             {/* Brand Color */}
@@ -279,7 +243,7 @@ export function Sidebar({
                       outline: brandColor === preset.color ? `2px solid ${preset.color}` : 'none',
                       outlineOffset: 2,
                     }}
-                    onClick={() => setBrandColor(preset.color)}
+                    onClick={() => onBrandColorChange(preset.color)}
                     title={preset.name}
                   />
                 ))}
@@ -404,19 +368,6 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: 48,
     maxWidth: '100%',
     objectFit: 'contain',
-  },
-  bgPreview: {
-    position: 'relative',
-    aspectRatio: '16 / 9',
-    borderRadius: 8,
-    background: 'var(--bg-tertiary)',
-    border: '1px solid var(--border)',
-    overflow: 'hidden',
-  },
-  bgImg: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover',
   },
   removeImgBtn: {
     position: 'absolute',

@@ -114,7 +114,7 @@ export interface ChatMessage {
 
 // ============ Layout Types ============
 
-export type LayoutMode = 'grid' | 'spotlight' | 'side-by-side' | 'pip';
+export type LayoutMode = 'grid' | 'spotlight' | 'side-by-side' | 'pip' | 'single' | 'featured';
 
 export interface LayoutConfig {
   mode: LayoutMode;
@@ -141,6 +141,13 @@ export interface OverlayContent {
   text?: string;
   backgroundColor?: string;
   textColor?: string;
+}
+
+// ============ Stage Background Types ============
+
+export interface StageBackground {
+  type: 'color' | 'image' | 'gradient' | 'none';
+  value: string;
 }
 
 // ============ Stream Destination Types ============
