@@ -954,6 +954,12 @@ export function StudioRoom() {
     }
   }, [layout, videoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
 
+  // These must be called before any conditional returns to satisfy Rules of Hooks
+  const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
+  const visibleTimers = useMemo(() => timers.filter(t => t.visible), [timers]);
+  const visibleTickers = useMemo(() => tickers.filter(t => t.visible), [tickers]);
+  const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
+
   // Connection error
   if (connectionError) {
     return (
@@ -986,12 +992,6 @@ export function StudioRoom() {
 
   const visibleLowerThird = lowerThirds.find((lt) => lt.visible);
   const isHostOrCoHost = myParticipant?.role === 'host' || myParticipant?.role === 'co-host';
-
-  // Memoized filtered overlay arrays to avoid creating new arrays every render
-  const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
-  const visibleTimers = useMemo(() => timers.filter(t => t.visible), [timers]);
-  const visibleTickers = useMemo(() => tickers.filter(t => t.visible), [tickers]);
-  const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
 
   return (
     <div style={styles.container}>
