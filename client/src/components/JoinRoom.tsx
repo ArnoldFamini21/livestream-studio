@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
+import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -69,7 +70,7 @@ export function JoinRoom() {
   useEffect(() => {
     if (localStream && audioEnabled) {
       try {
-        const ctx = new AudioContext();
+        const ctx = acquireAudioContext();
         const source = ctx.createMediaStreamSource(localStream);
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
@@ -85,8 +86,8 @@ export function JoinRoom() {
     }
     return () => {
       cancelAnimationFrame(animFrameRef.current);
-      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-        audioContextRef.current.close();
+      if (audioContextRef.current) {
+        releaseAudioContext();
       }
       audioContextRef.current = null;
       analyserRef.current = null;
@@ -324,6 +325,7 @@ export function JoinRoom() {
             onChange={(e) => setGuestName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
             autoFocus
+            maxLength={50}
           />
         </div>
 

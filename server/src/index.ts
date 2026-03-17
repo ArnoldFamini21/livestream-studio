@@ -6,6 +6,7 @@ import { setupSignalingServer } from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 // Allowed origins for CORS (HTTP) and WebSocket origin checking
@@ -41,8 +42,12 @@ app.use((_req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
+
+// Health check endpoint (before rate limiter to avoid false downtime)
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // Simple in-memory rate limiter for REST endpoints
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
@@ -79,13 +84,14 @@ setInterval(() => {
 // REST API routes
 app.use('/api/rooms', roomRouter);
 
-// Health check endpoints (Render uses this to verify the service is up)
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
-});
-
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Error-handling middleware (must be last in the middleware chain)
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('Unhandled error:', err.message);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 // Create HTTP server and attach WebSocket

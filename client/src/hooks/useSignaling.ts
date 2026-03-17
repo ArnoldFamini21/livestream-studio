@@ -47,13 +47,15 @@ export function useSignaling() {
     };
 
     ws.onmessage = (event) => {
+      let message: SignalMessage;
       try {
-        const message: SignalMessage = JSON.parse(event.data);
-        for (const handler of handlersRef.current) {
-          handler(message);
-        }
-      } catch (err) {
-        console.error('Failed to parse message:', err);
+        message = JSON.parse(event.data);
+      } catch (e) {
+        console.warn('Invalid WebSocket message:', e);
+        return;
+      }
+      for (const handler of handlersRef.current) {
+        handler(message);
       }
     };
 
@@ -61,10 +63,14 @@ export function useSignaling() {
       console.log('WebSocket disconnected');
       setConnected(false);
 
+      // Clear stale message queue from old session to avoid replaying outdated data
+      messageQueueRef.current = [];
+
       // Bug fix #6: Reconnect on non-clean close, unless intentionally disconnected
       if (!intentionalDisconnectRef.current && !event.wasClean) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-        console.log(`Scheduling reconnection in ${delay}ms (attempt ${reconnectAttemptsRef.current + 1})`);
+        const baseDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+        const delay = baseDelay * (0.5 + Math.random() * 0.5); // 50-100% of base delay (jitter)
+        console.log(`Scheduling reconnection in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current + 1})`);
         reconnectTimerRef.current = setTimeout(() => {
           reconnectTimerRef.current = null;
           reconnectAttemptsRef.current++;

@@ -264,12 +264,12 @@ const overlayKeyframes = `
 
 const overlayContainer: React.CSSProperties = {
   position: 'absolute',
-  bottom: 32,
-  left: '50%',
-  transform: 'translateX(-50%)',
-  zIndex: 10,
-  maxWidth: 500,
-  width: '90%',
+  bottom: 100,
+  left: 0,
+  right: 0,
+  display: 'flex',
+  justifyContent: 'center',
+  zIndex: 11,
   pointerEvents: 'none',
   transition: 'opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
 };
@@ -286,6 +286,8 @@ const overlayCard: React.CSSProperties = {
   border: '1px solid rgba(255, 255, 255, 0.1)',
   boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.08)',
   animation: 'commentGlow 3s ease-in-out infinite',
+  maxWidth: 500,
+  width: '90%',
 };
 
 const overlayAvatar: React.CSSProperties = {

@@ -167,6 +167,7 @@ export function HomePage() {
                 value={hostName}
                 onChange={(e) => setHostName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && createRoom()}
+                maxLength={50}
               />
             </div>
 

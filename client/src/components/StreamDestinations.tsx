@@ -103,7 +103,7 @@ export function StreamDestinations({
                 </div>
               </div>
               <div style={styles.destKey}>
-                Key: {'*'.repeat(Math.min(dest.streamKey.length || 12, 20))}
+                Key: {'••••••••••••'}
               </div>
             </div>
           );
@@ -175,7 +175,7 @@ function getDefaultRtmpUrl(platform: StreamDestination['platform']): string {
     case 'youtube': return 'rtmp://a.rtmp.youtube.com/live2';
     case 'facebook': return 'rtmps://live-api-s.facebook.com:443/rtmp/';
     case 'twitch': return 'rtmp://live.twitch.tv/app/';
-    case 'linkedin': return 'rtmp://rtmp-api.linkedin.com:443/rtmp/';
+    case 'linkedin': return 'rtmps://rtmp-api.linkedin.com:443/rtmp/';
     case 'instagram': return 'rtmps://live-upload.instagram.com:443/rtmp/';
     default: return '';
   }

@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene } from '@studio/shared';
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
+}
+
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
@@ -37,6 +42,7 @@ export function StudioRoom() {
   const [myParticipant, setMyParticipant] = useState<Participant | null>(null);
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [joined, setJoined] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   // UI panels
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
@@ -110,7 +116,8 @@ export function StudioRoom() {
     switchAudioDevice, switchVideoDevice,
     audioDevices, videoDevices, audioOutputDevices,
     selectedAudioDeviceId, selectedVideoDeviceId,
-    selectedAudioOutputDeviceId, setSelectedAudioOutputDeviceId,
+    selectedAudioOutputDeviceId,
+    onAudioOutputDeviceChange,
   } = useMediaDevices();
 
   const { remoteStreams, connectToPeer, handleOffer, handleAnswer, handleIceCandidate, removePeer, replaceTrack, cleanup } = useWebRTC({
@@ -128,6 +135,7 @@ export function StudioRoom() {
     stopRecording: stopLocalRecording,
   } = useLocalRecording();
 
+  const noopFn = useCallback(() => {}, []);
   const joinedRef = useRef(false);
   const myParticipantRef = useRef<Participant | null>(null);
   const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0 });
@@ -135,6 +143,22 @@ export function StudioRoom() {
   const videoEnabledRef = useRef(videoEnabled);
   const isScreenSharingRef = useRef(isScreenSharing);
   const localStreamRef = useRef<MediaStream | null>(null);
+
+  // Refs for signaling handler dependencies to reduce recreation frequency
+  const connectToPeerRef = useRef(connectToPeer);
+  const handleOfferRef = useRef(handleOffer);
+  const handleAnswerRef = useRef(handleAnswer);
+  const handleIceCandidateRef = useRef(handleIceCandidate);
+  const removePeerRef = useRef(removePeer);
+  const cleanupRef = useRef(cleanup);
+  const stopMediaRef = useRef(stopMedia);
+  const stopScreenShareRef = useRef(stopScreenShare);
+  const navigateRef = useRef(navigate);
+
+  // Refs for onToggleScreenShare dependencies
+  const replaceTrackRef = useRef(replaceTrack);
+  const startScreenShareRef = useRef(startScreenShare);
+  const sendRef = useRef(send);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -145,17 +169,43 @@ export function StudioRoom() {
   useEffect(() => { isScreenSharingRef.current = isScreenSharing; }, [isScreenSharing]);
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
 
+  // Keep function refs in sync
+  useEffect(() => { connectToPeerRef.current = connectToPeer; }, [connectToPeer]);
+  useEffect(() => { handleOfferRef.current = handleOffer; }, [handleOffer]);
+  useEffect(() => { handleAnswerRef.current = handleAnswer; }, [handleAnswer]);
+  useEffect(() => { handleIceCandidateRef.current = handleIceCandidate; }, [handleIceCandidate]);
+  useEffect(() => { removePeerRef.current = removePeer; }, [removePeer]);
+  useEffect(() => { cleanupRef.current = cleanup; }, [cleanup]);
+  useEffect(() => { stopMediaRef.current = stopMedia; }, [stopMedia]);
+  useEffect(() => { stopScreenShareRef.current = stopScreenShare; }, [stopScreenShare]);
+  useEffect(() => { navigateRef.current = navigate; }, [navigate]);
+  useEffect(() => { replaceTrackRef.current = replaceTrack; }, [replaceTrack]);
+  useEffect(() => { startScreenShareRef.current = startScreenShare; }, [startScreenShare]);
+  useEffect(() => { sendRef.current = send; }, [send]);
+
   // Connect WebSocket and start media on mount
   useEffect(() => {
     connect();
     startMedia();
   }, [connect, startMedia]);
 
-  // Fix 1: Reset joinedRef when disconnected so room-join is re-sent on reconnect
+  // Fix 1: Reset joinedRef and clear room-ending state when disconnected so room-join is re-sent on reconnect
   useEffect(() => {
     if (!connected) {
       joinedRef.current = false;
+      setRoomEnding(false);
+      setEndingCountdown(10);
     }
+  }, [connected]);
+
+  // WebSocket connection timeout: show error if not connected within 10 seconds
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (!connected) {
+        setConnectionError('Unable to connect to server. Please check your connection and try again.');
+      }
+    }, 10000);
+    return () => clearTimeout(timeout);
   }, [connected]);
 
   // Join room once connected
@@ -182,7 +232,7 @@ export function StudioRoom() {
           existing.forEach((p) => map.set(p.id, p));
           setParticipants(map);
           existing.forEach((p) => {
-            setTimeout(() => connectToPeer(p.id).catch(err => console.error('Failed to connect to peer:', err)), 100);
+            setTimeout(() => connectToPeerRef.current(p.id).catch(err => console.error('Failed to connect to peer:', err)), 100);
           });
           break;
         }
@@ -197,7 +247,7 @@ export function StudioRoom() {
         case 'participant-left': {
           const { participantId } = message.payload;
           setParticipants((prev) => { const n = new Map(prev); n.delete(participantId); return n; });
-          removePeer(participantId);
+          removePeerRef.current(participantId);
           break;
         }
         case 'participant-updated': {
@@ -216,13 +266,13 @@ export function StudioRoom() {
           break;
         }
         case 'offer':
-          handleOffer(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle offer:', err));
+          handleOfferRef.current(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle offer:', err));
           break;
         case 'answer':
-          handleAnswer(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle answer:', err));
+          handleAnswerRef.current(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle answer:', err));
           break;
         case 'ice-candidate':
-          handleIceCandidate(message.payload.from, message.payload.candidate).catch(err => console.error('Failed to handle ICE candidate:', err));
+          handleIceCandidateRef.current(message.payload.from, message.payload.candidate).catch(err => console.error('Failed to handle ICE candidate:', err));
           break;
         case 'media-state-changed': {
           const { participantId, audioEnabled: a, videoEnabled: v, screenSharing: s } = message.payload;
@@ -238,27 +288,44 @@ export function StudioRoom() {
           setChatMessages((prev) => {
             // Deduplicate: the sender already added this message optimistically
             if (prev.some((m) => m.id === message.payload.id)) return prev;
-            return [...prev, message.payload];
+            const next = [...prev, message.payload];
+            return next.length > 500 ? next.slice(-500) : next;
           });
           break;
         case 'room-ending':
           setRoomEnding(true);
           setEndingCountdown(message.payload.countdown);
           break;
+        case 'room-ending-cancelled':
+          setRoomEnding(false);
+          setEndingCountdown(10);
+          break;
+        case 'host-changed':
+          setRoom((prev) => prev ? { ...prev, hostId: message.payload.newHostId } : prev);
+          break;
         case 'room-ended':
           setRoomEnding(false);
-          cleanup();
-          stopMedia();
-          stopScreenShare();
-          navigate('/');
+          cleanupRef.current();
+          stopMediaRef.current();
+          stopScreenShareRef.current();
+          navigateRef.current('/');
           break;
         case 'error':
           console.error('Server error:', message.payload.message);
-          if (message.payload.code === 'ROOM_NOT_FOUND') { alert('Room not found'); navigate('/'); }
+          if (message.payload.code === 'ROOM_NOT_FOUND') {
+            setConnectionError('This room does not exist or has ended.');
+          }
           break;
+        // Client-to-server messages: not expected here but listed for exhaustive check
+        case 'join-room':
+        case 'stage-action':
+        case 'end-room':
+          break;
+        default:
+          assertNever(message);
       }
     },
-    [connectToPeer, handleOffer, handleAnswer, handleIceCandidate, removePeer, navigate, cleanup, stopMedia, stopScreenShare]
+    [] // No external dependencies — all mutable values accessed via refs
   );
 
   useEffect(() => {
@@ -307,40 +374,42 @@ export function StudioRoom() {
     try { const t = await switchVideoDevice(id); if (t) await replaceTrack(t); }
     catch (err) { console.error('Failed to switch video device:', err); }
   };
-  const onAudioOutputDeviceChange = (id: string) => { setSelectedAudioOutputDeviceId(id); };
-
   // Screen sharing — replace the camera video track on all peer connections
   // so remote participants actually receive the screen feed.
-  const onToggleScreenShare = async () => {
-    if (isScreenSharing) {
-      stopScreenShare();
+  const onToggleScreenShare = useCallback(async () => {
+    if (isScreenSharingRef.current) {
+      stopScreenShareRef.current();
       // Restore the camera video track on all peer connections
-      const cameraTrack = localStream?.getVideoTracks()[0];
-      if (cameraTrack) await replaceTrack(cameraTrack);
-      if (myParticipant) send({ type: 'media-state-changed', payload: { participantId: myParticipant.id, audioEnabled, videoEnabled, screenSharing: false } });
+      const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
+      if (cameraTrack) await replaceTrackRef.current(cameraTrack);
+      if (myParticipantRef.current) sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: false } });
     } else {
       try {
-        const stream = await startScreenShare();
-        if (stream && myParticipant) {
+        const stream = await startScreenShareRef.current();
+        if (stream && myParticipantRef.current) {
           // Replace the camera video track with the screen video track on all peers
           const screenTrack = stream.getVideoTracks()[0];
           if (screenTrack) {
-            await replaceTrack(screenTrack);
+            await replaceTrackRef.current(screenTrack);
             // When the user stops sharing via the browser's native button,
             // restore the camera track automatically
             screenTrack.addEventListener('ended', async () => {
+              stopScreenShareRef.current();
               const camTrack = localStreamRef.current?.getVideoTracks()[0];
-              if (camTrack) await replaceTrack(camTrack);
+              if (camTrack) await replaceTrackRef.current(camTrack);
+              if (myParticipantRef.current) {
+                sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: false } });
+              }
             });
           }
-          send({ type: 'media-state-changed', payload: { participantId: myParticipant.id, audioEnabled, videoEnabled, screenSharing: true } });
+          sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: true } });
         }
       } catch (err) {
         // User cancelled screen share dialog or permission denied
         console.warn('Screen share cancelled or failed:', err);
       }
     }
-  };
+  }, []); // All mutable values accessed via refs
 
   // Recording
   const onToggleRecording = () => {
@@ -377,7 +446,10 @@ export function StudioRoom() {
       timestamp: new Date().toISOString(),
       isBackstage: false,
     };
-    setChatMessages((prev) => [...prev, msg]);
+    setChatMessages((prev) => {
+      const next = [...prev, msg];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
     send({ type: 'chat-message', payload: msg });
   };
 
@@ -457,15 +529,36 @@ export function StudioRoom() {
   const onShowImage = (url: string) => setActiveMedia({ type: 'image', url });
   const onStopMedia = () => setActiveMedia(null);
 
+  // Helper to convert blob URL to data URL
+  const blobToDataUrl = async (blobUrl: string): Promise<string> => {
+    const response = await fetch(blobUrl);
+    const blob = await response.blob();
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(blob);
+    });
+  };
+
   // Scenes
-  const onSaveScene = (name: string) => {
+  const onSaveScene = async (name: string) => {
+    // Convert blob URL to data URL so the scene survives blob revocation
+    let persistedLogoUrl = logoUrl;
+    if (logoUrl && logoUrl.startsWith('blob:')) {
+      try {
+        persistedLogoUrl = await blobToDataUrl(logoUrl);
+      } catch {
+        // Keep original URL if conversion fails
+      }
+    }
+
     const newScene: Scene = {
-      id: `scene-${Date.now()}`,
+      id: `scene-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name,
       layout,
       background: stageBackground,
       brandColor,
-      logoUrl,
+      logoUrl: persistedLogoUrl,
       visibleOverlayIds: [
         ...lowerThirds.filter(lt => lt.visible).map(lt => lt.id),
         ...banners.filter(b => b.visible).map(b => b.id),
@@ -479,6 +572,7 @@ export function StudioRoom() {
   const onApplyScene = (sceneId: string) => {
     const scene = scenes.find(s => s.id === sceneId);
     if (!scene) return;
+    if (sceneId === activeSceneId) return;
     setLayout(scene.layout);
     setStageBackground(scene.background);
     setBrandColor(scene.brandColor);
@@ -573,11 +667,18 @@ export function StudioRoom() {
     }
     for (const [id, p] of participants) {
       if (p.status === 'on-stage') {
-        items.push({ id, name: p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.audioEnabled, videoEnabled: p.screenSharing ? true : p.videoEnabled });
+        items.push({ id, name: p.screenSharing ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.screenSharing ? false : p.audioEnabled, videoEnabled: p.screenSharing ? true : p.videoEnabled, isScreenShare: p.screenSharing || false });
       }
     }
     return items;
   }, [myParticipant, participants, localStream, audioEnabled, videoEnabled, remoteStreams, isScreenSharing, screenStream]);
+
+  // Auto-switch to grid when participant count drops below what the layout requires
+  useEffect(() => {
+    if (videoItems.length < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
+      setLayout('grid');
+    }
+  }, [videoItems.length, layout]);
 
   // All participants for the manager - memoized
   const allParticipantsMap = useMemo(() => {
@@ -634,6 +735,8 @@ export function StudioRoom() {
   // Uses flexbox + percentage widths; justify-content:center handles
   // centering the last row when it has fewer tiles than the row above.
   const getAutoGridLayout = useCallback((count: number): LayoutResult => {
+    if (count <= 0) return { containerStyle: { ...containerBase, display: 'flex' }, tileStyles: [], mode: 'flex' };
+
     const rowConfigs: Record<number, number[]> = {
       1: [1],
       2: [2],
@@ -648,9 +751,20 @@ export function StudioRoom() {
       11: [4, 4, 3],
       12: [4, 4, 4],
     };
-    const rows = rowConfigs[Math.min(count, 12)] || rowConfigs[12];
-    const numRows = rows.length;
-    const maxCols = Math.max(...rows);
+
+    let numRows: number;
+    let maxCols: number;
+
+    if (count > 12) {
+      // Dynamically compute grid dimensions for large participant counts
+      maxCols = Math.ceil(Math.sqrt(count * 16 / 9));
+      numRows = Math.ceil(count / maxCols);
+    } else {
+      const rows = rowConfigs[count]!;
+      numRows = rows.length;
+      maxCols = Math.max(...rows);
+    }
+
     const tileW = `calc(${100 / maxCols}% - ${GAP * (maxCols - 1) / maxCols}px)`;
     const tileH = `calc(${100 / numRows}% - ${GAP * (numRows - 1) / numRows}px)`;
 
@@ -725,15 +839,18 @@ export function StudioRoom() {
     if (count <= 1) return getAutoGridLayout(count);
     const thumbCount = count - 1;
     const maxThumbsPerRow = Math.min(thumbCount, 6);
-    const mainPct = 74;
-    const thumbPct = 26;
+    const numThumbRows = Math.ceil(thumbCount / maxThumbsPerRow);
+    // Dynamic split: allocate more space as thumbnail rows grow
+    const thumbTotalPct = Math.min(26 + (numThumbRows - 1) * 14, 50); // 26% for 1 row, 40% for 2, cap at 50%
+    const mainPct = 100 - thumbTotalPct;
+    const thumbRowH = thumbTotalPct / numThumbRows;
     const tiles: React.CSSProperties[] = [
       { width: '100%', height: `calc(${mainPct}% - ${GAP / 2}px)`, flexShrink: 0, flexGrow: 0 },
     ];
     for (let i = 0; i < thumbCount; i++) {
       tiles.push({
         width: `calc(${100 / maxThumbsPerRow}% - ${GAP * (maxThumbsPerRow - 1) / maxThumbsPerRow}px)`,
-        height: `calc(${thumbPct}% - ${GAP / 2}px)`,
+        height: `calc(${thumbRowH}% - ${GAP * (numThumbRows) / (numThumbRows + 1)}px)`,
         flexShrink: 0, flexGrow: 0,
       });
     }
@@ -774,8 +891,8 @@ export function StudioRoom() {
     const count = videoItems.length;
     const hasScreenShare = videoItems.some(v => v.isScreenShare);
 
-    // Screen share layout takes priority in grid mode
-    if (hasScreenShare && layout === 'grid') {
+    // Screen share layout takes priority across all layout modes
+    if (hasScreenShare) {
       return getScreenShareLayout(videoItems);
     }
 
@@ -810,6 +927,7 @@ export function StudioRoom() {
             right: 20,
             width: '24%',
             aspectRatio: '16 / 9',
+            height: '13.5%', // fallback for browsers without aspectRatio support
             borderRadius: 12,
             overflow: 'hidden',
             boxShadow: '0 4px 24px rgba(0, 0, 0, 0.5)',
@@ -832,9 +950,29 @@ export function StudioRoom() {
         };
       }
       default:
-        return getAutoGridLayout(count);
+        return assertNever(layout);
     }
   }, [layout, videoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
+
+  // Connection error
+  if (connectionError) {
+    return (
+      <div style={styles.loading}>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M15 9l-6 6M9 9l6 6" />
+        </svg>
+        <p style={{ ...styles.loadingText, color: '#ef4444', marginTop: 16 }}>{connectionError}</p>
+        <button
+          className="btn-primary"
+          style={{ marginTop: 16, padding: '10px 24px', borderRadius: 10, fontSize: 14, fontWeight: 600 }}
+          onClick={() => navigate('/')}
+        >
+          Go to homepage
+        </button>
+      </div>
+    );
+  }
 
   // Loading
   if (!joined) {
@@ -848,6 +986,12 @@ export function StudioRoom() {
 
   const visibleLowerThird = lowerThirds.find((lt) => lt.visible);
   const isHostOrCoHost = myParticipant?.role === 'host' || myParticipant?.role === 'co-host';
+
+  // Memoized filtered overlay arrays to avoid creating new arrays every render
+  const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
+  const visibleTimers = useMemo(() => timers.filter(t => t.visible), [timers]);
+  const visibleTickers = useMemo(() => tickers.filter(t => t.visible), [tickers]);
+  const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
 
   return (
     <div style={styles.container}>
@@ -888,6 +1032,7 @@ export function StudioRoom() {
             <button
               style={{ ...styles.headerBtn, ...(showSidebar ? styles.headerBtnActive : {}) }}
               onClick={() => setShowSidebar(!showSidebar)}
+              title="Toggle sidebar"
               aria-label="Toggle sidebar"
               aria-pressed={showSidebar}
             >
@@ -935,6 +1080,7 @@ export function StudioRoom() {
                         stream={item.stream}
                         name={item.name}
                         isLocal={item.isLocal}
+                        isScreenShare={item.isScreenShare}
                         audioEnabled={item.audioEnabled}
                         videoEnabled={item.videoEnabled}
                         brandColor={brandColor}
@@ -965,17 +1111,17 @@ export function StudioRoom() {
                 {visibleLowerThird && <LowerThirdOverlay data={visibleLowerThird} />}
 
                 {/* Banner Overlays */}
-                {banners.filter((b) => b.visible).map((b) => (
+                {visibleBanners.map((b) => (
                   <BannerOverlayDisplay key={b.id} data={b} />
                 ))}
 
                 {/* Timer Overlays */}
-                {timers.filter((t) => t.visible).map((t) => (
+                {visibleTimers.map((t) => (
                   <TimerOverlayDisplay key={t.id} data={t} />
                 ))}
 
                 {/* Ticker Overlays */}
-                {tickers.filter((t) => t.visible).map((t) => (
+                {visibleTickers.map((t) => (
                   <TickerOverlayDisplay key={t.id} data={t} />
                 ))}
 
@@ -983,7 +1129,7 @@ export function StudioRoom() {
                 <CommentHighlightOverlay comment={highlightedComment} />
 
                 {/* Webinar Q&A Overlay */}
-                <WebinarQAOverlay question={qaQuestions.find(q => q.highlighted) || null} />
+                <WebinarQAOverlay question={highlightedQA} />
               </div>
 
               {/* Logo watermark */}
@@ -1148,7 +1294,7 @@ export function StudioRoom() {
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={onToggleScreenShare}
         onOpenChat={() => setShowGuestChat(!showGuestChat)}
-        onOpenParticipants={() => {}}
+        onOpenParticipants={noopFn}
         onOpenStreamDestinations={() => setShowStreamDest(!showStreamDest)}
         onOpenSoundBoard={() => setShowSoundBoard(!showSoundBoard)}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
@@ -1267,7 +1413,7 @@ const styles: Record<string, React.CSSProperties> = {
   headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
   logoMark: { display: 'flex' },
   headerRight: { display: 'flex', alignItems: 'center', gap: 6 },
-  roomTitle: { fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' },
+  roomTitle: { fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   divider: { width: 1, height: 16, background: 'var(--border-strong)' },
   badge: {
     display: 'flex', alignItems: 'center', gap: 6,
@@ -1358,15 +1504,16 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     height: '100%',
     boxSizing: 'border-box' as const,
-    transition: 'all 0.3s ease',
+    transition: 'opacity 0.3s ease',
   },
   // Generic tile wrapper — per-tile sizing is merged from layoutResult.tileStyles[i]
   tileWrapper: {
+    boxSizing: 'border-box' as const,
     minWidth: 0,
     minHeight: 0,
     overflow: 'hidden',
     borderRadius: 16,
-    transition: 'all 0.3s ease',
+    transition: 'width 0.3s ease, height 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease',
   },
   layoutBar: {
     flexShrink: 0,

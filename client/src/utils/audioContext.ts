@@ -3,8 +3,13 @@
 
 let sharedContext: AudioContext | null = null;
 let refCount = 0;
+let closeTimeout: ReturnType<typeof setTimeout> | null = null;
 
 export function acquireAudioContext(): AudioContext {
+  if (closeTimeout) {
+    clearTimeout(closeTimeout);
+    closeTimeout = null;
+  }
   if (!sharedContext || sharedContext.state === 'closed') {
     sharedContext = new AudioContext();
   }
@@ -17,16 +22,14 @@ export function acquireAudioContext(): AudioContext {
 }
 
 export function releaseAudioContext(): void {
-  refCount--;
-  // Don't close — keep alive for reuse. Only close if truly no consumers.
-  if (refCount <= 0 && sharedContext) {
-    refCount = 0;
-    // Defer close slightly in case new consumers appear immediately
-    setTimeout(() => {
-      if (refCount <= 0 && sharedContext) {
+  refCount = Math.max(0, refCount - 1);
+  if (refCount === 0 && sharedContext) {
+    closeTimeout = setTimeout(() => {
+      if (refCount === 0 && sharedContext) {
         sharedContext.close().catch(() => {});
         sharedContext = null;
       }
+      closeTimeout = null;
     }, 5000);
   }
 }

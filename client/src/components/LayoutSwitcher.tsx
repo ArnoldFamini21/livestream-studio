@@ -80,13 +80,16 @@ const layouts: { mode: LayoutMode; label: string; description: string; icon: Rea
 
 export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount }: LayoutSwitcherProps) {
   return (
-    <div style={styles.bar}>
+    <div style={styles.bar} role="radiogroup" aria-label="Layout switcher">
       {layouts.map(({ mode, label, description, icon }) => {
         const isActive = currentLayout === mode;
         const isDisabled = participantCount < 2 && (mode === 'side-by-side' || mode === 'pip' || mode === 'spotlight' || mode === 'featured');
         return (
           <button
             key={mode}
+            role="radio"
+            aria-checked={isActive}
+            aria-label={`${label} layout — ${description}`}
             onClick={() => onLayoutChange(mode)}
             disabled={isDisabled}
             title={`${label} — ${description}`}

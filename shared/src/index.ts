@@ -61,10 +61,10 @@ export type SignalMessage =
   | { type: 'chat-message'; payload: ChatMessage }
   | { type: 'stage-action'; payload: StageActionPayload }
   | { type: 'participant-updated'; payload: Participant }
-  | { type: 'end-room'; payload: {} }
+  | { type: 'end-room'; payload: Record<string, never> }
   | { type: 'room-ending'; payload: { countdown: number } }
-  | { type: 'room-ended'; payload: {} }
-  | { type: 'room-ending-cancelled'; payload: {} }
+  | { type: 'room-ended'; payload: Record<string, never> }
+  | { type: 'room-ending-cancelled'; payload: Record<string, never> }
   | { type: 'host-changed'; payload: { newHostId: string; newHostName: string } }
   | { type: 'error'; payload: { message: string; code: string } };
 

@@ -93,9 +93,12 @@ export function RecordingPanel({
     }
   }, [onStopRecording, roomName]);
 
-  const handleDownloadAll = useCallback(() => {
-    for (const file of recordedFiles) {
-      downloadBlob(file.blob, file.fileName);
+  const handleDownloadAll = useCallback(async () => {
+    for (let i = 0; i < recordedFiles.length; i++) {
+      downloadBlob(recordedFiles[i].blob, recordedFiles[i].fileName);
+      if (i < recordedFiles.length - 1) {
+        await new Promise(r => setTimeout(r, 500));
+      }
     }
   }, [recordedFiles]);
 

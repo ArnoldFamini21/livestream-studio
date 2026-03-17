@@ -219,6 +219,9 @@ export function BannerOverlayDisplay({ data }: { data: BannerData }) {
   const textRef = useRef<HTMLDivElement>(null);
   const [textWidth, setTextWidth] = useState(0);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [mounted, setMounted] = useState(data.visible);
+  const [animatingIn, setAnimatingIn] = useState(data.visible);
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (data.isTicker && textRef.current && containerRef.current) {
@@ -227,27 +230,60 @@ export function BannerOverlayDisplay({ data }: { data: BannerData }) {
     }
   }, [data.text, data.isTicker]);
 
-  if (!data.visible) return null;
+  // Re-measure ticker widths when the container resizes
+  useEffect(() => {
+    if (!data.isTicker || !containerRef.current) return;
+    const ro = new ResizeObserver(() => {
+      if (textRef.current && containerRef.current) {
+        setTextWidth(textRef.current.scrollWidth);
+        setContainerWidth(containerRef.current.offsetWidth);
+      }
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, [data.isTicker]);
+
+  useEffect(() => {
+    if (exitTimerRef.current) {
+      clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = null;
+    }
+
+    if (data.visible) {
+      setMounted(true);
+      requestAnimationFrame(() => setAnimatingIn(true));
+    } else {
+      setAnimatingIn(false);
+      exitTimerRef.current = setTimeout(() => setMounted(false), 400);
+    }
+
+    return () => {
+      if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+    };
+  }, [data.visible]);
+
+  if (!mounted) return null;
 
   const bannerColor = getStyleColor(data.style, data.customColor);
   const animationDuration = Math.max(8, (textWidth + containerWidth) / 80);
+  const slideDirection = data.position === 'top' ? '-100%' : '100%';
 
   return (
     <div
       ref={containerRef}
+      aria-live="polite"
+      role="status"
       style={{
         ...overlayBase,
-        ...(data.position === 'top' ? { top: 0 } : { bottom: 0 }),
+        ...(data.position === 'top' ? { top: 0 } : { bottom: 36 }),
         background: bannerColor,
-        animation: `bannerFadeIn-${data.id} 0.3s ease-out`,
+        opacity: animatingIn ? 1 : 0,
+        transform: animatingIn ? 'translateY(0)' : `translateY(${slideDirection})`,
+        transition: 'opacity 0.3s ease-out, transform 0.3s ease-out',
       }}
     >
-      {/* Inject keyframes - unique per banner ID to avoid collisions */}
+      {/* Inject keyframes for ticker animation */}
       <style>{`
-        @keyframes bannerFadeIn-${data.id} {
-          from { opacity: 0; transform: translateY(${data.position === 'top' ? '-100%' : '100%'}); }
-          to { opacity: 1; transform: translateY(0); }
-        }
         @keyframes bannerTicker-${data.id} {
           from { transform: translateX(${containerWidth}px); }
           to { transform: translateX(-${textWidth}px); }
@@ -297,7 +333,7 @@ const overlayBase: React.CSSProperties = {
   position: 'absolute',
   left: 0,
   right: 0,
-  zIndex: 10,
+  zIndex: 9,
   overflow: 'hidden',
 };
 

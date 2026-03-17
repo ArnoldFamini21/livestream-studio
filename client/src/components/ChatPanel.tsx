@@ -8,6 +8,9 @@ interface ChatPanelProps {
   senderName: string;
 }
 
+const MAX_MESSAGE_LENGTH = 2000;
+const CHAR_COUNT_THRESHOLD = 1800;
+
 export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -29,7 +32,7 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
 
   const handleSend = () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || text.length > MAX_MESSAGE_LENGTH) return;
     onSend(text);
     setInput('');
   };
@@ -48,7 +51,7 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
       </div>
 
       {/* Messages */}
-      <div ref={messagesContainerRef} style={styles.messages} onScroll={handleScroll} aria-live="polite" aria-label="Chat messages">
+      <div ref={messagesContainerRef} style={styles.messages} onScroll={handleScroll} role="log" aria-live="polite" aria-label="Chat messages">
         {messages.length === 0 && (
           <div style={styles.empty}>
             <p style={styles.emptyText}>No messages yet</p>
@@ -84,28 +87,39 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
       </div>
 
       {/* Input */}
-      <div style={styles.inputBar}>
-        <input
-          style={styles.input}
-          placeholder="Type a message..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-        />
-        <button
-          style={{
-            ...styles.sendBtn,
-            opacity: input.trim() ? 1 : 0.4,
-          }}
-          onClick={handleSend}
-          disabled={!input.trim()}
-          aria-label="Send message"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13" />
-            <polygon points="22 2 15 22 11 13 2 9 22 2" />
-          </svg>
-        </button>
+      <div style={styles.inputArea}>
+        {input.length >= CHAR_COUNT_THRESHOLD && (
+          <div style={{
+            ...styles.charCount,
+            color: input.length > MAX_MESSAGE_LENGTH ? '#ef4444' : 'var(--text-muted)',
+          }}>
+            {input.length}/{MAX_MESSAGE_LENGTH}
+          </div>
+        )}
+        <div style={styles.inputBar}>
+          <input
+            style={styles.input}
+            placeholder="Type a message..."
+            value={input}
+            maxLength={MAX_MESSAGE_LENGTH}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+          />
+          <button
+            style={{
+              ...styles.sendBtn,
+              opacity: input.trim() && input.trim().length <= MAX_MESSAGE_LENGTH ? 1 : 0.4,
+            }}
+            onClick={handleSend}
+            disabled={!input.trim() || input.trim().length > MAX_MESSAGE_LENGTH}
+            aria-label="Send message"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -196,12 +210,19 @@ const styles: Record<string, React.CSSProperties> = {
     wordBreak: 'break-word',
     margin: 0,
   },
+  inputArea: {
+    borderTop: '1px solid var(--border)',
+  },
+  charCount: {
+    fontSize: 11,
+    textAlign: 'right' as const,
+    padding: '4px 12px 0',
+  },
   inputBar: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
     padding: '10px 12px',
-    borderTop: '1px solid var(--border)',
   },
   input: {
     flex: 1,

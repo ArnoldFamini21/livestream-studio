@@ -4,7 +4,7 @@ import type { Scene, LayoutMode } from '@studio/shared';
 interface SceneManagerProps {
   scenes: Scene[];
   activeSceneId: string | null;
-  onSaveScene: (name: string) => void;
+  onSaveScene: (name: string) => void | Promise<void>;
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface LowerThirdData {
   id: string;
@@ -104,16 +104,47 @@ export function LowerThirdManager({ lowerThirds, onAdd, onToggle, onRemove }: Lo
 
 // The actual on-screen overlay component
 export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
-  if (!data.visible) return null;
+  const [mounted, setMounted] = useState(data.visible);
+  const [animatingIn, setAnimatingIn] = useState(data.visible);
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (exitTimerRef.current) {
+      clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = null;
+    }
+
+    if (data.visible) {
+      setMounted(true);
+      // Allow the DOM to render before triggering the enter animation
+      requestAnimationFrame(() => setAnimatingIn(true));
+    } else {
+      // Start exit animation, then unmount
+      setAnimatingIn(false);
+      exitTimerRef.current = setTimeout(() => setMounted(false), 400);
+    }
+
+    return () => {
+      if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+    };
+  }, [data.visible]);
+
+  if (!mounted) return null;
 
   const overlayStyles = getOverlayStyle(data.style);
 
   return (
-    <div style={{
-      ...overlayBase,
-      ...overlayStyles.container,
-      animation: 'slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
-    }}>
+    <div
+      aria-live="polite"
+      role="status"
+      style={{
+        ...overlayBase,
+        ...overlayStyles.container,
+        opacity: animatingIn ? 1 : 0,
+        transform: animatingIn ? 'translateY(0)' : 'translateY(16px)',
+        transition: 'opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
+      }}
+    >
       <div style={overlayStyles.nameBar}>
         <span style={overlayStyles.name}>{data.name}</span>
       </div>
@@ -174,7 +205,7 @@ function getOverlayStyle(style: LowerThirdData['style']) {
 
 const overlayBase: React.CSSProperties = {
   position: 'absolute',
-  bottom: 24,
+  bottom: 60,
   left: 24,
   zIndex: 10,
   maxWidth: 320,

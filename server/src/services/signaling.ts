@@ -33,9 +33,23 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'end-room',
 ]);
 
+const MAX_ROOMS = 1000;
+
 const rooms = new Map<string, RoomState>();
 const wsToParticipant = new Map<WebSocket, { roomId: string; participantId: string }>();
 const endingTimers = new Map<string, NodeJS.Timeout>();
+
+// Stale room cleanup: remove rooms older than 24 hours with no participants
+setInterval(() => {
+  const now = Date.now();
+  rooms.forEach((roomState, id) => {
+    const created = new Date(roomState.room.createdAt).getTime();
+    if (now - created > 24 * 60 * 60 * 1000 && roomState.participants.size === 0) {
+      rooms.delete(id);
+      console.log(`Stale room ${id} cleaned up (older than 24h, no participants)`);
+    }
+  });
+}, 60 * 60 * 1000); // Every hour
 
 // WebSocket per-connection rate limiting
 const wsMessageCounts = new Map<WebSocket, { count: number; resetAt: number }>();
@@ -65,6 +79,10 @@ export function getRooms() {
 }
 
 export function createRoom(name: string, hostName: string, options?: { status?: 'waiting' | 'scheduled'; scheduledFor?: string }): Room {
+  if (rooms.size >= MAX_ROOMS) {
+    throw new Error('Room limit reached');
+  }
+
   const room: Room = {
     id: nanoid(10),
     name,
@@ -195,7 +213,21 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
 }
 
 function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
-  const { roomId, role } = payload;
+  // Duplicate join guard: prevent same WebSocket from joining twice
+  if (wsToParticipant.has(ws)) {
+    sendError(ws, 'Already in a room', 'ALREADY_JOINED');
+    return;
+  }
+
+  // Validate payload field types
+  if (typeof payload.roomId !== 'string' || typeof payload.name !== 'string') {
+    sendError(ws, 'Invalid payload types', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const { roomId } = payload;
+  // Server-side role validation: only allow 'host' or 'guest' from client
+  const role: 'host' | 'guest' = payload.role === 'host' ? 'host' : 'guest';
   // Sanitize and validate participant name
   const name = (typeof payload.name === 'string' ? payload.name : '').trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, MAX_PARTICIPANT_NAME_LENGTH) || 'Anonymous';
   const roomState = rooms.get(roomId);
@@ -238,12 +270,9 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     status: 'green-room',
   };
 
-  // Host and co-hosts go directly on-stage
+  // Host goes directly on-stage; co-host role is only granted via promote-co-host stage action
   if (effectiveRole === 'host') {
     roomState.room.hostId = participant.id;
-    participant.status = 'on-stage';
-  } else if (effectiveRole === 'co-host') {
-    roomState.room.coHostIds.push(participant.id);
     participant.status = 'on-stage';
   } else {
     // Guests: if green room is enabled, they wait; otherwise auto-admit
@@ -411,9 +440,12 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   const senderEntry = roomState.participants.get(mapping.participantId);
   if (!senderEntry) return;
 
+  const sanitizedContent = payload.content.replace(/[\x00-\x1F\x7F]/g, '').trim();
+  if (sanitizedContent.length === 0) return;
+
   const sanitizedPayload: ChatMessage = {
     ...payload,
-    content: payload.content.trim(),
+    content: sanitizedContent,
     senderId: mapping.participantId,
     senderName: senderEntry.participant.name,
   };
@@ -606,8 +638,14 @@ function broadcastToRoom(roomId: string, message: SignalMessage, excludeId?: str
   }
 }
 
-function send(ws: WebSocket, message: SignalMessage) {
-  ws.send(JSON.stringify(message));
+function send(ws: WebSocket, message: any) {
+  try {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
+    }
+  } catch {
+    // Socket is closing or closed, nothing to do
+  }
 }
 
 function sendError(ws: WebSocket, message: string, code: string) {

@@ -9,7 +9,6 @@ import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.
 
 function useAudioLevel(stream: MediaStream | null): number {
   const [level, setLevel] = useState(0);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const rafRef = useRef<number>(0);
@@ -41,7 +40,6 @@ function useAudioLevel(stream: MediaStream | null): number {
     const source = audioCtx.createMediaStreamSource(stream);
     source.connect(analyser);
 
-    audioCtxRef.current = audioCtx;
     analyserRef.current = analyser;
     sourceRef.current = source;
 
@@ -305,13 +303,13 @@ const meterStyles: Record<string, React.CSSProperties> = {
 // ---------------------------------------------------------------------------
 
 interface AudioLevelIndicatorProps {
-  stream: MediaStream | null;
+  /** Pre-computed audio level 0-100 from the parent's shared analyser pipeline. */
+  level: number;
 }
 
-export function AudioLevelIndicator({ stream }: AudioLevelIndicatorProps) {
-  const level = useAudioLevel(stream);
+export function AudioLevelIndicator({ level }: AudioLevelIndicatorProps) {
   const isActive = level > 3;
-  const isDisabled = !stream;
+  const isDisabled = false;
 
   const dotSize = 8;
   const glowSize = isActive ? Math.min(level / 6, 8) : 0;

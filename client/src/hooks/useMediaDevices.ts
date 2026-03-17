@@ -6,6 +6,11 @@ export interface MediaDeviceInfo {
   kind: 'audioinput' | 'videoinput' | 'audiooutput';
 }
 
+// Type for the setSinkId API which may or may not be present on HTMLMediaElement
+interface SinkIdElement {
+  setSinkId?: (sinkId: string) => Promise<void>;
+}
+
 export function useMediaDevices() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(true);
@@ -21,9 +26,14 @@ export function useMediaDevices() {
   const [selectedAudioOutputDeviceId, setSelectedAudioOutputDeviceId] = useState<string>('');
 
   const streamRef = useRef<MediaStream | null>(null);
+  const switchingRef = useRef(false);
+  const audioOutputIdRef = useRef<string>('');
 
   // Enumerate all available media devices
   const enumerateDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      return { audio: [], video: [], audioOut: [] };
+    }
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
 
@@ -64,31 +74,52 @@ export function useMediaDevices() {
 
   // Start media with optional specific device IDs
   const startMedia = useCallback(async (audioDeviceId?: string, videoDeviceId?: string) => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Media devices not available. Please use HTTPS or localhost.');
+      return null;
+    }
+
     try {
       // Stop any existing tracks first
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
 
-      const constraints: MediaStreamConstraints = {
-        video: {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30 },
-          ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
-        },
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
-        },
+      const videoConstraints: MediaStreamConstraints['video'] = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30 },
+        ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
+      };
+      const audioConstraints: MediaStreamConstraints['audio'] = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: videoConstraints });
+        setError(null);
+      } catch {
+        // Audio+video failed -- try audio only
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+          setError('Camera not available - audio only');
+        } catch {
+          // Audio only failed -- try video only
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+            setError('Microphone not available - video only');
+          } catch (finalErr) {
+            setError('No media devices available');
+            return null;
+          }
+        }
+      }
       streamRef.current = stream;
       setLocalStream(stream);
-      setError(null);
 
       // After getting the stream, enumerate devices to get labels
       // (labels are only available after granting permission)
@@ -154,7 +185,9 @@ export function useMediaDevices() {
 
   // Switch audio input device
   const switchAudioDevice = useCallback(async (deviceId: string) => {
-    if (!streamRef.current) return;
+    if (!streamRef.current) return null;
+    if (switchingRef.current) return null;
+    switchingRef.current = true;
 
     try {
       const newAudioStream = await navigator.mediaDevices.getUserMedia({
@@ -184,18 +217,24 @@ export function useMediaDevices() {
 
       streamRef.current.addTrack(newAudioTrack);
       setSelectedAudioDeviceId(deviceId);
+      setError(null);
 
       // Return the new track so WebRTC can replace it on peer connections
       return newAudioTrack;
     } catch (err) {
       console.error('Failed to switch audio device:', err);
+      setError('Failed to switch microphone. The selected device may be unavailable.');
       return null;
+    } finally {
+      switchingRef.current = false;
     }
   }, []);
 
   // Switch video input device
   const switchVideoDevice = useCallback(async (deviceId: string) => {
-    if (!streamRef.current) return;
+    if (!streamRef.current) return null;
+    if (switchingRef.current) return null;
+    switchingRef.current = true;
 
     try {
       const newVideoStream = await navigator.mediaDevices.getUserMedia({
@@ -224,11 +263,15 @@ export function useMediaDevices() {
 
       streamRef.current.addTrack(newVideoTrack);
       setSelectedVideoDeviceId(deviceId);
+      setError(null);
 
       return newVideoTrack;
     } catch (err) {
       console.error('Failed to switch video device:', err);
+      setError('Failed to switch camera. The selected device may be unavailable.');
       return null;
+    } finally {
+      switchingRef.current = false;
     }
   }, []);
 
@@ -347,11 +390,45 @@ export function useMediaDevices() {
         }
       }
     };
+    if (!navigator.mediaDevices) return;
     navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
     return () => {
       navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
     };
   }, [enumerateDevices]);
+
+  // Apply audio output device (setSinkId) to a given media element
+  const applyAudioOutput = useCallback(async (element: HTMLMediaElement) => {
+    const el = element as SinkIdElement;
+    if (typeof el.setSinkId === 'function' && audioOutputIdRef.current) {
+      try {
+        await el.setSinkId(audioOutputIdRef.current);
+      } catch (err) {
+        console.error('Failed to set audio output device:', err);
+        setError('Failed to switch speaker output. The selected device may be unavailable.');
+      }
+    }
+  }, []);
+
+  // Change the selected audio output device and try to apply immediately
+  const onAudioOutputDeviceChange = useCallback(async (deviceId: string) => {
+    setSelectedAudioOutputDeviceId(deviceId);
+    audioOutputIdRef.current = deviceId;
+
+    // Attempt to apply to all existing <audio> and <video> elements in the document
+    const mediaElements = document.querySelectorAll<HTMLMediaElement>('audio, video');
+    for (const el of mediaElements) {
+      const sinkEl = el as SinkIdElement;
+      if (typeof sinkEl.setSinkId === 'function') {
+        try {
+          await sinkEl.setSinkId(deviceId);
+        } catch (err) {
+          console.error('Failed to set audio output on element:', err);
+          setError('Failed to switch speaker output. The selected device may be unavailable.');
+        }
+      }
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -381,5 +458,7 @@ export function useMediaDevices() {
     switchAudioDevice,
     switchVideoDevice,
     enumerateDevices,
+    applyAudioOutput,
+    onAudioOutputDeviceChange,
   };
 }

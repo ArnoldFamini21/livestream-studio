@@ -6,16 +6,19 @@ interface VideoTileProps {
   stream: MediaStream | null;
   name: string;
   isLocal?: boolean;
+  isScreenShare?: boolean;
   audioEnabled?: boolean;
   videoEnabled?: boolean;
   brandColor?: string;
 }
 
 // Lightweight hook to detect if audio is active on a stream (for border glow).
-// Returns a smoothed level 0-100.
-function useSpeakingDetector(stream: MediaStream | null): number {
+// Returns { isSpeaking, audioLevel } so consumers can share one analyser pipeline.
+function useSpeakingDetector(
+  stream: MediaStream | null,
+  enabled: boolean,
+): { isSpeaking: boolean; audioLevel: number } {
   const [level, setLevel] = useState(0);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const rafRef = useRef<number>(0);
@@ -23,8 +26,10 @@ function useSpeakingDetector(stream: MediaStream | null): number {
   const frameCountRef = useRef(0);
   const lastRoundedRef = useRef(0);
 
+  const effectiveStream = enabled ? stream : null;
+
   useEffect(() => {
-    if (!stream) {
+    if (!effectiveStream) {
       setLevel(0);
       smoothedRef.current = 0;
       lastRoundedRef.current = 0;
@@ -32,7 +37,7 @@ function useSpeakingDetector(stream: MediaStream | null): number {
       return;
     }
 
-    const audioTracks = stream.getAudioTracks();
+    const audioTracks = effectiveStream.getAudioTracks();
     if (audioTracks.length === 0) {
       setLevel(0);
       return;
@@ -43,10 +48,9 @@ function useSpeakingDetector(stream: MediaStream | null): number {
     analyser.fftSize = 256;
     analyser.smoothingTimeConstant = 0.3;
 
-    const source = audioCtx.createMediaStreamSource(stream);
+    const source = audioCtx.createMediaStreamSource(effectiveStream);
     source.connect(analyser);
 
-    audioCtxRef.current = audioCtx;
     analyserRef.current = analyser;
     sourceRef.current = source;
 
@@ -95,9 +99,9 @@ function useSpeakingDetector(stream: MediaStream | null): number {
       lastRoundedRef.current = 0;
       frameCountRef.current = 0;
     };
-  }, [stream]);
+  }, [effectiveStream]);
 
-  return level;
+  return { isSpeaking: enabled && level > 8, audioLevel: level };
 }
 
 // Generate a deterministic background gradient from a name string for the avatar placeholder
@@ -111,15 +115,19 @@ function nameToGradient(name: string): string {
   return `linear-gradient(135deg, hsl(${h1}, 60%, 35%), hsl(${h2}, 50%, 25%))`;
 }
 
-export function VideoTile({ stream, name, isLocal, audioEnabled = true, videoEnabled = true, brandColor = '#a78bfa' }: VideoTileProps) {
+export function VideoTile({ stream, name, isLocal, isScreenShare, audioEnabled = true, videoEnabled = true, brandColor = '#a78bfa' }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const speakingLevel = useSpeakingDetector(audioEnabled ? stream : null);
-  const isSpeaking = audioEnabled && speakingLevel > 8;
+  const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, audioEnabled);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream || null;
     }
+    return () => {
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
   }, [stream]);
 
   const initials = (name || '?')
@@ -150,7 +158,8 @@ export function VideoTile({ stream, name, isLocal, audioEnabled = true, videoEna
           muted={isLocal}
           style={videoEnabled ? {
             ...tileStyles.video,
-            transform: isLocal ? 'scaleX(-1)' : 'none',
+            objectFit: isScreenShare ? 'contain' : 'cover',
+            transform: isLocal && !isScreenShare ? 'scaleX(-1)' : 'none',
           } : tileStyles.hiddenVideo}
         />
       )}
@@ -180,7 +189,7 @@ export function VideoTile({ stream, name, isLocal, audioEnabled = true, videoEna
               </svg>
             </div>
           ) : (
-            <AudioLevelIndicator stream={stream} />
+            <AudioLevelIndicator level={speakingLevel} />
           )}
           <span style={tileStyles.nameText}>
             {name}
@@ -286,6 +295,8 @@ const tileStyles: Record<string, React.CSSProperties> = {
     backdropFilter: 'blur(12px)',
     WebkitBackdropFilter: 'blur(12px)',
     border: '1px solid rgba(255, 255, 255, 0.08)',
+    maxWidth: '70%',
+    overflow: 'hidden',
   },
   muteIcon: {
     display: 'flex',
@@ -299,6 +310,8 @@ const tileStyles: Record<string, React.CSSProperties> = {
     color: 'rgba(255, 255, 255, 0.92)',
     letterSpacing: '0.01em',
     whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
   },
   youTag: {
     color: 'rgba(255, 255, 255, 0.55)',

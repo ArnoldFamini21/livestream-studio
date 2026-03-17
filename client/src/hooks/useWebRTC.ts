@@ -137,11 +137,35 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
         // Bug fix #5: ICE restart on disconnected state with 5-second timeout
         if (pc.connectionState === 'disconnected') {
-          const timer = setTimeout(() => {
+          const timer = setTimeout(async () => {
             disconnectTimersRef.current.delete(remoteParticipantId);
             if (pc.connectionState === 'disconnected') {
               console.log(`Peer ${remoteParticipantId} still disconnected, restarting ICE`);
-              pc.restartIce();
+              try {
+                pc.restartIce();
+                const offer = await pc.createOffer({ iceRestart: true });
+                await pc.setLocalDescription(offer);
+                const currentMyId = myParticipantIdRef.current;
+                if (currentMyId) {
+                  sendRef.current({
+                    type: 'offer',
+                    payload: {
+                      from: currentMyId,
+                      to: remoteParticipantId,
+                      sdp: pc.localDescription!,
+                    },
+                  });
+                }
+              } catch (err) {
+                console.error(`ICE restart failed for ${remoteParticipantId}:`, err);
+                pc.ontrack = null;
+                pc.onicecandidate = null;
+                pc.onconnectionstatechange = null;
+                pc.close();
+                peersRef.current.delete(remoteParticipantId);
+                pendingCandidatesRef.current.delete(remoteParticipantId);
+                updateRemoteStreams();
+              }
             }
           }, 5000);
           disconnectTimersRef.current.set(remoteParticipantId, timer);
@@ -184,48 +208,103 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       const currentMyId = myParticipantIdRef.current;
       if (!currentMyId) return;
 
-      // Bug fix #4: Guard against duplicate calls to prevent glare conditions
-      if (peersRef.current.has(remoteParticipantId)) return;
+      // If we already have a peer, only reconnect if the connection is in a bad state
+      const existing = peersRef.current.get(remoteParticipantId);
+      if (existing) {
+        const state = existing.connection.connectionState;
+        if (state === 'failed' || state === 'closed') {
+          // Clean up the broken connection before reconnecting
+          existing.connection.ontrack = null;
+          existing.connection.onicecandidate = null;
+          existing.connection.onconnectionstatechange = null;
+          existing.connection.close();
+          peersRef.current.delete(remoteParticipantId);
+          pendingCandidatesRef.current.delete(remoteParticipantId);
+        } else {
+          // Connection exists and is healthy or still negotiating; skip
+          return;
+        }
+      }
 
       const pc = createPeerConnection(remoteParticipantId);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
 
-      sendRef.current({
-        type: 'offer',
-        payload: {
-          from: currentMyId,
-          to: remoteParticipantId,
-          sdp: offer,
-        },
-      });
+        sendRef.current({
+          type: 'offer',
+          payload: {
+            from: currentMyId,
+            to: remoteParticipantId,
+            sdp: offer,
+          },
+        });
+      } catch (err) {
+        console.error(`Failed to create offer for ${remoteParticipantId}:`, err);
+        pc.ontrack = null;
+        pc.onicecandidate = null;
+        pc.onconnectionstatechange = null;
+        pc.close();
+        peersRef.current.delete(remoteParticipantId);
+        pendingCandidatesRef.current.delete(remoteParticipantId);
+      }
     },
     [createPeerConnection]
   );
 
   // Handle incoming offer (callee side)
+  // Includes glare resolution: when we have a pending outgoing offer to the same peer,
+  // the peer with the lexicographically smaller ID is "polite" and yields.
   const handleOffer = useCallback(
     async (from: string, sdp: RTCSessionDescriptionInit) => {
       const currentMyId = myParticipantIdRef.current;
       if (!currentMyId) return;
 
+      // Glare resolution: we already sent an offer to this peer (have-local-offer state)
+      const existingPeer = peersRef.current.get(from);
+      if (existingPeer) {
+        const signalingState = existingPeer.connection.signalingState;
+        if (signalingState === 'have-local-offer') {
+          // Both sides sent offers simultaneously. The peer with the smaller ID is polite
+          // (yields and accepts the incoming offer). The impolite peer ignores it.
+          const isPolite = currentMyId < from;
+          if (!isPolite) {
+            // We are impolite; ignore the incoming offer and keep our own
+            console.log(`Glare with ${from}: we are impolite, ignoring incoming offer`);
+            return;
+          }
+          // We are polite: discard our pending offer and accept theirs
+          console.log(`Glare with ${from}: we are polite, accepting incoming offer`);
+        }
+      }
+
       const pc = createPeerConnection(from);
-      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
 
-      // Bug fix #1: Drain any buffered ICE candidates after setting remote description
-      await drainPendingCandidates(from, pc);
+        // Bug fix #1: Drain any buffered ICE candidates after setting remote description
+        await drainPendingCandidates(from, pc);
 
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
 
-      sendRef.current({
-        type: 'answer',
-        payload: {
-          from: currentMyId,
-          to: from,
-          sdp: answer,
-        },
-      });
+        sendRef.current({
+          type: 'answer',
+          payload: {
+            from: currentMyId,
+            to: from,
+            sdp: answer,
+          },
+        });
+      } catch (err) {
+        console.error(`Failed to handle offer from ${from}:`, err);
+        pc.ontrack = null;
+        pc.onicecandidate = null;
+        pc.onconnectionstatechange = null;
+        pc.close();
+        peersRef.current.delete(from);
+        pendingCandidatesRef.current.delete(from);
+      }
     },
     [createPeerConnection, drainPendingCandidates]
   );
@@ -248,15 +327,26 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   const handleIceCandidate = useCallback(
     async (from: string, candidate: RTCIceCandidateInit) => {
       const peer = peersRef.current.get(from);
-      if (peer) {
-        // Bug fix #1: Buffer candidates if remote description is not yet set
-        if (!peer.connection.remoteDescription) {
-          const existing = pendingCandidatesRef.current.get(from) || [];
-          existing.push(candidate);
-          pendingCandidatesRef.current.set(from, existing);
-          return;
-        }
+      if (!peer) {
+        // Peer doesn't exist yet -- buffer the candidate until the peer is created
+        const existing = pendingCandidatesRef.current.get(from) || [];
+        existing.push(candidate);
+        pendingCandidatesRef.current.set(from, existing);
+        return;
+      }
+
+      // Buffer candidates if remote description is not yet set
+      if (!peer.connection.remoteDescription) {
+        const existing = pendingCandidatesRef.current.get(from) || [];
+        existing.push(candidate);
+        pendingCandidatesRef.current.set(from, existing);
+        return;
+      }
+
+      try {
         await peer.connection.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error(`Failed to add ICE candidate from ${from}:`, err);
       }
     },
     []

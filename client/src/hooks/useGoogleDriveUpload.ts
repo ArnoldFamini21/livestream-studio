@@ -174,8 +174,9 @@ export function useGoogleDriveUpload() {
       }
 
       const data = await response.json();
+      if (typeof data?.id !== 'string') throw new Error('Invalid response from Google Drive API');
       console.log(`Created Google Drive folder: ${name} (${data.id})`);
-      return data.id as string;
+      return data.id;
     } catch (err) {
       console.error('Error creating folder:', err);
       return null;
@@ -254,9 +255,10 @@ export function useGoogleDriveUpload() {
             }
 
             const data = await uploadResponse.json();
+            if (typeof data?.id !== 'string') throw new Error('Invalid response from Google Drive API');
             setUploadProgress((prev) => ({ ...prev, [fileName]: 100 }));
             console.log(`Uploaded ${fileName} to Google Drive (${data.id})`);
-            return data.id as string;
+            return data.id;
           }
 
           // For non-last chunks, 308 Resume Incomplete is expected

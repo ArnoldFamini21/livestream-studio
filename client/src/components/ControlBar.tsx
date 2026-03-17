@@ -145,19 +145,25 @@ export function ControlBar({
   if (!isHost) {
     return (
       <div style={styles.bar}>
+        <style>{focusStyles}</style>
         <div style={styles.barInner}>
           {/* Mic with device selector */}
           <div style={styles.mediaGroup}>
             <button
+              className="cb-focusable"
               style={{ ...styles.mediaBtn, ...(audioEnabled ? {} : styles.mediaBtnOff) }}
               onClick={onToggleAudio}
+              aria-label={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
+              aria-pressed={audioEnabled}
               title={audioEnabled ? 'Mute' : 'Unmute'}
             >
               {micIcon}
             </button>
             <button
+              className="cb-focusable"
               style={{ ...styles.chevronBtn, ...(audioEnabled ? {} : styles.chevronBtnOff) }}
               onClick={onOpenDeviceSettings}
+              aria-label="Audio settings"
               title="Audio settings"
             >
               {chevronDown}
@@ -167,15 +173,20 @@ export function ControlBar({
           {/* Camera with device selector */}
           <div style={styles.mediaGroup}>
             <button
+              className="cb-focusable"
               style={{ ...styles.mediaBtn, ...(videoEnabled ? {} : styles.mediaBtnOff) }}
               onClick={onToggleVideo}
+              aria-label={videoEnabled ? 'Turn camera off' : 'Turn camera on'}
+              aria-pressed={videoEnabled}
               title={videoEnabled ? 'Camera off' : 'Camera on'}
             >
               {camIcon}
             </button>
             <button
+              className="cb-focusable"
               style={{ ...styles.chevronBtn, ...(videoEnabled ? {} : styles.chevronBtnOff) }}
               onClick={onOpenDeviceSettings}
+              aria-label="Camera settings"
               title="Camera settings"
             >
               {chevronDown}
@@ -185,8 +196,11 @@ export function ControlBar({
           {/* Screen Share */}
           {onToggleScreenShare && (
             <button
+              className="cb-focusable"
               style={{ ...styles.iconBtn, ...(isScreenSharing ? styles.iconBtnGreen : {}) }}
               onClick={onToggleScreenShare}
+              aria-label={isScreenSharing ? 'Stop sharing screen' : 'Share screen'}
+              aria-pressed={isScreenSharing}
               title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -200,8 +214,10 @@ export function ControlBar({
           {/* Chat */}
           {onOpenChat && (
             <button
+              className="cb-focusable"
               style={styles.iconBtn}
               onClick={onOpenChat}
+              aria-label="Open chat"
               title="Chat"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -213,7 +229,7 @@ export function ControlBar({
           <div style={styles.sep} />
 
           {/* Leave */}
-          <button style={styles.endBtn} onClick={onLeave}>
+          <button className="cb-focusable" style={styles.endBtn} onClick={onLeave} aria-label="Leave studio">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
               <polyline points="16 17 21 12 16 7" />
@@ -267,20 +283,26 @@ export function ControlBar({
 
   return (
     <div style={styles.bar}>
+      <style>{focusStyles}</style>
       {/* Left: Media controls */}
       <div style={styles.leftGroup}>
         {/* Mic with device selector chevron */}
         <div style={styles.mediaGroup}>
           <button
+            className="cb-focusable"
             style={{ ...styles.mediaBtn, ...(audioEnabled ? {} : styles.mediaBtnOff) }}
             onClick={onToggleAudio}
+            aria-label={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
+            aria-pressed={audioEnabled}
             title={audioEnabled ? 'Mute' : 'Unmute'}
           >
             {micIcon}
           </button>
           <button
+            className="cb-focusable"
             style={{ ...styles.chevronBtn, ...(audioEnabled ? {} : styles.chevronBtnOff) }}
             onClick={onOpenDeviceSettings}
+            aria-label="Audio settings"
             title="Audio settings"
           >
             {chevronDown}
@@ -290,15 +312,20 @@ export function ControlBar({
         {/* Camera with device selector chevron */}
         <div style={styles.mediaGroup}>
           <button
+            className="cb-focusable"
             style={{ ...styles.mediaBtn, ...(videoEnabled ? {} : styles.mediaBtnOff) }}
             onClick={onToggleVideo}
+            aria-label={videoEnabled ? 'Turn camera off' : 'Turn camera on'}
+            aria-pressed={videoEnabled}
             title={videoEnabled ? 'Camera off' : 'Camera on'}
           >
             {camIcon}
           </button>
           <button
+            className="cb-focusable"
             style={{ ...styles.chevronBtn, ...(videoEnabled ? {} : styles.chevronBtnOff) }}
             onClick={onOpenDeviceSettings}
+            aria-label="Camera settings"
             title="Camera settings"
           >
             {chevronDown}
@@ -308,8 +335,11 @@ export function ControlBar({
         {/* Screen Share */}
         {onToggleScreenShare && (
           <button
+            className="cb-focusable"
             style={{ ...styles.iconBtn, ...(isScreenSharing ? styles.iconBtnGreen : {}) }}
             onClick={onToggleScreenShare}
+            aria-label={isScreenSharing ? 'Stop sharing screen' : 'Share screen'}
+            aria-pressed={isScreenSharing}
             title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -326,8 +356,11 @@ export function ControlBar({
         {/* Record */}
         {onToggleRecording && (
           <button
+            className="cb-focusable"
             style={{ ...styles.pill, ...(isRecording ? styles.pillRecording : {}) }}
             onClick={onToggleRecording}
+            aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+            aria-pressed={isRecording}
             title={isRecording ? 'Stop recording' : 'Start recording'}
           >
             {isRecording ? (
@@ -344,8 +377,10 @@ export function ControlBar({
 
         {/* Invite */}
         <button
+          className="cb-focusable"
           style={{ ...styles.pill, ...(copied ? styles.pillCopied : {}) }}
           onClick={copyInviteLink}
+          aria-label="Copy invite link"
           title="Copy invite link"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -359,7 +394,7 @@ export function ControlBar({
 
         {/* Participants */}
         {onOpenParticipants && (
-          <button style={styles.pill} onClick={onOpenParticipants} title="Participants">
+          <button className="cb-focusable" style={styles.pill} onClick={onOpenParticipants} aria-label={`Participants: ${participantCount}`} title="Participants">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
               <circle cx="9" cy="7" r="4" />
@@ -374,8 +409,11 @@ export function ControlBar({
         {moreItems.length > 0 && (
           <div ref={moreRef} style={{ position: 'relative' }}>
             <button
+              className="cb-focusable"
               style={{ ...styles.pill, ...(showMore ? styles.pillActive : {}) }}
               onClick={() => setShowMore(!showMore)}
+              aria-label="More tools"
+              aria-expanded={showMore}
               title="More tools"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -386,12 +424,15 @@ export function ControlBar({
               More
             </button>
             {showMore && (
-              <div style={styles.moreMenu}>
+              <div style={styles.moreMenu} role="menu">
                 {moreItems.map((item) => (
                   <button
                     key={item.label}
+                    className="cb-focusable"
                     style={styles.moreItem}
                     onClick={item.onClick}
+                    role="menuitem"
+                    aria-label={item.label}
                   >
                     {item.icon}
                     {item.label}
@@ -407,8 +448,10 @@ export function ControlBar({
       <div style={styles.rightGroup}>
         {onOpenStreamDestinations && (
           <button
+            className="cb-focusable"
             style={{ ...styles.liveBtn, ...(isLive ? styles.liveBtnActive : {}) }}
             onClick={onOpenStreamDestinations}
+            aria-label={isLive ? 'Live: open stream destinations' : 'Go live: open stream destinations'}
           >
             {isLive && <span style={styles.liveDot} />}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -419,7 +462,7 @@ export function ControlBar({
             {isLive ? 'LIVE' : 'Go Live'}
           </button>
         )}
-        <button style={styles.endBtn} onClick={onLeave}>
+        <button className="cb-focusable" style={styles.endBtn} onClick={onLeave} aria-label="End session">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
             <polyline points="16 17 21 12 16 7" />
@@ -647,7 +690,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
 
-  // End button
+  // End button (host)
   endBtn: {
     display: 'flex',
     alignItems: 'center',
@@ -663,3 +706,10 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.12s ease',
   },
 };
+
+const focusStyles = `
+  .cb-focusable:focus-visible {
+    outline: 2px solid #67e8f9;
+    outline-offset: 2px;
+  }
+`;

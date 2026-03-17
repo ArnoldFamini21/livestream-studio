@@ -276,7 +276,6 @@ export function useLocalRecording() {
 
   return {
     isRecording,
-    recordingDuration,
     formattedTime: formatTime(recordingDuration),
     startRecording,
     stopRecording,

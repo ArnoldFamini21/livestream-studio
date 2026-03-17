@@ -356,7 +356,7 @@ const overlayBar: React.CSSProperties = {
   bottom: 0,
   left: 0,
   right: 0,
-  zIndex: 10,
+  zIndex: 8,
   height: 36,
   display: 'flex',
   alignItems: 'center',

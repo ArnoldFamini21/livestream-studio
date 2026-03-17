@@ -22,13 +22,9 @@ export function useScreenShare() {
         audio: true,
       });
 
-      // Handle the browser's native "Stop sharing" button — when the user
-      // clicks it the video track fires an "ended" event.
-      stream.getVideoTracks().forEach((track) => {
-        track.addEventListener('ended', () => {
-          stopScreenShare();
-        });
-      });
+      // NOTE: The browser's native "Stop sharing" ended event is handled in
+      // StudioRoom.tsx where it can also notify peers via signaling. Do not
+      // add a duplicate ended listener here to avoid race conditions.
 
       streamRef.current = stream;
       setScreenStream(stream);

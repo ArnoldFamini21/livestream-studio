@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 export interface TimerData {
   id: string;
@@ -275,6 +275,8 @@ export function TimerOverlayDisplay({ data }: TimerOverlayDisplayProps) {
 
   return (
     <div
+      aria-live="polite"
+      role="timer"
       style={{
         ...overlayBase,
         ...positionStyle,
@@ -324,20 +326,23 @@ export function useTimerTick(
   timers: TimerData[],
   onUpdate: (id: string, updates: Partial<TimerData>) => void,
 ) {
-  useEffect(() => {
-    const runningTimers = timers.filter((t) => t.isRunning);
-    if (runningTimers.length === 0) return;
+  const timersRef = useRef(timers);
+  const onUpdateRef = useRef(onUpdate);
+  timersRef.current = timers;
+  onUpdateRef.current = onUpdate;
 
+  useEffect(() => {
     const interval = setInterval(() => {
-      for (const timer of runningTimers) {
+      for (const timer of timersRef.current) {
+        if (!timer.isRunning) continue;
         if (timer.mode === 'countdown') {
           const next = Math.max(0, timer.remainingSeconds - 1);
-          onUpdate(timer.id, {
+          onUpdateRef.current(timer.id, {
             remainingSeconds: next,
             ...(next <= 0 ? { isRunning: false } : {}),
           });
         } else {
-          onUpdate(timer.id, {
+          onUpdateRef.current(timer.id, {
             remainingSeconds: timer.remainingSeconds + 1,
           });
         }
@@ -345,7 +350,7 @@ export function useTimerTick(
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [timers, onUpdate]);
+  }, []); // Empty deps — uses refs to avoid tearing down the interval
 }
 
 // ---------------------------------------------------------------------------
