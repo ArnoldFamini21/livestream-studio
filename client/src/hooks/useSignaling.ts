@@ -32,7 +32,7 @@ export function useSignaling() {
     intentionalDisconnectRef.current = false;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = import.meta.env.VITE_WS_URL || `${protocol}//${window.location.host}/ws`;
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {

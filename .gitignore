@@ -3,5 +3,7 @@ dist/
 .vite/
 *.log
 .env
-.env.*
+.env.local
+.env.*.local
 .DS_Store
+*.tsbuildinfo

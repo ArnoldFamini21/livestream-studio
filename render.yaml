@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: livestream-studio-server
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run -w shared build && npm run -w server build
+    startCommand: npm run -w server start
+    envVars:
+      - key: NODE_ENV
+        value: production

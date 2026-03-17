@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 
+const API_URL = import.meta.env.VITE_API_URL || '';
+
 export function JoinRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
@@ -11,7 +13,7 @@ export function JoinRoom() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch(`/api/rooms/${roomId}/exists`, { signal: controller.signal })
+    fetch(`${API_URL}/api/rooms/${roomId}/exists`, { signal: controller.signal })
       .then((res) => {
         if (!res.ok) throw new Error('Not found');
         return res.json();

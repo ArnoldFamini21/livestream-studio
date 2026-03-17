@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+const API_URL = import.meta.env.VITE_API_URL || '';
+
 export function HomePage() {
   const [roomName, setRoomName] = useState('');
   const [hostName, setHostName] = useState('');
@@ -15,7 +17,7 @@ export function HomePage() {
     setError(null);
 
     try {
-      const res = await fetch('/api/rooms', {
+      const res = await fetch(`${API_URL}/api/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: roomName, hostName }),

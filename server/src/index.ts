@@ -8,11 +8,39 @@ import { roomRouter } from './routes/rooms.js';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
+// Allowed origins for CORS (HTTP) and WebSocket origin checking
+const allowedOrigins = [
+  'https://studio.arnoldfamini.com',
+  'http://localhost:5173',
+];
+
+// If CLIENT_URL env var is set and not already in the list, add it
+if (process.env.CLIENT_URL && !allowedOrigins.includes(process.env.CLIENT_URL)) {
+  allowedOrigins.push(process.env.CLIENT_URL);
+}
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. server-to-server, curl, health checks)
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS: origin ${origin} not allowed`));
+      }
+    },
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 // REST API routes
 app.use('/api/rooms', roomRouter);
+
+// Health check endpoints (Render uses this to verify the service is up)
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -22,7 +50,21 @@ app.get('/api/health', (_req, res) => {
 const server = http.createServer(app);
 
 // Fix #4: Add maxPayload to limit incoming WebSocket message size to 64KB
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
+// verifyClient checks the Origin header on WebSocket upgrade requests for CORS
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  maxPayload: 64 * 1024,
+  verifyClient: (info, done) => {
+    const origin = info.origin || info.req.headers.origin;
+    if (!origin || allowedOrigins.includes(origin)) {
+      done(true);
+    } else {
+      console.warn(`WebSocket connection rejected from origin: ${origin}`);
+      done(false, 403, 'Forbidden: origin not allowed');
+    }
+  },
+});
 
 setupSignalingServer(wss);
 

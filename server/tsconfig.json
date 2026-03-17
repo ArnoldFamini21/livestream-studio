@@ -3,11 +3,16 @@
   "compilerOptions": {
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "noEmit": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": false,
     "baseUrl": ".",
     "paths": {
       "@studio/shared": ["../shared/src/index.ts"]
     }
   },
-  "include": ["src", "../shared/src"]
+  "include": ["src"],
+  "references": [
+    { "path": "../shared" }
+  ]
 }
