@@ -132,7 +132,7 @@ const typeColors: Record<ToastType, string> = {
   success: '#22c55e',
   error: '#ef4444',
   warning: '#f59e0b',
-  info: '#7c3aed',
+  info: '#a78bfa',
 };
 
 const typeIcons: Record<ToastType, string> = {

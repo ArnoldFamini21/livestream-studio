@@ -111,7 +111,7 @@ function nameToGradient(name: string): string {
   return `linear-gradient(135deg, hsl(${h1}, 60%, 35%), hsl(${h2}, 50%, 25%))`;
 }
 
-export function VideoTile({ stream, name, isLocal, audioEnabled = true, videoEnabled = true, brandColor = '#7c3aed' }: VideoTileProps) {
+export function VideoTile({ stream, name, isLocal, audioEnabled = true, videoEnabled = true, brandColor = '#a78bfa' }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const speakingLevel = useSpeakingDetector(audioEnabled ? stream : null);
   const isSpeaking = audioEnabled && speakingLevel > 8;

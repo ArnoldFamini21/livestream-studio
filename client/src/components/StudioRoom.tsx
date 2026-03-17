@@ -78,7 +78,7 @@ export function StudioRoom() {
 
   // Brand state (lifted from Sidebar so it can drive stage appearance)
   const [stageBackground, setStageBackground] = useState<StageBackground>({ type: 'none', value: '' });
-  const [brandColor, setBrandColor] = useState('#7c3aed');
+  const [brandColor, setBrandColor] = useState('#a78bfa');
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
 
   // Scenes
@@ -612,7 +612,7 @@ export function StudioRoom() {
             <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
               <rect width="32" height="32" rx="7" fill="url(#g2)" />
               <circle cx="16" cy="16" r="4" fill="white" />
-              <defs><linearGradient id="g2" x1="0" y1="0" x2="32" y2="32"><stop stopColor="#7c3aed" /><stop offset="1" stopColor="#a78bfa" /></linearGradient></defs>
+              <defs><linearGradient id="g2" x1="0" y1="0" x2="32" y2="32"><stop stopColor="#a78bfa" /><stop offset="1" stopColor="#67e8f9" /></linearGradient></defs>
             </svg>
           </div>
           <h2 style={styles.roomTitle}>{room?.name || 'Studio'}</h2>
@@ -1078,9 +1078,11 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '8px 16px',
-    background: 'var(--bg-secondary)',
-    borderBottom: '1px solid var(--border)',
+    background: 'rgba(15, 23, 42, 0.8)',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
     flexShrink: 0,
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
   },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
   logoMark: { display: 'flex' },
@@ -1292,9 +1294,9 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 1000,
   },
   roomEndingCard: {
-    background: 'var(--bg-secondary)',
-    border: '1px solid var(--border)',
-    borderRadius: 16,
+    background: 'rgba(15, 23, 42, 0.95)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    borderRadius: 18,
     padding: '40px 48px',
     display: 'flex',
     flexDirection: 'column' as const,
@@ -1302,6 +1304,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     minWidth: 320,
     boxShadow: '0 24px 48px rgba(0, 0, 0, 0.4)',
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
   },
   roomEndingIcon: {
     color: 'var(--text-muted)',

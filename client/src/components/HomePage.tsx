@@ -117,13 +117,13 @@ export function HomePage() {
         <div style={styles.brand}>
           <div style={styles.logoMark}>
             <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-              <rect width="32" height="32" rx="8" fill="url(#grad)" />
+              <rect width="32" height="32" rx="10" fill="url(#grad)" />
               <path d="M10 12L16 8L22 12V20L16 24L10 20V12Z" stroke="white" strokeWidth="1.5" fill="none" />
               <circle cx="16" cy="16" r="3" fill="white" />
               <defs>
                 <linearGradient id="grad" x1="0" y1="0" x2="32" y2="32">
-                  <stop stopColor="#7c3aed" />
-                  <stop offset="1" stopColor="#a78bfa" />
+                  <stop stopColor="#a78bfa" />
+                  <stop offset="1" stopColor="#67e8f9" />
                 </linearGradient>
               </defs>
             </svg>
@@ -310,7 +310,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 600,
     height: 600,
     borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(124, 58, 237, 0.08) 0%, transparent 70%)',
+    background: 'radial-gradient(circle, rgba(167, 139, 250, 0.06) 0%, transparent 70%)',
     pointerEvents: 'none',
   },
   bgGlow2: {
@@ -320,7 +320,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 500,
     height: 500,
     borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(124, 58, 237, 0.05) 0%, transparent 70%)',
+    background: 'radial-gradient(circle, rgba(103, 232, 249, 0.04) 0%, transparent 70%)',
     pointerEvents: 'none',
   },
   container: {
@@ -357,7 +357,7 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '0.03em',
   } as React.CSSProperties,
   poweredByLink: {
-    color: '#a78bfa',
+    color: '#67e8f9',
     textDecoration: 'none',
     fontWeight: 500,
   } as React.CSSProperties,
@@ -370,11 +370,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   card: {
     width: '100%',
-    background: 'var(--bg-secondary)',
-    borderRadius: 'var(--radius-xl)',
-    border: '1px solid var(--border)',
-    boxShadow: 'var(--shadow-lg)',
+    background: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 18,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.28)',
     overflow: 'hidden',
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
   },
   cardInner: {
     padding: '28px 28px 32px',
@@ -384,6 +386,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     marginBottom: 4,
     letterSpacing: '-0.01em',
+    color: 'rgba(226, 232, 240, 0.92)',
   },
   cardSub: {
     fontSize: 13,
@@ -410,6 +413,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     marginTop: 8,
     letterSpacing: '-0.01em',
+    borderRadius: 12,
   },
   loadingInner: {
     display: 'flex',
@@ -440,7 +444,7 @@ const styles: Record<string, React.CSSProperties> = {
   dividerLine: {
     flex: 1,
     height: 1,
-    background: 'var(--border)',
+    background: 'rgba(255, 255, 255, 0.06)',
   },
   dividerText: {
     fontSize: 12,
@@ -454,14 +458,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     fontWeight: 600,
     background: 'transparent',
-    color: 'var(--accent)',
-    border: '1.5px solid var(--accent)',
-    borderRadius: 'var(--radius-md, 8px)',
+    color: '#67e8f9',
+    border: '1.5px solid rgba(103, 232, 249, 0.3)',
+    borderRadius: 12,
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    transition: 'all 0.15s ease',
+    transition: 'all 0.18s ease',
     letterSpacing: '-0.01em',
   },
   hint: {
@@ -476,7 +480,8 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'fixed',
     inset: 0,
     background: 'rgba(0, 0, 0, 0.6)',
-    backdropFilter: 'blur(4px)',
+    backdropFilter: 'blur(8px)',
+    WebkitBackdropFilter: 'blur(8px)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -485,16 +490,18 @@ const styles: Record<string, React.CSSProperties> = {
     animation: 'fadeIn 0.2s ease-out',
   },
   modal: {
-    background: 'var(--bg-secondary)',
-    borderRadius: 'var(--radius-xl)',
-    border: '1px solid var(--border)',
-    boxShadow: 'var(--shadow-lg)',
+    background: 'rgba(15, 23, 42, 0.95)',
+    borderRadius: 18,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.45)',
     padding: '32px 28px',
     width: '100%',
     maxWidth: 440,
     textAlign: 'center',
     position: 'relative',
     animation: 'scaleIn 0.3s ease-out',
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
   },
   modalClose: {
     position: 'absolute',
@@ -532,9 +539,9 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     fontSize: 13,
     padding: '10px 12px',
-    background: 'var(--bg-primary, #0a0a0f)',
-    border: '1px solid var(--border)',
-    borderRadius: 'var(--radius-md, 8px)',
+    background: 'rgba(255, 255, 255, 0.04)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    borderRadius: 10,
     color: 'var(--text-primary)',
     fontFamily: 'monospace',
     overflow: 'hidden',
@@ -547,13 +554,13 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '10px 16px',
     fontSize: 13,
     fontWeight: 600,
-    background: 'var(--accent)',
+    background: 'var(--accent-solid)',
     color: 'white',
     border: 'none',
-    borderRadius: 'var(--radius-md, 8px)',
+    borderRadius: 10,
     cursor: 'pointer',
     whiteSpace: 'nowrap',
-    transition: 'background 0.15s ease',
+    transition: 'background 0.18s ease',
   },
   modalActions: {
     display: 'flex',
@@ -564,17 +571,19 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '12px 20px',
     fontSize: 14,
     fontWeight: 600,
+    borderRadius: 12,
   },
   modalDoneButton: {
     flex: 1,
     padding: '12px 20px',
     fontSize: 14,
     fontWeight: 600,
-    background: 'transparent',
+    background: 'rgba(255, 255, 255, 0.04)',
     color: 'var(--text-secondary)',
-    border: '1px solid var(--border)',
-    borderRadius: 'var(--radius-md, 8px)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    borderRadius: 12,
     cursor: 'pointer',
+    transition: 'all 0.18s ease',
   },
   legalLinks: {
     display: 'flex',
