@@ -1,12 +1,15 @@
 import { useState, useRef } from 'react';
-import type { LayoutMode, StageBackground } from '@studio/shared';
+import type { LayoutMode, StageBackground, Scene, ChatMessage } from '@studio/shared';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
 import { BackgroundPicker } from './BackgroundPicker.tsx';
+import { SceneManager } from './SceneManager.tsx';
+import { TickerManager, type TickerData } from './TickerOverlay.tsx';
+import { CommentHighlightManager, type HighlightedComment } from './CommentHighlight.tsx';
 
-type SidebarTab = 'layout' | 'overlays' | 'brand';
+type SidebarTab = 'scenes' | 'layout' | 'overlays' | 'brand';
 
 interface SidebarProps {
   currentLayout: LayoutMode;
@@ -32,6 +35,24 @@ interface SidebarProps {
   onBrandColorChange: (color: string) => void;
   logoUrl: string | null;
   onLogoUrlChange: (url: string | null) => void;
+  // Scenes
+  scenes: Scene[];
+  activeSceneId: string | null;
+  onSaveScene: (name: string) => void;
+  onApplyScene: (sceneId: string) => void;
+  onDeleteScene: (sceneId: string) => void;
+  onRenameScene: (sceneId: string, newName: string) => void;
+  // Tickers
+  tickers: TickerData[];
+  onAddTicker: (ticker: Omit<TickerData, 'id' | 'visible'>) => void;
+  onToggleTicker: (id: string) => void;
+  onRemoveTicker: (id: string) => void;
+  onUpdateTicker: (id: string, updates: Partial<TickerData>) => void;
+  // Comment highlighting
+  chatMessages: ChatMessage[];
+  highlightedComment: HighlightedComment | null;
+  onHighlightComment: (comment: HighlightedComment) => void;
+  onDismissComment: () => void;
 }
 
 export function Sidebar({
@@ -57,6 +78,21 @@ export function Sidebar({
   onBrandColorChange,
   logoUrl,
   onLogoUrlChange,
+  scenes,
+  activeSceneId,
+  onSaveScene,
+  onApplyScene,
+  onDeleteScene,
+  onRenameScene,
+  tickers,
+  onAddTicker,
+  onToggleTicker,
+  onRemoveTicker,
+  onUpdateTicker,
+  chatMessages,
+  highlightedComment,
+  onHighlightComment,
+  onDismissComment,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('layout');
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -82,6 +118,16 @@ export function Sidebar({
   ];
 
   const tabs: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
+    {
+      id: 'scenes',
+      label: 'Scenes',
+      icon: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="7" width="20" height="14" rx="2" />
+          <path d="M16 3h-8l-2 4h12l-2-4z" />
+        </svg>
+      ),
+    },
     {
       id: 'layout',
       label: 'Layout',
@@ -138,6 +184,19 @@ export function Sidebar({
 
       {/* Tab content */}
       <div style={styles.content}>
+        {activeTab === 'scenes' && (
+          <div style={styles.section}>
+            <SceneManager
+              scenes={scenes}
+              activeSceneId={activeSceneId}
+              onSaveScene={onSaveScene}
+              onApplyScene={onApplyScene}
+              onDeleteScene={onDeleteScene}
+              onRenameScene={onRenameScene}
+            />
+          </div>
+        )}
+
         {activeTab === 'layout' && (
           <div style={styles.section}>
             <h4 style={styles.sectionTitle}>Arrange Feeds</h4>
@@ -176,6 +235,21 @@ export function Sidebar({
               onToggle={onToggleTimer}
               onRemove={onRemoveTimer}
               onUpdate={onUpdateTimer}
+            />
+            <div style={styles.overlayDivider} />
+            <TickerManager
+              tickers={tickers}
+              onAdd={onAddTicker}
+              onToggle={onToggleTicker}
+              onRemove={onRemoveTicker}
+              onUpdate={onUpdateTicker}
+            />
+            <div style={styles.overlayDivider} />
+            <CommentHighlightManager
+              chatMessages={chatMessages}
+              activeComment={highlightedComment}
+              onHighlightComment={onHighlightComment}
+              onDismissComment={onDismissComment}
             />
           </div>
         )}

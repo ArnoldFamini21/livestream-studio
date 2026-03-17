@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const INVITE_BASE_URL = 'https://studio.arnoldfamini.com';
@@ -222,6 +222,12 @@ export function HomePage() {
         <p style={styles.hint}>
           Have an invite link? Just open it to join as a guest -- no sign-up needed.
         </p>
+
+        <div style={styles.legalLinks}>
+          <Link to="/privacy" style={styles.legalLink}>Privacy Policy</Link>
+          <span style={styles.legalSep}>|</span>
+          <Link to="/terms" style={styles.legalLink}>Terms of Service</Link>
+        </div>
       </div>
 
       {/* Invite Link Modal */}
@@ -569,5 +575,23 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--border)',
     borderRadius: 'var(--radius-md, 8px)',
     cursor: 'pointer',
+  },
+  legalLinks: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 16,
+  },
+  legalLink: {
+    fontSize: 12,
+    color: 'var(--text-muted)',
+    textDecoration: 'none',
+    opacity: 0.7,
+  },
+  legalSep: {
+    fontSize: 12,
+    color: 'var(--text-muted)',
+    opacity: 0.4,
   },
 };

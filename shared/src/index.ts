@@ -161,3 +161,16 @@ export interface StreamDestination {
   enabled: boolean;
   status: 'idle' | 'connecting' | 'live' | 'error';
 }
+
+// ============ Scene Types ============
+
+export interface Scene {
+  id: string;
+  name: string;
+  layout: LayoutMode;
+  background: StageBackground;
+  brandColor: string;
+  logoUrl: string | null;
+  // Which overlay IDs should be visible when this scene is active
+  visibleOverlayIds: string[];
+}

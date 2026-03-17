@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground } from '@studio/shared';
+import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene } from '@studio/shared';
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
@@ -22,6 +22,11 @@ import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { BackgroundMusic } from './BackgroundMusic.tsx';
 import { RecordingPanel } from './RecordingPanel.tsx';
+import { SceneManager } from './SceneManager.tsx';
+import { ProducerPanel } from './ProducerPanel.tsx';
+import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
+import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
+import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience, type QAQuestion } from './WebinarQA.tsx';
 
 export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -45,6 +50,8 @@ export function StudioRoom() {
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [showBackgroundMusic, setShowBackgroundMusic] = useState(false);
   const [showRecordingPanel, setShowRecordingPanel] = useState(false);
+  const [showProducerPanel, setShowProducerPanel] = useState(false);
+  const [showWebinarQA, setShowWebinarQA] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   // Layout
@@ -75,6 +82,20 @@ export function StudioRoom() {
   const [brandColor, setBrandColor] = useState('#7c3aed');
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
 
+  // Scenes
+  const [scenes, setScenes] = useState<Scene[]>([]);
+  const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+
+  // Comment highlighting
+  const [highlightedComment, setHighlightedComment] = useState<HighlightedComment | null>(null);
+
+  // Tickers
+  const [tickers, setTickers] = useState<TickerData[]>([]);
+
+  // Webinar Q&A
+  const [qaQuestions, setQAQuestions] = useState<QAQuestion[]>([]);
+  const [myUpvotes, setMyUpvotes] = useState<Set<string>>(new Set());
+
   // Hooks
   const { connect, send, addHandler, connected } = useSignaling();
   const {
@@ -103,7 +124,7 @@ export function StudioRoom() {
 
   const joinedRef = useRef(false);
   const myParticipantRef = useRef<Participant | null>(null);
-  const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0 });
+  const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0 });
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -382,6 +403,102 @@ export function StudioRoom() {
   const onPlayVideo = (url: string) => setActiveMedia({ type: 'video', url });
   const onShowImage = (url: string) => setActiveMedia({ type: 'image', url });
   const onStopMedia = () => setActiveMedia(null);
+
+  // Scenes
+  const onSaveScene = (name: string) => {
+    const newScene: Scene = {
+      id: `scene-${Date.now()}`,
+      name,
+      layout,
+      background: stageBackground,
+      brandColor,
+      logoUrl,
+      visibleOverlayIds: [
+        ...lowerThirds.filter(lt => lt.visible).map(lt => lt.id),
+        ...banners.filter(b => b.visible).map(b => b.id),
+        ...timers.filter(t => t.visible).map(t => t.id),
+        ...tickers.filter(t => t.visible).map(t => t.id),
+      ],
+    };
+    setScenes(prev => [...prev, newScene]);
+    setActiveSceneId(newScene.id);
+  };
+  const onApplyScene = (sceneId: string) => {
+    const scene = scenes.find(s => s.id === sceneId);
+    if (!scene) return;
+    setLayout(scene.layout);
+    setStageBackground(scene.background);
+    setBrandColor(scene.brandColor);
+    setLogoUrl(scene.logoUrl);
+    setActiveSceneId(sceneId);
+  };
+  const onDeleteScene = (sceneId: string) => {
+    setScenes(prev => prev.filter(s => s.id !== sceneId));
+    if (activeSceneId === sceneId) setActiveSceneId(null);
+  };
+  const onRenameScene = (sceneId: string, newName: string) => {
+    setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, name: newName } : s));
+  };
+
+  // Tickers
+  const onAddTicker = (ticker: Omit<TickerData, 'id' | 'visible'>) => {
+    setTickers(prev => [...prev, { ...ticker, id: `ticker-${++idCounters.current.ticker}`, visible: false }]);
+  };
+  const onToggleTicker = (id: string) => {
+    setTickers(prev => prev.map(t => ({ ...t, visible: t.id === id ? !t.visible : t.visible })));
+  };
+  const onRemoveTicker = (id: string) => {
+    setTickers(prev => prev.filter(t => t.id !== id));
+  };
+  const onUpdateTicker = (id: string, updates: Partial<TickerData>) => {
+    setTickers(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
+  };
+
+  // Comment highlighting
+  const onHighlightComment = (comment: HighlightedComment) => setHighlightedComment(comment);
+  const onDismissComment = () => setHighlightedComment(null);
+
+  // Webinar Q&A
+  const onSubmitQuestion = (content: string) => {
+    const question: QAQuestion = {
+      id: `qa-${++idCounters.current.qa}`,
+      authorName: userName,
+      content,
+      timestamp: new Date().toISOString(),
+      upvotes: 0,
+      status: 'pending',
+      highlighted: false,
+    };
+    setQAQuestions(prev => [...prev, question]);
+  };
+  const onApproveQuestion = (id: string) => {
+    setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, status: 'approved' as const } : q));
+  };
+  const onDismissQuestion = (id: string) => {
+    setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, status: 'dismissed' as const } : q));
+  };
+  const onAnswerQuestion = (id: string, answer: string) => {
+    setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, status: 'answered' as const, answer } : q));
+  };
+  const onHighlightQuestion = (id: string) => {
+    setQAQuestions(prev => prev.map(q => ({ ...q, highlighted: q.id === id })));
+  };
+  const onUnhighlightQuestion = (id: string) => {
+    setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, highlighted: false } : q));
+  };
+  const onUpvoteQuestion = (id: string) => {
+    setMyUpvotes(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        setQAQuestions(p => p.map(q => q.id === id ? { ...q, upvotes: Math.max(0, q.upvotes - 1) } : q));
+      } else {
+        next.add(id);
+        setQAQuestions(p => p.map(q => q.id === id ? { ...q, upvotes: q.upvotes + 1 } : q));
+      }
+      return next;
+    });
+  };
 
   // Build video items (only show on-stage participants) - memoized
   const videoItems = useMemo(() => {
@@ -676,6 +793,17 @@ export function StudioRoom() {
             {timers.filter((t) => t.visible).map((t) => (
               <TimerOverlayDisplay key={t.id} data={t} />
             ))}
+
+            {/* Ticker Overlays */}
+            {tickers.filter((t) => t.visible).map((t) => (
+              <TickerOverlayDisplay key={t.id} data={t} />
+            ))}
+
+            {/* Comment Highlight Overlay */}
+            <CommentHighlightOverlay comment={highlightedComment} />
+
+            {/* Webinar Q&A Overlay */}
+            <WebinarQAOverlay question={qaQuestions.find(q => q.highlighted) || null} />
           </div>
 
           {/* Logo watermark */}
@@ -752,6 +880,44 @@ export function StudioRoom() {
             onBrandColorChange={setBrandColor}
             logoUrl={logoUrl}
             onLogoUrlChange={setLogoUrl}
+            scenes={scenes}
+            activeSceneId={activeSceneId}
+            onSaveScene={onSaveScene}
+            onApplyScene={onApplyScene}
+            onDeleteScene={onDeleteScene}
+            onRenameScene={onRenameScene}
+            tickers={tickers}
+            onAddTicker={onAddTicker}
+            onToggleTicker={onToggleTicker}
+            onRemoveTicker={onRemoveTicker}
+            onUpdateTicker={onUpdateTicker}
+            chatMessages={chatMessages}
+            highlightedComment={highlightedComment}
+            onHighlightComment={onHighlightComment}
+            onDismissComment={onDismissComment}
+          />
+        )}
+
+        {/* Webinar Q&A Panel (host) */}
+        {isHostOrCoHost && showWebinarQA && (
+          <WebinarQAPanel
+            questions={qaQuestions}
+            onApprove={onApproveQuestion}
+            onDismiss={onDismissQuestion}
+            onAnswer={onAnswerQuestion}
+            onHighlight={onHighlightQuestion}
+            onUnhighlight={onUnhighlightQuestion}
+            onClose={() => setShowWebinarQA(false)}
+          />
+        )}
+
+        {/* Webinar Q&A Audience (guest) */}
+        {!isHostOrCoHost && showWebinarQA && (
+          <WebinarQAAudience
+            questions={qaQuestions.filter(q => q.status === 'approved' || q.status === 'answered')}
+            onSubmitQuestion={onSubmitQuestion}
+            onUpvote={onUpvoteQuestion}
+            myUpvotes={myUpvotes}
           />
         )}
 
@@ -790,9 +956,28 @@ export function StudioRoom() {
         onOpenMediaPanel={() => setShowMediaPanel(!showMediaPanel)}
         onOpenBackgroundMusic={() => setShowBackgroundMusic(!showBackgroundMusic)}
         onOpenRecordingPanel={() => setShowRecordingPanel(!showRecordingPanel)}
+        onOpenProducerPanel={() => setShowProducerPanel(!showProducerPanel)}
+        onOpenWebinarQA={() => setShowWebinarQA(!showWebinarQA)}
         participantCount={allParticipantsMap.size}
         isLive={isLive}
       />
+
+      {/* Producer Panel (full-screen overlay) */}
+      {showProducerPanel && (
+        <ProducerPanel
+          participants={allParticipantsMap}
+          myParticipantId={myParticipant?.id || ''}
+          remoteStreams={remoteStreams}
+          localStream={localStream}
+          onStageAction={onStageAction}
+          isLive={isLive}
+          isRecording={isRecording}
+          formattedTime={formattedTime}
+          currentLayout={layout}
+          onLayoutChange={setLayout}
+          onClose={() => setShowProducerPanel(false)}
+        />
+      )}
 
       {/* Sound Board Modal */}
       {showSoundBoard && <SoundBoard onClose={() => setShowSoundBoard(false)} />}
