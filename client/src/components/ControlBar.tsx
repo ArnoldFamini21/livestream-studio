@@ -9,7 +9,6 @@ interface ControlBarProps {
   onOpenDeviceSettings: () => void;
   roomId: string;
   isHost: boolean;
-  // New actions
   isRecording?: boolean;
   formattedTime?: string;
   onToggleRecording?: () => void;
@@ -55,259 +54,254 @@ export function ControlBar({
   isLive = false,
 }: ControlBarProps) {
   const [copied, setCopied] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
   const inviteLink = `${window.location.origin}/join/${roomId}`;
 
-  // Clear the copied timeout on unmount
   useEffect(() => {
     return () => {
-      if (copiedTimerRef.current !== null) {
-        clearTimeout(copiedTimerRef.current);
-      }
+      if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
     };
   }, []);
+
+  // Close "More" menu on outside click
+  useEffect(() => {
+    if (!showMore) return;
+    const handleClick = (e: MouseEvent) => {
+      if (moreRef.current && e.target instanceof Node && !moreRef.current.contains(e.target)) {
+        setShowMore(false);
+      }
+    };
+    const timer = setTimeout(() => document.addEventListener('mousedown', handleClick), 0);
+    return () => { clearTimeout(timer); document.removeEventListener('mousedown', handleClick); };
+  }, [showMore]);
 
   const copyInviteLink = () => {
     navigator.clipboard.writeText(inviteLink).then(() => {
       setCopied(true);
-      if (copiedTimerRef.current !== null) {
-        clearTimeout(copiedTimerRef.current);
-      }
+      if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
       copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {
-      // Clipboard write failed
-    });
+    }).catch(() => {});
   };
 
-  // ====== Guest Layout: centered simple bar ======
+  // Mic icon
+  const micIcon = audioEnabled ? (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  ) : (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <line x1="1" y1="1" x2="23" y2="23" />
+      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  );
+
+  // Camera icon
+  const camIcon = videoEnabled ? (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="23 7 16 12 23 17 23 7" />
+      <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+    </svg>
+  ) : (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  );
+
+  const chevronDown = (
+    <svg width="8" height="8" viewBox="0 0 12 12" fill="currentColor">
+      <path d="M6 8L1.5 3.5h9z" />
+    </svg>
+  );
+
+  // ====== Guest Layout ======
   if (!isHost) {
     return (
-      <div style={styles.barGuest}>
-        <div style={styles.guestControls}>
-          {/* Mic */}
-          <div style={styles.circBtnGroup}>
+      <div style={styles.bar}>
+        <div style={styles.barInner}>
+          {/* Mic with device selector */}
+          <div style={styles.mediaGroup}>
             <button
-              style={{
-                ...styles.circBtn,
-                ...(audioEnabled ? styles.circBtnActive : styles.circBtnDanger),
-              }}
+              style={{ ...styles.mediaBtn, ...(audioEnabled ? {} : styles.mediaBtnOff) }}
               onClick={onToggleAudio}
-              title={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
-              aria-label="Toggle microphone"
-              aria-pressed={audioEnabled}
+              title={audioEnabled ? 'Mute' : 'Unmute'}
             >
-              {audioEnabled ? (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <line x1="12" y1="19" x2="12" y2="23" />
-                  <line x1="8" y1="23" x2="16" y2="23" />
-                </svg>
-              ) : (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="1" y1="1" x2="23" y2="23" />
-                  <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                  <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" />
-                  <line x1="12" y1="19" x2="12" y2="23" />
-                  <line x1="8" y1="23" x2="16" y2="23" />
-                </svg>
-              )}
+              {micIcon}
             </button>
-            <span style={styles.circBtnLabel}>{audioEnabled ? 'Mic' : 'Muted'}</span>
+            <button
+              style={{ ...styles.chevronBtn, ...(audioEnabled ? {} : styles.chevronBtnOff) }}
+              onClick={onOpenDeviceSettings}
+              title="Audio settings"
+            >
+              {chevronDown}
+            </button>
           </div>
 
-          {/* Camera */}
-          <div style={styles.circBtnGroup}>
+          {/* Camera with device selector */}
+          <div style={styles.mediaGroup}>
             <button
-              style={{
-                ...styles.circBtn,
-                ...(videoEnabled ? styles.circBtnActive : styles.circBtnDanger),
-              }}
+              style={{ ...styles.mediaBtn, ...(videoEnabled ? {} : styles.mediaBtnOff) }}
               onClick={onToggleVideo}
-              title={videoEnabled ? 'Turn off camera' : 'Turn on camera'}
-              aria-label="Toggle camera"
-              aria-pressed={videoEnabled}
+              title={videoEnabled ? 'Camera off' : 'Camera on'}
             >
-              {videoEnabled ? (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="23 7 16 12 23 17 23 7" />
-                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-                </svg>
-              ) : (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10" />
-                  <line x1="1" y1="1" x2="23" y2="23" />
-                </svg>
-              )}
+              {camIcon}
             </button>
-            <span style={styles.circBtnLabel}>{videoEnabled ? 'Camera' : 'Off'}</span>
+            <button
+              style={{ ...styles.chevronBtn, ...(videoEnabled ? {} : styles.chevronBtnOff) }}
+              onClick={onOpenDeviceSettings}
+              title="Camera settings"
+            >
+              {chevronDown}
+            </button>
           </div>
 
           {/* Screen Share */}
           {onToggleScreenShare && (
-            <div style={styles.circBtnGroup}>
-              <button
-                style={{
-                  ...styles.circBtn,
-                  ...(isScreenSharing ? styles.circBtnScreen : styles.circBtnActive),
-                }}
-                onClick={onToggleScreenShare}
-                title={isScreenSharing ? 'Stop screen share' : 'Share screen'}
-                aria-label="Share screen"
-                aria-pressed={isScreenSharing}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                  <line x1="8" y1="21" x2="16" y2="21" />
-                  <line x1="12" y1="17" x2="12" y2="21" />
-                </svg>
-              </button>
-              <span style={styles.circBtnLabel}>{isScreenSharing ? 'Sharing' : 'Screen'}</span>
-            </div>
-          )}
-
-          {/* Settings */}
-          <div style={styles.circBtnGroup}>
             <button
-              style={{ ...styles.circBtn, ...styles.circBtnActive }}
-              onClick={onOpenDeviceSettings}
-              title="Device settings"
-              aria-label="Device settings"
+              style={{ ...styles.iconBtn, ...(isScreenSharing ? styles.iconBtnGreen : {}) }}
+              onClick={onToggleScreenShare}
+              title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-              </svg>
-            </button>
-            <span style={styles.circBtnLabel}>Settings</span>
-          </div>
-
-          {/* Leave */}
-          <div style={styles.circBtnGroup}>
-            <button
-              style={{ ...styles.circBtn, ...styles.circBtnLeave }}
-              onClick={onLeave}
-              aria-label="Leave session"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                <polyline points="16 17 21 12 16 7" />
-                <line x1="21" y1="12" x2="9" y2="12" />
-              </svg>
-            </button>
-            <span style={{ ...styles.circBtnLabel, color: 'var(--danger)' }}>Leave</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ====== Host Layout: Left / Center / Right ======
-  return (
-    <div style={styles.bar}>
-      {/* Left Group: Mic, Camera, Screen Share */}
-      <div style={styles.leftGroup}>
-        {/* Mic */}
-        <div style={styles.circBtnGroup}>
-          <button
-            style={{
-              ...styles.circBtn,
-              ...(audioEnabled ? styles.circBtnActive : styles.circBtnDanger),
-            }}
-            onClick={onToggleAudio}
-            title={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
-            aria-label="Toggle microphone"
-            aria-pressed={audioEnabled}
-          >
-            {audioEnabled ? (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                <line x1="12" y1="19" x2="12" y2="23" />
-                <line x1="8" y1="23" x2="16" y2="23" />
-              </svg>
-            ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="1" y1="1" x2="23" y2="23" />
-                <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" />
-                <line x1="12" y1="19" x2="12" y2="23" />
-                <line x1="8" y1="23" x2="16" y2="23" />
-              </svg>
-            )}
-          </button>
-          <span style={styles.circBtnLabel}>{audioEnabled ? 'Mic' : 'Muted'}</span>
-        </div>
-
-        {/* Camera */}
-        <div style={styles.circBtnGroup}>
-          <button
-            style={{
-              ...styles.circBtn,
-              ...(videoEnabled ? styles.circBtnActive : styles.circBtnDanger),
-            }}
-            onClick={onToggleVideo}
-            title={videoEnabled ? 'Turn off camera' : 'Turn on camera'}
-            aria-label="Toggle camera"
-            aria-pressed={videoEnabled}
-          >
-            {videoEnabled ? (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="23 7 16 12 23 17 23 7" />
-                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-              </svg>
-            ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10" />
-                <line x1="1" y1="1" x2="23" y2="23" />
-              </svg>
-            )}
-          </button>
-          <span style={styles.circBtnLabel}>{videoEnabled ? 'Camera' : 'Off'}</span>
-        </div>
-
-        {/* Screen Share */}
-        {onToggleScreenShare && (
-          <div style={styles.circBtnGroup}>
-            <button
-              style={{
-                ...styles.circBtn,
-                ...(isScreenSharing ? styles.circBtnScreen : styles.circBtnActive),
-              }}
-              onClick={onToggleScreenShare}
-              title={isScreenSharing ? 'Stop screen share' : 'Share screen'}
-              aria-label="Share screen"
-              aria-pressed={isScreenSharing}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
                 <line x1="8" y1="21" x2="16" y2="21" />
                 <line x1="12" y1="17" x2="12" y2="21" />
               </svg>
             </button>
-            <span style={styles.circBtnLabel}>{isScreenSharing ? 'Sharing' : 'Screen'}</span>
-          </div>
+          )}
+
+          <div style={styles.sep} />
+
+          {/* Leave */}
+          <button style={styles.endBtn} onClick={onLeave}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Leave
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ====== Host Layout ======
+  // Items for the "More" dropdown
+  const moreItems: { label: string; icon: React.ReactNode; onClick: () => void }[] = [];
+  if (onOpenMediaPanel) moreItems.push({
+    label: 'Media',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>,
+    onClick: () => { onOpenMediaPanel(); setShowMore(false); },
+  });
+  if (onOpenSoundBoard) moreItems.push({
+    label: 'Sounds',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></svg>,
+    onClick: () => { onOpenSoundBoard(); setShowMore(false); },
+  });
+  if (onOpenBackgroundMusic) moreItems.push({
+    label: 'Music',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>,
+    onClick: () => { onOpenBackgroundMusic(); setShowMore(false); },
+  });
+  if (onOpenTeleprompter) moreItems.push({
+    label: 'Script',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
+    onClick: () => { onOpenTeleprompter(); setShowMore(false); },
+  });
+  if (onOpenRecordingPanel) moreItems.push({
+    label: 'Local Rec',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>,
+    onClick: () => { onOpenRecordingPanel(); setShowMore(false); },
+  });
+  if (onOpenProducerPanel) moreItems.push({
+    label: 'Producer',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" /></svg>,
+    onClick: () => { onOpenProducerPanel(); setShowMore(false); },
+  });
+  if (onOpenWebinarQA) moreItems.push({
+    label: 'Q&A',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>,
+    onClick: () => { onOpenWebinarQA(); setShowMore(false); },
+  });
+
+  return (
+    <div style={styles.bar}>
+      {/* Left: Media controls */}
+      <div style={styles.leftGroup}>
+        {/* Mic with device selector chevron */}
+        <div style={styles.mediaGroup}>
+          <button
+            style={{ ...styles.mediaBtn, ...(audioEnabled ? {} : styles.mediaBtnOff) }}
+            onClick={onToggleAudio}
+            title={audioEnabled ? 'Mute' : 'Unmute'}
+          >
+            {micIcon}
+          </button>
+          <button
+            style={{ ...styles.chevronBtn, ...(audioEnabled ? {} : styles.chevronBtnOff) }}
+            onClick={onOpenDeviceSettings}
+            title="Audio settings"
+          >
+            {chevronDown}
+          </button>
+        </div>
+
+        {/* Camera with device selector chevron */}
+        <div style={styles.mediaGroup}>
+          <button
+            style={{ ...styles.mediaBtn, ...(videoEnabled ? {} : styles.mediaBtnOff) }}
+            onClick={onToggleVideo}
+            title={videoEnabled ? 'Camera off' : 'Camera on'}
+          >
+            {camIcon}
+          </button>
+          <button
+            style={{ ...styles.chevronBtn, ...(videoEnabled ? {} : styles.chevronBtnOff) }}
+            onClick={onOpenDeviceSettings}
+            title="Camera settings"
+          >
+            {chevronDown}
+          </button>
+        </div>
+
+        {/* Screen Share */}
+        {onToggleScreenShare && (
+          <button
+            style={{ ...styles.iconBtn, ...(isScreenSharing ? styles.iconBtnGreen : {}) }}
+            onClick={onToggleScreenShare}
+            title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
+            </svg>
+          </button>
         )}
       </div>
 
-      {/* Center Group: Feature pills */}
+      {/* Center: Essential actions */}
       <div style={styles.centerGroup}>
         {/* Record */}
         {onToggleRecording && (
           <button
-            style={{
-              ...styles.pill,
-              ...(isRecording ? styles.pillRecording : {}),
-            }}
+            style={{ ...styles.pill, ...(isRecording ? styles.pillRecording : {}) }}
             onClick={onToggleRecording}
             title={isRecording ? 'Stop recording' : 'Start recording'}
-            aria-label="Toggle recording"
-            aria-pressed={isRecording}
           >
             {isRecording ? (
               <span style={styles.recDot} />
             ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="12" cy="12" r="10" />
                 <circle cx="12" cy="12" r="4" fill="currentColor" />
               </svg>
@@ -318,14 +312,11 @@ export function ControlBar({
 
         {/* Invite */}
         <button
-          style={{
-            ...styles.pill,
-            ...(copied ? styles.pillCopied : {}),
-          }}
+          style={{ ...styles.pill, ...(copied ? styles.pillCopied : {}) }}
           onClick={copyInviteLink}
-          aria-label="Copy invite link"
+          title="Copy invite link"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
             <circle cx="8.5" cy="7" r="4" />
             <line x1="20" y1="8" x2="20" y2="14" />
@@ -336,13 +327,8 @@ export function ControlBar({
 
         {/* Participants */}
         {onOpenParticipants && (
-          <button
-            style={styles.pill}
-            onClick={onOpenParticipants}
-            title="Manage participants"
-            aria-label="Show participants"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <button style={styles.pill} onClick={onOpenParticipants} title="Participants">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
               <circle cx="9" cy="7" r="4" />
               <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
@@ -352,134 +338,45 @@ export function ControlBar({
           </button>
         )}
 
-        {/* Media */}
-        {onOpenMediaPanel && (
-          <button
-            style={styles.pill}
-            onClick={onOpenMediaPanel}
-            title="Share media"
-            aria-label="Show media panel"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="5 3 19 12 5 21 5 3" />
-            </svg>
-            Media
-          </button>
-        )}
-
-        {/* Sound Board */}
-        {onOpenSoundBoard && (
-          <button
-            style={styles.pill}
-            onClick={onOpenSoundBoard}
-            title="Sound effects"
-            aria-label="Sound effects"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-              <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-            </svg>
-            Sounds
-          </button>
-        )}
-
-        {/* Background Music */}
-        {onOpenBackgroundMusic && (
-          <button
-            style={styles.pill}
-            onClick={onOpenBackgroundMusic}
-            title="Background music"
-            aria-label="Background music"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 18V5l12-2v13" />
-              <circle cx="6" cy="18" r="3" />
-              <circle cx="18" cy="16" r="3" />
-            </svg>
-            Music
-          </button>
-        )}
-
-        {/* Teleprompter */}
-        {onOpenTeleprompter && (
-          <button
-            style={styles.pill}
-            onClick={onOpenTeleprompter}
-            title="Teleprompter"
-            aria-label="Teleprompter"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <line x1="16" y1="13" x2="8" y2="13" />
-              <line x1="16" y1="17" x2="8" y2="17" />
-            </svg>
-            Script
-          </button>
-        )}
-
-        {/* Local Recording Panel */}
-        {onOpenRecordingPanel && (
-          <button
-            style={styles.pill}
-            onClick={onOpenRecordingPanel}
-            title="Local multi-track recording"
-            aria-label="Local recording panel"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            Local Rec
-          </button>
-        )}
-
-        {/* Producer Mode */}
-        {onOpenProducerPanel && (
-          <button
-            style={styles.pill}
-            onClick={onOpenProducerPanel}
-            title="Producer mode"
-            aria-label="Producer mode"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
-              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
-            </svg>
-            Producer
-          </button>
-        )}
-
-        {/* Webinar Q&A */}
-        {onOpenWebinarQA && (
-          <button
-            style={styles.pill}
-            onClick={onOpenWebinarQA}
-            title="Webinar Q&A"
-            aria-label="Webinar Q&A"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
-            </svg>
-            Q&A
-          </button>
+        {/* More dropdown */}
+        {moreItems.length > 0 && (
+          <div ref={moreRef} style={{ position: 'relative' }}>
+            <button
+              style={{ ...styles.pill, ...(showMore ? styles.pillActive : {}) }}
+              onClick={() => setShowMore(!showMore)}
+              title="More tools"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <circle cx="12" cy="5" r="1.5" />
+                <circle cx="12" cy="12" r="1.5" />
+                <circle cx="12" cy="19" r="1.5" />
+              </svg>
+              More
+            </button>
+            {showMore && (
+              <div style={styles.moreMenu}>
+                {moreItems.map((item) => (
+                  <button
+                    key={item.label}
+                    style={styles.moreItem}
+                    onClick={item.onClick}
+                  >
+                    {item.icon}
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
-      {/* Right Group: Go Live + End */}
+      {/* Right: Live + End */}
       <div style={styles.rightGroup}>
-        {/* Go Live / Stream */}
         {onOpenStreamDestinations && (
           <button
-            style={{
-              ...styles.liveBtn,
-              ...(isLive ? styles.liveBtnActive : {}),
-            }}
+            style={{ ...styles.liveBtn, ...(isLive ? styles.liveBtnActive : {}) }}
             onClick={onOpenStreamDestinations}
-            aria-label={isLive ? 'Stop streaming' : 'Go live'}
           >
             {isLive && <span style={styles.liveDot} />}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -490,14 +387,8 @@ export function ControlBar({
             {isLive ? 'LIVE' : 'Go Live'}
           </button>
         )}
-
-        {/* End / Leave */}
-        <button
-          style={styles.endBtn}
-          onClick={onLeave}
-          aria-label="End session"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <button style={styles.endBtn} onClick={onLeave}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
             <polyline points="16 17 21 12 16 7" />
             <line x1="21" y1="12" x2="9" y2="12" />
@@ -510,101 +401,102 @@ export function ControlBar({
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  // ====== Host Bar ======
   bar: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '8px 16px',
+    padding: '6px 16px',
     background: 'var(--bg-secondary)',
     borderTop: '1px solid var(--border)',
     flexShrink: 0,
     gap: 12,
   },
-
-  // ====== Guest Bar ======
-  barGuest: {
+  barInner: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: '8px 16px',
-    background: 'var(--bg-secondary)',
-    borderTop: '1px solid var(--border)',
-    flexShrink: 0,
-  },
-  guestControls: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
+    gap: 8,
+    width: '100%',
   },
 
-  // ====== Layout Groups ======
-  leftGroup: {
+  leftGroup: { display: 'flex', alignItems: 'center', gap: 6 },
+  centerGroup: { display: 'flex', alignItems: 'center', gap: 4 },
+  rightGroup: { display: 'flex', alignItems: 'center', gap: 8 },
+
+  // Mic/Camera button group with chevron
+  mediaGroup: {
     display: 'flex',
-    alignItems: 'center',
-    gap: 8,
+    alignItems: 'stretch',
+    borderRadius: 22,
+    overflow: 'hidden',
+    border: '1px solid var(--border-strong)',
+    background: 'var(--bg-surface)',
   },
-  centerGroup: {
+  mediaBtn: {
+    width: 40,
+    height: 36,
     display: 'flex',
     alignItems: 'center',
-    gap: 4,
-    flexWrap: 'wrap' as const,
     justifyContent: 'center',
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-primary)',
+    cursor: 'pointer',
+    padding: 0,
+    transition: 'all 0.12s ease',
   },
-  rightGroup: {
+  mediaBtnOff: {
+    background: 'var(--danger)',
+    color: 'white',
+  },
+  chevronBtn: {
+    width: 18,
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
+    background: 'none',
+    border: 'none',
+    borderLeft: '1px solid var(--border)',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    padding: 0,
+    transition: 'all 0.12s ease',
+  },
+  chevronBtnOff: {
+    background: 'rgba(185, 28, 28, 0.8)',
+    color: 'rgba(255,255,255,0.7)',
+    borderLeftColor: 'rgba(255,255,255,0.2)',
   },
 
-  // ====== Circular Buttons (media controls) ======
-  circBtnGroup: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    gap: 3,
-  },
-  circBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: '50%',
-    border: '1px solid var(--border)',
+  // Standalone icon button (screen share)
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 22,
+    border: '1px solid var(--border-strong)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-primary)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     cursor: 'pointer',
     padding: 0,
-    transition: 'all 0.15s ease',
-    fontSize: 0,
+    transition: 'all 0.12s ease',
   },
-  circBtnActive: {
-    background: 'var(--bg-surface)',
-    color: 'var(--text-primary)',
-    borderColor: 'var(--border-strong)',
-  },
-  circBtnDanger: {
-    background: 'var(--danger)',
-    color: 'white',
-    borderColor: 'var(--danger)',
-  },
-  circBtnScreen: {
+  iconBtnGreen: {
     background: 'var(--success)',
     color: 'white',
     borderColor: 'var(--success)',
   },
-  circBtnLeave: {
-    background: 'var(--danger)',
-    color: 'white',
-    borderColor: 'var(--danger)',
-  },
-  circBtnLabel: {
-    fontSize: 10,
-    color: 'var(--text-muted)',
-    fontWeight: 500,
-    letterSpacing: '0.02em',
+
+  sep: {
+    width: 1,
+    height: 24,
+    background: 'var(--border)',
+    flexShrink: 0,
   },
 
-  // ====== Pill Buttons (feature controls) ======
+  // Pill buttons
   pill: {
     display: 'flex',
     alignItems: 'center',
@@ -617,8 +509,13 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
     border: '1px solid var(--border)',
     cursor: 'pointer',
-    transition: 'all 0.15s ease',
+    transition: 'all 0.12s ease',
     whiteSpace: 'nowrap' as const,
+  },
+  pillActive: {
+    background: 'var(--accent-subtle)',
+    borderColor: 'var(--accent)',
+    color: 'var(--accent)',
   },
   pillRecording: {
     background: 'rgba(239, 68, 68, 0.15)',
@@ -650,20 +547,55 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
 
-  // ====== Live Button ======
+  // More dropdown menu
+  moreMenu: {
+    position: 'absolute',
+    bottom: '100%',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    marginBottom: 6,
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: 12,
+    padding: 4,
+    minWidth: 140,
+    boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+    zIndex: 100,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 1,
+  },
+  moreItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 12px',
+    fontSize: 12,
+    fontWeight: 500,
+    color: 'var(--text-secondary)',
+    background: 'none',
+    border: 'none',
+    borderRadius: 8,
+    cursor: 'pointer',
+    transition: 'background 0.1s',
+    textAlign: 'left' as const,
+    width: '100%',
+  },
+
+  // Live button
   liveBtn: {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
-    padding: '9px 18px',
-    fontSize: 13,
+    padding: '8px 16px',
+    fontSize: 12,
     fontWeight: 600,
-    borderRadius: 'var(--radius)',
+    borderRadius: 20,
     background: 'var(--accent)',
     color: 'white',
     border: 'none',
     cursor: 'pointer',
-    transition: 'all 0.15s ease',
+    transition: 'all 0.12s ease',
     boxShadow: 'var(--shadow-sm)',
   },
   liveBtnActive: {
@@ -671,27 +603,27 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: '0 0 0 3px rgba(239, 68, 68, 0.2)',
   },
   liveDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: '50%',
     background: 'white',
     animation: 'livePulse 1.5s infinite',
     flexShrink: 0,
   },
 
-  // ====== End Button ======
+  // End button
   endBtn: {
     display: 'flex',
     alignItems: 'center',
-    gap: 6,
-    padding: '9px 16px',
-    fontSize: 13,
+    gap: 5,
+    padding: '8px 14px',
+    fontSize: 12,
     fontWeight: 600,
-    borderRadius: 'var(--radius)',
+    borderRadius: 20,
     background: 'var(--danger)',
     color: 'white',
     border: 'none',
     cursor: 'pointer',
-    transition: 'all 0.15s ease',
+    transition: 'all 0.12s ease',
   },
 };
