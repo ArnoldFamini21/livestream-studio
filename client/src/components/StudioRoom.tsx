@@ -211,7 +211,11 @@ export function StudioRoom() {
           break;
         }
         case 'chat-message':
-          setChatMessages((prev) => [...prev, message.payload]);
+          setChatMessages((prev) => {
+            // Deduplicate: the sender already added this message optimistically
+            if (prev.some((m) => m.id === message.payload.id)) return prev;
+            return [...prev, message.payload];
+          });
           break;
         case 'room-ending':
           setRoomEnding(true);
