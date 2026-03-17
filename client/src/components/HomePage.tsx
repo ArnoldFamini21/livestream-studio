@@ -131,6 +131,13 @@ export function HomePage() {
           <h1 style={styles.title}>Studio</h1>
         </div>
 
+        <p style={styles.poweredBy}>
+          Powered by{' '}
+          <a href="https://arnoldfamini.com" target="_blank" rel="noopener noreferrer" style={styles.poweredByLink}>
+            ArnoldFamini.com
+          </a>
+        </p>
+
         <p style={styles.tagline}>
           Professional live streaming & recording, right in your browser.
         </p>
@@ -335,6 +342,19 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '-0.02em',
     color: 'var(--text-primary)',
   },
+  poweredBy: {
+    fontSize: 12,
+    color: 'var(--text-secondary)',
+    marginBottom: 8,
+    textAlign: 'center',
+    opacity: 0.7,
+    letterSpacing: '0.03em',
+  } as React.CSSProperties,
+  poweredByLink: {
+    color: '#a78bfa',
+    textDecoration: 'none',
+    fontWeight: 500,
+  } as React.CSSProperties,
   tagline: {
     fontSize: 15,
     color: 'var(--text-secondary)',
