@@ -11,6 +11,7 @@ import { VideoTile } from './VideoTile.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
 import { Sidebar } from './Sidebar.tsx';
+import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { StreamDestinations } from './StreamDestinations.tsx';
 import { MediaPanel } from './MediaPanel.tsx';
@@ -49,6 +50,7 @@ export function StudioRoom() {
   const [showRecordingPanel, setShowRecordingPanel] = useState(false);
   const [showProducerPanel, setShowProducerPanel] = useState(false);
   const [showWebinarQA, setShowWebinarQA] = useState(false);
+  const [showGuestChat, setShowGuestChat] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   // Layout
@@ -857,6 +859,16 @@ export function StudioRoom() {
           />
         )}
 
+        {/* Guest Chat Panel */}
+        {!isHostOrCoHost && showGuestChat && (
+          <ChatPanel
+            messages={chatMessages}
+            onSend={onSendChat}
+            onClose={() => setShowGuestChat(false)}
+            senderName={userName}
+          />
+        )}
+
         {/* Sidebar (right) - host/co-host only */}
         {isHostOrCoHost && showSidebar && (
           <Sidebar
@@ -955,6 +967,7 @@ export function StudioRoom() {
         onToggleRecording={onToggleRecording}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={onToggleScreenShare}
+        onOpenChat={() => setShowGuestChat(!showGuestChat)}
         onOpenParticipants={() => setShowParticipants(!showParticipants)}
         onOpenStreamDestinations={() => setShowStreamDest(!showStreamDest)}
         onOpenSoundBoard={() => setShowSoundBoard(!showSoundBoard)}
