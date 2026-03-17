@@ -390,10 +390,11 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
       }
     }
   } else {
+    // Exclude sender — the client already adds the message optimistically
     broadcastToRoom(mapping.roomId, {
       type: 'chat-message',
       payload: sanitizedPayload,
-    });
+    }, mapping.participantId);
   }
 }
 

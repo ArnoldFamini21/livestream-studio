@@ -22,7 +22,7 @@ import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { BackgroundMusic } from './BackgroundMusic.tsx';
 import { RecordingPanel } from './RecordingPanel.tsx';
-import { SceneManager } from './SceneManager.tsx';
+import { LayoutSwitcher } from './LayoutSwitcher.tsx';
 import { ProducerPanel } from './ProducerPanel.tsx';
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
@@ -806,6 +806,17 @@ export function StudioRoom() {
             <WebinarQAOverlay question={qaQuestions.find(q => q.highlighted) || null} />
           </div>
 
+          {/* Floating layout switcher (like StreamYard) */}
+          {isHostOrCoHost && (
+            <div style={styles.layoutBar}>
+              <LayoutSwitcher
+                currentLayout={layout}
+                onLayoutChange={setLayout}
+                participantCount={videoItems.length}
+              />
+            </div>
+          )}
+
           {/* Logo watermark */}
           {logoUrl && (
             <div style={styles.logoWatermark}>
@@ -858,9 +869,6 @@ export function StudioRoom() {
         {/* Sidebar (right) - host/co-host only */}
         {isHostOrCoHost && showSidebar && (
           <Sidebar
-            currentLayout={layout}
-            onLayoutChange={setLayout}
-            participantCount={videoItems.length}
             lowerThirds={lowerThirds}
             onAddLowerThird={onAddLowerThird}
             onToggleLowerThird={onToggleLowerThird}
@@ -1126,18 +1134,25 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
+    padding: 12,
     overflow: 'hidden',
     position: 'relative',
   },
   grid: {
     display: 'grid',
-    gap: 8,
+    gap: 6,
     width: '100%',
-    maxWidth: 1200,
+    maxWidth: 1400,
     maxHeight: '100%',
     flex: 1,
     transition: 'all 0.3s ease',
+  },
+  layoutBar: {
+    position: 'absolute',
+    bottom: 12,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 10,
   },
   // Spotlight layout
   spotlightRow: {

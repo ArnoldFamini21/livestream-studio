@@ -1,6 +1,5 @@
 import { useState, useRef } from 'react';
-import type { LayoutMode, StageBackground, Scene, ChatMessage } from '@studio/shared';
-import { LayoutSwitcher } from './LayoutSwitcher.tsx';
+import type { StageBackground, Scene, ChatMessage } from '@studio/shared';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
@@ -9,12 +8,9 @@ import { SceneManager } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
 import { CommentHighlightManager, type HighlightedComment } from './CommentHighlight.tsx';
 
-type SidebarTab = 'scenes' | 'layout' | 'overlays' | 'brand';
+type SidebarTab = 'scenes' | 'overlays' | 'brand';
 
 interface SidebarProps {
-  currentLayout: LayoutMode;
-  onLayoutChange: (layout: LayoutMode) => void;
-  participantCount: number;
   lowerThirds: LowerThirdData[];
   onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'>) => void;
   onToggleLowerThird: (id: string) => void;
@@ -28,27 +24,23 @@ interface SidebarProps {
   onToggleTimer: (id: string) => void;
   onRemoveTimer: (id: string) => void;
   onUpdateTimer: (id: string, updates: Partial<TimerData>) => void;
-  // Controlled brand state
   stageBackground: StageBackground;
   onStageBackgroundChange: (bg: StageBackground) => void;
   brandColor: string;
   onBrandColorChange: (color: string) => void;
   logoUrl: string | null;
   onLogoUrlChange: (url: string | null) => void;
-  // Scenes
   scenes: Scene[];
   activeSceneId: string | null;
   onSaveScene: (name: string) => void;
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
-  // Tickers
   tickers: TickerData[];
   onAddTicker: (ticker: Omit<TickerData, 'id' | 'visible'>) => void;
   onToggleTicker: (id: string) => void;
   onRemoveTicker: (id: string) => void;
   onUpdateTicker: (id: string, updates: Partial<TickerData>) => void;
-  // Comment highlighting
   chatMessages: ChatMessage[];
   highlightedComment: HighlightedComment | null;
   onHighlightComment: (comment: HighlightedComment) => void;
@@ -56,9 +48,6 @@ interface SidebarProps {
 }
 
 export function Sidebar({
-  currentLayout,
-  onLayoutChange,
-  participantCount,
   lowerThirds,
   onAddLowerThird,
   onToggleLowerThird,
@@ -94,7 +83,7 @@ export function Sidebar({
   onHighlightComment,
   onDismissComment,
 }: SidebarProps) {
-  const [activeTab, setActiveTab] = useState<SidebarTab>('layout');
+  const [activeTab, setActiveTab] = useState<SidebarTab>('overlays');
   const logoInputRef = useRef<HTMLInputElement>(null);
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,21 +111,9 @@ export function Sidebar({
       id: 'scenes',
       label: 'Scenes',
       icon: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="2" y="7" width="20" height="14" rx="2" />
           <path d="M16 3h-8l-2 4h12l-2-4z" />
-        </svg>
-      ),
-    },
-    {
-      id: 'layout',
-      label: 'Layout',
-      icon: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="7" height="7" />
-          <rect x="14" y="3" width="7" height="7" />
-          <rect x="14" y="14" width="7" height="7" />
-          <rect x="3" y="14" width="7" height="7" />
         </svg>
       ),
     },
@@ -144,7 +121,7 @@ export function Sidebar({
       id: 'overlays',
       label: 'Overlays',
       icon: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
           <line x1="3" y1="15" x2="21" y2="15" />
         </svg>
@@ -154,7 +131,7 @@ export function Sidebar({
       id: 'brand',
       label: 'Brand',
       icon: (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="12" r="10" />
           <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
         </svg>
@@ -194,22 +171,6 @@ export function Sidebar({
               onDeleteScene={onDeleteScene}
               onRenameScene={onRenameScene}
             />
-          </div>
-        )}
-
-        {activeTab === 'layout' && (
-          <div style={styles.section}>
-            <h4 style={styles.sectionTitle}>Arrange Feeds</h4>
-            <div style={styles.layoutWrap}>
-              <LayoutSwitcher
-                currentLayout={currentLayout}
-                onLayoutChange={onLayoutChange}
-                participantCount={participantCount}
-              />
-            </div>
-            <p style={styles.hint}>
-              Choose how participant videos are arranged on screen. Spotlight and PiP require 2+ participants.
-            </p>
           </div>
         )}
 
@@ -295,7 +256,7 @@ export function Sidebar({
               )}
             </div>
 
-            {/* Stage Background (BackgroundPicker) */}
+            {/* Stage Background */}
             <div style={styles.brandGroup}>
               <span style={styles.brandLabel}>Stage Background</span>
               <BackgroundPicker
@@ -387,20 +348,11 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '0.06em',
     marginBottom: 12,
   },
-  layoutWrap: {
-    marginBottom: 12,
-  },
-  hint: {
-    fontSize: 12,
-    color: 'var(--text-muted)',
-    lineHeight: 1.5,
-  },
   overlayDivider: {
     height: 1,
     background: 'var(--border)',
     margin: '4px 16px 8px',
   },
-  // Brand Kit
   brandGroup: {
     marginBottom: 16,
   },

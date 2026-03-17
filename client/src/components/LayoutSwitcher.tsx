@@ -11,7 +11,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
     mode: 'grid',
     label: 'Grid',
     icon: (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="10" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="1" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -23,7 +23,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
     mode: 'spotlight',
     label: 'Spotlight',
     icon: (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="16" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="1" y="14" width="4.5" height="3" rx="1" stroke="currentColor" strokeWidth="1.2" />
         <rect x="6.75" y="14" width="4.5" height="3" rx="1" stroke="currentColor" strokeWidth="1.2" />
@@ -35,9 +35,19 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
     mode: 'side-by-side',
     label: 'Side by Side',
     icon: (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="2" width="7.5" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="9.5" y="2" width="7.5" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+    ),
+  },
+  {
+    mode: 'featured',
+    label: 'Featured',
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+        <rect x="1" y="2" width="11" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+        <rect x="13.5" y="2" width="3.5" height="14" rx="1" stroke="currentColor" strokeWidth="1.2" />
       </svg>
     ),
   },
@@ -45,7 +55,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
     mode: 'pip',
     label: 'PiP',
     icon: (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="16" height="16" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="10" y="10" width="6" height="5" rx="1" fill="currentColor" opacity="0.5" stroke="currentColor" strokeWidth="1" />
       </svg>
@@ -55,18 +65,8 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
     mode: 'single',
     label: 'Single',
     icon: (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" />
-      </svg>
-    ),
-  },
-  {
-    mode: 'featured',
-    label: 'Featured',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-        <rect x="1" y="2" width="11" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-        <rect x="13.5" y="2" width="3.5" height="14" rx="1" stroke="currentColor" strokeWidth="1.2" />
       </svg>
     ),
   },
@@ -74,75 +74,62 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
 
 export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount }: LayoutSwitcherProps) {
   return (
-    <div style={styles.container}>
-      <span style={styles.label}>Layout</span>
-      <div style={styles.options}>
-        {layouts.map(({ mode, label, icon }) => {
-          const isActive = currentLayout === mode;
-          const isDisabled = participantCount < 2 && (mode === 'side-by-side' || mode === 'pip' || mode === 'spotlight' || mode === 'featured');
-          return (
-            <button
-              key={mode}
-              onClick={() => onLayoutChange(mode)}
-              disabled={isDisabled}
-              title={label}
-              style={{
-                ...styles.option,
-                ...(isActive ? styles.optionActive : {}),
-                ...(isDisabled ? styles.optionDisabled : {}),
-              }}
-            >
-              {icon}
-            </button>
-          );
-        })}
-      </div>
+    <div style={styles.bar}>
+      {layouts.map(({ mode, label, icon }) => {
+        const isActive = currentLayout === mode;
+        const isDisabled = participantCount < 2 && (mode === 'side-by-side' || mode === 'pip' || mode === 'spotlight' || mode === 'featured');
+        return (
+          <button
+            key={mode}
+            onClick={() => onLayoutChange(mode)}
+            disabled={isDisabled}
+            title={label}
+            style={{
+              ...styles.btn,
+              ...(isActive ? styles.btnActive : {}),
+              ...(isDisabled ? styles.btnDisabled : {}),
+            }}
+          >
+            {icon}
+          </button>
+        );
+      })}
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-  },
-  label: {
-    fontSize: 11,
-    fontWeight: 500,
-    color: 'var(--text-muted)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-  },
-  options: {
-    display: 'flex',
+  bar: {
+    display: 'inline-flex',
     gap: 2,
-    background: 'var(--bg-tertiary)',
+    background: 'rgba(0, 0, 0, 0.5)',
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
     borderRadius: 10,
     padding: 3,
-    border: '1px solid var(--border)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
   },
-  option: {
+  btn: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: 34,
-    height: 30,
+    width: 30,
+    height: 26,
     borderRadius: 7,
     background: 'transparent',
-    color: 'var(--text-muted)',
+    color: 'rgba(255, 255, 255, 0.5)',
     border: 'none',
     cursor: 'pointer',
     padding: 0,
-    transition: 'all var(--transition-fast)',
+    transition: 'all 0.12s ease',
   },
-  optionActive: {
+  btnActive: {
     background: 'var(--accent)',
     color: 'white',
     boxShadow: '0 1px 4px rgba(124, 58, 237, 0.3)',
   },
-  optionDisabled: {
-    opacity: 0.3,
+  btnDisabled: {
+    opacity: 0.25,
     cursor: 'not-allowed',
   },
 };

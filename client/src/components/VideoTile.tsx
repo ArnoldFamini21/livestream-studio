@@ -141,18 +141,20 @@ export function VideoTile({ stream, name, isLocal, audioEnabled = true, videoEna
 
   return (
     <div style={tileStyle} role="group" aria-label={`Video feed: ${name}${isLocal ? ' (you)' : ''}${!audioEnabled ? ', muted' : ''}${!videoEnabled ? ', camera off' : ''}`}>
-      {stream && videoEnabled ? (
+      {/* Always render a hidden video/audio element for remote streams so audio plays even when camera is off */}
+      {stream && (
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted={isLocal}
-          style={{
+          style={videoEnabled ? {
             ...tileStyles.video,
             transform: isLocal ? 'scaleX(-1)' : 'none',
-          }}
+          } : tileStyles.hiddenVideo}
         />
-      ) : (
+      )}
+      {(!stream || !videoEnabled) && (
         <div style={{ ...tileStyles.placeholder, background: nameToGradient(name) }}>
           <div style={tileStyles.avatarOuter}>
             <div style={tileStyles.avatarInner}>
@@ -205,6 +207,13 @@ const tileStyles: Record<string, React.CSSProperties> = {
     height: '100%',
     objectFit: 'cover',
     display: 'block',
+  },
+  hiddenVideo: {
+    position: 'absolute',
+    width: 0,
+    height: 0,
+    opacity: 0,
+    pointerEvents: 'none',
   },
   placeholder: {
     width: '100%',
