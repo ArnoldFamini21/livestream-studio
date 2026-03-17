@@ -8,9 +8,11 @@ export interface Room {
   createdAt: string;
   status: RoomStatus;
   settings: RoomSettings;
+  scheduledFor?: string;
+  hostName?: string;
 }
 
-export type RoomStatus = 'waiting' | 'live' | 'recording' | 'ended';
+export type RoomStatus = 'waiting' | 'scheduled' | 'live' | 'recording' | 'ended';
 
 export interface RoomSettings {
   maxParticipants: number;
@@ -59,6 +61,9 @@ export type SignalMessage =
   | { type: 'chat-message'; payload: ChatMessage }
   | { type: 'stage-action'; payload: StageActionPayload }
   | { type: 'participant-updated'; payload: Participant }
+  | { type: 'end-room'; payload: {} }
+  | { type: 'room-ending'; payload: { countdown: number } }
+  | { type: 'room-ended'; payload: {} }
   | { type: 'error'; payload: { message: string; code: string } };
 
 export interface JoinRoomPayload {

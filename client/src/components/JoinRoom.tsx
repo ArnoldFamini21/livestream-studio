@@ -7,7 +7,7 @@ export function JoinRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const [guestName, setGuestName] = useState('');
-  const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number } | null>(null);
+  const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number; status?: string; hostName?: string; scheduledFor?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -74,15 +74,23 @@ export function JoinRoom() {
 
       <div style={styles.card}>
         <div style={styles.studioInfo}>
-          <div style={styles.liveDot} />
+          <div style={{
+            ...styles.liveDot,
+            background: roomInfo?.status === 'scheduled' ? '#f59e0b' : 'var(--accent)',
+          }} />
           <span style={styles.studioName}>{roomInfo?.name}</span>
+          {roomInfo?.status === 'scheduled' && (
+            <span style={styles.scheduledBadge}>Scheduled</span>
+          )}
         </div>
 
         <h2 style={styles.cardTitle}>You're invited</h2>
         <p style={styles.text}>
-          {roomInfo?.participantCount === 0
-            ? 'Be the first to join this studio'
-            : `${roomInfo?.participantCount} participant${roomInfo?.participantCount !== 1 ? 's' : ''} already here`}
+          {roomInfo?.status === 'scheduled'
+            ? `Hosted by ${roomInfo?.hostName || 'the organizer'}. Enter your name to join when the session starts.`
+            : roomInfo?.participantCount === 0
+              ? 'Be the first to join this studio'
+              : `${roomInfo?.participantCount} participant${roomInfo?.participantCount !== 1 ? 's' : ''} already here`}
         </p>
 
         <div style={styles.field}>
@@ -222,5 +230,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   errorIcon: {
     marginBottom: 16,
+  },
+  scheduledBadge: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: '#f59e0b',
+    background: 'rgba(245, 158, 11, 0.1)',
+    padding: '2px 8px',
+    borderRadius: 10,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
   },
 };

@@ -2,14 +2,20 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
+const INVITE_BASE_URL = 'https://studio.arnoldfamini.com';
 
 export function HomePage() {
   const [roomName, setRoomName] = useState('');
   const [hostName, setHostName] = useState('');
   const [loading, setLoading] = useState(false);
+  const [schedulingLoading, setSchedulingLoading] = useState(false);
   const navigate = useNavigate();
 
   const [error, setError] = useState<string | null>(null);
+
+  // Invite link modal state
+  const [scheduledRoom, setScheduledRoom] = useState<{ id: string; name: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const createRoom = async () => {
     if (!roomName.trim() || !hostName.trim()) return;
@@ -37,6 +43,67 @@ export function HomePage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const scheduleRoom = async () => {
+    if (!roomName.trim() || !hostName.trim()) return;
+    setSchedulingLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_URL}/api/rooms/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: roomName, hostName }),
+      });
+      if (!res.ok) {
+        const errorText = await res.text().catch(() => 'Unknown error');
+        setError(`Failed to schedule room: ${res.status} ${errorText}`);
+        return;
+      }
+      const room = await res.json();
+      setScheduledRoom({ id: room.id, name: room.name });
+      setCopied(false);
+    } catch (err) {
+      console.error('Failed to schedule room:', err);
+      setError('Network error. Please check your connection and try again.');
+    } finally {
+      setSchedulingLoading(false);
+    }
+  };
+
+  const inviteLink = scheduledRoom ? `${INVITE_BASE_URL}/join/${scheduledRoom.id}` : '';
+
+  const copyToClipboard = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for non-HTTPS contexts
+      const textArea = document.createElement('textarea');
+      textArea.value = inviteLink;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const goToStudioAsHost = () => {
+    if (!scheduledRoom) return;
+    sessionStorage.setItem('userName', hostName);
+    sessionStorage.setItem('userRole', 'host');
+    navigate(`/studio/${scheduledRoom.id}`);
+  };
+
+  const closeModal = () => {
+    setScheduledRoom(null);
+    setCopied(false);
+    setRoomName('');
+    setHostName('');
   };
 
   return (
@@ -115,13 +182,100 @@ export function HomePage() {
                 'Create Studio'
               )}
             </button>
+
+            <div style={styles.divider}>
+              <span style={styles.dividerLine} />
+              <span style={styles.dividerText}>or</span>
+              <span style={styles.dividerLine} />
+            </div>
+
+            <button
+              style={styles.scheduleButton}
+              onClick={scheduleRoom}
+              disabled={schedulingLoading || !roomName.trim() || !hostName.trim()}
+            >
+              {schedulingLoading ? (
+                <span style={styles.loadingInner}>
+                  <span style={{ ...styles.loadingDot, background: 'var(--accent)' }} />
+                  Scheduling...
+                </span>
+              ) : (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 8, flexShrink: 0 }}>
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                  </svg>
+                  Schedule & Get Invite Link
+                </>
+              )}
+            </button>
           </div>
         </div>
 
         <p style={styles.hint}>
-          Have an invite link? Just open it to join as a guest — no sign-up needed.
+          Have an invite link? Just open it to join as a guest -- no sign-up needed.
         </p>
       </div>
+
+      {/* Invite Link Modal */}
+      {scheduledRoom && (
+        <div style={styles.modalOverlay} onClick={closeModal}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <button style={styles.modalClose} onClick={closeModal}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+
+            <div style={styles.modalIcon}>
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                <polyline points="22 4 12 14.01 9 11.01" />
+              </svg>
+            </div>
+
+            <h3 style={styles.modalTitle}>Studio Scheduled</h3>
+            <p style={styles.modalSub}>
+              <strong>{scheduledRoom.name}</strong> is ready. Share this invite link with your guests.
+            </p>
+
+            <div style={styles.linkBox}>
+              <input
+                style={styles.linkInput}
+                value={inviteLink}
+                readOnly
+                onClick={(e) => (e.target as HTMLInputElement).select()}
+              />
+              <button style={styles.copyButton} onClick={copyToClipboard}>
+                {copied ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                )}
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+
+            <div style={styles.modalActions}>
+              <button
+                className="btn-primary"
+                style={styles.modalStartButton}
+                onClick={goToStudioAsHost}
+              >
+                Start Studio Now
+              </button>
+              <button style={styles.modalDoneButton} onClick={closeModal}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -251,10 +405,149 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
     lineHeight: 1.4,
   },
+  divider: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    margin: '16px 0',
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    background: 'var(--border)',
+  },
+  dividerText: {
+    fontSize: 12,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+  },
+  scheduleButton: {
+    width: '100%',
+    padding: '12px 20px',
+    fontSize: 14,
+    fontWeight: 600,
+    background: 'transparent',
+    color: 'var(--accent)',
+    border: '1.5px solid var(--accent)',
+    borderRadius: 'var(--radius-md, 8px)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'all 0.15s ease',
+    letterSpacing: '-0.01em',
+  },
   hint: {
     marginTop: 20,
     fontSize: 13,
     color: 'var(--text-muted)',
     textAlign: 'center',
+  },
+
+  // Modal styles
+  modalOverlay: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0, 0, 0, 0.6)',
+    backdropFilter: 'blur(4px)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+    padding: 24,
+    animation: 'fadeIn 0.2s ease-out',
+  },
+  modal: {
+    background: 'var(--bg-secondary)',
+    borderRadius: 'var(--radius-xl)',
+    border: '1px solid var(--border)',
+    boxShadow: 'var(--shadow-lg)',
+    padding: '32px 28px',
+    width: '100%',
+    maxWidth: 440,
+    textAlign: 'center',
+    position: 'relative',
+    animation: 'scaleIn 0.3s ease-out',
+  },
+  modalClose: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    padding: 4,
+    display: 'flex',
+    borderRadius: 6,
+  },
+  modalIcon: {
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 600,
+    marginBottom: 8,
+    letterSpacing: '-0.01em',
+  },
+  modalSub: {
+    fontSize: 14,
+    color: 'var(--text-secondary)',
+    marginBottom: 24,
+    lineHeight: 1.5,
+  },
+  linkBox: {
+    display: 'flex',
+    gap: 8,
+    marginBottom: 24,
+  },
+  linkInput: {
+    flex: 1,
+    fontSize: 13,
+    padding: '10px 12px',
+    background: 'var(--bg-primary, #0a0a0f)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-md, 8px)',
+    color: 'var(--text-primary)',
+    fontFamily: 'monospace',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  copyButton: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '10px 16px',
+    fontSize: 13,
+    fontWeight: 600,
+    background: 'var(--accent)',
+    color: 'white',
+    border: 'none',
+    borderRadius: 'var(--radius-md, 8px)',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    transition: 'background 0.15s ease',
+  },
+  modalActions: {
+    display: 'flex',
+    gap: 10,
+  },
+  modalStartButton: {
+    flex: 1,
+    padding: '12px 20px',
+    fontSize: 14,
+    fontWeight: 600,
+  },
+  modalDoneButton: {
+    flex: 1,
+    padding: '12px 20px',
+    fontSize: 14,
+    fontWeight: 600,
+    background: 'transparent',
+    color: 'var(--text-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-md, 8px)',
+    cursor: 'pointer',
   },
 };

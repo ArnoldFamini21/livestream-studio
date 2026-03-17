@@ -60,6 +60,10 @@ export function StudioRoom() {
   const [destinations, setDestinations] = useState<StreamDestination[]>([]);
   const [isLive, setIsLive] = useState(false);
 
+  // Room ending countdown
+  const [roomEnding, setRoomEnding] = useState(false);
+  const [endingCountdown, setEndingCountdown] = useState(10);
+
   // Media overlay
   const [activeMedia, setActiveMedia] = useState<{ type: 'video' | 'image' | 'pdf'; url: string } | null>(null);
 
@@ -177,13 +181,24 @@ export function StudioRoom() {
         case 'chat-message':
           setChatMessages((prev) => [...prev, message.payload]);
           break;
+        case 'room-ending':
+          setRoomEnding(true);
+          setEndingCountdown(message.payload.countdown);
+          break;
+        case 'room-ended':
+          setRoomEnding(false);
+          cleanup();
+          stopMedia();
+          stopScreenShare();
+          navigate('/');
+          break;
         case 'error':
           console.error('Server error:', message.payload.message);
           if (message.payload.code === 'ROOM_NOT_FOUND') { alert('Room not found'); navigate('/'); }
           break;
       }
     },
-    [connectToPeer, handleOffer, handleAnswer, handleIceCandidate, removePeer, navigate]
+    [connectToPeer, handleOffer, handleAnswer, handleIceCandidate, removePeer, navigate, cleanup, stopMedia, stopScreenShare]
   );
 
   useEffect(() => {
@@ -201,7 +216,15 @@ export function StudioRoom() {
     const s = toggleVideo();
     if (myParticipant) send({ type: 'media-state-changed', payload: { participantId: myParticipant.id, audioEnabled, videoEnabled: s, screenSharing: isScreenSharing } });
   };
-  const onLeave = () => { cleanup(); stopMedia(); stopScreenShare(); navigate('/'); };
+  const onLeave = () => {
+    if (userRole === 'host') {
+      // Host ends the room: trigger server-side countdown for all participants
+      send({ type: 'end-room', payload: {} });
+    } else {
+      // Guests just leave immediately
+      cleanup(); stopMedia(); stopScreenShare(); navigate('/');
+    }
+  };
 
   const onAudioDeviceChange = async (id: string) => {
     try { const t = await switchAudioDevice(id); if (t) await replaceTrack(t); }
@@ -439,17 +462,19 @@ export function StudioRoom() {
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
           </button>
-          <button
-            style={{ ...styles.headerBtn, ...(showSidebar ? styles.headerBtnActive : {}) }}
-            onClick={() => setShowSidebar(!showSidebar)}
-            aria-label="Toggle sidebar"
-            aria-pressed={showSidebar}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <line x1="15" y1="3" x2="15" y2="21" />
-            </svg>
-          </button>
+          {isHostOrCoHost && (
+            <button
+              style={{ ...styles.headerBtn, ...(showSidebar ? styles.headerBtnActive : {}) }}
+              onClick={() => setShowSidebar(!showSidebar)}
+              aria-label="Toggle sidebar"
+              aria-pressed={showSidebar}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <line x1="15" y1="3" x2="15" y2="21" />
+              </svg>
+            </button>
+          )}
           <span style={styles.roomIdBadge}>{roomId}</span>
         </div>
       </div>
@@ -607,8 +632,8 @@ export function StudioRoom() {
           />
         )}
 
-        {/* Sidebar (right) */}
-        {showSidebar && (
+        {/* Sidebar (right) - host/co-host only */}
+        {isHostOrCoHost && showSidebar && (
           <Sidebar
             currentLayout={layout}
             onLayoutChange={setLayout}
@@ -675,6 +700,31 @@ export function StudioRoom() {
           onAudioOutputDeviceChange={onAudioOutputDeviceChange}
           onClose={() => setShowDeviceSettings(false)}
         />
+      )}
+
+      {/* Room Ending Countdown Overlay */}
+      {roomEnding && (
+        <div style={styles.roomEndingOverlay}>
+          <div style={styles.roomEndingCard}>
+            <div style={styles.roomEndingIcon}>
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </div>
+            <h2 style={styles.roomEndingTitle}>Room is ending...</h2>
+            <div style={styles.roomEndingCountdown}>{endingCountdown}</div>
+            <p style={styles.roomEndingSubtitle}>The host is ending this session</p>
+            <div style={styles.roomEndingBar}>
+              <div
+                style={{
+                  ...styles.roomEndingBarFill,
+                  width: `${((10 - endingCountdown) / 10) * 100}%`,
+                }}
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -877,5 +927,66 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     padding: 0,
     zIndex: 11,
+  },
+  // Room ending overlay
+  roomEndingOverlay: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0, 0, 0, 0.75)',
+    backdropFilter: 'blur(8px)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  roomEndingCard: {
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: 16,
+    padding: '40px 48px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 320,
+    boxShadow: '0 24px 48px rgba(0, 0, 0, 0.4)',
+  },
+  roomEndingIcon: {
+    color: 'var(--text-muted)',
+    marginBottom: 8,
+  },
+  roomEndingTitle: {
+    fontSize: 20,
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+    margin: 0,
+    letterSpacing: '-0.01em',
+  },
+  roomEndingCountdown: {
+    fontSize: 64,
+    fontWeight: 700,
+    color: 'var(--accent)',
+    fontFamily: 'monospace',
+    lineHeight: 1,
+    margin: '12px 0',
+  },
+  roomEndingSubtitle: {
+    fontSize: 14,
+    color: 'var(--text-secondary)',
+    margin: 0,
+  },
+  roomEndingBar: {
+    width: '100%',
+    height: 4,
+    borderRadius: 2,
+    background: 'var(--bg-tertiary)',
+    marginTop: 20,
+    overflow: 'hidden',
+  },
+  roomEndingBarFill: {
+    height: '100%',
+    background: 'var(--accent)',
+    borderRadius: 2,
+    transition: 'width 1s linear',
   },
 };

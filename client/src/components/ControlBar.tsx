@@ -74,7 +74,7 @@ export function ControlBar({
   };
 
   return (
-    <div style={styles.bar}>
+    <div style={isHost ? styles.bar : styles.barGuest}>
       {/* Left: Core controls */}
       <div style={styles.section}>
         {/* Mic */}
@@ -151,8 +151,8 @@ export function ControlBar({
           </div>
         )}
 
-        {/* Record */}
-        {onToggleRecording && (
+        {/* Record (host only) */}
+        {onToggleRecording && isHost && (
           <div style={styles.btnGroup}>
             <button
               className="btn-icon"
@@ -232,8 +232,8 @@ export function ControlBar({
           </button>
         )}
 
-        {/* Media */}
-        {onOpenMediaPanel && (
+        {/* Media (host only) */}
+        {onOpenMediaPanel && isHost && (
           <button
             className="btn-secondary"
             style={styles.featureBtn}
@@ -248,8 +248,8 @@ export function ControlBar({
           </button>
         )}
 
-        {/* Sound Board */}
-        {onOpenSoundBoard && (
+        {/* Sound Board (host only) */}
+        {onOpenSoundBoard && isHost && (
           <button
             className="btn-secondary"
             style={styles.featureBtn}
@@ -265,8 +265,8 @@ export function ControlBar({
           </button>
         )}
 
-        {/* Background Music */}
-        {onOpenBackgroundMusic && (
+        {/* Background Music (host only) */}
+        {onOpenBackgroundMusic && isHost && (
           <button
             className="btn-secondary"
             style={styles.featureBtn}
@@ -341,6 +341,15 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    padding: '10px 20px',
+    background: 'var(--bg-secondary)',
+    borderTop: '1px solid var(--border)',
+  },
+  barGuest: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
     padding: '10px 20px',
     background: 'var(--bg-secondary)',
     borderTop: '1px solid var(--border)',

@@ -5,7 +5,22 @@ const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turns:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
+  iceTransportPolicy: 'all',
 };
 
 interface PeerState {
@@ -23,6 +38,16 @@ interface UseWebRTCProps {
 export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps) {
   const peersRef = useRef<Map<string, PeerState>>(new Map());
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+
+  // Use refs to avoid stale closures in setTimeout callbacks
+  const myParticipantIdRef = useRef<string | null>(myParticipantId);
+  useEffect(() => { myParticipantIdRef.current = myParticipantId; }, [myParticipantId]);
+
+  const sendRef = useRef(send);
+  useEffect(() => { sendRef.current = send; }, [send]);
+
+  const localStreamRef = useRef(localStream);
+  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
 
   // Bug fix #1: Buffer ICE candidates that arrive before remote description is set
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
@@ -75,10 +100,11 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         stream: null,
       };
 
-      // Add local tracks to the connection
-      if (localStream) {
-        for (const track of localStream.getTracks()) {
-          pc.addTrack(track, localStream);
+      // Add local tracks to the connection (use ref for latest stream)
+      const currentStream = localStreamRef.current;
+      if (currentStream) {
+        for (const track of currentStream.getTracks()) {
+          pc.addTrack(track, currentStream);
         }
       }
 
@@ -91,13 +117,14 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         }
       };
 
-      // Send ICE candidates to the remote peer
+      // Send ICE candidates to the remote peer (use refs to avoid stale closures)
       pc.onicecandidate = (event) => {
-        if (event.candidate && myParticipantId) {
-          send({
+        const currentMyId = myParticipantIdRef.current;
+        if (event.candidate && currentMyId) {
+          sendRef.current({
             type: 'ice-candidate',
             payload: {
-              from: myParticipantId,
+              from: currentMyId,
               to: remoteParticipantId,
               candidate: event.candidate.toJSON(),
             },
@@ -147,13 +174,15 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       peersRef.current.set(remoteParticipantId, peerState);
       return pc;
     },
-    [localStream, myParticipantId, send, updateRemoteStreams]
+    [updateRemoteStreams]
   );
 
   // Initiate a connection to a remote participant (caller side)
+  // Uses refs to avoid stale closure issues when called from setTimeout
   const connectToPeer = useCallback(
     async (remoteParticipantId: string) => {
-      if (!myParticipantId) return;
+      const currentMyId = myParticipantIdRef.current;
+      if (!currentMyId) return;
 
       // Bug fix #4: Guard against duplicate calls to prevent glare conditions
       if (peersRef.current.has(remoteParticipantId)) return;
@@ -162,22 +191,23 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      send({
+      sendRef.current({
         type: 'offer',
         payload: {
-          from: myParticipantId,
+          from: currentMyId,
           to: remoteParticipantId,
           sdp: offer,
         },
       });
     },
-    [myParticipantId, createPeerConnection, send]
+    [createPeerConnection]
   );
 
   // Handle incoming offer (callee side)
   const handleOffer = useCallback(
     async (from: string, sdp: RTCSessionDescriptionInit) => {
-      if (!myParticipantId) return;
+      const currentMyId = myParticipantIdRef.current;
+      if (!currentMyId) return;
 
       const pc = createPeerConnection(from);
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
@@ -188,16 +218,16 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-      send({
+      sendRef.current({
         type: 'answer',
         payload: {
-          from: myParticipantId,
+          from: currentMyId,
           to: from,
           sdp: answer,
         },
       });
     },
-    [myParticipantId, createPeerConnection, send, drainPendingCandidates]
+    [createPeerConnection, drainPendingCandidates]
   );
 
   // Handle incoming answer

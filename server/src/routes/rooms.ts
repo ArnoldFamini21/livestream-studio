@@ -16,6 +16,22 @@ roomRouter.post('/', (req, res) => {
   res.status(201).json(room);
 });
 
+// Schedule a room in advance (creates with 'scheduled' status)
+roomRouter.post('/schedule', (req, res) => {
+  const { name, hostName, scheduledFor } = req.body;
+
+  if (!name || !hostName) {
+    res.status(400).json({ error: 'name and hostName are required' });
+    return;
+  }
+
+  const room = createRoom(name, hostName, {
+    status: 'scheduled',
+    scheduledFor: scheduledFor || undefined,
+  });
+  res.status(201).json(room);
+});
+
 // Get room info
 roomRouter.get('/:id', (req, res) => {
   const rooms = getRooms();
@@ -50,5 +66,7 @@ roomRouter.get('/:id/exists', (req, res) => {
     name: roomState.room.name,
     participantCount: roomState.participants.size,
     status: roomState.room.status,
+    hostName: roomState.room.hostName,
+    scheduledFor: roomState.room.scheduledFor,
   });
 });

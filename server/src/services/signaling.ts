@@ -30,23 +30,25 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'media-state-changed',
   'chat-message',
   'stage-action',
+  'end-room',
 ]);
 
 const rooms = new Map<string, RoomState>();
 const wsToParticipant = new Map<WebSocket, { roomId: string; participantId: string }>();
+const endingTimers = new Map<string, NodeJS.Timeout>();
 
 export function getRooms() {
   return rooms;
 }
 
-export function createRoom(name: string, hostName: string): Room {
+export function createRoom(name: string, hostName: string, options?: { status?: 'waiting' | 'scheduled'; scheduledFor?: string }): Room {
   const room: Room = {
     id: nanoid(10),
     name,
     hostId: '',
     coHostIds: [],
     createdAt: new Date().toISOString(),
-    status: 'waiting',
+    status: options?.status || 'waiting',
     settings: {
       maxParticipants: 12,
       resolution: '1080p',
@@ -55,6 +57,8 @@ export function createRoom(name: string, hostName: string): Room {
       enableStreaming: false,
       greenRoomEnabled: true,
     },
+    hostName,
+    scheduledFor: options?.scheduledFor,
   };
 
   rooms.set(room.id, {
@@ -153,6 +157,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'stage-action':
       handleStageAction(ws, message.payload);
       break;
+    case 'end-room':
+      handleEndRoom(ws);
+      break;
     default:
       sendError(ws, 'Unknown message type', 'UNKNOWN_TYPE');
   }
@@ -170,6 +177,11 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   if (roomState.participants.size >= roomState.room.settings.maxParticipants) {
     sendError(ws, 'Room is full (max 12 participants)', 'ROOM_FULL');
     return;
+  }
+
+  // Transition scheduled rooms to 'waiting' once someone joins
+  if (roomState.room.status === 'scheduled') {
+    roomState.room.status = 'waiting';
   }
 
   // Fix #6: Determine the effective role — prevent host takeover
@@ -385,6 +397,69 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   }
 }
 
+function handleEndRoom(ws: WebSocket) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  // Only the host can end the room
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer || performer.participant.role !== 'host') {
+    sendError(ws, 'Only the host can end the room', 'UNAUTHORIZED');
+    return;
+  }
+
+  // Prevent duplicate end-room if already ending
+  if (endingTimers.has(mapping.roomId)) return;
+
+  const roomId = mapping.roomId;
+  let countdown = 10;
+
+  // Broadcast initial countdown to all participants (including host)
+  broadcastToRoom(roomId, {
+    type: 'room-ending',
+    payload: { countdown },
+  });
+
+  console.log(`Host is ending room ${roomId} — countdown started`);
+
+  const timer = setInterval(() => {
+    countdown -= 1;
+
+    if (countdown > 0) {
+      broadcastToRoom(roomId, {
+        type: 'room-ending',
+        payload: { countdown },
+      });
+    } else {
+      // Countdown finished — broadcast room-ended and clean up
+      clearInterval(timer);
+      endingTimers.delete(roomId);
+
+      broadcastToRoom(roomId, {
+        type: 'room-ended',
+        payload: {},
+      });
+
+      // Close all participant WebSockets and clean up
+      const state = rooms.get(roomId);
+      if (state) {
+        for (const [id, { ws: participantWs }] of state.participants) {
+          wsToParticipant.delete(participantWs);
+          participantWs.close();
+        }
+        state.participants.clear();
+        rooms.delete(roomId);
+        console.log(`Room ${roomId} ended and cleaned up`);
+      }
+    }
+  }, 1000);
+
+  endingTimers.set(roomId, timer);
+}
+
 function handleDisconnect(ws: WebSocket) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
@@ -409,7 +484,7 @@ function handleDisconnect(ws: WebSocket) {
 
     console.log(`${name} left room ${roomId} [${roomState.participants.size} participants]`);
 
-    if (roomState.participants.size === 0) {
+    if (roomState.participants.size === 0 && roomState.room.status !== 'scheduled') {
       rooms.delete(roomId);
       console.log(`Room ${roomId} deleted (empty)`);
     }
