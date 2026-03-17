@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AudioLevelIndicator } from './AudioLevelMeter.tsx';
+import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 
 interface VideoTileProps {
   stream: MediaStream | null;
@@ -37,7 +38,7 @@ function useSpeakingDetector(stream: MediaStream | null): number {
       return;
     }
 
-    const audioCtx = new AudioContext();
+    const audioCtx = acquireAudioContext();
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
     analyser.smoothingTimeConstant = 0.3;
@@ -87,8 +88,7 @@ function useSpeakingDetector(stream: MediaStream | null): number {
       cancelAnimationFrame(rafRef.current);
       source.disconnect();
       analyser.disconnect();
-      audioCtx.close().catch(() => {});
-      audioCtxRef.current = null;
+      releaseAudioContext();
       analyserRef.current = null;
       sourceRef.current = null;
       smoothedRef.current = 0;
@@ -198,7 +198,8 @@ const tileStyles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-tertiary)',
     borderRadius: 16,
     overflow: 'hidden',
-    aspectRatio: '16 / 9',
+    width: '100%',
+    height: '100%',
     border: '2px solid var(--border)',
     transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
   },

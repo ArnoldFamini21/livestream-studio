@@ -64,6 +64,8 @@ export type SignalMessage =
   | { type: 'end-room'; payload: {} }
   | { type: 'room-ending'; payload: { countdown: number } }
   | { type: 'room-ended'; payload: {} }
+  | { type: 'room-ending-cancelled'; payload: {} }
+  | { type: 'host-changed'; payload: { newHostId: string; newHostName: string } }
   | { type: 'error'; payload: { message: string; code: string } };
 
 export interface JoinRoomPayload {

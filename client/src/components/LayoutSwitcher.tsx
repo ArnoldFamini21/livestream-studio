@@ -6,10 +6,11 @@ interface LayoutSwitcherProps {
   participantCount: number;
 }
 
-const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
+const layouts: { mode: LayoutMode; label: string; description: string; icon: React.ReactNode }[] = [
   {
     mode: 'grid',
     label: 'Grid',
+    description: 'Auto-fit grid for 1-12 people',
     icon: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -22,6 +23,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
   {
     mode: 'spotlight',
     label: 'Spotlight',
+    description: 'One large, others in strip below',
     icon: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="16" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -34,6 +36,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
   {
     mode: 'side-by-side',
     label: 'Side by Side',
+    description: 'Two equal tiles, 50/50 split',
     icon: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="2" width="7.5" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -44,6 +47,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
   {
     mode: 'featured',
     label: 'Featured',
+    description: '70% main + 30% side stack',
     icon: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="2" width="11" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -54,6 +58,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
   {
     mode: 'pip',
     label: 'PiP',
+    description: 'Full screen + small overlay',
     icon: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="16" height="16" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -64,6 +69,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
   {
     mode: 'single',
     label: 'Single',
+    description: 'Show only one participant',
     icon: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" />
@@ -75,7 +81,7 @@ const layouts: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
 export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount }: LayoutSwitcherProps) {
   return (
     <div style={styles.bar}>
-      {layouts.map(({ mode, label, icon }) => {
+      {layouts.map(({ mode, label, description, icon }) => {
         const isActive = currentLayout === mode;
         const isDisabled = participantCount < 2 && (mode === 'side-by-side' || mode === 'pip' || mode === 'spotlight' || mode === 'featured');
         return (
@@ -83,7 +89,7 @@ export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount
             key={mode}
             onClick={() => onLayoutChange(mode)}
             disabled={isDisabled}
-            title={label}
+            title={`${label} — ${description}`}
             style={{
               ...styles.btn,
               ...(isActive ? styles.btnActive : {}),

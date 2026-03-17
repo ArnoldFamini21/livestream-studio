@@ -92,7 +92,7 @@ export function useMediaDevices() {
 
       // After getting the stream, enumerate devices to get labels
       // (labels are only available after granting permission)
-      const { audio, video } = await enumerateDevices();
+      await enumerateDevices();
 
       // Track which devices are actually active
       const activeAudioTrack = stream.getAudioTracks()[0];

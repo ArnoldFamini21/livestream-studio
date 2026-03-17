@@ -41,7 +41,6 @@ export function StudioRoom() {
   // UI panels
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
-  const [showParticipants, setShowParticipants] = useState(false);
   const [showStreamDest, setShowStreamDest] = useState(false);
   const [showMediaPanel, setShowMediaPanel] = useState(false);
   const [showSoundBoard, setShowSoundBoard] = useState(false);
@@ -80,6 +79,14 @@ export function StudioRoom() {
   const [stageBackground, setStageBackground] = useState<StageBackground>({ type: 'none', value: '' });
   const [brandColor, setBrandColor] = useState('#a78bfa');
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+
+  // Cleanup blob URLs when logoUrl changes
+  useEffect(() => {
+    const url = logoUrl;
+    return () => {
+      if (url && url.startsWith('blob:')) URL.revokeObjectURL(url);
+    };
+  }, [logoUrl]);
 
   // Scenes
   const [scenes, setScenes] = useState<Scene[]>([]);
@@ -124,17 +131,32 @@ export function StudioRoom() {
   const joinedRef = useRef(false);
   const myParticipantRef = useRef<Participant | null>(null);
   const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0 });
+  const audioEnabledRef = useRef(audioEnabled);
+  const videoEnabledRef = useRef(videoEnabled);
+  const isScreenSharingRef = useRef(isScreenSharing);
+  const localStreamRef = useRef<MediaStream | null>(null);
 
-  // Keep ref in sync with state
+  // Keep refs in sync with state
   useEffect(() => {
     myParticipantRef.current = myParticipant;
   }, [myParticipant]);
+  useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
+  useEffect(() => { videoEnabledRef.current = videoEnabled; }, [videoEnabled]);
+  useEffect(() => { isScreenSharingRef.current = isScreenSharing; }, [isScreenSharing]);
+  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
 
   // Connect WebSocket and start media on mount
   useEffect(() => {
     connect();
     startMedia();
   }, [connect, startMedia]);
+
+  // Fix 1: Reset joinedRef when disconnected so room-join is re-sent on reconnect
+  useEffect(() => {
+    if (!connected) {
+      joinedRef.current = false;
+    }
+  }, [connected]);
 
   // Join room once connected
   useEffect(() => {
@@ -160,7 +182,7 @@ export function StudioRoom() {
           existing.forEach((p) => map.set(p.id, p));
           setParticipants(map);
           existing.forEach((p) => {
-            setTimeout(() => connectToPeer(p.id), 100);
+            setTimeout(() => connectToPeer(p.id).catch(err => console.error('Failed to connect to peer:', err)), 100);
           });
           break;
         }
@@ -194,13 +216,13 @@ export function StudioRoom() {
           break;
         }
         case 'offer':
-          handleOffer(message.payload.from, message.payload.sdp);
+          handleOffer(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle offer:', err));
           break;
         case 'answer':
-          handleAnswer(message.payload.from, message.payload.sdp);
+          handleAnswer(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle answer:', err));
           break;
         case 'ice-candidate':
-          handleIceCandidate(message.payload.from, message.payload.candidate);
+          handleIceCandidate(message.payload.from, message.payload.candidate).catch(err => console.error('Failed to handle ICE candidate:', err));
           break;
         case 'media-state-changed': {
           const { participantId, audioEnabled: a, videoEnabled: v, screenSharing: s } = message.payload;
@@ -244,16 +266,29 @@ export function StudioRoom() {
     return rm;
   }, [addHandler, handleSignalingMessage]);
 
+  // Sync local tracks when remotely muted/unmuted
+  useEffect(() => {
+    if (!myParticipant || !localStream) return;
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (audioTrack && audioTrack.enabled !== myParticipant.audioEnabled) {
+      audioTrack.enabled = myParticipant.audioEnabled;
+    }
+    const videoTrack = localStream.getVideoTracks()[0];
+    if (videoTrack && videoTrack.enabled !== myParticipant.videoEnabled) {
+      videoTrack.enabled = myParticipant.videoEnabled;
+    }
+  }, [myParticipant?.audioEnabled, myParticipant?.videoEnabled, localStream]);
+
   // ====== Actions ======
 
-  const onToggleAudio = () => {
+  const onToggleAudio = useCallback(() => {
     const s = toggleAudio();
-    if (myParticipant) send({ type: 'media-state-changed', payload: { participantId: myParticipant.id, audioEnabled: s, videoEnabled, screenSharing: isScreenSharing } });
-  };
-  const onToggleVideo = () => {
+    if (myParticipantRef.current) send({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: s, videoEnabled: videoEnabledRef.current, screenSharing: isScreenSharingRef.current } });
+  }, [toggleAudio, send]);
+  const onToggleVideo = useCallback(() => {
     const s = toggleVideo();
-    if (myParticipant) send({ type: 'media-state-changed', payload: { participantId: myParticipant.id, audioEnabled, videoEnabled: s, screenSharing: isScreenSharing } });
-  };
+    if (myParticipantRef.current) send({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: s, screenSharing: isScreenSharingRef.current } });
+  }, [toggleVideo, send]);
   const onLeave = () => {
     if (userRole === 'host') {
       // Host ends the room: trigger server-side countdown for all participants
@@ -294,7 +329,7 @@ export function StudioRoom() {
             // When the user stops sharing via the browser's native button,
             // restore the camera track automatically
             screenTrack.addEventListener('ended', async () => {
-              const camTrack = localStream?.getVideoTracks()[0];
+              const camTrack = localStreamRef.current?.getVideoTracks()[0];
               if (camTrack) await replaceTrack(camTrack);
             });
           }
@@ -378,9 +413,9 @@ export function StudioRoom() {
   const onRemoveTimer = (id: string) => {
     setTimers((prev) => prev.filter((t) => t.id !== id));
   };
-  const onUpdateTimer = (id: string, updates: Partial<TimerData>) => {
+  const onUpdateTimer = useCallback((id: string, updates: Partial<TimerData>) => {
     setTimers((prev) => prev.map((t) => t.id === id ? { ...t, ...updates } : t));
-  };
+  }, []);
 
   // Timer ticking
   useTimerTick(timers, onUpdateTimer);
@@ -448,6 +483,12 @@ export function StudioRoom() {
     setStageBackground(scene.background);
     setBrandColor(scene.brandColor);
     setLogoUrl(scene.logoUrl);
+    // Restore overlay visibility from saved scene
+    const visibleIds = new Set(scene.visibleOverlayIds);
+    setLowerThirds(prev => prev.map(lt => ({ ...lt, visible: visibleIds.has(lt.id) })));
+    setBanners(prev => prev.map(b => ({ ...b, visible: visibleIds.has(b.id) })));
+    setTimers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id) })));
+    setTickers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id) })));
     setActiveSceneId(sceneId);
   };
   const onDeleteScene = (sceneId: string) => {
@@ -568,27 +609,217 @@ export function StudioRoom() {
     }
   }, [stageBackground]);
 
-  // Layout logic - memoized
-  const gridStyle = useMemo((): React.CSSProperties => {
-    const count = videoItems.length;
-    switch (layout) {
-      case 'spotlight':
-        return { gridTemplateColumns: '1fr', gridTemplateRows: count > 1 ? '3fr auto' : '1fr' };
-      case 'side-by-side':
-        return { gridTemplateColumns: count >= 2 ? '1fr 1fr' : '1fr' };
-      case 'pip':
-        return { gridTemplateColumns: '1fr', position: 'relative' as const };
-      case 'single':
-        return { gridTemplateColumns: '1fr', gridTemplateRows: '1fr' };
-      case 'featured':
-        return { gridTemplateColumns: count >= 2 ? '2fr 1fr' : '1fr' };
-      case 'grid':
-      default: {
-        const cols = count <= 1 ? 1 : count <= 4 ? 2 : count <= 9 ? 3 : 4;
-        return { gridTemplateColumns: `repeat(${cols}, 1fr)` };
-      }
+  // ====== Layout Engine ======
+  // Each layout helper returns { containerStyle, tileStyles[], mode }.
+  // The rendering section uses containerStyle on the wrapper and applies
+  // tileStyles[i] to each tile so that centering and sizing are precise.
+
+  type LayoutResult = {
+    containerStyle: React.CSSProperties;
+    tileStyles: React.CSSProperties[];
+    mode: 'flex' | 'custom';
+  };
+
+  const GAP = 6;
+
+  // Optimal auto-grid for 1-12 participants.
+  // Uses flexbox + percentage widths; justify-content:center handles
+  // centering the last row when it has fewer tiles than the row above.
+  const getAutoGridLayout = useCallback((count: number): LayoutResult => {
+    const rowConfigs: Record<number, number[]> = {
+      1: [1],
+      2: [2],
+      3: [2, 1],
+      4: [2, 2],
+      5: [3, 2],
+      6: [3, 3],
+      7: [4, 3],
+      8: [4, 4],
+      9: [3, 3, 3],
+      10: [5, 5],
+      11: [4, 4, 3],
+      12: [4, 4, 4],
+    };
+    const rows = rowConfigs[Math.min(count, 12)] || rowConfigs[12];
+    const numRows = rows.length;
+    const maxCols = Math.max(...rows);
+    const tileW = `calc(${100 / maxCols}% - ${GAP * (maxCols - 1) / maxCols}px)`;
+    const tileH = `calc(${100 / numRows}% - ${GAP * (numRows - 1) / numRows}px)`;
+
+    const tiles: React.CSSProperties[] = Array.from({ length: count }, () => ({
+      width: tileW,
+      height: tileH,
+      flexShrink: 0,
+      flexGrow: 0,
+    }));
+
+    return {
+      containerStyle: {
+        display: 'flex',
+        flexWrap: 'wrap' as const,
+        justifyContent: 'center',
+        alignContent: 'center',
+        gap: GAP,
+        width: '100%',
+        height: '100%',
+        padding: 6,
+      },
+      tileStyles: tiles,
+      mode: 'flex',
+    };
+  }, []);
+
+  // Screen share layout: screen tile gets prominent placement.
+  const getScreenShareLayout = useCallback((items: typeof videoItems): LayoutResult => {
+    const screenIdx = items.findIndex(v => v.isScreenShare);
+    const speakerCount = items.length - 1;
+
+    if (speakerCount <= 4) {
+      // Screen 75% left, speakers stacked vertically on right 25%
+      const tiles: React.CSSProperties[] = items.map((_, i) => {
+        if (i === screenIdx) {
+          return { width: `calc(75% - ${GAP / 2}px)`, height: '100%', flexShrink: 0, flexGrow: 0, order: 0 };
+        }
+        return {
+          width: `calc(25% - ${GAP / 2}px)`,
+          height: speakerCount > 0 ? `calc(${100 / speakerCount}% - ${GAP * Math.max(speakerCount - 1, 0) / Math.max(speakerCount, 1)}px)` : '100%',
+          flexShrink: 0, flexGrow: 0, order: 1,
+        };
+      });
+      return {
+        containerStyle: { display: 'flex', flexWrap: 'wrap' as const, gap: GAP, width: '100%', height: '100%', padding: 6 },
+        tileStyles: tiles,
+        mode: 'custom',
+      };
     }
-  }, [layout, videoItems.length]);
+    // 5+ speakers: screen on top 70%, speaker strip at bottom 30%
+    const tiles: React.CSSProperties[] = items.map((_, i) => {
+      if (i === screenIdx) {
+        return { width: '100%', height: `calc(70% - ${GAP / 2}px)`, flexShrink: 0, flexGrow: 0, order: 0 };
+      }
+      return {
+        width: `calc(${100 / speakerCount}% - ${GAP * (speakerCount - 1) / speakerCount}px)`,
+        height: `calc(30% - ${GAP / 2}px)`,
+        flexShrink: 0, flexGrow: 0, order: 1,
+      };
+    });
+    return {
+      containerStyle: { display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'center', alignContent: 'flex-start', gap: GAP, width: '100%', height: '100%', padding: 6 },
+      tileStyles: tiles,
+      mode: 'custom',
+    };
+  }, []);
+
+  // Spotlight: 1 large tile top ~78%, thumbnail strip bottom ~22%
+  const getSpotlightLayout = useCallback((count: number): LayoutResult => {
+    if (count <= 1) return getAutoGridLayout(count);
+    const thumbCount = count - 1;
+    const maxThumbsPerRow = Math.min(thumbCount, 6);
+    const tiles: React.CSSProperties[] = [
+      { width: '100%', height: `calc(78% - ${GAP / 2}px)`, flexShrink: 0, flexGrow: 0 },
+    ];
+    for (let i = 0; i < thumbCount; i++) {
+      tiles.push({
+        width: `calc(${100 / maxThumbsPerRow}% - ${GAP * (maxThumbsPerRow - 1) / maxThumbsPerRow}px)`,
+        height: `calc(22% - ${GAP / 2}px)`,
+        flexShrink: 0, flexGrow: 0,
+      });
+    }
+    return {
+      containerStyle: { display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'center', alignContent: 'flex-start', gap: GAP, width: '100%', height: '100%', padding: 6 },
+      tileStyles: tiles,
+      mode: 'flex',
+    };
+  }, [getAutoGridLayout]);
+
+  // Featured: 1 large tile 70% left + smaller tiles stacked on right 30%
+  const getFeaturedLayout = useCallback((count: number): LayoutResult => {
+    if (count <= 1) return getAutoGridLayout(count);
+    const sideCount = count - 1;
+    const tiles: React.CSSProperties[] = [
+      { width: `calc(70% - ${GAP / 2}px)`, height: '100%', flexShrink: 0, flexGrow: 0 },
+    ];
+    for (let i = 0; i < sideCount; i++) {
+      tiles.push({
+        width: `calc(30% - ${GAP / 2}px)`,
+        height: `calc(${100 / sideCount}% - ${GAP * Math.max(sideCount - 1, 0) / Math.max(sideCount, 1)}px)`,
+        flexShrink: 0, flexGrow: 0,
+      });
+    }
+    return {
+      containerStyle: { display: 'flex', flexWrap: 'wrap' as const, alignContent: 'flex-start', gap: GAP, width: '100%', height: '100%', padding: 6 },
+      tileStyles: tiles,
+      mode: 'custom',
+    };
+  }, [getAutoGridLayout]);
+
+  // Final computed layout
+  const layoutResult = useMemo((): LayoutResult => {
+    const count = videoItems.length;
+    const hasScreenShare = videoItems.some(v => v.isScreenShare);
+
+    // Screen share layout takes priority in grid mode
+    if (hasScreenShare && layout === 'grid') {
+      return getScreenShareLayout(videoItems);
+    }
+
+    switch (layout) {
+      case 'grid':
+        return getAutoGridLayout(count);
+      case 'spotlight':
+        return getSpotlightLayout(count);
+      case 'featured':
+        return getFeaturedLayout(count);
+      case 'side-by-side': {
+        const showCount = Math.min(count, 2);
+        const tiles: React.CSSProperties[] = Array.from({ length: showCount }, () => ({
+          width: showCount === 2 ? `calc(50% - ${GAP / 2}px)` : '100%',
+          height: '100%',
+          flexShrink: 0, flexGrow: 0,
+        }));
+        return {
+          containerStyle: { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: GAP, width: '100%', height: '100%', padding: 6 },
+          tileStyles: tiles,
+          mode: 'flex',
+        };
+      }
+      case 'pip': {
+        const tiles: React.CSSProperties[] = [
+          { width: '100%', height: '100%', flexShrink: 0, flexGrow: 0 },
+        ];
+        if (count >= 2) {
+          tiles.push({
+            position: 'absolute' as const,
+            bottom: 16,
+            right: 16,
+            width: '22%',
+            minWidth: 160,
+            height: 'auto',
+            borderRadius: 12,
+            overflow: 'hidden',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
+            border: '2px solid rgba(255, 255, 255, 0.1)',
+            zIndex: 5,
+            flexShrink: 0, flexGrow: 0,
+          });
+        }
+        return {
+          containerStyle: { display: 'flex', position: 'relative' as const, width: '100%', height: '100%', padding: 6 },
+          tileStyles: tiles,
+          mode: 'custom',
+        };
+      }
+      case 'single': {
+        return {
+          containerStyle: { display: 'flex', justifyContent: 'center', alignItems: 'center', width: '100%', height: '100%', padding: 6 },
+          tileStyles: count > 0 ? [{ width: '100%', height: '100%', flexShrink: 0, flexGrow: 0 }] : [],
+          mode: 'flex',
+        };
+      }
+      default:
+        return getAutoGridLayout(count);
+    }
+  }, [layout, videoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
 
   // Loading
   if (!joined) {
@@ -671,104 +902,31 @@ export function StudioRoom() {
           {/* Fixed 16:9 Canvas */}
           <div style={styles.canvasWrapper}>
             <div style={{ ...styles.canvas, ...stageBackgroundStyle }}>
-              <div style={{ ...styles.grid, ...gridStyle, position: 'relative' }}>
-                {layout === 'single' && videoItems.length > 0 ? (
-                  <div style={styles.singleTile}>
-                    <VideoTile
-                      stream={videoItems[0].stream}
-                      name={videoItems[0].name}
-                      isLocal={videoItems[0].isLocal}
-                      audioEnabled={videoItems[0].audioEnabled}
-                      videoEnabled={videoItems[0].videoEnabled}
-                      brandColor={brandColor}
-                    />
-                  </div>
-                ) : layout === 'featured' && videoItems.length >= 2 ? (
-                  <>
-                    <div style={styles.featuredMain}>
+              <div style={{ ...styles.gridBase, ...layoutResult.containerStyle, position: 'relative' }}>
+                {/* Render tiles based on layout engine */}
+                {(() => {
+                  // Determine which items to render based on layout
+                  const itemsToRender = layout === 'side-by-side'
+                    ? videoItems.slice(0, 2)
+                    : layout === 'single'
+                      ? videoItems.slice(0, 1)
+                      : layout === 'pip'
+                        ? videoItems.slice(0, 2)
+                        : videoItems;
+
+                  return itemsToRender.map((item, i) => (
+                    <div key={item.id} style={{ ...styles.tileWrapper, ...(layoutResult.tileStyles[i] || {}) }}>
                       <VideoTile
-                        stream={videoItems[0].stream}
-                        name={videoItems[0].name}
-                        isLocal={videoItems[0].isLocal}
-                        audioEnabled={videoItems[0].audioEnabled}
-                        videoEnabled={videoItems[0].videoEnabled}
+                        stream={item.stream}
+                        name={item.name}
+                        isLocal={item.isLocal}
+                        audioEnabled={item.audioEnabled}
+                        videoEnabled={item.videoEnabled}
                         brandColor={brandColor}
                       />
                     </div>
-                    <div style={styles.featuredSide}>
-                      {videoItems.slice(1).map((item) => (
-                        <div key={item.id} style={styles.featuredSideTile}>
-                          <VideoTile
-                            stream={item.stream}
-                            name={item.name}
-                            isLocal={item.isLocal}
-                            audioEnabled={item.audioEnabled}
-                            videoEnabled={item.videoEnabled}
-                            brandColor={brandColor}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : layout === 'spotlight' && videoItems.length > 1 ? (
-                  <>
-                    <VideoTile
-                      stream={videoItems[0].stream}
-                      name={videoItems[0].name}
-                      isLocal={videoItems[0].isLocal}
-                      audioEnabled={videoItems[0].audioEnabled}
-                      videoEnabled={videoItems[0].videoEnabled}
-                      brandColor={brandColor}
-                    />
-                    <div style={styles.spotlightRow}>
-                      {videoItems.slice(1).map((item) => (
-                        <div key={item.id} style={styles.spotlightThumb}>
-                          <VideoTile
-                            stream={item.stream}
-                            name={item.name}
-                            isLocal={item.isLocal}
-                            audioEnabled={item.audioEnabled}
-                            videoEnabled={item.videoEnabled}
-                            brandColor={brandColor}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : layout === 'pip' && videoItems.length >= 2 ? (
-                  <>
-                    <VideoTile
-                      stream={videoItems[0].stream}
-                      name={videoItems[0].name}
-                      isLocal={videoItems[0].isLocal}
-                      audioEnabled={videoItems[0].audioEnabled}
-                      videoEnabled={videoItems[0].videoEnabled}
-                      brandColor={brandColor}
-                    />
-                    <div style={styles.pipOverlay}>
-                      <VideoTile
-                        stream={videoItems[1].stream}
-                        name={videoItems[1].name}
-                        isLocal={videoItems[1].isLocal}
-                        audioEnabled={videoItems[1].audioEnabled}
-                        videoEnabled={videoItems[1].videoEnabled}
-                        brandColor={brandColor}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  videoItems.map((item) => (
-                    <VideoTile
-                      key={item.id}
-                      stream={item.stream}
-                      name={item.name}
-                      isLocal={item.isLocal}
-                      audioEnabled={item.audioEnabled}
-                      videoEnabled={item.videoEnabled}
-                      brandColor={brandColor}
-                    />
-                  ))
-                )}
+                  ));
+                })()}
 
                 {/* Media overlay on stage */}
                 {activeMedia && (
@@ -975,7 +1133,7 @@ export function StudioRoom() {
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={onToggleScreenShare}
         onOpenChat={() => setShowGuestChat(!showGuestChat)}
-        onOpenParticipants={() => setShowParticipants(!showParticipants)}
+        onOpenParticipants={() => {}}
         onOpenStreamDestinations={() => setShowStreamDest(!showStreamDest)}
         onOpenSoundBoard={() => setShowSoundBoard(!showSoundBoard)}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
@@ -1180,66 +1338,23 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
     background: '#0f172a',
   },
-  grid: {
-    display: 'grid',
-    gap: 6,
+  // Base grid container — actual layout props are merged from layoutResult.containerStyle
+  gridBase: {
     width: '100%',
     height: '100%',
-    padding: 6,
+    transition: 'all 0.3s ease',
+  },
+  // Generic tile wrapper — per-tile sizing is merged from layoutResult.tileStyles[i]
+  tileWrapper: {
+    minWidth: 0,
+    minHeight: 0,
+    overflow: 'hidden',
+    borderRadius: 16,
     transition: 'all 0.3s ease',
   },
   layoutBar: {
     flexShrink: 0,
     zIndex: 10,
-  },
-  // Spotlight layout
-  spotlightRow: {
-    display: 'flex',
-    gap: 8,
-    height: 120,
-  },
-  spotlightThumb: {
-    flex: 1,
-    minWidth: 0,
-  },
-  // Single layout
-  singleTile: {
-    width: '100%',
-    height: '100%',
-    transition: 'all 0.3s ease',
-  },
-  // Featured layout
-  featuredMain: {
-    height: '100%',
-    minHeight: 0,
-    transition: 'all 0.3s ease',
-  },
-  featuredSide: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 8,
-    height: '100%',
-    minHeight: 0,
-    overflow: 'auto',
-    transition: 'all 0.3s ease',
-  },
-  featuredSideTile: {
-    flex: 1,
-    minHeight: 80,
-    transition: 'all 0.3s ease',
-  },
-  // PiP layout
-  pipOverlay: {
-    position: 'absolute',
-    bottom: 16,
-    right: 16,
-    width: '22%',
-    minWidth: 160,
-    borderRadius: 'var(--radius)',
-    overflow: 'hidden',
-    boxShadow: 'var(--shadow-lg)',
-    border: '2px solid var(--border)',
-    zIndex: 5,
   },
   // Screen share banner
   screenShareBanner: {

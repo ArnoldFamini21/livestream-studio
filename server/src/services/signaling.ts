@@ -37,6 +37,29 @@ const rooms = new Map<string, RoomState>();
 const wsToParticipant = new Map<WebSocket, { roomId: string; participantId: string }>();
 const endingTimers = new Map<string, NodeJS.Timeout>();
 
+// WebSocket per-connection rate limiting
+const wsMessageCounts = new Map<WebSocket, { count: number; resetAt: number }>();
+const WS_RATE_LIMIT_WINDOW = 10_000; // 10 seconds
+const WS_RATE_LIMIT_MAX = 100; // 100 messages per 10 seconds
+
+// Max lengths for user input
+const MAX_CHAT_MESSAGE_LENGTH = 2000;
+const MAX_PARTICIPANT_NAME_LENGTH = 50;
+
+function checkWsRateLimit(ws: WebSocket): boolean {
+  const now = Date.now();
+  const entry = wsMessageCounts.get(ws);
+  if (!entry || now > entry.resetAt) {
+    wsMessageCounts.set(ws, { count: 1, resetAt: now + WS_RATE_LIMIT_WINDOW });
+    return true;
+  }
+  entry.count++;
+  if (entry.count > WS_RATE_LIMIT_MAX) {
+    return false;
+  }
+  return true;
+}
+
 export function getRooms() {
   return rooms;
 }
@@ -118,6 +141,12 @@ export function setupSignalingServer(wss: WebSocketServer) {
     ws.on('message', (data: Buffer) => {
       // Fix #2: Wrap entire message handling in try/catch
       try {
+        // Rate limit WebSocket messages
+        if (!checkWsRateLimit(ws)) {
+          sendError(ws, 'Too many messages. Please slow down.', 'RATE_LIMITED');
+          return;
+        }
+
         const parsed = JSON.parse(data.toString());
 
         // Fix #10: Validate message structure before handling
@@ -166,7 +195,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
 }
 
 function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
-  const { roomId, name, role } = payload;
+  const { roomId, role } = payload;
+  // Sanitize and validate participant name
+  const name = (typeof payload.name === 'string' ? payload.name : '').trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, MAX_PARTICIPANT_NAME_LENGTH) || 'Anonymous';
   const roomState = rooms.get(roomId);
 
   if (!roomState) {
@@ -369,12 +400,20 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   const roomState = rooms.get(mapping.roomId);
   if (!roomState) return;
 
+  // Validate chat message content
+  if (typeof payload.content !== 'string' || payload.content.trim().length === 0) return;
+  if (payload.content.length > MAX_CHAT_MESSAGE_LENGTH) {
+    sendError(ws, `Message too long (max ${MAX_CHAT_MESSAGE_LENGTH} characters)`, 'MESSAGE_TOO_LONG');
+    return;
+  }
+
   // Fix #8: Override senderId and senderName with server-authoritative values
   const senderEntry = roomState.participants.get(mapping.participantId);
   if (!senderEntry) return;
 
   const sanitizedPayload: ChatMessage = {
     ...payload,
+    content: payload.content.trim(),
     senderId: mapping.participantId,
     senderName: senderEntry.participant.name,
   };
@@ -462,6 +501,9 @@ function handleEndRoom(ws: WebSocket) {
 }
 
 function handleDisconnect(ws: WebSocket) {
+  // Clean up rate limit tracking
+  wsMessageCounts.delete(ws);
+
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
 
@@ -471,12 +513,68 @@ function handleDisconnect(ws: WebSocket) {
   if (roomState) {
     const entry = roomState.participants.get(participantId);
     const name = entry?.participant.name || 'Unknown';
+    const wasHost = participantId === roomState.room.hostId;
 
     roomState.participants.delete(participantId);
     wsToParticipant.delete(ws);
 
     // Remove from co-host list if applicable
     roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== participantId);
+
+    // If the host disconnected, clean up ending timer and handoff
+    if (wasHost) {
+      // Clear any active ending timer for this room
+      const endingTimer = endingTimers.get(roomId);
+      if (endingTimer) {
+        clearInterval(endingTimer);
+        endingTimers.delete(roomId);
+        // Notify remaining participants that the end was cancelled
+        broadcastToRoom(roomId, {
+          type: 'room-ending-cancelled',
+          payload: {},
+        });
+      }
+
+      // Handoff host to the first co-host, or failing that, the first remaining participant
+      if (roomState.participants.size > 0) {
+        let newHostId: string | null = null;
+
+        // Try co-hosts first
+        for (const coHostId of roomState.room.coHostIds) {
+          if (roomState.participants.has(coHostId)) {
+            newHostId = coHostId;
+            break;
+          }
+        }
+
+        // Fall back to any remaining participant
+        if (!newHostId) {
+          newHostId = roomState.participants.keys().next().value ?? null;
+        }
+
+        if (newHostId) {
+          const newHost = roomState.participants.get(newHostId);
+          if (newHost) {
+            newHost.participant.role = 'host';
+            roomState.room.hostId = newHostId;
+            // Remove from co-host list if they were a co-host
+            roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== newHostId);
+
+            console.log(`Host handoff: ${newHost.participant.name} is now host of room ${roomId}`);
+
+            // Notify all participants about the host change
+            broadcastToRoom(roomId, {
+              type: 'participant-updated',
+              payload: newHost.participant,
+            });
+            broadcastToRoom(roomId, {
+              type: 'host-changed',
+              payload: { newHostId, newHostName: newHost.participant.name },
+            });
+          }
+        }
+      }
+    }
 
     broadcastToRoom(roomId, {
       type: 'participant-left',

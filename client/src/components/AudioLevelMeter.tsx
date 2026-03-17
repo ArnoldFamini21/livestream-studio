@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 
 // ---------------------------------------------------------------------------
 // Hook: useAudioLevel
@@ -32,7 +33,7 @@ function useAudioLevel(stream: MediaStream | null): number {
       return;
     }
 
-    const audioCtx = new AudioContext();
+    const audioCtx = acquireAudioContext();
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
     analyser.smoothingTimeConstant = 0.3;
@@ -86,8 +87,7 @@ function useAudioLevel(stream: MediaStream | null): number {
       cancelAnimationFrame(rafRef.current);
       source.disconnect();
       analyser.disconnect();
-      audioCtx.close().catch(() => {});
-      audioCtxRef.current = null;
+      releaseAudioContext();
       analyserRef.current = null;
       sourceRef.current = null;
       smoothedRef.current = 0;
