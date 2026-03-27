@@ -147,7 +147,7 @@ export function RecordingPanel({
           <h3 style={styles.title}>Local Recording</h3>
           <p style={styles.subtitle}>Multi-track recording</p>
         </div>
-        <button style={styles.closeBtn} onClick={onClose}>
+        <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
           </svg>
@@ -169,6 +169,7 @@ export function RecordingPanel({
               <span style={styles.trackBadge}>Screen</span>
             </div>
             <button
+              className="hover-scale"
               style={styles.stopBtn}
               onClick={handleStop}
               disabled={isStopping}
@@ -187,6 +188,7 @@ export function RecordingPanel({
             </svg>
             <p style={styles.idleText}>Record separate audio, video, and screen tracks locally for maximum quality.</p>
             <button
+              className="hover-scale"
               style={styles.startBtn}
               onClick={onStartRecording}
             >
@@ -214,13 +216,14 @@ export function RecordingPanel({
               const isFileError = progress === -1;
 
               return (
-                <div key={file.fileName} style={styles.fileCard}>
+                <div key={file.fileName} className="participant-item" style={styles.fileCard}>
                   <div style={styles.fileHeader}>
                     <div style={styles.fileInfo}>
                       <span style={styles.fileLabel}>{file.label}</span>
                       <span style={styles.fileSize}>{formatFileSize(file.blob.size)}</span>
                     </div>
                     <button
+                      className="participant-action-btn"
                       style={styles.downloadBtn}
                       onClick={() => handleDownloadSingle(file)}
                       title={`Download ${file.label}`}
@@ -266,6 +269,7 @@ export function RecordingPanel({
             {/* Action buttons */}
             <div style={styles.actions}>
               <button
+                className="hover-lift"
                 style={styles.downloadAllBtn}
                 onClick={handleDownloadAll}
               >
@@ -278,6 +282,7 @@ export function RecordingPanel({
               </button>
 
               <button
+                className="hover-lift"
                 style={{
                   ...styles.driveBtn,
                   opacity: isUploading ? 0.6 : 1,

@@ -85,11 +85,18 @@ export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount
         .ls-btn:hover:not(:disabled) {
           color: white !important;
           background: rgba(255, 255, 255, 0.1) !important;
+          transform: scale(1.1);
+        }
+        .ls-btn:active:not(:disabled) {
+          transform: scale(0.95);
         }
         .ls-btn.active {
           background: var(--accent) !important;
           color: white !important;
-          box-shadow: 0 1px 4px rgba(124, 58, 237, 0.3) !important;
+          box-shadow: 0 1px 6px rgba(124, 58, 237, 0.4), 0 0 0 1px rgba(167, 139, 250, 0.2) !important;
+        }
+        .ls-btn.active:hover {
+          transform: none;
         }
       `}</style>
       {layouts.map(({ mode, label, description, icon }) => {

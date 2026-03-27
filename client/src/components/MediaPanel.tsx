@@ -159,7 +159,7 @@ export function MediaPanel({
       {/* Header */}
       <div style={styles.header}>
         <h3 style={styles.title}>Media</h3>
-        <button style={styles.closeBtn} onClick={onClose} title="Close media panel">
+        <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} title="Close media panel">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
@@ -253,7 +253,7 @@ export function MediaPanel({
             {uploadedVideos.length > 0 && (
               <div style={styles.fileList}>
                 {uploadedVideos.map((file, index) => (
-                  <div key={file.id} style={styles.fileItem}>
+                  <div key={file.id} className="participant-item" style={styles.fileItem}>
                     <div style={styles.fileInfo}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <polygon points="5 3 19 12 5 21 5 3" />
@@ -478,7 +478,7 @@ export function MediaPanel({
             {uploadedFiles.length > 0 && (
               <div style={styles.fileList}>
                 {uploadedFiles.map((file, index) => (
-                  <div key={file.id} style={styles.fileItem}>
+                  <div key={file.id} className="participant-item" style={styles.fileItem}>
                     <div style={styles.fileInfo}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
