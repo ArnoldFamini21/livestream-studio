@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { AudioLevelIndicator } from './AudioLevelMeter.tsx';
+import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
+import type { CameraShape, NameTagStyle } from '@studio/shared';
 
 interface VideoTileProps {
   stream: MediaStream | null;
@@ -10,6 +11,8 @@ interface VideoTileProps {
   audioEnabled?: boolean;
   videoEnabled?: boolean;
   brandColor?: string;
+  cameraShape?: CameraShape;
+  nameTagStyle?: NameTagStyle;
 }
 
 // Lightweight hook to detect if audio is active on a stream (for border glow).
@@ -115,7 +118,17 @@ function nameToGradient(name: string): string {
   return `linear-gradient(135deg, hsl(${h1}, 60%, 35%), hsl(${h2}, 50%, 25%))`;
 }
 
-export function VideoTile({ stream, name, isLocal, isScreenShare, audioEnabled = true, videoEnabled = true, brandColor = '#a78bfa' }: VideoTileProps) {
+export function VideoTile({ 
+  stream, 
+  name, 
+  isLocal, 
+  isScreenShare, 
+  audioEnabled = true, 
+  videoEnabled = true, 
+  brandColor = '#a78bfa',
+  cameraShape = 'rectangle',
+  nameTagStyle = 'classic'
+}: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, audioEnabled);
 
@@ -138,11 +151,31 @@ export function VideoTile({ stream, name, isLocal, isScreenShare, audioEnabled =
     .toUpperCase()
     .slice(0, 2) || '?';
 
-  // Dynamic border glow based on speaking + brand color
+  // Dynamic styling overrides
+  const getShapeStyle = (): React.CSSProperties => {
+    switch (cameraShape) {
+      case 'circle': return { borderRadius: '50%', aspectRatio: '1 / 1' };
+      case 'square': return { borderRadius: 16, aspectRatio: '1 / 1' };
+      case 'rounded': return { borderRadius: 32, aspectRatio: '16 / 9' };
+      case 'rectangle': 
+      default: return { borderRadius: 8, aspectRatio: '16 / 9' };
+    }
+  };
+
+  const getNameTagStyle = (): React.CSSProperties => {
+    switch (nameTagStyle) {
+      case 'minimal': return { background: 'transparent', border: 'none', padding: '0px 4px', backdropFilter: 'none', ...tileStyles.textShadow };
+      case 'block': return { background: brandColor, borderRadius: 4, border: 'none', padding: '6px 14px' };
+      case 'classic':
+      default: return tileStyles.namePill;
+    }
+  };
+
   const tileStyle: React.CSSProperties = {
     ...tileStyles.tile,
+    ...getShapeStyle(),
     boxShadow: isSpeaking
-      ? `0 0 0 2px ${brandColor}, 0 0 ${Math.min(speakingLevel / 4, 16)}px ${brandColor}88`
+      ? `0 0 0 3px ${brandColor}, 0 0 ${Math.min(speakingLevel / 4, 20)}px ${brandColor}88`
       : 'none',
     borderColor: isSpeaking ? brandColor : 'var(--border)',
   };
@@ -177,19 +210,21 @@ export function VideoTile({ stream, name, isLocal, isScreenShare, audioEnabled =
       {/* Bottom gradient overlay */}
       <div style={tileStyles.gradient} />
 
-      {/* Frosted glass pill name badge */}
+      {/* Name Tag Area */}
       <div style={tileStyles.nameBar}>
-        <div style={tileStyles.namePill}>
+        <div style={{ ...getNameTagStyle(), display: 'inline-flex', alignItems: 'center', gap: 8 }}>
           {!audioEnabled ? (
             <div style={tileStyles.muteIcon}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round">
                 <line x1="1" y1="1" x2="23" y2="23" />
                 <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
                 <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" />
               </svg>
             </div>
           ) : (
-            <AudioLevelIndicator level={speakingLevel} />
+            <div style={{ width: 24, paddingBottom: 2 }}>
+               <AudioLevelMeter stream={stream} size="small" orientation="horizontal" />
+            </div>
           )}
           <span style={tileStyles.nameText}>
             {name}
@@ -313,8 +348,11 @@ const tileStyles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
+  textShadow: {
+    textShadow: '0px 2px 4px rgba(0,0,0,0.8), 0px 0px 8px rgba(0,0,0,0.6)',
+  },
   youTag: {
-    color: 'rgba(255, 255, 255, 0.55)',
+    color: 'rgba(255, 255, 255, 0.75)',
     fontWeight: 400,
   },
 };
