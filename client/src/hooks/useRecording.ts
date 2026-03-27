@@ -45,8 +45,8 @@ export function useRecording() {
         const chunks: Blob[] = [];
         const recorder = new MediaRecorder(stream, {
           mimeType,
-          videoBitsPerSecond: 8_000_000, // 8 Mbps for high quality
-          audioBitsPerSecond: 256_000,   // 256 kbps audio
+          videoBitsPerSecond: 20_000_000, // 20 Mbps for professional studio quality
+          audioBitsPerSecond: 256_000,    // 256 kbps audio
         });
 
         recorder.ondataavailable = (e) => {

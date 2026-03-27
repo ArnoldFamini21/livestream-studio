@@ -709,7 +709,15 @@ const styles: Record<string, React.CSSProperties> = {
 
 const focusStyles = `
   .cb-focusable:focus-visible {
-    outline: 2px solid #67e8f9;
+    outline: 2px solid var(--accent);
     outline-offset: 2px;
+  }
+  .cb-focusable:hover:not(:disabled) {
+    transform: translateY(-1px);
+    filter: brightness(1.2);
+  }
+  .cb-focusable:active:not(:disabled) {
+    transform: translateY(1px);
+    filter: brightness(0.9);
   }
 `;

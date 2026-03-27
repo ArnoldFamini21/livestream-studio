@@ -10,7 +10,7 @@ const layouts: { mode: LayoutMode; label: string; description: string; icon: Rea
   {
     mode: 'grid',
     label: 'Grid',
-    description: 'Auto-fit grid for 1-12 people',
+    description: 'Auto-fit grid for 1-7 people',
     icon: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />

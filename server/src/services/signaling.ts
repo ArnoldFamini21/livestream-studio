@@ -91,7 +91,7 @@ export function createRoom(name: string, hostName: string, options?: { status?: 
     createdAt: new Date().toISOString(),
     status: options?.status || 'waiting',
     settings: {
-      maxParticipants: 12,
+      maxParticipants: 7,
       resolution: '1080p',
       frameRate: 30,
       enableRecording: true,
@@ -238,7 +238,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   }
 
   if (roomState.participants.size >= roomState.room.settings.maxParticipants) {
-    sendError(ws, 'Room is full (max 12 participants)', 'ROOM_FULL');
+    sendError(ws, 'Room is full (max 7 participants)', 'ROOM_FULL');
     return;
   }
 
@@ -307,7 +307,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     payload: participant,
   }, participant.id);
 
-  console.log(`${name} (${effectiveRole}) joined room ${roomId} as ${participant.status} [${roomState.participants.size}/12 participants]`);
+  console.log(`${name} (${effectiveRole}) joined room ${roomId} as ${participant.status} [${roomState.participants.size}/7 participants]`);
 }
 
 function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
