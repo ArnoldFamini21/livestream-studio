@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene } from '@studio/shared';
+import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle } from '@studio/shared';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
@@ -82,10 +82,11 @@ export function StudioRoom() {
   // Media overlay
   const [activeMedia, setActiveMedia] = useState<{ type: 'video' | 'image' | 'pdf'; url: string } | null>(null);
 
-  // Brand state (lifted from Sidebar so it can drive stage appearance)
   const [stageBackground, setStageBackground] = useState<StageBackground>({ type: 'none', value: '' });
   const [brandColor, setBrandColor] = useState('#a78bfa');
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [cameraShape, setCameraShape] = useState<CameraShape>('rectangle');
+  const [nameTagStyle, setNameTagStyle] = useState<NameTagStyle>('classic');
 
   // Cleanup blob URLs when logoUrl changes
   useEffect(() => {
@@ -144,7 +145,7 @@ export function StudioRoom() {
   const audioEnabledRef = useRef(audioEnabled);
   const videoEnabledRef = useRef(videoEnabled);
   const isScreenSharingRef = useRef(isScreenSharing);
-  const localStreamRef = useRef<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(localStream);
 
   // Refs for signaling handler dependencies to reduce recreation frequency
   const connectToPeerRef = useRef(connectToPeer);
@@ -572,8 +573,10 @@ export function StudioRoom() {
       background: stageBackground,
       brandColor,
       logoUrl: persistedLogoUrl,
+      cameraShape,
+      nameTagStyle,
       visibleOverlayIds: [
-        ...lowerThirds.filter(lt => lt.visible).map(lt => lt.id),
+        ...lowerThirds.filter(o => o.visible).map(o => o.id),
         ...banners.filter(b => b.visible).map(b => b.id),
         ...timers.filter(t => t.visible).map(t => t.id),
         ...tickers.filter(t => t.visible).map(t => t.id),
@@ -588,11 +591,13 @@ export function StudioRoom() {
     if (sceneId === activeSceneId) return;
     setLayout(scene.layout);
     setStageBackground(scene.background);
-    setBrandColor(scene.brandColor);
-    setLogoUrl(scene.logoUrl);
+    setBrandColor(scene.brandColor || '#a78bfa');
+    setLogoUrl(scene.logoUrl || null);
+    setCameraShape(scene.cameraShape || 'rectangle');
+    setNameTagStyle(scene.nameTagStyle || 'classic');
     // Restore overlay visibility from saved scene
     const visibleIds = new Set(scene.visibleOverlayIds);
-    setLowerThirds(prev => prev.map(lt => ({ ...lt, visible: visibleIds.has(lt.id) })));
+    setLowerThirds(prev => prev.map(o => ({ ...o, visible: scene.visibleOverlayIds.includes(o.id) })));
     setBanners(prev => prev.map(b => ({ ...b, visible: visibleIds.has(b.id) })));
     setTimers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id) })));
     setTickers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id) })));
@@ -1071,10 +1076,11 @@ export function StudioRoom() {
                         stream={item.stream}
                         name={item.name}
                         isLocal={item.isLocal}
-                        isScreenShare={item.isScreenShare}
                         audioEnabled={item.audioEnabled}
                         videoEnabled={item.videoEnabled}
                         brandColor={brandColor}
+                        cameraShape={cameraShape}
+                        nameTagStyle={nameTagStyle}
                       />
                     </div>
                   ));
@@ -1224,6 +1230,10 @@ export function StudioRoom() {
             onBrandColorChange={setBrandColor}
             logoUrl={logoUrl}
             onLogoUrlChange={setLogoUrl}
+            cameraShape={cameraShape}
+            onCameraShapeChange={setCameraShape}
+            nameTagStyle={nameTagStyle}
+            onNameTagStyleChange={setNameTagStyle}
             scenes={scenes}
             activeSceneId={activeSceneId}
             onSaveScene={onSaveScene}

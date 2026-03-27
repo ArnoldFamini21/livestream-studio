@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { StageBackground, Scene, ChatMessage, Participant, StageActionPayload } from '@studio/shared';
+import type { StageBackground, Scene, ChatMessage, Participant, StageActionPayload, CameraShape, NameTagStyle } from '@studio/shared';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
@@ -48,6 +48,10 @@ interface SidebarProps {
   onBrandColorChange: (color: string) => void;
   logoUrl: string | null;
   onLogoUrlChange: (url: string | null) => void;
+  cameraShape: CameraShape;
+  onCameraShapeChange: (shape: CameraShape) => void;
+  nameTagStyle: NameTagStyle;
+  onNameTagStyleChange: (style: NameTagStyle) => void;
   // Scene props
   scenes: Scene[];
   activeSceneId: string | null;
@@ -267,6 +271,36 @@ export function Sidebar(props: SidebarProps) {
                     <div style={{ ...st.colorDot, background: props.brandColor }} />
                     <span style={st.colorHex}>{props.brandColor}</span>
                   </div>
+                </div>
+
+                <div style={st.brandGroup}>
+                  <span style={st.brandLabel}>Camera Shape</span>
+                  <div style={st.shapeGrid}>
+                    {(['rectangle', 'rounded', 'square', 'circle'] as CameraShape[]).map((shape) => (
+                      <button
+                        key={shape}
+                        style={{ ...st.shapeBtn, outline: props.cameraShape === shape ? '2px solid var(--accent)' : 'none', outlineOffset: 2 }}
+                        onClick={() => props.onCameraShapeChange(shape)}
+                        title={shape}
+                      >
+                        <div style={{ ...st.shapeVisual, borderRadius: shape === 'circle' ? '50%' : shape === 'rounded' ? 8 : shape === 'square' ? 4 : 2, aspectRatio: shape === 'square' || shape === 'circle' ? '1/1' : '16/9' }} />
+                        <span style={st.shapeText}>{shape}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={st.brandGroup}>
+                  <span style={st.brandLabel}>Name Tag Style</span>
+                  <select 
+                    style={st.selectInput} 
+                    value={props.nameTagStyle} 
+                    onChange={(e) => props.onNameTagStyleChange(e.target.value as NameTagStyle)}
+                  >
+                    <option value="classic">Classic (Pill)</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="block">Block (Solid Brand Color)</option>
+                  </select>
                 </div>
               </div>
             </div>
@@ -543,6 +577,11 @@ const st: Record<string, React.CSSProperties> = {
   colorInfo: { display: 'flex', alignItems: 'center', gap: 6 },
   colorDot: { width: 12, height: 12, borderRadius: 4 },
   colorHex: { fontSize: 11, fontFamily: 'monospace', color: 'var(--text-muted)' },
+  shapeGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
+  shapeBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s ease' },
+  shapeVisual: { width: 32, background: 'var(--border-strong)' },
+  shapeText: { fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)', textTransform: 'capitalize' },
+  selectInput: { width: '100%', padding: '8px 12px', fontSize: 13, background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 8, outline: 'none' },
   // Panel layout
   panelFull: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
   panelHeader: { padding: '14px 16px 10px', borderBottom: '1px solid var(--border)' },

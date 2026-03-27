@@ -152,6 +152,11 @@ export interface StageBackground {
   value: string;
 }
 
+// ============ Advanced Participant Visual Types ============
+
+export type CameraShape = 'rectangle' | 'rounded' | 'square' | 'circle';
+export type NameTagStyle = 'classic' | 'minimal' | 'block';
+
 // ============ Stream Destination Types ============
 
 export interface StreamDestination {
@@ -173,6 +178,8 @@ export interface Scene {
   background: StageBackground;
   brandColor: string;
   logoUrl: string | null;
+  cameraShape?: CameraShape;
+  nameTagStyle?: NameTagStyle;
   // Which overlay IDs should be visible when this scene is active
   visibleOverlayIds: string[];
 }
