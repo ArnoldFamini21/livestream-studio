@@ -132,6 +132,8 @@ export function VideoTile({
   const videoRef = useRef<HTMLVideoElement>(null);
   const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, audioEnabled);
 
+  const [isVertical, setIsVertical] = useState(false);
+
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.srcObject = stream || null;
@@ -142,6 +144,13 @@ export function VideoTile({
       }
     };
   }, [stream]);
+
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      const { videoWidth, videoHeight } = videoRef.current;
+      setIsVertical(videoHeight > videoWidth);
+    }
+  };
 
   const initials = (name || '?')
     .split(' ')
@@ -189,9 +198,10 @@ export function VideoTile({
           autoPlay
           playsInline
           muted={isLocal}
+          onLoadedMetadata={handleLoadedMetadata}
           style={videoEnabled ? {
             ...tileStyles.video,
-            objectFit: isScreenShare ? 'contain' : 'cover',
+            objectFit: isScreenShare || isVertical ? 'contain' : 'cover',
             transform: isLocal && !isScreenShare ? 'scaleX(-1)' : 'none',
           } : tileStyles.hiddenVideo}
         />

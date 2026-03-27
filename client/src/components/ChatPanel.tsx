@@ -25,8 +25,11 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
   };
 
   useEffect(() => {
-    if (isNearBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isNearBottomRef.current || messages.length === 1) { // Also auto-scroll on first message
+      // Delay slightly to ensure React has fully committed the new message elements to the DOM
+      setTimeout(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 50);
     }
   }, [messages.length]);
 

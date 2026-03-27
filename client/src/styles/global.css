@@ -75,6 +75,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.02em;
+}
+
 /* ---------- Focus Visible ---------- */
 button:focus-visible, [role="button"]:focus-visible {
   outline: 2px solid var(--accent);
@@ -240,8 +244,8 @@ input::placeholder {
 }
 
 @keyframes tickerScroll {
-  from { transform: translateX(100%); }
-  to { transform: translateX(-100%); }
+  from { transform: translate3d(100%, 0, 0); }
+  to { transform: translate3d(-100%, 0, 0); }
 }
 
 @keyframes timerPulse {
@@ -280,6 +284,7 @@ input::placeholder {
 
 /* Range input styling */
 input[type="range"] {
+  appearance: none;
   -webkit-appearance: none;
   height: 4px;
   background: var(--bg-surface);

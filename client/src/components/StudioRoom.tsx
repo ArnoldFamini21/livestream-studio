@@ -1327,7 +1327,7 @@ export function StudioRoom() {
       />
 
       {/* Producer Panel (full-screen overlay) */}
-      {showProducerPanel && (
+      {isHostOrCoHost && showProducerPanel && (
         <ProducerPanel
           participants={allParticipantsMap}
           myParticipantId={myParticipant?.id || ''}

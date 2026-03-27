@@ -81,21 +81,32 @@ const layouts: { mode: LayoutMode; label: string; description: string; icon: Rea
 export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount }: LayoutSwitcherProps) {
   return (
     <div style={styles.bar} role="radiogroup" aria-label="Layout switcher">
+      <style>{`
+        .ls-btn:hover:not(:disabled) {
+          color: white !important;
+          background: rgba(255, 255, 255, 0.1) !important;
+        }
+        .ls-btn.active {
+          background: var(--accent) !important;
+          color: white !important;
+          box-shadow: 0 1px 4px rgba(124, 58, 237, 0.3) !important;
+        }
+      `}</style>
       {layouts.map(({ mode, label, description, icon }) => {
         const isActive = currentLayout === mode;
         const isDisabled = participantCount < 2 && (mode === 'side-by-side' || mode === 'pip' || mode === 'spotlight' || mode === 'featured');
         return (
           <button
             key={mode}
+            className={`ls-btn ${isActive ? 'active' : ''}`}
             role="radio"
             aria-checked={isActive}
             aria-label={`${label} layout — ${description}`}
             onClick={() => onLayoutChange(mode)}
             disabled={isDisabled}
-            title={`${label} — ${description}`}
+            title={isDisabled ? `${label} (Requires 2+ people)` : `${label} — ${description}`}
             style={{
               ...styles.btn,
-              ...(isActive ? styles.btnActive : {}),
               ...(isDisabled ? styles.btnDisabled : {}),
             }}
           >

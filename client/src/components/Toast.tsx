@@ -171,6 +171,7 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
     pointerEvents: 'auto',
     maxWidth: 380,
+    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
   },
   icon: {
     fontSize: 16,

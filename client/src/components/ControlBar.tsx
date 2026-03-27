@@ -371,7 +371,9 @@ export function ControlBar({
                 <circle cx="12" cy="12" r="4" fill="currentColor" />
               </svg>
             )}
-            {isRecording ? formattedTime : 'Record'}
+            <span style={{ minWidth: 42, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
+              {isRecording ? formattedTime : 'Record'}
+            </span>
           </button>
         )}
 

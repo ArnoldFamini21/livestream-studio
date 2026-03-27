@@ -21,9 +21,9 @@ export function useMediaDevices() {
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
 
-  const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>('');
-  const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>('');
-  const [selectedAudioOutputDeviceId, setSelectedAudioOutputDeviceId] = useState<string>('');
+  const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>(() => localStorage.getItem('preferredAudioDeviceId') || '');
+  const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>(() => localStorage.getItem('preferredVideoDeviceId') || '');
+  const [selectedAudioOutputDeviceId, setSelectedAudioOutputDeviceId] = useState<string>(() => localStorage.getItem('preferredAudioOutputDeviceId') || '');
 
   const streamRef = useRef<MediaStream | null>(null);
   const switchingRef = useRef(false);
@@ -89,17 +89,20 @@ export function useMediaDevices() {
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
 
+      const targetVideoId = videoDeviceId || localStorage.getItem('preferredVideoDeviceId');
+      const targetAudioId = audioDeviceId || localStorage.getItem('preferredAudioDeviceId');
+
       const videoConstraints: MediaStreamConstraints['video'] = {
         width: { ideal: 1920 },
         height: { ideal: 1080 },
         frameRate: { ideal: 30 },
-        ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
+        ...(targetVideoId ? { deviceId: { exact: targetVideoId } } : {}),
       };
       const audioConstraints: MediaStreamConstraints['audio'] = {
         echoCancellation: options.echoCancellation ?? true,
         noiseSuppression: options.noiseSuppression ?? true,
         autoGainControl: true, // Keep AGC active generally
-        ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
+        ...(targetAudioId ? { deviceId: { exact: targetAudioId } } : {}),
       };
 
       let stream: MediaStream;
@@ -137,6 +140,7 @@ export function useMediaDevices() {
         const settings = activeAudioTrack.getSettings();
         const activeId = settings.deviceId || '';
         setSelectedAudioDeviceId(activeId);
+        if (activeId) localStorage.setItem('preferredAudioDeviceId', activeId);
 
         // Bug fix #15: Add track.onended listener for audio
         activeAudioTrack.onended = () => {
@@ -148,6 +152,7 @@ export function useMediaDevices() {
         const settings = activeVideoTrack.getSettings();
         const activeId = settings.deviceId || '';
         setSelectedVideoDeviceId(activeId);
+        if (activeId) localStorage.setItem('preferredVideoDeviceId', activeId);
 
         // Bug fix #15: Add track.onended listener for video
         activeVideoTrack.onended = () => {
@@ -224,6 +229,7 @@ export function useMediaDevices() {
 
       streamRef.current.addTrack(newAudioTrack);
       setSelectedAudioDeviceId(deviceId);
+      localStorage.setItem('preferredAudioDeviceId', deviceId);
       setError(null);
 
       // Return the new track so WebRTC can replace it on peer connections
@@ -270,6 +276,7 @@ export function useMediaDevices() {
 
       streamRef.current.addTrack(newVideoTrack);
       setSelectedVideoDeviceId(deviceId);
+      localStorage.setItem('preferredVideoDeviceId', deviceId);
       setError(null);
 
       return newVideoTrack;
@@ -435,6 +442,9 @@ export function useMediaDevices() {
         }
       }
     }
+    
+    // Persist this choice
+    localStorage.setItem('preferredAudioOutputDeviceId', deviceId);
   }, []);
 
   useEffect(() => {

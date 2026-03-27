@@ -159,10 +159,16 @@ export function useCompositor({
   useEffect(() => {
     if (isLive) {
       console.log('Compositor Engine Started: Drawing 1080p canvas at 30FPS');
+      cancelAnimationFrame(rAF.current); // Guard against multi-ticks
       rAF.current = requestAnimationFrame(drawLoop);
     } else {
       cancelAnimationFrame(rAF.current);
     }
+    
+    // Cleanup to prevent memory leaks when drawLoop dependencies change
+    return () => {
+      cancelAnimationFrame(rAF.current);
+    };
   }, [isLive, drawLoop]);
 
   return { compositeStreamRef, compositeCanvasRef: canvasRef };
