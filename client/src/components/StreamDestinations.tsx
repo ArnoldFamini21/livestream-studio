@@ -125,6 +125,7 @@ export function StreamDestinations({
               {PLATFORMS.map((p) => (
                 <button
                   key={p.value}
+                  className="hover-scale"
                   style={{
                     ...styles.platformBtn,
                     borderColor: platform === p.value ? p.color : 'var(--border)',

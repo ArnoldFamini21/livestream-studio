@@ -321,6 +321,7 @@ export function Sidebar(props: SidebarProps) {
         {tabDefs.map((tab) => (
           <button
             key={tab.id}
+            className={`sidebar-icon-btn ${activeTab === tab.id ? 'active' : ''}`}
             style={{ ...st.iconBtn, ...(activeTab === tab.id ? st.iconBtnActive : {}) }}
             onClick={() => handleTabClick(tab.id)}
             title={tab.label}
@@ -401,7 +402,7 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction, r
       <div style={st.panelHeader}><h3 style={st.panelTitle}>People</h3><span style={st.panelSub}>{participants.size}/12 in session</span></div>
       <div style={st.panelBody}>
         {myP && (
-          <div style={st.personItem}>
+          <div className="participant-item" style={st.personItem}>
             <div style={st.personLeft}>
               <MiniVideoPreview stream={localStream} videoEnabled={myP.videoEnabled} name={myP.name} />
               <div style={st.personInfo}>
@@ -464,7 +465,7 @@ function PeopleSection({ title, subtitle, color, participants, isHostOrCoHost, g
       {participants.length === 0 ? <p style={st.emptyText}>No participants</p> : (
         <div style={st.pList}>
           {participants.map((p) => (
-            <div key={p.id} style={st.personItem}>
+            <div key={p.id} className="participant-item" style={st.personItem}>
               <div style={st.personLeft}>
                 <MiniVideoPreview stream={getStream(p.id)} videoEnabled={p.videoEnabled} name={p.name} />
                 <div style={st.personInfo}>
@@ -532,7 +533,7 @@ function ChatContent({ messages, onSend, senderName }: { messages: ChatMessage[]
       <div ref={containerRef} style={st.chatMessages} onScroll={handleScroll}>
         {messages.length === 0 && <div style={st.chatEmpty}><p style={st.chatEmptyText}>No messages yet</p><p style={st.chatEmptyHint}>Start the conversation!</p></div>}
         {messages.map((msg) => (
-          <div key={msg.id} style={st.chatMsg}>
+          <div key={msg.id} className="chat-msg-enter" style={st.chatMsg}>
             <div style={st.chatMsgHead}>
               <span style={{ ...st.chatMsgName, color: msg.senderName === senderName ? 'var(--accent-hover)' : 'var(--text-primary)' }}>{msg.senderName}</span>
               <span style={st.chatMsgTime}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -544,7 +545,7 @@ function ChatContent({ messages, onSend, senderName }: { messages: ChatMessage[]
       </div>
       <div style={st.chatInputBar}>
         <input style={st.chatInput} placeholder="Type a message..." value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} />
-        <button style={{ ...st.chatSendBtn, opacity: input.trim() ? 1 : 0.4 }} onClick={handleSend} disabled={!input.trim()} aria-label="Send message">
+        <button className="chat-send-btn" style={{ ...st.chatSendBtn, opacity: input.trim() ? 1 : 0.4 }} onClick={handleSend} disabled={!input.trim()} aria-label="Send message">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
         </button>
       </div>

@@ -101,7 +101,7 @@ export function WebinarQAPanel({
             </span>
           )}
         </div>
-        <button style={panelStyles.closeBtn} onClick={onClose} aria-label="Close Q&A panel">
+        <button className="panel-close-btn" style={panelStyles.closeBtn} onClick={onClose} aria-label="Close Q&A panel">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
@@ -141,6 +141,7 @@ export function WebinarQAPanel({
         {filteredQuestions.map((q) => (
           <div
             key={q.id}
+            className="participant-item"
             style={{
               ...panelStyles.questionCard,
               ...(q.highlighted ? panelStyles.questionCardHighlighted : {}),
@@ -218,6 +219,7 @@ export function WebinarQAPanel({
               {q.status === 'pending' && (
                 <>
                   <button
+                    className="participant-action-btn"
                     style={panelStyles.actionBtn}
                     onClick={() => onApprove(q.id)}
                     title="Approve"
@@ -227,6 +229,7 @@ export function WebinarQAPanel({
                     </svg>
                   </button>
                   <button
+                    className="participant-action-btn"
                     style={panelStyles.actionBtn}
                     onClick={() => onDismiss(q.id)}
                     title="Dismiss"
@@ -243,6 +246,7 @@ export function WebinarQAPanel({
               {q.status === 'approved' && (
                 <>
                   <button
+                    className="participant-action-btn"
                     style={panelStyles.actionBtn}
                     onClick={() => {
                       setAnsweringId(q.id);
@@ -268,6 +272,7 @@ export function WebinarQAPanel({
                     </svg>
                   </button>
                   <button
+                    className="participant-action-btn"
                     style={panelStyles.actionBtn}
                     onClick={() => onDismiss(q.id)}
                     title="Dismiss"
@@ -406,7 +411,7 @@ export function WebinarQAAudience({
         {sortedQuestions.map((q) => {
           const hasUpvoted = myUpvotes.has(q.id);
           return (
-            <div key={q.id} style={audienceStyles.questionCard}>
+            <div key={q.id} className="participant-item" style={audienceStyles.questionCard}>
               {/* Upvote button */}
               <button
                 style={{

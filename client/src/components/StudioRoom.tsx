@@ -87,6 +87,7 @@ export function StudioRoom() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [cameraShape, setCameraShape] = useState<CameraShape>('rectangle');
   const [nameTagStyle, setNameTagStyle] = useState<NameTagStyle>('classic');
+  const [pipCorner, setPipCorner] = useState<'TL' | 'TR' | 'BL' | 'BR'>('BR');
 
   // Cleanup blob URLs when logoUrl changes
   useEffect(() => {
@@ -691,9 +692,15 @@ export function StudioRoom() {
     return items;
   }, [myParticipant, participants, localStream, audioEnabled, videoEnabled, remoteStreams, isScreenSharing, screenStream]);
 
-  // Auto-switch to grid when participant count drops below what the layout requires
+  // Auto-switch layout when participant count changes
   useEffect(() => {
-    if (videoItems.length < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
+    const count = videoItems.length;
+    // Layouts requiring >= 2 participants
+    if (count < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
+      setLayout(count === 1 ? 'single' : 'grid');
+    }
+    // Single layout with multiple participants should switch to grid
+    if (count > 1 && layout === 'single') {
       setLayout('grid');
     }
   }, [videoItems.length, layout]);
@@ -914,14 +921,19 @@ export function StudioRoom() {
         };
       }
       case 'pip': {
+        const pipPos = {
+          TL: { top: 20, left: 20 },
+          TR: { top: 20, right: 20 },
+          BL: { bottom: 20, left: 20 },
+          BR: { bottom: 20, right: 20 },
+        }[pipCorner];
         const tiles: React.CSSProperties[] = [
           { width: '100%', aspectRatio: '16 / 9', flexShrink: 0, flexGrow: 0 },
         ];
         if (count >= 2) {
           tiles.push({
             position: 'absolute' as const,
-            bottom: 20,
-            right: 20,
+            ...pipPos,
             width: '24%',
             aspectRatio: '16 / 9',
             borderRadius: 12,
@@ -930,6 +942,8 @@ export function StudioRoom() {
             border: '2px solid rgba(255, 255, 255, 0.15)',
             zIndex: 5,
             flexShrink: 0, flexGrow: 0,
+            cursor: 'pointer',
+            transition: 'top 0.3s ease, bottom 0.3s ease, left 0.3s ease, right 0.3s ease',
           });
         }
         return {
@@ -1051,7 +1065,7 @@ export function StudioRoom() {
             <div style={styles.screenShareBanner}>
               <span style={styles.screenShareDot} />
               You are sharing your screen
-              <button style={styles.screenShareStopBtn} onClick={onToggleScreenShare} aria-label="Stop screen sharing">Stop Sharing</button>
+              <button className="hover-scale" style={styles.screenShareStopBtn} onClick={onToggleScreenShare} aria-label="Stop screen sharing">Stop Sharing</button>
             </div>
           )}
 
@@ -1070,20 +1084,34 @@ export function StudioRoom() {
                         ? videoItems.slice(0, 2)
                         : videoItems;
 
-                  return itemsToRender.map((item, i) => (
-                    <div key={item.id} style={{ ...styles.tileWrapper, ...(layoutResult.tileStyles[i] || {}) }}>
-                      <VideoTile
-                        stream={item.stream}
-                        name={item.name}
-                        isLocal={item.isLocal}
-                        audioEnabled={item.audioEnabled}
-                        videoEnabled={item.videoEnabled}
-                        brandColor={brandColor}
-                        cameraShape={cameraShape}
-                        nameTagStyle={nameTagStyle}
-                      />
-                    </div>
-                  ));
+                  return itemsToRender.map((item, i) => {
+                    const isPipSmallTile = layout === 'pip' && i === 1;
+                    return (
+                      <div
+                        key={item.id}
+                        style={{ ...styles.tileWrapper, ...(layoutResult.tileStyles[i] || {}) }}
+                        onClick={isPipSmallTile ? () => {
+                          setPipCorner((prev) => {
+                            const order: Array<'TL' | 'TR' | 'BR' | 'BL'> = ['TL', 'TR', 'BR', 'BL'];
+                            return order[(order.indexOf(prev) + 1) % 4];
+                          });
+                        } : undefined}
+                        title={isPipSmallTile ? 'Click to move PiP position' : undefined}
+                      >
+                        <VideoTile
+                          stream={item.stream}
+                          name={item.name}
+                          isLocal={item.isLocal}
+                          isScreenShare={item.isScreenShare}
+                          audioEnabled={item.audioEnabled}
+                          videoEnabled={item.videoEnabled}
+                          brandColor={brandColor}
+                          cameraShape={cameraShape}
+                          nameTagStyle={nameTagStyle}
+                        />
+                      </div>
+                    );
+                  });
                 })()}
 
                 {/* Media overlay on stage */}
@@ -1096,7 +1124,7 @@ export function StudioRoom() {
                     ) : (
                       <iframe src={activeMedia.url} style={styles.mediaContent} title="PDF" />
                     )}
-                    <button style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close media overlay">
+                    <button className="panel-close-btn" style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close media overlay">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                         <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                       </svg>
@@ -1523,7 +1551,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     height: '100%',
     boxSizing: 'border-box' as const,
-    transition: 'opacity 0.3s ease',
+    transition: 'opacity 0.3s ease, gap 0.3s ease',
   },
   // Generic tile wrapper — per-tile sizing is merged from layoutResult.tileStyles[i]
   tileWrapper: {
@@ -1532,7 +1560,7 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
     overflow: 'hidden',
     borderRadius: 16,
-    transition: 'width 0.3s ease, height 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease',
+    transition: 'width 0.3s ease, height 0.3s ease, flex-basis 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease',
   },
   layoutBar: {
     flexShrink: 0,

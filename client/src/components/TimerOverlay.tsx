@@ -66,7 +66,7 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
       {/* Existing timers */}
       <div style={styles.list}>
         {timers.map((timer) => (
-          <div key={timer.id} style={styles.item}>
+          <div key={timer.id} className="participant-item" style={styles.item}>
             <div style={styles.itemInfo}>
               <div style={styles.itemRow}>
                 <span style={styles.itemTime}>{formatTime(timer.remainingSeconds)}</span>
@@ -99,6 +99,7 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
                 )}
               </button>
               <button
+                className="participant-action-btn"
                 style={styles.controlBtn}
                 onClick={() => handleReset(timer)}
                 title="Reset"
@@ -118,7 +119,7 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
               >
                 {timer.visible ? 'ON' : 'OFF'}
               </button>
-              <button style={styles.removeBtn} onClick={() => onRemove(timer.id)}>
+              <button className="participant-action-btn" style={styles.removeBtn} onClick={() => onRemove(timer.id)}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />

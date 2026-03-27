@@ -216,12 +216,13 @@ export function CommentHighlightManager({
             </div>
           )}
           {recentMessages.map((msg) => (
-            <div key={msg.id} style={styles.chatRow}>
+            <div key={msg.id} className="participant-item" style={styles.chatRow}>
               <div style={styles.chatRowInfo}>
                 <span style={styles.chatRowName}>{msg.senderName}</span>
                 <span style={styles.chatRowText}>{msg.content}</span>
               </div>
               <button
+                className="participant-action-btn"
                 style={styles.highlightBtn}
                 onClick={() => handleHighlightChat(msg)}
                 title="Highlight this comment"

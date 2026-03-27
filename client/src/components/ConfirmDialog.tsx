@@ -102,6 +102,7 @@ export function ConfirmDialog({
         <div style={styles.actions}>
           <button
             ref={cancelBtnRef}
+            className="hover-lift"
             style={styles.cancelBtn}
             onClick={onCancel}
           >
@@ -109,6 +110,7 @@ export function ConfirmDialog({
           </button>
           <button
             ref={confirmBtnRef}
+            className="hover-lift"
             style={{
               ...styles.confirmBtn,
               background: destructive ? '#ef4444' : '#7c3aed',
@@ -174,6 +176,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
+    transition: 'background-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease',
   },
   confirmBtn: {
     padding: '9px 18px',
@@ -183,5 +186,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
+    transition: 'background-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease',
   },
 };

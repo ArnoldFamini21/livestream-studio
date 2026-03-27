@@ -1,11 +1,14 @@
 import { useEffect, useRef, useCallback } from 'react';
+import type { BannerData } from '../components/BannerOverlay.tsx';
+import type { LowerThirdData } from '../components/LowerThird.tsx';
+import type { TickerData } from '../components/TickerOverlay.tsx';
 
 interface CompositorProps {
   containerRef: React.RefObject<HTMLDivElement>;
   isLive: boolean;
-  banners: any[];
-  lowerThirds: any[];
-  tickers: any[];
+  banners: BannerData[];
+  lowerThirds: LowerThirdData[];
+  tickers: TickerData[];
   brandColor?: string;
   logoUrl?: string | null;
 }
@@ -126,7 +129,7 @@ export function useCompositor({
       const bw = 1760;
       const bx = 80;
       
-      ctx.fillStyle = banner.theme === 'dark' ? '#1e293b' : brandColor;
+      ctx.fillStyle = banner.style === 'custom' ? (banner.customColor || brandColor) : banner.style === 'breaking' ? '#dc2626' : banner.style === 'alert' ? '#d97706' : banner.style === 'info' ? '#2563eb' : brandColor;
       ctx.beginPath();
       ctx.roundRect(bx, by, bw, bh, 12);
       ctx.fill();
