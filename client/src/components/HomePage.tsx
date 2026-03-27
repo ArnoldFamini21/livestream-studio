@@ -36,7 +36,7 @@ export function HomePage() {
       const room = await res.json();
       sessionStorage.setItem('userName', hostName);
       sessionStorage.setItem('userRole', 'host');
-      navigate(`/studio/${room.id}`);
+      navigate(`/join/${room.id}`);
     } catch (err) {
       console.error('Failed to create room:', err);
       setError('Network error. Please check your connection and try again.');
@@ -96,7 +96,7 @@ export function HomePage() {
     if (!scheduledRoom) return;
     sessionStorage.setItem('userName', hostName);
     sessionStorage.setItem('userRole', 'host');
-    navigate(`/studio/${scheduledRoom.id}`);
+    navigate(`/join/${scheduledRoom.id}`);
   };
 
   const closeModal = () => {

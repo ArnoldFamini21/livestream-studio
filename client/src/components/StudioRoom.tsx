@@ -12,6 +12,7 @@ import { useWebRTC } from '../hooks/useWebRTC.ts';
 import { useRecording } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording } from '../hooks/useLocalRecording.ts';
+import { useCompositor } from '../hooks/useCompositor.ts';
 import { VideoTile } from './VideoTile.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
@@ -137,6 +138,7 @@ export function StudioRoom() {
 
   const noopFn = useCallback(() => {}, []);
   const joinedRef = useRef(false);
+  const stageRef = useRef<HTMLDivElement>(null);
   const myParticipantRef = useRef<Participant | null>(null);
   const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0 });
   const audioEnabledRef = useRef(audioEnabled);
@@ -159,6 +161,17 @@ export function StudioRoom() {
   const replaceTrackRef = useRef(replaceTrack);
   const startScreenShareRef = useRef(startScreenShare);
   const sendRef = useRef(send);
+
+  // Initialize Canvas Compositor for RTMP
+  const { compositeStreamRef, compositeCanvasRef } = useCompositor({
+    containerRef: stageRef,
+    isLive,
+    banners,
+    lowerThirds,
+    tickers,
+    brandColor,
+    logoUrl,
+  });
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -1039,7 +1052,7 @@ export function StudioRoom() {
 
           {/* Fixed 16:9 Canvas */}
           <div style={styles.canvasWrapper}>
-            <div style={{ ...styles.canvas, ...stageBackgroundStyle }}>
+            <div ref={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }}>
               <div style={{ ...styles.gridBase, ...layoutResult.containerStyle, position: 'relative' }}>
                 {/* Render tiles based on layout engine */}
                 {(() => {
@@ -1114,6 +1127,24 @@ export function StudioRoom() {
               {logoUrl && (
                 <div style={styles.logoWatermark}>
                   <img src={logoUrl} alt="Logo" style={styles.logoWatermarkImg} />
+                </div>
+              )}
+
+              {/* Debug Compositor Preview (Only visible when LIVE) */}
+              {isLive && (
+                <div style={{ position: 'absolute', top: 16, right: 16, width: 240, aspectRatio: '16/9', border: '2px solid red', borderRadius: 8, overflow: 'hidden', zIndex: 1000, background: '#000', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                  <span style={{ position: 'absolute', top: 4, left: 4, background: 'red', color: 'white', fontSize: 10, padding: '2px 4px', borderRadius: 4, fontWeight: 'bold', zIndex: 10 }}>COMPOSITOR OUTPUT</span>
+                  <video
+                    autoPlay
+                    muted
+                    playsInline
+                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                    ref={(el) => {
+                      if (el && compositeStreamRef.current && el.srcObject !== compositeStreamRef.current) {
+                        el.srcObject = compositeStreamRef.current;
+                      }
+                    }}
+                  />
                 </div>
               )}
             </div>

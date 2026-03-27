@@ -73,7 +73,11 @@ export function useMediaDevices() {
   }, []);
 
   // Start media with optional specific device IDs
-  const startMedia = useCallback(async (audioDeviceId?: string, videoDeviceId?: string) => {
+  const startMedia = useCallback(async (
+    audioDeviceId?: string, 
+    videoDeviceId?: string,
+    options: { echoCancellation?: boolean; noiseSuppression?: boolean } = { echoCancellation: true, noiseSuppression: true }
+  ) => {
     if (!navigator.mediaDevices?.getUserMedia) {
       setError('Media devices not available. Please use HTTPS or localhost.');
       return null;
@@ -92,9 +96,9 @@ export function useMediaDevices() {
         ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
       };
       const audioConstraints: MediaStreamConstraints['audio'] = {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        echoCancellation: options.echoCancellation ?? true,
+        noiseSuppression: options.noiseSuppression ?? true,
+        autoGainControl: true, // Keep AGC active generally
         ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
       };
 
@@ -184,7 +188,10 @@ export function useMediaDevices() {
   }, [enumerateDevices]);
 
   // Switch audio input device
-  const switchAudioDevice = useCallback(async (deviceId: string) => {
+  const switchAudioDevice = useCallback(async (
+    deviceId: string,
+    options: { echoCancellation?: boolean; noiseSuppression?: boolean } = { echoCancellation: true, noiseSuppression: true }
+  ) => {
     if (!streamRef.current) return null;
     if (switchingRef.current) return null;
     switchingRef.current = true;
@@ -193,8 +200,8 @@ export function useMediaDevices() {
       const newAudioStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           deviceId: { exact: deviceId },
-          echoCancellation: true,
-          noiseSuppression: true,
+          echoCancellation: options.echoCancellation ?? true,
+          noiseSuppression: options.noiseSuppression ?? true,
           autoGainControl: true,
         },
       });
