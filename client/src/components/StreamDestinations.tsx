@@ -12,12 +12,12 @@ interface StreamDestinationsProps {
   onClose: () => void;
 }
 
-const PLATFORMS: Array<{ value: StreamDestination['platform']; label: string; color: string }> = [
-  { value: 'youtube', label: 'YouTube', color: '#FF0000' },
-  { value: 'facebook', label: 'Facebook', color: '#1877F2' },
-  { value: 'twitch', label: 'Twitch', color: '#9146FF' },
-  { value: 'linkedin', label: 'LinkedIn', color: '#0A66C2' },
-  { value: 'instagram', label: 'Instagram', color: '#E4405F' },
+const PLATFORMS: Array<{ value: StreamDestination['platform']; label: string; color: string; dashUrl?: string }> = [
+  { value: 'youtube', label: 'YouTube', color: '#FF0000', dashUrl: 'https://studio.youtube.com/channel/UC/livestreaming' },
+  { value: 'facebook', label: 'Facebook', color: '#1877F2', dashUrl: 'https://www.facebook.com/live/producer' },
+  { value: 'twitch', label: 'Twitch', color: '#9146FF', dashUrl: 'https://dashboard.twitch.tv/broadcast' },
+  { value: 'linkedin', label: 'LinkedIn', color: '#0A66C2', dashUrl: 'https://www.linkedin.com/video/golive/now/' },
+  { value: 'instagram', label: 'Instagram', color: '#E4405F', dashUrl: 'https://www.instagram.com/live/producer/' },
   { value: 'custom', label: 'Custom RTMP', color: '#71717a' },
 ];
 
@@ -40,10 +40,14 @@ export function StreamDestinations({
   const handleAdd = () => {
     if (!streamKey.trim()) return;
     const platformInfo = PLATFORMS.find((p) => p.value === platform);
+    
+    // Always fallback to standard RTMP if empty
+    const finalRtmp = rtmpUrl.trim() || getDefaultRtmpUrl(platform);
+
     onAdd({
       platform,
       name: name.trim() || platformInfo?.label || 'Stream',
-      rtmpUrl: rtmpUrl.trim() || getDefaultRtmpUrl(platform),
+      rtmpUrl: finalRtmp,
       streamKey: streamKey.trim(),
       enabled: true,
     });
@@ -60,9 +64,14 @@ export function StreamDestinations({
       <div style={styles.header}>
         <div>
           <h3 style={styles.title}>Stream Destinations</h3>
-          <p style={styles.subtitle}>{destinations.length} destination{destinations.length !== 1 ? 's' : ''} configured</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            <p style={styles.subtitle}>{destinations.length} destination{destinations.length !== 1 ? 's' : ''}</p>
+            {enabledCount > 1 && (
+              <span style={styles.multistreamBadge}>Multistreaming ({enabledCount})</span>
+            )}
+          </div>
         </div>
-        <button style={styles.closeBtn} onClick={onClose}>
+        <button style={styles.closeBtn} onClick={onClose} aria-label="Close destinations panel">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
           </svg>
@@ -95,7 +104,7 @@ export function StreamDestinations({
                   >
                     {dest.enabled ? 'ON' : 'OFF'}
                   </button>
-                  <button style={styles.removeBtn} onClick={() => onRemove(dest.id)}>
+                  <button style={styles.removeBtn} onClick={() => onRemove(dest.id)} aria-label="Remove destination">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                       <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                     </svg>
@@ -122,24 +131,78 @@ export function StreamDestinations({
                     background: platform === p.value ? p.color + '15' : 'var(--bg-tertiary)',
                     color: platform === p.value ? p.color : 'var(--text-secondary)',
                   }}
-                  onClick={() => setPlatform(p.value)}
+                  onClick={() => {
+                    setPlatform(p.value);
+                    setRtmpUrl(getDefaultRtmpUrl(p.value)); // prefill RTMP visually
+                  }}
                 >
                   {p.label}
                 </button>
               ))}
             </div>
-            <input style={styles.input} placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
-            {platform === 'custom' && (
-              <input style={styles.input} placeholder="RTMP URL" value={rtmpUrl} onChange={(e) => setRtmpUrl(e.target.value)} />
-            )}
-            <input style={styles.input} placeholder="Stream Key" type="password" value={streamKey} onChange={(e) => setStreamKey(e.target.value)} />
+
+            <div style={styles.inputGroup}>
+              <label style={styles.inputLabel}>Name (optional)</label>
+              <input 
+                style={styles.input} 
+                placeholder={`e.g. My ${PLATFORMS.find(p => p.value === platform)?.label} Channel`} 
+                value={name} 
+                onChange={(e) => setName(e.target.value)} 
+              />
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.inputLabel}>RTMP Server URL</label>
+              <input 
+                style={{ 
+                  ...styles.input, 
+                  ...(platform !== 'custom' ? { background: 'rgba(255,255,255,0.03)', color: 'var(--text-muted)' } : {}) 
+                }} 
+                placeholder="rtmp://" 
+                value={rtmpUrl || getDefaultRtmpUrl(platform)} 
+                onChange={(e) => setRtmpUrl(e.target.value)}
+                readOnly={platform !== 'custom'} 
+              />
+            </div>
+
+            <div style={styles.inputGroup}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
+                <label style={{...styles.inputLabel, margin: 0}}>Stream Key</label>
+                {PLATFORMS.find(p => p.value === platform)?.dashUrl && (
+                  <a 
+                    href={PLATFORMS.find(p => p.value === platform)?.dashUrl} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    style={styles.keyLink}
+                  >
+                    Get {PLATFORMS.find(p => p.value === platform)?.label} Key
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginLeft: 4 }}>
+                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                      <polyline points="15 3 21 3 21 9" />
+                      <line x1="10" y1="14" x2="21" y2="3" />
+                    </svg>
+                  </a>
+                )}
+              </div>
+              <input 
+                style={styles.input} 
+                placeholder="Paste key here" 
+                type="password" 
+                value={streamKey} 
+                onChange={(e) => setStreamKey(e.target.value)} 
+              />
+            </div>
+
             <div style={styles.formActions}>
               <button className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={() => setShowForm(false)}>Cancel</button>
-              <button className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} onClick={handleAdd} disabled={!streamKey.trim()}>Add</button>
+              <button className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} onClick={handleAdd} disabled={!streamKey.trim()}>Add Destination</button>
             </div>
           </div>
         ) : (
-          <button className="btn-secondary" style={styles.addBtn} onClick={() => setShowForm(true)}>
+          <button className="btn-secondary" style={styles.addBtn} onClick={() => {
+            setShowForm(true);
+            setRtmpUrl(getDefaultRtmpUrl(platform)); // Ensure initial mount has pre-filled RTMP
+          }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
             </svg>
@@ -185,7 +248,17 @@ const styles: Record<string, React.CSSProperties> = {
   panel: { width: 320, display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%' },
   header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '14px 16px 10px', borderBottom: '1px solid var(--border)' },
   title: { fontSize: 14, fontWeight: 600, margin: 0 },
-  subtitle: { fontSize: 11, color: 'var(--text-muted)', margin: 0, marginTop: 2 },
+  subtitle: { fontSize: 11, color: 'var(--text-muted)', margin: 0 },
+  multistreamBadge: { 
+    fontSize: 9, 
+    fontWeight: 700, 
+    background: 'rgba(167, 139, 250, 0.15)', 
+    color: '#c4b5fd', 
+    padding: '2px 6px', 
+    borderRadius: 6, 
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em'
+  },
   closeBtn: { background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4, borderRadius: 6, display: 'flex' },
   body: { flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 },
   destCard: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: '10px 12px', border: '1px solid var(--border)' },
@@ -199,11 +272,14 @@ const styles: Record<string, React.CSSProperties> = {
   toggleBtn: { fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, border: 'none', cursor: 'pointer' },
   removeBtn: { width: 22, height: 22, borderRadius: 5, background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 },
   destKey: { fontSize: 10, color: 'var(--text-muted)', marginTop: 6, fontFamily: 'monospace' },
-  form: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 6, border: '1px solid var(--border)' },
+  form: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 12, border: '1px solid var(--border)' },
   platformGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 },
   platformBtn: { fontSize: 11, fontWeight: 500, padding: '6px 4px', borderRadius: 6, border: '1px solid', cursor: 'pointer', background: 'var(--bg-tertiary)', textAlign: 'center' as const },
+  inputGroup: { display: 'flex', flexDirection: 'column', gap: 4 },
+  inputLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' },
+  keyLink: { fontSize: 10, color: '#60a5fa', textDecoration: 'none', display: 'flex', alignItems: 'center', fontWeight: 500 },
   input: { width: '100%', padding: '7px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' },
-  formActions: { display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 4 },
+  formActions: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 },
   addBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13, padding: '10px', width: '100%' },
   liveSection: { marginTop: 'auto', paddingTop: 8 },
   liveBtn: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 14, fontWeight: 600, padding: '12px 16px' },
