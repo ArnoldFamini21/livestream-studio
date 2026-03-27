@@ -8,10 +8,15 @@ const API_URL = import.meta.env.VITE_API_URL || '';
 export function JoinRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const [guestName, setGuestName] = useState('');
+  // Auto-fill from sessionStorage for Hosts
+  const [guestName, setGuestName] = useState(sessionStorage.getItem('userName') || '');
   const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number; status?: string; hostName?: string; scheduledFor?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  
+  // Advanced Audio Settings
+  const [echoCancellation, setEchoCancellation] = useState(true);
+  const [noiseSuppression, setNoiseSuppression] = useState(true);
 
   // Media preview
   const {
@@ -38,11 +43,11 @@ export function JoinRoom() {
 
   // Start camera preview on mount
   useEffect(() => {
-    startMedia();
+    startMedia(undefined, undefined, { echoCancellation, noiseSuppression });
     return () => {
       stopMedia();
     };
-  }, [startMedia, stopMedia]);
+  }, [startMedia, stopMedia, echoCancellation, noiseSuppression]);
 
   // Attach local stream to preview video
   useEffect(() => {
@@ -117,14 +122,19 @@ export function JoinRoom() {
   const joinStudio = () => {
     if (!guestName.trim()) return;
     stopMedia();
+    
+    // Default to 'guest' unless already set as 'host'
+    const existingRole = sessionStorage.getItem('userRole');
+    if (existingRole !== 'host') {
+      sessionStorage.setItem('userRole', 'guest');
+    }
     sessionStorage.setItem('userName', guestName);
-    sessionStorage.setItem('userRole', 'guest');
     navigate(`/studio/${roomId}`);
   };
 
   const onAudioDeviceChange = async (deviceId: string) => {
     try {
-      await switchAudioDevice(deviceId);
+      await switchAudioDevice(deviceId, { echoCancellation, noiseSuppression });
     } catch (err) {
       // Device switch failed
     }
@@ -313,6 +323,21 @@ export function JoinRoom() {
               </select>
             </div>
           )}
+        </div>
+
+        {/* Advanced Audio Options */}
+        <div style={styles.advancedAudio}>
+          <label style={styles.deviceLabel}>Audio Settings</label>
+          <div style={styles.checkboxRow}>
+            <label style={styles.checkboxLabel}>
+              <input type="checkbox" checked={echoCancellation} onChange={(e) => setEchoCancellation(e.target.checked)} />
+              Echo Cancellation
+            </label>
+            <label style={styles.checkboxLabel}>
+              <input type="checkbox" checked={noiseSuppression} onChange={(e) => setNoiseSuppression(e.target.checked)} />
+              Noise Suppression
+            </label>
+          </div>
         </div>
 
         {/* Name input */}
@@ -533,6 +558,28 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--border-strong)',
     background: 'var(--bg-tertiary)',
     color: 'var(--text-primary)',
+    cursor: 'pointer',
+  },
+  
+  advancedAudio: {
+    marginBottom: 16,
+    textAlign: 'left' as const,
+    background: 'rgba(255,255,255,0.03)',
+    padding: '10px 12px',
+    borderRadius: 10,
+    border: '1px solid rgba(255,255,255,0.05)',
+  },
+  checkboxRow: {
+    display: 'flex',
+    gap: 16,
+    marginTop: 6,
+  },
+  checkboxLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    fontSize: 12,
+    color: 'var(--text-secondary)',
     cursor: 'pointer',
   },
 
