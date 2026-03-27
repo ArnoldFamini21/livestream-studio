@@ -34,7 +34,7 @@ export function LowerThirdManager({ lowerThirds, onAdd, onToggle, onRemove }: Lo
       {/* Existing lower thirds */}
       <div style={styles.list}>
         {lowerThirds.map((lt) => (
-          <div key={lt.id} style={styles.item}>
+          <div key={lt.id} className="participant-item" style={styles.item}>
             <div style={styles.itemInfo}>
               <span style={styles.itemName}>{lt.name}</span>
               {lt.title && <span style={styles.itemTitle}>{lt.title}</span>}
@@ -209,6 +209,7 @@ const overlayBase: React.CSSProperties = {
   left: 24,
   zIndex: 10,
   maxWidth: 320,
+  filter: 'drop-shadow(0 8px 20px rgba(0, 0, 0, 0.4))',
 };
 
 const styles: Record<string, React.CSSProperties> = {

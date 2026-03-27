@@ -45,7 +45,12 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
       {/* Header */}
       <div style={styles.header}>
         <h3 style={styles.title}>Chat</h3>
-        <button style={styles.closeBtn} onClick={onClose} aria-label="Close chat">
+        <button
+          className="chat-close-btn"
+          style={styles.closeBtn}
+          onClick={onClose}
+          aria-label="Close chat"
+        >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
@@ -109,9 +114,11 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
           />
           <button
+            className="chat-send-btn"
             style={{
               ...styles.sendBtn,
               opacity: input.trim() && input.trim().length <= MAX_MESSAGE_LENGTH ? 1 : 0.4,
+              pointerEvents: input.trim() && input.trim().length <= MAX_MESSAGE_LENGTH ? 'auto' : 'none',
             }}
             onClick={handleSend}
             disabled={!input.trim() || input.trim().length > MAX_MESSAGE_LENGTH}

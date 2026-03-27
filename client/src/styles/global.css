@@ -445,3 +445,47 @@ textarea:focus {
 .not-found-page a:hover {
   background: var(--accent-hover);
 }
+
+/* ---------- Chat Panel Buttons ---------- */
+.chat-close-btn:hover {
+  background: var(--bg-surface) !important;
+  color: var(--text-primary) !important;
+}
+
+.chat-send-btn:hover {
+  background: #8b5cf6 !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4) !important;
+}
+.chat-send-btn:active {
+  transform: translateY(0) !important;
+}
+
+/* ---------- Panel & Participant Manager ---------- */
+.panel-close-btn:hover {
+  background: var(--bg-surface) !important;
+  color: var(--text-primary) !important;
+}
+
+.participant-item {
+  transition: background-color var(--transition-fast) ease-out;
+}
+.participant-item:hover {
+  background: var(--bg-surface) !important;
+}
+
+.participant-action-btn:hover {
+  background: var(--btn-hover-bg) !important;
+  transform: translateY(-1px);
+}
+.participant-action-btn:active {
+  transform: translateY(0);
+}
+
+.device-select {
+  transition: border-color var(--transition-fast) ease-out, box-shadow var(--transition-fast) ease-out;
+}
+.device-select:hover {
+  border-color: var(--accent-subtle) !important;
+  box-shadow: 0 0 0 2px var(--accent-subtle) !important;
+}

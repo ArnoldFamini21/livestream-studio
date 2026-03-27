@@ -312,7 +312,7 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
             </svg>
             <span style={styles.headerTitle}>Background Music</span>
           </div>
-          <button style={styles.closeBtn} onClick={onClose} title="Close">
+          <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} title="Close">
             <svg
               width="16"
               height="16"
@@ -556,6 +556,7 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
                 return (
                   <div
                     key={track.id}
+                    className="participant-item"
                     style={{
                       ...styles.trackItem,
                       background: isCurrent

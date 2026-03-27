@@ -99,6 +99,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               </span>
               <span style={styles.message}>{toast.message}</span>
               <button
+                className="panel-close-btn"
                 style={styles.dismissBtn}
                 onClick={() => removeToast(toast.id)}
                 aria-label="Dismiss notification"

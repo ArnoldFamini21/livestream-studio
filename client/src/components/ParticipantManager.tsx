@@ -36,7 +36,7 @@ export function ParticipantManager({
           <h3 style={styles.title}>Participants</h3>
           <p style={styles.subtitle}>{participants.size}/12 in session</p>
         </div>
-        <button style={styles.closeBtn} onClick={onClose}>
+        <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
           </svg>
@@ -147,7 +147,7 @@ function Section({
       ) : (
         <div style={sectionStyles.list}>
           {participants.map((p) => (
-            <div key={p.id} style={sectionStyles.item}>
+            <div key={p.id} className="participant-item" style={sectionStyles.item}>
               <div style={sectionStyles.itemLeft}>
                 <div style={sectionStyles.avatar}>{p.name.charAt(0).toUpperCase()}</div>
                 <div>
@@ -177,7 +177,8 @@ function Section({
 function ActionBtn({ label, color, onClick }: { label: string; color: string; onClick: () => void }) {
   return (
     <button
-      style={{ ...actionStyles.btn, color, borderColor: color + '33' }}
+      className="participant-action-btn"
+      style={{ ...actionStyles.btn, color, borderColor: color + '33', '--btn-hover-bg': color + '1a' } as React.CSSProperties}
       onClick={onClick}
     >
       {label}

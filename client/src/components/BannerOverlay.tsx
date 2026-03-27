@@ -65,7 +65,7 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
       {/* Existing banners */}
       <div style={styles.list}>
         {banners.map((banner) => (
-          <div key={banner.id} style={styles.item}>
+          <div key={banner.id} className="participant-item" style={styles.item}>
             <div style={styles.itemInfo}>
               <div style={styles.itemRow}>
                 <span
@@ -335,6 +335,7 @@ const overlayBase: React.CSSProperties = {
   right: 0,
   zIndex: 9,
   overflow: 'hidden',
+  boxShadow: '0 4px 24px rgba(0, 0, 0, 0.5)',
 };
 
 const tickerContainer: React.CSSProperties = {

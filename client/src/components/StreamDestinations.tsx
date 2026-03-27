@@ -71,7 +71,7 @@ export function StreamDestinations({
             )}
           </div>
         </div>
-        <button style={styles.closeBtn} onClick={onClose} aria-label="Close destinations panel">
+        <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} aria-label="Close destinations panel">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
           </svg>
@@ -83,7 +83,7 @@ export function StreamDestinations({
         {destinations.map((dest) => {
           const platformInfo = PLATFORMS.find((p) => p.value === dest.platform);
           return (
-            <div key={dest.id} style={styles.destCard}>
+            <div key={dest.id} className="participant-item" style={styles.destCard}>
               <div style={styles.destHeader}>
                 <div style={{ ...styles.platformDot, background: platformInfo?.color }} />
                 <div style={styles.destInfo}>
@@ -104,7 +104,7 @@ export function StreamDestinations({
                   >
                     {dest.enabled ? 'ON' : 'OFF'}
                   </button>
-                  <button style={styles.removeBtn} onClick={() => onRemove(dest.id)} aria-label="Remove destination">
+                  <button className="participant-action-btn" style={styles.removeBtn} onClick={() => onRemove(dest.id)} aria-label="Remove destination">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                       <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                     </svg>

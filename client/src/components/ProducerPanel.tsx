@@ -168,7 +168,7 @@ function ParticipantRow({
   const initial = participant.name.charAt(0).toUpperCase();
 
   return (
-    <div style={rowStyles.row}>
+    <div className="participant-item" style={rowStyles.row}>
       <div style={rowStyles.left}>
         <div style={rowStyles.avatar}>{initial}</div>
         <div style={rowStyles.info}>
@@ -199,7 +199,8 @@ function ParticipantRow({
         <div style={rowStyles.actions}>
           {(participant.status === 'backstage' || participant.status === 'green-room') && (
             <button
-              style={{ ...rowStyles.actionBtn, color: 'var(--success)', borderColor: 'rgba(34, 197, 94, 0.25)' }}
+              className="participant-action-btn"
+              style={{ ...rowStyles.actionBtn, color: 'var(--success)', borderColor: 'rgba(34, 197, 94, 0.25)', '--btn-hover-bg': 'rgba(34, 197, 94, 0.1)' } as React.CSSProperties}
               onClick={() => onStageAction('move-to-stage', participant.id)}
               title="Bring to Stage"
             >
@@ -212,7 +213,8 @@ function ParticipantRow({
           )}
           {participant.status === 'on-stage' && (
             <button
-              style={{ ...rowStyles.actionBtn, color: 'var(--warning, #f59e0b)', borderColor: 'rgba(245, 158, 11, 0.25)' }}
+              className="participant-action-btn"
+              style={{ ...rowStyles.actionBtn, color: 'var(--warning, #f59e0b)', borderColor: 'rgba(245, 158, 11, 0.25)', '--btn-hover-bg': 'rgba(245, 158, 11, 0.1)' } as React.CSSProperties}
               onClick={() => onStageAction('move-to-backstage', participant.id)}
               title="Move Backstage"
             >
@@ -225,7 +227,8 @@ function ParticipantRow({
           )}
           {participant.status === 'on-stage' && participant.audioEnabled && (
             <button
-              style={{ ...rowStyles.actionBtn, color: 'var(--text-muted)', borderColor: 'var(--border)' }}
+              className="participant-action-btn"
+              style={{ ...rowStyles.actionBtn, color: 'var(--text-muted)', borderColor: 'var(--border)', '--btn-hover-bg': 'rgba(255, 255, 255, 0.05)' } as React.CSSProperties}
               onClick={() => onStageAction('mute', participant.id)}
               title="Mute"
             >
@@ -237,7 +240,8 @@ function ParticipantRow({
             </button>
           )}
           <button
-            style={{ ...rowStyles.actionBtn, color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+            className="participant-action-btn"
+            style={{ ...rowStyles.actionBtn, color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)', '--btn-hover-bg': 'rgba(239, 68, 68, 0.1)' } as React.CSSProperties}
             onClick={() => onStageAction('remove', participant.id)}
             title="Remove from session"
           >
