@@ -737,40 +737,17 @@ export function StudioRoom() {
   const getAutoGridLayout = useCallback((count: number): LayoutResult => {
     if (count <= 0) return { containerStyle: { ...containerBase, display: 'flex' }, tileStyles: [], mode: 'flex' };
 
-    const rowConfigs: Record<number, number[]> = {
-      1: [1],
-      2: [2],
-      3: [2, 1],
-      4: [2, 2],
-      5: [3, 2],
-      6: [3, 3],
-      7: [4, 3],
-      8: [4, 4],
-      9: [3, 3, 3],
-      10: [4, 3, 3],
-      11: [4, 4, 3],
-      12: [4, 4, 4],
-    };
-
-    let numRows: number;
-    let maxCols: number;
-
-    if (count > 12) {
-      // Dynamically compute grid dimensions for large participant counts
-      maxCols = Math.ceil(Math.sqrt(count * 16 / 9));
-      numRows = Math.ceil(count / maxCols);
-    } else {
-      const rows = rowConfigs[count]!;
-      numRows = rows.length;
-      maxCols = Math.max(...rows);
-    }
+    let maxCols = 1;
+    if (count >= 2 && count <= 4) maxCols = 2;
+    else if (count >= 5 && count <= 9) maxCols = 3;
+    else if (count >= 10 && count <= 16) maxCols = 4;
+    else maxCols = Math.ceil(Math.sqrt(count * 16 / 9));
 
     const tileW = `calc(${100 / maxCols}% - ${GAP * (maxCols - 1) / maxCols}px)`;
-    const tileH = `calc(${100 / numRows}% - ${GAP * (numRows - 1) / numRows}px)`;
 
     const tiles: React.CSSProperties[] = Array.from({ length: count }, () => ({
       width: tileW,
-      height: tileH,
+      aspectRatio: '16 / 9',
       flexShrink: 0,
       flexGrow: 0,
     }));
@@ -799,10 +776,10 @@ export function StudioRoom() {
       const speakerRows = Math.max(speakerCount, 1);
       const tiles: React.CSSProperties[] = items.map((_, i) => {
         if (i === screenIdx) {
-          return { gridColumn: '1', gridRow: `1 / ${speakerRows + 1}`, minWidth: 0, minHeight: 0 };
+          return { gridColumn: '1', gridRow: `1 / ${speakerRows + 1}`, width: '100%', aspectRatio: '16 / 9', alignSelf: 'center' };
         }
         const si = i < screenIdx ? i : i - 1;
-        return { gridColumn: '2', gridRow: `${si + 1}`, minWidth: 0, minHeight: 0 };
+        return { gridColumn: '2', gridRow: `${si + 1}`, width: '100%', aspectRatio: '16 / 9', alignSelf: 'center' };
       });
       return {
         containerStyle: {
@@ -811,24 +788,26 @@ export function StudioRoom() {
           gridTemplateColumns: speakerCount > 0 ? '1fr 0.32fr' : '1fr',
           gridTemplateRows: `repeat(${speakerRows}, 1fr)`,
           gap: GAP,
+          alignItems: 'center',
+          justifyItems: 'center',
         },
         tileStyles: tiles,
         mode: 'grid',
       };
     }
-    // 5+ speakers: screen on top 70%, speaker strip at bottom 30%
+    // 5+ speakers: screen on top 80%, speaker strip at bottom 20%
     const tiles: React.CSSProperties[] = items.map((_, i) => {
       if (i === screenIdx) {
-        return { width: '100%', height: `calc(70% - ${GAP / 2}px)`, flexShrink: 0, flexGrow: 0, order: 0 };
+        return { width: `calc(80% - ${GAP}px)`, aspectRatio: '16 / 9', flexShrink: 0, flexGrow: 0, order: 0 };
       }
       return {
-        width: `calc(${100 / speakerCount}% - ${GAP * (speakerCount - 1) / speakerCount}px)`,
-        height: `calc(30% - ${GAP / 2}px)`,
+        width: `calc(20% - ${GAP}px)`,
+        aspectRatio: '16 / 9',
         flexShrink: 0, flexGrow: 0, order: 1,
       };
     });
     return {
-      containerStyle: { ...containerBase, display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'center', alignContent: 'flex-start', gap: GAP },
+      containerStyle: { ...containerBase, display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'center', alignContent: 'center', gap: GAP },
       tileStyles: tiles,
       mode: 'custom',
     };
@@ -838,24 +817,22 @@ export function StudioRoom() {
   const getSpotlightLayout = useCallback((count: number): LayoutResult => {
     if (count <= 1) return getAutoGridLayout(count);
     const thumbCount = count - 1;
-    const maxThumbsPerRow = Math.min(thumbCount, 6);
-    const numThumbRows = Math.ceil(thumbCount / maxThumbsPerRow);
-    // Dynamic split: allocate more space as thumbnail rows grow
-    const thumbTotalPct = Math.min(26 + (numThumbRows - 1) * 14, 50); // 26% for 1 row, 40% for 2, cap at 50%
-    const mainPct = 100 - thumbTotalPct;
-    const thumbRowH = thumbTotalPct / numThumbRows;
+    const maxThumbsPerRow = Math.max(3, Math.min(thumbCount, 6)); 
+    const thumbW = 100 / maxThumbsPerRow;
+    const mainW = 100 - thumbW; 
+
     const tiles: React.CSSProperties[] = [
-      { width: '100%', height: `calc(${mainPct}% - ${GAP / 2}px)`, flexShrink: 0, flexGrow: 0 },
+      { width: `calc(${mainW}% - ${GAP}px)`, aspectRatio: '16 / 9', flexShrink: 0, flexGrow: 0 },
     ];
     for (let i = 0; i < thumbCount; i++) {
       tiles.push({
-        width: `calc(${100 / maxThumbsPerRow}% - ${GAP * (maxThumbsPerRow - 1) / maxThumbsPerRow}px)`,
-        height: `calc(${thumbRowH}% - ${GAP * (numThumbRows) / (numThumbRows + 1)}px)`,
+        width: `calc(${thumbW}% - ${GAP}px)`,
+        aspectRatio: '16 / 9',
         flexShrink: 0, flexGrow: 0,
       });
     }
     return {
-      containerStyle: { ...containerBase, display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'center', alignContent: 'flex-start', gap: GAP },
+      containerStyle: { ...containerBase, display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'center', alignContent: 'center', gap: GAP },
       tileStyles: tiles,
       mode: 'flex',
     };
@@ -866,11 +843,11 @@ export function StudioRoom() {
     if (count <= 1) return getAutoGridLayout(count);
     const sideCount = count - 1;
     const tiles: React.CSSProperties[] = [
-      { gridColumn: '1', gridRow: `1 / ${sideCount + 1}`, minWidth: 0, minHeight: 0 },
+      { gridColumn: '1', gridRow: `1 / ${sideCount + 1}`, width: '100%', aspectRatio: '16 / 9', alignSelf: 'center' },
     ];
     for (let i = 0; i < sideCount; i++) {
       tiles.push({
-        gridColumn: '2', gridRow: `${i + 1}`, minWidth: 0, minHeight: 0,
+        gridColumn: '2', gridRow: `${i + 1}`, width: '100%', aspectRatio: '16 / 9', alignSelf: 'center',
       });
     }
     return {
@@ -880,6 +857,8 @@ export function StudioRoom() {
         gridTemplateColumns: '1fr 0.38fr',
         gridTemplateRows: `repeat(${sideCount}, 1fr)`,
         gap: GAP,
+        alignItems: 'center',
+        justifyItems: 'center',
       },
       tileStyles: tiles,
       mode: 'grid',
@@ -907,18 +886,18 @@ export function StudioRoom() {
         const showCount = Math.min(count, 2);
         const tiles: React.CSSProperties[] = Array.from({ length: showCount }, () => ({
           width: showCount === 2 ? `calc(50% - ${GAP / 2}px)` : '100%',
-          height: '100%',
+          aspectRatio: '16 / 9',
           flexShrink: 0, flexGrow: 0,
         }));
         return {
-          containerStyle: { ...containerBase, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: GAP },
+          containerStyle: { ...containerBase, display: 'flex', justifyContent: 'center', alignItems: 'center', alignContent: 'center', gap: GAP },
           tileStyles: tiles,
           mode: 'flex',
         };
       }
       case 'pip': {
         const tiles: React.CSSProperties[] = [
-          { width: '100%', height: '100%', flexShrink: 0, flexGrow: 0 },
+          { width: '100%', aspectRatio: '16 / 9', flexShrink: 0, flexGrow: 0 },
         ];
         if (count >= 2) {
           tiles.push({
@@ -927,7 +906,6 @@ export function StudioRoom() {
             right: 20,
             width: '24%',
             aspectRatio: '16 / 9',
-            height: '13.5%', // fallback for browsers without aspectRatio support
             borderRadius: 12,
             overflow: 'hidden',
             boxShadow: '0 4px 24px rgba(0, 0, 0, 0.5)',
@@ -937,7 +915,7 @@ export function StudioRoom() {
           });
         }
         return {
-          containerStyle: { ...containerBase, display: 'flex', position: 'relative' as const },
+          containerStyle: { ...containerBase, display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative' as const },
           tileStyles: tiles,
           mode: 'custom',
         };
@@ -945,7 +923,7 @@ export function StudioRoom() {
       case 'single': {
         return {
           containerStyle: { ...containerBase, display: 'flex', justifyContent: 'center', alignItems: 'center' },
-          tileStyles: count > 0 ? [{ width: '100%', height: '100%', flexShrink: 0, flexGrow: 0 }] : [],
+          tileStyles: count > 0 ? [{ width: '100%', aspectRatio: '16 / 9', flexShrink: 0, flexGrow: 0 }] : [],
           mode: 'flex',
         };
       }
