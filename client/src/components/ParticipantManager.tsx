@@ -73,6 +73,9 @@ export function ParticipantManager({
               {!p.audioEnabled ? null : (
                 <ActionBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />
               )}
+              {!p.audioEnabled && (
+                <ActionBtn label="Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />
+              )}
               <ActionBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
               {p.role === 'guest' && (
                 <ActionBtn label="Co-host" color="var(--accent)" onClick={() => onStageAction('promote-co-host', p.id)} />
@@ -175,10 +178,12 @@ function Section({
 }
 
 function ActionBtn({ label, color, onClick }: { label: string; color: string; onClick: () => void }) {
+  const borderColor = color.startsWith('#') ? `${color}33` : 'var(--border-strong)';
+  const hoverBg = color.startsWith('#') ? `${color}1a` : 'rgba(255, 255, 255, 0.06)';
   return (
     <button
       className="participant-action-btn"
-      style={{ ...actionStyles.btn, color, borderColor: color + '33', '--btn-hover-bg': color + '1a' } as React.CSSProperties}
+      style={{ ...actionStyles.btn, color, borderColor, '--btn-hover-bg': hoverBg } as React.CSSProperties}
       onClick={onClick}
     >
       {label}

@@ -155,6 +155,8 @@ roomRouter.get('/:id/exists', (req, res) => {
       name: roomState.room.name,
       participantCount: roomState.participants.size,
       status: roomState.room.status,
+      hostName: roomState.room.hostName,
+      scheduledFor: roomState.room.scheduledFor,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to check room' });

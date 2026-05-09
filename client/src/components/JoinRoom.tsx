@@ -204,6 +204,14 @@ export function JoinRoom() {
               ? 'Be the first to join this studio'
               : `${roomInfo?.participantCount} participant${roomInfo?.participantCount !== 1 ? 's' : ''} already here`}
         </p>
+        {roomInfo?.scheduledFor && (
+          <p style={styles.scheduleText}>
+            {new Date(roomInfo.scheduledFor).toLocaleString([], {
+              dateStyle: 'medium',
+              timeStyle: 'short',
+            })}
+          </p>
+        )}
 
         {/* Camera Preview */}
         <div style={styles.previewContainer}>
@@ -445,6 +453,13 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     marginBottom: 20,
     lineHeight: 1.5,
+  },
+  scheduleText: {
+    color: 'var(--accent-hover)',
+    fontSize: 13,
+    fontWeight: 600,
+    marginTop: -10,
+    marginBottom: 16,
   },
 
   // Camera preview

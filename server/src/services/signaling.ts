@@ -7,6 +7,7 @@ import type {
   JoinRoomPayload,
   MediaStatePayload,
   ChatMessage,
+  QAQuestion,
   StageActionPayload,
 } from '@studio/shared';
 
@@ -14,6 +15,8 @@ import type {
 interface RoomState {
   room: Room;
   participants: Map<string, { participant: Participant; ws: WebSocket }>;
+  qaQuestions: Map<string, QAQuestion>;
+  qaVotes: Map<string, Set<string>>;
 }
 
 // Extend WebSocket to track heartbeat state
@@ -29,6 +32,9 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'ice-candidate',
   'media-state-changed',
   'chat-message',
+  'qa-question-submitted',
+  'qa-question-update',
+  'qa-question-upvote',
   'stage-action',
   'end-room',
 ]);
@@ -58,6 +64,8 @@ const WS_RATE_LIMIT_MAX = 100; // 100 messages per 10 seconds
 
 // Max lengths for user input
 const MAX_CHAT_MESSAGE_LENGTH = 2000;
+const MAX_QA_QUESTION_LENGTH = 500;
+const MAX_QA_ANSWER_LENGTH = 1000;
 const MAX_PARTICIPANT_NAME_LENGTH = 50;
 
 function checkWsRateLimit(ws: WebSocket): boolean {
@@ -105,6 +113,8 @@ export function createRoom(name: string, hostName: string, options?: { status?: 
   rooms.set(room.id, {
     room,
     participants: new Map(),
+    qaQuestions: new Map(),
+    qaVotes: new Map(),
   });
 
   return room;
@@ -201,6 +211,15 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'chat-message':
       handleChatMessage(ws, message.payload);
       break;
+    case 'qa-question-submitted':
+      handleQAQuestionSubmitted(ws, message.payload);
+      break;
+    case 'qa-question-update':
+      handleQAQuestionUpdate(ws, message.payload);
+      break;
+    case 'qa-question-upvote':
+      handleQAQuestionUpvote(ws, message.payload);
+      break;
     case 'stage-action':
       handleStageAction(ws, message.payload);
       break;
@@ -291,6 +310,8 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   const allParticipants = Array.from(roomState.participants.values())
     .map((p) => p.participant)
     .filter((p) => p.id !== participant.id);
+  const qaQuestions = Array.from(roomState.qaQuestions.values())
+    .filter((q) => effectiveRole === 'host' || q.status === 'approved' || q.status === 'answered');
 
   send(ws, {
     type: 'room-joined',
@@ -298,6 +319,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       room: roomState.room,
       participant,
       participants: allParticipants,
+      qaQuestions,
     },
   });
 
@@ -366,9 +388,16 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     case 'mute':
       target.participant.audioEnabled = false;
       break;
+    case 'unmute':
+      target.participant.audioEnabled = true;
+      break;
     case 'remove':
+      send(target.ws, {
+        type: 'participant-removed',
+        payload: { reason: 'Removed by host' },
+      });
       // Close the target's WebSocket to trigger disconnect
-      target.ws.close();
+      target.ws.close(1000, 'Removed by host');
       return;
   }
 
@@ -467,6 +496,161 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
       payload: sanitizedPayload,
     }, mapping.participantId);
   }
+}
+
+function handleQAQuestionSubmitted(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'qa-question-submitted' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const senderEntry = roomState.participants.get(mapping.participantId);
+  if (!senderEntry) return;
+
+  if (typeof payload.content !== 'string') {
+    sendError(ws, 'Question content is required', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const content = payload.content.replace(/[\x00-\x1F\x7F]/g, '').trim();
+  if (!content) return;
+  if (content.length > MAX_QA_QUESTION_LENGTH) {
+    sendError(ws, `Question too long (max ${MAX_QA_QUESTION_LENGTH} characters)`, 'QUESTION_TOO_LONG');
+    return;
+  }
+
+  const requestedId = typeof payload.id === 'string' && /^[\w-]{1,80}$/.test(payload.id)
+    ? payload.id
+    : nanoid(10);
+  const id = roomState.qaQuestions.has(requestedId) ? nanoid(10) : requestedId;
+
+  const question: QAQuestion = {
+    id,
+    authorId: mapping.participantId,
+    authorName: senderEntry.participant.name,
+    content,
+    timestamp: new Date().toISOString(),
+    upvotes: 0,
+    status: 'pending',
+    highlighted: false,
+  };
+
+  roomState.qaQuestions.set(question.id, question);
+  roomState.qaVotes.set(question.id, new Set());
+
+  broadcastQAQuestion(mapping.roomId, question);
+}
+
+function handleQAQuestionUpdate(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'qa-question-update' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can manage Q&A', 'UNAUTHORIZED');
+    return;
+  }
+
+  if (typeof payload.questionId !== 'string') {
+    sendError(ws, 'Invalid question id', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const existing = roomState.qaQuestions.get(payload.questionId);
+  if (!existing) return;
+
+  const updates = payload.updates || {};
+  const changedQuestions: QAQuestion[] = [];
+
+  if (updates.highlighted === true) {
+    for (const [id, question] of roomState.qaQuestions) {
+      if (id !== existing.id && question.highlighted) {
+        const unhighlighted = { ...question, highlighted: false };
+        roomState.qaQuestions.set(id, unhighlighted);
+        changedQuestions.push(unhighlighted);
+      }
+    }
+  }
+
+  const next: QAQuestion = { ...existing };
+
+  if (updates.status) {
+    if (!['pending', 'approved', 'answered', 'dismissed'].includes(updates.status)) {
+      sendError(ws, 'Invalid Q&A status', 'VALIDATION_ERROR');
+      return;
+    }
+    next.status = updates.status;
+    if (updates.status === 'dismissed') next.highlighted = false;
+  }
+
+  if (typeof updates.answer === 'string') {
+    const answer = updates.answer.replace(/[\x00-\x1F\x7F]/g, '').trim();
+    if (answer.length > MAX_QA_ANSWER_LENGTH) {
+      sendError(ws, `Answer too long (max ${MAX_QA_ANSWER_LENGTH} characters)`, 'ANSWER_TOO_LONG');
+      return;
+    }
+    if (answer) {
+      next.answer = answer;
+      next.status = 'answered';
+    }
+  }
+
+  if (typeof updates.highlighted === 'boolean') {
+    next.highlighted = updates.highlighted && next.status !== 'dismissed';
+  }
+
+  roomState.qaQuestions.set(next.id, next);
+  changedQuestions.push(next);
+
+  for (const question of changedQuestions) {
+    broadcastQAQuestion(mapping.roomId, question);
+  }
+}
+
+function handleQAQuestionUpvote(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'qa-question-upvote' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  if (typeof payload.questionId !== 'string') {
+    sendError(ws, 'Invalid question id', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const question = roomState.qaQuestions.get(payload.questionId);
+  if (!question || (question.status !== 'approved' && question.status !== 'answered')) return;
+
+  const votes = roomState.qaVotes.get(question.id) || new Set<string>();
+  if (votes.has(mapping.participantId)) {
+    votes.delete(mapping.participantId);
+  } else {
+    votes.add(mapping.participantId);
+  }
+  roomState.qaVotes.set(question.id, votes);
+
+  const updated: QAQuestion = {
+    ...question,
+    upvotes: votes.size,
+  };
+  roomState.qaQuestions.set(updated.id, updated);
+
+  broadcastQAQuestion(mapping.roomId, updated);
 }
 
 function handleEndRoom(ws: WebSocket) {
@@ -634,6 +818,31 @@ function broadcastToRoom(roomId: string, message: SignalMessage, excludeId?: str
       } catch (err) {
         console.error(`Failed to send to participant ${id}:`, (err as Error).message);
       }
+    }
+  }
+}
+
+function broadcastQAQuestion(roomId: string, question: QAQuestion) {
+  const roomState = rooms.get(roomId);
+  if (!roomState) return;
+
+  for (const [id, { participant, ws }] of roomState.participants) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (
+      question.status === 'pending' &&
+      participant.role === 'guest' &&
+      id !== question.authorId
+    ) {
+      continue;
+    }
+
+    try {
+      send(ws, {
+        type: 'qa-question-updated',
+        payload: question,
+      });
+    } catch (err) {
+      console.error(`Failed to send Q&A update to participant ${id}:`, (err as Error).message);
     }
   }
 }

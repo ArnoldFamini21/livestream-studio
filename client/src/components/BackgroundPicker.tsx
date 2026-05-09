@@ -28,6 +28,8 @@ const GRADIENT_PRESETS = [
   { label: 'Emerald', value: 'linear-gradient(135deg, #065f46, #047857, #10b981)' },
 ];
 
+const MAX_PERSISTED_BACKGROUND_BYTES = 2 * 1024 * 1024;
+
 export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -37,8 +39,14 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const url = URL.createObjectURL(file);
-      onChange({ type: 'image', value: url });
+      if (file.size <= MAX_PERSISTED_BACKGROUND_BYTES) {
+        const reader = new FileReader();
+        reader.onload = () => onChange({ type: 'image', value: reader.result as string });
+        reader.readAsDataURL(file);
+      } else {
+        const url = URL.createObjectURL(file);
+        onChange({ type: 'image', value: url });
+      }
     }
     e.target.value = '';
   };
@@ -142,7 +150,7 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
               <button
                 style={styles.removeBtn}
                 onClick={() => {
-                  URL.revokeObjectURL(value.value);
+                  if (value.value.startsWith('blob:')) URL.revokeObjectURL(value.value);
                   onChange({ type: 'none', value: '' });
                 }}
               >
