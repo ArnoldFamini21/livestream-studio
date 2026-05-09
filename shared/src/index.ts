@@ -59,8 +59,13 @@ export type SignalMessage =
   | { type: 'ice-candidate'; payload: ICEPayload }
   | { type: 'media-state-changed'; payload: MediaStatePayload }
   | { type: 'chat-message'; payload: ChatMessage }
+  | { type: 'qa-question-submitted'; payload: { id?: string; content: string } }
+  | { type: 'qa-question-updated'; payload: QAQuestion }
+  | { type: 'qa-question-update'; payload: { questionId: string; updates: Partial<Pick<QAQuestion, 'status' | 'answer' | 'highlighted'>> } }
+  | { type: 'qa-question-upvote'; payload: { questionId: string } }
   | { type: 'stage-action'; payload: StageActionPayload }
   | { type: 'participant-updated'; payload: Participant }
+  | { type: 'participant-removed'; payload: { reason: string } }
   | { type: 'end-room'; payload: Record<string, never> }
   | { type: 'room-ending'; payload: { countdown: number } }
   | { type: 'room-ended'; payload: Record<string, never> }
@@ -78,6 +83,7 @@ export interface RoomJoinedPayload {
   room: Room;
   participant: Participant;
   participants: Participant[];
+  qaQuestions?: QAQuestion[];
 }
 
 export interface SDPPayload {
@@ -100,7 +106,7 @@ export interface MediaStatePayload {
 }
 
 export interface StageActionPayload {
-  action: 'move-to-stage' | 'move-to-backstage' | 'move-to-green-room' | 'promote-co-host' | 'demote-to-guest' | 'mute' | 'remove';
+  action: 'move-to-stage' | 'move-to-backstage' | 'move-to-green-room' | 'promote-co-host' | 'demote-to-guest' | 'mute' | 'unmute' | 'remove';
   targetParticipantId: string;
   performedBy: string;
 }
@@ -112,6 +118,18 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   isBackstage: boolean;
+}
+
+export interface QAQuestion {
+  id: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  timestamp: string;
+  upvotes: number;
+  status: 'pending' | 'approved' | 'answered' | 'dismissed';
+  answer?: string;
+  highlighted: boolean;
 }
 
 // ============ Layout Types ============

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle } from '@studio/shared';
+import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion } from '@studio/shared';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
@@ -16,7 +16,7 @@ import { useCompositor } from '../hooks/useCompositor.ts';
 import { VideoTile } from './VideoTile.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
-import { Sidebar } from './Sidebar.tsx';
+import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { StreamDestinations } from './StreamDestinations.tsx';
@@ -31,7 +31,58 @@ import { LayoutSwitcher } from './LayoutSwitcher.tsx';
 import { ProducerPanel } from './ProducerPanel.tsx';
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
-import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience, type QAQuestion } from './WebinarQA.tsx';
+import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience } from './WebinarQA.tsx';
+
+const STUDIO_STATE_VERSION = 1;
+const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
+
+interface PersistedStudioState {
+  version: typeof STUDIO_STATE_VERSION;
+  layout: LayoutMode;
+  stageBackground: StageBackground;
+  brandColor: string;
+  logoUrl: string | null;
+  cameraShape: CameraShape;
+  nameTagStyle: NameTagStyle;
+  pipCorner: 'TL' | 'TR' | 'BL' | 'BR';
+  scenes: Scene[];
+  activeSceneId: string | null;
+  lowerThirds: LowerThirdData[];
+  banners: BannerData[];
+  timers: TimerData[];
+  tickers: TickerData[];
+}
+
+function getStudioStateKey(roomId: string): string {
+  return `livestream-studio:room-state:${roomId}`;
+}
+
+function isPersistableLogoUrl(url: string | null): url is string {
+  return Boolean(url && !url.startsWith('blob:'));
+}
+
+function getPersistableStageBackground(background: StageBackground): StageBackground {
+  if (background.type === 'image' && background.value.startsWith('blob:')) {
+    return { type: 'none', value: '' };
+  }
+  return background;
+}
+
+function getPersistableScenes(scenes: Scene[]): Scene[] {
+  return scenes.map((scene) => ({
+    ...scene,
+    background: getPersistableStageBackground(scene.background),
+    logoUrl: isPersistableLogoUrl(scene.logoUrl) ? scene.logoUrl : null,
+  }));
+}
+
+function getMaxNumericSuffix(items: Array<{ id: string }> | undefined, prefix: string): number {
+  if (!items) return 0;
+  return items.reduce((max, item) => {
+    const value = Number(item.id.replace(`${prefix}-`, ''));
+    return Number.isFinite(value) ? Math.max(max, value) : max;
+  }, 0);
+}
 
 export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -44,6 +95,7 @@ export function StudioRoom() {
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [joined, setJoined] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [mediaAttemptComplete, setMediaAttemptComplete] = useState(false);
 
   // UI panels
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
@@ -57,6 +109,7 @@ export function StudioRoom() {
   const [showProducerPanel, setShowProducerPanel] = useState(false);
   const [showWebinarQA, setShowWebinarQA] = useState(false);
   const [showGuestChat, setShowGuestChat] = useState(false);
+  const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>('people');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   // Layout
@@ -112,9 +165,10 @@ export function StudioRoom() {
   const [myUpvotes, setMyUpvotes] = useState<Set<string>>(new Set());
 
   // Hooks
-  const { connect, send, addHandler, connected } = useSignaling();
+  const { connect, disconnect, send, addHandler, connected } = useSignaling();
   const {
     localStream, audioEnabled, videoEnabled,
+    error: mediaError,
     startMedia, stopMedia, toggleAudio, toggleVideo,
     switchAudioDevice, switchVideoDevice,
     audioDevices, videoDevices, audioOutputDevices,
@@ -138,11 +192,14 @@ export function StudioRoom() {
     stopRecording: stopLocalRecording,
   } = useLocalRecording();
 
-  const noopFn = useCallback(() => {}, []);
+  const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]);
+  const effectiveVideoEnabled = videoEnabled && Boolean(localStream?.getVideoTracks()[0]);
+
   const joinedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const myParticipantRef = useRef<Participant | null>(null);
   const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0 });
+  const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
   const videoEnabledRef = useRef(videoEnabled);
   const isScreenSharingRef = useRef(isScreenSharing);
@@ -155,6 +212,7 @@ export function StudioRoom() {
   const handleIceCandidateRef = useRef(handleIceCandidate);
   const removePeerRef = useRef(removePeer);
   const cleanupRef = useRef(cleanup);
+  const disconnectRef = useRef(disconnect);
   const stopMediaRef = useRef(stopMedia);
   const stopScreenShareRef = useRef(stopScreenShare);
   const navigateRef = useRef(navigate);
@@ -175,12 +233,91 @@ export function StudioRoom() {
     logoUrl,
   });
 
+  // Restore non-sensitive room setup from this browser.
+  useEffect(() => {
+    studioStateLoadedRef.current = false;
+    if (!roomId) return;
+
+    let loadCompleteTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const raw = localStorage.getItem(getStudioStateKey(roomId));
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<PersistedStudioState>;
+        if (parsed.version === STUDIO_STATE_VERSION) {
+          if (parsed.layout) setLayout(parsed.layout);
+          if (parsed.stageBackground) setStageBackground(parsed.stageBackground);
+          if (parsed.brandColor) setBrandColor(parsed.brandColor);
+          if (parsed.logoUrl !== undefined) setLogoUrl(parsed.logoUrl);
+          if (parsed.cameraShape) setCameraShape(parsed.cameraShape);
+          if (parsed.nameTagStyle) setNameTagStyle(parsed.nameTagStyle);
+          if (parsed.pipCorner) setPipCorner(parsed.pipCorner);
+          if (Array.isArray(parsed.scenes)) {
+            setScenes(parsed.scenes);
+            setActiveSceneId(parsed.activeSceneId && parsed.scenes.some((scene) => scene.id === parsed.activeSceneId) ? parsed.activeSceneId : null);
+          }
+          if (Array.isArray(parsed.lowerThirds)) setLowerThirds(parsed.lowerThirds);
+          if (Array.isArray(parsed.banners)) setBanners(parsed.banners);
+          if (Array.isArray(parsed.timers)) setTimers(parsed.timers.map((timer) => ({ ...timer, isRunning: false })));
+          if (Array.isArray(parsed.tickers)) setTickers(parsed.tickers);
+          idCounters.current = {
+            ...idCounters.current,
+            lt: getMaxNumericSuffix(parsed.lowerThirds, 'lt'),
+            banner: getMaxNumericSuffix(parsed.banners, 'banner'),
+            timer: getMaxNumericSuffix(parsed.timers, 'timer'),
+            ticker: getMaxNumericSuffix(parsed.tickers, 'ticker'),
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to restore studio state:', err);
+    } finally {
+      loadCompleteTimer = setTimeout(() => {
+        studioStateLoadedRef.current = true;
+      }, 0);
+    }
+
+    return () => {
+      if (loadCompleteTimer) clearTimeout(loadCompleteTimer);
+    };
+  }, [roomId]);
+
+  // Persist room setup locally without storing stream keys or transient media state.
+  useEffect(() => {
+    if (!roomId || !studioStateLoadedRef.current) return;
+    const timeout = setTimeout(() => {
+      const state: PersistedStudioState = {
+        version: STUDIO_STATE_VERSION,
+        layout,
+        stageBackground: getPersistableStageBackground(stageBackground),
+        brandColor,
+        logoUrl: isPersistableLogoUrl(logoUrl) ? logoUrl : null,
+        cameraShape,
+        nameTagStyle,
+        pipCorner,
+        scenes: getPersistableScenes(scenes),
+        activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
+        lowerThirds,
+        banners,
+        timers: timers.map((timer) => ({ ...timer, isRunning: false })),
+        tickers,
+      };
+
+      try {
+        localStorage.setItem(getStudioStateKey(roomId), JSON.stringify(state));
+      } catch (err) {
+        console.warn('Failed to persist studio state:', err);
+      }
+    }, 250);
+
+    return () => clearTimeout(timeout);
+  }, [roomId, layout, stageBackground, brandColor, logoUrl, cameraShape, nameTagStyle, pipCorner, scenes, activeSceneId, lowerThirds, banners, timers, tickers]);
+
   // Keep refs in sync with state
   useEffect(() => {
     myParticipantRef.current = myParticipant;
   }, [myParticipant]);
-  useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
-  useEffect(() => { videoEnabledRef.current = videoEnabled; }, [videoEnabled]);
+  useEffect(() => { audioEnabledRef.current = effectiveAudioEnabled; }, [effectiveAudioEnabled]);
+  useEffect(() => { videoEnabledRef.current = effectiveVideoEnabled; }, [effectiveVideoEnabled]);
   useEffect(() => { isScreenSharingRef.current = isScreenSharing; }, [isScreenSharing]);
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
 
@@ -191,6 +328,7 @@ export function StudioRoom() {
   useEffect(() => { handleIceCandidateRef.current = handleIceCandidate; }, [handleIceCandidate]);
   useEffect(() => { removePeerRef.current = removePeer; }, [removePeer]);
   useEffect(() => { cleanupRef.current = cleanup; }, [cleanup]);
+  useEffect(() => { disconnectRef.current = disconnect; }, [disconnect]);
   useEffect(() => { stopMediaRef.current = stopMedia; }, [stopMedia]);
   useEffect(() => { stopScreenShareRef.current = stopScreenShare; }, [stopScreenShare]);
   useEffect(() => { navigateRef.current = navigate; }, [navigate]);
@@ -201,7 +339,19 @@ export function StudioRoom() {
   // Connect WebSocket and start media on mount
   useEffect(() => {
     connect();
-    startMedia();
+    let active = true;
+    const fallbackTimer = setTimeout(() => {
+      if (active) setMediaAttemptComplete(true);
+    }, 3000);
+    startMedia().finally(() => {
+      if (!active) return;
+      clearTimeout(fallbackTimer);
+      setMediaAttemptComplete(true);
+    });
+    return () => {
+      active = false;
+      clearTimeout(fallbackTimer);
+    };
   }, [connect, startMedia]);
 
   // Fix 1: Reset joinedRef and clear room-ending state when disconnected so room-join is re-sent on reconnect
@@ -225,24 +375,25 @@ export function StudioRoom() {
 
   // Join room once connected
   useEffect(() => {
-    if (connected && localStream && roomId && !joinedRef.current) {
+    if (connected && roomId && !joinedRef.current && (localStream || mediaError || mediaAttemptComplete)) {
       joinedRef.current = true;
       send({
         type: 'join-room',
         payload: { roomId, name: userName, role: userRole },
       });
     }
-  }, [connected, localStream, roomId, userName, userRole, send]);
+  }, [connected, localStream, mediaError, mediaAttemptComplete, roomId, userName, userRole, send]);
 
   // Signaling message handler
   const handleSignalingMessage = useCallback(
     (message: SignalMessage) => {
       switch (message.type) {
         case 'room-joined': {
-          const { room: roomData, participant, participants: existing } = message.payload;
+          const { room: roomData, participant, participants: existing, qaQuestions: existingQuestions = [] } = message.payload;
           setRoom(roomData);
           setMyParticipant(participant);
           setJoined(true);
+          setQAQuestions(existingQuestions);
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
           setParticipants(map);
@@ -307,6 +458,29 @@ export function StudioRoom() {
             return next.length > 500 ? next.slice(-500) : next;
           });
           break;
+        case 'qa-question-updated': {
+          const updated = message.payload;
+          setQAQuestions((prev) => {
+            const next = updated.highlighted
+              ? prev.map((q) => ({ ...q, highlighted: q.id === updated.id ? updated.highlighted : false }))
+              : [...prev];
+            const index = next.findIndex((q) => q.id === updated.id);
+            if (index >= 0) {
+              next[index] = updated.highlighted ? { ...updated, highlighted: true } : updated;
+            } else {
+              next.push(updated);
+            }
+            return next;
+          });
+          break;
+        }
+        case 'participant-removed':
+          cleanupRef.current();
+          stopMediaRef.current();
+          stopScreenShareRef.current();
+          disconnectRef.current();
+          setConnectionError(message.payload.reason || 'You were removed from this session.');
+          break;
         case 'room-ending':
           setRoomEnding(true);
           setEndingCountdown(message.payload.countdown);
@@ -334,6 +508,9 @@ export function StudioRoom() {
         // Client-to-server messages: not expected here but listed for exhaustive check
         case 'join-room':
         case 'stage-action':
+        case 'qa-question-submitted':
+        case 'qa-question-update':
+        case 'qa-question-upvote':
         case 'end-room':
           break;
         default:
@@ -360,6 +537,23 @@ export function StudioRoom() {
       videoTrack.enabled = myParticipant.videoEnabled;
     }
   }, [myParticipant?.audioEnabled, myParticipant?.videoEnabled, localStream]);
+
+  useEffect(() => {
+    if (!myParticipant) return;
+    const hasAudio = Boolean(localStream?.getAudioTracks()[0]?.enabled);
+    const hasVideo = Boolean(localStream?.getVideoTracks()[0]?.enabled);
+    if (hasAudio === myParticipant.audioEnabled && hasVideo === myParticipant.videoEnabled) return;
+    setMyParticipant((prev) => prev && prev.id === myParticipant.id ? { ...prev, audioEnabled: hasAudio, videoEnabled: hasVideo } : prev);
+    send({
+      type: 'media-state-changed',
+      payload: {
+        participantId: myParticipant.id,
+        audioEnabled: hasAudio,
+        videoEnabled: hasVideo,
+        screenSharing: isScreenSharing,
+      },
+    });
+  }, [myParticipant, localStream, isScreenSharing, send]);
 
   // ====== Actions ======
 
@@ -545,12 +739,16 @@ export function StudioRoom() {
   const onStopMedia = () => setActiveMedia(null);
 
   // Helper to convert blob URL to data URL
-  const blobToDataUrl = async (blobUrl: string): Promise<string> => {
+  const blobToDataUrl = async (blobUrl: string, maxBytes = MAX_PERSISTED_IMAGE_BYTES): Promise<string> => {
     const response = await fetch(blobUrl);
     const blob = await response.blob();
-    return new Promise((resolve) => {
+    if (blob.size > maxBytes) {
+      throw new Error('Image is too large to persist');
+    }
+    return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(blob);
     });
   };
@@ -566,12 +764,20 @@ export function StudioRoom() {
         // Keep original URL if conversion fails
       }
     }
+    let persistedBackground = stageBackground;
+    if (stageBackground.type === 'image' && stageBackground.value.startsWith('blob:')) {
+      try {
+        persistedBackground = { ...stageBackground, value: await blobToDataUrl(stageBackground.value) };
+      } catch {
+        // Keep original URL for this session if conversion fails
+      }
+    }
 
     const newScene: Scene = {
       id: `scene-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name,
       layout,
-      background: stageBackground,
+      background: persistedBackground,
       brandColor,
       logoUrl: persistedLogoUrl,
       cameraShape,
@@ -632,31 +838,32 @@ export function StudioRoom() {
 
   // Webinar Q&A
   const onSubmitQuestion = (content: string) => {
-    const question: QAQuestion = {
-      id: `qa-${++idCounters.current.qa}`,
-      authorName: userName,
-      content,
-      timestamp: new Date().toISOString(),
-      upvotes: 0,
-      status: 'pending',
-      highlighted: false,
-    };
-    setQAQuestions(prev => [...prev, question]);
+    const text = content.trim();
+    if (!text) return;
+    send({
+      type: 'qa-question-submitted',
+      payload: { id: `qa-${++idCounters.current.qa}`, content: text },
+    });
   };
   const onApproveQuestion = (id: string) => {
     setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, status: 'approved' as const } : q));
+    send({ type: 'qa-question-update', payload: { questionId: id, updates: { status: 'approved' } } });
   };
   const onDismissQuestion = (id: string) => {
-    setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, status: 'dismissed' as const } : q));
+    setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, status: 'dismissed' as const, highlighted: false } : q));
+    send({ type: 'qa-question-update', payload: { questionId: id, updates: { status: 'dismissed', highlighted: false } } });
   };
   const onAnswerQuestion = (id: string, answer: string) => {
     setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, status: 'answered' as const, answer } : q));
+    send({ type: 'qa-question-update', payload: { questionId: id, updates: { answer } } });
   };
   const onHighlightQuestion = (id: string) => {
     setQAQuestions(prev => prev.map(q => ({ ...q, highlighted: q.id === id })));
+    send({ type: 'qa-question-update', payload: { questionId: id, updates: { highlighted: true } } });
   };
   const onUnhighlightQuestion = (id: string) => {
     setQAQuestions(prev => prev.map(q => q.id === id ? { ...q, highlighted: false } : q));
+    send({ type: 'qa-question-update', payload: { questionId: id, updates: { highlighted: false } } });
   };
   const onUpvoteQuestion = (id: string) => {
     setMyUpvotes(prev => {
@@ -670,6 +877,7 @@ export function StudioRoom() {
       }
       return next;
     });
+    send({ type: 'qa-question-upvote', payload: { questionId: id } });
   };
 
   // Build video items (only show on-stage participants) - memoized
@@ -678,7 +886,7 @@ export function StudioRoom() {
   const videoItems = useMemo(() => {
     const items: Array<{ id: string; name: string; stream: MediaStream | null; isLocal: boolean; audioEnabled: boolean; videoEnabled: boolean; isScreenShare?: boolean }> = [];
     if (myParticipant) {
-      items.push({ id: myParticipant.id, name: myParticipant.name, stream: localStream, isLocal: true, audioEnabled, videoEnabled });
+      items.push({ id: myParticipant.id, name: myParticipant.name, stream: localStream, isLocal: true, audioEnabled: effectiveAudioEnabled, videoEnabled: effectiveVideoEnabled });
       // Add local screen share as a separate tile
       if (isScreenSharing && screenStream) {
         items.push({ id: `${myParticipant.id}-screen`, name: `${myParticipant.name}'s Screen`, stream: screenStream, isLocal: true, audioEnabled: false, videoEnabled: true, isScreenShare: true });
@@ -690,7 +898,7 @@ export function StudioRoom() {
       }
     }
     return items;
-  }, [myParticipant, participants, localStream, audioEnabled, videoEnabled, remoteStreams, isScreenSharing, screenStream]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream]);
 
   // Auto-switch layout when participant count changes
   useEffect(() => {
@@ -969,6 +1177,7 @@ export function StudioRoom() {
   const visibleTimers = useMemo(() => timers.filter(t => t.visible), [timers]);
   const visibleTickers = useMemo(() => tickers.filter(t => t.visible), [tickers]);
   const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
+  const showCompositorDebug = import.meta.env.DEV && isLive;
 
   // Connection error
   if (connectionError) {
@@ -1164,8 +1373,8 @@ export function StudioRoom() {
                 </div>
               )}
 
-              {/* Debug Compositor Preview (Only visible when LIVE) */}
-              {isLive && (
+              {/* Debug Compositor Preview (development only) */}
+              {showCompositorDebug && (
                 <div style={{ position: 'absolute', top: 16, right: 16, width: 240, aspectRatio: '16/9', border: '2px solid red', borderRadius: 8, overflow: 'hidden', zIndex: 1000, background: '#000', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
                   <span style={{ position: 'absolute', top: 4, left: 4, background: 'red', color: 'white', fontSize: 10, padding: '2px 4px', borderRadius: 4, fontWeight: 'bold', zIndex: 10 }}>COMPOSITOR OUTPUT</span>
                   <video
@@ -1239,6 +1448,8 @@ export function StudioRoom() {
         {/* Sidebar (right) - host/co-host only */}
         {isHostOrCoHost && showSidebar && (
           <Sidebar
+            activeTab={sidebarActiveTab}
+            onActiveTabChange={setSidebarActiveTab}
             lowerThirds={lowerThirds}
             onAddLowerThird={onAddLowerThird}
             onToggleLowerThird={onToggleLowerThird}
@@ -1305,7 +1516,7 @@ export function StudioRoom() {
         {/* Webinar Q&A Audience (guest) */}
         {!isHostOrCoHost && showWebinarQA && (
           <WebinarQAAudience
-            questions={qaQuestions.filter(q => q.status === 'approved' || q.status === 'answered')}
+            questions={qaQuestions.filter(q => q.status === 'approved' || q.status === 'answered' || q.authorId === myParticipant?.id)}
             onSubmitQuestion={onSubmitQuestion}
             onUpvote={onUpvoteQuestion}
             myUpvotes={myUpvotes}
@@ -1327,8 +1538,8 @@ export function StudioRoom() {
 
       {/* Control Bar */}
       <ControlBar
-        audioEnabled={audioEnabled}
-        videoEnabled={videoEnabled}
+        audioEnabled={effectiveAudioEnabled}
+        videoEnabled={effectiveVideoEnabled}
         onToggleAudio={onToggleAudio}
         onToggleVideo={onToggleVideo}
         onLeave={onLeave}
@@ -1340,8 +1551,8 @@ export function StudioRoom() {
         onToggleRecording={onToggleRecording}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={onToggleScreenShare}
-        onOpenChat={() => setShowGuestChat(!showGuestChat)}
-        onOpenParticipants={noopFn}
+        onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
+        onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
         onOpenStreamDestinations={() => setShowStreamDest(!showStreamDest)}
         onOpenSoundBoard={() => setShowSoundBoard(!showSoundBoard)}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}

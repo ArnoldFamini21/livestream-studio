@@ -11,12 +11,14 @@ import { CommentHighlightManager, type HighlightedComment } from './CommentHighl
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
 // ---------------------------------------------------------------------------
-type SidebarTab = 'people' | 'chat' | 'overlays' | 'brand' | 'scenes';
+export type SidebarTab = 'people' | 'chat' | 'overlays' | 'brand' | 'scenes';
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 interface SidebarProps {
+  activeTab?: SidebarTab | null;
+  onActiveTabChange?: (tab: SidebarTab | null) => void;
   // Overlay props
   lowerThirds: LowerThirdData[];
   onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'>) => void;
@@ -134,8 +136,10 @@ const tabDefs: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
 // Main Sidebar component
 // ---------------------------------------------------------------------------
 export function Sidebar(props: SidebarProps) {
-  const [activeTab, setActiveTab] = useState<SidebarTab | null>('people');
+  const [internalActiveTab, setInternalActiveTab] = useState<SidebarTab | null>('people');
   const logoInputRef = useRef<HTMLInputElement>(null);
+  const activeTab = props.activeTab !== undefined ? props.activeTab : internalActiveTab;
+  const setActiveTab = props.onActiveTabChange || setInternalActiveTab;
 
   const handleTabClick = (tabId: SidebarTab) => {
     setActiveTab(activeTab === tabId ? null : tabId);
@@ -155,8 +159,14 @@ export function Sidebar(props: SidebarProps) {
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (props.logoUrl) URL.revokeObjectURL(props.logoUrl);
-      props.onLogoUrlChange(URL.createObjectURL(file));
+      if (props.logoUrl?.startsWith('blob:')) URL.revokeObjectURL(props.logoUrl);
+      if (file.size <= 2_000_000) {
+        const reader = new FileReader();
+        reader.onloadend = () => props.onLogoUrlChange(reader.result as string);
+        reader.readAsDataURL(file);
+      } else {
+        props.onLogoUrlChange(URL.createObjectURL(file));
+      }
     }
     e.target.value = '';
   };
@@ -436,6 +446,7 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction, r
         )}
         <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<>
           {p.audioEnabled && <SmallBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />}
+          {!p.audioEnabled && <SmallBtn label="Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />}
           <SmallBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
           {p.role === 'guest' && <SmallBtn label="Co-host" color="var(--accent)" onClick={() => onStageAction('promote-co-host', p.id)} />}
           {p.role === 'co-host' && <SmallBtn label="Demote" color="var(--text-muted)" onClick={() => onStageAction('demote-to-guest', p.id)} />}
@@ -503,7 +514,8 @@ function PeopleSection({ title, subtitle, color, participants, isHostOrCoHost, g
 }
 
 function SmallBtn({ label, color, onClick }: { label: string; color: string; onClick: () => void }) {
-  return <button style={{ ...st.smallBtn, color, borderColor: color + '33' }} onClick={onClick}>{label}</button>;
+  const borderColor = color.startsWith('#') ? `${color}33` : 'var(--border-strong)';
+  return <button style={{ ...st.smallBtn, color, borderColor }} onClick={onClick}>{label}</button>;
 }
 
 // ---------------------------------------------------------------------------

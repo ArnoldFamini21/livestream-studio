@@ -29,6 +29,14 @@ export function useMediaDevices() {
   const switchingRef = useRef(false);
   const audioOutputIdRef = useRef<string>('');
 
+  const publishStreamUpdate = useCallback(() => {
+    if (!streamRef.current) {
+      setLocalStream(null);
+      return;
+    }
+    setLocalStream(new MediaStream(streamRef.current.getTracks()));
+  }, []);
+
   // Enumerate all available media devices
   const enumerateDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -121,6 +129,10 @@ export function useMediaDevices() {
             setError('Microphone not available - video only');
           } catch (finalErr) {
             setError('No media devices available');
+            setAudioEnabled(false);
+            setVideoEnabled(false);
+            streamRef.current = null;
+            setLocalStream(null);
             return null;
           }
         }
@@ -135,6 +147,8 @@ export function useMediaDevices() {
       // Track which devices are actually active
       const activeAudioTrack = stream.getAudioTracks()[0];
       const activeVideoTrack = stream.getVideoTracks()[0];
+      setAudioEnabled(Boolean(activeAudioTrack?.enabled));
+      setVideoEnabled(Boolean(activeVideoTrack?.enabled));
 
       if (activeAudioTrack) {
         const settings = activeAudioTrack.getSettings();
@@ -187,6 +201,10 @@ export function useMediaDevices() {
         message = err instanceof Error ? err.message : 'Failed to access media devices';
       }
       setError(message);
+      setAudioEnabled(false);
+      setVideoEnabled(false);
+      streamRef.current = null;
+      setLocalStream(null);
       console.error('Media device error:', err);
       return null;
     }
@@ -228,6 +246,7 @@ export function useMediaDevices() {
       };
 
       streamRef.current.addTrack(newAudioTrack);
+      publishStreamUpdate();
       setSelectedAudioDeviceId(deviceId);
       localStorage.setItem('preferredAudioDeviceId', deviceId);
       setError(null);
@@ -241,7 +260,7 @@ export function useMediaDevices() {
     } finally {
       switchingRef.current = false;
     }
-  }, []);
+  }, [publishStreamUpdate]);
 
   // Switch video input device
   const switchVideoDevice = useCallback(async (deviceId: string) => {
@@ -275,6 +294,7 @@ export function useMediaDevices() {
       };
 
       streamRef.current.addTrack(newVideoTrack);
+      publishStreamUpdate();
       setSelectedVideoDeviceId(deviceId);
       localStorage.setItem('preferredVideoDeviceId', deviceId);
       setError(null);
@@ -287,7 +307,7 @@ export function useMediaDevices() {
     } finally {
       switchingRef.current = false;
     }
-  }, []);
+  }, [publishStreamUpdate]);
 
   const stopMedia = useCallback(() => {
     if (streamRef.current) {
@@ -306,7 +326,8 @@ export function useMediaDevices() {
         return audioTrack.enabled;
       }
     }
-    return audioEnabled;
+    setAudioEnabled(false);
+    return false;
   }, [audioEnabled]);
 
   const toggleVideo = useCallback(() => {
@@ -318,7 +339,8 @@ export function useMediaDevices() {
         return videoTrack.enabled;
       }
     }
-    return videoEnabled;
+    setVideoEnabled(false);
+    return false;
   }, [videoEnabled]);
 
   // Listen for device changes (plugging in / removing devices)
@@ -351,6 +373,7 @@ export function useMediaDevices() {
               const newTrack = newStream.getAudioTracks()[0];
               streamRef.current.removeTrack(audioTrack);
               streamRef.current.addTrack(newTrack);
+              publishStreamUpdate();
               setSelectedAudioDeviceId(fallbackAudio.deviceId);
               setAudioEnabled(true);
 
@@ -387,6 +410,7 @@ export function useMediaDevices() {
               const newTrack = newStream.getVideoTracks()[0];
               streamRef.current.removeTrack(videoTrack);
               streamRef.current.addTrack(newTrack);
+              publishStreamUpdate();
               setSelectedVideoDeviceId(fallbackVideo.deviceId);
               setVideoEnabled(true);
 
@@ -409,7 +433,7 @@ export function useMediaDevices() {
     return () => {
       navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
     };
-  }, [enumerateDevices]);
+  }, [enumerateDevices, publishStreamUpdate]);
 
   // Apply audio output device (setSinkId) to a given media element
   const applyAudioOutput = useCallback(async (element: HTMLMediaElement) => {

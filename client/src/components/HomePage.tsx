@@ -2,11 +2,17 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
-const INVITE_BASE_URL = 'https://studio.arnoldfamini.com';
+const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
+
+function toDateTimeLocalValue(date: Date): string {
+  const timezoneOffsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - timezoneOffsetMs).toISOString().slice(0, 16);
+}
 
 export function HomePage() {
   const [roomName, setRoomName] = useState('');
   const [hostName, setHostName] = useState('');
+  const [scheduledFor, setScheduledFor] = useState('');
   const [loading, setLoading] = useState(false);
   const [schedulingLoading, setSchedulingLoading] = useState(false);
   const navigate = useNavigate();
@@ -14,7 +20,7 @@ export function HomePage() {
   const [error, setError] = useState<string | null>(null);
 
   // Invite link modal state
-  const [scheduledRoom, setScheduledRoom] = useState<{ id: string; name: string } | null>(null);
+  const [scheduledRoom, setScheduledRoom] = useState<{ id: string; name: string; scheduledFor?: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
   const createRoom = async () => {
@@ -26,7 +32,10 @@ export function HomePage() {
       const res = await fetch(`${API_URL}/api/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: roomName, hostName }),
+        body: JSON.stringify({
+          name: roomName,
+          hostName,
+        }),
       });
       if (!res.ok) {
         const errorText = await res.text().catch(() => 'Unknown error');
@@ -54,7 +63,11 @@ export function HomePage() {
       const res = await fetch(`${API_URL}/api/rooms/schedule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: roomName, hostName }),
+        body: JSON.stringify({
+          name: roomName,
+          hostName,
+          scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
+        }),
       });
       if (!res.ok) {
         const errorText = await res.text().catch(() => 'Unknown error');
@@ -62,7 +75,7 @@ export function HomePage() {
         return;
       }
       const room = await res.json();
-      setScheduledRoom({ id: room.id, name: room.name });
+      setScheduledRoom({ id: room.id, name: room.name, scheduledFor: room.scheduledFor });
       setCopied(false);
     } catch (err) {
       console.error('Failed to schedule room:', err);
@@ -104,7 +117,10 @@ export function HomePage() {
     setCopied(false);
     setRoomName('');
     setHostName('');
+    setScheduledFor('');
   };
+
+  const minScheduleDateTime = toDateTimeLocalValue(new Date(Date.now() + 60_000));
 
   return (
     <div style={styles.page}>
@@ -168,6 +184,17 @@ export function HomePage() {
                 onChange={(e) => setHostName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && createRoom()}
                 maxLength={50}
+              />
+            </div>
+
+            <div style={styles.field}>
+              <label style={styles.label}>Schedule time (optional)</label>
+              <input
+                style={styles.input}
+                type="datetime-local"
+                value={scheduledFor}
+                min={minScheduleDateTime}
+                onChange={(e) => setScheduledFor(e.target.value)}
               />
             </div>
 
@@ -252,6 +279,14 @@ export function HomePage() {
             <p style={styles.modalSub}>
               <strong>{scheduledRoom.name}</strong> is ready. Share this invite link with your guests.
             </p>
+            {scheduledRoom.scheduledFor && (
+              <p style={styles.modalSchedule}>
+                Scheduled for {new Date(scheduledRoom.scheduledFor).toLocaleString([], {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                })}
+              </p>
+            )}
 
             <div style={styles.linkBox}>
               <input
@@ -528,8 +563,14 @@ const styles: Record<string, React.CSSProperties> = {
   modalSub: {
     fontSize: 14,
     color: 'var(--text-secondary)',
-    marginBottom: 24,
+    marginBottom: 12,
     lineHeight: 1.5,
+  },
+  modalSchedule: {
+    fontSize: 13,
+    color: 'var(--accent-hover)',
+    marginBottom: 24,
+    lineHeight: 1.4,
   },
   linkBox: {
     display: 'flex',

@@ -1,15 +1,6 @@
 import { useState, useMemo } from 'react';
-
-export interface QAQuestion {
-  id: string;
-  authorName: string;
-  content: string;
-  timestamp: string;
-  upvotes: number;
-  status: 'pending' | 'approved' | 'answered' | 'dismissed';
-  answer?: string;
-  highlighted: boolean;
-}
+import type { QAQuestion } from '@studio/shared';
+export type { QAQuestion };
 
 // ---------------------------------------------------------------------------
 // WebinarQAPanel — host's Q&A management view
@@ -410,6 +401,7 @@ export function WebinarQAAudience({
 
         {sortedQuestions.map((q) => {
           const hasUpvoted = myUpvotes.has(q.id);
+          const canUpvote = q.status === 'approved' || q.status === 'answered';
           return (
             <div key={q.id} className="participant-item" style={audienceStyles.questionCard}>
               {/* Upvote button */}
@@ -417,8 +409,10 @@ export function WebinarQAAudience({
                 style={{
                   ...audienceStyles.upvoteBtn,
                   ...(hasUpvoted ? audienceStyles.upvoteBtnActive : {}),
+                  ...(!canUpvote ? audienceStyles.upvoteBtnDisabled : {}),
                 }}
                 onClick={() => onUpvote(q.id)}
+                disabled={!canUpvote}
                 aria-label={`Upvote question by ${q.authorName}`}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill={hasUpvoted ? 'var(--accent)' : 'none'} stroke={hasUpvoted ? 'var(--accent)' : 'currentColor'} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -439,6 +433,7 @@ export function WebinarQAAudience({
                   <span style={audienceStyles.timestamp}>
                     {new Date(q.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
+                  {q.status === 'pending' && <span style={audienceStyles.statusBadge}>Pending</span>}
                 </div>
                 <p style={audienceStyles.questionText}>{q.content}</p>
                 {q.status === 'answered' && q.answer && (
@@ -892,6 +887,10 @@ const audienceStyles: Record<string, React.CSSProperties> = {
     background: 'var(--accent-subtle)',
     borderColor: 'var(--accent)',
   },
+  upvoteBtnDisabled: {
+    opacity: 0.45,
+    cursor: 'not-allowed',
+  },
   upvoteCount: {
     fontSize: 10,
     fontWeight: 700,
@@ -917,6 +916,16 @@ const audienceStyles: Record<string, React.CSSProperties> = {
   timestamp: {
     fontSize: 10,
     color: 'var(--text-muted)',
+  },
+  statusBadge: {
+    fontSize: 9,
+    fontWeight: 700,
+    color: 'var(--warning, #f59e0b)',
+    background: 'rgba(245, 158, 11, 0.12)',
+    padding: '1px 5px',
+    borderRadius: 4,
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
   },
   questionText: {
     fontSize: 13,
