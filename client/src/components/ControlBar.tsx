@@ -23,6 +23,7 @@ interface ControlBarProps {
   onOpenRecordingPanel?: () => void;
   onOpenProducerPanel?: () => void;
   onOpenWebinarQA?: () => void;
+  onOpenHealthPanel?: () => void;
   onOpenChat?: () => void;
   participantCount?: number;
   isLive?: boolean;
@@ -51,6 +52,7 @@ export function ControlBar({
   onOpenRecordingPanel,
   onOpenProducerPanel,
   onOpenWebinarQA,
+  onOpenHealthPanel,
   onOpenChat,
   participantCount = 0,
   isLive = false,
@@ -243,6 +245,21 @@ export function ControlBar({
             </button>
           )}
 
+          {onOpenHealthPanel && (
+            <button
+              className="cb-focusable"
+              style={styles.iconBtn}
+              onClick={onOpenHealthPanel}
+              aria-label="Open session health"
+              title="Session health"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8z" />
+                <path d="M9 12l2 2 4-5" />
+              </svg>
+            </button>
+          )}
+
           <div style={styles.sep} />
 
           {/* Leave */}
@@ -301,6 +318,11 @@ export function ControlBar({
     label: 'Q&A',
     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>,
     onClick: () => { onOpenWebinarQA(); setShowMore(false); },
+  });
+  if (onOpenHealthPanel) moreItems.push({
+    label: 'Health',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8z" /><path d="M9 12l2 2 4-5" /></svg>,
+    onClick: () => { onOpenHealthPanel(); setShowMore(false); },
   });
 
   return (

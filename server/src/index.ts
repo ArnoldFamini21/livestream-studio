@@ -9,22 +9,43 @@ const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
-// Allowed origins for CORS (HTTP) and WebSocket origin checking
-const allowedOrigins = [
+// Allowed origins for CORS (HTTP) and WebSocket origin checking.
+// CLIENT_URL and CLIENT_URLS accept one URL or a comma-separated list.
+const allowedOrigins = new Set<string>([
   'https://studio.arnoldfamini.com',
   'http://localhost:5173',
-];
+]);
 
-// If CLIENT_URL env var is set and not already in the list, add it
-if (process.env.CLIENT_URL && !allowedOrigins.includes(process.env.CLIENT_URL)) {
-  allowedOrigins.push(process.env.CLIENT_URL);
+function normalizeOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function addAllowedOrigins(value?: string) {
+  if (!value) return;
+  for (const item of value.split(',')) {
+    const origin = normalizeOrigin(item.trim());
+    if (origin) allowedOrigins.add(origin);
+  }
+}
+
+addAllowedOrigins(process.env.CLIENT_URL);
+addAllowedOrigins(process.env.CLIENT_URLS);
+
+function isAllowedOrigin(origin?: string): boolean {
+  if (!origin) return true;
+  const normalized = normalizeOrigin(origin);
+  return Boolean(normalized && allowedOrigins.has(normalized));
 }
 
 app.use(
   cors({
     origin: (origin, callback) => {
       // Allow requests with no origin (e.g. server-to-server, curl, health checks)
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (isAllowedOrigin(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`CORS: origin ${origin} not allowed`));
@@ -104,8 +125,9 @@ const wss = new WebSocketServer({
   path: '/ws',
   maxPayload: 64 * 1024,
   verifyClient: (info, done) => {
-    const origin = info.origin || info.req.headers.origin;
-    if (!origin || allowedOrigins.includes(origin)) {
+    const headerOrigin = info.req.headers.origin;
+    const origin = info.origin || (Array.isArray(headerOrigin) ? headerOrigin[0] : headerOrigin);
+    if (isAllowedOrigin(origin)) {
       done(true);
     } else {
       console.warn(`WebSocket connection rejected from origin: ${origin}`);

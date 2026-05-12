@@ -10,6 +10,7 @@ export function useSignaling() {
 
   // Bug fix #6: Reconnection with exponential backoff
   const reconnectAttemptsRef = useRef<number>(0);
+  const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const intentionalDisconnectRef = useRef<boolean>(false);
 
@@ -28,67 +29,85 @@ export function useSignaling() {
     // Bug fix #8: Guard against OPEN and CONNECTING states
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     if (wsRef.current?.readyState === WebSocket.CONNECTING) return;
+    if (connectTimerRef.current) return;
 
     intentionalDisconnectRef.current = false;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = import.meta.env.VITE_WS_URL || `${protocol}//${window.location.host}/ws`;
-    const ws = new WebSocket(wsUrl);
+    connectTimerRef.current = setTimeout(() => {
+      connectTimerRef.current = null;
+      if (intentionalDisconnectRef.current) return;
+      if (wsRef.current?.readyState === WebSocket.OPEN) return;
+      if (wsRef.current?.readyState === WebSocket.CONNECTING) return;
 
-    ws.onopen = () => {
-      console.log('WebSocket connected');
-      setConnected(true);
+      const ws = new WebSocket(wsUrl);
 
-      // Bug fix #6: Reset reconnect attempts on successful connection
-      reconnectAttemptsRef.current = 0;
+      ws.onopen = () => {
+        if (wsRef.current !== ws) return;
+        console.log('WebSocket connected');
+        setConnected(true);
 
-      // Bug fix #7: Drain any queued messages
-      drainMessageQueue(ws);
-    };
+        // Bug fix #6: Reset reconnect attempts on successful connection
+        reconnectAttemptsRef.current = 0;
 
-    ws.onmessage = (event) => {
-      let message: SignalMessage;
-      try {
-        message = JSON.parse(event.data);
-      } catch (e) {
-        console.warn('Invalid WebSocket message:', e);
-        return;
-      }
-      for (const handler of handlersRef.current) {
-        handler(message);
-      }
-    };
+        // Bug fix #7: Drain any queued messages
+        drainMessageQueue(ws);
+      };
 
-    ws.onclose = (event) => {
-      console.log('WebSocket disconnected');
-      setConnected(false);
+      ws.onmessage = (event) => {
+        if (wsRef.current !== ws) return;
+        let message: SignalMessage;
+        try {
+          message = JSON.parse(event.data);
+        } catch (e) {
+          console.warn('Invalid WebSocket message:', e);
+          return;
+        }
+        for (const handler of handlersRef.current) {
+          handler(message);
+        }
+      };
 
-      // Clear stale message queue from old session to avoid replaying outdated data
-      messageQueueRef.current = [];
+      ws.onclose = (event) => {
+        if (wsRef.current !== ws) return;
+        console.log('WebSocket disconnected');
+        setConnected(false);
 
-      // Bug fix #6: Reconnect on non-clean close, unless intentionally disconnected
-      if (!intentionalDisconnectRef.current && !event.wasClean) {
-        const baseDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-        const delay = baseDelay * (0.5 + Math.random() * 0.5); // 50-100% of base delay (jitter)
-        console.log(`Scheduling reconnection in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current + 1})`);
-        reconnectTimerRef.current = setTimeout(() => {
-          reconnectTimerRef.current = null;
-          reconnectAttemptsRef.current++;
-          connect();
-        }, delay);
-      }
-    };
+        // Clear stale message queue from old session to avoid replaying outdated data
+        messageQueueRef.current = [];
 
-    ws.onerror = (err) => {
-      console.error('WebSocket error:', err);
-    };
+        // Bug fix #6: Reconnect on non-clean close, unless intentionally disconnected
+        if (!intentionalDisconnectRef.current && !event.wasClean) {
+          const baseDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+          const delay = baseDelay * (0.5 + Math.random() * 0.5); // 50-100% of base delay (jitter)
+          console.log(`Scheduling reconnection in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current + 1})`);
+          reconnectTimerRef.current = setTimeout(() => {
+            reconnectTimerRef.current = null;
+            reconnectAttemptsRef.current++;
+            connect();
+          }, delay);
+        }
+      };
 
-    wsRef.current = ws;
+      ws.onerror = (err) => {
+        if (wsRef.current === ws && !intentionalDisconnectRef.current) {
+          console.error('WebSocket error:', err);
+        }
+      };
+
+      wsRef.current = ws;
+    }, 0);
   }, [drainMessageQueue]);
 
   const disconnect = useCallback(() => {
     // Bug fix #6: Prevent reconnection on manual disconnect
     intentionalDisconnectRef.current = true;
+
+    if (connectTimerRef.current) {
+      clearTimeout(connectTimerRef.current);
+      connectTimerRef.current = null;
+    }
 
     // Bug fix #6: Clear any pending reconnection timer
     if (reconnectTimerRef.current) {
@@ -119,6 +138,10 @@ export function useSignaling() {
   useEffect(() => {
     return () => {
       // Bug fix #6: Clean up reconnect timer on unmount
+      if (connectTimerRef.current) {
+        clearTimeout(connectTimerRef.current);
+        connectTimerRef.current = null;
+      }
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;

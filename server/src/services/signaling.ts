@@ -9,7 +9,10 @@ import type {
   ChatMessage,
   QAQuestion,
   StageActionPayload,
+  RecordingStatePayload,
 } from '@studio/shared';
+
+type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
 
 // In-memory store (replace with Redis/PostgreSQL later)
 interface RoomState {
@@ -17,6 +20,7 @@ interface RoomState {
   participants: Map<string, { participant: Participant; ws: WebSocket }>;
   qaQuestions: Map<string, QAQuestion>;
   qaVotes: Map<string, Set<string>>;
+  recordingStartedAt?: string;
 }
 
 // Extend WebSocket to track heartbeat state
@@ -36,7 +40,19 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'qa-question-update',
   'qa-question-upvote',
   'stage-action',
+  'recording-state-changed',
   'end-room',
+]);
+
+const STAGE_ACTIONS = new Set<StageActionPayload['action']>([
+  'move-to-stage',
+  'move-to-backstage',
+  'move-to-green-room',
+  'promote-co-host',
+  'demote-to-guest',
+  'mute',
+  'unmute',
+  'remove',
 ]);
 
 const MAX_ROOMS = 1000;
@@ -223,6 +239,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'stage-action':
       handleStageAction(ws, message.payload);
       break;
+    case 'recording-state-changed':
+      handleRecordingStateChange(ws, message.payload);
+      break;
     case 'end-room':
       handleEndRoom(ws);
       break;
@@ -320,6 +339,13 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       participant,
       participants: allParticipants,
       qaQuestions,
+      recordingState: roomState.recordingStartedAt
+        ? {
+            recording: true,
+            startedAt: roomState.recordingStartedAt,
+            performedBy: roomState.room.hostId,
+          }
+        : undefined,
     },
   });
 
@@ -346,6 +372,19 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     sendError(ws, 'Only hosts and co-hosts can manage the stage', 'UNAUTHORIZED');
     return;
   }
+
+  if (
+    typeof payload.targetParticipantId !== 'string' ||
+    !STAGE_ACTIONS.has(payload.action)
+  ) {
+    sendError(ws, 'Invalid stage action', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const authoritativePayload: StageActionPayload = {
+    ...payload,
+    performedBy: mapping.participantId,
+  };
 
   const target = roomState.participants.get(payload.targetParticipantId);
   if (!target) return;
@@ -410,24 +449,80 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
   // Also broadcast the stage action for UI feedback
   broadcastToRoom(mapping.roomId, {
     type: 'stage-action',
-    payload,
+    payload: authoritativePayload,
   });
 
   console.log(`Stage action: ${payload.action} on ${target.participant.name} by ${performer.participant.name}`);
 }
 
-function relayToParticipant(ws: WebSocket, message: SignalMessage) {
-  if (message.type !== 'offer' && message.type !== 'answer' && message.type !== 'ice-candidate') return;
-
+function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayload) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
 
   const roomState = rooms.get(mapping.roomId);
   if (!roomState) return;
 
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can change recording state', 'UNAUTHORIZED');
+    return;
+  }
+
+  if (typeof payload.recording !== 'boolean') {
+    sendError(ws, 'Invalid recording state', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const authoritativePayload: RecordingStatePayload = {
+    recording: payload.recording,
+    performedBy: mapping.participantId,
+    ...(payload.recording ? { startedAt: now } : { stoppedAt: now }),
+  };
+
+  if (payload.recording) {
+    roomState.recordingStartedAt = now;
+    roomState.room.status = 'recording';
+  } else if (roomState.room.status === 'recording') {
+    roomState.recordingStartedAt = undefined;
+    roomState.room.status = 'waiting';
+  } else {
+    roomState.recordingStartedAt = undefined;
+  }
+
+  broadcastToRoom(mapping.roomId, {
+    type: 'recording-state-changed',
+    payload: authoritativePayload,
+  });
+}
+
+function relayToParticipant(ws: WebSocket, message: RelaySignalMessage) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  if (typeof message.payload.to !== 'string') {
+    sendError(ws, 'Invalid recipient', 'VALIDATION_ERROR');
+    return;
+  }
+
+  if (message.payload.to === mapping.participantId) {
+    sendError(ws, 'Cannot relay a signal to yourself', 'VALIDATION_ERROR');
+    return;
+  }
+
   const target = roomState.participants.get(message.payload.to);
   if (target && target.ws.readyState === WebSocket.OPEN) {
-    send(target.ws, message);
+    send(target.ws, {
+      ...message,
+      payload: {
+        ...message.payload,
+        from: mapping.participantId,
+      },
+    } as RelaySignalMessage);
   }
 }
 
@@ -438,6 +533,15 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
   const roomState = rooms.get(mapping.roomId);
   if (!roomState) return;
 
+  if (
+    typeof payload.audioEnabled !== 'boolean' ||
+    typeof payload.videoEnabled !== 'boolean' ||
+    typeof payload.screenSharing !== 'boolean'
+  ) {
+    sendError(ws, 'Invalid media state', 'VALIDATION_ERROR');
+    return;
+  }
+
   const entry = roomState.participants.get(mapping.participantId);
   if (entry) {
     entry.participant.audioEnabled = payload.audioEnabled;
@@ -445,9 +549,16 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
     entry.participant.screenSharing = payload.screenSharing;
   }
 
+  const authoritativePayload: MediaStatePayload = {
+    participantId: mapping.participantId,
+    audioEnabled: payload.audioEnabled,
+    videoEnabled: payload.videoEnabled,
+    screenSharing: payload.screenSharing,
+  };
+
   broadcastToRoom(mapping.roomId, {
     type: 'media-state-changed',
-    payload,
+    payload: authoritativePayload,
   }, mapping.participantId);
 }
 
@@ -473,10 +584,12 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   if (sanitizedContent.length === 0) return;
 
   const sanitizedPayload: ChatMessage = {
-    ...payload,
+    id: nanoid(10),
     content: sanitizedContent,
     senderId: mapping.participantId,
     senderName: senderEntry.participant.name,
+    timestamp: new Date().toISOString(),
+    isBackstage: payload.isBackstage === true,
   };
 
   // If backstage message, only send to host/co-hosts and the sender
@@ -847,7 +960,7 @@ function broadcastQAQuestion(roomId: string, question: QAQuestion) {
   }
 }
 
-function send(ws: WebSocket, message: any) {
+function send(ws: WebSocket, message: SignalMessage) {
   try {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));

@@ -63,7 +63,7 @@ interface SidebarProps {
   onRenameScene: (sceneId: string, newName: string) => void;
   // Chat props
   chatPanelMessages: ChatMessage[];
-  onSendChat: (content: string) => void;
+  onSendChat: (content: string, isBackstage?: boolean) => void;
   chatSenderName: string;
   // People props
   allParticipants: Map<string, Participant>;
@@ -521,11 +521,15 @@ function SmallBtn({ label, color, onClick }: { label: string; color: string; onC
 // ---------------------------------------------------------------------------
 // Chat sub-component
 // ---------------------------------------------------------------------------
-function ChatContent({ messages, onSend, senderName }: { messages: ChatMessage[]; onSend: (c: string) => void; senderName: string }) {
+function ChatContent({ messages, onSend, senderName }: { messages: ChatMessage[]; onSend: (c: string, isBackstage?: boolean) => void; senderName: string }) {
   const [input, setInput] = useState('');
+  const [mode, setMode] = useState<'public' | 'backstage'>('public');
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const publicMessages = messages.filter((msg) => !msg.isBackstage);
+  const backstageMessages = messages.filter((msg) => msg.isBackstage);
+  const visibleMessages = mode === 'backstage' ? backstageMessages : publicMessages;
 
   const handleScroll = () => {
     const el = containerRef.current;
@@ -535,19 +539,54 @@ function ChatContent({ messages, onSend, senderName }: { messages: ChatMessage[]
 
   useEffect(() => {
     if (isNearBottomRef.current) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+  }, [visibleMessages.length, mode]);
 
-  const handleSend = () => { const t = input.trim(); if (!t) return; onSend(t); setInput(''); };
+  const handleSend = () => {
+    const t = input.trim();
+    if (!t) return;
+    onSend(t, mode === 'backstage');
+    setInput('');
+  };
 
   return (
     <div style={st.panelFull}>
-      <div style={st.panelHeader}><h3 style={st.panelTitle}>Chat</h3></div>
+      <div style={st.panelHeader}>
+        <h3 style={st.panelTitle}>Chat</h3>
+        <div style={st.chatTabs} role="tablist" aria-label="Chat channel">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'public'}
+            style={{ ...st.chatTab, ...(mode === 'public' ? st.chatTabActive : {}) }}
+            onClick={() => setMode('public')}
+          >
+            Public
+            {publicMessages.length > 0 && <span style={st.chatTabCount}>{publicMessages.length}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'backstage'}
+            style={{ ...st.chatTab, ...(mode === 'backstage' ? st.chatTabActiveBackstage : {}) }}
+            onClick={() => setMode('backstage')}
+          >
+            Backstage
+            {backstageMessages.length > 0 && <span style={st.chatTabCount}>{backstageMessages.length}</span>}
+          </button>
+        </div>
+      </div>
       <div ref={containerRef} style={st.chatMessages} onScroll={handleScroll}>
-        {messages.length === 0 && <div style={st.chatEmpty}><p style={st.chatEmptyText}>No messages yet</p><p style={st.chatEmptyHint}>Start the conversation!</p></div>}
-        {messages.map((msg) => (
+        {visibleMessages.length === 0 && (
+          <div style={st.chatEmpty}>
+            <p style={st.chatEmptyText}>{mode === 'backstage' ? 'No backstage notes yet' : 'No public messages yet'}</p>
+            <p style={st.chatEmptyHint}>{mode === 'backstage' ? 'Coordinate with producers and co-hosts.' : 'Messages here are visible to everyone.'}</p>
+          </div>
+        )}
+        {visibleMessages.map((msg) => (
           <div key={msg.id} className="chat-msg-enter" style={st.chatMsg}>
             <div style={st.chatMsgHead}>
               <span style={{ ...st.chatMsgName, color: msg.senderName === senderName ? 'var(--accent-hover)' : 'var(--text-primary)' }}>{msg.senderName}</span>
+              {msg.isBackstage && <span style={st.chatBackstageBadge}>Backstage</span>}
               <span style={st.chatMsgTime}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
             <p style={st.chatMsgContent}>{msg.content}</p>
@@ -556,7 +595,13 @@ function ChatContent({ messages, onSend, senderName }: { messages: ChatMessage[]
         <div ref={bottomRef} />
       </div>
       <div style={st.chatInputBar}>
-        <input style={st.chatInput} placeholder="Type a message..." value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} />
+        <input
+          style={st.chatInput}
+          placeholder={mode === 'backstage' ? 'Send a backstage note...' : 'Type a public message...'}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+        />
         <button className="chat-send-btn" style={{ ...st.chatSendBtn, opacity: input.trim() ? 1 : 0.4 }} onClick={handleSend} disabled={!input.trim()} aria-label="Send message">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
         </button>
@@ -633,6 +678,11 @@ const st: Record<string, React.CSSProperties> = {
   smallBtn: { fontSize: 10, fontWeight: 600, padding: '3px 7px', borderRadius: 5, background: 'transparent', border: '1px solid', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 150ms' },
   admitAllBtn: { margin: '8px 16px', width: 'calc(100% - 32px)', fontSize: 13, padding: '8px 14px' },
   // Chat
+  chatTabs: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
+  chatTab: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, height: 28, padding: '0 8px', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
+  chatTabActive: { background: 'rgba(96, 165, 250, 0.14)', color: '#93c5fd' },
+  chatTabActiveBackstage: { background: 'rgba(245, 158, 11, 0.16)', color: '#fbbf24' },
+  chatTabCount: { minWidth: 16, height: 16, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px', borderRadius: 8, background: 'rgba(255, 255, 255, 0.08)', color: 'inherit', fontSize: 9, lineHeight: 1 },
   chatMessages: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 },
   chatEmpty: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4 },
   chatEmptyText: { fontSize: 13, color: 'var(--text-muted)', fontWeight: 500 },
@@ -640,6 +690,7 @@ const st: Record<string, React.CSSProperties> = {
   chatMsg: { display: 'flex', flexDirection: 'column', gap: 2 },
   chatMsgHead: { display: 'flex', alignItems: 'baseline', gap: 8 },
   chatMsgName: { fontSize: 12, fontWeight: 600 },
+  chatBackstageBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.14)', color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatMsgTime: { fontSize: 10, color: 'var(--text-muted)' },
   chatMsgContent: { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.4, wordBreak: 'break-word', margin: 0 },
   chatInputBar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderTop: '1px solid var(--border)' },

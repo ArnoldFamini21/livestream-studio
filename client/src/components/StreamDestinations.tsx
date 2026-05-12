@@ -36,13 +36,16 @@ export function StreamDestinations({
   const [name, setName] = useState('');
   const [rtmpUrl, setRtmpUrl] = useState('');
   const [streamKey, setStreamKey] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
 
   const handleAdd = () => {
-    if (!streamKey.trim()) return;
     const platformInfo = PLATFORMS.find((p) => p.value === platform);
-    
-    // Always fallback to standard RTMP if empty
     const finalRtmp = rtmpUrl.trim() || getDefaultRtmpUrl(platform);
+    const issue = getDestinationIssue({ rtmpUrl: finalRtmp, streamKey });
+    if (issue) {
+      setFormError(issue);
+      return;
+    }
 
     onAdd({
       platform,
@@ -55,9 +58,15 @@ export function StreamDestinations({
     setName('');
     setRtmpUrl('');
     setStreamKey('');
+    setFormError(null);
   };
 
-  const enabledCount = destinations.filter((d) => d.enabled).length;
+  const enabledDestinations = destinations.filter((d) => d.enabled);
+  const enabledIssues = enabledDestinations
+    .map((dest) => ({ dest, issue: getDestinationIssue(dest) }))
+    .filter((item): item is { dest: StreamDestination; issue: string } => Boolean(item.issue));
+  const enabledCount = enabledDestinations.length;
+  const canGoLive = enabledCount > 0 && enabledIssues.length === 0;
 
   return (
     <div style={styles.panel}>
@@ -79,9 +88,24 @@ export function StreamDestinations({
       </div>
 
       <div style={styles.body}>
+        {destinations.length > 0 && (
+          <div style={{ ...styles.preflight, ...(canGoLive ? styles.preflightReady : styles.preflightWarn) }}>
+            <div style={styles.preflightTop}>
+              <span style={styles.preflightLabel}>{canGoLive ? 'Ready to stream' : 'Needs setup'}</span>
+              <span style={styles.preflightCount}>{enabledCount} enabled</span>
+            </div>
+            {enabledIssues.length > 0 && (
+              <div style={styles.preflightIssue}>
+                {enabledIssues[0].dest.name}: {enabledIssues[0].issue}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Destinations list */}
         {destinations.map((dest) => {
           const platformInfo = PLATFORMS.find((p) => p.value === dest.platform);
+          const issue = dest.enabled ? getDestinationIssue(dest) : null;
           return (
             <div key={dest.id} className="participant-item" style={styles.destCard}>
               <div style={styles.destHeader}>
@@ -93,18 +117,20 @@ export function StreamDestinations({
                 <div style={styles.destActions}>
                   <span style={{
                     ...styles.statusBadge,
-                    background: dest.status === 'live' ? 'rgba(34,197,94,0.12)' : dest.status === 'error' ? 'rgba(239,68,68,0.12)' : 'var(--bg-surface)',
-                    color: dest.status === 'live' ? '#22c55e' : dest.status === 'error' ? '#ef4444' : 'var(--text-muted)',
+                    background: dest.status === 'live' ? 'rgba(34,197,94,0.12)' : dest.status === 'connecting' ? 'rgba(96,165,250,0.12)' : dest.status === 'error' || issue ? 'rgba(239,68,68,0.12)' : 'var(--bg-surface)',
+                    color: dest.status === 'live' ? '#22c55e' : dest.status === 'connecting' ? '#60a5fa' : dest.status === 'error' || issue ? '#ef4444' : 'var(--text-muted)',
                   }}>
-                    {dest.status}
+                    {issue ? 'error' : dest.status}
                   </span>
                   <button
-                    style={{ ...styles.toggleBtn, background: dest.enabled ? 'var(--success)' : 'var(--bg-surface)', color: dest.enabled ? 'white' : 'var(--text-muted)' }}
+                    type="button"
+                    style={{ ...styles.toggleBtn, background: dest.enabled ? 'var(--success)' : 'var(--bg-surface)', color: dest.enabled ? 'white' : 'var(--text-muted)', opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }}
                     onClick={() => onToggle(dest.id)}
+                    disabled={isLive}
                   >
                     {dest.enabled ? 'ON' : 'OFF'}
                   </button>
-                  <button className="participant-action-btn" style={styles.removeBtn} onClick={() => onRemove(dest.id)} aria-label="Remove destination">
+                  <button type="button" className="participant-action-btn" style={{ ...styles.removeBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={() => onRemove(dest.id)} disabled={isLive} aria-label="Remove destination">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                       <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                     </svg>
@@ -112,18 +138,21 @@ export function StreamDestinations({
                 </div>
               </div>
               <div style={styles.destKey}>
-                Key: {'••••••••••••'}
+                Key: {maskStreamKey(dest.streamKey)}
               </div>
+              <div style={styles.destRtmp}>{dest.rtmpUrl}</div>
+              {issue && <div style={styles.destIssue}>{issue}</div>}
             </div>
           );
         })}
 
         {/* Add destination form */}
         {showForm ? (
-          <div style={styles.form}>
+          <form style={styles.form} onSubmit={(e) => { e.preventDefault(); handleAdd(); }}>
             <div style={styles.platformGrid}>
               {PLATFORMS.map((p) => (
                 <button
+                  type="button"
                   key={p.value}
                   className="hover-scale"
                   style={{
@@ -135,6 +164,7 @@ export function StreamDestinations({
                   onClick={() => {
                     setPlatform(p.value);
                     setRtmpUrl(getDefaultRtmpUrl(p.value)); // prefill RTMP visually
+                    setFormError(null);
                   }}
                 >
                   {p.label}
@@ -148,7 +178,7 @@ export function StreamDestinations({
                 style={styles.input} 
                 placeholder={`e.g. My ${PLATFORMS.find(p => p.value === platform)?.label} Channel`} 
                 value={name} 
-                onChange={(e) => setName(e.target.value)} 
+                onChange={(e) => { setName(e.target.value); setFormError(null); }}
               />
             </div>
 
@@ -161,7 +191,7 @@ export function StreamDestinations({
                 }} 
                 placeholder="rtmp://" 
                 value={rtmpUrl || getDefaultRtmpUrl(platform)} 
-                onChange={(e) => setRtmpUrl(e.target.value)}
+                onChange={(e) => { setRtmpUrl(e.target.value); setFormError(null); }}
                 readOnly={platform !== 'custom'} 
               />
             </div>
@@ -189,21 +219,24 @@ export function StreamDestinations({
                 style={styles.input} 
                 placeholder="Paste key here" 
                 type="password" 
+                autoComplete="off"
                 value={streamKey} 
-                onChange={(e) => setStreamKey(e.target.value)} 
+                onChange={(e) => { setStreamKey(e.target.value); setFormError(null); }}
               />
             </div>
 
+            {formError && <div style={styles.formError}>{formError}</div>}
+
             <div style={styles.formActions}>
-              <button className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={() => setShowForm(false)}>Cancel</button>
-              <button className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} onClick={handleAdd} disabled={!streamKey.trim()}>Add Destination</button>
+              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={() => setShowForm(false)}>Cancel</button>
+              <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={!streamKey.trim() || isLive}>Add Destination</button>
             </div>
-          </div>
+          </form>
         ) : (
-          <button className="btn-secondary" style={styles.addBtn} onClick={() => {
+          <button type="button" className="btn-secondary" style={{ ...styles.addBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={() => {
             setShowForm(true);
             setRtmpUrl(getDefaultRtmpUrl(platform)); // Ensure initial mount has pre-filled RTMP
-          }}>
+          }} disabled={isLive}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
             </svg>
@@ -220,10 +253,11 @@ export function StreamDestinations({
             </button>
           ) : (
             <button
+              type="button"
               className="btn-primary"
-              style={{ ...styles.liveBtn, background: enabledCount > 0 ? '#ef4444' : 'var(--bg-surface)', color: enabledCount > 0 ? 'white' : 'var(--text-muted)' }}
+              style={{ ...styles.liveBtn, background: canGoLive ? '#ef4444' : 'var(--bg-surface)', color: canGoLive ? 'white' : 'var(--text-muted)' }}
               onClick={onGoLive}
-              disabled={enabledCount === 0}
+              disabled={!canGoLive}
             >
               Go Live to {enabledCount} Destination{enabledCount !== 1 ? 's' : ''}
             </button>
@@ -245,6 +279,28 @@ function getDefaultRtmpUrl(platform: StreamDestination['platform']): string {
   }
 }
 
+function isValidRtmpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'rtmp:' || parsed.protocol === 'rtmps:';
+  } catch {
+    return false;
+  }
+}
+
+function getDestinationIssue(dest: Pick<StreamDestination, 'rtmpUrl' | 'streamKey'>): string | null {
+  if (!dest.rtmpUrl.trim()) return 'Missing RTMP server URL';
+  if (!isValidRtmpUrl(dest.rtmpUrl.trim())) return 'RTMP URL must start with rtmp:// or rtmps://';
+  if (!dest.streamKey.trim()) return 'Missing stream key';
+  return null;
+}
+
+function maskStreamKey(streamKey: string): string {
+  const trimmed = streamKey.trim();
+  if (trimmed.length <= 4) return '••••';
+  return `${'•'.repeat(Math.min(trimmed.length - 4, 12))}${trimmed.slice(-4)}`;
+}
+
 const styles: Record<string, React.CSSProperties> = {
   panel: { width: 320, display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%' },
   header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '14px 16px 10px', borderBottom: '1px solid var(--border)' },
@@ -262,6 +318,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   closeBtn: { background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4, borderRadius: 6, display: 'flex' },
   body: { flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 },
+  preflight: { borderRadius: 8, padding: '10px 12px', border: '1px solid', display: 'flex', flexDirection: 'column', gap: 4 },
+  preflightReady: { background: 'rgba(34,197,94,0.08)', borderColor: 'rgba(34,197,94,0.22)' },
+  preflightWarn: { background: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.22)' },
+  preflightTop: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' },
+  preflightLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
+  preflightCount: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' },
+  preflightIssue: { fontSize: 11, color: '#fbbf24', lineHeight: 1.35 },
   destCard: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: '10px 12px', border: '1px solid var(--border)' },
   destHeader: { display: 'flex', alignItems: 'center', gap: 8 },
   platformDot: { width: 10, height: 10, borderRadius: '50%', flexShrink: 0 },
@@ -273,6 +336,8 @@ const styles: Record<string, React.CSSProperties> = {
   toggleBtn: { fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, border: 'none', cursor: 'pointer' },
   removeBtn: { width: 22, height: 22, borderRadius: 5, background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 },
   destKey: { fontSize: 10, color: 'var(--text-muted)', marginTop: 6, fontFamily: 'monospace' },
+  destRtmp: { fontSize: 10, color: 'var(--text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' },
+  destIssue: { fontSize: 10, color: '#ef4444', marginTop: 5, lineHeight: 1.3 },
   form: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 12, border: '1px solid var(--border)' },
   platformGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 },
   platformBtn: { fontSize: 11, fontWeight: 500, padding: '6px 4px', borderRadius: 6, border: '1px solid', cursor: 'pointer', background: 'var(--bg-tertiary)', textAlign: 'center' as const },
@@ -280,6 +345,7 @@ const styles: Record<string, React.CSSProperties> = {
   inputLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' },
   keyLink: { fontSize: 10, color: '#60a5fa', textDecoration: 'none', display: 'flex', alignItems: 'center', fontWeight: 500 },
   input: { width: '100%', padding: '7px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' },
+  formError: { fontSize: 11, color: '#fca5a5', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 6, padding: '7px 9px', lineHeight: 1.35 },
   formActions: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 },
   addBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13, padding: '10px', width: '100%' },
   liveSection: { marginTop: 'auto', paddingTop: 8 },

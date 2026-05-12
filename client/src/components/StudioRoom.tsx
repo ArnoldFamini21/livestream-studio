@@ -13,6 +13,7 @@ import { useRecording } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording } from '../hooks/useLocalRecording.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
+import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
 import { VideoTile } from './VideoTile.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
@@ -32,6 +33,7 @@ import { ProducerPanel } from './ProducerPanel.tsx';
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
 import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience } from './WebinarQA.tsx';
+import { SessionHealthPanel } from './SessionHealthPanel.tsx';
 
 const STUDIO_STATE_VERSION = 1;
 const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -55,6 +57,37 @@ interface PersistedStudioState {
 
 function getStudioStateKey(roomId: string): string {
   return `livestream-studio:room-state:${roomId}`;
+}
+
+function getHealthColor(status: HealthStatus): string {
+  switch (status) {
+    case 'good': return 'var(--success)';
+    case 'warning': return 'var(--warning)';
+    case 'bad': return 'var(--danger)';
+  }
+}
+
+function formatDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function getStreamDestinationIssue(dest: Pick<StreamDestination, 'rtmpUrl' | 'streamKey'>): string | null {
+  const rtmpUrl = dest.rtmpUrl.trim();
+  if (!rtmpUrl) return 'Missing RTMP server URL';
+  try {
+    const parsed = new URL(rtmpUrl);
+    if (parsed.protocol !== 'rtmp:' && parsed.protocol !== 'rtmps:') {
+      return 'Invalid RTMP server URL';
+    }
+  } catch {
+    return 'Invalid RTMP server URL';
+  }
+  if (!dest.streamKey.trim()) return 'Missing stream key';
+  return null;
 }
 
 function isPersistableLogoUrl(url: string | null): url is string {
@@ -108,6 +141,7 @@ export function StudioRoom() {
   const [showRecordingPanel, setShowRecordingPanel] = useState(false);
   const [showProducerPanel, setShowProducerPanel] = useState(false);
   const [showWebinarQA, setShowWebinarQA] = useState(false);
+  const [showHealthPanel, setShowHealthPanel] = useState(false);
   const [showGuestChat, setShowGuestChat] = useState(false);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>('people');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -131,6 +165,8 @@ export function StudioRoom() {
   // Room ending countdown
   const [roomEnding, setRoomEnding] = useState(false);
   const [endingCountdown, setEndingCountdown] = useState(10);
+  const [sessionRecordingStartedAt, setSessionRecordingStartedAt] = useState<string | null>(null);
+  const [sessionRecordingElapsed, setSessionRecordingElapsed] = useState(0);
 
   // Media overlay
   const [activeMedia, setActiveMedia] = useState<{ type: 'video' | 'image' | 'pdf'; url: string } | null>(null);
@@ -194,16 +230,28 @@ export function StudioRoom() {
 
   const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]);
   const effectiveVideoEnabled = videoEnabled && Boolean(localStream?.getVideoTracks()[0]);
+  const sessionHealth = useSessionHealth({
+    localStream,
+    connected,
+    mediaError,
+    audioDeviceCount: audioDevices.length,
+    videoDeviceCount: videoDevices.length,
+    participantCount: participants.size + (myParticipant ? 1 : 0),
+    isRecording: isRecording || isLocalRecording || Boolean(sessionRecordingStartedAt),
+    isLive,
+  });
 
   const joinedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const myParticipantRef = useRef<Participant | null>(null);
   const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0 });
+  const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
   const videoEnabledRef = useRef(videoEnabled);
   const isScreenSharingRef = useRef(isScreenSharing);
   const localStreamRef = useRef<MediaStream | null>(localStream);
+  const publishedTrackIdsRef = useRef<{ audio?: string; video?: string }>({});
 
   // Refs for signaling handler dependencies to reduce recreation frequency
   const connectToPeerRef = useRef(connectToPeer);
@@ -232,6 +280,12 @@ export function StudioRoom() {
     brandColor,
     logoUrl,
   });
+
+  useEffect(() => {
+    return () => {
+      if (liveStatusTimerRef.current) clearTimeout(liveStatusTimerRef.current);
+    };
+  }, []);
 
   // Restore non-sensitive room setup from this browser.
   useEffect(() => {
@@ -336,6 +390,20 @@ export function StudioRoom() {
   useEffect(() => { startScreenShareRef.current = startScreenShare; }, [startScreenShare]);
   useEffect(() => { sendRef.current = send; }, [send]);
 
+  useEffect(() => {
+    if (!sessionRecordingStartedAt) {
+      setSessionRecordingElapsed(0);
+      return;
+    }
+
+    const updateElapsed = () => {
+      setSessionRecordingElapsed(Math.max(0, Math.floor((Date.now() - new Date(sessionRecordingStartedAt).getTime()) / 1000)));
+    };
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [sessionRecordingStartedAt]);
+
   // Connect WebSocket and start media on mount
   useEffect(() => {
     connect();
@@ -343,7 +411,10 @@ export function StudioRoom() {
     const fallbackTimer = setTimeout(() => {
       if (active) setMediaAttemptComplete(true);
     }, 3000);
-    startMedia().finally(() => {
+    startMedia(undefined, undefined, {
+      audioEnabled: sessionStorage.getItem('preferredAudioEnabled') !== 'false',
+      videoEnabled: sessionStorage.getItem('preferredVideoEnabled') !== 'false',
+    }).finally(() => {
       if (!active) return;
       clearTimeout(fallbackTimer);
       setMediaAttemptComplete(true);
@@ -373,6 +444,12 @@ export function StudioRoom() {
     return () => clearTimeout(timeout);
   }, [connected]);
 
+  useEffect(() => {
+    if (connected) {
+      setConnectionError(null);
+    }
+  }, [connected]);
+
   // Join room once connected
   useEffect(() => {
     if (connected && roomId && !joinedRef.current && (localStream || mediaError || mediaAttemptComplete)) {
@@ -389,11 +466,12 @@ export function StudioRoom() {
     (message: SignalMessage) => {
       switch (message.type) {
         case 'room-joined': {
-          const { room: roomData, participant, participants: existing, qaQuestions: existingQuestions = [] } = message.payload;
+          const { room: roomData, participant, participants: existing, qaQuestions: existingQuestions = [], recordingState } = message.payload;
           setRoom(roomData);
           setMyParticipant(participant);
           setJoined(true);
           setQAQuestions(existingQuestions);
+          setSessionRecordingStartedAt(recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null);
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
           setParticipants(map);
@@ -492,6 +570,10 @@ export function StudioRoom() {
         case 'host-changed':
           setRoom((prev) => prev ? { ...prev, hostId: message.payload.newHostId } : prev);
           break;
+        case 'recording-state-changed':
+          setSessionRecordingStartedAt(message.payload.recording ? message.payload.startedAt || new Date().toISOString() : null);
+          setRoom((prev) => prev ? { ...prev, status: message.payload.recording ? 'recording' : 'waiting' } : prev);
+          break;
         case 'room-ended':
           setRoomEnding(false);
           cleanupRef.current();
@@ -524,6 +606,27 @@ export function StudioRoom() {
     const rm = addHandler(handleSignalingMessage);
     return rm;
   }, [addHandler, handleSignalingMessage]);
+
+  // Keep active peer connections aligned when a device switch or fallback replaces tracks.
+  useEffect(() => {
+    const audioTrack = localStream?.getAudioTracks()[0];
+    const videoTrack = localStream?.getVideoTracks()[0];
+    const published = publishedTrackIdsRef.current;
+
+    if (audioTrack?.id !== published.audio) {
+      published.audio = audioTrack?.id;
+      if (audioTrack) {
+        replaceTrack(audioTrack).catch((err) => console.error('Failed to publish audio track:', err));
+      }
+    }
+
+    if (videoTrack?.id !== published.video) {
+      published.video = videoTrack?.id;
+      if (videoTrack) {
+        replaceTrack(videoTrack).catch((err) => console.error('Failed to publish video track:', err));
+      }
+    }
+  }, [localStream, replaceTrack]);
 
   // Sync local tracks when remotely muted/unmuted
   useEffect(() => {
@@ -621,9 +724,18 @@ export function StudioRoom() {
   }, []); // All mutable values accessed via refs
 
   // Recording
-  const onToggleRecording = () => {
+  const onToggleRecording = async () => {
+    if (!myParticipant) return;
     if (isRecording) {
-      downloadRecordings();
+      await downloadRecordings();
+      send({
+        type: 'recording-state-changed',
+        payload: {
+          recording: false,
+          performedBy: myParticipant.id,
+        },
+      });
+      setSessionRecordingStartedAt(null);
     } else {
       const streams = new Map<string, { stream: MediaStream; name: string; isLocal: boolean }>();
       if (localStream && myParticipant) {
@@ -633,7 +745,18 @@ export function StudioRoom() {
         const rs = remoteStreams.get(id);
         if (rs) streams.set(id, { stream: rs, name: participant.name, isLocal: false });
       }
+      if (streams.size === 0) return;
       startRecording(streams);
+      const startedAt = new Date().toISOString();
+      setSessionRecordingStartedAt(startedAt);
+      send({
+        type: 'recording-state-changed',
+        payload: {
+          recording: true,
+          startedAt,
+          performedBy: myParticipant.id,
+        },
+      });
     }
   };
 
@@ -645,7 +768,7 @@ export function StudioRoom() {
   };
 
   // Chat
-  const onSendChat = (content: string) => {
+  const onSendChat = (content: string, isBackstage = false) => {
     if (!myParticipant) return;
     const msg: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -653,12 +776,19 @@ export function StudioRoom() {
       senderName: myParticipant.name,
       content,
       timestamp: new Date().toISOString(),
-      isBackstage: false,
+      isBackstage,
     };
-    setChatMessages((prev) => {
-      const next = [...prev, msg];
-      return next.length > 500 ? next.slice(-500) : next;
-    });
+
+    // Public messages are broadcast to everyone except the sender, so keep them
+    // optimistic. Backstage messages are echoed back by the server only to the
+    // production team, which avoids client-generated duplicate IDs.
+    if (!isBackstage) {
+      setChatMessages((prev) => {
+        const next = [...prev, msg];
+        return next.length > 500 ? next.slice(-500) : next;
+      });
+    }
+
     send({ type: 'chat-message', payload: msg });
   };
 
@@ -712,10 +842,29 @@ export function StudioRoom() {
     setDestinations((prev) => prev.map((d) => d.id === id ? { ...d, enabled: !d.enabled } : d));
   };
   const onGoLive = () => {
+    if (liveStatusTimerRef.current) {
+      clearTimeout(liveStatusTimerRef.current);
+      liveStatusTimerRef.current = null;
+    }
+
+    const enabledDestinations = destinations.filter((d) => d.enabled);
+    if (enabledDestinations.length === 0 || enabledDestinations.some((d) => getStreamDestinationIssue(d))) {
+      setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'error' } : d));
+      return;
+    }
+
     setIsLive(true);
-    setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'live' } : d));
+    setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'connecting' } : { ...d, status: 'idle' }));
+    liveStatusTimerRef.current = setTimeout(() => {
+      setDestinations((prev) => prev.map((d) => d.status === 'connecting' ? { ...d, status: 'live' } : d));
+      liveStatusTimerRef.current = null;
+    }, 1200);
   };
   const onStopLive = () => {
+    if (liveStatusTimerRef.current) {
+      clearTimeout(liveStatusTimerRef.current);
+      liveStatusTimerRef.current = null;
+    }
     setIsLive(false);
     setDestinations((prev) => prev.map((d) => ({ ...d, status: 'idle' })));
   };
@@ -1178,6 +1327,12 @@ export function StudioRoom() {
   const visibleTickers = useMemo(() => tickers.filter(t => t.visible), [tickers]);
   const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
   const showCompositorDebug = import.meta.env.DEV && isLive;
+  const sessionRecordingActive = Boolean(sessionRecordingStartedAt || isRecording || isLocalRecording);
+  const sessionRecordingTime = isRecording
+    ? formattedTime
+    : sessionRecordingStartedAt
+      ? formatDuration(sessionRecordingElapsed)
+      : localRecFormattedTime;
 
   // Connection error
   if (connectionError) {
@@ -1230,10 +1385,10 @@ export function StudioRoom() {
             <span style={styles.badgeDot} />
             {videoItems.length} in studio
           </span>
-          {isRecording && (
+          {sessionRecordingActive && (
             <span style={styles.recBadge}>
               <span style={styles.recDot} />
-              REC {formattedTime}
+              REC {sessionRecordingTime}
             </span>
           )}
           {isLive && (
@@ -1247,6 +1402,19 @@ export function StudioRoom() {
           )}
         </div>
         <div style={styles.headerRight}>
+          <button
+            style={{
+              ...styles.healthBtn,
+              borderColor: getHealthColor(sessionHealth.status),
+              color: getHealthColor(sessionHealth.status),
+            }}
+            onClick={() => setShowHealthPanel(true)}
+            title="Session health"
+            aria-label={`Session health: ${sessionHealth.label}, ${sessionHealth.score}`}
+          >
+            <span style={{ ...styles.healthDot, background: getHealthColor(sessionHealth.status) }} />
+            {sessionHealth.score}
+          </button>
           {isHostOrCoHost && (
             <button
               style={{ ...styles.headerBtn, ...(showSidebar ? styles.headerBtnActive : {}) }}
@@ -1438,7 +1606,7 @@ export function StudioRoom() {
         {/* Guest Chat Panel */}
         {!isHostOrCoHost && showGuestChat && (
           <ChatPanel
-            messages={chatMessages}
+            messages={chatMessages.filter((msg) => !msg.isBackstage)}
             onSend={onSendChat}
             onClose={() => setShowGuestChat(false)}
             senderName={userName}
@@ -1561,6 +1729,7 @@ export function StudioRoom() {
         onOpenRecordingPanel={() => setShowRecordingPanel(!showRecordingPanel)}
         onOpenProducerPanel={() => setShowProducerPanel(!showProducerPanel)}
         onOpenWebinarQA={() => setShowWebinarQA(!showWebinarQA)}
+        onOpenHealthPanel={() => setShowHealthPanel(true)}
         participantCount={allParticipantsMap.size}
         isLive={isLive}
       />
@@ -1587,6 +1756,14 @@ export function StudioRoom() {
 
       {/* Background Music Modal */}
       {showBackgroundMusic && <BackgroundMusic onClose={() => setShowBackgroundMusic(false)} />}
+
+      {/* Session Health Panel */}
+      {showHealthPanel && (
+        <SessionHealthPanel
+          summary={sessionHealth}
+          onClose={() => setShowHealthPanel(false)}
+        />
+      )}
 
       {/* Device Settings Modal */}
       {showDeviceSettings && (
@@ -1715,6 +1892,28 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--accent-subtle)',
     borderColor: 'var(--accent)',
     color: 'var(--accent)',
+  },
+  healthBtn: {
+    height: 32,
+    minWidth: 54,
+    borderRadius: 8,
+    background: 'var(--bg-tertiary)',
+    border: '1px solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    padding: '0 9px',
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: 'pointer',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  healthDot: {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    flexShrink: 0,
   },
   roomIdBadge: {
     fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace',
