@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { StageBackground, Scene, ChatMessage, Participant, StageActionPayload, CameraShape, NameTagStyle } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoSize, StageBackground, Scene, ChatMessage, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset } from '@studio/shared';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
@@ -7,11 +7,12 @@ import { BackgroundPicker } from './BackgroundPicker.tsx';
 import { SceneManager } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
 import { CommentHighlightManager, type HighlightedComment } from './CommentHighlight.tsx';
+import { MediaLibrary } from './MediaLibrary.tsx';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
 // ---------------------------------------------------------------------------
-export type SidebarTab = 'people' | 'chat' | 'overlays' | 'brand' | 'scenes';
+export type SidebarTab = 'people' | 'chat' | 'media' | 'overlays' | 'brand' | 'scenes';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -21,20 +22,20 @@ interface SidebarProps {
   onActiveTabChange?: (tab: SidebarTab | null) => void;
   // Overlay props
   lowerThirds: LowerThirdData[];
-  onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'>) => void;
+  onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleLowerThird: (id: string) => void;
   onRemoveLowerThird: (id: string) => void;
   banners: BannerData[];
-  onAddBanner: (banner: Omit<BannerData, 'id' | 'visible'>) => void;
+  onAddBanner: (banner: Omit<BannerData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleBanner: (id: string) => void;
   onRemoveBanner: (id: string) => void;
   timers: TimerData[];
-  onAddTimer: (timer: Omit<TimerData, 'id' | 'visible'>) => void;
+  onAddTimer: (timer: Omit<TimerData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleTimer: (id: string) => void;
   onRemoveTimer: (id: string) => void;
   onUpdateTimer: (id: string, updates: Partial<TimerData>) => void;
   tickers: TickerData[];
-  onAddTicker: (ticker: Omit<TickerData, 'id' | 'visible'>) => void;
+  onAddTicker: (ticker: Omit<TickerData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleTicker: (id: string) => void;
   onRemoveTicker: (id: string) => void;
   onUpdateTicker: (id: string, updates: Partial<TickerData>) => void;
@@ -50,10 +51,22 @@ interface SidebarProps {
   onBrandColorChange: (color: string) => void;
   logoUrl: string | null;
   onLogoUrlChange: (url: string | null) => void;
+  logoPlacement: LogoPlacement;
+  onLogoPlacementChange: (placement: LogoPlacement) => void;
+  logoSize: LogoSize;
+  onLogoSizeChange: (size: LogoSize) => void;
   cameraShape: CameraShape;
   onCameraShapeChange: (shape: CameraShape) => void;
   nameTagStyle: NameTagStyle;
   onNameTagStyleChange: (style: NameTagStyle) => void;
+  // Media props
+  mediaAssets: StudioMediaAsset[];
+  activeMedia: ActiveMedia | null;
+  onUploadMedia: (files: FileList | File[]) => void;
+  onAddMediaUrl: (url: string, type: 'video' | 'image') => void;
+  onPlayMediaAsset: (asset: StudioMediaAsset) => void;
+  onRemoveMediaAsset: (assetId: string) => void;
+  onStopMedia: () => void;
   // Scene props
   scenes: Scene[];
   activeSceneId: string | null;
@@ -97,6 +110,16 @@ const tabDefs: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'media',
+    label: 'Media',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="M10 9l5 3-5 3V9z" />
       </svg>
     ),
   },
@@ -156,6 +179,28 @@ export function Sidebar(props: SidebarProps) {
     { name: 'Amber', color: '#f59e0b' },
   ];
 
+  const brandKits: Array<{
+    name: string;
+    color: string;
+    background: StageBackground;
+    cameraShape: CameraShape;
+    nameTagStyle: NameTagStyle;
+    logoSize: LogoSize;
+  }> = [
+    { name: 'Broadcast', color: '#ef4444', background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium' },
+    { name: 'Webinar', color: '#2563eb', background: { type: 'gradient', value: 'linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%)' }, cameraShape: 'rounded', nameTagStyle: 'classic', logoSize: 'small' },
+    { name: 'Podcast', color: '#db2777', background: { type: 'gradient', value: 'linear-gradient(135deg, #18181b 0%, #831843 100%)' }, cameraShape: 'circle', nameTagStyle: 'minimal', logoSize: 'medium' },
+    { name: 'Executive', color: '#059669', background: { type: 'color', value: '#111827' }, cameraShape: 'rectangle', nameTagStyle: 'classic', logoSize: 'large' },
+  ];
+
+  const applyBrandKit = (kit: (typeof brandKits)[number]) => {
+    props.onBrandColorChange(kit.color);
+    props.onStageBackgroundChange(kit.background);
+    props.onCameraShapeChange(kit.cameraShape);
+    props.onNameTagStyleChange(kit.nameTagStyle);
+    props.onLogoSizeChange(kit.logoSize);
+  };
+
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -195,8 +240,37 @@ export function Sidebar(props: SidebarProps) {
             />
           )}
 
+          {activeTab === 'media' && (
+            <MediaLibrary
+              assets={props.mediaAssets}
+              activeMedia={props.activeMedia}
+              onUpload={props.onUploadMedia}
+              onAddUrl={props.onAddMediaUrl}
+              onPlay={props.onPlayMediaAsset}
+              onRemove={props.onRemoveMediaAsset}
+              onStop={props.onStopMedia}
+            />
+          )}
+
           {activeTab === 'overlays' && (
             <div style={st.scrollContent}>
+              <OverlayQuickActions
+                hostName={props.chatSenderName}
+                brandColor={props.brandColor}
+                lowerThirds={props.lowerThirds}
+                banners={props.banners}
+                timers={props.timers}
+                tickers={props.tickers}
+                onAddLowerThird={props.onAddLowerThird}
+                onToggleLowerThird={props.onToggleLowerThird}
+                onAddBanner={props.onAddBanner}
+                onToggleBanner={props.onToggleBanner}
+                onAddTimer={props.onAddTimer}
+                onToggleTimer={props.onToggleTimer}
+                onAddTicker={props.onAddTicker}
+                onToggleTicker={props.onToggleTicker}
+              />
+              <div style={st.divider} />
               <LowerThirdManager
                 lowerThirds={props.lowerThirds}
                 onAdd={props.onAddLowerThird}
@@ -241,6 +315,17 @@ export function Sidebar(props: SidebarProps) {
               <div style={st.section}>
                 <h4 style={st.sectionTitle}>Brand Kit</h4>
                 <div style={st.brandGroup}>
+                  <span style={st.brandLabel}>Presets</span>
+                  <div style={st.brandKitGrid}>
+                    {brandKits.map((kit) => (
+                      <button key={kit.name} type="button" style={st.brandKitBtn} onClick={() => applyBrandKit(kit)}>
+                        <span style={{ ...st.brandKitSwatch, background: kit.background.type === 'none' ? kit.color : kit.background.value }} />
+                        <span style={st.brandKitName}>{kit.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div style={st.brandGroup}>
                   <span style={st.brandLabel}>Logo</span>
                   <input ref={logoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleLogoUpload} />
                   {props.logoUrl ? (
@@ -260,6 +345,37 @@ export function Sidebar(props: SidebarProps) {
                       Upload Logo
                     </button>
                   )}
+                </div>
+                <div style={st.brandGroup}>
+                  <span style={st.brandLabel}>Logo Position</span>
+                  <div style={st.positionGrid}>
+                    {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as LogoPlacement[]).map((placement) => (
+                      <button
+                        key={placement}
+                        type="button"
+                        style={{ ...st.positionBtn, ...(props.logoPlacement === placement ? st.positionBtnActive : {}) }}
+                        onClick={() => props.onLogoPlacementChange(placement)}
+                        title={placement.replace('-', ' ')}
+                      >
+                        <span style={{ ...st.positionDot, ...getPositionDotStyle(placement) }} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div style={st.brandGroup}>
+                  <span style={st.brandLabel}>Logo Size</span>
+                  <div style={st.segmented}>
+                    {(['small', 'medium', 'large'] as LogoSize[]).map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        style={{ ...st.segmentedBtn, ...(props.logoSize === size ? st.segmentedBtnActive : {}) }}
+                        onClick={() => props.onLogoSizeChange(size)}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div style={st.brandGroup}>
                   <span style={st.brandLabel}>Stage Background</span>
@@ -610,6 +726,107 @@ function ChatContent({ messages, onSend, senderName }: { messages: ChatMessage[]
   );
 }
 
+function OverlayQuickActions({
+  hostName,
+  brandColor,
+  lowerThirds,
+  banners,
+  timers,
+  tickers,
+  onAddLowerThird,
+  onToggleLowerThird,
+  onAddBanner,
+  onToggleBanner,
+  onAddTimer,
+  onToggleTimer,
+  onAddTicker,
+  onToggleTicker,
+}: {
+  hostName: string;
+  brandColor: string;
+  lowerThirds: LowerThirdData[];
+  banners: BannerData[];
+  timers: TimerData[];
+  tickers: TickerData[];
+  onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
+  onToggleLowerThird: (id: string) => void;
+  onAddBanner: (banner: Omit<BannerData, 'id' | 'visible'> & { visible?: boolean }) => void;
+  onToggleBanner: (id: string) => void;
+  onAddTimer: (timer: Omit<TimerData, 'id' | 'visible'> & { visible?: boolean }) => void;
+  onToggleTimer: (id: string) => void;
+  onAddTicker: (ticker: Omit<TickerData, 'id' | 'visible'> & { visible?: boolean }) => void;
+  onToggleTicker: (id: string) => void;
+}) {
+  const visibleCount =
+    lowerThirds.filter((item) => item.visible).length +
+    banners.filter((item) => item.visible).length +
+    timers.filter((item) => item.visible).length +
+    tickers.filter((item) => item.visible).length;
+
+  const clearLiveOverlays = () => {
+    lowerThirds.filter((item) => item.visible).forEach((item) => onToggleLowerThird(item.id));
+    banners.filter((item) => item.visible).forEach((item) => onToggleBanner(item.id));
+    timers.filter((item) => item.visible).forEach((item) => onToggleTimer(item.id));
+    tickers.filter((item) => item.visible).forEach((item) => onToggleTicker(item.id));
+  };
+
+  const addLiveShowPack = () => {
+    onAddLowerThird({ name: hostName || 'Host', title: 'Live Host', style: 'bold', visible: true });
+    onAddBanner({ text: 'We are live', style: 'info', isTicker: false, position: 'top', visible: true });
+  };
+
+  const addWebinarPack = () => {
+    onAddBanner({ text: 'Send your questions in chat', style: 'custom', customColor: brandColor, isTicker: false, position: 'bottom', visible: true });
+    onAddTimer({ mode: 'countup', durationSeconds: 0, remainingSeconds: 0, isRunning: true, position: 'top-right', style: 'minimal', visible: true });
+  };
+
+  const addCountdownPack = () => {
+    onAddBanner({ text: 'Starting soon', style: 'custom', customColor: brandColor, isTicker: false, position: 'top', visible: true });
+    onAddTimer({ mode: 'countdown', durationSeconds: 300, remainingSeconds: 300, isRunning: true, position: 'bottom-right', style: 'bold', visible: true });
+  };
+
+  const addTickerPack = () => {
+    onAddTicker({ text: 'Welcome to the live stream', speed: 'normal', backgroundColor: brandColor, textColor: '#ffffff', separator: '\u2022', visible: true });
+  };
+
+  const packs = [
+    { label: 'Live Show', action: addLiveShowPack },
+    { label: 'Webinar Q&A', action: addWebinarPack },
+    { label: 'Countdown', action: addCountdownPack },
+    { label: 'Ticker', action: addTickerPack },
+  ];
+
+  return (
+    <div style={st.overlayQuick}>
+      <div style={st.overlayQuickHead}>
+        <div>
+          <h4 style={st.sectionTitleInline}>Overlay Packs</h4>
+          <p style={st.panelSub}>{visibleCount} live overlay{visibleCount === 1 ? '' : 's'}</p>
+        </div>
+        <button type="button" style={{ ...st.clearBtn, opacity: visibleCount > 0 ? 1 : 0.45 }} disabled={visibleCount === 0} onClick={clearLiveOverlays}>
+          Clear
+        </button>
+      </div>
+      <div style={st.overlayPackGrid}>
+        {packs.map((pack) => (
+          <button key={pack.label} type="button" style={st.overlayPackBtn} onClick={pack.action}>
+            {pack.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function getPositionDotStyle(placement: LogoPlacement): React.CSSProperties {
+  switch (placement) {
+    case 'top-left': return { top: 4, left: 4 };
+    case 'top-right': return { top: 4, right: 4 };
+    case 'bottom-left': return { bottom: 4, left: 4 };
+    case 'bottom-right': return { bottom: 4, right: 4 };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
@@ -623,9 +840,14 @@ const st: Record<string, React.CSSProperties> = {
   iconLabel: { fontSize: 9, fontWeight: 500, lineHeight: 1 },
   section: { padding: 16 },
   sectionTitle: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 },
+  sectionTitleInline: { fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: 0 },
   divider: { height: 1, background: 'var(--border)', margin: '4px 16px 8px' },
   brandGroup: { marginBottom: 16 },
   brandLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 8 },
+  brandKitGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
+  brandKitBtn: { display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch', border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', borderRadius: 8, padding: 8, cursor: 'pointer', minWidth: 0 },
+  brandKitSwatch: { display: 'block', height: 28, borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' },
+  brandKitName: { fontSize: 11, fontWeight: 700, textAlign: 'left' },
   uploadBtn: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, fontSize: 12, fontWeight: 500, background: 'none', color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 10, cursor: 'pointer', transition: 'all var(--transition-fast)' },
   logoPreview: { position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', height: 60, borderRadius: 8, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', overflow: 'hidden' },
   logoImg: { maxHeight: 48, maxWidth: '100%', objectFit: 'contain' },
@@ -635,6 +857,13 @@ const st: Record<string, React.CSSProperties> = {
   colorInfo: { display: 'flex', alignItems: 'center', gap: 6 },
   colorDot: { width: 12, height: 12, borderRadius: 4 },
   colorHex: { fontSize: 11, fontFamily: 'monospace', color: 'var(--text-muted)' },
+  positionGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
+  positionBtn: { height: 40, position: 'relative', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg-tertiary)', cursor: 'pointer' },
+  positionBtnActive: { border: '1px solid var(--accent)', boxShadow: 'inset 0 0 0 1px var(--accent)' },
+  positionDot: { position: 'absolute', width: 10, height: 10, borderRadius: 3, background: 'var(--accent)' },
+  segmented: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, padding: 3, background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)' },
+  segmentedBtn: { height: 28, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer', textTransform: 'capitalize' },
+  segmentedBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
   shapeGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
   shapeBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s ease' },
   shapeVisual: { width: 32, background: 'var(--border-strong)' },
@@ -677,6 +906,12 @@ const st: Record<string, React.CSSProperties> = {
   personActions: { display: 'flex', gap: 3, flexShrink: 0 },
   smallBtn: { fontSize: 10, fontWeight: 600, padding: '3px 7px', borderRadius: 5, background: 'transparent', border: '1px solid', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 150ms' },
   admitAllBtn: { margin: '8px 16px', width: 'calc(100% - 32px)', fontSize: 13, padding: '8px 14px' },
+  // Overlay quick actions
+  overlayQuick: { padding: 12, display: 'flex', flexDirection: 'column', gap: 10 },
+  overlayQuickHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  clearBtn: { border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.1)', color: '#fca5a5', borderRadius: 7, height: 28, padding: '0 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
+  overlayPackGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 },
+  overlayPackBtn: { minHeight: 34, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer' },
   // Chat
   chatTabs: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
   chatTab: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, height: 28, padding: '0 8px', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer' },

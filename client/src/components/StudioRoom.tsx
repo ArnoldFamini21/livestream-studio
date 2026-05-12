@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset } from '@studio/shared';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
@@ -21,7 +21,7 @@ import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { StreamDestinations } from './StreamDestinations.tsx';
-import { MediaPanel } from './MediaPanel.tsx';
+import { detectMediaType } from './MediaLibrary.tsx';
 import { SoundBoard } from './SoundBoard.tsx';
 import { Teleprompter } from './Teleprompter.tsx';
 import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
@@ -44,9 +44,12 @@ interface PersistedStudioState {
   stageBackground: StageBackground;
   brandColor: string;
   logoUrl: string | null;
+  logoPlacement: LogoPlacement;
+  logoSize: LogoSize;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
   pipCorner: 'TL' | 'TR' | 'BL' | 'BR';
+  mediaAssets: StudioMediaAsset[];
   scenes: Scene[];
   activeSceneId: string | null;
   lowerThirds: LowerThirdData[];
@@ -117,6 +120,44 @@ function getMaxNumericSuffix(items: Array<{ id: string }> | undefined, prefix: s
   }, 0);
 }
 
+function getMediaNameFromUrl(url: string, type: 'video' | 'image'): string {
+  if (url.startsWith('data:')) {
+    return type === 'video' ? 'Inline video' : 'Inline image';
+  }
+  try {
+    const parsed = new URL(url);
+    const lastSegment = parsed.pathname.split('/').filter(Boolean).pop();
+    if (lastSegment) return decodeURIComponent(lastSegment);
+  } catch {
+    // Fall back to a readable generated name below.
+  }
+  return type === 'video' ? 'Video URL' : 'Image URL';
+}
+
+function getLogoPlacementStyle(placement: LogoPlacement): React.CSSProperties {
+  switch (placement) {
+    case 'top-left':
+      return { top: 12, left: 12 };
+    case 'top-right':
+      return { top: 12, right: 12 };
+    case 'bottom-left':
+      return { bottom: 12, left: 12 };
+    case 'bottom-right':
+      return { bottom: 12, right: 12 };
+  }
+}
+
+function getLogoSizeStyle(size: LogoSize): React.CSSProperties {
+  switch (size) {
+    case 'small':
+      return { maxHeight: 28, maxWidth: 84 };
+    case 'medium':
+      return { maxHeight: 42, maxWidth: 128 };
+    case 'large':
+      return { maxHeight: 58, maxWidth: 180 };
+  }
+}
+
 export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
@@ -134,7 +175,6 @@ export function StudioRoom() {
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showStreamDest, setShowStreamDest] = useState(false);
-  const [showMediaPanel, setShowMediaPanel] = useState(false);
   const [showSoundBoard, setShowSoundBoard] = useState(false);
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [showBackgroundMusic, setShowBackgroundMusic] = useState(false);
@@ -169,11 +209,14 @@ export function StudioRoom() {
   const [sessionRecordingElapsed, setSessionRecordingElapsed] = useState(0);
 
   // Media overlay
-  const [activeMedia, setActiveMedia] = useState<{ type: 'video' | 'image' | 'pdf'; url: string } | null>(null);
+  const [activeMedia, setActiveMedia] = useState<ActiveMedia | null>(null);
+  const [mediaAssets, setMediaAssets] = useState<StudioMediaAsset[]>([]);
 
   const [stageBackground, setStageBackground] = useState<StageBackground>({ type: 'none', value: '' });
   const [brandColor, setBrandColor] = useState('#a78bfa');
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>('top-right');
+  const [logoSize, setLogoSize] = useState<LogoSize>('medium');
   const [cameraShape, setCameraShape] = useState<CameraShape>('rectangle');
   const [nameTagStyle, setNameTagStyle] = useState<NameTagStyle>('classic');
   const [pipCorner, setPipCorner] = useState<'TL' | 'TR' | 'BL' | 'BR'>('BR');
@@ -244,7 +287,8 @@ export function StudioRoom() {
   const joinedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const myParticipantRef = useRef<Participant | null>(null);
-  const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0 });
+  const mediaAssetsRef = useRef<StudioMediaAsset[]>(mediaAssets);
+  const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0, media: 0 });
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
@@ -287,6 +331,18 @@ export function StudioRoom() {
     };
   }, []);
 
+  useEffect(() => {
+    mediaAssetsRef.current = mediaAssets;
+  }, [mediaAssets]);
+
+  useEffect(() => {
+    return () => {
+      for (const asset of mediaAssetsRef.current) {
+        if (asset.url.startsWith('blob:')) URL.revokeObjectURL(asset.url);
+      }
+    };
+  }, []);
+
   // Restore non-sensitive room setup from this browser.
   useEffect(() => {
     studioStateLoadedRef.current = false;
@@ -302,9 +358,12 @@ export function StudioRoom() {
           if (parsed.stageBackground) setStageBackground(parsed.stageBackground);
           if (parsed.brandColor) setBrandColor(parsed.brandColor);
           if (parsed.logoUrl !== undefined) setLogoUrl(parsed.logoUrl);
+          if (parsed.logoPlacement) setLogoPlacement(parsed.logoPlacement);
+          if (parsed.logoSize) setLogoSize(parsed.logoSize);
           if (parsed.cameraShape) setCameraShape(parsed.cameraShape);
           if (parsed.nameTagStyle) setNameTagStyle(parsed.nameTagStyle);
           if (parsed.pipCorner) setPipCorner(parsed.pipCorner);
+          if (Array.isArray(parsed.mediaAssets)) setMediaAssets(parsed.mediaAssets.filter((asset) => asset.source === 'url'));
           if (Array.isArray(parsed.scenes)) {
             setScenes(parsed.scenes);
             setActiveSceneId(parsed.activeSceneId && parsed.scenes.some((scene) => scene.id === parsed.activeSceneId) ? parsed.activeSceneId : null);
@@ -319,6 +378,7 @@ export function StudioRoom() {
             banner: getMaxNumericSuffix(parsed.banners, 'banner'),
             timer: getMaxNumericSuffix(parsed.timers, 'timer'),
             ticker: getMaxNumericSuffix(parsed.tickers, 'ticker'),
+            media: getMaxNumericSuffix(parsed.mediaAssets, 'media'),
           };
         }
       }
@@ -345,9 +405,12 @@ export function StudioRoom() {
         stageBackground: getPersistableStageBackground(stageBackground),
         brandColor,
         logoUrl: isPersistableLogoUrl(logoUrl) ? logoUrl : null,
+        logoPlacement,
+        logoSize,
         cameraShape,
         nameTagStyle,
         pipCorner,
+        mediaAssets: mediaAssets.filter((asset) => asset.source === 'url'),
         scenes: getPersistableScenes(scenes),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
         lowerThirds,
@@ -364,7 +427,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, stageBackground, brandColor, logoUrl, cameraShape, nameTagStyle, pipCorner, scenes, activeSceneId, lowerThirds, banners, timers, tickers]);
+  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, mediaAssets, scenes, activeSceneId, lowerThirds, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -793,8 +856,8 @@ export function StudioRoom() {
   };
 
   // Lower thirds
-  const onAddLowerThird = (lt: Omit<LowerThirdData, 'id' | 'visible'>) => {
-    setLowerThirds((prev) => [...prev, { ...lt, id: `lt-${++idCounters.current.lt}`, visible: false }]);
+  const onAddLowerThird = (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => {
+    setLowerThirds((prev) => [...prev, { ...lt, id: `lt-${++idCounters.current.lt}`, visible: lt.visible ?? false }]);
   };
   const onToggleLowerThird = (id: string) => {
     setLowerThirds((prev) => prev.map((lt) => ({ ...lt, visible: lt.id === id ? !lt.visible : lt.visible })));
@@ -804,8 +867,8 @@ export function StudioRoom() {
   };
 
   // Banners
-  const onAddBanner = (banner: Omit<BannerData, 'id' | 'visible'>) => {
-    setBanners((prev) => [...prev, { ...banner, id: `banner-${++idCounters.current.banner}`, visible: false }]);
+  const onAddBanner = (banner: Omit<BannerData, 'id' | 'visible'> & { visible?: boolean }) => {
+    setBanners((prev) => [...prev, { ...banner, id: `banner-${++idCounters.current.banner}`, visible: banner.visible ?? false }]);
   };
   const onToggleBanner = (id: string) => {
     setBanners((prev) => prev.map((b) => ({ ...b, visible: b.id === id ? !b.visible : b.visible })));
@@ -815,8 +878,8 @@ export function StudioRoom() {
   };
 
   // Timers
-  const onAddTimer = (timer: Omit<TimerData, 'id' | 'visible'>) => {
-    setTimers((prev) => [...prev, { ...timer, id: `timer-${++idCounters.current.timer}`, visible: false }]);
+  const onAddTimer = (timer: Omit<TimerData, 'id' | 'visible'> & { visible?: boolean }) => {
+    setTimers((prev) => [...prev, { ...timer, id: `timer-${++idCounters.current.timer}`, visible: timer.visible ?? false }]);
   };
   const onToggleTimer = (id: string) => {
     setTimers((prev) => prev.map((t) => ({ ...t, visible: t.id === id ? !t.visible : t.visible })));
@@ -882,9 +945,56 @@ export function StudioRoom() {
     });
   };
 
-  // Media panel
-  const onPlayVideo = (url: string) => setActiveMedia({ type: 'video', url });
-  const onShowImage = (url: string) => setActiveMedia({ type: 'image', url });
+  // Media library
+  const onUploadMedia = (files: FileList | File[]) => {
+    const nextAssets = Array.from(files).map((file) => ({
+      id: `media-${++idCounters.current.media}`,
+      name: file.name,
+      url: URL.createObjectURL(file),
+      type: detectMediaType(file),
+      mimeType: file.type || 'application/octet-stream',
+      sizeBytes: file.size,
+      createdAt: new Date().toISOString(),
+      source: 'upload' as const,
+    }));
+    if (nextAssets.length > 0) {
+      setMediaAssets((prev) => [...nextAssets, ...prev].slice(0, 80));
+    }
+  };
+
+  const onAddMediaUrl = (url: string, type: 'video' | 'image') => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    const asset: StudioMediaAsset = {
+      id: `media-${++idCounters.current.media}`,
+      name: getMediaNameFromUrl(trimmed, type),
+      url: trimmed,
+      type,
+      mimeType: type === 'video' ? 'video/url' : 'image/url',
+      createdAt: new Date().toISOString(),
+      source: 'url',
+    };
+    setMediaAssets((prev) => [asset, ...prev].slice(0, 80));
+  };
+
+  const onPlayMediaAsset = (asset: StudioMediaAsset) => {
+    setActiveMedia({
+      assetId: asset.id,
+      type: asset.type,
+      url: asset.url,
+      name: asset.name,
+    });
+  };
+
+  const onRemoveMediaAsset = (assetId: string) => {
+    setMediaAssets((prev) => {
+      const asset = prev.find((item) => item.id === assetId);
+      if (asset?.url.startsWith('blob:')) URL.revokeObjectURL(asset.url);
+      return prev.filter((item) => item.id !== assetId);
+    });
+    setActiveMedia((current) => current?.assetId === assetId ? null : current);
+  };
+
   const onStopMedia = () => setActiveMedia(null);
 
   // Helper to convert blob URL to data URL
@@ -931,6 +1041,8 @@ export function StudioRoom() {
       logoUrl: persistedLogoUrl,
       cameraShape,
       nameTagStyle,
+      logoPlacement,
+      logoSize,
       visibleOverlayIds: [
         ...lowerThirds.filter(o => o.visible).map(o => o.id),
         ...banners.filter(b => b.visible).map(b => b.id),
@@ -951,6 +1063,8 @@ export function StudioRoom() {
     setLogoUrl(scene.logoUrl || null);
     setCameraShape(scene.cameraShape || 'rectangle');
     setNameTagStyle(scene.nameTagStyle || 'classic');
+    setLogoPlacement(scene.logoPlacement || 'top-right');
+    setLogoSize(scene.logoSize || 'medium');
     // Restore overlay visibility from saved scene
     const visibleIds = new Set(scene.visibleOverlayIds);
     setLowerThirds(prev => prev.map(o => ({ ...o, visible: scene.visibleOverlayIds.includes(o.id) })));
@@ -968,8 +1082,8 @@ export function StudioRoom() {
   };
 
   // Tickers
-  const onAddTicker = (ticker: Omit<TickerData, 'id' | 'visible'>) => {
-    setTickers(prev => [...prev, { ...ticker, id: `ticker-${++idCounters.current.ticker}`, visible: false }]);
+  const onAddTicker = (ticker: Omit<TickerData, 'id' | 'visible'> & { visible?: boolean }) => {
+    setTickers(prev => [...prev, { ...ticker, id: `ticker-${++idCounters.current.ticker}`, visible: ticker.visible ?? false }]);
   };
   const onToggleTicker = (id: string) => {
     setTickers(prev => prev.map(t => ({ ...t, visible: t.id === id ? !t.visible : t.visible })));
@@ -1497,9 +1611,21 @@ export function StudioRoom() {
                     {activeMedia.type === 'video' ? (
                       <video src={activeMedia.url} style={styles.mediaContent} autoPlay controls />
                     ) : activeMedia.type === 'image' ? (
-                      <img src={activeMedia.url} alt="Media" style={styles.mediaContent} />
-                    ) : (
+                      <img src={activeMedia.url} alt={activeMedia.name} style={styles.mediaContent} />
+                    ) : activeMedia.type === 'pdf' ? (
                       <iframe src={activeMedia.url} style={styles.mediaContent} title="PDF" />
+                    ) : (
+                      <div style={styles.mediaDocumentCard}>
+                        <div style={styles.mediaDocumentIcon}>
+                          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M2 3h20v14H2z" />
+                            <path d="M8 21h8" />
+                            <path d="M12 17v4" />
+                          </svg>
+                        </div>
+                        <div style={styles.mediaDocumentTitle}>{activeMedia.name}</div>
+                        <div style={styles.mediaDocumentType}>{activeMedia.type === 'presentation' ? 'Presentation deck' : 'Shared file'}</div>
+                      </div>
                     )}
                     <button className="panel-close-btn" style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close media overlay">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -1536,8 +1662,8 @@ export function StudioRoom() {
 
               {/* Logo watermark */}
               {logoUrl && (
-                <div style={styles.logoWatermark}>
-                  <img src={logoUrl} alt="Logo" style={styles.logoWatermarkImg} />
+                <div style={{ ...styles.logoWatermark, ...getLogoPlacementStyle(logoPlacement) }}>
+                  <img src={logoUrl} alt="Logo" style={{ ...styles.logoWatermarkImg, ...getLogoSizeStyle(logoSize) }} />
                 </div>
               )}
 
@@ -1592,17 +1718,6 @@ export function StudioRoom() {
           />
         )}
 
-        {/* Media Panel */}
-        {showMediaPanel && (
-          <MediaPanel
-            onPlayVideo={onPlayVideo}
-            onShowImage={onShowImage}
-            onStopMedia={onStopMedia}
-            activeMedia={activeMedia}
-            onClose={() => setShowMediaPanel(false)}
-          />
-        )}
-
         {/* Guest Chat Panel */}
         {!isHostOrCoHost && showGuestChat && (
           <ChatPanel
@@ -1637,10 +1752,21 @@ export function StudioRoom() {
             onBrandColorChange={setBrandColor}
             logoUrl={logoUrl}
             onLogoUrlChange={setLogoUrl}
+            logoPlacement={logoPlacement}
+            onLogoPlacementChange={setLogoPlacement}
+            logoSize={logoSize}
+            onLogoSizeChange={setLogoSize}
             cameraShape={cameraShape}
             onCameraShapeChange={setCameraShape}
             nameTagStyle={nameTagStyle}
             onNameTagStyleChange={setNameTagStyle}
+            mediaAssets={mediaAssets}
+            activeMedia={activeMedia}
+            onUploadMedia={onUploadMedia}
+            onAddMediaUrl={onAddMediaUrl}
+            onPlayMediaAsset={onPlayMediaAsset}
+            onRemoveMediaAsset={onRemoveMediaAsset}
+            onStopMedia={onStopMedia}
             scenes={scenes}
             activeSceneId={activeSceneId}
             onSaveScene={onSaveScene}
@@ -1724,7 +1850,7 @@ export function StudioRoom() {
         onOpenStreamDestinations={() => setShowStreamDest(!showStreamDest)}
         onOpenSoundBoard={() => setShowSoundBoard(!showSoundBoard)}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
-        onOpenMediaPanel={() => setShowMediaPanel(!showMediaPanel)}
+        onOpenMediaPanel={() => { setShowSidebar(true); setSidebarActiveTab('media'); }}
         onOpenBackgroundMusic={() => setShowBackgroundMusic(!showBackgroundMusic)}
         onOpenRecordingPanel={() => setShowRecordingPanel(!showRecordingPanel)}
         onOpenProducerPanel={() => setShowProducerPanel(!showProducerPanel)}
@@ -2024,6 +2150,46 @@ const styles: Record<string, React.CSSProperties> = {
     objectFit: 'contain',
     border: 'none',
   },
+  mediaDocumentCard: {
+    width: 'min(520px, 72%)',
+    minHeight: 260,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    padding: 32,
+    borderRadius: 16,
+    background: 'linear-gradient(135deg, rgba(17,24,39,0.96), rgba(49,46,129,0.88))',
+    border: '1px solid rgba(255,255,255,0.12)',
+    color: 'white',
+    textAlign: 'center',
+  },
+  mediaDocumentIcon: {
+    width: 76,
+    height: 76,
+    borderRadius: 18,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(255,255,255,0.08)',
+    color: '#c4b5fd',
+  },
+  mediaDocumentTitle: {
+    maxWidth: '100%',
+    fontSize: 22,
+    fontWeight: 700,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  mediaDocumentType: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: 'rgba(255,255,255,0.62)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+  },
   mediaCloseBtn: {
     position: 'absolute',
     top: 8,
@@ -2107,15 +2273,11 @@ const styles: Record<string, React.CSSProperties> = {
   // Logo watermark
   logoWatermark: {
     position: 'absolute',
-    top: 12,
-    right: 12,
     zIndex: 6,
     opacity: 0.85,
     pointerEvents: 'none',
   },
   logoWatermarkImg: {
-    maxHeight: 32,
-    maxWidth: 100,
     objectFit: 'contain',
   },
 };

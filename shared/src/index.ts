@@ -183,6 +183,30 @@ export interface StageBackground {
 
 export type CameraShape = 'rectangle' | 'rounded' | 'square' | 'circle';
 export type NameTagStyle = 'classic' | 'minimal' | 'block';
+export type LogoPlacement = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+export type LogoSize = 'small' | 'medium' | 'large';
+
+// ============ Studio Media Types ============
+
+export type StudioMediaType = 'video' | 'image' | 'pdf' | 'presentation' | 'file';
+
+export interface StudioMediaAsset {
+  id: string;
+  name: string;
+  url: string;
+  type: StudioMediaType;
+  mimeType: string;
+  sizeBytes?: number;
+  createdAt: string;
+  source: 'upload' | 'url';
+}
+
+export interface ActiveMedia {
+  assetId?: string;
+  type: StudioMediaType;
+  url: string;
+  name: string;
+}
 
 // ============ Stream Destination Types ============
 
@@ -207,6 +231,8 @@ export interface Scene {
   logoUrl: string | null;
   cameraShape?: CameraShape;
   nameTagStyle?: NameTagStyle;
+  logoPlacement?: LogoPlacement;
+  logoSize?: LogoSize;
   // Which overlay IDs should be visible when this scene is active
   visibleOverlayIds: string[];
 }
