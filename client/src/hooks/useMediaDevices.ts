@@ -11,6 +11,13 @@ interface SinkIdElement {
   setSinkId?: (sinkId: string) => Promise<void>;
 }
 
+interface StartMediaOptions {
+  echoCancellation?: boolean;
+  noiseSuppression?: boolean;
+  audioEnabled?: boolean;
+  videoEnabled?: boolean;
+}
+
 export function useMediaDevices() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(true);
@@ -84,7 +91,7 @@ export function useMediaDevices() {
   const startMedia = useCallback(async (
     audioDeviceId?: string, 
     videoDeviceId?: string,
-    options: { echoCancellation?: boolean; noiseSuppression?: boolean } = { echoCancellation: true, noiseSuppression: true }
+    options: StartMediaOptions = { echoCancellation: true, noiseSuppression: true }
   ) => {
     if (!navigator.mediaDevices?.getUserMedia) {
       setError('Media devices not available. Please use HTTPS or localhost.');
@@ -100,32 +107,62 @@ export function useMediaDevices() {
       const targetVideoId = videoDeviceId || localStorage.getItem('preferredVideoDeviceId');
       const targetAudioId = audioDeviceId || localStorage.getItem('preferredAudioDeviceId');
 
-      const videoConstraints: MediaStreamConstraints['video'] = {
+      const createVideoConstraints = (deviceId?: string | null): MediaTrackConstraints => ({
         width: { ideal: 1920 },
         height: { ideal: 1080 },
         frameRate: { ideal: 30 },
-        ...(targetVideoId ? { deviceId: { exact: targetVideoId } } : {}),
-      };
-      const audioConstraints: MediaStreamConstraints['audio'] = {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      });
+      const createAudioConstraints = (deviceId?: string | null): MediaTrackConstraints => ({
         echoCancellation: options.echoCancellation ?? true,
         noiseSuppression: options.noiseSuppression ?? true,
-        autoGainControl: true, // Keep AGC active generally
-        ...(targetAudioId ? { deviceId: { exact: targetAudioId } } : {}),
+        autoGainControl: true,
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      });
+
+      const preferredDeviceIds = [targetAudioId, targetVideoId].some(Boolean);
+      const avAttempts: MediaStreamConstraints[] = [
+        { audio: createAudioConstraints(targetAudioId), video: createVideoConstraints(targetVideoId) },
+        ...(preferredDeviceIds ? [{ audio: createAudioConstraints(), video: createVideoConstraints() }] : []),
+      ];
+      const audioOnlyAttempts: MediaStreamConstraints[] = [
+        { audio: createAudioConstraints(targetAudioId), video: false },
+        ...(targetAudioId ? [{ audio: createAudioConstraints(), video: false }] : []),
+      ];
+      const videoOnlyAttempts: MediaStreamConstraints[] = [
+        { audio: false, video: createVideoConstraints(targetVideoId) },
+        ...(targetVideoId ? [{ audio: false, video: createVideoConstraints() }] : []),
+      ];
+
+      const tryMediaAttempts = async (attempts: MediaStreamConstraints[]) => {
+        let lastError: unknown;
+        for (let index = 0; index < attempts.length; index++) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia(attempts[index]);
+            return { stream, usedFallback: index > 0 };
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        throw lastError;
       };
 
       let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: videoConstraints });
-        setError(null);
+        const result = await tryMediaAttempts(avAttempts);
+        stream = result.stream;
+        setError(result.usedFallback ? 'Preferred device unavailable - using available camera and microphone' : null);
       } catch {
         // Audio+video failed -- try audio only
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+          const result = await tryMediaAttempts(audioOnlyAttempts);
+          stream = result.stream;
           setError('Camera not available - audio only');
         } catch {
           // Audio only failed -- try video only
           try {
-            stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+            const result = await tryMediaAttempts(videoOnlyAttempts);
+            stream = result.stream;
             setError('Microphone not available - video only');
           } catch (finalErr) {
             setError('No media devices available');
@@ -147,6 +184,8 @@ export function useMediaDevices() {
       // Track which devices are actually active
       const activeAudioTrack = stream.getAudioTracks()[0];
       const activeVideoTrack = stream.getVideoTracks()[0];
+      if (activeAudioTrack) activeAudioTrack.enabled = options.audioEnabled ?? true;
+      if (activeVideoTrack) activeVideoTrack.enabled = options.videoEnabled ?? true;
       setAudioEnabled(Boolean(activeAudioTrack?.enabled));
       setVideoEnabled(Boolean(activeVideoTrack?.enabled));
 

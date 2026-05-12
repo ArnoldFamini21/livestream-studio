@@ -64,6 +64,7 @@ export type SignalMessage =
   | { type: 'qa-question-update'; payload: { questionId: string; updates: Partial<Pick<QAQuestion, 'status' | 'answer' | 'highlighted'>> } }
   | { type: 'qa-question-upvote'; payload: { questionId: string } }
   | { type: 'stage-action'; payload: StageActionPayload }
+  | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   | { type: 'participant-updated'; payload: Participant }
   | { type: 'participant-removed'; payload: { reason: string } }
   | { type: 'end-room'; payload: Record<string, never> }
@@ -84,6 +85,7 @@ export interface RoomJoinedPayload {
   participant: Participant;
   participants: Participant[];
   qaQuestions?: QAQuestion[];
+  recordingState?: RecordingStatePayload;
 }
 
 export interface SDPPayload {
@@ -108,6 +110,13 @@ export interface MediaStatePayload {
 export interface StageActionPayload {
   action: 'move-to-stage' | 'move-to-backstage' | 'move-to-green-room' | 'promote-co-host' | 'demote-to-guest' | 'mute' | 'unmute' | 'remove';
   targetParticipantId: string;
+  performedBy: string;
+}
+
+export interface RecordingStatePayload {
+  recording: boolean;
+  startedAt?: string;
+  stoppedAt?: string;
   performedBy: string;
 }
 

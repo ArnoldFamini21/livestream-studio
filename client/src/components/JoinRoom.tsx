@@ -39,11 +39,26 @@ export function JoinRoom() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number>(0);
+  const audioEnabledRef = useRef(audioEnabled);
+  const videoEnabledRef = useRef(videoEnabled);
   const [audioLevel, setAudioLevel] = useState(0);
+
+  useEffect(() => {
+    audioEnabledRef.current = audioEnabled;
+  }, [audioEnabled]);
+
+  useEffect(() => {
+    videoEnabledRef.current = videoEnabled;
+  }, [videoEnabled]);
 
   // Start camera preview on mount
   useEffect(() => {
-    startMedia(undefined, undefined, { echoCancellation, noiseSuppression });
+    startMedia(undefined, undefined, {
+      echoCancellation,
+      noiseSuppression,
+      audioEnabled: audioEnabledRef.current,
+      videoEnabled: videoEnabledRef.current,
+    });
     return () => {
       stopMedia();
     };
@@ -129,6 +144,8 @@ export function JoinRoom() {
       sessionStorage.setItem('userRole', 'guest');
     }
     sessionStorage.setItem('userName', guestName);
+    sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
+    sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
     navigate(`/studio/${roomId}`);
   };
 

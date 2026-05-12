@@ -1,0 +1,282 @@
+import { useEffect, useMemo, useState } from 'react';
+
+export type HealthStatus = 'good' | 'warning' | 'bad';
+
+export interface SessionHealthCheck {
+  id: string;
+  label: string;
+  status: HealthStatus;
+  detail: string;
+}
+
+export interface SessionHealthSummary {
+  status: HealthStatus;
+  label: string;
+  score: number;
+  checks: SessionHealthCheck[];
+  storage: {
+    supported: boolean;
+    usage: number | null;
+    quota: number | null;
+    percentUsed: number | null;
+  };
+  network: {
+    online: boolean;
+    effectiveType?: string;
+    downlink?: number;
+    rtt?: number;
+  };
+  media: {
+    audioTrack: MediaStreamTrack | null;
+    videoTrack: MediaStreamTrack | null;
+    videoLabel: string;
+    audioLabel: string;
+  };
+}
+
+interface NetworkInformationLike extends EventTarget {
+  effectiveType?: string;
+  downlink?: number;
+  rtt?: number;
+}
+
+interface UseSessionHealthOptions {
+  localStream: MediaStream | null;
+  connected: boolean;
+  mediaError: string | null;
+  audioDeviceCount: number;
+  videoDeviceCount: number;
+  participantCount: number;
+  isRecording: boolean;
+  isLive: boolean;
+}
+
+function getNetworkInfo() {
+  const connection = (navigator as Navigator & { connection?: NetworkInformationLike }).connection;
+  return {
+    online: navigator.onLine,
+    effectiveType: connection?.effectiveType,
+    downlink: connection?.downlink,
+    rtt: connection?.rtt,
+  };
+}
+
+function formatVideoLabel(track: MediaStreamTrack | null): string {
+  if (!track) return 'No camera track';
+  const settings = track.getSettings();
+  const width = settings.width;
+  const height = settings.height;
+  const frameRate = settings.frameRate;
+  if (width && height && frameRate) return `${width}x${height} at ${Math.round(frameRate)} fps`;
+  if (width && height) return `${width}x${height}`;
+  return track.enabled ? 'Camera ready' : 'Camera off';
+}
+
+function formatAudioLabel(track: MediaStreamTrack | null): string {
+  if (!track) return 'No microphone track';
+  const settings = track.getSettings();
+  if (settings.sampleRate) return `${settings.sampleRate} Hz`;
+  return track.enabled ? 'Microphone ready' : 'Microphone muted';
+}
+
+function scoreForStatus(status: HealthStatus): number {
+  switch (status) {
+    case 'good': return 100;
+    case 'warning': return 58;
+    case 'bad': return 0;
+  }
+}
+
+function statusFromScore(score: number): HealthStatus {
+  if (score >= 80) return 'good';
+  if (score >= 50) return 'warning';
+  return 'bad';
+}
+
+function labelFromStatus(status: HealthStatus): string {
+  switch (status) {
+    case 'good': return 'Ready';
+    case 'warning': return 'Needs attention';
+    case 'bad': return 'Blocked';
+  }
+}
+
+export function useSessionHealth({
+  localStream,
+  connected,
+  mediaError,
+  audioDeviceCount,
+  videoDeviceCount,
+  participantCount,
+  isRecording,
+  isLive,
+}: UseSessionHealthOptions): SessionHealthSummary {
+  const [network, setNetwork] = useState(getNetworkInfo);
+  const [storage, setStorage] = useState<SessionHealthSummary['storage']>({
+    supported: Boolean(navigator.storage?.estimate),
+    usage: null,
+    quota: null,
+    percentUsed: null,
+  });
+
+  useEffect(() => {
+    const update = () => setNetwork(getNetworkInfo());
+    const connection = (navigator as Navigator & { connection?: NetworkInformationLike }).connection;
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    connection?.addEventListener?.('change', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+      connection?.removeEventListener?.('change', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const updateStorage = async () => {
+      if (!navigator.storage?.estimate) {
+        setStorage({ supported: false, usage: null, quota: null, percentUsed: null });
+        return;
+      }
+      const estimate = await navigator.storage.estimate();
+      if (cancelled) return;
+      const usage = estimate.usage ?? null;
+      const quota = estimate.quota ?? null;
+      setStorage({
+        supported: true,
+        usage,
+        quota,
+        percentUsed: usage !== null && quota ? Math.round((usage / quota) * 100) : null,
+      });
+    };
+    updateStorage();
+    const timer = window.setInterval(updateStorage, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isRecording]);
+
+  return useMemo(() => {
+    const audioTrack = localStream?.getAudioTracks()[0] ?? null;
+    const videoTrack = localStream?.getVideoTracks()[0] ?? null;
+    const checks: SessionHealthCheck[] = [];
+
+    const mediaApiReady = Boolean(navigator.mediaDevices?.getUserMedia);
+    checks.push({
+      id: 'browser-media',
+      label: 'Browser media',
+      status: mediaApiReady && typeof MediaRecorder !== 'undefined' ? 'good' : 'bad',
+      detail: mediaApiReady && typeof MediaRecorder !== 'undefined'
+        ? 'Camera, microphone, and recording APIs are available.'
+        : 'Use a modern browser on HTTPS or localhost.',
+    });
+
+    checks.push({
+      id: 'signaling',
+      label: 'Studio connection',
+      status: connected ? 'good' : 'bad',
+      detail: connected ? 'Connected to the studio signaling server.' : 'Not connected to the studio server.',
+    });
+
+    const networkStatus: HealthStatus = !network.online
+      ? 'bad'
+      : network.effectiveType && ['slow-2g', '2g'].includes(network.effectiveType)
+        ? 'warning'
+        : 'good';
+    checks.push({
+      id: 'network',
+      label: 'Network',
+      status: networkStatus,
+      detail: !network.online
+        ? 'Browser reports that you are offline.'
+        : network.effectiveType
+          ? `${network.effectiveType.toUpperCase()}${network.downlink ? `, ${network.downlink} Mbps` : ''}${network.rtt ? `, ${network.rtt} ms RTT` : ''}`
+          : 'Online. Detailed network metrics are not exposed by this browser.',
+    });
+
+    const audioStatus: HealthStatus = mediaError && !audioTrack ? 'bad' : audioTrack ? 'good' : audioDeviceCount > 0 ? 'warning' : 'bad';
+    checks.push({
+      id: 'audio',
+      label: 'Microphone',
+      status: audioStatus,
+      detail: audioTrack ? formatAudioLabel(audioTrack) : audioDeviceCount > 0 ? 'Microphone available but not active.' : 'No microphone detected.',
+    });
+
+    const videoStatus: HealthStatus = mediaError && !videoTrack ? 'bad' : videoTrack ? 'good' : videoDeviceCount > 0 ? 'warning' : 'bad';
+    checks.push({
+      id: 'video',
+      label: 'Camera',
+      status: videoStatus,
+      detail: videoTrack ? formatVideoLabel(videoTrack) : videoDeviceCount > 0 ? 'Camera available but not active.' : 'No camera detected.',
+    });
+
+    const storageStatus: HealthStatus = !storage.supported
+      ? 'warning'
+      : storage.percentUsed !== null && storage.percentUsed > 90
+        ? 'bad'
+        : storage.percentUsed !== null && storage.percentUsed > 75
+          ? 'warning'
+          : 'good';
+    checks.push({
+      id: 'storage',
+      label: 'Recording storage',
+      status: storageStatus,
+      detail: storage.supported
+        ? storage.percentUsed !== null
+          ? `${storage.percentUsed}% of browser storage is in use.`
+          : 'Storage estimate is available.'
+        : 'Browser storage estimate is unavailable; long local recordings may be riskier.',
+    });
+
+    checks.push({
+      id: 'capacity',
+      label: 'Session capacity',
+      status: participantCount <= 5 ? 'good' : participantCount <= 7 ? 'warning' : 'bad',
+      detail: participantCount <= 5
+        ? `${participantCount} participant${participantCount === 1 ? '' : 's'} in this mesh session.`
+        : 'Mesh WebRTC sessions become fragile as participant count rises.',
+    });
+
+    if (mediaError) {
+      checks.push({
+        id: 'media-error',
+        label: 'Media warning',
+        status: 'warning',
+        detail: mediaError,
+      });
+    }
+
+    if (isLive || isRecording) {
+      checks.push({
+        id: 'production-state',
+        label: 'Production state',
+        status: connected && network.online ? 'good' : 'bad',
+        detail: isLive && isRecording
+          ? 'Live and recording are both active.'
+          : isLive
+            ? 'Live output is active.'
+            : 'Recording is active.',
+      });
+    }
+
+    const score = Math.round(checks.reduce((sum, check) => sum + scoreForStatus(check.status), 0) / checks.length);
+    const status = statusFromScore(score);
+
+    return {
+      status,
+      label: labelFromStatus(status),
+      score,
+      checks,
+      storage,
+      network,
+      media: {
+        audioTrack,
+        videoTrack,
+        audioLabel: formatAudioLabel(audioTrack),
+        videoLabel: formatVideoLabel(videoTrack),
+      },
+    };
+  }, [audioDeviceCount, connected, isLive, isRecording, localStream, mediaError, network, participantCount, storage, videoDeviceCount]);
+}
