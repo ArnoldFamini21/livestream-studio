@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import type { StageBackground } from '@studio/shared';
+import { usePhotoLibrary } from '../hooks/usePhotoLibrary.ts';
 
 interface BackgroundPickerProps {
   value: StageBackground;
@@ -28,27 +29,19 @@ const GRADIENT_PRESETS = [
   { label: 'Emerald', value: 'linear-gradient(135deg, #065f46, #047857, #10b981)' },
 ];
 
-const MAX_PERSISTED_BACKGROUND_BYTES = 2 * 1024 * 1024;
-
 export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { photos, addPhoto, removePhoto, error, clearError } = usePhotoLibrary();
 
   const isSelected = (type: StageBackground['type'], val: string) =>
     value.type === type && value.value === val;
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size <= MAX_PERSISTED_BACKGROUND_BYTES) {
-        const reader = new FileReader();
-        reader.onload = () => onChange({ type: 'image', value: reader.result as string });
-        reader.readAsDataURL(file);
-      } else {
-        const url = URL.createObjectURL(file);
-        onChange({ type: 'image', value: url });
-      }
-    }
     e.target.value = '';
+    if (!file) return;
+    const photo = await addPhoto(file);
+    if (photo) onChange({ type: 'image', value: photo.dataUrl });
   };
 
   return (
@@ -70,6 +63,89 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
             <span style={styles.thumbLabel}>None</span>
           </button>
         </div>
+      </div>
+
+      {/* My Photos */}
+      <div style={styles.group}>
+        <div style={styles.groupHeader}>
+          <span style={styles.groupLabel}>My Photos</span>
+          <button
+            type="button"
+            style={styles.uploadBtnInline}
+            onClick={() => fileInputRef.current?.click()}
+            title="Upload a new background"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            Upload
+          </button>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: 'none' }}
+          onChange={handleImageUpload}
+        />
+        {error && (
+          <button type="button" style={styles.errorBox} onClick={clearError} title="Dismiss">
+            {error}
+          </button>
+        )}
+        {photos.length === 0 ? (
+          <button
+            type="button"
+            style={styles.uploadArea}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+            <span style={styles.uploadText}>Upload Background Image</span>
+            <span style={styles.uploadHint}>JPG, PNG, WebP — up to 4 MB</span>
+          </button>
+        ) : (
+          <div style={styles.thumbGrid}>
+            {photos.map((photo) => {
+              const selected = isSelected('image', photo.dataUrl);
+              return (
+                <div key={photo.id} style={styles.photoCell}>
+                  <button
+                    style={{
+                      ...styles.thumb,
+                      backgroundImage: `url(${photo.dataUrl})`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      outline: selected ? '2px solid var(--accent)' : '2px solid transparent',
+                      outlineOffset: 2,
+                    }}
+                    onClick={() => onChange({ type: 'image', value: photo.dataUrl })}
+                    title={photo.name}
+                    aria-label={`Use ${photo.name} as background`}
+                  />
+                  <button
+                    type="button"
+                    style={styles.photoRemove}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void removePhoto(photo.id);
+                      if (selected) onChange({ type: 'none', value: '' });
+                    }}
+                    title="Remove from library"
+                    aria-label={`Remove ${photo.name}`}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Solid Colors */}
@@ -111,71 +187,6 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
           ))}
         </div>
       </div>
-
-      {/* Image Upload */}
-      <div style={styles.group}>
-        <span style={styles.groupLabel}>Custom Image</span>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          style={{ display: 'none' }}
-          onChange={handleImageUpload}
-        />
-        {value.type === 'image' ? (
-          <div style={styles.imagePreviewWrap}>
-            <div
-              style={{
-                ...styles.thumb,
-                ...styles.imageThumb,
-                backgroundImage: `url(${value.value})`,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-                outline: '2px solid var(--accent)',
-                outlineOffset: 2,
-              }}
-            />
-            <div style={styles.imageActions}>
-              <button
-                style={styles.uploadBtn}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-                Replace
-              </button>
-              <button
-                style={styles.removeBtn}
-                onClick={() => {
-                  if (value.value.startsWith('blob:')) URL.revokeObjectURL(value.value);
-                  onChange({ type: 'none', value: '' });
-                }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-                Remove
-              </button>
-            </div>
-          </div>
-        ) : (
-          <button
-            style={styles.uploadArea}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <circle cx="8.5" cy="8.5" r="1.5" />
-              <polyline points="21 15 16 10 5 21" />
-            </svg>
-            <span style={styles.uploadText}>Upload Background Image</span>
-            <span style={styles.uploadHint}>JPG, PNG, WebP</span>
-          </button>
-        )}
-      </div>
     </div>
   );
 }
@@ -190,6 +201,11 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
+  },
+  groupHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   groupLabel: {
     fontSize: 11,
@@ -219,6 +235,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     transition: 'transform 0.1s, outline-color 0.15s',
+    width: '100%',
   },
   thumbLabel: {
     fontSize: 9,
@@ -228,43 +245,35 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '0.06em',
     pointerEvents: 'none',
   },
-  imageThumb: {
-    width: '100%',
-    maxWidth: 120,
+  photoCell: {
+    position: 'relative',
   },
-  imagePreviewWrap: {
+  photoRemove: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    background: 'rgba(0,0,0,0.6)',
+    color: 'white',
+    border: 'none',
+    cursor: 'pointer',
     display: 'flex',
-    alignItems: 'flex-start',
-    gap: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
   },
-  imageActions: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-  },
-  uploadBtn: {
+  uploadBtnInline: {
     display: 'flex',
     alignItems: 'center',
     gap: 4,
-    padding: '5px 10px',
+    padding: '4px 8px',
     fontSize: 11,
     fontWeight: 500,
     background: 'var(--bg-tertiary)',
     color: 'var(--text-secondary)',
     border: '1px solid var(--border-strong)',
-    borderRadius: 6,
-    cursor: 'pointer',
-  },
-  removeBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 4,
-    padding: '5px 10px',
-    fontSize: 11,
-    fontWeight: 500,
-    background: 'none',
-    color: 'var(--text-muted)',
-    border: '1px solid var(--border)',
     borderRadius: 6,
     cursor: 'pointer',
   },
@@ -290,5 +299,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: 'var(--text-muted)',
     opacity: 0.7,
+  },
+  errorBox: {
+    fontSize: 11,
+    padding: '6px 10px',
+    background: 'rgba(239,68,68,0.1)',
+    color: '#ef4444',
+    borderRadius: 6,
+    border: '1px solid rgba(239,68,68,0.2)',
+    cursor: 'pointer',
+    textAlign: 'left',
   },
 };

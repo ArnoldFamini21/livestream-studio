@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { MediaDeviceInfo } from '../hooks/useMediaDevices.ts';
+import type { VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
+import { VirtualBackgroundPicker } from './VirtualBackgroundPicker.tsx';
 
 interface DeviceSelectorProps {
   audioDevices: MediaDeviceInfo[];
@@ -12,6 +14,11 @@ interface DeviceSelectorProps {
   onVideoDeviceChange: (deviceId: string) => void;
   onAudioOutputDeviceChange: (deviceId: string) => void;
   onClose: () => void;
+  // Virtual background controls. Optional so callers can opt out.
+  virtualBackground?: VirtualBackgroundConfig;
+  onVirtualBackgroundChange?: (next: VirtualBackgroundConfig) => void;
+  virtualBackgroundReady?: boolean;
+  virtualBackgroundError?: string | null;
 }
 
 export function DeviceSelector({
@@ -25,6 +32,10 @@ export function DeviceSelector({
   onVideoDeviceChange,
   onAudioOutputDeviceChange,
   onClose,
+  virtualBackground,
+  onVirtualBackgroundChange,
+  virtualBackgroundReady,
+  virtualBackgroundError,
 }: DeviceSelectorProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -115,6 +126,17 @@ export function DeviceSelector({
               onChange={onAudioOutputDeviceChange}
               emptyText="No speakers detected"
             />
+          )}
+
+          {virtualBackground && onVirtualBackgroundChange && (
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14, marginTop: 4 }}>
+              <VirtualBackgroundPicker
+                value={virtualBackground}
+                onChange={onVirtualBackgroundChange}
+                warmingUp={virtualBackground.mode !== 'off' && !virtualBackgroundReady}
+                error={virtualBackgroundError ?? null}
+              />
+            </div>
           )}
         </div>
       </div>

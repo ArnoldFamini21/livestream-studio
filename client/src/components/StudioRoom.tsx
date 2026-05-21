@@ -9,6 +9,7 @@ function assertNever(value: never): never {
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
+import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
 import { useRecording } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording } from '../hooks/useLocalRecording.ts';
@@ -247,7 +248,7 @@ export function StudioRoom() {
   // Hooks
   const { connect, disconnect, send, addHandler, connected, reconnectFailed, retry: retryConnection } = useSignaling();
   const {
-    localStream, audioEnabled, videoEnabled,
+    localStream: rawLocalStream, audioEnabled, videoEnabled,
     error: mediaError,
     startMedia, stopMedia, toggleAudio, toggleVideo,
     switchAudioDevice, switchVideoDevice,
@@ -256,6 +257,34 @@ export function StudioRoom() {
     selectedAudioOutputDeviceId,
     onAudioOutputDeviceChange,
   } = useMediaDevices();
+
+  // Virtual webcam background (Zoom-style). Off by default; persists across sessions.
+  const [vbConfig, setVbConfig] = useState<VirtualBackgroundConfig>(() => {
+    try {
+      const raw = localStorage.getItem('livestream-studio:virtual-background');
+      if (raw) {
+        const parsed = JSON.parse(raw) as VirtualBackgroundConfig;
+        if (parsed && (parsed.mode === 'off' || parsed.mode === 'blur' || parsed.mode === 'image')) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore invalid persisted value
+    }
+    return { mode: 'off' };
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('livestream-studio:virtual-background', JSON.stringify(vbConfig));
+    } catch {
+      // ignore quota errors
+    }
+  }, [vbConfig]);
+
+  const { outputStream: localStream, ready: vbReady, error: vbError } = useVirtualBackground({
+    inputStream: rawLocalStream,
+    config: vbConfig,
+  });
 
   const { remoteStreams, connectToPeer, handleOffer, handleAnswer, handleIceCandidate, removePeer, replaceTrack, cleanup } = useWebRTC({
     localStream,
@@ -1974,6 +2003,10 @@ export function StudioRoom() {
           onVideoDeviceChange={onVideoDeviceChange}
           onAudioOutputDeviceChange={onAudioOutputDeviceChange}
           onClose={() => setShowDeviceSettings(false)}
+          virtualBackground={vbConfig}
+          onVirtualBackgroundChange={setVbConfig}
+          virtualBackgroundReady={vbReady}
+          virtualBackgroundError={vbError}
         />
       )}
 

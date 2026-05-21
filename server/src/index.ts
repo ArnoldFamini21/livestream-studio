@@ -63,13 +63,17 @@ app.use(express.json({ limit: '16kb' }));
 // no 'unsafe-inline' for scripts; allow only the third parties the client actually uses.
 const CSP_DIRECTIVES = [
   "default-src 'self'",
-  "script-src 'self' https://accounts.google.com https://apis.google.com",
+  // jsdelivr is allow-listed so MediaPipe's selfie_segmentation WASM/binarypb can load
+  // for the virtual background feature.
+  "script-src 'self' https://accounts.google.com https://apis.google.com https://cdn.jsdelivr.net",
   // Inline styles are required for React inline style={...} usage; not a meaningful XSS vector.
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  // Google APIs for OAuth + Drive uploads; ws/wss for our own signaling.
-  "connect-src 'self' wss: ws: https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com",
+  // Google APIs for OAuth + Drive uploads; jsdelivr/storage.googleapis.com for MediaPipe assets;
+  // ws/wss for our own signaling.
+  "connect-src 'self' wss: ws: https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://cdn.jsdelivr.net https://storage.googleapis.com",
+  "worker-src 'self' blob:",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "object-src 'none'",

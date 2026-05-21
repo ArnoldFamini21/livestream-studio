@@ -1,0 +1,312 @@
+import { useEffect, useRef, useState } from 'react';
+// Types only — the runtime is loaded lazily from CDN so we don't bake the
+// ~3MB MediaPipe bundle into the main app chunk.
+import type { SelfieSegmentation as SelfieSegmentationType, Results } from '@mediapipe/selfie_segmentation';
+
+declare global {
+  interface Window {
+    SelfieSegmentation?: new (config?: { locateFile?: (path: string) => string }) => SelfieSegmentationType;
+  }
+}
+
+export type VirtualBackgroundMode = 'off' | 'blur' | 'image';
+
+export interface VirtualBackgroundConfig {
+  mode: VirtualBackgroundMode;
+  // Required when mode === 'image'. Data URL or remote URL.
+  imageSrc?: string;
+  // Blur radius in CSS pixels when mode === 'blur'. Default 12.
+  blurPx?: number;
+}
+
+interface UseVirtualBackgroundInput {
+  inputStream: MediaStream | null;
+  config: VirtualBackgroundConfig;
+}
+
+interface UseVirtualBackgroundResult {
+  // The effective stream the rest of the app should consume. Identical to
+  // inputStream when mode === 'off' or while segmentation is still warming up.
+  outputStream: MediaStream | null;
+  ready: boolean;
+  error: string | null;
+}
+
+const MEDIAPIPE_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747';
+
+// Cached script-load promise so concurrent toggles only trigger one network fetch.
+let mediapipeLoadPromise: Promise<void> | null = null;
+function loadMediaPipeScript(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.reject(new Error('No window'));
+  if (window.SelfieSegmentation) return Promise.resolve();
+  if (mediapipeLoadPromise) return mediapipeLoadPromise;
+  mediapipeLoadPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-mediapipe-selfie]`);
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('Failed to load MediaPipe')));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = `${MEDIAPIPE_BASE}/selfie_segmentation.js`;
+    script.async = true;
+    script.crossOrigin = 'anonymous';
+    script.dataset.mediapipeSelfie = 'true';
+    script.onload = () => resolve();
+    script.onerror = () => {
+      mediapipeLoadPromise = null;
+      reject(new Error('Failed to load MediaPipe selfie_segmentation script'));
+    };
+    document.head.appendChild(script);
+  });
+  return mediapipeLoadPromise;
+}
+
+// Reasonable target FPS for the compositor. Lowering this saves CPU while still
+// looking smooth for talking-head video. Most webcams cap around 30 anyway.
+const TARGET_FPS = 30;
+
+// Internal segmentation resolution. SelfieSegmentation model 1 expects 256x256;
+// downscaling reduces CPU/GPU work and the mask is upscaled back to canvas size.
+const SEGMENTATION_WIDTH = 256;
+const SEGMENTATION_HEIGHT = 256;
+
+/**
+ * Apply a virtual background (blur or image) to a webcam stream using MediaPipe
+ * Selfie Segmentation. The returned outputStream contains the original audio
+ * tracks plus a canvas-captured video track that downstream code (WebRTC peers,
+ * local preview) can consume transparently.
+ */
+export function useVirtualBackground({
+  inputStream,
+  config,
+}: UseVirtualBackgroundInput): UseVirtualBackgroundResult {
+  const [outputStream, setOutputStream] = useState<MediaStream | null>(inputStream);
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Refs that don't trigger re-renders for the per-frame loop.
+  const configRef = useRef(config);
+  useEffect(() => { configRef.current = config; }, [config]);
+
+  // Cached HTMLImageElement so we don't re-decode the data URL on every frame.
+  const bgImageRef = useRef<{ src: string; img: HTMLImageElement | null } | null>(null);
+
+  useEffect(() => {
+    if (config.mode !== 'image' || !config.imageSrc) {
+      bgImageRef.current = null;
+      return;
+    }
+    if (bgImageRef.current?.src === config.imageSrc) return;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      bgImageRef.current = { src: config.imageSrc!, img };
+    };
+    img.onerror = () => {
+      bgImageRef.current = { src: config.imageSrc!, img: null };
+      console.warn('Failed to load virtual background image');
+    };
+    img.src = config.imageSrc;
+  }, [config.mode, config.imageSrc]);
+
+  // Bypass entirely when off — return the raw stream unchanged.
+  useEffect(() => {
+    if (config.mode === 'off') {
+      setOutputStream(inputStream);
+      setReady(true);
+      setError(null);
+    }
+  }, [config.mode, inputStream]);
+
+  useEffect(() => {
+    if (config.mode === 'off') return;
+    if (!inputStream) {
+      setOutputStream(null);
+      setReady(false);
+      return;
+    }
+
+    // While we boot the segmenter, surface the raw stream so the local preview
+    // and peers keep showing the camera instead of freezing.
+    setOutputStream(inputStream);
+    setReady(false);
+
+    const videoTrack = inputStream.getVideoTracks()[0];
+    if (!videoTrack) {
+      // Audio-only: passthrough.
+      setOutputStream(inputStream);
+      setReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    let raf = 0;
+    let segmenter: SelfieSegmentationType | null = null;
+    let lastResults: Results | null = null;
+    let inFlight = false;
+
+    // The driver video element pulls frames from the input track.
+    const driverVideo = document.createElement('video');
+    driverVideo.muted = true;
+    driverVideo.playsInline = true;
+    driverVideo.srcObject = new MediaStream([videoTrack]);
+
+    // Output canvas — captureStream from this is what we hand to consumers.
+    const outputCanvas = document.createElement('canvas');
+    const outputCtx = outputCanvas.getContext('2d', { alpha: false });
+    if (!outputCtx) {
+      setError('Canvas 2D context unavailable; cannot apply virtual background.');
+      return;
+    }
+
+    // Downscaled mask canvas to keep segmentation fast.
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = SEGMENTATION_WIDTH;
+    maskCanvas.height = SEGMENTATION_HEIGHT;
+
+    const finalize = () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      try { driverVideo.pause(); } catch { /* ignore */ }
+      driverVideo.srcObject = null;
+      if (segmenter) {
+        // close() returns a promise; we don't await it on unmount.
+        segmenter.close().catch(() => { /* ignore */ });
+        segmenter = null;
+      }
+    };
+
+    const sizeCanvasToTrack = () => {
+      const settings = videoTrack.getSettings();
+      const w = settings.width || driverVideo.videoWidth || 1280;
+      const h = settings.height || driverVideo.videoHeight || 720;
+      if (outputCanvas.width !== w || outputCanvas.height !== h) {
+        outputCanvas.width = w;
+        outputCanvas.height = h;
+      }
+    };
+
+    const drawComposite = () => {
+      if (!lastResults) return;
+      const { segmentationMask, image } = lastResults;
+      const ctx = outputCtx;
+      const cw = outputCanvas.width;
+      const ch = outputCanvas.height;
+      const mode = configRef.current.mode;
+
+      ctx.save();
+      ctx.clearRect(0, 0, cw, ch);
+
+      // Step 1: paint the segmentation mask alpha into the canvas.
+      ctx.drawImage(segmentationMask, 0, 0, cw, ch);
+
+      // Step 2: keep only the foreground (the person) where the mask is opaque.
+      ctx.globalCompositeOperation = 'source-in';
+      ctx.drawImage(image, 0, 0, cw, ch);
+
+      // Step 3: paint the chosen background BEHIND the foreground.
+      ctx.globalCompositeOperation = 'destination-over';
+      if (mode === 'blur') {
+        const blurPx = configRef.current.blurPx ?? 12;
+        ctx.filter = `blur(${blurPx}px)`;
+        ctx.drawImage(image, 0, 0, cw, ch);
+        ctx.filter = 'none';
+      } else if (mode === 'image') {
+        const cached = bgImageRef.current?.img;
+        if (cached && cached.complete && cached.naturalWidth > 0) {
+          drawCover(ctx, cached, cw, ch);
+        } else {
+          // Fallback while the image is loading or failed: blur the camera frame.
+          ctx.filter = 'blur(16px)';
+          ctx.drawImage(image, 0, 0, cw, ch);
+          ctx.filter = 'none';
+        }
+      }
+      ctx.restore();
+    };
+
+    const frameInterval = 1000 / TARGET_FPS;
+    let lastFrameTime = 0;
+
+    const renderLoop = (now: number) => {
+      if (cancelled) return;
+      raf = requestAnimationFrame(renderLoop);
+
+      if (now - lastFrameTime < frameInterval) return;
+      lastFrameTime = now;
+
+      if (driverVideo.readyState < 2 || !segmenter || inFlight) return;
+      sizeCanvasToTrack();
+
+      inFlight = true;
+      segmenter
+        .send({ image: driverVideo })
+        .catch((err) => console.warn('Segmentation frame failed:', err))
+        .finally(() => { inFlight = false; });
+    };
+
+    (async () => {
+      try {
+        await loadMediaPipeScript();
+        if (cancelled) return;
+        const Ctor = window.SelfieSegmentation;
+        if (!Ctor) throw new Error('MediaPipe loaded but constructor missing');
+
+        segmenter = new Ctor({
+          locateFile: (file) => `${MEDIAPIPE_BASE}/${file}`,
+        });
+        segmenter.setOptions({ modelSelection: 1, selfieMode: false });
+        segmenter.onResults((results) => {
+          lastResults = results;
+          drawComposite();
+        });
+        await segmenter.initialize();
+
+        await driverVideo.play();
+        if (cancelled) {
+          finalize();
+          return;
+        }
+
+        sizeCanvasToTrack();
+
+        // Capture once the canvas has its first frame painted.
+        const captured = outputCanvas.captureStream(TARGET_FPS);
+        const composed = new MediaStream();
+        for (const t of inputStream.getAudioTracks()) composed.addTrack(t);
+        for (const t of captured.getVideoTracks()) composed.addTrack(t);
+        setOutputStream(composed);
+        setReady(true);
+        setError(null);
+
+        raf = requestAnimationFrame(renderLoop);
+      } catch (err) {
+        console.error('Failed to initialize virtual background:', err);
+        setError(err instanceof Error ? err.message : 'Virtual background failed to start');
+        setReady(false);
+        // On failure, fall back to the raw stream so the user isn't blocked.
+        setOutputStream(inputStream);
+        finalize();
+      }
+    })();
+
+    return () => {
+      finalize();
+    };
+    // We intentionally re-spin the pipeline when the input stream changes or
+    // when the mode toggles between off and on.
+  }, [inputStream, config.mode]);
+
+  return { outputStream, ready, error };
+}
+
+// "background-size: cover" style draw onto a canvas.
+function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, w: number, h: number) {
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  const scale = Math.max(w / iw, h / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+}
