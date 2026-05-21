@@ -49,8 +49,10 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   const localStreamRef = useRef(localStream);
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
 
-  // Bug fix #1: Buffer ICE candidates that arrive before remote description is set
+  // Buffer ICE candidates that arrive before remote description is set.
+  // Capped per peer so a misbehaving / never-materializing peer cannot accumulate memory.
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const MAX_PENDING_CANDIDATES_PER_PEER = 50;
 
   // Bug fix #5: Track disconnected timers for ICE restart
   const disconnectTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -313,33 +315,54 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   const handleAnswer = useCallback(
     async (from: string, sdp: RTCSessionDescriptionInit) => {
       const peer = peersRef.current.get(from);
-      if (peer) {
+      if (!peer) return;
+      try {
         await peer.connection.setRemoteDescription(new RTCSessionDescription(sdp));
-
-        // Bug fix #1: Drain any buffered ICE candidates after setting remote description
         await drainPendingCandidates(from, peer.connection);
+      } catch (err) {
+        // setRemoteDescription can reject if the peer was closed mid-flight or the
+        // SDP was malformed. Clean up rather than letting the rejection bubble.
+        console.error(`Failed to apply answer from ${from}:`, err);
+        try {
+          peer.connection.ontrack = null;
+          peer.connection.onicecandidate = null;
+          peer.connection.onconnectionstatechange = null;
+          peer.connection.close();
+        } catch {
+          // Already closed
+        }
+        peersRef.current.delete(from);
+        pendingCandidatesRef.current.delete(from);
+        updateRemoteStreams();
       }
     },
-    [drainPendingCandidates]
+    [drainPendingCandidates, updateRemoteStreams]
   );
+
+  // Push an ICE candidate into the per-peer pending buffer, with a cap.
+  const bufferCandidate = useCallback((peerId: string, candidate: RTCIceCandidateInit) => {
+    const existing = pendingCandidatesRef.current.get(peerId) || [];
+    if (existing.length >= MAX_PENDING_CANDIDATES_PER_PEER) {
+      // Drop the oldest to bound memory; a flood of candidates from a single peer
+      // should not be allowed to grow unbounded.
+      existing.shift();
+    }
+    existing.push(candidate);
+    pendingCandidatesRef.current.set(peerId, existing);
+  }, []);
 
   // Handle incoming ICE candidate
   const handleIceCandidate = useCallback(
     async (from: string, candidate: RTCIceCandidateInit) => {
       const peer = peersRef.current.get(from);
       if (!peer) {
-        // Peer doesn't exist yet -- buffer the candidate until the peer is created
-        const existing = pendingCandidatesRef.current.get(from) || [];
-        existing.push(candidate);
-        pendingCandidatesRef.current.set(from, existing);
+        bufferCandidate(from, candidate);
         return;
       }
 
       // Buffer candidates if remote description is not yet set
       if (!peer.connection.remoteDescription) {
-        const existing = pendingCandidatesRef.current.get(from) || [];
-        existing.push(candidate);
-        pendingCandidatesRef.current.set(from, existing);
+        bufferCandidate(from, candidate);
         return;
       }
 
@@ -349,7 +372,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         console.error(`Failed to add ICE candidate from ${from}:`, err);
       }
     },
-    []
+    [bufferCandidate]
   );
 
   // Remove a peer connection

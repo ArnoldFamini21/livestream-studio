@@ -21,7 +21,7 @@ declare global {
           initTokenClient: (config: {
             client_id: string;
             scope: string;
-            callback: (response: { access_token?: string; error?: string }) => void;
+            callback: (response: { access_token?: string; expires_in?: number; error?: string }) => void;
           }) => TokenClient;
         };
       };
@@ -29,14 +29,23 @@ declare global {
   }
 }
 
+// Google OAuth access tokens default to ~1 hour. Treat them as stale a bit early
+// so we proactively re-auth before a long upload runs out of token mid-flight.
+const TOKEN_SAFETY_MARGIN_MS = 5 * 60 * 1000;
+
 export function useGoogleDriveUpload() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress>({});
 
   const accessTokenRef = useRef<string | null>(null);
+  const accessTokenExpiresAtRef = useRef<number>(0);
   const tokenClientRef = useRef<TokenClient | null>(null);
   const gisLoadedRef = useRef<boolean>(false);
+
+  function isTokenFresh(): boolean {
+    return Boolean(accessTokenRef.current) && Date.now() < accessTokenExpiresAtRef.current - TOKEN_SAFETY_MARGIN_MS;
+  }
 
   // Load Google Identity Services script dynamically
   const loadGisScript = useCallback((): Promise<void> => {
@@ -76,69 +85,63 @@ export function useGoogleDriveUpload() {
     });
   }, []);
 
+  // Resolver for the in-flight authorize() call. The token client is created once
+  // and reused; each authorize() swaps in a new resolver via this ref so we don't
+  // re-initialize the underlying client and leak the previous one.
+  const pendingResolveRef = useRef<((authorized: boolean) => void) | null>(null);
+
+  const handleTokenResponse = useCallback((response: { access_token?: string; expires_in?: number; error?: string }) => {
+    const resolve = pendingResolveRef.current;
+    pendingResolveRef.current = null;
+
+    if (response.error) {
+      console.error('OAuth2 error:', response.error);
+      setIsAuthorized(false);
+      accessTokenRef.current = null;
+      accessTokenExpiresAtRef.current = 0;
+      resolve?.(false);
+      return;
+    }
+    if (response.access_token) {
+      accessTokenRef.current = response.access_token;
+      // expires_in is in seconds; default to 1 hour if absent.
+      const ttlMs = (response.expires_in ?? 3600) * 1000;
+      accessTokenExpiresAtRef.current = Date.now() + ttlMs;
+      setIsAuthorized(true);
+      console.log('Google Drive authorized');
+      resolve?.(true);
+      return;
+    }
+    resolve?.(false);
+  }, []);
+
   const initTokenClient = useCallback(() => {
     if (!window.google?.accounts?.oauth2) {
       console.error('Google Identity Services not loaded');
       return null;
     }
-
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: SCOPES,
-      callback: (response) => {
-        if (response.error) {
-          console.error('OAuth2 error:', response.error);
-          setIsAuthorized(false);
-          return;
-        }
-        if (response.access_token) {
-          accessTokenRef.current = response.access_token;
-          setIsAuthorized(true);
-          console.log('Google Drive authorized');
-        }
-      },
+      callback: handleTokenResponse,
     });
-
     tokenClientRef.current = client;
     return client;
-  }, []);
+  }, [handleTokenResponse]);
 
   const authorize = useCallback(async (): Promise<boolean> => {
     try {
       await loadGisScript();
 
-      let client = tokenClientRef.current;
-      if (!client) {
-        client = initTokenClient();
-      }
-
+      const client = tokenClientRef.current ?? initTokenClient();
       if (!client) {
         console.error('Failed to initialize token client');
         return false;
       }
 
       return new Promise((resolve) => {
-        // Override callback for this specific authorization request
-        const originalClient = window.google!.accounts.oauth2.initTokenClient({
-          client_id: GOOGLE_CLIENT_ID,
-          scope: SCOPES,
-          callback: (response) => {
-            if (response.error) {
-              console.error('OAuth2 error:', response.error);
-              setIsAuthorized(false);
-              resolve(false);
-              return;
-            }
-            if (response.access_token) {
-              accessTokenRef.current = response.access_token;
-              setIsAuthorized(true);
-              resolve(true);
-            }
-          },
-        });
-
-        tokenClientRef.current = originalClient;
-        originalClient.requestAccessToken({ prompt: '' });
+        pendingResolveRef.current = resolve;
+        client.requestAccessToken({ prompt: '' });
       });
     } catch (err) {
       console.error('Authorization failed:', err);
@@ -146,8 +149,15 @@ export function useGoogleDriveUpload() {
     }
   }, [loadGisScript, initTokenClient]);
 
+  // Ensure we have a fresh token (or trigger re-auth) before kicking off a long upload.
+  const ensureFreshToken = useCallback(async (): Promise<boolean> => {
+    if (isTokenFresh()) return true;
+    return authorize();
+  }, [authorize]);
+
   const createFolder = useCallback(async (name: string): Promise<string | null> => {
-    if (!accessTokenRef.current) {
+    const ok = await ensureFreshToken();
+    if (!ok || !accessTokenRef.current) {
       console.error('Not authorized');
       return null;
     }
@@ -181,11 +191,13 @@ export function useGoogleDriveUpload() {
       console.error('Error creating folder:', err);
       return null;
     }
-  }, []);
+  }, [ensureFreshToken]);
 
   const uploadFile = useCallback(
     async (blob: Blob, fileName: string, folderId?: string): Promise<string | null> => {
-      if (!accessTokenRef.current) {
+      // Refresh the token now if it's stale; otherwise a long upload could die mid-stream.
+      const ok = await ensureFreshToken();
+      if (!ok || !accessTokenRef.current) {
         console.error('Not authorized');
         return null;
       }
@@ -283,7 +295,7 @@ export function useGoogleDriveUpload() {
         return null;
       }
     },
-    []
+    [ensureFreshToken]
   );
 
   // Track overall uploading state based on progress

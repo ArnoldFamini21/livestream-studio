@@ -66,7 +66,11 @@ export function StreamDestinations({
     .map((dest) => ({ dest, issue: getDestinationIssue(dest) }))
     .filter((item): item is { dest: StreamDestination; issue: string } => Boolean(item.issue));
   const enabledCount = enabledDestinations.length;
-  const canGoLive = enabledCount > 0 && enabledIssues.length === 0;
+  // RTMP relay (the media-server) is not implemented yet. Disable Go Live so users
+  // don't believe they're broadcasting when nothing is being pushed upstream.
+  // Flip this to `enabledCount > 0 && enabledIssues.length === 0` once the relay ships.
+  const RTMP_RELAY_AVAILABLE = false;
+  const canGoLive = RTMP_RELAY_AVAILABLE && enabledCount > 0 && enabledIssues.length === 0;
 
   return (
     <div style={styles.panel}>
@@ -88,7 +92,18 @@ export function StreamDestinations({
       </div>
 
       <div style={styles.body}>
-        {destinations.length > 0 && (
+        {!RTMP_RELAY_AVAILABLE && (
+          <div style={{ ...styles.preflight, ...styles.preflightWarn }}>
+            <div style={styles.preflightTop}>
+              <span style={styles.preflightLabel}>RTMP relay coming soon</span>
+            </div>
+            <div style={styles.preflightIssue}>
+              You can save destinations and stream keys here, but the server-side RTMP push isn't live yet,
+              so clicking Go Live won't actually broadcast. Use your platform's own producer dashboard for now.
+            </div>
+          </div>
+        )}
+        {RTMP_RELAY_AVAILABLE && destinations.length > 0 && (
           <div style={{ ...styles.preflight, ...(canGoLive ? styles.preflightReady : styles.preflightWarn) }}>
             <div style={styles.preflightTop}>
               <span style={styles.preflightLabel}>{canGoLive ? 'Ready to stream' : 'Needs setup'}</span>

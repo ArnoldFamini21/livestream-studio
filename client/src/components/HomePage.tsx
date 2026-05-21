@@ -45,6 +45,10 @@ export function HomePage() {
       const room = await res.json();
       sessionStorage.setItem('userName', hostName);
       sessionStorage.setItem('userRole', 'host');
+      if (typeof room.hostToken === 'string') {
+        // Scoped per room so old tokens don't leak across rooms.
+        sessionStorage.setItem(`hostToken:${room.id}`, room.hostToken);
+      }
       navigate(`/join/${room.id}`);
     } catch (err) {
       console.error('Failed to create room:', err);
@@ -75,6 +79,9 @@ export function HomePage() {
         return;
       }
       const room = await res.json();
+      if (typeof room.hostToken === 'string') {
+        sessionStorage.setItem(`hostToken:${room.id}`, room.hostToken);
+      }
       setScheduledRoom({ id: room.id, name: room.name, scheduledFor: room.scheduledFor });
       setCopied(false);
     } catch (err) {

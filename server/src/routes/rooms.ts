@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createRoom, getRooms } from '../services/signaling.js';
+import { createRoom, getRooms, RoomQuotaError } from '../services/signaling.js';
 
 export const roomRouter = Router();
 
@@ -13,6 +13,10 @@ function sanitizeString(str: unknown): string | null {
   if (trimmed.length === 0) return null;
   // Strip control characters
   return trimmed.replace(/[\x00-\x1F\x7F]/g, '');
+}
+
+function getClientIp(req: { ip?: string; socket: { remoteAddress?: string } }): string {
+  return req.ip || req.socket.remoteAddress || 'unknown';
 }
 
 // Create a new room
@@ -35,7 +39,7 @@ roomRouter.post('/', (req, res) => {
       return;
     }
 
-    const room = createRoom(name, hostName);
+    const { room, hostToken } = createRoom(name, hostName, { creatorIp: getClientIp(req) });
     res.status(201).json({
       id: room.id,
       name: room.name,
@@ -43,8 +47,15 @@ roomRouter.post('/', (req, res) => {
       createdAt: room.createdAt,
       hostName: room.hostName,
       settings: room.settings,
+      // hostToken is shown to the creator ONCE and stored client-side.
+      // Anyone who later joins as 'host' must present this token to the WS signaling server.
+      hostToken,
     });
   } catch (err) {
+    if (err instanceof RoomQuotaError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
     res.status(500).json({ error: 'Failed to create room' });
   }
 });
@@ -82,9 +93,10 @@ roomRouter.post('/schedule', (req, res) => {
       }
     }
 
-    const room = createRoom(name, hostName, {
+    const { room, hostToken } = createRoom(name, hostName, {
       status: 'scheduled',
       scheduledFor: scheduledFor || undefined,
+      creatorIp: getClientIp(req),
     });
     res.status(201).json({
       id: room.id,
@@ -94,8 +106,13 @@ roomRouter.post('/schedule', (req, res) => {
       hostName: room.hostName,
       scheduledFor: room.scheduledFor,
       settings: room.settings,
+      hostToken,
     });
   } catch (err) {
+    if (err instanceof RoomQuotaError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
     res.status(500).json({ error: 'Failed to schedule room' });
   }
 });

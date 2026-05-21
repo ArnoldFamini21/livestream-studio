@@ -202,8 +202,9 @@ export function StudioRoom() {
   const [destinations, setDestinations] = useState<StreamDestination[]>([]);
   const [isLive, setIsLive] = useState(false);
 
-  // Room ending countdown
+  // Room ending countdown — driven by server-issued absolute end time.
   const [roomEnding, setRoomEnding] = useState(false);
+  const [roomEndsAt, setRoomEndsAt] = useState<number | null>(null);
   const [endingCountdown, setEndingCountdown] = useState(10);
   const [sessionRecordingStartedAt, setSessionRecordingStartedAt] = useState<string | null>(null);
   const [sessionRecordingElapsed, setSessionRecordingElapsed] = useState(0);
@@ -244,7 +245,7 @@ export function StudioRoom() {
   const [myUpvotes, setMyUpvotes] = useState<Set<string>>(new Set());
 
   // Hooks
-  const { connect, disconnect, send, addHandler, connected } = useSignaling();
+  const { connect, disconnect, send, addHandler, connected, reconnectFailed, retry: retryConnection } = useSignaling();
   const {
     localStream, audioEnabled, videoEnabled,
     error: mediaError,
@@ -299,6 +300,8 @@ export function StudioRoom() {
 
   // Refs for signaling handler dependencies to reduce recreation frequency
   const connectToPeerRef = useRef(connectToPeer);
+  // Initial peers we should dial once myParticipant has settled. Stays a ref so we don't trigger renders.
+  const initialPeersToConnectRef = useRef<string[]>([]);
   const handleOfferRef = useRef(handleOffer);
   const handleAnswerRef = useRef(handleAnswer);
   const handleIceCandidateRef = useRef(handleIceCandidate);
@@ -440,6 +443,18 @@ export function StudioRoom() {
 
   // Keep function refs in sync
   useEffect(() => { connectToPeerRef.current = connectToPeer; }, [connectToPeer]);
+
+  // Once we know our own participant ID, dial each peer in the initial roster.
+  // Driven by myParticipant?.id rather than a setTimeout race.
+  useEffect(() => {
+    if (!myParticipant?.id) return;
+    const ids = initialPeersToConnectRef.current;
+    if (ids.length === 0) return;
+    initialPeersToConnectRef.current = [];
+    for (const id of ids) {
+      connectToPeerRef.current(id).catch((err) => console.error('Failed to connect to peer:', err));
+    }
+  }, [myParticipant?.id]);
   useEffect(() => { handleOfferRef.current = handleOffer; }, [handleOffer]);
   useEffect(() => { handleAnswerRef.current = handleAnswer; }, [handleAnswer]);
   useEffect(() => { handleIceCandidateRef.current = handleIceCandidate; }, [handleIceCandidate]);
@@ -493,9 +508,22 @@ export function StudioRoom() {
     if (!connected) {
       joinedRef.current = false;
       setRoomEnding(false);
+      setRoomEndsAt(null);
       setEndingCountdown(10);
     }
   }, [connected]);
+
+  // Tick the local countdown against the server-issued absolute end time.
+  useEffect(() => {
+    if (!roomEnding || roomEndsAt === null) return;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((roomEndsAt - Date.now()) / 1000));
+      setEndingCountdown(remaining);
+    };
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [roomEnding, roomEndsAt]);
 
   // WebSocket connection timeout: show error if not connected within 10 seconds
   useEffect(() => {
@@ -517,9 +545,13 @@ export function StudioRoom() {
   useEffect(() => {
     if (connected && roomId && !joinedRef.current && (localStream || mediaError || mediaAttemptComplete)) {
       joinedRef.current = true;
+      // Only present hostToken when claiming host — guests never have one to send.
+      const hostToken = userRole === 'host'
+        ? sessionStorage.getItem(`hostToken:${roomId}`) || undefined
+        : undefined;
       send({
         type: 'join-room',
-        payload: { roomId, name: userName, role: userRole },
+        payload: { roomId, name: userName, role: userRole, hostToken },
       });
     }
   }, [connected, localStream, mediaError, mediaAttemptComplete, roomId, userName, userRole, send]);
@@ -538,9 +570,9 @@ export function StudioRoom() {
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
           setParticipants(map);
-          existing.forEach((p) => {
-            setTimeout(() => connectToPeerRef.current(p.id).catch(err => console.error('Failed to connect to peer:', err)), 100);
-          });
+          // Defer connectToPeer until myParticipant has propagated through useWebRTC's ref;
+          // a dedicated effect below handles the initial connect-out.
+          initialPeersToConnectRef.current = existing.map((p) => p.id);
           break;
         }
         case 'participant-joined': {
@@ -622,12 +654,18 @@ export function StudioRoom() {
           disconnectRef.current();
           setConnectionError(message.payload.reason || 'You were removed from this session.');
           break;
-        case 'room-ending':
-          setRoomEnding(true);
-          setEndingCountdown(message.payload.countdown);
+        case 'room-ending': {
+          const endsAt = Date.parse(message.payload.endsAt);
+          if (Number.isFinite(endsAt)) {
+            setRoomEnding(true);
+            setRoomEndsAt(endsAt);
+            setEndingCountdown(Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)));
+          }
           break;
+        }
         case 'room-ending-cancelled':
           setRoomEnding(false);
+          setRoomEndsAt(null);
           setEndingCountdown(10);
           break;
         case 'host-changed':
@@ -1464,6 +1502,38 @@ export function StudioRoom() {
         >
           Go to homepage
         </button>
+      </div>
+    );
+  }
+
+  // Reconnect failed after max attempts — let the user manually retry rather than spinning forever.
+  if (reconnectFailed) {
+    return (
+      <div style={styles.loading}>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+        <p style={{ ...styles.loadingText, color: '#f59e0b', marginTop: 16 }}>
+          Could not reconnect to the studio. Your network may be down or the server is unreachable.
+        </p>
+        <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+          <button
+            className="btn-primary"
+            style={{ padding: '10px 24px', borderRadius: 10, fontSize: 14, fontWeight: 600 }}
+            onClick={retryConnection}
+          >
+            Retry
+          </button>
+          <button
+            className="btn-ghost"
+            style={{ padding: '10px 24px', borderRadius: 10, fontSize: 14, fontWeight: 600 }}
+            onClick={() => navigate('/')}
+          >
+            Go to homepage
+          </button>
+        </div>
       </div>
     );
   }

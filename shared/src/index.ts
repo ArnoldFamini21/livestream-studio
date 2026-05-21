@@ -68,7 +68,7 @@ export type SignalMessage =
   | { type: 'participant-updated'; payload: Participant }
   | { type: 'participant-removed'; payload: { reason: string } }
   | { type: 'end-room'; payload: Record<string, never> }
-  | { type: 'room-ending'; payload: { countdown: number } }
+  | { type: 'room-ending'; payload: { endsAt: string } }
   | { type: 'room-ended'; payload: Record<string, never> }
   | { type: 'room-ending-cancelled'; payload: Record<string, never> }
   | { type: 'host-changed'; payload: { newHostId: string; newHostName: string } }
@@ -78,6 +78,7 @@ export interface JoinRoomPayload {
   roomId: string;
   name: string;
   role: ParticipantRole;
+  hostToken?: string;
 }
 
 export interface RoomJoinedPayload {

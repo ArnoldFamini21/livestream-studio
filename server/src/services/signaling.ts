@@ -21,6 +21,12 @@ interface RoomState {
   qaQuestions: Map<string, QAQuestion>;
   qaVotes: Map<string, Set<string>>;
   recordingStartedAt?: string;
+  // Server-issued secret returned to the room creator and required on host join-room.
+  hostToken: string;
+  // Creator IP, used to enforce a per-IP active-room quota.
+  creatorIp: string;
+  // True once any participant successfully joined; used for shorter idle expiry.
+  hasBeenJoined: boolean;
 }
 
 // Extend WebSocket to track heartbeat state
@@ -56,22 +62,30 @@ const STAGE_ACTIONS = new Set<StageActionPayload['action']>([
 ]);
 
 const MAX_ROOMS = 1000;
+const MAX_ROOMS_PER_IP = 5;
+// Idle (never-joined) rooms expire fast so a bad actor can't squat on the global pool.
+const NEVER_JOINED_IDLE_MS = 30 * 60 * 1000; // 30 minutes
+const ACTIVE_IDLE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const rooms = new Map<string, RoomState>();
 const wsToParticipant = new Map<WebSocket, { roomId: string; participantId: string }>();
 const endingTimers = new Map<string, NodeJS.Timeout>();
+// IP -> Set<roomId> of rooms this IP created and that are still active.
+const roomsByCreatorIp = new Map<string, Set<string>>();
 
-// Stale room cleanup: remove rooms older than 24 hours with no participants
+// Stale room cleanup: never-joined rooms expire after 30 min, joined rooms after 24h.
 setInterval(() => {
   const now = Date.now();
   rooms.forEach((roomState, id) => {
+    if (roomState.participants.size > 0) return;
     const created = new Date(roomState.room.createdAt).getTime();
-    if (now - created > 24 * 60 * 60 * 1000 && roomState.participants.size === 0) {
-      rooms.delete(id);
-      console.log(`Stale room ${id} cleaned up (older than 24h, no participants)`);
+    const idleLimit = roomState.hasBeenJoined ? ACTIVE_IDLE_MS : NEVER_JOINED_IDLE_MS;
+    if (now - created > idleLimit) {
+      deleteRoom(id);
+      console.log(`Stale room ${id} cleaned up (idle for >${Math.round(idleLimit / 60000)}m)`);
     }
   });
-}, 60 * 60 * 1000); // Every hour
+}, 10 * 60 * 1000); // Every 10 minutes
 
 // WebSocket per-connection rate limiting
 const wsMessageCounts = new Map<WebSocket, { count: number; resetAt: number }>();
@@ -102,9 +116,44 @@ export function getRooms() {
   return rooms;
 }
 
-export function createRoom(name: string, hostName: string, options?: { status?: 'waiting' | 'scheduled'; scheduledFor?: string }): Room {
+export interface CreatedRoom {
+  room: Room;
+  hostToken: string;
+}
+
+export class RoomQuotaError extends Error {
+  constructor(message: string, public statusCode: number) {
+    super(message);
+    this.name = 'RoomQuotaError';
+  }
+}
+
+function deleteRoom(roomId: string) {
+  const state = rooms.get(roomId);
+  if (!state) return;
+  const ipSet = roomsByCreatorIp.get(state.creatorIp);
+  if (ipSet) {
+    ipSet.delete(roomId);
+    if (ipSet.size === 0) roomsByCreatorIp.delete(state.creatorIp);
+  }
+  rooms.delete(roomId);
+}
+
+export function createRoom(
+  name: string,
+  hostName: string,
+  options: { status?: 'waiting' | 'scheduled'; scheduledFor?: string; creatorIp: string }
+): CreatedRoom {
   if (rooms.size >= MAX_ROOMS) {
-    throw new Error('Room limit reached');
+    throw new RoomQuotaError('Global room limit reached. Please try again later.', 503);
+  }
+
+  const existingForIp = roomsByCreatorIp.get(options.creatorIp);
+  if (existingForIp && existingForIp.size >= MAX_ROOMS_PER_IP) {
+    throw new RoomQuotaError(
+      `You have ${existingForIp.size} active rooms. Close one before creating another.`,
+      429
+    );
   }
 
   const room: Room = {
@@ -113,7 +162,7 @@ export function createRoom(name: string, hostName: string, options?: { status?: 
     hostId: '',
     coHostIds: [],
     createdAt: new Date().toISOString(),
-    status: options?.status || 'waiting',
+    status: options.status || 'waiting',
     settings: {
       maxParticipants: 7,
       resolution: '1080p',
@@ -123,17 +172,39 @@ export function createRoom(name: string, hostName: string, options?: { status?: 
       greenRoomEnabled: true,
     },
     hostName,
-    scheduledFor: options?.scheduledFor,
+    scheduledFor: options.scheduledFor,
   };
+
+  const hostToken = nanoid(32);
 
   rooms.set(room.id, {
     room,
     participants: new Map(),
     qaQuestions: new Map(),
     qaVotes: new Map(),
+    hostToken,
+    creatorIp: options.creatorIp,
+    hasBeenJoined: false,
   });
 
-  return room;
+  let ipSet = roomsByCreatorIp.get(options.creatorIp);
+  if (!ipSet) {
+    ipSet = new Set();
+    roomsByCreatorIp.set(options.creatorIp, ipSet);
+  }
+  ipSet.add(room.id);
+
+  return { room, hostToken };
+}
+
+// Constant-time comparison to thwart timing attacks on the host token.
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
 }
 
 // Fix #10: Validate incoming messages before processing
@@ -285,15 +356,22 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     roomState.room.status = 'waiting';
   }
 
-  // Fix #6: Determine the effective role — prevent host takeover
+  // Host role requires the secret token returned at room creation. Without a valid
+  // token, the join is silently demoted to 'guest' — anyone who only has the room
+  // URL cannot claim host.
   let effectiveRole = role;
   if (role === 'host') {
-    const existingHostId = roomState.room.hostId;
-    const hostStillConnected =
-      existingHostId !== '' && roomState.participants.has(existingHostId);
-    if (hostStillConnected) {
-      // Room already has an active host — force this joiner to guest
+    const presented = typeof payload.hostToken === 'string' ? payload.hostToken : '';
+    if (!presented || !safeEqual(presented, roomState.hostToken)) {
       effectiveRole = 'guest';
+    } else {
+      // Token valid — but also defend against takeover if a previously-authenticated host is still here.
+      const existingHostId = roomState.room.hostId;
+      const hostStillConnected =
+        existingHostId !== '' && roomState.participants.has(existingHostId);
+      if (hostStillConnected) {
+        effectiveRole = 'guest';
+      }
     }
   }
 
@@ -324,6 +402,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   // Store participant
   roomState.participants.set(participant.id, { participant, ws });
   wsToParticipant.set(ws, { roomId, participantId: participant.id });
+  roomState.hasBeenJoined = true;
 
   // Send room-joined to the new participant (include ALL participants for awareness)
   const allParticipants = Array.from(roomState.participants.values())
@@ -497,6 +576,33 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
   });
 }
 
+function isValidSdpPayload(payload: unknown): payload is { to: string; sdp: { type: string; sdp: string } } {
+  if (!payload || typeof payload !== 'object') return false;
+  const p = payload as Record<string, unknown>;
+  if (typeof p.to !== 'string') return false;
+  if (!p.sdp || typeof p.sdp !== 'object') return false;
+  const sdp = p.sdp as Record<string, unknown>;
+  // RTCSessionDescriptionInit requires .type ('offer' | 'answer' | 'pranswer' | 'rollback'); .sdp is optional only for rollback.
+  if (typeof sdp.type !== 'string') return false;
+  if (!['offer', 'answer', 'pranswer', 'rollback'].includes(sdp.type)) return false;
+  if (sdp.sdp !== undefined && typeof sdp.sdp !== 'string') return false;
+  return true;
+}
+
+function isValidIcePayload(payload: unknown): payload is { to: string; candidate: Record<string, unknown> } {
+  if (!payload || typeof payload !== 'object') return false;
+  const p = payload as Record<string, unknown>;
+  if (typeof p.to !== 'string') return false;
+  // candidate may be null (end-of-candidates) or an object with .candidate/.sdpMid/.sdpMLineIndex
+  if (p.candidate === null) return true;
+  if (!p.candidate || typeof p.candidate !== 'object') return false;
+  const c = p.candidate as Record<string, unknown>;
+  if (c.candidate !== undefined && typeof c.candidate !== 'string') return false;
+  if (c.sdpMid !== undefined && c.sdpMid !== null && typeof c.sdpMid !== 'string') return false;
+  if (c.sdpMLineIndex !== undefined && c.sdpMLineIndex !== null && typeof c.sdpMLineIndex !== 'number') return false;
+  return true;
+}
+
 function relayToParticipant(ws: WebSocket, message: RelaySignalMessage) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
@@ -504,9 +610,16 @@ function relayToParticipant(ws: WebSocket, message: RelaySignalMessage) {
   const roomState = rooms.get(mapping.roomId);
   if (!roomState) return;
 
-  if (typeof message.payload.to !== 'string') {
-    sendError(ws, 'Invalid recipient', 'VALIDATION_ERROR');
-    return;
+  if (message.type === 'ice-candidate') {
+    if (!isValidIcePayload(message.payload)) {
+      sendError(ws, 'Invalid ICE payload', 'VALIDATION_ERROR');
+      return;
+    }
+  } else {
+    if (!isValidSdpPayload(message.payload)) {
+      sendError(ws, 'Invalid SDP payload', 'VALIDATION_ERROR');
+      return;
+    }
   }
 
   if (message.payload.to === mapping.participantId) {
@@ -766,6 +879,27 @@ function handleQAQuestionUpvote(
   broadcastQAQuestion(mapping.roomId, updated);
 }
 
+const END_ROOM_GRACE_MS = 10_000;
+
+function endRoomImmediately(roomId: string) {
+  const state = rooms.get(roomId);
+  if (!state) return;
+
+  broadcastToRoom(roomId, { type: 'room-ended', payload: {} });
+
+  for (const [, { ws: participantWs }] of state.participants) {
+    wsToParticipant.delete(participantWs);
+    try {
+      participantWs.close(1000, 'Room ended');
+    } catch {
+      // Already closed
+    }
+  }
+  state.participants.clear();
+  deleteRoom(roomId);
+  console.log(`Room ${roomId} ended and cleaned up`);
+}
+
 function handleEndRoom(ws: WebSocket) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
@@ -784,47 +918,21 @@ function handleEndRoom(ws: WebSocket) {
   if (endingTimers.has(mapping.roomId)) return;
 
   const roomId = mapping.roomId;
-  let countdown = 10;
+  const endsAt = new Date(Date.now() + END_ROOM_GRACE_MS).toISOString();
 
-  // Broadcast initial countdown to all participants (including host)
+  // Single broadcast — clients tick locally against endsAt rather than relying on
+  // per-second server messages.
   broadcastToRoom(roomId, {
     type: 'room-ending',
-    payload: { countdown },
+    payload: { endsAt },
   });
 
-  console.log(`Host is ending room ${roomId} — countdown started`);
+  console.log(`Host is ending room ${roomId} — closing at ${endsAt}`);
 
-  const timer = setInterval(() => {
-    countdown -= 1;
-
-    if (countdown > 0) {
-      broadcastToRoom(roomId, {
-        type: 'room-ending',
-        payload: { countdown },
-      });
-    } else {
-      // Countdown finished — broadcast room-ended and clean up
-      clearInterval(timer);
-      endingTimers.delete(roomId);
-
-      broadcastToRoom(roomId, {
-        type: 'room-ended',
-        payload: {},
-      });
-
-      // Close all participant WebSockets and clean up
-      const state = rooms.get(roomId);
-      if (state) {
-        for (const [id, { ws: participantWs }] of state.participants) {
-          wsToParticipant.delete(participantWs);
-          participantWs.close();
-        }
-        state.participants.clear();
-        rooms.delete(roomId);
-        console.log(`Room ${roomId} ended and cleaned up`);
-      }
-    }
-  }, 1000);
+  const timer = setTimeout(() => {
+    endingTimers.delete(roomId);
+    endRoomImmediately(roomId);
+  }, END_ROOM_GRACE_MS);
 
   endingTimers.set(roomId, timer);
 }
@@ -850,12 +958,12 @@ function handleDisconnect(ws: WebSocket) {
     // Remove from co-host list if applicable
     roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== participantId);
 
-    // If the host disconnected, clean up ending timer and handoff
+    // If the host disconnected, clean up ending timer and attempt co-host handoff.
     if (wasHost) {
       // Clear any active ending timer for this room
       const endingTimer = endingTimers.get(roomId);
       if (endingTimer) {
-        clearInterval(endingTimer);
+        clearTimeout(endingTimer);
         endingTimers.delete(roomId);
         // Notify remaining participants that the end was cancelled
         broadcastToRoom(roomId, {
@@ -864,44 +972,39 @@ function handleDisconnect(ws: WebSocket) {
         });
       }
 
-      // Handoff host to the first co-host, or failing that, the first remaining participant
-      if (roomState.participants.size > 0) {
-        let newHostId: string | null = null;
-
-        // Try co-hosts first
-        for (const coHostId of roomState.room.coHostIds) {
-          if (roomState.participants.has(coHostId)) {
-            newHostId = coHostId;
-            break;
-          }
+      // Hand off only to an actual co-host. Promoting a random guest is
+      // surprising and gives someone uninvited authority over the room.
+      let newHostId: string | null = null;
+      for (const coHostId of roomState.room.coHostIds) {
+        if (roomState.participants.has(coHostId)) {
+          newHostId = coHostId;
+          break;
         }
+      }
 
-        // Fall back to any remaining participant
-        if (!newHostId) {
-          newHostId = roomState.participants.keys().next().value ?? null;
+      if (newHostId) {
+        const newHost = roomState.participants.get(newHostId);
+        if (newHost) {
+          newHost.participant.role = 'host';
+          roomState.room.hostId = newHostId;
+          roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== newHostId);
+
+          console.log(`Host handoff: ${newHost.participant.name} is now host of room ${roomId}`);
+
+          broadcastToRoom(roomId, {
+            type: 'participant-updated',
+            payload: newHost.participant,
+          });
+          broadcastToRoom(roomId, {
+            type: 'host-changed',
+            payload: { newHostId, newHostName: newHost.participant.name },
+          });
         }
-
-        if (newHostId) {
-          const newHost = roomState.participants.get(newHostId);
-          if (newHost) {
-            newHost.participant.role = 'host';
-            roomState.room.hostId = newHostId;
-            // Remove from co-host list if they were a co-host
-            roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== newHostId);
-
-            console.log(`Host handoff: ${newHost.participant.name} is now host of room ${roomId}`);
-
-            // Notify all participants about the host change
-            broadcastToRoom(roomId, {
-              type: 'participant-updated',
-              payload: newHost.participant,
-            });
-            broadcastToRoom(roomId, {
-              type: 'host-changed',
-              payload: { newHostId, newHostName: newHost.participant.name },
-            });
-          }
-        }
+      } else if (roomState.participants.size > 0) {
+        // No co-host to inherit — end the room rather than crowning a random guest.
+        console.log(`Host of room ${roomId} disconnected with no co-host. Ending room.`);
+        endRoomImmediately(roomId);
+        return;
       }
     }
 
@@ -913,7 +1016,7 @@ function handleDisconnect(ws: WebSocket) {
     console.log(`${name} left room ${roomId} [${roomState.participants.size} participants]`);
 
     if (roomState.participants.size === 0 && roomState.room.status !== 'scheduled') {
-      rooms.delete(roomId);
+      deleteRoom(roomId);
       console.log(`Room ${roomId} deleted (empty)`);
     }
   }

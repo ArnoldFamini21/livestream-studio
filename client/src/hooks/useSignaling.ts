@@ -3,18 +3,23 @@ import type { SignalMessage } from '@studio/shared';
 
 type MessageHandler = (message: SignalMessage) => void;
 
+// After this many failed reconnect attempts in a row we stop trying and surface
+// a 'reconnect_failed' state so the UI can prompt the user to manually retry.
+const MAX_RECONNECT_ATTEMPTS = 12;
+
 export function useSignaling() {
   const wsRef = useRef<WebSocket | null>(null);
   const handlersRef = useRef<Set<MessageHandler>>(new Set());
   const [connected, setConnected] = useState(false);
+  const [reconnectFailed, setReconnectFailed] = useState(false);
 
-  // Bug fix #6: Reconnection with exponential backoff
+  // Reconnection with exponential backoff (capped attempts).
   const reconnectAttemptsRef = useRef<number>(0);
   const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const intentionalDisconnectRef = useRef<boolean>(false);
 
-  // Bug fix #7: Message queue for offline messages
+  // Message queue for offline messages
   const messageQueueRef = useRef<SignalMessage[]>([]);
 
   // Bug fix #7: Drain queued messages
@@ -47,11 +52,12 @@ export function useSignaling() {
         if (wsRef.current !== ws) return;
         console.log('WebSocket connected');
         setConnected(true);
+        setReconnectFailed(false);
 
-        // Bug fix #6: Reset reconnect attempts on successful connection
+        // Reset reconnect attempts on successful connection
         reconnectAttemptsRef.current = 0;
 
-        // Bug fix #7: Drain any queued messages
+        // Drain any queued messages
         drainMessageQueue(ws);
       };
 
@@ -77,17 +83,23 @@ export function useSignaling() {
         // Clear stale message queue from old session to avoid replaying outdated data
         messageQueueRef.current = [];
 
-        // Bug fix #6: Reconnect on non-clean close, unless intentionally disconnected
-        if (!intentionalDisconnectRef.current && !event.wasClean) {
-          const baseDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-          const delay = baseDelay * (0.5 + Math.random() * 0.5); // 50-100% of base delay (jitter)
-          console.log(`Scheduling reconnection in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current + 1})`);
-          reconnectTimerRef.current = setTimeout(() => {
-            reconnectTimerRef.current = null;
-            reconnectAttemptsRef.current++;
-            connect();
-          }, delay);
+        // Reconnect on non-clean close, unless intentionally disconnected or out of attempts.
+        if (intentionalDisconnectRef.current || event.wasClean) return;
+
+        if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          console.warn(`Giving up after ${MAX_RECONNECT_ATTEMPTS} reconnect attempts`);
+          setReconnectFailed(true);
+          return;
         }
+
+        const baseDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+        const delay = baseDelay * (0.5 + Math.random() * 0.5); // 50-100% of base delay (jitter)
+        console.log(`Scheduling reconnection in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          reconnectAttemptsRef.current++;
+          connect();
+        }, delay);
       };
 
       ws.onerror = (err) => {
@@ -135,6 +147,13 @@ export function useSignaling() {
     };
   }, []);
 
+  // After max attempts the UI calls this to kick off a fresh attempt cycle.
+  const retry = useCallback(() => {
+    reconnectAttemptsRef.current = 0;
+    setReconnectFailed(false);
+    connect();
+  }, [connect]);
+
   useEffect(() => {
     return () => {
       // Bug fix #6: Clean up reconnect timer on unmount
@@ -151,5 +170,5 @@ export function useSignaling() {
     };
   }, [disconnect]);
 
-  return { connect, disconnect, send, addHandler, connected };
+  return { connect, disconnect, send, addHandler, connected, reconnectFailed, retry };
 }

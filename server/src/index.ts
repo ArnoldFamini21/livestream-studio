@@ -56,12 +56,29 @@ app.use(
 );
 app.use(express.json({ limit: '16kb' }));
 
-// Security headers (CSP, X-Frame-Options, etc.)
+// Security headers (CSP, X-Frame-Options, etc.).
+// Note: the SPA is served from a separate static host (Hostinger), so this CSP
+// primarily protects the API surface. The SPA itself should set CSP via meta or
+// host configuration. We still emit a hardened policy as defense in depth:
+// no 'unsafe-inline' for scripts; allow only the third parties the client actually uses.
+const CSP_DIRECTIVES = [
+  "default-src 'self'",
+  "script-src 'self' https://accounts.google.com https://apis.google.com",
+  // Inline styles are required for React inline style={...} usage; not a meaningful XSS vector.
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  // Google APIs for OAuth + Drive uploads; ws/wss for our own signaling.
+  "connect-src 'self' wss: ws: https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "object-src 'none'",
+].join('; ');
+
 app.use((_req, res, next) => {
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' wss: ws:");
+  res.setHeader('Content-Security-Policy', CSP_DIRECTIVES);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
@@ -70,40 +87,79 @@ app.use((_req, res, next) => {
 // Health check endpoint (before rate limiter to avoid false downtime)
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// Simple in-memory rate limiter for REST endpoints
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+// Simple in-memory rate limiter for REST endpoints.
+// Bounded map size so an attacker spreading requests across many IPs cannot exhaust memory.
+const RATE_LIMIT_MAP_MAX = 50_000;
 const RATE_LIMIT_WINDOW = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 30; // 30 requests per minute per IP
+const RATE_LIMIT_MAX = 30; // 30 requests per minute per IP (general)
+const ROOM_CREATE_LIMIT_MAX = 10; // 10 room-create attempts per minute per IP
 
-app.use((req, res, next) => {
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
+interface RateEntry {
+  count: number;
+  resetAt: number;
+}
 
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
-    next();
-    return;
+function makeRateLimiter(maxPerWindow: number) {
+  const buckets = new Map<string, RateEntry>();
+
+  function set(ip: string, entry: RateEntry) {
+    // Bound the map: drop the oldest entry once we hit the ceiling.
+    if (buckets.size >= RATE_LIMIT_MAP_MAX && !buckets.has(ip)) {
+      const oldestKey = buckets.keys().next().value;
+      if (oldestKey !== undefined) buckets.delete(oldestKey);
+    }
+    buckets.set(ip, entry);
   }
 
-  entry.count++;
-  if (entry.count > RATE_LIMIT_MAX) {
-    res.status(429).json({ error: 'Too many requests. Please try again later.' });
+  return {
+    middleware(req: express.Request, res: express.Response, next: express.NextFunction): void {
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+      const now = Date.now();
+      const entry = buckets.get(ip);
+
+      if (!entry || now > entry.resetAt) {
+        set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
+        next();
+        return;
+      }
+
+      entry.count++;
+      if (entry.count > maxPerWindow) {
+        const retryAfterSec = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+        res.setHeader('Retry-After', String(retryAfterSec));
+        res.status(429).json({ error: 'Too many requests. Please try again later.' });
+        return;
+      }
+      next();
+    },
+    sweep() {
+      const now = Date.now();
+      for (const [ip, e] of buckets) {
+        if (now > e.resetAt) buckets.delete(ip);
+      }
+    },
+  };
+}
+
+const generalLimiter = makeRateLimiter(RATE_LIMIT_MAX);
+const roomCreateLimiter = makeRateLimiter(ROOM_CREATE_LIMIT_MAX);
+
+app.use(generalLimiter.middleware);
+
+// Clean up rate-limit entries every 5 minutes
+const rateLimitSweepTimer = setInterval(() => {
+  generalLimiter.sweep();
+  roomCreateLimiter.sweep();
+}, 5 * 60_000);
+
+// REST API routes — room creation gets its own tighter cap.
+app.use('/api/rooms', (req, res, next) => {
+  if (req.method === 'POST') {
+    roomCreateLimiter.middleware(req, res, next);
     return;
   }
   next();
-});
-
-// Clean up rate limit entries every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of rateLimitMap) {
-    if (now > entry.resetAt) rateLimitMap.delete(ip);
-  }
-}, 5 * 60_000);
-
-// REST API routes
-app.use('/api/rooms', roomRouter);
+}, roomRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -143,9 +199,11 @@ server.listen(PORT, () => {
   console.log(`WebSocket signaling on ws://localhost:${PORT}/ws`);
 });
 
-// Fix #9: Graceful shutdown on SIGTERM and SIGINT
+// Graceful shutdown on SIGTERM and SIGINT
 function gracefulShutdown(signal: string) {
   console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+
+  clearInterval(rateLimitSweepTimer);
 
   // Close all WebSocket connections
   wss.clients.forEach((ws) => {
