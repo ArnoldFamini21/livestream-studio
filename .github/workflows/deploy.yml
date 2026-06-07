@@ -26,6 +26,12 @@ jobs:
       - name: Build shared workspace
         run: npm run -w shared build
 
+      - name: Build server
+        run: npm run -w server build
+
+      - name: Build media server
+        run: npm run -w media-server build
+
       - name: Build client
         run: npm run -w client build
 

@@ -1,16 +1,24 @@
 import { useState } from 'react';
 import type { StreamDestination } from '@studio/shared';
+import type { RtmpRelayStats } from '../hooks/useRtmpRelay.ts';
 
 interface StreamDestinationsProps {
   destinations: StreamDestination[];
   onAdd: (dest: Omit<StreamDestination, 'id' | 'status'>) => void;
+  onUpdate: (id: string, dest: Omit<StreamDestination, 'id' | 'status'>) => void;
   onRemove: (id: string) => void;
   onToggle: (id: string) => void;
   isLive: boolean;
-  onGoLive: () => void;
-  onStopLive: () => void;
+  relayStats?: RtmpRelayStats;
+  onGoLive: () => void | Promise<void>;
+  onStopLive: () => void | Promise<void>;
   onClose: () => void;
 }
+
+const MAX_ENABLED_DESTINATIONS = 3;
+const TARGET_RELAY_KBPS = 4660;
+const STALE_CHUNK_MS = 5_000;
+const BITRATE_BAR_COUNT = 24;
 
 const PLATFORMS: Array<{ value: StreamDestination['platform']; label: string; color: string; dashUrl?: string }> = [
   { value: 'youtube', label: 'YouTube', color: '#FF0000', dashUrl: 'https://studio.youtube.com/channel/UC/livestreaming' },
@@ -24,9 +32,11 @@ const PLATFORMS: Array<{ value: StreamDestination['platform']; label: string; co
 export function StreamDestinations({
   destinations,
   onAdd,
+  onUpdate,
   onRemove,
   onToggle,
   isLive,
+  relayStats,
   onGoLive,
   onStopLive,
   onClose,
@@ -37,28 +47,68 @@ export function StreamDestinations({
   const [rtmpUrl, setRtmpUrl] = useState('');
   const [streamKey, setStreamKey] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [editingDestinationId, setEditingDestinationId] = useState<string | null>(null);
 
-  const handleAdd = () => {
+  const resetForm = () => {
+    setShowForm(false);
+    setEditingDestinationId(null);
+    setPlatform('youtube');
+    setName('');
+    setRtmpUrl('');
+    setStreamKey('');
+    setFormError(null);
+  };
+
+  const openCreateForm = () => {
+    setShowForm(true);
+    setEditingDestinationId(null);
+    setPlatform('youtube');
+    setName('');
+    setRtmpUrl(getDefaultRtmpUrl('youtube'));
+    setStreamKey('');
+    setFormError(null);
+  };
+
+  const openEditForm = (destination: StreamDestination) => {
+    setShowForm(true);
+    setEditingDestinationId(destination.id);
+    setPlatform(destination.platform);
+    setName(destination.name);
+    setRtmpUrl(destination.rtmpUrl);
+    setStreamKey('');
+    setFormError(null);
+  };
+
+  const handleSave = () => {
     const platformInfo = PLATFORMS.find((p) => p.value === platform);
+    const existing = editingDestinationId
+      ? destinations.find((destination) => destination.id === editingDestinationId)
+      : undefined;
     const finalRtmp = rtmpUrl.trim() || getDefaultRtmpUrl(platform);
-    const issue = getDestinationIssue({ rtmpUrl: finalRtmp, streamKey });
+    const finalStreamKey = streamKey.trim() || existing?.streamKey || '';
+    const issue = getDestinationIssue({ rtmpUrl: finalRtmp, streamKey: finalStreamKey });
     if (issue) {
       setFormError(issue);
       return;
     }
 
-    onAdd({
+    const savedDestination = {
       platform,
       name: name.trim() || platformInfo?.label || 'Stream',
       rtmpUrl: finalRtmp,
-      streamKey: streamKey.trim(),
+      streamKey: finalStreamKey,
       enabled: true,
-    });
-    setShowForm(false);
-    setName('');
-    setRtmpUrl('');
-    setStreamKey('');
-    setFormError(null);
+    };
+
+    if (editingDestinationId) {
+      onUpdate(editingDestinationId, {
+        ...savedDestination,
+        enabled: existing?.enabled ?? true,
+      });
+    } else {
+      onAdd(savedDestination);
+    }
+    resetForm();
   };
 
   const enabledDestinations = destinations.filter((d) => d.enabled);
@@ -66,11 +116,17 @@ export function StreamDestinations({
     .map((dest) => ({ dest, issue: getDestinationIssue(dest) }))
     .filter((item): item is { dest: StreamDestination; issue: string } => Boolean(item.issue));
   const enabledCount = enabledDestinations.length;
-  // RTMP relay (the media-server) is not implemented yet. Disable Go Live so users
-  // don't believe they're broadcasting when nothing is being pushed upstream.
-  // Flip this to `enabledCount > 0 && enabledIssues.length === 0` once the relay ships.
-  const RTMP_RELAY_AVAILABLE = false;
-  const canGoLive = RTMP_RELAY_AVAILABLE && enabledCount > 0 && enabledIssues.length === 0;
+  const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
+  const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled;
+  const preflightIssue = enabledCount === 0
+    ? 'Enable at least one destination.'
+    : tooManyEnabled
+      ? `Disable ${enabledCount - MAX_ENABLED_DESTINATIONS} destination${enabledCount - MAX_ENABLED_DESTINATIONS === 1 ? '' : 's'} to stay within the ${MAX_ENABLED_DESTINATIONS}-destination limit.`
+      : enabledIssues[0]
+        ? `${enabledIssues[0].dest.name}: ${enabledIssues[0].issue}`
+        : null;
+  const relayQuality = relayStats ? getRelayQuality(relayStats) : null;
+  const bitrateBars = relayStats ? buildBitrateBars(relayStats.bitrateHistory, TARGET_RELAY_KBPS, BITRATE_BAR_COUNT) : [];
 
   return (
     <div style={styles.panel}>
@@ -92,28 +148,70 @@ export function StreamDestinations({
       </div>
 
       <div style={styles.body}>
-        {!RTMP_RELAY_AVAILABLE && (
-          <div style={{ ...styles.preflight, ...styles.preflightWarn }}>
-            <div style={styles.preflightTop}>
-              <span style={styles.preflightLabel}>RTMP relay coming soon</span>
-            </div>
-            <div style={styles.preflightIssue}>
-              You can save destinations and stream keys here, but the server-side RTMP push isn't live yet,
-              so clicking Go Live won't actually broadcast. Use your platform's own producer dashboard for now.
-            </div>
-          </div>
-        )}
-        {RTMP_RELAY_AVAILABLE && destinations.length > 0 && (
+        {destinations.length > 0 && (
           <div style={{ ...styles.preflight, ...(canGoLive ? styles.preflightReady : styles.preflightWarn) }}>
             <div style={styles.preflightTop}>
               <span style={styles.preflightLabel}>{canGoLive ? 'Ready to stream' : 'Needs setup'}</span>
-              <span style={styles.preflightCount}>{enabledCount} enabled</span>
+              <span style={styles.preflightCount}>{enabledCount}/{MAX_ENABLED_DESTINATIONS} enabled</span>
             </div>
-            {enabledIssues.length > 0 && (
-              <div style={styles.preflightIssue}>
-                {enabledIssues[0].dest.name}: {enabledIssues[0].issue}
+            {preflightIssue && <div style={styles.preflightIssue}>{preflightIssue}</div>}
+          </div>
+        )}
+
+        {isLive && relayStats && (
+          <div style={styles.healthCard}>
+            <div style={styles.healthTop}>
+              <div>
+                <span style={styles.healthLabel}>Stream Health</span>
+                {relayQuality && <p style={styles.healthDetail}>{relayQuality.detail}</p>}
               </div>
-            )}
+              <span style={{
+                ...styles.healthStatus,
+                background: relayQuality?.background,
+                borderColor: relayQuality?.border,
+                color: relayQuality?.color,
+              }}>
+                {relayQuality?.label || relayStats.status}
+              </span>
+            </div>
+            <div style={styles.bitrateGraph} aria-label="Recent upstream bitrate">
+              {bitrateBars.map((bar, index) => (
+                <span
+                  key={`${index}-${bar}`}
+                  style={{
+                    ...styles.bitrateBar,
+                    height: `${bar}%`,
+                    background: bar >= 60 ? '#22c55e' : bar >= 25 ? '#f59e0b' : 'rgba(148, 163, 184, 0.7)',
+                  }}
+                />
+              ))}
+            </div>
+            <div style={styles.healthGrid}>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{formatBitrate(relayStats.bitrateKbps)}</span>
+                <span style={styles.healthCaption}>Upstream</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{formatBytes(relayStats.sentBytes)}</span>
+                <span style={styles.healthCaption}>Sent</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{formatLastChunkAge(relayStats.lastChunkAt, relayStats.updatedAt)}</span>
+                <span style={styles.healthCaption}>Last Chunk</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{relayStats.droppedChunks}</span>
+                <span style={styles.healthCaption}>Dropped</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{relayStats.chunksSent}</span>
+                <span style={styles.healthCaption}>Chunks</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{formatElapsed(relayStats.startedAt)}</span>
+                <span style={styles.healthCaption}>Elapsed</span>
+              </div>
+            </div>
           </div>
         )}
 
@@ -137,17 +235,30 @@ export function StreamDestinations({
                   }}>
                     {issue ? 'error' : dest.status}
                   </span>
+	                  <button
+	                    type="button"
+	                    style={{ ...styles.toggleBtn, background: dest.enabled ? 'var(--success)' : 'var(--bg-surface)', color: dest.enabled ? 'white' : 'var(--text-muted)', opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }}
+	                    onClick={() => onToggle(dest.id)}
+	                    disabled={isLive}
+	                  >
+	                    {dest.enabled ? 'ON' : 'OFF'}
+	                  </button>
                   <button
                     type="button"
-                    style={{ ...styles.toggleBtn, background: dest.enabled ? 'var(--success)' : 'var(--bg-surface)', color: dest.enabled ? 'white' : 'var(--text-muted)', opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }}
-                    onClick={() => onToggle(dest.id)}
+                    className="participant-action-btn"
+                    style={{ ...styles.editBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }}
+                    onClick={() => openEditForm(dest)}
                     disabled={isLive}
+                    aria-label={`Edit ${dest.name}`}
+                    title="Edit destination"
                   >
-                    {dest.enabled ? 'ON' : 'OFF'}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 3a2.83 2.83 0 014 4L8 20l-5 1 1-5 13-13z" />
+                    </svg>
                   </button>
-                  <button type="button" className="participant-action-btn" style={{ ...styles.removeBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={() => onRemove(dest.id)} disabled={isLive} aria-label="Remove destination">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+	                  <button type="button" className="participant-action-btn" style={{ ...styles.removeBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={() => onRemove(dest.id)} disabled={isLive} aria-label="Remove destination">
+	                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+	                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                     </svg>
                   </button>
                 </div>
@@ -163,7 +274,11 @@ export function StreamDestinations({
 
         {/* Add destination form */}
         {showForm ? (
-          <form style={styles.form} onSubmit={(e) => { e.preventDefault(); handleAdd(); }}>
+          <form style={styles.form} onSubmit={(e) => { e.preventDefault(); handleSave(); }}>
+            <div style={styles.formHeader}>
+              <span style={styles.formTitle}>{editingDestinationId ? 'Edit Destination' : 'Add Destination'}</span>
+              {editingDestinationId && <span style={styles.formMode}>Session only</span>}
+            </div>
             <div style={styles.platformGrid}>
               {PLATFORMS.map((p) => (
                 <button
@@ -175,13 +290,13 @@ export function StreamDestinations({
                     borderColor: platform === p.value ? p.color : 'var(--border)',
                     background: platform === p.value ? p.color + '15' : 'var(--bg-tertiary)',
                     color: platform === p.value ? p.color : 'var(--text-secondary)',
-                  }}
-                  onClick={() => {
-                    setPlatform(p.value);
-                    setRtmpUrl(getDefaultRtmpUrl(p.value)); // prefill RTMP visually
-                    setFormError(null);
-                  }}
-                >
+	                  }}
+	                  onClick={() => {
+	                    setPlatform(p.value);
+	                    setRtmpUrl(getDefaultRtmpUrl(p.value));
+	                    setFormError(null);
+	                  }}
+	                >
                   {p.label}
                 </button>
               ))}
@@ -230,28 +345,30 @@ export function StreamDestinations({
                   </a>
                 )}
               </div>
-              <input 
-                style={styles.input} 
-                placeholder="Paste key here" 
-                type="password" 
+              <input
+                style={styles.input}
+                placeholder={editingDestinationId ? 'Leave blank to keep current key' : 'Paste key here'}
+                type="password"
                 autoComplete="off"
-                value={streamKey} 
+                value={streamKey}
                 onChange={(e) => { setStreamKey(e.target.value); setFormError(null); }}
               />
-            </div>
+              {editingDestinationId && (
+                <span style={styles.inputHint}>Leave blank to keep the current stream key.</span>
+              )}
+	            </div>
 
             {formError && <div style={styles.formError}>{formError}</div>}
 
-            <div style={styles.formActions}>
-              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={() => setShowForm(false)}>Cancel</button>
-              <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={!streamKey.trim() || isLive}>Add Destination</button>
-            </div>
-          </form>
-        ) : (
-          <button type="button" className="btn-secondary" style={{ ...styles.addBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={() => {
-            setShowForm(true);
-            setRtmpUrl(getDefaultRtmpUrl(platform)); // Ensure initial mount has pre-filled RTMP
-          }} disabled={isLive}>
+	            <div style={styles.formActions}>
+	              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={resetForm}>Cancel</button>
+	              <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={(!streamKey.trim() && !editingDestinationId) || isLive}>
+                  {editingDestinationId ? 'Save Destination' : 'Add Destination'}
+                </button>
+	            </div>
+	          </form>
+	        ) : (
+	          <button type="button" className="btn-secondary" style={{ ...styles.addBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={openCreateForm} disabled={isLive}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
             </svg>
@@ -316,6 +433,123 @@ function maskStreamKey(streamKey: string): string {
   return `${'•'.repeat(Math.min(trimmed.length - 4, 12))}${trimmed.slice(-4)}`;
 }
 
+function formatBitrate(kbps: number): string {
+  if (kbps <= 0) return '0 kbps';
+  if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
+  return `${kbps} kbps`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatElapsed(startedAt: number | null): string {
+  if (!startedAt) return '0:00';
+  const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}:${rest.toString().padStart(2, '0')}`;
+}
+
+function formatLastChunkAge(lastChunkAt: number | null, updatedAt: number): string {
+  if (!lastChunkAt) return 'waiting';
+  const ageSeconds = Math.max(0, Math.floor(((updatedAt || Date.now()) - lastChunkAt) / 1000));
+  if (ageSeconds <= 1) return 'now';
+  if (ageSeconds < 60) return `${ageSeconds}s`;
+  const minutes = Math.floor(ageSeconds / 60);
+  const seconds = ageSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+function getRelayQuality(stats: RtmpRelayStats) {
+  const now = stats.updatedAt || Date.now();
+  const chunkAge = stats.lastChunkAt ? now - stats.lastChunkAt : null;
+
+  if (stats.status === 'error') {
+    return {
+      label: 'Error',
+      detail: 'Relay connection needs attention.',
+      color: '#fca5a5',
+      background: 'rgba(239, 68, 68, 0.12)',
+      border: 'rgba(239, 68, 68, 0.25)',
+    };
+  }
+
+  if (stats.status === 'connecting' || !stats.lastChunkAt) {
+    return {
+      label: 'Starting',
+      detail: 'Waiting for browser upload chunks.',
+      color: '#93c5fd',
+      background: 'rgba(96, 165, 250, 0.12)',
+      border: 'rgba(96, 165, 250, 0.25)',
+    };
+  }
+
+  if (chunkAge !== null && chunkAge > STALE_CHUNK_MS) {
+    return {
+      label: 'Stalled',
+      detail: `No upload chunk for ${formatLastChunkAge(stats.lastChunkAt, now)}.`,
+      color: '#fca5a5',
+      background: 'rgba(239, 68, 68, 0.12)',
+      border: 'rgba(239, 68, 68, 0.25)',
+    };
+  }
+
+  if (stats.droppedChunks > 0 && stats.bitrateKbps < TARGET_RELAY_KBPS * 0.55) {
+    return {
+      label: 'Degraded',
+      detail: 'Upload is live but chunks are being dropped.',
+      color: '#fcd34d',
+      background: 'rgba(245, 158, 11, 0.12)',
+      border: 'rgba(245, 158, 11, 0.25)',
+    };
+  }
+
+  if (stats.bitrateKbps >= TARGET_RELAY_KBPS * 0.7) {
+    return {
+      label: 'Stable',
+      detail: 'Browser upload is near the 1080p target.',
+      color: '#86efac',
+      background: 'rgba(34, 197, 94, 0.12)',
+      border: 'rgba(34, 197, 94, 0.25)',
+    };
+  }
+
+  if (stats.bitrateKbps > 0) {
+    return {
+      label: 'Low',
+      detail: 'Upload is below the 1080p target bitrate.',
+      color: '#fcd34d',
+      background: 'rgba(245, 158, 11, 0.12)',
+      border: 'rgba(245, 158, 11, 0.25)',
+    };
+  }
+
+  return {
+    label: 'Starting',
+    detail: 'Preparing the first upload chunks.',
+    color: '#93c5fd',
+    background: 'rgba(96, 165, 250, 0.12)',
+    border: 'rgba(96, 165, 250, 0.25)',
+  };
+}
+
+function buildBitrateBars(history: RtmpRelayStats['bitrateHistory'], targetKbps: number, count: number): number[] {
+  const samples = history.slice(-count);
+  const padded = [
+    ...Array(Math.max(0, count - samples.length)).fill({ at: 0, kbps: 0 }),
+    ...samples,
+  ];
+  const maxKbps = Math.max(targetKbps, ...padded.map((sample) => sample.kbps), 1);
+  return padded.map((sample) => {
+    if (sample.kbps <= 0) return 4;
+    return Math.max(10, Math.min(100, Math.round((sample.kbps / maxKbps) * 100)));
+  });
+}
+
 const styles: Record<string, React.CSSProperties> = {
   panel: { width: 320, display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%' },
   header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '14px 16px 10px', borderBottom: '1px solid var(--border)' },
@@ -340,6 +574,17 @@ const styles: Record<string, React.CSSProperties> = {
   preflightLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
   preflightCount: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' },
   preflightIssue: { fontSize: 11, color: '#fbbf24', lineHeight: 1.35 },
+  healthCard: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 },
+  healthTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
+  healthLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
+  healthDetail: { margin: '2px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
+  healthStatus: { flexShrink: 0, fontSize: 10, fontWeight: 800, textTransform: 'uppercase', borderRadius: 999, border: '1px solid', padding: '3px 7px', letterSpacing: '0.04em' },
+  bitrateGraph: { height: 38, display: 'flex', alignItems: 'flex-end', gap: 2, padding: '6px 6px 4px', borderRadius: 7, background: 'rgba(0,0,0,0.18)', overflow: 'hidden' },
+  bitrateBar: { flex: 1, minWidth: 2, borderRadius: 2, transition: 'height 0.2s ease' },
+  healthGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 },
+  healthMetric: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2, padding: '7px 8px', background: 'rgba(0,0,0,0.16)', borderRadius: 7 },
+  healthValue: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  healthCaption: { fontSize: 9, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' },
   destCard: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: '10px 12px', border: '1px solid var(--border)' },
   destHeader: { display: 'flex', alignItems: 'center', gap: 8 },
   platformDot: { width: 10, height: 10, borderRadius: '50%', flexShrink: 0 },
@@ -349,15 +594,20 @@ const styles: Record<string, React.CSSProperties> = {
   destActions: { display: 'flex', alignItems: 'center', gap: 4 },
   statusBadge: { fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase' as const },
   toggleBtn: { fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, border: 'none', cursor: 'pointer' },
+  editBtn: { width: 22, height: 22, borderRadius: 5, background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 },
   removeBtn: { width: 22, height: 22, borderRadius: 5, background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 },
   destKey: { fontSize: 10, color: 'var(--text-muted)', marginTop: 6, fontFamily: 'monospace' },
   destRtmp: { fontSize: 10, color: 'var(--text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' },
   destIssue: { fontSize: 10, color: '#ef4444', marginTop: 5, lineHeight: 1.3 },
   form: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 12, border: '1px solid var(--border)' },
+  formHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  formTitle: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
+  formMode: { fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' },
   platformGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 },
   platformBtn: { fontSize: 11, fontWeight: 500, padding: '6px 4px', borderRadius: 6, border: '1px solid', cursor: 'pointer', background: 'var(--bg-tertiary)', textAlign: 'center' as const },
   inputGroup: { display: 'flex', flexDirection: 'column', gap: 4 },
   inputLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' },
+  inputHint: { fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.3 },
   keyLink: { fontSize: 10, color: '#60a5fa', textDecoration: 'none', display: 'flex', alignItems: 'center', fontWeight: 500 },
   input: { width: '100%', padding: '7px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' },
   formError: { fontSize: 11, color: '#fca5a5', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 6, padding: '7px 9px', lineHeight: 1.35 },

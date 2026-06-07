@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll } from '@studio/shared';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
@@ -12,8 +12,10 @@ import { useWebRTC } from '../hooks/useWebRTC.ts';
 import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
 import { useRecording } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
-import { useLocalRecording } from '../hooks/useLocalRecording.ts';
+import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
+import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
+import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
 import { VideoTile } from './VideoTile.tsx';
 import { ControlBar } from './ControlBar.tsx';
@@ -21,23 +23,30 @@ import { DeviceSelector } from './DeviceSelector.tsx';
 import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
-import { StreamDestinations } from './StreamDestinations.tsx';
 import { detectMediaType } from './MediaLibrary.tsx';
-import { SoundBoard } from './SoundBoard.tsx';
-import { Teleprompter } from './Teleprompter.tsx';
+import type { ProductionSceneTemplate } from './SceneManager.tsx';
 import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
-import { BackgroundMusic } from './BackgroundMusic.tsx';
-import { RecordingPanel } from './RecordingPanel.tsx';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
-import { ProducerPanel } from './ProducerPanel.tsx';
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
 import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience } from './WebinarQA.tsx';
 import { SessionHealthPanel } from './SessionHealthPanel.tsx';
+import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
+import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 
 const STUDIO_STATE_VERSION = 1;
+const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
+const MAX_STUDIO_SCENES = 12;
+
+const StreamDestinationsPanel = lazy(() => import('./StreamDestinations.tsx').then((module) => ({ default: module.StreamDestinations })));
+const InvitePanel = lazy(() => import('./InvitePanel.tsx').then((module) => ({ default: module.InvitePanel })));
+const SoundBoard = lazy(() => import('./SoundBoard.tsx').then((module) => ({ default: module.SoundBoard })));
+const Teleprompter = lazy(() => import('./Teleprompter.tsx').then((module) => ({ default: module.Teleprompter })));
+const BackgroundMusic = lazy(() => import('./BackgroundMusic.tsx').then((module) => ({ default: module.BackgroundMusic })));
+const RecordingPanel = lazy(() => import('./RecordingPanel.tsx').then((module) => ({ default: module.RecordingPanel })));
+const ProducerPanel = lazy(() => import('./ProducerPanel.tsx').then((module) => ({ default: module.ProducerPanel })));
 
 interface PersistedStudioState {
   version: typeof STUDIO_STATE_VERSION;
@@ -59,8 +68,60 @@ interface PersistedStudioState {
   tickers: TickerData[];
 }
 
+interface PendingLiveTokenRequest {
+  resolve: (token: string) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingCoHostInviteRequest {
+  resolve: (payload: { token: string; expiresAt: string }) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 function getStudioStateKey(roomId: string): string {
   return `livestream-studio:room-state:${roomId}`;
+}
+
+function getRecordingSourceId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'track';
+}
+
+function LazyPanelFallback() {
+  return (
+    <div
+      role="status"
+      style={{
+        position: 'absolute',
+        right: 16,
+        bottom: 74,
+        zIndex: 70,
+        padding: '10px 14px',
+        borderRadius: 8,
+        border: '1px solid var(--border)',
+        background: 'var(--bg-secondary)',
+        color: 'var(--text-secondary)',
+        fontSize: 12,
+        fontWeight: 700,
+        boxShadow: 'var(--shadow-lg)',
+      }}
+    >
+      Loading panel...
+    </div>
+  );
+}
+
+function buildCoHostInviteUrl(baseInviteUrl: string, token: string): string {
+  try {
+    const url = new URL(baseInviteUrl);
+    url.searchParams.set('role', 'co-host');
+    url.searchParams.set('invite', token);
+    return url.toString();
+  } catch {
+    const separator = baseInviteUrl.includes('?') ? '&' : '?';
+    return `${baseInviteUrl}${separator}role=co-host&invite=${encodeURIComponent(token)}`;
+  }
 }
 
 function getHealthColor(status: HealthStatus): string {
@@ -92,6 +153,10 @@ function getStreamDestinationIssue(dest: Pick<StreamDestination, 'rtmpUrl' | 'st
   }
   if (!dest.streamKey.trim()) return 'Missing stream key';
   return null;
+}
+
+function canExchangeStudioMedia(a: Participant | null | undefined, b: Participant | null | undefined): boolean {
+  return a?.status === 'on-stage' && b?.status === 'on-stage';
 }
 
 function isPersistableLogoUrl(url: string | null): url is string {
@@ -135,6 +200,105 @@ function getMediaNameFromUrl(url: string, type: 'video' | 'image'): string {
   return type === 'video' ? 'Video URL' : 'Image URL';
 }
 
+function getTemplateSceneConfig(template: ProductionSceneTemplate): {
+  name: string;
+  layout: LayoutMode;
+  background: StageBackground;
+  brandColor: string;
+  cameraShape: CameraShape;
+  nameTagStyle: NameTagStyle;
+  banner?: Omit<BannerData, 'id'>;
+  ticker?: Omit<TickerData, 'id'>;
+  timer?: Omit<TimerData, 'id'>;
+} {
+  switch (template) {
+    case 'starting-soon':
+      return {
+        name: 'Starting Soon',
+        layout: 'single',
+        background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #312e81 55%, #0e7490 100%)' },
+        brandColor: '#67e8f9',
+        cameraShape: 'rounded',
+        nameTagStyle: 'minimal',
+        banner: {
+          text: 'Starting Soon',
+          visible: true,
+          style: 'custom',
+          customColor: '#0e7490',
+          isTicker: false,
+          position: 'top',
+        },
+        ticker: {
+          text: 'Welcome. The live broadcast will begin shortly.',
+          visible: true,
+          speed: 'normal',
+          backgroundColor: '#0f172a',
+          textColor: '#e0f2fe',
+          separator: '•',
+        },
+        timer: {
+          mode: 'countdown',
+          durationSeconds: 300,
+          remainingSeconds: 300,
+          isRunning: false,
+          visible: true,
+          position: 'top-right',
+          style: 'bold',
+        },
+      };
+    case 'brb':
+      return {
+        name: 'Be Right Back',
+        layout: 'single',
+        background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #14532d 58%, #065f46 100%)' },
+        brandColor: '#34d399',
+        cameraShape: 'rounded',
+        nameTagStyle: 'minimal',
+        banner: {
+          text: 'Be Right Back',
+          visible: true,
+          style: 'custom',
+          customColor: '#059669',
+          isTicker: false,
+          position: 'top',
+        },
+        ticker: {
+          text: 'We will be back in a moment.',
+          visible: true,
+          speed: 'slow',
+          backgroundColor: '#052e16',
+          textColor: '#bbf7d0',
+          separator: '•',
+        },
+      };
+    case 'ending':
+      return {
+        name: 'Ending',
+        layout: 'single',
+        background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 58%, #991b1b 100%)' },
+        brandColor: '#f87171',
+        cameraShape: 'rounded',
+        nameTagStyle: 'block',
+        banner: {
+          text: 'Thanks for watching',
+          visible: true,
+          style: 'custom',
+          customColor: '#dc2626',
+          isTicker: false,
+          position: 'top',
+        },
+        ticker: {
+          text: 'Follow the host for the next live session.',
+          visible: true,
+          speed: 'normal',
+          backgroundColor: '#450a0a',
+          textColor: '#fee2e2',
+          separator: '•',
+        },
+      };
+  }
+}
+
 function getLogoPlacementStyle(placement: LogoPlacement): React.CSSProperties {
   switch (placement) {
     case 'top-left':
@@ -163,7 +327,7 @@ export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const userName = sessionStorage.getItem('userName') || 'Anonymous';
-  const userRole = (sessionStorage.getItem('userRole') || 'guest') as 'host' | 'guest';
+  const userRole = (sessionStorage.getItem('userRole') || 'guest') as 'host' | 'co-host' | 'guest';
 
   const [room, setRoom] = useState<Room | null>(null);
   const [myParticipant, setMyParticipant] = useState<Participant | null>(null);
@@ -182,10 +346,14 @@ export function StudioRoom() {
   const [showRecordingPanel, setShowRecordingPanel] = useState(false);
   const [showProducerPanel, setShowProducerPanel] = useState(false);
   const [showWebinarQA, setShowWebinarQA] = useState(false);
+  const [showPolls, setShowPolls] = useState(false);
+  const [showCaptionsPanel, setShowCaptionsPanel] = useState(false);
   const [showHealthPanel, setShowHealthPanel] = useState(false);
   const [showGuestChat, setShowGuestChat] = useState(false);
+  const [showInvitePanel, setShowInvitePanel] = useState(false);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>('people');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [guestNotification, setGuestNotification] = useState<ParticipantNotificationPayload | null>(null);
 
   // Layout
   const [layout, setLayout] = useState<LayoutMode>('grid');
@@ -222,6 +390,8 @@ export function StudioRoom() {
   const [cameraShape, setCameraShape] = useState<CameraShape>('rectangle');
   const [nameTagStyle, setNameTagStyle] = useState<NameTagStyle>('classic');
   const [pipCorner, setPipCorner] = useState<'TL' | 'TR' | 'BL' | 'BR'>('BR');
+  const [focusedVideoItemId, setFocusedVideoItemId] = useState<string | null>(null);
+  const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
 
   // Cleanup blob URLs when logoUrl changes
   useEffect(() => {
@@ -244,6 +414,10 @@ export function StudioRoom() {
   // Webinar Q&A
   const [qaQuestions, setQAQuestions] = useState<QAQuestion[]>([]);
   const [myUpvotes, setMyUpvotes] = useState<Set<string>>(new Set());
+  const [polls, setPolls] = useState<LivePoll[]>([]);
+  const [myPollVotes, setMyPollVotes] = useState<Record<string, string>>({});
+  const [captionsEnabled, setCaptionsEnabled] = useState(false);
+  const [captionLanguage, setCaptionLanguage] = useState('en-US');
 
   // Hooks
   const { connect, disconnect, send, addHandler, connected, reconnectFailed, retry: retryConnection } = useSignaling();
@@ -292,17 +466,30 @@ export function StudioRoom() {
     send,
   });
 
+  const broadcastRemoteStreams = useMemo(() => {
+    const streams = new Map<string, MediaStream>();
+    for (const [id, participant] of participants) {
+      const stream = remoteStreams.get(id);
+      if (participant.status === 'on-stage' && stream) {
+        streams.set(id, stream);
+      }
+    }
+    return streams;
+  }, [participants, remoteStreams]);
+
   const { isRecording, formattedTime, startRecording, downloadRecordings } = useRecording();
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
   const {
     isRecording: isLocalRecording,
     formattedTime: localRecFormattedTime,
+    recordingLabels: localRecordingLabels,
     startRecording: startLocalRecording,
     stopRecording: stopLocalRecording,
   } = useLocalRecording();
 
   const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]);
   const effectiveVideoEnabled = videoEnabled && Boolean(localStream?.getVideoTracks()[0]);
+  const isHostOrCoHost = myParticipant?.role === 'host' || myParticipant?.role === 'co-host';
   const sessionHealth = useSessionHealth({
     localStream,
     connected,
@@ -313,13 +500,29 @@ export function StudioRoom() {
     isRecording: isRecording || isLocalRecording || Boolean(sessionRecordingStartedAt),
     isLive,
   });
+  const captionsAllowed = Boolean(isHostOrCoHost && myParticipant?.status !== 'green-room');
+  const {
+    supported: captionsSupported,
+    listening: captionsListening,
+    error: captionsError,
+    activeCaption,
+    segments: captionSegments,
+    clearCaptions,
+  } = useLiveCaptions({
+    enabled: captionsAllowed && captionsEnabled,
+    language: captionLanguage,
+    speakerName: myParticipant?.name || userName,
+  });
+  const broadcastCaption = captionsAllowed ? activeCaption : null;
 
   const joinedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const myParticipantRef = useRef<Participant | null>(null);
   const mediaAssetsRef = useRef<StudioMediaAsset[]>(mediaAssets);
-  const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0, media: 0 });
+  const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0, poll: 0, media: 0 });
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
+  const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
   const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
   const videoEnabledRef = useRef(videoEnabled);
@@ -352,16 +555,81 @@ export function StudioRoom() {
     isLive,
     banners,
     lowerThirds,
+    timers,
     tickers,
+    activeMedia,
+    highlightedComment,
+    highlightedQA: qaQuestions.find((question) => question.highlighted) || null,
+    highlightedPoll: polls.find((poll) => poll.highlighted) || null,
+    caption: broadcastCaption,
+    stageBackground,
     brandColor,
     logoUrl,
+    logoPlacement,
+    logoSize,
   });
+
+  const handleRelayDestinationStatus = useCallback((destinationId: string, status: 'connecting' | 'live' | 'error' | 'idle') => {
+    setDestinations((prev) => prev.map((destination) => (
+      destination.id === destinationId ? { ...destination, status } : destination
+    )));
+  }, []);
+
+  const { startRelay, stopRelay, stats: relayStats } = useRtmpRelay({
+    compositeStreamRef,
+    localStream,
+    localParticipantId: myParticipant?.id || null,
+    remoteStreams: broadcastRemoteStreams,
+    screenStream,
+    participantVolumes,
+    onDestinationStatus: handleRelayDestinationStatus,
+  });
+
+  const handleParticipantVolumeChange = useCallback((participantId: string, volume: number) => {
+    const clamped = Math.min(1, Math.max(0, Number.isFinite(volume) ? volume : 1));
+    setParticipantVolumes((current) => {
+      if (current[participantId] === clamped) return current;
+      return { ...current, [participantId]: clamped };
+    });
+  }, []);
+
+  useEffect(() => {
+    setParticipantVolumes((current) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [participantId, volume] of Object.entries(current)) {
+        if (participants.has(participantId) || participantId === myParticipant?.id) {
+          next[participantId] = volume;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [myParticipant?.id, participants]);
 
   useEffect(() => {
     return () => {
       if (liveStatusTimerRef.current) clearTimeout(liveStatusTimerRef.current);
+      for (const request of liveTokenRequestsRef.current.values()) {
+        clearTimeout(request.timer);
+        request.reject(new Error('Studio closed before live stream authorization completed.'));
+      }
+      liveTokenRequestsRef.current.clear();
+      for (const request of coHostInviteRequestsRef.current.values()) {
+        clearTimeout(request.timer);
+        request.reject(new Error('Studio closed before co-host invite authorization completed.'));
+      }
+      coHostInviteRequestsRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    if (!captionsAllowed && captionsEnabled) {
+      setCaptionsEnabled(false);
+      setShowCaptionsPanel(false);
+    }
+  }, [captionsAllowed, captionsEnabled]);
 
   useEffect(() => {
     mediaAssetsRef.current = mediaAssets;
@@ -484,6 +752,22 @@ export function StudioRoom() {
       connectToPeerRef.current(id).catch((err) => console.error('Failed to connect to peer:', err));
     }
   }, [myParticipant?.id]);
+
+  useEffect(() => {
+    if (!myParticipant?.id) return;
+
+    for (const [id, participant] of participants) {
+      if (canExchangeStudioMedia(myParticipant, participant)) {
+        connectToPeerRef.current(id).catch((err) => console.error('Failed to connect to peer:', err));
+      } else {
+        removePeerRef.current(id);
+      }
+    }
+
+    if (myParticipant.status !== 'on-stage') {
+      cleanupRef.current();
+    }
+  }, [myParticipant?.id, myParticipant?.status, participants]);
   useEffect(() => { handleOfferRef.current = handleOffer; }, [handleOffer]);
   useEffect(() => { handleAnswerRef.current = handleAnswer; }, [handleAnswer]);
   useEffect(() => { handleIceCandidateRef.current = handleIceCandidate; }, [handleIceCandidate]);
@@ -578,30 +862,47 @@ export function StudioRoom() {
       const hostToken = userRole === 'host'
         ? sessionStorage.getItem(`hostToken:${roomId}`) || undefined
         : undefined;
+      const coHostInviteToken = userRole === 'co-host'
+        ? sessionStorage.getItem(`coHostInviteToken:${roomId}`) || undefined
+        : undefined;
+      const roomPassword = hostToken || coHostInviteToken ? undefined : sessionStorage.getItem(`roomPassword:${roomId}`) || undefined;
       send({
         type: 'join-room',
-        payload: { roomId, name: userName, role: userRole, hostToken },
+        payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, roomPassword },
       });
     }
   }, [connected, localStream, mediaError, mediaAttemptComplete, roomId, userName, userRole, send]);
+
+  useEffect(() => {
+    if (!guestNotification) return;
+    if (myParticipant?.status === 'on-stage') {
+      setGuestNotification(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setGuestNotification(null), 20_000);
+    return () => window.clearTimeout(timer);
+  }, [guestNotification, myParticipant?.status]);
 
   // Signaling message handler
   const handleSignalingMessage = useCallback(
     (message: SignalMessage) => {
       switch (message.type) {
         case 'room-joined': {
-          const { room: roomData, participant, participants: existing, qaQuestions: existingQuestions = [], recordingState } = message.payload;
+          const { room: roomData, participant, participants: existing, qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState } = message.payload;
           setRoom(roomData);
           setMyParticipant(participant);
           setJoined(true);
           setQAQuestions(existingQuestions);
+          setPolls(existingPolls);
           setSessionRecordingStartedAt(recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null);
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
           setParticipants(map);
           // Defer connectToPeer until myParticipant has propagated through useWebRTC's ref;
           // a dedicated effect below handles the initial connect-out.
-          initialPeersToConnectRef.current = existing.map((p) => p.id);
+          initialPeersToConnectRef.current = existing
+            .filter((p) => canExchangeStudioMedia(participant, p))
+            .map((p) => p.id);
           break;
         }
         case 'participant-joined': {
@@ -676,12 +977,31 @@ export function StudioRoom() {
           });
           break;
         }
+        case 'poll-updated': {
+          const updated = message.payload;
+          setPolls((prev) => {
+            const next = updated.highlighted
+              ? prev.map((poll) => ({ ...poll, highlighted: poll.id === updated.id ? updated.highlighted : false }))
+              : [...prev];
+            const index = next.findIndex((poll) => poll.id === updated.id);
+            if (index >= 0) {
+              next[index] = updated.highlighted ? { ...updated, highlighted: true } : updated;
+            } else {
+              next.push(updated);
+            }
+            return next;
+          });
+          break;
+        }
         case 'participant-removed':
           cleanupRef.current();
           stopMediaRef.current();
           stopScreenShareRef.current();
           disconnectRef.current();
           setConnectionError(message.payload.reason || 'You were removed from this session.');
+          break;
+        case 'participant-notification':
+          setGuestNotification(message.payload);
           break;
         case 'room-ending': {
           const endsAt = Date.parse(message.payload.endsAt);
@@ -704,6 +1024,27 @@ export function StudioRoom() {
           setSessionRecordingStartedAt(message.payload.recording ? message.payload.startedAt || new Date().toISOString() : null);
           setRoom((prev) => prev ? { ...prev, status: message.payload.recording ? 'recording' : 'waiting' } : prev);
           break;
+        case 'live-stream-token-issued': {
+          const pending = liveTokenRequestsRef.current.get(message.payload.requestId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            liveTokenRequestsRef.current.delete(message.payload.requestId);
+            pending.resolve(message.payload.token);
+          }
+          break;
+        }
+        case 'co-host-invite-token-issued': {
+          const pending = coHostInviteRequestsRef.current.get(message.payload.requestId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            coHostInviteRequestsRef.current.delete(message.payload.requestId);
+            pending.resolve({
+              token: message.payload.token,
+              expiresAt: message.payload.expiresAt,
+            });
+          }
+          break;
+        }
         case 'room-ended':
           setRoomEnding(false);
           cleanupRef.current();
@@ -716,6 +1057,45 @@ export function StudioRoom() {
           if (message.payload.code === 'ROOM_NOT_FOUND') {
             setConnectionError('This room does not exist or has ended.');
           }
+          if (message.payload.code === 'ROOM_PASSWORD_REQUIRED' || message.payload.code === 'ROOM_PASSWORD_INVALID') {
+            if (roomId) sessionStorage.removeItem(`roomPassword:${roomId}`);
+            cleanupRef.current();
+            stopMediaRef.current();
+            stopScreenShareRef.current();
+            disconnectRef.current();
+            setConnectionError(message.payload.message);
+          }
+          if (
+            liveTokenRequestsRef.current.size > 0 &&
+            ['UNAUTHORIZED', 'LIVE_STREAM_NOT_CONFIGURED', 'VALIDATION_ERROR'].includes(message.payload.code)
+          ) {
+            const error = new Error(message.payload.message);
+            for (const [requestId, request] of liveTokenRequestsRef.current) {
+              clearTimeout(request.timer);
+              request.reject(error);
+              liveTokenRequestsRef.current.delete(requestId);
+            }
+          }
+          if (message.payload.code === 'CO_HOST_INVITE_INVALID') {
+            if (roomId) sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
+            sessionStorage.setItem('userRole', 'guest');
+            cleanupRef.current();
+            stopMediaRef.current();
+            stopScreenShareRef.current();
+            disconnectRef.current();
+            setConnectionError(message.payload.message);
+          }
+          if (
+            coHostInviteRequestsRef.current.size > 0 &&
+            ['UNAUTHORIZED', 'PARTICIPANT_NOT_ADMITTED', 'VALIDATION_ERROR'].includes(message.payload.code)
+          ) {
+            const error = new Error(message.payload.message);
+            for (const [requestId, request] of coHostInviteRequestsRef.current) {
+              clearTimeout(request.timer);
+              request.reject(error);
+              coHostInviteRequestsRef.current.delete(requestId);
+            }
+          }
           break;
         // Client-to-server messages: not expected here but listed for exhaustive check
         case 'join-room':
@@ -723,6 +1103,11 @@ export function StudioRoom() {
         case 'qa-question-submitted':
         case 'qa-question-update':
         case 'qa-question-upvote':
+        case 'poll-create':
+        case 'poll-vote':
+        case 'poll-update':
+        case 'live-stream-token-request':
+        case 'co-host-invite-token-request':
         case 'end-room':
           break;
         default:
@@ -868,10 +1253,11 @@ export function StudioRoom() {
       setSessionRecordingStartedAt(null);
     } else {
       const streams = new Map<string, { stream: MediaStream; name: string; isLocal: boolean }>();
-      if (localStream && myParticipant) {
+      if (localStream && myParticipant.status === 'on-stage') {
         streams.set(myParticipant.id, { stream: localStream, name: myParticipant.name, isLocal: true });
       }
       for (const [id, participant] of participants) {
+        if (participant.status !== 'on-stage') continue;
         const rs = remoteStreams.get(id);
         if (rs) streams.set(id, { stream: rs, name: participant.name, isLocal: false });
       }
@@ -890,11 +1276,65 @@ export function StudioRoom() {
     }
   };
 
-  // Local recording (separate tracks)
+  // Local recording (separate on-stage tracks)
   const onStartLocalRecording = () => {
-    if (localStream) {
-      startLocalRecording(localStream, screenStream);
+    if (!myParticipant) return;
+    const sources: LocalRecordingSource[] = [];
+    const localAudioTracks = localStream?.getAudioTracks().filter((track) => track.readyState === 'live') || [];
+    const localVideoTracks = localStream?.getVideoTracks().filter((track) => track.readyState === 'live') || [];
+    const localId = getRecordingSourceId(myParticipant.id);
+
+    if (localAudioTracks.length > 0) {
+      sources.push({
+        id: `${localId}-audio`,
+        label: `${myParticipant.name} audio`,
+        kind: 'audio',
+        stream: new MediaStream(localAudioTracks),
+        bitsPerSecond: 256_000,
+      });
     }
+
+    if (localVideoTracks.length > 0) {
+      sources.push({
+        id: `${localId}-camera`,
+        label: `${myParticipant.name} camera`,
+        kind: 'video',
+        stream: new MediaStream(localVideoTracks),
+        bitsPerSecond: 8_000_000,
+      });
+    }
+
+    for (const [id, participant] of participants) {
+      if (participant.status !== 'on-stage') continue;
+      const remoteStream = remoteStreams.get(id);
+      if (!remoteStream) continue;
+      const remoteTracks = remoteStream.getTracks().filter((track) => track.readyState === 'live');
+      if (remoteTracks.length === 0) continue;
+      const hasVideo = remoteTracks.some((track) => track.kind === 'video');
+      sources.push({
+        id: `${getRecordingSourceId(id)}-isolated`,
+        label: participant.screenSharing ? `${participant.name} screen` : `${participant.name} isolated`,
+        kind: hasVideo ? 'video' : 'audio',
+        stream: new MediaStream(remoteTracks),
+        bitsPerSecond: hasVideo ? 8_000_000 : 256_000,
+      });
+    }
+
+    if (isScreenSharing && screenStream) {
+      const screenTracks = screenStream.getTracks().filter((track) => track.readyState === 'live');
+      if (screenTracks.length > 0) {
+        sources.push({
+          id: `${localId}-screen`,
+          label: `${myParticipant.name} screen`,
+          kind: 'screen',
+          stream: new MediaStream(screenTracks),
+          bitsPerSecond: 8_000_000,
+        });
+      }
+    }
+
+    if (sources.length === 0) return;
+    void startLocalRecording(sources).catch((err) => console.error('Failed to start local recording:', err));
   };
 
   // Chat
@@ -961,9 +1401,55 @@ export function StudioRoom() {
   // Timer ticking
   useTimerTick(timers, onUpdateTimer);
 
+  const inviteUrl = useMemo(() => (
+    `${INVITE_BASE_URL.replace(/\/+$/, '')}/join/${roomId || ''}`
+  ), [roomId]);
+
+  const requestLiveStreamToken = useCallback((): Promise<string> => {
+    const requestId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        liveTokenRequestsRef.current.delete(requestId);
+        reject(new Error('Timed out while authorizing live stream.'));
+      }, 10_000);
+
+      liveTokenRequestsRef.current.set(requestId, { resolve, reject, timer });
+      send({
+        type: 'live-stream-token-request',
+        payload: { requestId },
+      });
+    });
+  }, [send]);
+
+  const requestCoHostInvite = useCallback(async (): Promise<{ inviteUrl: string; expiresAt: string }> => {
+    const requestId = `cohost-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const { token, expiresAt } = await new Promise<{ token: string; expiresAt: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        coHostInviteRequestsRef.current.delete(requestId);
+        reject(new Error('Timed out while creating co-host invite.'));
+      }, 10_000);
+
+      coHostInviteRequestsRef.current.set(requestId, { resolve, reject, timer });
+      send({
+        type: 'co-host-invite-token-request',
+        payload: { requestId },
+      });
+    });
+
+    return {
+      inviteUrl: buildCoHostInviteUrl(inviteUrl, token),
+      expiresAt,
+    };
+  }, [inviteUrl, send]);
+
   // Stream destinations
   const onAddDestination = (dest: Omit<StreamDestination, 'id' | 'status'>) => {
     setDestinations((prev) => [...prev, { ...dest, id: `dest-${++idCounters.current.dest}`, status: 'idle' }]);
+  };
+  const onUpdateDestination = (id: string, dest: Omit<StreamDestination, 'id' | 'status'>) => {
+    setDestinations((prev) => prev.map((destination) => (
+      destination.id === id ? { ...destination, ...dest, status: 'idle' } : destination
+    )));
   };
   const onRemoveDestination = (id: string) => {
     setDestinations((prev) => prev.filter((d) => d.id !== id));
@@ -971,30 +1457,48 @@ export function StudioRoom() {
   const onToggleDestination = (id: string) => {
     setDestinations((prev) => prev.map((d) => d.id === id ? { ...d, enabled: !d.enabled } : d));
   };
-  const onGoLive = () => {
+  const onGoLive = async () => {
     if (liveStatusTimerRef.current) {
       clearTimeout(liveStatusTimerRef.current);
       liveStatusTimerRef.current = null;
     }
 
     const enabledDestinations = destinations.filter((d) => d.enabled);
-    if (enabledDestinations.length === 0 || enabledDestinations.some((d) => getStreamDestinationIssue(d))) {
+    if (
+      enabledDestinations.length === 0 ||
+      enabledDestinations.length > 3 ||
+      enabledDestinations.some((d) => getStreamDestinationIssue(d))
+    ) {
       setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'error' } : d));
       return;
     }
 
     setIsLive(true);
     setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'connecting' } : { ...d, status: 'idle' }));
-    liveStatusTimerRef.current = setTimeout(() => {
-      setDestinations((prev) => prev.map((d) => d.status === 'connecting' ? { ...d, status: 'live' } : d));
-      liveStatusTimerRef.current = null;
-    }, 1200);
+    try {
+      const token = await requestLiveStreamToken();
+      await startRelay({
+        token,
+        destinations: enabledDestinations.map((destination) => ({
+          id: destination.id,
+          name: destination.name,
+          rtmpUrl: destination.rtmpUrl,
+          streamKey: destination.streamKey,
+        })),
+      });
+    } catch (err) {
+      console.error('Failed to start live stream:', err);
+      stopRelay();
+      setIsLive(false);
+      setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'error' } : { ...d, status: 'idle' }));
+    }
   };
   const onStopLive = () => {
     if (liveStatusTimerRef.current) {
       clearTimeout(liveStatusTimerRef.current);
       liveStatusTimerRef.current = null;
     }
+    stopRelay();
     setIsLive(false);
     setDestinations((prev) => prev.map((d) => ({ ...d, status: 'idle' })));
   };
@@ -1081,6 +1585,8 @@ export function StudioRoom() {
 
   // Scenes
   const onSaveScene = async (name: string) => {
+    if (scenes.length >= MAX_STUDIO_SCENES) return;
+
     // Convert blob URL to data URL so the scene survives blob revocation
     let persistedLogoUrl = logoUrl;
     if (logoUrl && logoUrl.startsWith('blob:')) {
@@ -1120,6 +1626,71 @@ export function StudioRoom() {
     setScenes(prev => [...prev, newScene]);
     setActiveSceneId(newScene.id);
   };
+
+  const onCreateTemplateScene = (template: ProductionSceneTemplate) => {
+    if (scenes.length >= MAX_STUDIO_SCENES) return;
+    const config = getTemplateSceneConfig(template);
+    const visibleOverlayIds: string[] = [];
+    let nextBanner: BannerData | null = null;
+    let nextTicker: TickerData | null = null;
+    let nextTimer: TimerData | null = null;
+
+    if (config.banner) {
+      nextBanner = { ...config.banner, id: `banner-${++idCounters.current.banner}` };
+      visibleOverlayIds.push(nextBanner.id);
+    }
+    if (config.ticker) {
+      nextTicker = { ...config.ticker, id: `ticker-${++idCounters.current.ticker}` };
+      visibleOverlayIds.push(nextTicker.id);
+    }
+    if (config.timer) {
+      nextTimer = { ...config.timer, id: `timer-${++idCounters.current.timer}` };
+      visibleOverlayIds.push(nextTimer.id);
+    }
+
+    const newScene: Scene = {
+      id: `scene-template-${template}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: config.name,
+      layout: config.layout,
+      background: config.background,
+      brandColor: config.brandColor,
+      logoUrl: null,
+      cameraShape: config.cameraShape,
+      nameTagStyle: config.nameTagStyle,
+      logoPlacement: 'top-right',
+      logoSize: 'medium',
+      visibleOverlayIds,
+    };
+
+    setScenes(prev => prev.length >= MAX_STUDIO_SCENES ? prev : [...prev, newScene]);
+    setLayout(config.layout);
+    setStageBackground(config.background);
+    setBrandColor(config.brandColor);
+    setLogoUrl(null);
+    setCameraShape(config.cameraShape);
+    setNameTagStyle(config.nameTagStyle);
+    setLogoPlacement('top-right');
+    setLogoSize('medium');
+    setFocusedVideoItemId(null);
+    setLowerThirds(prev => prev.map(o => ({ ...o, visible: false })));
+    if (nextBanner) {
+      setBanners(prev => [...prev.map(b => ({ ...b, visible: false })), nextBanner]);
+    } else {
+      setBanners(prev => prev.map(b => ({ ...b, visible: false })));
+    }
+    if (nextTimer) {
+      setTimers(prev => [...prev.map(t => ({ ...t, visible: false, isRunning: false })), nextTimer]);
+    } else {
+      setTimers(prev => prev.map(t => ({ ...t, visible: false, isRunning: false })));
+    }
+    if (nextTicker) {
+      setTickers(prev => [...prev.map(t => ({ ...t, visible: false })), nextTicker]);
+    } else {
+      setTickers(prev => prev.map(t => ({ ...t, visible: false })));
+    }
+    setActiveSceneId(newScene.id);
+  };
+
   const onApplyScene = (sceneId: string) => {
     const scene = scenes.find(s => s.id === sceneId);
     if (!scene) return;
@@ -1132,11 +1703,12 @@ export function StudioRoom() {
     setNameTagStyle(scene.nameTagStyle || 'classic');
     setLogoPlacement(scene.logoPlacement || 'top-right');
     setLogoSize(scene.logoSize || 'medium');
+    setFocusedVideoItemId(null);
     // Restore overlay visibility from saved scene
     const visibleIds = new Set(scene.visibleOverlayIds);
-    setLowerThirds(prev => prev.map(o => ({ ...o, visible: scene.visibleOverlayIds.includes(o.id) })));
+    setLowerThirds(prev => prev.map(o => ({ ...o, visible: visibleIds.has(o.id) })));
     setBanners(prev => prev.map(b => ({ ...b, visible: visibleIds.has(b.id) })));
-    setTimers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id) })));
+    setTimers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id), isRunning: visibleIds.has(t.id) ? t.isRunning : false })));
     setTickers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id) })));
     setActiveSceneId(sceneId);
   };
@@ -1210,25 +1782,76 @@ export function StudioRoom() {
     send({ type: 'qa-question-upvote', payload: { questionId: id } });
   };
 
+  const onCreatePoll = (question: string, options: string[]) => {
+    const cleanOptions = options.map((option) => option.trim()).filter(Boolean);
+    if (!question.trim() || cleanOptions.length < 2) return;
+    send({
+      type: 'poll-create',
+      payload: {
+        id: `poll-${++idCounters.current.poll}`,
+        question: question.trim(),
+        options: cleanOptions,
+      },
+    });
+  };
+
+  const onVotePoll = (pollId: string, optionId: string) => {
+    setMyPollVotes((prev) => ({ ...prev, [pollId]: optionId }));
+    send({ type: 'poll-vote', payload: { pollId, optionId } });
+  };
+
+  const onClosePoll = (pollId: string) => {
+    setPolls((prev) => prev.map((poll) => poll.id === pollId ? { ...poll, status: 'closed' as const } : poll));
+    send({ type: 'poll-update', payload: { pollId, updates: { status: 'closed' } } });
+  };
+
+  const onHighlightPoll = (pollId: string) => {
+    setPolls((prev) => prev.map((poll) => ({ ...poll, highlighted: poll.id === pollId })));
+    send({ type: 'poll-update', payload: { pollId, updates: { highlighted: true } } });
+  };
+
+  const onUnhighlightPoll = (pollId: string) => {
+    setPolls((prev) => prev.map((poll) => poll.id === pollId ? { ...poll, highlighted: false } : poll));
+    send({ type: 'poll-update', payload: { pollId, updates: { highlighted: false } } });
+  };
+
   // Build video items (only show on-stage participants) - memoized
   // When someone is screen sharing, the screen share replaces their camera track
   // on the WebRTC connection. Locally, we show the screen share as a separate tile.
   const videoItems = useMemo(() => {
-    const items: Array<{ id: string; name: string; stream: MediaStream | null; isLocal: boolean; audioEnabled: boolean; videoEnabled: boolean; isScreenShare?: boolean }> = [];
-    if (myParticipant) {
-      items.push({ id: myParticipant.id, name: myParticipant.name, stream: localStream, isLocal: true, audioEnabled: effectiveAudioEnabled, videoEnabled: effectiveVideoEnabled });
+    const items: Array<{ id: string; name: string; stream: MediaStream | null; isLocal: boolean; audioEnabled: boolean; videoEnabled: boolean; volume: number; isScreenShare?: boolean }> = [];
+    if (myParticipant && myParticipant.status === 'on-stage') {
+      items.push({ id: myParticipant.id, name: myParticipant.name, stream: localStream, isLocal: true, audioEnabled: effectiveAudioEnabled, videoEnabled: effectiveVideoEnabled, volume: participantVolumes[myParticipant.id] ?? 1 });
       // Add local screen share as a separate tile
       if (isScreenSharing && screenStream) {
-        items.push({ id: `${myParticipant.id}-screen`, name: `${myParticipant.name}'s Screen`, stream: screenStream, isLocal: true, audioEnabled: false, videoEnabled: true, isScreenShare: true });
+        items.push({ id: `${myParticipant.id}-screen`, name: `${myParticipant.name}'s Screen`, stream: screenStream, isLocal: true, audioEnabled: false, videoEnabled: true, volume: 1, isScreenShare: true });
       }
     }
     for (const [id, p] of participants) {
       if (p.status === 'on-stage') {
-        items.push({ id, name: p.screenSharing ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.screenSharing ? false : p.audioEnabled, videoEnabled: p.screenSharing ? true : p.videoEnabled, isScreenShare: p.screenSharing || false });
+        items.push({ id, name: p.screenSharing ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.screenSharing ? false : p.audioEnabled, videoEnabled: p.screenSharing ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: p.screenSharing || false });
       }
     }
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream, participantVolumes]);
+
+  const orderedVideoItems = useMemo(() => {
+    if (!focusedVideoItemId) return videoItems;
+    const focusedIndex = videoItems.findIndex((item) => item.id === focusedVideoItemId);
+    if (focusedIndex <= 0) return videoItems;
+    const focusedItem = videoItems[focusedIndex];
+    return [
+      focusedItem,
+      ...videoItems.slice(0, focusedIndex),
+      ...videoItems.slice(focusedIndex + 1),
+    ];
+  }, [videoItems, focusedVideoItemId]);
+
+  useEffect(() => {
+    if (focusedVideoItemId && !videoItems.some((item) => item.id === focusedVideoItemId)) {
+      setFocusedVideoItemId(null);
+    }
+  }, [focusedVideoItemId, videoItems]);
 
   // Auto-switch layout when participant count changes
   useEffect(() => {
@@ -1430,12 +2053,12 @@ export function StudioRoom() {
 
   // Final computed layout
   const layoutResult = useMemo((): LayoutResult => {
-    const count = videoItems.length;
-    const hasScreenShare = videoItems.some(v => v.isScreenShare);
+    const count = orderedVideoItems.length;
+    const hasScreenShare = orderedVideoItems.some(v => v.isScreenShare);
 
     // Screen share layout takes priority across all layout modes
     if (hasScreenShare) {
-      return getScreenShareLayout(videoItems);
+      return getScreenShareLayout(orderedVideoItems);
     }
 
     switch (layout) {
@@ -1500,13 +2123,14 @@ export function StudioRoom() {
       default:
         return assertNever(layout);
     }
-  }, [layout, videoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
+  }, [layout, orderedVideoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
   const visibleTimers = useMemo(() => timers.filter(t => t.visible), [timers]);
   const visibleTickers = useMemo(() => tickers.filter(t => t.visible), [tickers]);
   const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
+  const highlightedPoll = useMemo(() => polls.find((poll) => poll.highlighted) || null, [polls]);
   const showCompositorDebug = import.meta.env.DEV && isLive;
   const sessionRecordingActive = Boolean(sessionRecordingStartedAt || isRecording || isLocalRecording);
   const sessionRecordingTime = isRecording
@@ -1517,6 +2141,8 @@ export function StudioRoom() {
 
   // Connection error
   if (connectionError) {
+    const passwordError = connectionError === 'This room requires a password' || connectionError === 'Incorrect room password';
+    const joinRecoverableError = passwordError || connectionError === 'Co-host invite link is invalid or expired';
     return (
       <div style={styles.loading}>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round">
@@ -1527,9 +2153,9 @@ export function StudioRoom() {
         <button
           className="btn-primary"
           style={{ marginTop: 16, padding: '10px 24px', borderRadius: 10, fontSize: 14, fontWeight: 600 }}
-          onClick={() => navigate('/')}
+          onClick={() => navigate(joinRecoverableError && roomId ? `/join/${roomId}` : '/')}
         >
-          Go to homepage
+          {joinRecoverableError ? 'Back to join screen' : 'Go to homepage'}
         </button>
       </div>
     );
@@ -1578,7 +2204,161 @@ export function StudioRoom() {
   }
 
   const visibleLowerThird = lowerThirds.find((lt) => lt.visible);
-  const isHostOrCoHost = myParticipant?.role === 'host' || myParticipant?.role === 'co-host';
+  const canManagePolls = Boolean(isHostOrCoHost && myParticipant?.status !== 'green-room');
+  const canVotePolls = Boolean(!isHostOrCoHost && myParticipant?.status !== 'green-room');
+  const captionBottomOffset = Math.max(
+    24,
+    visibleTickers.length > 0 ? 72 : 0,
+    visibleLowerThird ? 112 : 0,
+    visibleBanners.length > 0 ? 132 : 0,
+    highlightedComment ? 128 : 0
+  );
+  const waitingCount = Array.from(participants.values()).filter((participant) => participant.status === 'green-room').length;
+  const offStageGuestStatus = !isHostOrCoHost ? myParticipant?.status : null;
+  const isHeldOffStageGuest = offStageGuestStatus === 'green-room' || offStageGuestStatus === 'backstage';
+  const holdLabel = offStageGuestStatus === 'backstage' ? 'Backstage' : 'Green room';
+  const holdKicker = offStageGuestStatus === 'backstage' ? 'Backstage' : 'Waiting for host';
+  const holdTitle = offStageGuestStatus === 'backstage' ? "You're backstage" : "You're in the green room";
+  const holdText = offStageGuestStatus === 'backstage'
+    ? 'You are off the broadcast stage. The host can bring you back live when ready.'
+    : 'The host can see that you arrived and will bring you on stage when ready.';
+
+  if (isHeldOffStageGuest) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <div style={styles.headerLeft}>
+            <div style={styles.logoMark}>
+              <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+                <rect width="32" height="32" rx="7" fill="url(#g2-waiting)" />
+                <circle cx="16" cy="16" r="4" fill="white" />
+                <defs><linearGradient id="g2-waiting" x1="0" y1="0" x2="32" y2="32"><stop stopColor="#a78bfa" /><stop offset="1" stopColor="#67e8f9" /></linearGradient></defs>
+              </svg>
+            </div>
+            <h2 style={styles.roomTitle}>{room?.name || 'Studio'}</h2>
+            <div style={styles.divider} />
+            <span style={styles.waitingBadge}>
+              <span style={styles.waitingDot} />
+              {holdLabel}
+            </span>
+          </div>
+          <div style={styles.headerRight}>
+            <button
+              style={{
+                ...styles.healthBtn,
+                borderColor: getHealthColor(sessionHealth.status),
+                color: getHealthColor(sessionHealth.status),
+              }}
+              onClick={() => setShowHealthPanel(true)}
+              title="Session health"
+              aria-label={`Session health: ${sessionHealth.label}, ${sessionHealth.score}`}
+            >
+              <span style={{ ...styles.healthDot, background: getHealthColor(sessionHealth.status) }} />
+              {sessionHealth.score}
+            </button>
+            <span style={styles.roomIdBadge}>{roomId}</span>
+          </div>
+        </div>
+
+        <div style={styles.waitingMain}>
+          <div style={styles.waitingShell}>
+            <div style={styles.waitingPreview}>
+              <VideoTile
+                stream={localStream}
+                name={myParticipant?.name || userName}
+                isLocal
+                audioEnabled={effectiveAudioEnabled}
+                videoEnabled={effectiveVideoEnabled}
+                brandColor={brandColor}
+                cameraShape={cameraShape}
+                nameTagStyle={nameTagStyle}
+              />
+            </div>
+            <div style={styles.waitingCopy}>
+              <span style={styles.waitingKicker}>{holdKicker}</span>
+              <h1 style={styles.waitingTitle}>{holdTitle}</h1>
+              <p style={styles.waitingText}>{holdText}</p>
+              {guestNotification && (
+                <div style={{
+                  ...styles.waitingNotice,
+                  ...(guestNotification.tone === 'warning' ? styles.waitingNoticeWarning : {}),
+                  ...(guestNotification.tone === 'success' ? styles.waitingNoticeSuccess : {}),
+                }}>
+                  <span style={styles.waitingNoticeIcon}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 2 11 13" />
+                      <path d="m22 2-7 20-4-9-9-4 20-7z" />
+                    </svg>
+                  </span>
+                  <span style={styles.waitingNoticeCopy}>
+                    <strong style={styles.waitingNoticeTitle}>{guestNotification.title}</strong>
+                    <span style={styles.waitingNoticeText}>{guestNotification.message}</span>
+                  </span>
+                </div>
+              )}
+              {offStageGuestStatus === 'green-room' && waitingCount > 0 && (
+                <span style={styles.waitingQueue}>{waitingCount} waiting</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <ControlBar
+          audioEnabled={effectiveAudioEnabled}
+          videoEnabled={effectiveVideoEnabled}
+          onToggleAudio={onToggleAudio}
+          onToggleVideo={onToggleVideo}
+          onLeave={onLeave}
+          onOpenDeviceSettings={() => setShowDeviceSettings(true)}
+          roomId={roomId || ''}
+          isHost={false}
+          isScreenSharing={false}
+          onOpenChat={offStageGuestStatus === 'backstage' ? () => setShowGuestChat(!showGuestChat) : undefined}
+          participantCount={allParticipantsMap.size}
+          isLive={isLive}
+        />
+
+        {offStageGuestStatus === 'backstage' && showGuestChat && (
+          <ChatPanel
+            messages={chatMessages.filter((msg) => msg.isBackstage)}
+            onSend={(content) => onSendChat(content, true)}
+            onClose={() => setShowGuestChat(false)}
+            senderName={userName}
+            title="Backstage Chat"
+            placeholder="Send a backstage note..."
+            emptyText="No backstage notes yet"
+            emptyHint="Coordinate with the host and backstage guests."
+          />
+        )}
+
+        {showHealthPanel && (
+          <SessionHealthPanel
+            summary={sessionHealth}
+            onClose={() => setShowHealthPanel(false)}
+          />
+        )}
+
+        {showDeviceSettings && (
+          <DeviceSelector
+            audioDevices={audioDevices}
+            videoDevices={videoDevices}
+            audioOutputDevices={audioOutputDevices}
+            selectedAudioDeviceId={selectedAudioDeviceId}
+            selectedVideoDeviceId={selectedVideoDeviceId}
+            selectedAudioOutputDeviceId={selectedAudioOutputDeviceId}
+            onAudioDeviceChange={onAudioDeviceChange}
+            onVideoDeviceChange={onVideoDeviceChange}
+            onAudioOutputDeviceChange={onAudioOutputDeviceChange}
+            onClose={() => setShowDeviceSettings(false)}
+            virtualBackground={vbConfig}
+            onVirtualBackgroundChange={setVbConfig}
+            virtualBackgroundReady={vbReady}
+            virtualBackgroundError={vbError}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={styles.container}>
@@ -1596,8 +2376,14 @@ export function StudioRoom() {
           <div style={styles.divider} />
           <span style={styles.badge}>
             <span style={styles.badgeDot} />
-            {videoItems.length} in studio
+            {orderedVideoItems.length} in studio
           </span>
+          {isHostOrCoHost && waitingCount > 0 && (
+            <span style={styles.waitingBadge}>
+              <span style={styles.waitingDot} />
+              {waitingCount} waiting
+            </span>
+          )}
           {sessionRecordingActive && (
             <span style={styles.recBadge}>
               <span style={styles.recDot} />
@@ -1608,6 +2394,15 @@ export function StudioRoom() {
             <span style={styles.liveBadge}>
               <span style={styles.liveBadgeDot} />
               LIVE
+            </span>
+          )}
+          {captionsEnabled && isHostOrCoHost && (
+            <span style={styles.captionBadge}>
+              <span style={{
+                ...styles.captionBadgeDot,
+                background: captionsListening ? 'var(--success)' : 'var(--warning)',
+              }} />
+              CC
             </span>
           )}
           {myParticipant && (
@@ -1667,19 +2462,25 @@ export function StudioRoom() {
                 {(() => {
                   // Determine which items to render based on layout
                   const itemsToRender = layout === 'side-by-side'
-                    ? videoItems.slice(0, 2)
+                    ? orderedVideoItems.slice(0, 2)
                     : layout === 'single'
-                      ? videoItems.slice(0, 1)
+                      ? orderedVideoItems.slice(0, 1)
                       : layout === 'pip'
-                        ? videoItems.slice(0, 2)
-                        : videoItems;
+                        ? orderedVideoItems.slice(0, 2)
+                        : orderedVideoItems;
 
                   return itemsToRender.map((item, i) => {
                     const isPipSmallTile = layout === 'pip' && i === 1;
+                    const isFocusedTile = focusedVideoItemId === item.id;
+                    const canFocusTile = isHostOrCoHost && orderedVideoItems.length > 1;
                     return (
                       <div
                         key={item.id}
-                        style={{ ...styles.tileWrapper, ...(layoutResult.tileStyles[i] || {}) }}
+                        style={{
+                          ...styles.tileWrapper,
+                          ...(isFocusedTile ? styles.tileWrapperFocused : {}),
+                          ...(layoutResult.tileStyles[i] || {}),
+                        }}
                         onClick={isPipSmallTile ? () => {
                           setPipCorner((prev) => {
                             const order: Array<'TL' | 'TR' | 'BR' | 'BL'> = ['TL', 'TR', 'BR', 'BL'];
@@ -1688,6 +2489,27 @@ export function StudioRoom() {
                         } : undefined}
                         title={isPipSmallTile ? 'Click to move PiP position' : undefined}
                       >
+                        {canFocusTile && (
+                          <button
+                            type="button"
+                            style={{ ...styles.focusTileBtn, ...(isFocusedTile ? styles.focusTileBtnActive : {}) }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (isFocusedTile) {
+                                setFocusedVideoItemId(null);
+                                return;
+                              }
+                              setFocusedVideoItemId(item.id);
+                              if (layout === 'grid') setLayout('spotlight');
+                            }}
+                            aria-label={isFocusedTile ? `Clear main stage focus for ${item.name}` : `Make ${item.name} the main stage tile`}
+                            title={isFocusedTile ? 'Clear main stage focus' : 'Make main stage tile'}
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill={isFocusedTile ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                            </svg>
+                          </button>
+                        )}
                         <VideoTile
                           stream={item.stream}
                           name={item.name}
@@ -1695,6 +2517,7 @@ export function StudioRoom() {
                           isScreenShare={item.isScreenShare}
                           audioEnabled={item.audioEnabled}
                           videoEnabled={item.videoEnabled}
+                          volume={item.volume}
                           brandColor={brandColor}
                           cameraShape={cameraShape}
                           nameTagStyle={nameTagStyle}
@@ -1706,7 +2529,7 @@ export function StudioRoom() {
 
                 {/* Media overlay on stage */}
                 {activeMedia && (
-                  <div style={styles.mediaOverlay}>
+                  <div className="studio-active-media" style={styles.mediaOverlay}>
                     {activeMedia.type === 'video' ? (
                       <video src={activeMedia.url} style={styles.mediaContent} autoPlay controls />
                     ) : activeMedia.type === 'image' ? (
@@ -1757,6 +2580,16 @@ export function StudioRoom() {
 
                 {/* Webinar Q&A Overlay */}
                 <WebinarQAOverlay question={highlightedQA} />
+
+                {/* Live Poll Overlay */}
+                <LivePollOverlay poll={highlightedPoll} />
+
+                {/* Live Caption Overlay */}
+                <LiveCaptionOverlay
+                  caption={broadcastCaption}
+                  brandColor={brandColor}
+                  bottomOffset={captionBottomOffset}
+                />
               </div>
 
               {/* Logo watermark */}
@@ -1792,29 +2625,35 @@ export function StudioRoom() {
               <LayoutSwitcher
                 currentLayout={layout}
                 onLayoutChange={setLayout}
-                participantCount={videoItems.length}
+                participantCount={orderedVideoItems.length}
               />
             </div>
           )}
 
           {/* Teleprompter overlay */}
           {showTeleprompter && (
-            <Teleprompter onClose={() => setShowTeleprompter(false)} />
+            <Suspense fallback={<LazyPanelFallback />}>
+              <Teleprompter onClose={() => setShowTeleprompter(false)} />
+            </Suspense>
           )}
         </div>
 
         {/* Stream Destinations Panel */}
         {showStreamDest && (
-          <StreamDestinations
-            destinations={destinations}
-            onAdd={onAddDestination}
-            onRemove={onRemoveDestination}
-            onToggle={onToggleDestination}
-            isLive={isLive}
-            onGoLive={onGoLive}
-            onStopLive={onStopLive}
-            onClose={() => setShowStreamDest(false)}
-          />
+          <Suspense fallback={<LazyPanelFallback />}>
+            <StreamDestinationsPanel
+              destinations={destinations}
+              onAdd={onAddDestination}
+              onUpdate={onUpdateDestination}
+              onRemove={onRemoveDestination}
+              onToggle={onToggleDestination}
+              isLive={isLive}
+              relayStats={relayStats}
+              onGoLive={onGoLive}
+              onStopLive={onStopLive}
+              onClose={() => setShowStreamDest(false)}
+            />
+          </Suspense>
         )}
 
         {/* Guest Chat Panel */}
@@ -1869,6 +2708,7 @@ export function StudioRoom() {
             scenes={scenes}
             activeSceneId={activeSceneId}
             onSaveScene={onSaveScene}
+            onCreateTemplateScene={onCreateTemplateScene}
             onApplyScene={onApplyScene}
             onDeleteScene={onDeleteScene}
             onRenameScene={onRenameScene}
@@ -1890,6 +2730,8 @@ export function StudioRoom() {
             onStageAction={onStageAction}
             remoteStreams={remoteStreams}
             localStream={localStream}
+            participantVolumes={participantVolumes}
+            onParticipantVolumeChange={handleParticipantVolumeChange}
           />
         )}
 
@@ -1916,16 +2758,68 @@ export function StudioRoom() {
           />
         )}
 
+        {showPolls && (
+          <LivePollsPanel
+            polls={polls}
+            canManagePolls={canManagePolls}
+            canVotePolls={canVotePolls}
+            myVotes={myPollVotes}
+            onCreatePoll={onCreatePoll}
+            onVote={onVotePoll}
+            onClosePoll={onClosePoll}
+            onHighlightPoll={onHighlightPoll}
+            onUnhighlightPoll={onUnhighlightPoll}
+            onClose={() => setShowPolls(false)}
+          />
+        )}
+
+        {isHostOrCoHost && showCaptionsPanel && (
+          <LiveCaptionsPanel
+            enabled={captionsEnabled}
+            listening={captionsListening}
+            supported={captionsSupported}
+            language={captionLanguage}
+            error={captionsError}
+            segments={captionSegments}
+            roomName={room?.name || 'Studio'}
+            onToggle={() => setCaptionsEnabled((current) => !current)}
+            onLanguageChange={setCaptionLanguage}
+            onClear={clearCaptions}
+            onClose={() => setShowCaptionsPanel(false)}
+          />
+        )}
+
+        {isHostOrCoHost && showInvitePanel && (
+          <Suspense fallback={<LazyPanelFallback />}>
+            <InvitePanel
+              roomName={room?.name || 'Studio'}
+              roomId={roomId || ''}
+              hostName={room?.hostName}
+              inviteUrl={inviteUrl}
+              scheduledFor={room?.scheduledFor}
+              passwordProtected={Boolean(room?.settings.passwordProtected)}
+              participantCount={allParticipantsMap.size}
+              waitingCount={waitingCount}
+              isLive={isLive}
+              onCreateCoHostInvite={requestCoHostInvite}
+              onClose={() => setShowInvitePanel(false)}
+            />
+          </Suspense>
+        )}
+
         {/* Recording Panel */}
         {showRecordingPanel && (
-          <RecordingPanel
-            isRecording={isLocalRecording}
-            formattedTime={localRecFormattedTime}
-            onStartRecording={onStartLocalRecording}
-            onStopRecording={stopLocalRecording}
-            roomName={room?.name || 'Studio'}
-            onClose={() => setShowRecordingPanel(false)}
-          />
+          <Suspense fallback={<LazyPanelFallback />}>
+            <RecordingPanel
+              isRecording={isLocalRecording}
+              formattedTime={localRecFormattedTime}
+              recordingTrackLabels={localRecordingLabels}
+              onStartRecording={onStartLocalRecording}
+              onStopRecording={stopLocalRecording}
+              roomName={room?.name || 'Studio'}
+              onClose={() => setShowRecordingPanel(false)}
+            />
+          </Suspense>
         )}
       </div>
 
@@ -1946,6 +2840,7 @@ export function StudioRoom() {
         onToggleScreenShare={onToggleScreenShare}
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
         onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
+        onOpenInvitePanel={isHostOrCoHost ? () => setShowInvitePanel(true) : undefined}
         onOpenStreamDestinations={() => setShowStreamDest(!showStreamDest)}
         onOpenSoundBoard={() => setShowSoundBoard(!showSoundBoard)}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
@@ -1954,33 +2849,46 @@ export function StudioRoom() {
         onOpenRecordingPanel={() => setShowRecordingPanel(!showRecordingPanel)}
         onOpenProducerPanel={() => setShowProducerPanel(!showProducerPanel)}
         onOpenWebinarQA={() => setShowWebinarQA(!showWebinarQA)}
+        onOpenPolls={() => setShowPolls(!showPolls)}
+        onOpenCaptions={isHostOrCoHost ? () => setShowCaptionsPanel(!showCaptionsPanel) : undefined}
         onOpenHealthPanel={() => setShowHealthPanel(true)}
         participantCount={allParticipantsMap.size}
         isLive={isLive}
+        captionsActive={captionsEnabled}
       />
 
       {/* Producer Panel (full-screen overlay) */}
       {isHostOrCoHost && showProducerPanel && (
-        <ProducerPanel
-          participants={allParticipantsMap}
-          myParticipantId={myParticipant?.id || ''}
-          remoteStreams={remoteStreams}
-          localStream={localStream}
-          onStageAction={onStageAction}
-          isLive={isLive}
-          isRecording={isRecording}
-          formattedTime={formattedTime}
-          currentLayout={layout}
-          onLayoutChange={setLayout}
-          onClose={() => setShowProducerPanel(false)}
-        />
+        <Suspense fallback={<LazyPanelFallback />}>
+          <ProducerPanel
+            participants={allParticipantsMap}
+            myParticipantId={myParticipant?.id || ''}
+            remoteStreams={remoteStreams}
+            localStream={localStream}
+            onStageAction={onStageAction}
+            isLive={isLive}
+            isRecording={isRecording}
+            formattedTime={formattedTime}
+            currentLayout={layout}
+            onLayoutChange={setLayout}
+            onClose={() => setShowProducerPanel(false)}
+          />
+        </Suspense>
       )}
 
       {/* Sound Board Modal */}
-      {showSoundBoard && <SoundBoard onClose={() => setShowSoundBoard(false)} />}
+      {showSoundBoard && (
+        <Suspense fallback={<LazyPanelFallback />}>
+          <SoundBoard onClose={() => setShowSoundBoard(false)} />
+        </Suspense>
+      )}
 
       {/* Background Music Modal */}
-      {showBackgroundMusic && <BackgroundMusic onClose={() => setShowBackgroundMusic(false)} />}
+      {showBackgroundMusic && (
+        <Suspense fallback={<LazyPanelFallback />}>
+          <BackgroundMusic onClose={() => setShowBackgroundMusic(false)} />
+        </Suspense>
+      )}
 
       {/* Session Health Panel */}
       {showHealthPanel && (
@@ -2085,6 +2993,12 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--success-subtle)', color: 'var(--success)', fontWeight: 500,
   },
   badgeDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', animation: 'pulse 2s infinite' },
+  waitingBadge: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 12, padding: '3px 10px', borderRadius: 20,
+    background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24', fontWeight: 600,
+  },
+  waitingDot: { width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 2s infinite' },
   recBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
@@ -2104,6 +3018,14 @@ const styles: Record<string, React.CSSProperties> = {
   liveBadgeDot: {
     width: 6, height: 6, borderRadius: '50%', background: 'white',
     animation: 'pulse 1.5s infinite',
+  },
+  captionBadge: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20,
+    background: 'rgba(14, 165, 233, 0.14)', color: '#bae6fd',
+  },
+  captionBadgeDot: {
+    width: 6, height: 6, borderRadius: '50%',
   },
   roleBadge: {
     fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
@@ -2154,6 +3076,114 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     overflow: 'hidden',
   },
+  waitingMain: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    padding: 24,
+    background: 'rgba(0, 0, 0, 0.15)',
+  },
+  waitingShell: {
+    width: 'min(960px, 100%)',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+    gap: 24,
+    alignItems: 'center',
+  },
+  waitingPreview: {
+    aspectRatio: '16 / 9',
+    borderRadius: 14,
+    overflow: 'hidden',
+    border: '2px solid rgba(245, 158, 11, 0.28)',
+    background: '#0f172a',
+    boxShadow: '0 10px 32px rgba(0, 0, 0, 0.35)',
+  },
+  waitingCopy: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  waitingKicker: {
+    fontSize: 11,
+    fontWeight: 700,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.08em',
+    color: '#fbbf24',
+  },
+  waitingTitle: {
+    margin: 0,
+    fontSize: 28,
+    lineHeight: 1.1,
+    fontWeight: 700,
+    letterSpacing: 0,
+  },
+  waitingText: {
+    margin: 0,
+    maxWidth: 360,
+    fontSize: 14,
+    lineHeight: 1.55,
+    color: 'var(--text-secondary)',
+  },
+  waitingNotice: {
+    width: 'min(360px, 100%)',
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 9,
+    padding: '10px 12px',
+    borderRadius: 10,
+    border: '1px solid rgba(96, 165, 250, 0.24)',
+    background: 'rgba(96, 165, 250, 0.1)',
+    color: '#bfdbfe',
+    boxShadow: '0 10px 28px rgba(0, 0, 0, 0.18)',
+  },
+  waitingNoticeSuccess: {
+    borderColor: 'rgba(34, 197, 94, 0.28)',
+    background: 'rgba(34, 197, 94, 0.12)',
+    color: '#bbf7d0',
+  },
+  waitingNoticeWarning: {
+    borderColor: 'rgba(245, 158, 11, 0.28)',
+    background: 'rgba(245, 158, 11, 0.12)',
+    color: '#fde68a',
+  },
+  waitingNoticeIcon: {
+    width: 20,
+    height: 20,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    marginTop: 1,
+  },
+  waitingNoticeCopy: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  },
+  waitingNoticeTitle: {
+    fontSize: 13,
+    lineHeight: 1.25,
+    color: 'currentColor',
+  },
+  waitingNoticeText: {
+    fontSize: 12,
+    lineHeight: 1.4,
+    color: 'var(--text-secondary)',
+  },
+  waitingQueue: {
+    marginTop: 4,
+    padding: '5px 10px',
+    borderRadius: 999,
+    background: 'rgba(255, 255, 255, 0.06)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    color: 'var(--text-secondary)',
+    fontSize: 12,
+    fontWeight: 600,
+  },
   stage: {
     flex: 1,
     display: 'flex',
@@ -2199,7 +3229,37 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
     overflow: 'hidden',
     borderRadius: 16,
+    position: 'relative',
     transition: 'width 0.3s ease, height 0.3s ease, flex-basis 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease',
+  },
+  tileWrapperFocused: {
+    outline: '2px solid var(--accent)',
+    outlineOffset: -2,
+  },
+  focusTileBtn: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 12,
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.18)',
+    background: 'rgba(15, 23, 42, 0.72)',
+    color: 'rgba(255, 255, 255, 0.86)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    cursor: 'pointer',
+    boxShadow: '0 4px 14px rgba(0, 0, 0, 0.24)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+  },
+  focusTileBtnActive: {
+    background: 'var(--accent)',
+    border: '1px solid var(--accent)',
+    color: 'white',
   },
   layoutBar: {
     flexShrink: 0,

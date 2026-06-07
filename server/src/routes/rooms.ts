@@ -6,6 +6,7 @@ export const roomRouter = Router();
 // Input validation helpers
 const MAX_NAME_LENGTH = 100;
 const MAX_HOST_NAME_LENGTH = 50;
+const MAX_PASSWORD_LENGTH = 100;
 
 function sanitizeString(str: unknown): string | null {
   if (typeof str !== 'string') return null;
@@ -13,6 +14,12 @@ function sanitizeString(str: unknown): string | null {
   if (trimmed.length === 0) return null;
   // Strip control characters
   return trimmed.replace(/[\x00-\x1F\x7F]/g, '');
+}
+
+function sanitizeOptionalPassword(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const sanitized = value.trim().replace(/[\x00-\x1F\x7F]/g, '');
+  return sanitized || undefined;
 }
 
 function getClientIp(req: { ip?: string; socket: { remoteAddress?: string } }): string {
@@ -24,6 +31,7 @@ roomRouter.post('/', (req, res) => {
   try {
     const name = sanitizeString(req.body.name);
     const hostName = sanitizeString(req.body.hostName);
+    const password = sanitizeOptionalPassword(req.body.password);
 
     if (!name || !hostName) {
       res.status(400).json({ error: 'name and hostName are required' });
@@ -38,8 +46,12 @@ roomRouter.post('/', (req, res) => {
       res.status(400).json({ error: `hostName must be ${MAX_HOST_NAME_LENGTH} characters or less` });
       return;
     }
+    if (password && password.length > MAX_PASSWORD_LENGTH) {
+      res.status(400).json({ error: `password must be ${MAX_PASSWORD_LENGTH} characters or less` });
+      return;
+    }
 
-    const { room, hostToken } = createRoom(name, hostName, { creatorIp: getClientIp(req) });
+    const { room, hostToken } = createRoom(name, hostName, { creatorIp: getClientIp(req), password });
     res.status(201).json({
       id: room.id,
       name: room.name,
@@ -66,6 +78,7 @@ roomRouter.post('/schedule', (req, res) => {
     const name = sanitizeString(req.body.name);
     const hostName = sanitizeString(req.body.hostName);
     const scheduledFor = sanitizeString(req.body.scheduledFor);
+    const password = sanitizeOptionalPassword(req.body.password);
 
     if (!name || !hostName) {
       res.status(400).json({ error: 'name and hostName are required' });
@@ -78,6 +91,10 @@ roomRouter.post('/schedule', (req, res) => {
     }
     if (hostName.length > MAX_HOST_NAME_LENGTH) {
       res.status(400).json({ error: `hostName must be ${MAX_HOST_NAME_LENGTH} characters or less` });
+      return;
+    }
+    if (password && password.length > MAX_PASSWORD_LENGTH) {
+      res.status(400).json({ error: `password must be ${MAX_PASSWORD_LENGTH} characters or less` });
       return;
     }
 
@@ -97,6 +114,7 @@ roomRouter.post('/schedule', (req, res) => {
       status: 'scheduled',
       scheduledFor: scheduledFor || undefined,
       creatorIp: getClientIp(req),
+      password,
     });
     res.status(201).json({
       id: room.id,
@@ -174,6 +192,7 @@ roomRouter.get('/:id/exists', (req, res) => {
       status: roomState.room.status,
       hostName: roomState.room.hostName,
       scheduledFor: roomState.room.scheduledFor,
+      passwordProtected: roomState.room.settings.passwordProtected,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to check room' });

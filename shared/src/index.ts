@@ -21,6 +21,7 @@ export interface RoomSettings {
   enableRecording: boolean;
   enableStreaming: boolean;
   greenRoomEnabled: boolean;
+  passwordProtected: boolean;
 }
 
 export type VideoResolution = '720p' | '1080p' | '4k';
@@ -63,8 +64,17 @@ export type SignalMessage =
   | { type: 'qa-question-updated'; payload: QAQuestion }
   | { type: 'qa-question-update'; payload: { questionId: string; updates: Partial<Pick<QAQuestion, 'status' | 'answer' | 'highlighted'>> } }
   | { type: 'qa-question-upvote'; payload: { questionId: string } }
+  | { type: 'poll-create'; payload: PollCreatePayload }
+  | { type: 'poll-vote'; payload: PollVotePayload }
+  | { type: 'poll-update'; payload: PollUpdatePayload }
+  | { type: 'poll-updated'; payload: LivePoll }
   | { type: 'stage-action'; payload: StageActionPayload }
+  | { type: 'participant-notification'; payload: ParticipantNotificationPayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
+  | { type: 'live-stream-token-request'; payload: LiveStreamTokenRequestPayload }
+  | { type: 'live-stream-token-issued'; payload: LiveStreamTokenIssuedPayload }
+  | { type: 'co-host-invite-token-request'; payload: CoHostInviteTokenRequestPayload }
+  | { type: 'co-host-invite-token-issued'; payload: CoHostInviteTokenIssuedPayload }
   | { type: 'participant-updated'; payload: Participant }
   | { type: 'participant-removed'; payload: { reason: string } }
   | { type: 'end-room'; payload: Record<string, never> }
@@ -79,6 +89,8 @@ export interface JoinRoomPayload {
   name: string;
   role: ParticipantRole;
   hostToken?: string;
+  coHostInviteToken?: string;
+  roomPassword?: string;
 }
 
 export interface RoomJoinedPayload {
@@ -86,6 +98,7 @@ export interface RoomJoinedPayload {
   participant: Participant;
   participants: Participant[];
   qaQuestions?: QAQuestion[];
+  polls?: LivePoll[];
   recordingState?: RecordingStatePayload;
 }
 
@@ -109,9 +122,19 @@ export interface MediaStatePayload {
 }
 
 export interface StageActionPayload {
-  action: 'move-to-stage' | 'move-to-backstage' | 'move-to-green-room' | 'promote-co-host' | 'demote-to-guest' | 'mute' | 'unmute' | 'remove';
+  action: 'move-to-stage' | 'move-to-backstage' | 'move-to-green-room' | 'notify-next' | 'promote-co-host' | 'demote-to-guest' | 'mute' | 'unmute' | 'remove';
   targetParticipantId: string;
   performedBy: string;
+}
+
+export interface ParticipantNotificationPayload {
+  id: string;
+  targetParticipantId: string;
+  title: string;
+  message: string;
+  tone: 'info' | 'success' | 'warning';
+  issuedAt: string;
+  issuedBy: string;
 }
 
 export interface RecordingStatePayload {
@@ -119,6 +142,26 @@ export interface RecordingStatePayload {
   startedAt?: string;
   stoppedAt?: string;
   performedBy: string;
+}
+
+export interface LiveStreamTokenRequestPayload {
+  requestId: string;
+}
+
+export interface LiveStreamTokenIssuedPayload {
+  requestId: string;
+  token: string;
+  expiresAt: string;
+}
+
+export interface CoHostInviteTokenRequestPayload {
+  requestId: string;
+}
+
+export interface CoHostInviteTokenIssuedPayload {
+  requestId: string;
+  token: string;
+  expiresAt: string;
 }
 
 export interface ChatMessage {
@@ -140,6 +183,40 @@ export interface QAQuestion {
   status: 'pending' | 'approved' | 'answered' | 'dismissed';
   answer?: string;
   highlighted: boolean;
+}
+
+export interface LivePollOption {
+  id: string;
+  text: string;
+  votes: number;
+}
+
+export interface LivePoll {
+  id: string;
+  question: string;
+  options: LivePollOption[];
+  status: 'open' | 'closed';
+  highlighted: boolean;
+  createdAt: string;
+  createdBy: string;
+  createdByName: string;
+  totalVotes: number;
+}
+
+export interface PollCreatePayload {
+  id?: string;
+  question: string;
+  options: string[];
+}
+
+export interface PollVotePayload {
+  pollId: string;
+  optionId: string;
+}
+
+export interface PollUpdatePayload {
+  pollId: string;
+  updates: Partial<Pick<LivePoll, 'status' | 'highlighted'>>;
 }
 
 // ============ Layout Types ============
@@ -220,6 +297,56 @@ export interface StreamDestination {
   enabled: boolean;
   status: 'idle' | 'connecting' | 'live' | 'error';
 }
+
+// ============ RTMP Relay Protocol Types ============
+
+export interface LiveStreamTokenClaims {
+  v: 1;
+  roomId: string;
+  participantId: string;
+  role: Extract<ParticipantRole, 'host' | 'co-host'>;
+  exp: number;
+  nonce: string;
+}
+
+export interface RtmpRelayDestination {
+  id: string;
+  name: string;
+  rtmpUrl: string;
+  streamKey: string;
+}
+
+export interface RtmpRelayVideoConfig {
+  width: number;
+  height: number;
+  frameRate: number;
+  videoBitsPerSecond: number;
+}
+
+export interface RtmpRelayAudioConfig {
+  sampleRate: number;
+  channelCount: number;
+  audioBitsPerSecond: number;
+}
+
+export interface RtmpRelayStartPayload {
+  token: string;
+  destinations: RtmpRelayDestination[];
+  video: RtmpRelayVideoConfig;
+  audio: RtmpRelayAudioConfig;
+}
+
+export type RtmpRelayClientMessage =
+  | { type: 'start'; payload: RtmpRelayStartPayload }
+  | { type: 'stop'; payload?: Record<string, never> };
+
+export type RtmpRelayDestinationStatus = 'connecting' | 'live' | 'error' | 'idle';
+
+export type RtmpRelayServerMessage =
+  | { type: 'session-started'; payload: { roomId: string; destinationIds: string[] } }
+  | { type: 'session-stopped'; payload: { reason?: string } }
+  | { type: 'destination-status'; payload: { destinationId: string; status: RtmpRelayDestinationStatus; message?: string } }
+  | { type: 'error'; payload: { code: string; message: string; destinationId?: string } };
 
 // ============ Scene Types ============
 

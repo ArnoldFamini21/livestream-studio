@@ -10,9 +10,15 @@ interface VideoTileProps {
   isScreenShare?: boolean;
   audioEnabled?: boolean;
   videoEnabled?: boolean;
+  volume?: number;
   brandColor?: string;
   cameraShape?: CameraShape;
   nameTagStyle?: NameTagStyle;
+}
+
+function clampVolume(volume: number): number {
+  if (!Number.isFinite(volume)) return 1;
+  return Math.min(1, Math.max(0, volume));
 }
 
 // Lightweight hook to detect if audio is active on a stream (for border glow).
@@ -125,12 +131,15 @@ export function VideoTile({
   isScreenShare, 
   audioEnabled = true, 
   videoEnabled = true, 
+  volume = 1,
   brandColor = '#a78bfa',
   cameraShape = 'rectangle',
   nameTagStyle = 'classic'
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, audioEnabled);
+  const playbackVolume = clampVolume(volume);
+  const hasAudiblePlayback = audioEnabled && playbackVolume > 0;
+  const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, hasAudiblePlayback);
 
   const [isVertical, setIsVertical] = useState(false);
 
@@ -144,6 +153,13 @@ export function VideoTile({
       }
     };
   }, [stream]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.volume = playbackVolume;
+    video.muted = Boolean(isLocal || !audioEnabled || playbackVolume === 0);
+  }, [audioEnabled, isLocal, playbackVolume]);
 
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
@@ -197,7 +213,7 @@ export function VideoTile({
           ref={videoRef}
           autoPlay
           playsInline
-          muted={isLocal}
+          muted={isLocal || !audioEnabled || playbackVolume === 0}
           onLoadedMetadata={handleLoadedMetadata}
           style={videoEnabled ? {
             ...tileStyles.video,

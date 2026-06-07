@@ -1,18 +1,56 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
+const SCHEDULED_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
+
+interface SavedScheduledStudio {
+  id: string;
+  hostName: string;
+  hostToken: string;
+}
+
+function getSavedScheduledStudio(roomId: string): SavedScheduledStudio | null {
+  try {
+    const raw = localStorage.getItem(SCHEDULED_STUDIOS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const match = parsed.find((item) => item && item.id === roomId);
+    if (
+      match &&
+      typeof match.id === 'string' &&
+      typeof match.hostName === 'string' &&
+      typeof match.hostToken === 'string'
+    ) {
+      return match;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 export function JoinRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const savedHostStudio = roomId ? getSavedScheduledStudio(roomId) : null;
+  const sessionHostToken = roomId ? sessionStorage.getItem(`hostToken:${roomId}`) || '' : '';
+  const savedHostToken = savedHostStudio?.hostToken || '';
+  const hostToken = sessionHostToken || savedHostToken;
   // Auto-fill from sessionStorage for Hosts
-  const [guestName, setGuestName] = useState(sessionStorage.getItem('userName') || '');
-  const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number; status?: string; hostName?: string; scheduledFor?: string } | null>(null);
+  const [guestName, setGuestName] = useState(sessionStorage.getItem('userName') || savedHostStudio?.hostName || '');
+  const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number; status?: string; hostName?: string; scheduledFor?: string; passwordProtected?: boolean } | null>(null);
+  const [roomPassword, setRoomPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
+  const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
+  const isHostSession = Boolean(roomId && hostToken && (sessionStorage.getItem('userRole') === 'host' || savedHostToken));
+  const needsRoomPassword = Boolean(roomInfo?.passwordProtected && !isHostSession && !isCoHostInvite);
   
   // Advanced Audio Settings
   const [echoCancellation, setEchoCancellation] = useState(true);
@@ -136,16 +174,27 @@ export function JoinRoom() {
 
   const joinStudio = () => {
     if (!guestName.trim()) return;
+    if (needsRoomPassword && !roomPassword.trim()) return;
     stopMedia();
     
-    // Default to 'guest' unless already set as 'host'
-    const existingRole = sessionStorage.getItem('userRole');
-    if (existingRole !== 'host') {
+    if (isHostSession) {
+      sessionStorage.setItem('userRole', 'host');
+      if (roomId) sessionStorage.setItem(`hostToken:${roomId}`, hostToken);
+    } else if (isCoHostInvite && roomId) {
+      sessionStorage.setItem('userRole', 'co-host');
+      sessionStorage.setItem(`coHostInviteToken:${roomId}`, coHostInviteToken);
+    } else {
       sessionStorage.setItem('userRole', 'guest');
+      if (roomId) sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
     }
     sessionStorage.setItem('userName', guestName);
     sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
     sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
+    if (roomId && needsRoomPassword) {
+      sessionStorage.setItem(`roomPassword:${roomId}`, roomPassword);
+    } else if (roomId) {
+      sessionStorage.removeItem(`roomPassword:${roomId}`);
+    }
     navigate(`/studio/${roomId}`);
   };
 
@@ -211,13 +260,26 @@ export function JoinRoom() {
           {roomInfo?.status === 'scheduled' && (
             <span style={styles.scheduledBadge}>Scheduled</span>
           )}
+          {roomInfo?.passwordProtected && (
+            <span style={styles.scheduledBadge}>Password</span>
+          )}
+          {isHostSession && (
+            <span style={styles.scheduledBadge}>Host</span>
+          )}
+          {isCoHostInvite && (
+            <span style={styles.scheduledBadge}>Co-host</span>
+          )}
         </div>
 
         <h2 style={styles.cardTitle}>You're invited</h2>
         <p style={styles.text}>
-          {roomInfo?.status === 'scheduled'
+          {isHostSession
+            ? `Hosted by ${roomInfo?.hostName || savedHostStudio?.hostName || 'you'}`
+            : roomInfo?.status === 'scheduled'
             ? `Hosted by ${roomInfo?.hostName || 'the organizer'}. Enter your name to join when the session starts.`
-            : roomInfo?.participantCount === 0
+            : isCoHostInvite
+              ? 'You were invited as a co-host'
+              : roomInfo?.participantCount === 0
               ? 'Be the first to join this studio'
               : `${roomInfo?.participantCount} participant${roomInfo?.participantCount !== 1 ? 's' : ''} already here`}
         </p>
@@ -379,13 +441,29 @@ export function JoinRoom() {
           />
         </div>
 
+        {needsRoomPassword && (
+          <div style={styles.field}>
+            <label style={styles.label}>Room password</label>
+            <input
+              style={styles.input}
+              type="password"
+              placeholder="Enter room password"
+              value={roomPassword}
+              onChange={(e) => setRoomPassword(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
+              maxLength={100}
+              autoComplete="current-password"
+            />
+          </div>
+        )}
+
         <button
           className="btn-primary"
           style={styles.joinButton}
           onClick={joinStudio}
-          disabled={!guestName.trim()}
+          disabled={!guestName.trim() || Boolean(needsRoomPassword && !roomPassword.trim())}
         >
-          Join Studio
+          {isHostSession ? 'Enter as Host' : isCoHostInvite ? 'Join as Co-host' : 'Join Studio'}
         </button>
 
         <p style={styles.finePrint}>No account or download required</p>

@@ -5,12 +5,45 @@ interface SceneManagerProps {
   scenes: Scene[];
   activeSceneId: string | null;
   onSaveScene: (name: string) => void | Promise<void>;
+  onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
 }
 
 const MAX_SCENES = 12;
+
+export type ProductionSceneTemplate = 'starting-soon' | 'brb' | 'ending';
+
+const templateCards: Array<{
+  id: ProductionSceneTemplate;
+  name: string;
+  layout: LayoutMode;
+  background: Scene['background'];
+  accent: string;
+}> = [
+  {
+    id: 'starting-soon',
+    name: 'Starting Soon',
+    layout: 'single',
+    background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #312e81 55%, #0e7490 100%)' },
+    accent: '#67e8f9',
+  },
+  {
+    id: 'brb',
+    name: 'BRB',
+    layout: 'single',
+    background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #14532d 58%, #065f46 100%)' },
+    accent: '#34d399',
+  },
+  {
+    id: 'ending',
+    name: 'Ending',
+    layout: 'single',
+    background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 58%, #991b1b 100%)' },
+    accent: '#f87171',
+  },
+];
 
 const LAYOUT_LABELS: Record<LayoutMode, string> = {
   grid: 'Grid',
@@ -81,6 +114,7 @@ export function SceneManager({
   scenes,
   activeSceneId,
   onSaveScene,
+  onCreateTemplateScene,
   onApplyScene,
   onDeleteScene,
   onRenameScene,
@@ -200,6 +234,39 @@ export function SceneManager({
       {atLimit && (
         <span style={styles.limitNote}>Maximum of {MAX_SCENES} scenes reached.</span>
       )}
+
+      <div style={styles.templateSection}>
+        <div style={styles.templateHeader}>
+          <span style={styles.templateTitle}>Templates</span>
+          <span style={styles.templateHint}>Production scenes</span>
+        </div>
+        <div style={styles.templateGrid}>
+          {templateCards.map((template) => (
+            <button
+              key={template.id}
+              type="button"
+              style={{
+                ...styles.templateCard,
+                ...(atLimit ? styles.templateCardDisabled : {}),
+              }}
+              onClick={() => !atLimit && onCreateTemplateScene(template.id)}
+              disabled={atLimit}
+              title={atLimit ? `Maximum of ${MAX_SCENES} scenes reached` : `Add ${template.name} scene`}
+            >
+              <span
+                style={{
+                  ...styles.templateSwatch,
+                  background: getBackgroundPreview(template.background),
+                }}
+              >
+                <span style={{ ...styles.templateAccent, background: template.accent }} />
+                {layoutIcons[template.layout]}
+              </span>
+              <span style={styles.templateName}>{template.name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Scene list */}
       {scenes.length === 0 ? (
@@ -409,6 +476,72 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: 'var(--text-muted)',
     textAlign: 'center',
+  },
+  templateSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  templateHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  templateTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+  },
+  templateHint: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+  },
+  templateGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gap: 6,
+  },
+  templateCard: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 5,
+    padding: 0,
+    background: 'transparent',
+    border: 'none',
+    color: 'var(--text-secondary)',
+    cursor: 'pointer',
+  },
+  templateCardDisabled: {
+    opacity: 0.4,
+    cursor: 'not-allowed',
+  },
+  templateSwatch: {
+    position: 'relative',
+    aspectRatio: '16 / 9',
+    borderRadius: 7,
+    border: '1px solid rgba(255,255,255,0.1)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'rgba(255,255,255,0.74)',
+    overflow: 'hidden',
+  },
+  templateAccent: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 3,
+  },
+  templateName: {
+    fontSize: 10,
+    fontWeight: 700,
+    textAlign: 'center',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
   },
   empty: {
     display: 'flex',
