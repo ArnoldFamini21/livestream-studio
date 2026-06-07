@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
 import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary';
@@ -10,6 +11,8 @@ interface RecordingPanelProps {
   onStartRecording: () => void;
   onStopRecording: () => Promise<RecordingResult>;
   roomName: string;
+  captionSegments?: LiveCaptionSegment[];
+  captionLanguage?: string;
   onClose: () => void;
 }
 
@@ -33,6 +36,16 @@ interface RecordingBundleSource {
   createdAt: string;
   durationSeconds: number | null;
   files: RecordedFile[];
+  captionSegments?: LiveCaptionSegment[];
+  captionLanguage?: string;
+}
+
+interface RecordingCaptionFile {
+  label: string;
+  format: 'txt' | 'vtt';
+  zipPath: string;
+  size: number;
+  type: string;
 }
 
 interface ZipEntry {
@@ -178,8 +191,95 @@ function makeBundleFileName(roomName: string, createdAt: string): string {
   return `${roomPrefix}_recording_bundle_${timestamp}.zip`;
 }
 
-function createRecordingManifest(source: RecordingBundleSource, files: RecordingBundleFile[], exportedAt: string) {
+function getFinalCaptionSegments(segments: LiveCaptionSegment[] | undefined): LiveCaptionSegment[] {
+  return (segments || [])
+    .filter((segment) => !segment.interim && segment.text.trim())
+    .slice()
+    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+}
+
+function getCaptionLanguageLabel(language: string | undefined): string {
+  const labels: Record<string, string> = {
+    'en-US': 'English US',
+    'en-GB': 'English UK',
+    'es-ES': 'Spanish',
+    'fr-FR': 'French',
+    'de-DE': 'German',
+    'ja-JP': 'Japanese',
+    'ko-KR': 'Korean',
+    'fil-PH': 'Filipino',
+  };
+  return language ? labels[language] || language : 'Unknown';
+}
+
+function buildPlainCaptionTranscript(source: RecordingBundleSource, segments: LiveCaptionSegment[]): string {
+  const lines = [
+    'LiveStream Studio Captions',
+    `Room: ${source.roomName}`,
+    `Language: ${getCaptionLanguageLabel(source.captionLanguage)}`,
+    `Exported with recording bundle: ${new Date().toISOString()}`,
+    '',
+  ];
+
+  for (const segment of segments) {
+    const timestamp = new Date(segment.timestamp);
+    const time = Number.isNaN(timestamp.getTime()) ? '' : timestamp.toLocaleString();
+    lines.push(`[${time}] ${segment.speakerName}`);
+    lines.push(segment.text.trim());
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+function formatVttTimestamp(ms: number): string {
+  const safeMs = Math.max(0, Math.floor(ms));
+  const hours = Math.floor(safeMs / 3_600_000);
+  const minutes = Math.floor((safeMs % 3_600_000) / 60_000);
+  const seconds = Math.floor((safeMs % 60_000) / 1000);
+  const millis = safeMs % 1000;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+}
+
+function sanitizeVttText(value: string): string {
+  return value.replace(/-->/g, '->').replace(/[<>]/g, '');
+}
+
+function buildCaptionWebVtt(source: RecordingBundleSource, segments: LiveCaptionSegment[]): string {
+  const firstTime = Date.parse(segments[0]?.timestamp || '');
+  const origin = Number.isFinite(firstTime) ? firstTime : Date.now();
+  const lines = [
+    'WEBVTT',
+    `NOTE Room: ${source.roomName}`,
+    `NOTE Language: ${getCaptionLanguageLabel(source.captionLanguage)}`,
+    '',
+  ];
+
+  segments.forEach((segment, index) => {
+    const startTime = Date.parse(segment.timestamp);
+    const nextTime = Date.parse(segments[index + 1]?.timestamp || '');
+    const start = Number.isFinite(startTime) ? startTime - origin : index * 3500;
+    const end = Number.isFinite(nextTime)
+      ? Math.max(start + 1200, nextTime - origin)
+      : start + Math.max(2500, Math.min(6000, segment.text.length * 65));
+
+    lines.push(String(index + 1));
+    lines.push(`${formatVttTimestamp(start)} --> ${formatVttTimestamp(end)}`);
+    lines.push(`<v ${sanitizeVttText(segment.speakerName)}>${sanitizeVttText(segment.text.trim())}`);
+    lines.push('');
+  });
+
+  return lines.join('\n');
+}
+
+function createRecordingManifest(
+  source: RecordingBundleSource,
+  files: RecordingBundleFile[],
+  exportedAt: string,
+  captionFiles: RecordingCaptionFile[]
+) {
   const totalBytes = files.reduce((total, file) => total + file.size, 0);
+  const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
   return {
     app: 'livestream-studio',
     exportType: 'local-recording-bundle',
@@ -201,6 +301,16 @@ function createRecordingManifest(source: RecordingBundleSource, files: Recording
       size: file.size,
       type: file.type,
     })),
+    ...(finalCaptionSegments.length > 0
+      ? {
+          captions: {
+            language: source.captionLanguage || null,
+            languageLabel: getCaptionLanguageLabel(source.captionLanguage),
+            segmentCount: finalCaptionSegments.length,
+            files: captionFiles,
+          },
+        }
+      : {}),
   };
 }
 
@@ -300,12 +410,37 @@ async function createRecordingBundle(source: RecordingBundleSource): Promise<Blo
     size: entry.file.blob.size,
     type: entry.file.blob.type || 'application/octet-stream',
   }));
-  const manifest = createRecordingManifest(source, manifestFiles, exportedAt);
+  const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
+  const captionEntries = finalCaptionSegments.length > 0
+    ? [
+        {
+          path: 'captions/live_captions.txt',
+          blob: new Blob([buildPlainCaptionTranscript(source, finalCaptionSegments)], { type: 'text/plain;charset=utf-8' }),
+          label: 'Live captions transcript',
+          format: 'txt' as const,
+        },
+        {
+          path: 'captions/live_captions.vtt',
+          blob: new Blob([buildCaptionWebVtt(source, finalCaptionSegments)], { type: 'text/vtt;charset=utf-8' }),
+          label: 'Live captions WebVTT',
+          format: 'vtt' as const,
+        },
+      ]
+    : [];
+  const captionFiles: RecordingCaptionFile[] = captionEntries.map((entry) => ({
+    label: entry.label,
+    format: entry.format,
+    zipPath: entry.path,
+    size: entry.blob.size,
+    type: entry.blob.type,
+  }));
+  const manifest = createRecordingManifest(source, manifestFiles, exportedAt, captionFiles);
   const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
 
   return createZipBundle([
     { path: 'manifest.json', blob: manifestBlob },
     ...trackEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    ...captionEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
   ]);
 }
 
@@ -316,6 +451,8 @@ export function RecordingPanel({
   onStartRecording,
   onStopRecording,
   roomName,
+  captionSegments = [],
+  captionLanguage,
   onClose,
 }: RecordingPanelProps) {
   const [recordedFiles, setRecordedFiles] = useState<RecordedFile[]>([]);
@@ -345,6 +482,7 @@ export function RecordingPanel({
   const visibleTrackLabels = recordingTrackLabels.length > 0
     ? recordingTrackLabels
     : ['Audio', 'Video', 'Screen'];
+  const finalCaptionCount = getFinalCaptionSegments(captionSegments).length;
 
   useEffect(() => {
     return () => {
@@ -406,6 +544,8 @@ export function RecordingPanel({
       createdAt: activeSession?.createdAt || new Date().toISOString(),
       durationSeconds: activeSession?.durationSeconds ?? parseDurationSeconds(formattedTime),
       files: recordedFiles,
+      captionSegments,
+      captionLanguage,
     };
 
     setIsBundling(true);
@@ -419,7 +559,7 @@ export function RecordingPanel({
     } finally {
       setIsBundling(false);
     }
-  }, [activeSessionId, formattedTime, recordedFiles, roomName, sessions]);
+  }, [activeSessionId, captionLanguage, captionSegments, formattedTime, recordedFiles, roomName, sessions]);
 
   const handleDownloadSingle = useCallback((file: RecordedFile) => {
     downloadBlob(file.blob, file.fileName);
@@ -504,6 +644,7 @@ export function RecordingPanel({
           blob: file.blob,
           fileName: file.fileName,
         })),
+        ...(session.id === activeSessionId ? { captionSegments, captionLanguage } : {}),
       };
       const bundle = await createRecordingBundle(source);
       downloadBlob(bundle, makeBundleFileName(session.roomName, session.createdAt));
@@ -513,7 +654,7 @@ export function RecordingPanel({
     } finally {
       setLibraryBusyId(null);
     }
-  }, [loadFiles]);
+  }, [activeSessionId, captionLanguage, captionSegments, loadFiles]);
 
   const handleDeleteSession = useCallback(async (sessionId: string) => {
     setLibraryBusyId(sessionId);
@@ -562,6 +703,7 @@ export function RecordingPanel({
               {visibleTrackLabels.length > 6 && (
                 <span style={styles.trackBadge}>+{visibleTrackLabels.length - 6}</span>
               )}
+              {finalCaptionCount > 0 && <span style={styles.trackBadge}>CC {finalCaptionCount}</span>}
             </div>
             <button
               className="hover-scale"
@@ -691,6 +833,11 @@ export function RecordingPanel({
 
             {/* Action buttons */}
             <div style={styles.actions}>
+              {finalCaptionCount > 0 && (
+                <div style={styles.captionSidecarNote}>
+                  ZIP includes captions as TXT and WebVTT sidecars.
+                </div>
+              )}
               <button
                 className="hover-lift"
                 style={{
@@ -1107,6 +1254,16 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 6,
     marginTop: 4,
+  },
+  captionSidecarNote: {
+    padding: '7px 9px',
+    borderRadius: 7,
+    border: '1px solid rgba(20, 184, 166, 0.26)',
+    background: 'rgba(20, 184, 166, 0.1)',
+    color: '#99f6e4',
+    fontSize: 11,
+    fontWeight: 700,
+    lineHeight: 1.35,
   },
   downloadAllBtn: {
     display: 'flex',

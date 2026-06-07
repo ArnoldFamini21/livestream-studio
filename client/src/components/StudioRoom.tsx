@@ -512,6 +512,7 @@ export function StudioRoom() {
     enabled: captionsAllowed && captionsEnabled,
     language: captionLanguage,
     speakerName: myParticipant?.name || userName,
+    maxSegments: 500,
   });
   const broadcastCaption = captionsAllowed ? activeCaption : null;
 
@@ -2817,6 +2818,8 @@ export function StudioRoom() {
               onStartRecording={onStartLocalRecording}
               onStopRecording={stopLocalRecording}
               roomName={room?.name || 'Studio'}
+              captionSegments={captionSegments}
+              captionLanguage={captionLanguage}
               onClose={() => setShowRecordingPanel(false)}
             />
           </Suspense>
