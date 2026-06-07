@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { buildStudioCalendarInvite } from '@studio/shared';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -80,6 +81,25 @@ async function writeClipboardText(text: string): Promise<void> {
     document.execCommand('copy');
     document.body.removeChild(textArea);
   }
+}
+
+function downloadTextFile(text: string, fileName: string, type: string) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function safeFileName(value: string): string {
+  return value
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/^\.+/, '')
+    .slice(0, 80) || 'studio';
 }
 
 function formatScheduledDate(value?: string): string {
@@ -209,6 +229,20 @@ export function HomePage() {
     await writeClipboardText(buildInviteLink(room.id));
     setSavedRoomCopiedId(room.id);
     setTimeout(() => setSavedRoomCopiedId(null), 2000);
+  };
+
+  const downloadCalendarInvite = (room: SavedScheduledStudio) => {
+    const calendar = buildStudioCalendarInvite({
+      roomName: room.name,
+      hostName: room.hostName,
+      inviteUrl: buildInviteLink(room.id),
+      scheduledFor: room.scheduledFor,
+      createdAt: room.createdAt,
+      uid: `studio-${room.id}`,
+      passwordProtected: room.passwordProtected,
+    });
+    if (!calendar) return;
+    downloadTextFile(calendar, `${safeFileName(room.name)}_calendar.ics`, 'text/calendar;charset=utf-8');
   };
 
   const openScheduledAsHost = (room: SavedScheduledStudio) => {
@@ -417,6 +451,14 @@ export function HomePage() {
                         >
                           {savedRoomCopiedId === room.id ? 'Copied' : 'Copy'}
                         </button>
+                        {room.scheduledFor && (
+                          <button
+                            style={styles.savedRoomAction}
+                            onClick={() => downloadCalendarInvite(room)}
+                          >
+                            Calendar
+                          </button>
+                        )}
                         <button
                           style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
                           onClick={() => openScheduledAsHost(room)}
@@ -512,6 +554,11 @@ export function HomePage() {
               >
                 Start Studio Now
               </button>
+              {scheduledRoom.scheduledFor && (
+                <button style={styles.modalDoneButton} onClick={() => downloadCalendarInvite(scheduledRoom)}>
+                  Calendar
+                </button>
+              )}
               <button style={styles.modalDoneButton} onClick={closeModal}>
                 Done
               </button>

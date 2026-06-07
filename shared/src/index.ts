@@ -14,6 +14,101 @@ export interface Room {
 
 export type RoomStatus = 'waiting' | 'scheduled' | 'live' | 'recording' | 'ended';
 
+export const SCHEDULED_GUEST_EARLY_JOIN_MS = 15 * 60 * 1000;
+export const ROOM_NOT_OPEN_ERROR_CODE = 'ROOM_NOT_OPEN';
+export const SCHEDULED_GUEST_ACCESS_MESSAGE = 'This studio is scheduled. Guest access opens 15 minutes before the start time.';
+
+export function getScheduledGuestOpenAtMs(scheduledFor: string | null | undefined): number | null {
+  if (!scheduledFor) return null;
+  const scheduledAt = Date.parse(scheduledFor);
+  if (!Number.isFinite(scheduledAt)) return null;
+  return scheduledAt - SCHEDULED_GUEST_EARLY_JOIN_MS;
+}
+
+export function isScheduledGuestAccessBlocked(
+  scheduledFor: string | null | undefined,
+  nowMs = Date.now()
+): boolean {
+  const guestOpenAt = getScheduledGuestOpenAtMs(scheduledFor);
+  return guestOpenAt !== null && nowMs < guestOpenAt;
+}
+
+export interface StudioCalendarInviteInput {
+  roomName: string;
+  inviteUrl: string;
+  scheduledFor: string | null | undefined;
+  hostName?: string | null;
+  durationMinutes?: number;
+  createdAt?: string;
+  uid?: string;
+  passwordProtected?: boolean;
+}
+
+function formatIcsDate(date: Date): string {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function escapeIcsText(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/\r\n|\r|\n/g, '\\n')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,');
+}
+
+function foldIcsLine(line: string): string {
+  const maxLineLength = 74;
+  if (line.length <= maxLineLength) return line;
+  const parts: string[] = [];
+  let current = line;
+  while (current.length > maxLineLength) {
+    parts.push(current.slice(0, maxLineLength));
+    current = ` ${current.slice(maxLineLength)}`;
+  }
+  parts.push(current);
+  return parts.join('\r\n');
+}
+
+export function buildStudioCalendarInvite(input: StudioCalendarInviteInput): string | null {
+  const startMs = input.scheduledFor ? Date.parse(input.scheduledFor) : NaN;
+  if (!Number.isFinite(startMs)) return null;
+
+  const durationMinutes = Number.isFinite(input.durationMinutes)
+    ? Math.max(15, Math.min(24 * 60, Math.floor(input.durationMinutes || 60)))
+    : 60;
+  const start = new Date(startMs);
+  const end = new Date(startMs + durationMinutes * 60_000);
+  const createdMs = input.createdAt ? Date.parse(input.createdAt) : NaN;
+  const stamp = Number.isFinite(createdMs) ? new Date(createdMs) : new Date();
+  const uid = input.uid || `${startMs}-${input.inviteUrl}`;
+  const details = [
+    input.hostName ? `Host: ${input.hostName}` : null,
+    `Join: ${input.inviteUrl}`,
+    input.passwordProtected ? 'Password protected. Ask the host for the password.' : null,
+  ].filter(Boolean).join('\n');
+
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//LiveStream Studio//Scheduled Studio//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${escapeIcsText(uid)}`,
+    `DTSTAMP:${formatIcsDate(stamp)}`,
+    `DTSTART:${formatIcsDate(start)}`,
+    `DTEND:${formatIcsDate(end)}`,
+    `SUMMARY:${escapeIcsText(input.roomName || 'LiveStream Studio')}`,
+    `DESCRIPTION:${escapeIcsText(details)}`,
+    `LOCATION:${escapeIcsText(input.inviteUrl)}`,
+    `URL:${escapeIcsText(input.inviteUrl)}`,
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ];
+
+  return `${lines.map(foldIcsLine).join('\r\n')}\r\n`;
+}
+
 export interface RoomSettings {
   maxParticipants: number;
   resolution: VideoResolution;

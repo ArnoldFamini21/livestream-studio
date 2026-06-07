@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { getScheduledGuestOpenAtMs, isScheduledGuestAccessBlocked } from '@studio/shared';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 
@@ -33,6 +34,19 @@ function getSavedScheduledStudio(roomId: string): SavedScheduledStudio | null {
   return null;
 }
 
+function formatGuestOpenCountdown(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 export function JoinRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
@@ -47,10 +61,23 @@ export function JoinRoom() {
   const [roomPassword, setRoomPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
   const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
   const isHostSession = Boolean(roomId && hostToken && (sessionStorage.getItem('userRole') === 'host' || savedHostToken));
   const needsRoomPassword = Boolean(roomInfo?.passwordProtected && !isHostSession && !isCoHostInvite);
+  const guestOpenAtMs = getScheduledGuestOpenAtMs(roomInfo?.scheduledFor);
+  const scheduledGuestBlocked = Boolean(
+    !isHostSession &&
+    !isCoHostInvite &&
+    isScheduledGuestAccessBlocked(roomInfo?.scheduledFor, nowMs)
+  );
+  const guestOpenLabel = guestOpenAtMs !== null
+    ? new Date(guestOpenAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
+    : '';
+  const guestOpenCountdown = scheduledGuestBlocked
+    ? formatGuestOpenCountdown((guestOpenAtMs ?? nowMs) - nowMs)
+    : '';
   
   // Advanced Audio Settings
   const [echoCancellation, setEchoCancellation] = useState(true);
@@ -172,8 +199,15 @@ export function JoinRoom() {
     return () => controller.abort();
   }, [roomId]);
 
+  useEffect(() => {
+    if (!scheduledGuestBlocked) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [scheduledGuestBlocked]);
+
   const joinStudio = () => {
     if (!guestName.trim()) return;
+    if (scheduledGuestBlocked) return;
     if (needsRoomPassword && !roomPassword.trim()) return;
     stopMedia();
     
@@ -290,6 +324,13 @@ export function JoinRoom() {
               timeStyle: 'short',
             })}
           </p>
+        )}
+        {scheduledGuestBlocked && (
+          <div style={styles.guestOpenNotice}>
+            <strong>Guest access opens {guestOpenLabel}</strong>
+            <span>Hosts and co-hosts can enter now to prepare the studio.</span>
+            <span>{guestOpenCountdown} remaining</span>
+          </div>
         )}
 
         {/* Camera Preview */}
@@ -461,9 +502,9 @@ export function JoinRoom() {
           className="btn-primary"
           style={styles.joinButton}
           onClick={joinStudio}
-          disabled={!guestName.trim() || Boolean(needsRoomPassword && !roomPassword.trim())}
+          disabled={!guestName.trim() || scheduledGuestBlocked || Boolean(needsRoomPassword && !roomPassword.trim())}
         >
-          {isHostSession ? 'Enter as Host' : isCoHostInvite ? 'Join as Co-host' : 'Join Studio'}
+          {scheduledGuestBlocked ? 'Not Open Yet' : isHostSession ? 'Enter as Host' : isCoHostInvite ? 'Join as Co-host' : 'Join Studio'}
         </button>
 
         <p style={styles.finePrint}>No account or download required</p>
@@ -555,6 +596,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     marginTop: -10,
     marginBottom: 16,
+  },
+  guestOpenNotice: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    padding: '12px 14px',
+    marginBottom: 16,
+    border: '1px solid rgba(245, 158, 11, 0.32)',
+    borderRadius: 10,
+    background: 'rgba(245, 158, 11, 0.1)',
+    color: 'var(--text-secondary)',
+    fontSize: 12,
+    lineHeight: 1.4,
+    textAlign: 'left',
   },
 
   // Camera preview
