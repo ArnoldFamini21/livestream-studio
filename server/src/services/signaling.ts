@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { nanoid } from 'nanoid';
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type {
   SignalMessage,
   Room,
@@ -8,8 +9,10 @@ import type {
   MediaStatePayload,
   ChatMessage,
   QAQuestion,
+  LivePoll,
   StageActionPayload,
   RecordingStatePayload,
+  LiveStreamTokenClaims,
 } from '@studio/shared';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
@@ -20,13 +23,20 @@ interface RoomState {
   participants: Map<string, { participant: Participant; ws: WebSocket }>;
   qaQuestions: Map<string, QAQuestion>;
   qaVotes: Map<string, Set<string>>;
+  polls: Map<string, LivePoll>;
+  pollVotes: Map<string, Map<string, string>>;
+  coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   recordingStartedAt?: string;
   // Server-issued secret returned to the room creator and required on host join-room.
   hostToken: string;
+  // Optional guest password verifier. The raw password is never stored.
+  passwordHash?: string;
+  passwordSalt?: string;
   // Creator IP, used to enforce a per-IP active-room quota.
   creatorIp: string;
   // True once any participant successfully joined; used for shorter idle expiry.
   hasBeenJoined: boolean;
+  emptyRoomTimer?: ReturnType<typeof setTimeout>;
 }
 
 // Extend WebSocket to track heartbeat state
@@ -45,8 +55,13 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'qa-question-submitted',
   'qa-question-update',
   'qa-question-upvote',
+  'poll-create',
+  'poll-vote',
+  'poll-update',
   'stage-action',
   'recording-state-changed',
+  'live-stream-token-request',
+  'co-host-invite-token-request',
   'end-room',
 ]);
 
@@ -54,6 +69,7 @@ const STAGE_ACTIONS = new Set<StageActionPayload['action']>([
   'move-to-stage',
   'move-to-backstage',
   'move-to-green-room',
+  'notify-next',
   'promote-co-host',
   'demote-to-guest',
   'mute',
@@ -66,6 +82,12 @@ const MAX_ROOMS_PER_IP = 5;
 // Idle (never-joined) rooms expire fast so a bad actor can't squat on the global pool.
 const NEVER_JOINED_IDLE_MS = 30 * 60 * 1000; // 30 minutes
 const ACTIVE_IDLE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const EMPTY_ROOM_GRACE_MS = parseBoundedDurationMs(
+  process.env.EMPTY_ROOM_GRACE_MS,
+  2 * 60 * 1000,
+  10 * 1000,
+  10 * 60 * 1000
+);
 
 const rooms = new Map<string, RoomState>();
 const wsToParticipant = new Map<WebSocket, { roomId: string; participantId: string }>();
@@ -96,7 +118,27 @@ const WS_RATE_LIMIT_MAX = 100; // 100 messages per 10 seconds
 const MAX_CHAT_MESSAGE_LENGTH = 2000;
 const MAX_QA_QUESTION_LENGTH = 500;
 const MAX_QA_ANSWER_LENGTH = 1000;
+const MAX_POLL_QUESTION_LENGTH = 240;
+const MAX_POLL_OPTION_LENGTH = 80;
+const MAX_POLL_OPTIONS = 6;
+const MAX_ACTIVE_POLLS_PER_ROOM = 20;
 const MAX_PARTICIPANT_NAME_LENGTH = 50;
+const MAX_ROOM_PASSWORD_LENGTH = 100;
+const LIVE_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
+const CO_HOST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_CO_HOST_INVITE_TOKENS_PER_ROOM = 20;
+
+function parseBoundedDurationMs(
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.trunc(parsed), min), max);
+}
 
 function checkWsRateLimit(ws: WebSocket): boolean {
   const now = Date.now();
@@ -131,6 +173,15 @@ export class RoomQuotaError extends Error {
 function deleteRoom(roomId: string) {
   const state = rooms.get(roomId);
   if (!state) return;
+  if (state.emptyRoomTimer) {
+    clearTimeout(state.emptyRoomTimer);
+    state.emptyRoomTimer = undefined;
+  }
+  const endingTimer = endingTimers.get(roomId);
+  if (endingTimer) {
+    clearTimeout(endingTimer);
+    endingTimers.delete(roomId);
+  }
   const ipSet = roomsByCreatorIp.get(state.creatorIp);
   if (ipSet) {
     ipSet.delete(roomId);
@@ -139,10 +190,33 @@ function deleteRoom(roomId: string) {
   rooms.delete(roomId);
 }
 
+function cancelEmptyRoomDeletion(roomId: string, roomState: RoomState) {
+  if (!roomState.emptyRoomTimer) return;
+  clearTimeout(roomState.emptyRoomTimer);
+  roomState.emptyRoomTimer = undefined;
+  console.log(`Room ${roomId} empty cleanup cancelled`);
+}
+
+function scheduleEmptyRoomDeletion(roomId: string, roomState: RoomState) {
+  if (roomState.room.status === 'scheduled' || roomState.emptyRoomTimer) return;
+
+  roomState.emptyRoomTimer = setTimeout(() => {
+    const current = rooms.get(roomId);
+    if (!current) return;
+    current.emptyRoomTimer = undefined;
+    if (current.participants.size === 0 && current.room.status !== 'scheduled') {
+      deleteRoom(roomId);
+      console.log(`Room ${roomId} deleted (empty for >${Math.round(EMPTY_ROOM_GRACE_MS / 1000)}s)`);
+    }
+  }, EMPTY_ROOM_GRACE_MS);
+
+  console.log(`Room ${roomId} is empty; cleanup scheduled in ${Math.round(EMPTY_ROOM_GRACE_MS / 1000)}s`);
+}
+
 export function createRoom(
   name: string,
   hostName: string,
-  options: { status?: 'waiting' | 'scheduled'; scheduledFor?: string; creatorIp: string }
+  options: { status?: 'waiting' | 'scheduled'; scheduledFor?: string; creatorIp: string; password?: string }
 ): CreatedRoom {
   if (rooms.size >= MAX_ROOMS) {
     throw new RoomQuotaError('Global room limit reached. Please try again later.', 503);
@@ -170,19 +244,25 @@ export function createRoom(
       enableRecording: true,
       enableStreaming: false,
       greenRoomEnabled: true,
+      passwordProtected: Boolean(options.password),
     },
     hostName,
     scheduledFor: options.scheduledFor,
   };
 
   const hostToken = nanoid(32);
+  const passwordVerifier = options.password ? createPasswordVerifier(options.password) : {};
 
   rooms.set(room.id, {
     room,
     participants: new Map(),
     qaQuestions: new Map(),
     qaVotes: new Map(),
+    polls: new Map(),
+    pollVotes: new Map(),
+    coHostInviteTokens: new Map(),
     hostToken,
+    ...passwordVerifier,
     creatorIp: options.creatorIp,
     hasBeenJoined: false,
   });
@@ -197,6 +277,22 @@ export function createRoom(
   return { room, hostToken };
 }
 
+function createPasswordVerifier(password: string): { passwordHash: string; passwordSalt: string } {
+  const passwordSalt = randomBytes(16).toString('base64url');
+  const passwordHash = scryptSync(password, passwordSalt, 32).toString('base64url');
+  return { passwordHash, passwordSalt };
+}
+
+function verifyRoomPassword(roomState: RoomState, password: unknown): boolean {
+  if (!roomState.passwordHash || !roomState.passwordSalt) return true;
+  if (typeof password !== 'string') return false;
+  const sanitized = password.trim().replace(/[\x00-\x1F\x7F]/g, '');
+  if (!sanitized || sanitized.length > MAX_ROOM_PASSWORD_LENGTH) return false;
+  const actual = scryptSync(sanitized, roomState.passwordSalt, 32);
+  const expected = Buffer.from(roomState.passwordHash, 'base64url');
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 // Constant-time comparison to thwart timing attacks on the host token.
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -205,6 +301,40 @@ function safeEqual(a: string, b: string): boolean {
     mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return mismatch === 0;
+}
+
+function getLiveStreamTokenSecret(): string | null {
+  const secret = process.env.LIVE_STREAM_TOKEN_SECRET;
+  if (secret && secret.length >= 32) return secret;
+  if (process.env.NODE_ENV !== 'production') return 'development-live-stream-token-secret';
+  return null;
+}
+
+function signLiveStreamToken(claims: LiveStreamTokenClaims, secret: string): string {
+  const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  const signature = createHmac('sha256', secret).update(body).digest('base64url');
+  return `${body}.${signature}`;
+}
+
+function pruneExpiredCoHostInviteTokens(roomState: RoomState, now = Date.now()) {
+  for (const [token, invite] of roomState.coHostInviteTokens) {
+    if (invite.expiresAt <= now) {
+      roomState.coHostInviteTokens.delete(token);
+    }
+  }
+}
+
+function consumeCoHostInviteToken(roomState: RoomState, token: unknown): boolean {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 120) return false;
+  pruneExpiredCoHostInviteTokens(roomState);
+
+  for (const [candidateToken] of roomState.coHostInviteTokens) {
+    if (safeEqual(candidateToken, token)) {
+      roomState.coHostInviteTokens.delete(candidateToken);
+      return true;
+    }
+  }
+  return false;
 }
 
 // Fix #10: Validate incoming messages before processing
@@ -307,11 +437,26 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'qa-question-upvote':
       handleQAQuestionUpvote(ws, message.payload);
       break;
+    case 'poll-create':
+      handlePollCreate(ws, message.payload);
+      break;
+    case 'poll-vote':
+      handlePollVote(ws, message.payload);
+      break;
+    case 'poll-update':
+      handlePollUpdate(ws, message.payload);
+      break;
     case 'stage-action':
       handleStageAction(ws, message.payload);
       break;
     case 'recording-state-changed':
       handleRecordingStateChange(ws, message.payload);
+      break;
+    case 'live-stream-token-request':
+      handleLiveStreamTokenRequest(ws, message.payload);
+      break;
+    case 'co-host-invite-token-request':
+      handleCoHostInviteTokenRequest(ws, message.payload);
       break;
     case 'end-room':
       handleEndRoom(ws);
@@ -335,8 +480,8 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   }
 
   const { roomId } = payload;
-  // Server-side role validation: only allow 'host' or 'guest' from client
-  const role: 'host' | 'guest' = payload.role === 'host' ? 'host' : 'guest';
+  const requestedRole: Participant['role'] =
+    payload.role === 'host' || payload.role === 'co-host' ? payload.role : 'guest';
   // Sanitize and validate participant name
   const name = (typeof payload.name === 'string' ? payload.name : '').trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, MAX_PARTICIPANT_NAME_LENGTH) || 'Anonymous';
   const roomState = rooms.get(roomId);
@@ -351,16 +496,11 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     return;
   }
 
-  // Transition scheduled rooms to 'waiting' once someone joins
-  if (roomState.room.status === 'scheduled') {
-    roomState.room.status = 'waiting';
-  }
-
   // Host role requires the secret token returned at room creation. Without a valid
   // token, the join is silently demoted to 'guest' — anyone who only has the room
   // URL cannot claim host.
-  let effectiveRole = role;
-  if (role === 'host') {
+  let effectiveRole: Participant['role'] = requestedRole === 'host' ? 'host' : 'guest';
+  if (requestedRole === 'host') {
     const presented = typeof payload.hostToken === 'string' ? payload.hostToken : '';
     if (!presented || !safeEqual(presented, roomState.hostToken)) {
       effectiveRole = 'guest';
@@ -373,6 +513,29 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
         effectiveRole = 'guest';
       }
     }
+  } else if (requestedRole === 'co-host') {
+    if (consumeCoHostInviteToken(roomState, payload.coHostInviteToken)) {
+      effectiveRole = 'co-host';
+    } else {
+      sendError(ws, 'Co-host invite link is invalid or expired', 'CO_HOST_INVITE_INVALID');
+      return;
+    }
+  }
+
+  if (roomState.room.settings.passwordProtected && effectiveRole === 'guest') {
+    if (typeof payload.roomPassword !== 'string' || payload.roomPassword.trim().length === 0) {
+      sendError(ws, 'This room requires a password', 'ROOM_PASSWORD_REQUIRED');
+      return;
+    }
+    if (!verifyRoomPassword(roomState, payload.roomPassword)) {
+      sendError(ws, 'Incorrect room password', 'ROOM_PASSWORD_INVALID');
+      return;
+    }
+  }
+
+  // Transition scheduled rooms to 'waiting' only after the join is authorized.
+  if (roomState.room.status === 'scheduled') {
+    roomState.room.status = 'waiting';
   }
 
   const participant: Participant = {
@@ -386,9 +549,12 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     status: 'green-room',
   };
 
-  // Host goes directly on-stage; co-host role is only granted via promote-co-host stage action
+  // Host and server-issued co-host invites go directly on-stage.
   if (effectiveRole === 'host') {
     roomState.room.hostId = participant.id;
+    participant.status = 'on-stage';
+  } else if (effectiveRole === 'co-host') {
+    roomState.room.coHostIds.push(participant.id);
     participant.status = 'on-stage';
   } else {
     // Guests: if green room is enabled, they wait; otherwise auto-admit
@@ -398,6 +564,8 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       participant.status = 'on-stage';
     }
   }
+
+  cancelEmptyRoomDeletion(roomId, roomState);
 
   // Store participant
   roomState.participants.set(participant.id, { participant, ws });
@@ -409,7 +577,9 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     .map((p) => p.participant)
     .filter((p) => p.id !== participant.id);
   const qaQuestions = Array.from(roomState.qaQuestions.values())
-    .filter((q) => effectiveRole === 'host' || q.status === 'approved' || q.status === 'answered');
+    .filter((q) => effectiveRole === 'host' || effectiveRole === 'co-host' || q.status === 'approved' || q.status === 'answered');
+  const polls = Array.from(roomState.polls.values())
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
   send(ws, {
     type: 'room-joined',
@@ -418,6 +588,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       participant,
       participants: allParticipants,
       qaQuestions,
+      polls,
       recordingState: roomState.recordingStartedAt
         ? {
             recording: true,
@@ -451,6 +622,10 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     sendError(ws, 'Only hosts and co-hosts can manage the stage', 'UNAUTHORIZED');
     return;
   }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before managing the stage', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
 
   if (
     typeof payload.targetParticipantId !== 'string' ||
@@ -474,11 +649,41 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       payload.action === 'demote-to-guest' ||
       payload.action === 'remove' ||
       payload.action === 'move-to-backstage' ||
-      payload.action === 'move-to-green-room'
+      payload.action === 'move-to-green-room' ||
+      payload.action === 'notify-next'
     ) {
-      sendError(ws, 'Cannot demote or remove the host', 'HOST_PROTECTED');
+      sendError(ws, 'Cannot perform this action on the host', 'HOST_PROTECTED');
       return;
     }
+  }
+
+  if (payload.action === 'notify-next') {
+    if (target.participant.status !== 'green-room' && target.participant.status !== 'backstage') {
+      sendError(ws, 'Only off-stage participants can be notified', 'VALIDATION_ERROR');
+      return;
+    }
+
+    send(target.ws, {
+      type: 'participant-notification',
+      payload: {
+        id: nanoid(8),
+        targetParticipantId: target.participant.id,
+        title: target.participant.status === 'backstage' ? "You're on deck" : "You're next",
+        message: target.participant.status === 'backstage'
+          ? 'The host is getting ready to bring you back to the live stage.'
+          : 'The host is getting ready to bring you into the live studio.',
+        tone: 'success',
+        issuedAt: new Date().toISOString(),
+        issuedBy: mapping.participantId,
+      },
+    });
+
+    broadcastToRoom(mapping.roomId, {
+      type: 'stage-action',
+      payload: authoritativePayload,
+    });
+    console.log(`Stage action: notify-next sent to ${target.participant.name} by ${performer.participant.name}`);
+    return;
   }
 
   switch (payload.action) {
@@ -547,6 +752,10 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
     sendError(ws, 'Only hosts and co-hosts can change recording state', 'UNAUTHORIZED');
     return;
   }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before changing recording state', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
 
   if (typeof payload.recording !== 'boolean') {
     sendError(ws, 'Invalid recording state', 'VALIDATION_ERROR');
@@ -573,6 +782,111 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
   broadcastToRoom(mapping.roomId, {
     type: 'recording-state-changed',
     payload: authoritativePayload,
+  });
+}
+
+function handleLiveStreamTokenRequest(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'live-stream-token-request' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  if (typeof payload.requestId !== 'string' || payload.requestId.length > 80) {
+    sendError(ws, 'Invalid live stream token request', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can start a live stream', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before starting a live stream', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  const secret = getLiveStreamTokenSecret();
+  if (!secret) {
+    sendError(ws, 'Live streaming is not configured on this server', 'LIVE_STREAM_NOT_CONFIGURED');
+    return;
+  }
+
+  const expiresAtMs = Date.now() + LIVE_STREAM_TOKEN_TTL_MS;
+  const claims: LiveStreamTokenClaims = {
+    v: 1,
+    roomId: mapping.roomId,
+    participantId: mapping.participantId,
+    role: performer.participant.role,
+    exp: expiresAtMs,
+    nonce: nanoid(16),
+  };
+
+  send(ws, {
+    type: 'live-stream-token-issued',
+    payload: {
+      requestId: payload.requestId,
+      token: signLiveStreamToken(claims, secret),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    },
+  });
+}
+
+function handleCoHostInviteTokenRequest(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'co-host-invite-token-request' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  if (typeof payload.requestId !== 'string' || payload.requestId.length > 80) {
+    sendError(ws, 'Invalid co-host invite request', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can create co-host invites', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before creating co-host invites', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  const now = Date.now();
+  pruneExpiredCoHostInviteTokens(roomState, now);
+
+  while (roomState.coHostInviteTokens.size >= MAX_CO_HOST_INVITE_TOKENS_PER_ROOM) {
+    const oldestToken = roomState.coHostInviteTokens.keys().next().value;
+    if (!oldestToken) break;
+    roomState.coHostInviteTokens.delete(oldestToken);
+  }
+
+  const token = nanoid(32);
+  const expiresAtMs = now + CO_HOST_INVITE_TOKEN_TTL_MS;
+  roomState.coHostInviteTokens.set(token, {
+    expiresAt: expiresAtMs,
+    issuedBy: mapping.participantId,
+    createdAt: now,
+  });
+
+  send(ws, {
+    type: 'co-host-invite-token-issued',
+    payload: {
+      requestId: payload.requestId,
+      token,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    },
   });
 }
 
@@ -603,6 +917,16 @@ function isValidIcePayload(payload: unknown): payload is { to: string; candidate
   return true;
 }
 
+function canRelayMediaSignal(roomState: RoomState, fromId: string, toId: string): boolean {
+  const sender = roomState.participants.get(fromId)?.participant;
+  const target = roomState.participants.get(toId)?.participant;
+  if (!sender || !target) return false;
+
+  // Green-room/backstage participants are visible in the roster, but only
+  // on-stage participants exchange WebRTC media for broadcast and recording.
+  return sender.status === 'on-stage' && target.status === 'on-stage';
+}
+
 function relayToParticipant(ws: WebSocket, message: RelaySignalMessage) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
@@ -624,6 +948,12 @@ function relayToParticipant(ws: WebSocket, message: RelaySignalMessage) {
 
   if (message.payload.to === mapping.participantId) {
     sendError(ws, 'Cannot relay a signal to yourself', 'VALIDATION_ERROR');
+    return;
+  }
+
+  if (!canRelayMediaSignal(roomState, mapping.participantId, message.payload.to)) {
+    // Drop unauthorized media signals silently. A legitimate client may still
+    // have in-flight ICE/SDP while a participant is moved off stage.
     return;
   }
 
@@ -692,6 +1022,10 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   // Fix #8: Override senderId and senderName with server-authoritative values
   const senderEntry = roomState.participants.get(mapping.participantId);
   if (!senderEntry) return;
+  if (senderEntry.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before sending studio chat messages', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
 
   const sanitizedContent = payload.content.replace(/[\x00-\x1F\x7F]/g, '').trim();
   if (sanitizedContent.length === 0) return;
@@ -705,12 +1039,18 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
     isBackstage: payload.isBackstage === true,
   };
 
-  // If backstage message, only send to host/co-hosts and the sender
+  // Backstage messages are visible to the production team and guests who are
+  // currently backstage. Green-room participants remain isolated above.
   if (sanitizedPayload.isBackstage) {
     for (const [id, { participant, ws: targetWs }] of roomState.participants) {
       if (
         targetWs.readyState === WebSocket.OPEN &&
-        (participant.role === 'host' || participant.role === 'co-host' || id === mapping.participantId)
+        (
+          participant.role === 'host' ||
+          participant.role === 'co-host' ||
+          participant.status === 'backstage' ||
+          id === mapping.participantId
+        )
       ) {
         send(targetWs, { type: 'chat-message', payload: sanitizedPayload });
       }
@@ -736,6 +1076,10 @@ function handleQAQuestionSubmitted(
 
   const senderEntry = roomState.participants.get(mapping.participantId);
   if (!senderEntry) return;
+  if (senderEntry.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before submitting Q&A', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
 
   if (typeof payload.content !== 'string') {
     sendError(ws, 'Question content is required', 'VALIDATION_ERROR');
@@ -853,6 +1197,11 @@ function handleQAQuestionUpvote(
 
   const roomState = rooms.get(mapping.roomId);
   if (!roomState) return;
+  const participant = roomState.participants.get(mapping.participantId)?.participant;
+  if (participant?.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before voting in Q&A', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
 
   if (typeof payload.questionId !== 'string') {
     sendError(ws, 'Invalid question id', 'VALIDATION_ERROR');
@@ -877,6 +1226,196 @@ function handleQAQuestionUpvote(
   roomState.qaQuestions.set(updated.id, updated);
 
   broadcastQAQuestion(mapping.roomId, updated);
+}
+
+function handlePollCreate(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'poll-create' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can create polls', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before creating polls', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  if (roomState.polls.size >= MAX_ACTIVE_POLLS_PER_ROOM) {
+    sendError(ws, `Poll limit reached (max ${MAX_ACTIVE_POLLS_PER_ROOM})`, 'POLL_LIMIT_REACHED');
+    return;
+  }
+
+  if (typeof payload.question !== 'string' || !Array.isArray(payload.options)) {
+    sendError(ws, 'Invalid poll payload', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const question = payload.question.replace(/[\x00-\x1F\x7F]/g, '').trim();
+  if (!question) return;
+  if (question.length > MAX_POLL_QUESTION_LENGTH) {
+    sendError(ws, `Poll question too long (max ${MAX_POLL_QUESTION_LENGTH} characters)`, 'POLL_TOO_LONG');
+    return;
+  }
+
+  const options = payload.options
+    .map((option) => typeof option === 'string' ? option.replace(/[\x00-\x1F\x7F]/g, '').trim() : '')
+    .filter(Boolean)
+    .slice(0, MAX_POLL_OPTIONS);
+  const uniqueOptions = Array.from(new Set(options));
+
+  if (uniqueOptions.length < 2) {
+    sendError(ws, 'Polls require at least two options', 'VALIDATION_ERROR');
+    return;
+  }
+  if (uniqueOptions.some((option) => option.length > MAX_POLL_OPTION_LENGTH)) {
+    sendError(ws, `Poll options must be ${MAX_POLL_OPTION_LENGTH} characters or less`, 'POLL_OPTION_TOO_LONG');
+    return;
+  }
+
+  const requestedId = typeof payload.id === 'string' && /^[\w-]{1,80}$/.test(payload.id)
+    ? payload.id
+    : nanoid(10);
+  const id = roomState.polls.has(requestedId) ? nanoid(10) : requestedId;
+  const poll: LivePoll = {
+    id,
+    question,
+    options: uniqueOptions.map((text, index) => ({
+      id: `${id}-option-${index + 1}`,
+      text,
+      votes: 0,
+    })),
+    status: 'open',
+    highlighted: false,
+    createdAt: new Date().toISOString(),
+    createdBy: mapping.participantId,
+    createdByName: performer.participant.name,
+    totalVotes: 0,
+  };
+
+  roomState.polls.set(poll.id, poll);
+  roomState.pollVotes.set(poll.id, new Map());
+  broadcastPoll(mapping.roomId, poll);
+}
+
+function handlePollVote(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'poll-vote' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const participant = roomState.participants.get(mapping.participantId)?.participant;
+  if (participant?.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before voting in polls', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  if (typeof payload.pollId !== 'string' || typeof payload.optionId !== 'string') {
+    sendError(ws, 'Invalid poll vote', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const poll = roomState.polls.get(payload.pollId);
+  if (!poll || poll.status !== 'open') return;
+  if (!poll.options.some((option) => option.id === payload.optionId)) {
+    sendError(ws, 'Invalid poll option', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const votes = roomState.pollVotes.get(poll.id) || new Map<string, string>();
+  votes.set(mapping.participantId, payload.optionId);
+  roomState.pollVotes.set(poll.id, votes);
+
+  const totals = new Map<string, number>();
+  for (const optionId of votes.values()) {
+    totals.set(optionId, (totals.get(optionId) || 0) + 1);
+  }
+
+  const updated: LivePoll = {
+    ...poll,
+    options: poll.options.map((option) => ({
+      ...option,
+      votes: totals.get(option.id) || 0,
+    })),
+    totalVotes: votes.size,
+  };
+
+  roomState.polls.set(updated.id, updated);
+  broadcastPoll(mapping.roomId, updated);
+}
+
+function handlePollUpdate(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'poll-update' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can manage polls', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before managing polls', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  if (typeof payload.pollId !== 'string') {
+    sendError(ws, 'Invalid poll id', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const existing = roomState.polls.get(payload.pollId);
+  if (!existing) return;
+
+  const updates = payload.updates || {};
+  const changedPolls: LivePoll[] = [];
+
+  if (updates.highlighted === true) {
+    for (const [id, poll] of roomState.polls) {
+      if (id !== existing.id && poll.highlighted) {
+        const unhighlighted = { ...poll, highlighted: false };
+        roomState.polls.set(id, unhighlighted);
+        changedPolls.push(unhighlighted);
+      }
+    }
+  }
+
+  const next: LivePoll = { ...existing };
+  if (updates.status) {
+    if (updates.status !== 'open' && updates.status !== 'closed') {
+      sendError(ws, 'Invalid poll status', 'VALIDATION_ERROR');
+      return;
+    }
+    next.status = updates.status;
+  }
+  if (typeof updates.highlighted === 'boolean') {
+    next.highlighted = updates.highlighted;
+  }
+
+  roomState.polls.set(next.id, next);
+  changedPolls.push(next);
+
+  for (const poll of changedPolls) {
+    broadcastPoll(mapping.roomId, poll);
+  }
 }
 
 const END_ROOM_GRACE_MS = 10_000;
@@ -1015,9 +1554,8 @@ function handleDisconnect(ws: WebSocket) {
 
     console.log(`${name} left room ${roomId} [${roomState.participants.size} participants]`);
 
-    if (roomState.participants.size === 0 && roomState.room.status !== 'scheduled') {
-      deleteRoom(roomId);
-      console.log(`Room ${roomId} deleted (empty)`);
+    if (roomState.participants.size === 0) {
+      scheduleEmptyRoomDeletion(roomId, roomState);
     }
   }
 }
@@ -1061,6 +1599,13 @@ function broadcastQAQuestion(roomId: string, question: QAQuestion) {
       console.error(`Failed to send Q&A update to participant ${id}:`, (err as Error).message);
     }
   }
+}
+
+function broadcastPoll(roomId: string, poll: LivePoll) {
+  broadcastToRoom(roomId, {
+    type: 'poll-updated',
+    payload: poll,
+  });
 }
 
 function send(ws: WebSocket, message: SignalMessage) {

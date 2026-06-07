@@ -4,7 +4,7 @@ import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
 import { BackgroundPicker } from './BackgroundPicker.tsx';
-import { SceneManager } from './SceneManager.tsx';
+import { SceneManager, type ProductionSceneTemplate } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
 import { CommentHighlightManager, type HighlightedComment } from './CommentHighlight.tsx';
 import { MediaLibrary } from './MediaLibrary.tsx';
@@ -71,6 +71,7 @@ interface SidebarProps {
   scenes: Scene[];
   activeSceneId: string | null;
   onSaveScene: (name: string) => void | Promise<void>;
+  onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
@@ -86,6 +87,8 @@ interface SidebarProps {
   // Streams for live previews in People tab
   remoteStreams: Map<string, MediaStream>;
   localStream: MediaStream | null;
+  participantVolumes: Record<string, number>;
+  onParticipantVolumeChange: (participantId: string, volume: number) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +232,8 @@ export function Sidebar(props: SidebarProps) {
               onStageAction={props.onStageAction}
               remoteStreams={props.remoteStreams}
               localStream={props.localStream}
+              participantVolumes={props.participantVolumes}
+              onParticipantVolumeChange={props.onParticipantVolumeChange}
             />
           )}
 
@@ -435,7 +440,7 @@ export function Sidebar(props: SidebarProps) {
           {activeTab === 'scenes' && (
             <div style={st.scrollContent}>
               <div style={st.section}>
-                <SceneManager scenes={props.scenes} activeSceneId={props.activeSceneId} onSaveScene={props.onSaveScene} onApplyScene={props.onApplyScene} onDeleteScene={props.onDeleteScene} onRenameScene={props.onRenameScene} />
+                <SceneManager scenes={props.scenes} activeSceneId={props.activeSceneId} onSaveScene={props.onSaveScene} onCreateTemplateScene={props.onCreateTemplateScene} onApplyScene={props.onApplyScene} onDeleteScene={props.onDeleteScene} onRenameScene={props.onRenameScene} />
               </div>
             </div>
           )}
@@ -503,12 +508,23 @@ function MiniVideoPreview({ stream, videoEnabled, name }: { stream: MediaStream 
 // ---------------------------------------------------------------------------
 // People sub-component
 // ---------------------------------------------------------------------------
-function PeopleContent({ participants, myParticipantId, myRole, onStageAction, remoteStreams, localStream }: {
+function PeopleContent({
+  participants,
+  myParticipantId,
+  myRole,
+  onStageAction,
+  remoteStreams,
+  localStream,
+  participantVolumes,
+  onParticipantVolumeChange,
+}: {
   participants: Map<string, Participant>; myParticipantId: string;
   myRole: 'host' | 'co-host' | 'guest';
   onStageAction: (action: StageActionPayload['action'], targetId: string) => void;
   remoteStreams: Map<string, MediaStream>;
   localStream: MediaStream | null;
+  participantVolumes: Record<string, number>;
+  onParticipantVolumeChange: (participantId: string, volume: number) => void;
 }) {
   const isHostOrCoHost = myRole === 'host' || myRole === 'co-host';
   type PStatus = 'on-stage' | 'backstage' | 'green-room';
@@ -522,45 +538,55 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction, r
     if (id === myParticipantId) return localStream;
     return remoteStreams.get(id) || null;
   };
+  const canAdjustOwnVolume = isHostOrCoHost && myP?.status === 'on-stage';
 
   return (
     <div style={st.panelFull}>
       <div style={st.panelHeader}><h3 style={st.panelTitle}>People</h3><span style={st.panelSub}>{participants.size}/12 in session</span></div>
       <div style={st.panelBody}>
         {myP && (
-          <div className="participant-item" style={st.personItem}>
-            <div style={st.personLeft}>
-              <MiniVideoPreview stream={localStream} videoEnabled={myP.videoEnabled} name={myP.name} />
-              <div style={st.personInfo}>
-                <span style={st.personName}>{myP.name}</span>
-                <div style={st.badges}>
-                  <span style={{ ...st.roleBadge, background: 'var(--accent-subtle)', color: 'var(--accent)' }}>{myP.role}</span>
-                  <span style={st.qualityBadge}>You</span>
+          <div className="participant-item" style={{ ...st.personItem, ...(canAdjustOwnVolume ? st.personItemStack : {}) }}>
+            <div style={st.personRow}>
+              <div style={st.personLeft}>
+                <MiniVideoPreview stream={localStream} videoEnabled={myP.videoEnabled} name={myP.name} />
+                <div style={st.personInfo}>
+                  <span style={st.personName}>{myP.name}</span>
+                  <div style={st.badges}>
+                    <span style={{ ...st.roleBadge, background: 'var(--accent-subtle)', color: 'var(--accent)' }}>{myP.role}</span>
+                    <span style={st.qualityBadge}>You</span>
+                  </div>
+                </div>
+              </div>
+              <div style={st.mediaIndicators}>
+                <div style={{ ...st.mediaIcon, color: myP.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                  {myP.audioEnabled ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
+                  )}
+                </div>
+                <div style={{ ...st.mediaIcon, color: myP.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                  {myP.videoEnabled ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
+                  )}
                 </div>
               </div>
             </div>
-            <div style={st.mediaIndicators}>
-              <div style={{ ...st.mediaIcon, color: myP.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                {myP.audioEnabled ? (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
-                )}
-              </div>
-              <div style={{ ...st.mediaIcon, color: myP.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                {myP.videoEnabled ? (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
-                )}
-              </div>
-            </div>
+            {canAdjustOwnVolume && (
+              <ParticipantVolumeControl
+                participant={myP}
+                value={participantVolumes[myP.id] ?? 1}
+                onChange={onParticipantVolumeChange}
+              />
+            )}
           </div>
         )}
         {grouped['green-room'].length > 0 && (
-          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /></>)} />
+          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /></>)} />
         )}
-        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<>
+        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} participantVolumes={participantVolumes} onParticipantVolumeChange={onParticipantVolumeChange} showVolumeControls actions={(p) => (<>
           {p.audioEnabled && <SmallBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />}
           {!p.audioEnabled && <SmallBtn label="Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />}
           <SmallBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
@@ -568,7 +594,7 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction, r
           {p.role === 'co-host' && <SmallBtn label="Demote" color="var(--text-muted)" onClick={() => onStageAction('demote-to-guest', p.id)} />}
         </>)} />
         {grouped['backstage'].length > 0 && (
-          <PeopleSection title="Backstage" subtitle="Can hear but not visible" color="var(--accent)" participants={grouped['backstage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="To Stage" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /></>)} />
+          <PeopleSection title="Backstage" subtitle="Off broadcast stage" color="var(--accent)" participants={grouped['backstage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="To Stage" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /></>)} />
         )}
         {grouped['green-room'].length > 1 && isHostOrCoHost && (
           <button className="btn-primary" style={st.admitAllBtn} onClick={() => grouped['green-room'].forEach((p) => onStageAction('move-to-stage', p.id))}>
@@ -580,9 +606,23 @@ function PeopleContent({ participants, myParticipantId, myRole, onStageAction, r
   );
 }
 
-function PeopleSection({ title, subtitle, color, participants, isHostOrCoHost, getStream, actions }: {
+function PeopleSection({
+  title,
+  subtitle,
+  color,
+  participants,
+  isHostOrCoHost,
+  getStream,
+  participantVolumes = {},
+  onParticipantVolumeChange,
+  showVolumeControls = false,
+  actions,
+}: {
   title: string; subtitle: string; color: string; participants: Participant[];
   isHostOrCoHost: boolean; getStream: (id: string) => MediaStream | null;
+  participantVolumes?: Record<string, number>;
+  onParticipantVolumeChange?: (participantId: string, volume: number) => void;
+  showVolumeControls?: boolean;
   actions: (p: Participant) => React.ReactNode;
 }) {
   return (
@@ -591,40 +631,96 @@ function PeopleSection({ title, subtitle, color, participants, isHostOrCoHost, g
       <p style={st.pSectionSub}>{subtitle}</p>
       {participants.length === 0 ? <p style={st.emptyText}>No participants</p> : (
         <div style={st.pList}>
-          {participants.map((p) => (
-            <div key={p.id} className="participant-item" style={st.personItem}>
-              <div style={st.personLeft}>
-                <MiniVideoPreview stream={getStream(p.id)} videoEnabled={p.videoEnabled} name={p.name} />
-                <div style={st.personInfo}>
-                  <span style={st.personName}>{p.name}</span>
-                  <div style={st.badges}>
-                    {p.role !== 'guest' && <span style={{ ...st.roleBadge, background: p.role === 'host' ? 'var(--accent-subtle)' : 'var(--success-subtle)', color: p.role === 'host' ? 'var(--accent)' : 'var(--success)' }}>{p.role}</span>}
+          {participants.map((p) => {
+            const canAdjustVolume = isHostOrCoHost && showVolumeControls && Boolean(onParticipantVolumeChange);
+            return (
+              <div key={p.id} className="participant-item" style={{ ...st.personItem, ...st.personItemStack }}>
+                <div style={st.personRow}>
+                  <div style={st.personLeft}>
+                    <MiniVideoPreview stream={getStream(p.id)} videoEnabled={p.videoEnabled} name={p.name} />
+                    <div style={st.personInfo}>
+                      <span style={st.personName}>{p.name}</span>
+                      <div style={st.badges}>
+                        {p.role !== 'guest' && <span style={{ ...st.roleBadge, background: p.role === 'host' ? 'var(--accent-subtle)' : 'var(--success-subtle)', color: p.role === 'host' ? 'var(--accent)' : 'var(--success)' }}>{p.role}</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={st.personRight}>
+                    <div style={st.mediaIndicators}>
+                      <div style={{ ...st.mediaIcon, color: p.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                        {p.audioEnabled ? (
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
+                        ) : (
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
+                        )}
+                      </div>
+                      <div style={{ ...st.mediaIcon, color: p.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                        {p.videoEnabled ? (
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
+                        ) : (
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
+                        )}
+                      </div>
+                    </div>
+                    {isHostOrCoHost && p.role !== 'host' && <div style={st.personActions}>{actions(p)}</div>}
                   </div>
                 </div>
+                {canAdjustVolume && onParticipantVolumeChange && (
+                  <ParticipantVolumeControl
+                    participant={p}
+                    value={participantVolumes[p.id] ?? 1}
+                    onChange={onParticipantVolumeChange}
+                  />
+                )}
               </div>
-              <div style={st.personRight}>
-                <div style={st.mediaIndicators}>
-                  <div style={{ ...st.mediaIcon, color: p.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                    {p.audioEnabled ? (
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
-                    ) : (
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
-                    )}
-                  </div>
-                  <div style={{ ...st.mediaIcon, color: p.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                    {p.videoEnabled ? (
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
-                    ) : (
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
-                    )}
-                  </div>
-                </div>
-                {isHostOrCoHost && p.role !== 'host' && <div style={st.personActions}>{actions(p)}</div>}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
+    </div>
+  );
+}
+
+function ParticipantVolumeControl({
+  participant,
+  value,
+  onChange,
+}: {
+  participant: Participant;
+  value: number;
+  onChange: (participantId: string, volume: number) => void;
+}) {
+  const percentage = Math.round(Math.min(1, Math.max(0, Number.isFinite(value) ? value : 1)) * 100);
+
+  return (
+    <div style={st.volumeControl}>
+      <div style={st.volumeIcon} title={`Broadcast mix for ${participant.name}`}>
+        {percentage === 0 ? (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            <line x1="23" y1="9" x2="17" y2="15" />
+            <line x1="17" y1="9" x2="23" y2="15" />
+          </svg>
+        ) : (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+          </svg>
+        )}
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={percentage}
+        onChange={(event) => onChange(participant.id, Number(event.currentTarget.value) / 100)}
+        aria-label={`Broadcast mix for ${participant.name}`}
+        title={`Broadcast mix for ${participant.name}`}
+        style={st.volumeSlider}
+      />
+      <span style={st.volumeValue}>{percentage}%</span>
     </div>
   );
 }
@@ -695,7 +791,7 @@ function ChatContent({ messages, onSend, senderName }: { messages: ChatMessage[]
         {visibleMessages.length === 0 && (
           <div style={st.chatEmpty}>
             <p style={st.chatEmptyText}>{mode === 'backstage' ? 'No backstage notes yet' : 'No public messages yet'}</p>
-            <p style={st.chatEmptyHint}>{mode === 'backstage' ? 'Coordinate with producers and co-hosts.' : 'Messages here are visible to everyone.'}</p>
+            <p style={st.chatEmptyHint}>{mode === 'backstage' ? 'Coordinate with producers, co-hosts, and backstage guests.' : 'Messages here are visible to everyone.'}</p>
           </div>
         )}
         {visibleMessages.map((msg) => (
@@ -885,6 +981,8 @@ const st: Record<string, React.CSSProperties> = {
   emptyText: { fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' },
   pList: { display: 'flex', flexDirection: 'column', gap: 4 },
   personItem: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'rgba(255, 255, 255, 0.03)', borderRadius: 10, gap: 8, margin: '0 0 4px', border: '1px solid rgba(255, 255, 255, 0.04)' },
+  personItemStack: { flexDirection: 'column', alignItems: 'stretch', justifyContent: 'flex-start', gap: 7 },
+  personRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minWidth: 0 },
   personLeft: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 },
   personAvatar: { width: 30, height: 30, borderRadius: '50%', background: 'rgba(167, 139, 250, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, color: '#c4b5fd', flexShrink: 0 },
   personInfo: { minWidth: 0, flex: 1 },
@@ -905,6 +1003,10 @@ const st: Record<string, React.CSSProperties> = {
   muteBadge: { fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'rgba(239,68,68,0.1)', color: '#ef4444' },
   personActions: { display: 'flex', gap: 3, flexShrink: 0 },
   smallBtn: { fontSize: 10, fontWeight: 600, padding: '3px 7px', borderRadius: 5, background: 'transparent', border: '1px solid', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 150ms' },
+  volumeControl: { display: 'grid', gridTemplateColumns: '18px minmax(0, 1fr) 34px', alignItems: 'center', gap: 7, paddingLeft: 56 },
+  volumeIcon: { width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' },
+  volumeSlider: { width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' },
+  volumeValue: { fontSize: 10, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)', textAlign: 'right' },
   admitAllBtn: { margin: '8px 16px', width: 'calc(100% - 32px)', fontSize: 13, padding: '8px 14px' },
   // Overlay quick actions
   overlayQuick: { padding: 12, display: 'flex', flexDirection: 'column', gap: 10 },

@@ -15,6 +15,7 @@ interface ControlBarProps {
   isScreenSharing?: boolean;
   onToggleScreenShare?: () => void;
   onOpenParticipants?: () => void;
+  onOpenInvitePanel?: () => void;
   onOpenStreamDestinations?: () => void;
   onOpenSoundBoard?: () => void;
   onOpenTeleprompter?: () => void;
@@ -23,10 +24,13 @@ interface ControlBarProps {
   onOpenRecordingPanel?: () => void;
   onOpenProducerPanel?: () => void;
   onOpenWebinarQA?: () => void;
+  onOpenPolls?: () => void;
+  onOpenCaptions?: () => void;
   onOpenHealthPanel?: () => void;
   onOpenChat?: () => void;
   participantCount?: number;
   isLive?: boolean;
+  captionsActive?: boolean;
 }
 
 export function ControlBar({
@@ -44,6 +48,7 @@ export function ControlBar({
   isScreenSharing = false,
   onToggleScreenShare,
   onOpenParticipants,
+  onOpenInvitePanel,
   onOpenStreamDestinations,
   onOpenSoundBoard,
   onOpenTeleprompter,
@@ -52,10 +57,13 @@ export function ControlBar({
   onOpenRecordingPanel,
   onOpenProducerPanel,
   onOpenWebinarQA,
+  onOpenPolls,
+  onOpenCaptions,
   onOpenHealthPanel,
   onOpenChat,
   participantCount = 0,
   isLive = false,
+  captionsActive = false,
 }: ControlBarProps) {
   const [copied, setCopied] = useState(false);
   const [showMore, setShowMore] = useState(false);
@@ -245,6 +253,23 @@ export function ControlBar({
             </button>
           )}
 
+          {onOpenPolls && (
+            <button
+              className="cb-focusable"
+              style={styles.iconBtn}
+              onClick={onOpenPolls}
+              aria-label="Open polls"
+              title="Polls"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 19V5" />
+                <path d="M9 19V9" />
+                <path d="M14 19V3" />
+                <path d="M19 19v-7" />
+              </svg>
+            </button>
+          )}
+
           {onOpenHealthPanel && (
             <button
               className="cb-focusable"
@@ -318,6 +343,16 @@ export function ControlBar({
     label: 'Q&A',
     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>,
     onClick: () => { onOpenWebinarQA(); setShowMore(false); },
+  });
+  if (onOpenPolls) moreItems.push({
+    label: 'Polls',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19V5" /><path d="M9 19V9" /><path d="M14 19V3" /><path d="M19 19v-7" /></svg>,
+    onClick: () => { onOpenPolls(); setShowMore(false); },
+  });
+  if (onOpenCaptions) moreItems.push({
+    label: captionsActive ? 'Captions On' : 'Captions',
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M8 10h3" /><path d="M8 14h2" /><path d="M14 10h2" /><path d="M14 14h3" /></svg>,
+    onClick: () => { onOpenCaptions(); setShowMore(false); },
   });
   if (onOpenHealthPanel) moreItems.push({
     label: 'Health',
@@ -425,9 +460,9 @@ export function ControlBar({
         <button
           className="cb-focusable"
           style={{ ...styles.pill, ...(copied ? styles.pillCopied : {}) }}
-          onClick={copyInviteLink}
-          aria-label="Copy invite link"
-          title="Copy invite link"
+          onClick={onOpenInvitePanel || copyInviteLink}
+          aria-label={onOpenInvitePanel ? 'Open invite panel' : 'Copy invite link'}
+          title="Invite guests"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -588,7 +623,7 @@ const styles: Record<string, React.CSSProperties> = {
   chevronBtnOff: {
     background: 'rgba(185, 28, 28, 0.8)',
     color: 'rgba(255,255,255,0.7)',
-    borderLeftColor: 'rgba(255,255,255,0.2)',
+    borderLeft: '1px solid rgba(255,255,255,0.2)',
   },
 
   // Standalone icon button (screen share)
@@ -609,7 +644,7 @@ const styles: Record<string, React.CSSProperties> = {
   iconBtnGreen: {
     background: 'var(--success)',
     color: 'white',
-    borderColor: 'var(--success)',
+    border: '1px solid var(--success)',
   },
 
   sep: {
@@ -637,19 +672,19 @@ const styles: Record<string, React.CSSProperties> = {
   },
   pillActive: {
     background: 'var(--accent-subtle)',
-    borderColor: 'var(--accent)',
+    border: '1px solid var(--accent)',
     color: 'var(--accent)',
   },
   pillRecording: {
     background: 'rgba(239, 68, 68, 0.15)',
-    borderColor: 'rgba(239, 68, 68, 0.3)',
+    border: '1px solid rgba(239, 68, 68, 0.3)',
     color: '#ef4444',
     fontFamily: 'monospace',
     fontWeight: 600,
   },
   pillCopied: {
     background: 'var(--success-subtle)',
-    borderColor: 'rgba(34, 197, 94, 0.25)',
+    border: '1px solid rgba(34, 197, 94, 0.25)',
     color: 'var(--success)',
   },
   pillBadge: {

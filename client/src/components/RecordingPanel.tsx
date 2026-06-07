@@ -1,10 +1,12 @@
-import { useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import type { RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
+import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary';
 
 interface RecordingPanelProps {
   isRecording: boolean;
   formattedTime: string;
+  recordingTrackLabels?: string[];
   onStartRecording: () => void;
   onStopRecording: () => Promise<RecordingResult>;
   roomName: string;
@@ -16,6 +18,32 @@ interface RecordedFile {
   blob: Blob;
   fileName: string;
 }
+
+interface RecordingBundleFile {
+  label: string;
+  fileName: string;
+  zipPath: string;
+  size: number;
+  type: string;
+}
+
+interface RecordingBundleSource {
+  roomName: string;
+  sessionId: string | null;
+  createdAt: string;
+  durationSeconds: number | null;
+  files: RecordedFile[];
+}
+
+interface ZipEntry {
+  path: string;
+  blob: Blob;
+  modifiedAt?: Date;
+}
+
+const ZIP_UINT32_MAX = 0xffffffff;
+const ZIP_UINT16_MAX = 0xffff;
+const ZIP_ENCODER = new TextEncoder();
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -35,9 +63,256 @@ function downloadBlob(blob: Blob, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+function parseDurationSeconds(value: string): number | null {
+  const parts = value.split(':').map((part) => Number(part));
+  if (parts.some((part) => !Number.isFinite(part))) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
+
+function formatDateTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return '--:--';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function isPreviewable(file: RecordedFile): boolean {
+  const type = file.blob.type;
+  return type.startsWith('video/') || type.startsWith('audio/') || /\.(webm|mp4|mov|ogg|mp3|wav)$/i.test(file.fileName);
+}
+
+function getBlobExtension(blob: Blob): string {
+  if (blob.type.includes('ogg')) return 'ogg';
+  if (blob.type.includes('mp4')) return 'mp4';
+  if (blob.type.includes('mpeg') || blob.type.includes('mp3')) return 'mp3';
+  if (blob.type.includes('wav')) return 'wav';
+  return 'webm';
+}
+
+function makeRecordingFileName(roomName: string, label: string, timestamp: string, index: number, blob: Blob): string {
+  const roomPrefix = sanitizeFileName(roomName, 'studio');
+  const labelPart = sanitizeFileName(label, `track_${index + 1}`);
+  return `${roomPrefix}_${String(index + 1).padStart(2, '0')}_${labelPart}_${timestamp}.${getBlobExtension(blob)}`;
+}
+
+function createCrc32Table(): Uint32Array {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < table.length; i++) {
+    let crc = i;
+    for (let bit = 0; bit < 8; bit++) {
+      crc = (crc & 1) === 1 ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1);
+    }
+    table[i] = crc >>> 0;
+  }
+  return table;
+}
+
+const CRC32_TABLE = createCrc32Table();
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function getZipTimestamp(date: Date) {
+  const year = Math.min(Math.max(date.getFullYear(), 1980), 2107);
+  return {
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+    date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+  };
+}
+
+function assertZipLimit(value: number, label: string, limit = ZIP_UINT32_MAX) {
+  if (value > limit) {
+    throw new Error(`${label} is too large for this browser ZIP export`);
+  }
+}
+
+function sanitizeFileName(value: string, fallback: string): string {
+  const baseName = value.split(/[\\/]/).pop() || fallback;
+  const cleaned = baseName
+    .replace(/[<>:"|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/^\.+/, '')
+    .slice(0, 120);
+  return cleaned || fallback;
+}
+
+function makeUniqueZipPath(fileName: string, index: number, seenPaths: Set<string>): string {
+  const fallback = `track_${index + 1}.webm`;
+  const cleaned = sanitizeFileName(fileName, fallback);
+  const match = cleaned.match(/^(.*?)(\.[^.]+)?$/);
+  const stem = match?.[1] || fallback;
+  const extension = match?.[2] || '';
+  let candidate = `tracks/${String(index + 1).padStart(2, '0')}_${cleaned}`;
+  let suffix = 2;
+
+  while (seenPaths.has(candidate)) {
+    candidate = `tracks/${String(index + 1).padStart(2, '0')}_${stem}_${suffix}${extension}`;
+    suffix += 1;
+  }
+
+  seenPaths.add(candidate);
+  return candidate;
+}
+
+function makeBundleFileName(roomName: string, createdAt: string): string {
+  const roomPrefix = sanitizeFileName(roomName, 'studio');
+  const timestamp = createdAt.slice(0, 19).replace(/[:T]/g, '-');
+  return `${roomPrefix}_recording_bundle_${timestamp}.zip`;
+}
+
+function createRecordingManifest(source: RecordingBundleSource, files: RecordingBundleFile[], exportedAt: string) {
+  const totalBytes = files.reduce((total, file) => total + file.size, 0);
+  return {
+    app: 'livestream-studio',
+    exportType: 'local-recording-bundle',
+    version: 1,
+    exportedAt,
+    session: {
+      id: source.sessionId,
+      roomName: source.roomName,
+      createdAt: source.createdAt,
+      durationSeconds: source.durationSeconds,
+      trackCount: files.length,
+      totalBytes,
+    },
+    files: files.map((file, index) => ({
+      trackIndex: index + 1,
+      label: file.label,
+      fileName: file.fileName,
+      zipPath: file.zipPath,
+      size: file.size,
+      type: file.type,
+    })),
+  };
+}
+
+async function createZipBundle(entries: ZipEntry[]): Promise<Blob> {
+  if (entries.length > ZIP_UINT16_MAX) {
+    throw new Error('Too many files for this browser ZIP export');
+  }
+
+  const localParts: BlobPart[] = [];
+  const centralParts: BlobPart[] = [];
+  let offset = 0;
+  let centralSize = 0;
+
+  for (const entry of entries) {
+    const pathBytes = ZIP_ENCODER.encode(entry.path);
+    assertZipLimit(pathBytes.length, 'ZIP file path', ZIP_UINT16_MAX);
+
+    const dataBuffer = await entry.blob.arrayBuffer();
+    const data = new Uint8Array(dataBuffer);
+    assertZipLimit(data.byteLength, entry.path);
+
+    const checksum = crc32(data);
+    const { time, date } = getZipTimestamp(entry.modifiedAt || new Date());
+
+    const localHeader = new Uint8Array(30 + pathBytes.length);
+    const localView = new DataView(localHeader.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0x0800, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, time, true);
+    localView.setUint16(12, date, true);
+    localView.setUint32(14, checksum, true);
+    localView.setUint32(18, data.byteLength, true);
+    localView.setUint32(22, data.byteLength, true);
+    localView.setUint16(26, pathBytes.length, true);
+    localView.setUint16(28, 0, true);
+    localHeader.set(pathBytes, 30);
+
+    const centralHeader = new Uint8Array(46 + pathBytes.length);
+    const centralView = new DataView(centralHeader.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0x0800, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, time, true);
+    centralView.setUint16(14, date, true);
+    centralView.setUint32(16, checksum, true);
+    centralView.setUint32(20, data.byteLength, true);
+    centralView.setUint32(24, data.byteLength, true);
+    centralView.setUint16(28, pathBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, offset, true);
+    centralHeader.set(pathBytes, 46);
+
+    localParts.push(localHeader.buffer, dataBuffer);
+    centralParts.push(centralHeader.buffer);
+    centralSize += centralHeader.byteLength;
+    offset += localHeader.byteLength + data.byteLength;
+    assertZipLimit(offset, 'ZIP archive');
+  }
+
+  const centralOffset = offset;
+  assertZipLimit(centralOffset + centralSize, 'ZIP archive');
+
+  const endHeader = new Uint8Array(22);
+  const endView = new DataView(endHeader.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(4, 0, true);
+  endView.setUint16(6, 0, true);
+  endView.setUint16(8, entries.length, true);
+  endView.setUint16(10, entries.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, centralOffset, true);
+  endView.setUint16(20, 0, true);
+
+  return new Blob([...localParts, ...centralParts, endHeader.buffer], { type: 'application/zip' });
+}
+
+async function createRecordingBundle(source: RecordingBundleSource): Promise<Blob> {
+  const exportedAt = new Date().toISOString();
+  const seenPaths = new Set<string>();
+  const trackEntries = source.files.map((file, index) => ({
+    path: makeUniqueZipPath(file.fileName, index, seenPaths),
+    blob: file.blob,
+    file,
+  }));
+  const manifestFiles: RecordingBundleFile[] = trackEntries.map((entry) => ({
+    label: entry.file.label,
+    fileName: entry.file.fileName,
+    zipPath: entry.path,
+    size: entry.file.blob.size,
+    type: entry.file.blob.type || 'application/octet-stream',
+  }));
+  const manifest = createRecordingManifest(source, manifestFiles, exportedAt);
+  const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
+
+  return createZipBundle([
+    { path: 'manifest.json', blob: manifestBlob },
+    ...trackEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+  ]);
+}
+
 export function RecordingPanel({
   isRecording,
   formattedTime,
+  recordingTrackLabels = [],
   onStartRecording,
   onStopRecording,
   roomName,
@@ -45,6 +320,11 @@ export function RecordingPanel({
 }: RecordingPanelProps) {
   const [recordedFiles, setRecordedFiles] = useState<RecordedFile[]>([]);
   const [isStopping, setIsStopping] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ url: string; type: string; label: string } | null>(null);
+  const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
+  const [isBundling, setIsBundling] = useState(false);
+  const [bundleError, setBundleError] = useState<string | null>(null);
 
   const {
     authorize,
@@ -54,44 +334,59 @@ export function RecordingPanel({
     isUploading,
     isAuthorized,
   } = useGoogleDriveUpload();
+  const {
+    sessions,
+    isLoading: libraryLoading,
+    error: libraryError,
+    saveSession,
+    deleteSession,
+    loadFiles,
+  } = useRecordingLibrary();
+  const visibleTrackLabels = recordingTrackLabels.length > 0
+    ? recordingTrackLabels
+    : ['Audio', 'Video', 'Screen'];
+
+  useEffect(() => {
+    return () => {
+      if (preview) URL.revokeObjectURL(preview.url);
+    };
+  }, [preview]);
 
   const handleStop = useCallback(async () => {
     setIsStopping(true);
     try {
       const result = await onStopRecording();
       const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-      const prefix = roomName.replace(/\s+/g, '_');
-      const files: RecordedFile[] = [];
-
-      if (result.audio.size > 0) {
-        files.push({
-          label: 'Audio',
-          blob: result.audio,
-          fileName: `${prefix}_audio_${timestamp}.webm`,
-        });
-      }
-      if (result.video.size > 0) {
-        files.push({
-          label: 'Video',
-          blob: result.video,
-          fileName: `${prefix}_video_${timestamp}.webm`,
-        });
-      }
-      if (result.screen && result.screen.size > 0) {
-        files.push({
-          label: 'Screen',
-          blob: result.screen,
-          fileName: `${prefix}_screen_${timestamp}.webm`,
-        });
-      }
+      const resultFiles = result.files.length > 0
+        ? result.files
+        : [
+            { label: 'Audio', blob: result.audio },
+            { label: 'Video', blob: result.video },
+            ...(result.screen ? [{ label: 'Screen', blob: result.screen }] : []),
+          ];
+      const files: RecordedFile[] = resultFiles
+        .filter((file) => file.blob.size > 0)
+        .map((file, index) => ({
+          label: file.label,
+          blob: file.blob,
+          fileName: makeRecordingFileName(roomName, file.label, timestamp, index, file.blob),
+        }));
 
       setRecordedFiles(files);
+      if (files.length > 0) {
+        const session = await saveSession({
+          roomName,
+          durationSeconds: parseDurationSeconds(formattedTime),
+          files,
+        });
+        setActiveSessionId(session.id);
+      }
     } catch (err) {
       console.error('Error stopping recording:', err);
     } finally {
       setIsStopping(false);
     }
-  }, [onStopRecording, roomName]);
+  }, [formattedTime, onStopRecording, roomName, saveSession]);
 
   const handleDownloadAll = useCallback(async () => {
     for (let i = 0; i < recordedFiles.length; i++) {
@@ -101,6 +396,30 @@ export function RecordingPanel({
       }
     }
   }, [recordedFiles]);
+
+  const handleDownloadBundle = useCallback(async () => {
+    if (recordedFiles.length === 0) return;
+    const activeSession = activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null;
+    const source: RecordingBundleSource = {
+      roomName: activeSession?.roomName || roomName,
+      sessionId: activeSession?.id || activeSessionId,
+      createdAt: activeSession?.createdAt || new Date().toISOString(),
+      durationSeconds: activeSession?.durationSeconds ?? parseDurationSeconds(formattedTime),
+      files: recordedFiles,
+    };
+
+    setIsBundling(true);
+    setBundleError(null);
+    try {
+      const bundle = await createRecordingBundle(source);
+      downloadBlob(bundle, makeBundleFileName(source.roomName, source.createdAt));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create recording bundle';
+      setBundleError(message);
+    } finally {
+      setIsBundling(false);
+    }
+  }, [activeSessionId, formattedTime, recordedFiles, roomName, sessions]);
 
   const handleDownloadSingle = useCallback((file: RecordedFile) => {
     downloadBlob(file.blob, file.fileName);
@@ -137,7 +456,80 @@ export function RecordingPanel({
 
   const handleNewRecording = useCallback(() => {
     setRecordedFiles([]);
+    setActiveSessionId(null);
+    setPreview(null);
   }, []);
+
+  const handlePreviewFile = useCallback((file: RecordedFile) => {
+    setPreview((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return {
+        url: URL.createObjectURL(file.blob),
+        type: file.blob.type || 'video/webm',
+        label: file.label,
+      };
+    });
+  }, []);
+
+  const handleLoadSession = useCallback(async (session: LocalRecordingSession) => {
+    setLibraryBusyId(session.id);
+    try {
+      const files = await loadFiles(session.id);
+      setRecordedFiles(files.map((file) => ({
+        label: file.label,
+        blob: file.blob,
+        fileName: file.fileName,
+      })));
+      setActiveSessionId(session.id);
+      setPreview(null);
+    } catch (err) {
+      console.error('Failed to load recording session:', err);
+    } finally {
+      setLibraryBusyId(null);
+    }
+  }, [loadFiles]);
+
+  const handleDownloadSessionBundle = useCallback(async (session: LocalRecordingSession) => {
+    setLibraryBusyId(session.id);
+    setBundleError(null);
+    try {
+      const files = await loadFiles(session.id);
+      const source: RecordingBundleSource = {
+        roomName: session.roomName,
+        sessionId: session.id,
+        createdAt: session.createdAt,
+        durationSeconds: session.durationSeconds,
+        files: files.map((file) => ({
+          label: file.label,
+          blob: file.blob,
+          fileName: file.fileName,
+        })),
+      };
+      const bundle = await createRecordingBundle(source);
+      downloadBlob(bundle, makeBundleFileName(session.roomName, session.createdAt));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create recording bundle';
+      setBundleError(message);
+    } finally {
+      setLibraryBusyId(null);
+    }
+  }, [loadFiles]);
+
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    setLibraryBusyId(sessionId);
+    try {
+      await deleteSession(sessionId);
+      if (activeSessionId === sessionId) {
+        setRecordedFiles([]);
+        setActiveSessionId(null);
+        setPreview(null);
+      }
+    } catch (err) {
+      console.error('Failed to delete recording session:', err);
+    } finally {
+      setLibraryBusyId(null);
+    }
+  }, [activeSessionId, deleteSession]);
 
   return (
     <div style={styles.panel}>
@@ -164,9 +556,12 @@ export function RecordingPanel({
             </div>
             <div style={styles.timer}>{formattedTime}</div>
             <div style={styles.trackIndicators}>
-              <span style={styles.trackBadge}>Audio</span>
-              <span style={styles.trackBadge}>Video</span>
-              <span style={styles.trackBadge}>Screen</span>
+              {visibleTrackLabels.slice(0, 6).map((label) => (
+                <span key={label} style={styles.trackBadge}>{label}</span>
+              ))}
+              {visibleTrackLabels.length > 6 && (
+                <span style={styles.trackBadge}>+{visibleTrackLabels.length - 6}</span>
+              )}
             </div>
             <button
               className="hover-scale"
@@ -186,7 +581,7 @@ export function RecordingPanel({
               <circle cx="12" cy="12" r="10" />
               <circle cx="12" cy="12" r="4" fill="var(--text-muted)" />
             </svg>
-            <p style={styles.idleText}>Record separate audio, video, and screen tracks locally for maximum quality.</p>
+            <p style={styles.idleText}>Record isolated on-stage audio, camera, and screen tracks locally for maximum quality.</p>
             <button
               className="hover-scale"
               style={styles.startBtn}
@@ -222,18 +617,32 @@ export function RecordingPanel({
                       <span style={styles.fileLabel}>{file.label}</span>
                       <span style={styles.fileSize}>{formatFileSize(file.blob.size)}</span>
                     </div>
-                    <button
-                      className="participant-action-btn"
-                      style={styles.downloadBtn}
-                      onClick={() => handleDownloadSingle(file)}
-                      title={`Download ${file.label}`}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                        <polyline points="7 10 12 15 17 10" />
-                        <line x1="12" y1="15" x2="12" y2="3" />
-                      </svg>
-                    </button>
+                    <div style={styles.fileActions}>
+                      {isPreviewable(file) && (
+                        <button
+                          className="participant-action-btn"
+                          style={styles.iconBtn}
+                          onClick={() => handlePreviewFile(file)}
+                          title={`Preview ${file.label}`}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                          </svg>
+                        </button>
+                      )}
+                      <button
+                        className="participant-action-btn"
+                        style={styles.iconBtn}
+                        onClick={() => handleDownloadSingle(file)}
+                        title={`Download ${file.label}`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                   <div style={styles.fileName}>{file.fileName}</div>
 
@@ -266,8 +675,40 @@ export function RecordingPanel({
               );
             })}
 
+            {preview && (
+              <div style={styles.previewCard}>
+                <div style={styles.previewHeader}>
+                  <span style={styles.previewTitle}>Preview: {preview.label}</span>
+                  <button style={styles.previewClose} onClick={() => setPreview(null)}>Close</button>
+                </div>
+                {preview.type.startsWith('audio/') ? (
+                  <audio src={preview.url} controls style={styles.previewMedia} />
+                ) : (
+                  <video src={preview.url} controls style={styles.previewMedia} />
+                )}
+              </div>
+            )}
+
             {/* Action buttons */}
             <div style={styles.actions}>
+              <button
+                className="hover-lift"
+                style={{
+                  ...styles.bundleBtn,
+                  opacity: isBundling ? 0.6 : 1,
+                }}
+                onClick={handleDownloadBundle}
+                disabled={isBundling}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                  <path d="M7 3h10" />
+                </svg>
+                {isBundling ? 'Bundling...' : 'Download ZIP'}
+              </button>
+
               <button
                 className="hover-lift"
                 style={styles.downloadAllBtn}
@@ -278,7 +719,7 @@ export function RecordingPanel({
                   <polyline points="7 10 12 15 17 10" />
                   <line x1="12" y1="15" x2="12" y2="3" />
                 </svg>
-                Download All
+                Download Tracks
               </button>
 
               <button
@@ -299,6 +740,8 @@ export function RecordingPanel({
               </button>
             </div>
 
+            {bundleError && <div style={styles.errorBadge}>{bundleError}</div>}
+
             {/* New recording button */}
             <button
               style={styles.newRecordingBtn}
@@ -308,6 +751,59 @@ export function RecordingPanel({
             </button>
           </>
         )}
+
+        <div style={styles.librarySection}>
+          <div style={styles.filesHeader}>
+            <span style={styles.filesTitle}>Recording Library</span>
+            <span style={styles.filesCount}>{sessions.length} saved</span>
+          </div>
+
+          {libraryError && <div style={styles.errorBadge}>{libraryError}</div>}
+          {libraryLoading && <div style={styles.libraryEmpty}>Loading saved recordings...</div>}
+          {!libraryLoading && sessions.length === 0 && (
+            <div style={styles.libraryEmpty}>Saved sessions will appear here after you stop a recording.</div>
+          )}
+
+          {sessions.map((session) => {
+            const isActive = activeSessionId === session.id;
+            const isBusy = libraryBusyId === session.id;
+            return (
+              <div key={session.id} style={{ ...styles.sessionCard, ...(isActive ? styles.sessionCardActive : {}) }}>
+                <div style={styles.sessionTop}>
+                  <div style={styles.sessionInfo}>
+                    <span style={styles.sessionName}>{session.roomName}</span>
+                    <span style={styles.sessionMeta}>
+                      {formatDateTime(session.createdAt)} | {formatDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'} | {formatFileSize(session.totalBytes)}
+                    </span>
+                  </div>
+                </div>
+                <div style={styles.sessionActions}>
+                  <button
+                    style={styles.sessionBtn}
+                    onClick={() => handleDownloadSessionBundle(session)}
+                    disabled={isBusy}
+                  >
+                    {isBusy ? 'Working...' : 'ZIP'}
+                  </button>
+                  <button
+                    style={styles.sessionBtn}
+                    onClick={() => handleLoadSession(session)}
+                    disabled={isBusy}
+                  >
+                    {isActive ? 'Loaded' : isBusy ? 'Loading...' : 'Load'}
+                  </button>
+                  <button
+                    style={{ ...styles.sessionBtn, ...styles.deleteBtn }}
+                    onClick={() => handleDeleteSession(session.id)}
+                    disabled={isBusy}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -506,7 +1002,12 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
   },
-  downloadBtn: {
+  fileActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  iconBtn: {
     width: 28,
     height: 28,
     borderRadius: 6,
@@ -518,6 +1019,43 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     padding: 0,
+  },
+  previewCard: {
+    background: 'var(--bg-tertiary)',
+    borderRadius: 10,
+    padding: 10,
+    border: '1px solid var(--border)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  previewHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  previewTitle: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  previewClose: {
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    fontSize: 11,
+    cursor: 'pointer',
+    padding: 0,
+  },
+  previewMedia: {
+    width: '100%',
+    maxHeight: 170,
+    borderRadius: 8,
+    background: 'black',
   },
 
   // Progress
@@ -585,6 +1123,22 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-primary)',
     cursor: 'pointer',
   },
+  bundleBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
+    padding: '10px 16px',
+    fontSize: 13,
+    fontWeight: 600,
+    borderRadius: 8,
+    border: 'none',
+    background: '#14b8a6',
+    color: 'white',
+    cursor: 'pointer',
+    transition: 'opacity 0.2s ease',
+  },
   driveBtn: {
     display: 'flex',
     alignItems: 'center',
@@ -613,5 +1167,79 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     marginTop: 4,
     textDecoration: 'underline',
+  },
+  librarySection: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: '1px solid var(--border)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  libraryEmpty: {
+    fontSize: 11,
+    color: 'var(--text-muted)',
+    lineHeight: 1.4,
+    padding: 10,
+    background: 'rgba(255,255,255,0.03)',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+  },
+  sessionCard: {
+    background: 'var(--bg-tertiary)',
+    borderRadius: 10,
+    padding: '10px 12px',
+    border: '1px solid var(--border)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  sessionCardActive: {
+    borderColor: 'rgba(99, 102, 241, 0.55)',
+    boxShadow: '0 0 0 1px rgba(99, 102, 241, 0.18) inset',
+  },
+  sessionTop: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  sessionInfo: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+  },
+  sessionName: {
+    fontSize: 12,
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  sessionMeta: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    lineHeight: 1.35,
+  },
+  sessionActions: {
+    display: 'flex',
+    gap: 6,
+  },
+  sessionBtn: {
+    flex: 1,
+    height: 28,
+    borderRadius: 7,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  deleteBtn: {
+    color: '#ef4444',
+    borderColor: 'rgba(239, 68, 68, 0.25)',
   },
 };

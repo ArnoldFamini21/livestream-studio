@@ -6,12 +6,25 @@ interface ChatPanelProps {
   onSend: (content: string) => void;
   onClose: () => void;
   senderName: string;
+  title?: string;
+  placeholder?: string;
+  emptyText?: string;
+  emptyHint?: string;
 }
 
 const MAX_MESSAGE_LENGTH = 2000;
 const CHAR_COUNT_THRESHOLD = 1800;
 
-export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelProps) {
+export function ChatPanel({
+  messages,
+  onSend,
+  onClose,
+  senderName,
+  title = 'Chat',
+  placeholder = 'Type a message...',
+  emptyText = 'No messages yet',
+  emptyHint = 'Start the conversation!',
+}: ChatPanelProps) {
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -44,7 +57,7 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
     <div style={styles.panel}>
       {/* Header */}
       <div style={styles.header}>
-        <h3 style={styles.title}>Chat</h3>
+        <h3 style={styles.title}>{title}</h3>
         <button
           className="chat-close-btn"
           style={styles.closeBtn}
@@ -62,8 +75,8 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
       <div ref={messagesContainerRef} style={styles.messages} onScroll={handleScroll} role="log" aria-live="polite" aria-label="Chat messages">
         {messages.length === 0 && (
           <div style={styles.empty}>
-            <p style={styles.emptyText}>No messages yet</p>
-            <p style={styles.emptyHint}>Start the conversation!</p>
+            <p style={styles.emptyText}>{emptyText}</p>
+            <p style={styles.emptyHint}>{emptyHint}</p>
           </div>
         )}
         {messages.map((msg) => {
@@ -107,7 +120,7 @@ export function ChatPanel({ messages, onSend, onClose, senderName }: ChatPanelPr
         <div style={styles.inputBar}>
           <input
             style={styles.input}
-            placeholder="Type a message..."
+            placeholder={placeholder}
             value={input}
             maxLength={MAX_MESSAGE_LENGTH}
             onChange={(e) => setInput(e.target.value)}

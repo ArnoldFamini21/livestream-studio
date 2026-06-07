@@ -8,3 +8,21 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: CLIENT_URLS
+        value: https://studio.arnoldfamini.com
+      - key: LIVE_STREAM_TOKEN_SECRET
+        sync: false
+
+  - type: web
+    name: livestream-studio-media-server
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run -w shared build && npm run -w media-server build
+    startCommand: npm run -w media-server start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CLIENT_URLS
+        value: https://studio.arnoldfamini.com
+      - key: LIVE_STREAM_TOKEN_SECRET
+        sync: false

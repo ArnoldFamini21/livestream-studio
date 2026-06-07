@@ -4,9 +4,27 @@ export interface RecordingResult {
   audio: Blob;
   video: Blob;
   screen?: Blob;
+  files: LocalRecordingFileResult[];
+}
+
+export interface LocalRecordingFileResult {
+  label: string;
+  blob: Blob;
+  kind: LocalRecordingSource['kind'];
+}
+
+export interface LocalRecordingSource {
+  id: string;
+  label: string;
+  stream: MediaStream;
+  kind: 'audio' | 'video' | 'screen';
+  bitsPerSecond?: number;
 }
 
 interface TrackRecorder {
+  id: string;
+  label: string;
+  kind: LocalRecordingSource['kind'];
   recorder: MediaRecorder;
   chunks: Blob[];
   activeWritable?: any; // FileSystemWritableFileStream
@@ -17,10 +35,9 @@ interface TrackRecorder {
 export function useLocalRecording() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [recordingLabels, setRecordingLabels] = useState<string[]>([]);
 
-  const audioRecorderRef = useRef<TrackRecorder | null>(null);
-  const videoRecorderRef = useRef<TrackRecorder | null>(null);
-  const screenRecorderRef = useRef<TrackRecorder | null>(null);
+  const recordersRef = useRef<TrackRecorder[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
 
@@ -54,15 +71,28 @@ export function useLocalRecording() {
     return types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
   };
 
-  const createTrackRecorder = async (
-    stream: MediaStream,
-    mimeType: string,
-    bitsPerSecond: number,
-    label: string,
-    dirHandle?: any
-  ): Promise<TrackRecorder | null> => {
+  const getMimeTypeForSource = (source: LocalRecordingSource): string => {
+    if (source.kind === 'audio') return getAudioMimeType();
+    if (source.kind === 'screen') return getScreenMimeType();
+    const hasVideo = source.stream.getVideoTracks().some((track) => track.readyState === 'live');
+    return hasVideo ? getVideoMimeType() : getAudioMimeType();
+  };
+
+  const getBitsPerSecondForSource = (source: LocalRecordingSource): number => {
+    if (source.bitsPerSecond) return source.bitsPerSecond;
+    if (source.kind === 'audio') return 256_000;
+    if (source.kind === 'screen') return 8_000_000;
+    const hasVideo = source.stream.getVideoTracks().some((track) => track.readyState === 'live');
+    return hasVideo ? 8_000_000 : 256_000;
+  };
+
+  const createTrackRecorder = async (source: LocalRecordingSource, dirHandle?: any): Promise<TrackRecorder | null> => {
+    const stream = new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live'));
+    if (stream.getTracks().length === 0) return null;
+    const mimeType = getMimeTypeForSource({ ...source, stream });
+    const bitsPerSecond = getBitsPerSecondForSource({ ...source, stream });
     if (!mimeType) {
-      console.error(`No supported MIME type for ${label} recording`);
+      console.error(`No supported MIME type for ${source.label} recording`);
       return null;
     }
 
@@ -73,10 +103,10 @@ export function useLocalRecording() {
     if (dirHandle) {
       try {
         const ext = mimeType.includes('ogg') ? 'ogg' : 'webm';
-        fileHandle = await dirHandle.getFileHandle(`${label}-${Date.now()}.${ext}`, { create: true });
+        fileHandle = await dirHandle.getFileHandle(`${source.id}-${Date.now()}.${ext}`, { create: true });
         activeWritable = await fileHandle.createWritable();
       } catch (err) {
-        console.warn(`Failed to create OPFS file for ${label}, falling back to memory chunks`, err);
+        console.warn(`Failed to create OPFS file for ${source.label}, falling back to memory chunks`, err);
       }
     }
 
@@ -95,7 +125,7 @@ export function useLocalRecording() {
             try {
               await activeWritable.write(e.data);
             } catch (err) {
-              console.error(`OPFS write error for ${label}:`, err);
+              console.error(`OPFS write error for ${source.label}:`, err);
               chunks.push(e.data); // Fallback to memory
             }
           })();
@@ -107,16 +137,70 @@ export function useLocalRecording() {
     };
 
     recorder.onerror = (e) => {
-      console.error(`Recording error for ${label}:`, e);
+      console.error(`Recording error for ${source.label}:`, e);
     };
 
-    return { recorder, chunks, fileHandle, activeWritable, getWritePromise: () => currentWritePromise };
+    return {
+      id: source.id,
+      label: source.label,
+      kind: source.kind,
+      recorder,
+      chunks,
+      fileHandle,
+      activeWritable,
+      getWritePromise: () => currentWritePromise,
+    };
+  };
+
+  const getDefaultSources = (localStream: MediaStream, screenStream?: MediaStream | null): LocalRecordingSource[] => {
+    const sources: LocalRecordingSource[] = [];
+    const audioTracks = localStream.getAudioTracks().filter((track) => track.readyState === 'live');
+    const videoTracks = localStream.getVideoTracks().filter((track) => track.readyState === 'live');
+
+    if (audioTracks.length > 0) {
+      sources.push({
+        id: 'local-audio',
+        label: 'Audio',
+        kind: 'audio',
+        stream: new MediaStream(audioTracks),
+        bitsPerSecond: 256_000,
+      });
+    }
+
+    if (videoTracks.length > 0) {
+      sources.push({
+        id: 'local-video',
+        label: 'Video',
+        kind: 'video',
+        stream: new MediaStream(videoTracks),
+        bitsPerSecond: 8_000_000,
+      });
+    }
+
+    if (screenStream && screenStream.getTracks().some((track) => track.readyState === 'live')) {
+      sources.push({
+        id: 'screen',
+        label: 'Screen',
+        kind: 'screen',
+        stream: screenStream,
+        bitsPerSecond: 8_000_000,
+      });
+    }
+
+    return sources;
   };
 
   const startRecording = useCallback(
-    async (localStream: MediaStream, screenStream?: MediaStream | null) => {
+    async (input: MediaStream | LocalRecordingSource[], screenStream?: MediaStream | null) => {
       // Guard against double-start
       if (isRecording) return;
+      const sources = (Array.isArray(input) ? input : getDefaultSources(input, screenStream))
+        .map((source) => ({
+          ...source,
+          stream: new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live')),
+        }))
+        .filter((source) => source.stream.getTracks().length > 0);
+      if (sources.length === 0) return;
 
       let dirHandle: any = undefined;
       try {
@@ -129,33 +213,19 @@ export function useLocalRecording() {
         console.warn('OPFS not available, chunks will be stored in RAM', err);
       }
 
-      // 1. Audio-only recorder
-      const audioTracks = localStream.getAudioTracks();
-      if (audioTracks.length === 0) console.warn('No audio track found in localStream');
-      const audioStream = new MediaStream(audioTracks);
-      const audioMime = getAudioMimeType();
-      audioRecorderRef.current = await createTrackRecorder(audioStream, audioMime, 256_000, 'audio', dirHandle);
-
-      // 2. Video-only recorder
-      const videoTracks = localStream.getVideoTracks();
-      if (videoTracks.length === 0) console.warn('No video track found in localStream');
-      const videoStream = new MediaStream(videoTracks);
-      const videoMime = getVideoMimeType();
-      videoRecorderRef.current = await createTrackRecorder(videoStream, videoMime, 8_000_000, 'video', dirHandle);
-
-      // 3. Screen share recorder (conditional)
-      if (screenStream) {
-        const screenMime = getScreenMimeType();
-        screenRecorderRef.current = await createTrackRecorder(screenStream, screenMime, 8_000_000, 'screen', dirHandle);
-      } else {
-        screenRecorderRef.current = null;
+      const recorders: TrackRecorder[] = [];
+      for (const source of sources) {
+        const trackRecorder = await createTrackRecorder(source, dirHandle);
+        if (trackRecorder) recorders.push(trackRecorder);
       }
+      if (recorders.length === 0) return;
 
       // Start all recorders with 1-second chunks
-      let startedCount = 0;
-      if (audioRecorderRef.current) { audioRecorderRef.current.recorder.start(1000); startedCount++; }
-      if (videoRecorderRef.current) { videoRecorderRef.current.recorder.start(1000); startedCount++; }
-      if (screenRecorderRef.current) { screenRecorderRef.current.recorder.start(1000); startedCount++; }
+      for (const trackRecorder of recorders) {
+        trackRecorder.recorder.start(1000);
+      }
+      recordersRef.current = recorders;
+      setRecordingLabels(recorders.map((recorder) => recorder.label));
 
       // Start timer
       startTimeRef.current = Date.now();
@@ -164,7 +234,7 @@ export function useLocalRecording() {
       }, 1000);
 
       setIsRecording(true);
-      console.log(`Local recording started on disk/RAM: ${startedCount} track(s)`);
+      console.log(`Local recording started on disk/RAM: ${recorders.length} track(s)`);
     },
     [isRecording]
   );
@@ -218,7 +288,7 @@ export function useLocalRecording() {
   const stopRecording = useCallback((): Promise<RecordingResult> => {
     // Guard against double-stop
     if (stoppingRef.current) {
-      return Promise.resolve({ audio: new Blob(), video: new Blob() });
+      return Promise.resolve({ audio: new Blob(), video: new Blob(), files: [] });
     }
     stoppingRef.current = true;
 
@@ -228,24 +298,30 @@ export function useLocalRecording() {
       timerRef.current = null;
     }
 
-    const audioPromise = stopSingleRecorder(audioRecorderRef.current, 'audio');
-    const videoPromise = stopSingleRecorder(videoRecorderRef.current, 'video');
-    const screenPromise = stopSingleRecorder(screenRecorderRef.current, 'screen');
+    const activeRecorders = [...recordersRef.current];
+    const stopPromises = activeRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder, trackRecorder.label));
 
-    return Promise.all([audioPromise, videoPromise, screenPromise]).then(
-      ([audioBlob, videoBlob, screenBlob]) => {
+    return Promise.all(stopPromises).then(
+      (blobs) => {
         // Clean up refs
-        audioRecorderRef.current = null;
-        videoRecorderRef.current = null;
-        screenRecorderRef.current = null;
+        recordersRef.current = [];
 
         setIsRecording(false);
         setRecordingDuration(0);
+        setRecordingLabels([]);
         stoppingRef.current = false;
 
+        const files = activeRecorders.flatMap((recorder, index): LocalRecordingFileResult[] => {
+          const blob = blobs[index];
+          return blob && blob.size > 0 ? [{ label: recorder.label, kind: recorder.kind, blob }] : [];
+        });
+        const audioBlob = files.find((file) => file.kind === 'audio')?.blob || new Blob();
+        const videoBlob = files.find((file) => file.kind === 'video')?.blob || new Blob();
+        const screenBlob = files.find((file) => file.kind === 'screen')?.blob;
         const result: RecordingResult = {
-          audio: audioBlob || new Blob(),
-          video: videoBlob || new Blob(),
+          audio: audioBlob,
+          video: videoBlob,
+          files,
         };
 
         if (screenBlob && screenBlob.size > 0) {
@@ -273,12 +349,7 @@ export function useLocalRecording() {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      const recorders = [
-        audioRecorderRef.current,
-        videoRecorderRef.current,
-        screenRecorderRef.current,
-      ];
-      for (const trackRecorder of recorders) {
+      for (const trackRecorder of recordersRef.current) {
         if (trackRecorder && trackRecorder.recorder.state !== 'inactive') {
           try {
             trackRecorder.recorder.stop();
@@ -291,15 +362,14 @@ export function useLocalRecording() {
           }
         }
       }
-      audioRecorderRef.current = null;
-      videoRecorderRef.current = null;
-      screenRecorderRef.current = null;
+      recordersRef.current = [];
     };
   }, []);
 
   return {
     isRecording,
     formattedTime: formatTime(recordingDuration),
+    recordingLabels,
     startRecording,
     stopRecording,
   };
