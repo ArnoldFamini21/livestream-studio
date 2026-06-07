@@ -14,6 +14,11 @@ import type {
   RecordingStatePayload,
   LiveStreamTokenClaims,
 } from '@studio/shared';
+import {
+  ROOM_NOT_OPEN_ERROR_CODE,
+  SCHEDULED_GUEST_ACCESS_MESSAGE,
+  isScheduledGuestAccessBlocked,
+} from '@studio/shared';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
 
@@ -520,6 +525,14 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       sendError(ws, 'Co-host invite link is invalid or expired', 'CO_HOST_INVITE_INVALID');
       return;
     }
+  }
+
+  if (
+    effectiveRole === 'guest' &&
+    isScheduledGuestAccessBlocked(roomState.room.scheduledFor)
+  ) {
+    sendError(ws, SCHEDULED_GUEST_ACCESS_MESSAGE, ROOM_NOT_OPEN_ERROR_CODE);
+    return;
   }
 
   if (roomState.room.settings.passwordProtected && effectiveRole === 'guest') {

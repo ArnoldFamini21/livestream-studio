@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
@@ -8,12 +8,24 @@ interface RecordingPanelProps {
   isRecording: boolean;
   formattedTime: string;
   recordingTrackLabels?: string[];
+  recordingMarkers?: RecordingMarker[];
   onStartRecording: () => void;
   onStopRecording: () => Promise<RecordingResult>;
+  onAddRecordingMarker?: (seconds: number, label: string) => void;
+  onRemoveRecordingMarker?: (markerId: string) => void;
+  onClearRecordingMarkers?: () => void;
+  onReplaceRecordingMarkers?: (markers: RecordingMarker[]) => void;
   roomName: string;
   captionSegments?: LiveCaptionSegment[];
   captionLanguage?: string;
   onClose: () => void;
+}
+
+export interface RecordingMarker {
+  id: string;
+  label: string;
+  seconds: number;
+  createdAt: string;
 }
 
 interface RecordedFile {
@@ -38,11 +50,20 @@ interface RecordingBundleSource {
   files: RecordedFile[];
   captionSegments?: LiveCaptionSegment[];
   captionLanguage?: string;
+  markers?: RecordingMarker[];
 }
 
 interface RecordingCaptionFile {
   label: string;
   format: 'txt' | 'vtt';
+  zipPath: string;
+  size: number;
+  type: string;
+}
+
+interface RecordingMarkerFile {
+  label: string;
+  format: 'json' | 'csv';
   zipPath: string;
   size: number;
   type: string;
@@ -272,14 +293,60 @@ function buildCaptionWebVtt(source: RecordingBundleSource, segments: LiveCaption
   return lines.join('\n');
 }
 
+function getSortedRecordingMarkers(markers: RecordingMarker[] | undefined): RecordingMarker[] {
+  return (markers || [])
+    .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0 && marker.label.trim())
+    .slice()
+    .sort((a, b) => a.seconds - b.seconds || Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+function buildRecordingMarkersJson(source: RecordingBundleSource, markers: RecordingMarker[]): string {
+  return JSON.stringify({
+    app: 'livestream-studio',
+    exportType: 'recording-markers',
+    version: 1,
+    roomName: source.roomName,
+    sessionId: source.sessionId,
+    exportedAt: new Date().toISOString(),
+    markers: markers.map((marker, index) => ({
+      index: index + 1,
+      label: marker.label,
+      seconds: marker.seconds,
+      timecode: formatDuration(marker.seconds),
+      createdAt: marker.createdAt,
+    })),
+  }, null, 2);
+}
+
+function csvEscape(value: string | number | null): string {
+  const text = value === null ? '' : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function buildRecordingMarkersCsv(markers: RecordingMarker[]): string {
+  const rows = [
+    ['index', 'timecode', 'seconds', 'label', 'createdAt'],
+    ...markers.map((marker, index) => [
+      index + 1,
+      formatDuration(marker.seconds),
+      marker.seconds,
+      marker.label,
+      marker.createdAt,
+    ]),
+  ];
+  return rows.map((row) => row.map(csvEscape).join(',')).join('\n');
+}
+
 function createRecordingManifest(
   source: RecordingBundleSource,
   files: RecordingBundleFile[],
   exportedAt: string,
-  captionFiles: RecordingCaptionFile[]
+  captionFiles: RecordingCaptionFile[],
+  markerFiles: RecordingMarkerFile[]
 ) {
   const totalBytes = files.reduce((total, file) => total + file.size, 0);
   const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
+  const markers = getSortedRecordingMarkers(source.markers);
   return {
     app: 'livestream-studio',
     exportType: 'local-recording-bundle',
@@ -308,6 +375,14 @@ function createRecordingManifest(
             languageLabel: getCaptionLanguageLabel(source.captionLanguage),
             segmentCount: finalCaptionSegments.length,
             files: captionFiles,
+          },
+        }
+      : {}),
+    ...(markers.length > 0
+      ? {
+          markers: {
+            markerCount: markers.length,
+            files: markerFiles,
           },
         }
       : {}),
@@ -434,13 +509,38 @@ async function createRecordingBundle(source: RecordingBundleSource): Promise<Blo
     size: entry.blob.size,
     type: entry.blob.type,
   }));
-  const manifest = createRecordingManifest(source, manifestFiles, exportedAt, captionFiles);
+  const sortedMarkers = getSortedRecordingMarkers(source.markers);
+  const markerEntries = sortedMarkers.length > 0
+    ? [
+        {
+          path: 'markers/recording_markers.json',
+          blob: new Blob([buildRecordingMarkersJson(source, sortedMarkers)], { type: 'application/json' }),
+          label: 'Recording markers JSON',
+          format: 'json' as const,
+        },
+        {
+          path: 'markers/recording_markers.csv',
+          blob: new Blob([buildRecordingMarkersCsv(sortedMarkers)], { type: 'text/csv;charset=utf-8' }),
+          label: 'Recording markers CSV',
+          format: 'csv' as const,
+        },
+      ]
+    : [];
+  const markerFiles: RecordingMarkerFile[] = markerEntries.map((entry) => ({
+    label: entry.label,
+    format: entry.format,
+    zipPath: entry.path,
+    size: entry.blob.size,
+    type: entry.blob.type,
+  }));
+  const manifest = createRecordingManifest(source, manifestFiles, exportedAt, captionFiles, markerFiles);
   const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
 
   return createZipBundle([
     { path: 'manifest.json', blob: manifestBlob },
     ...trackEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...captionEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    ...markerEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
   ]);
 }
 
@@ -448,8 +548,13 @@ export function RecordingPanel({
   isRecording,
   formattedTime,
   recordingTrackLabels = [],
+  recordingMarkers = [],
   onStartRecording,
   onStopRecording,
+  onAddRecordingMarker,
+  onRemoveRecordingMarker,
+  onClearRecordingMarkers,
+  onReplaceRecordingMarkers,
   roomName,
   captionSegments = [],
   captionLanguage,
@@ -462,6 +567,7 @@ export function RecordingPanel({
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
   const [isBundling, setIsBundling] = useState(false);
   const [bundleError, setBundleError] = useState<string | null>(null);
+  const [markerLabel, setMarkerLabel] = useState('');
 
   const {
     authorize,
@@ -483,6 +589,8 @@ export function RecordingPanel({
     ? recordingTrackLabels
     : ['Audio', 'Video', 'Screen'];
   const finalCaptionCount = getFinalCaptionSegments(captionSegments).length;
+  const sortedRecordingMarkers = useMemo(() => getSortedRecordingMarkers(recordingMarkers), [recordingMarkers]);
+  const markerCount = sortedRecordingMarkers.length;
 
   useEffect(() => {
     return () => {
@@ -516,6 +624,7 @@ export function RecordingPanel({
           roomName,
           durationSeconds: parseDurationSeconds(formattedTime),
           files,
+          markers: sortedRecordingMarkers,
         });
         setActiveSessionId(session.id);
       }
@@ -524,7 +633,7 @@ export function RecordingPanel({
     } finally {
       setIsStopping(false);
     }
-  }, [formattedTime, onStopRecording, roomName, saveSession]);
+  }, [formattedTime, onStopRecording, roomName, saveSession, sortedRecordingMarkers]);
 
   const handleDownloadAll = useCallback(async () => {
     for (let i = 0; i < recordedFiles.length; i++) {
@@ -534,6 +643,14 @@ export function RecordingPanel({
       }
     }
   }, [recordedFiles]);
+
+  const handleAddMarker = useCallback(() => {
+    if (!onAddRecordingMarker) return;
+    const seconds = parseDurationSeconds(formattedTime) ?? 0;
+    const label = markerLabel.trim() || `Marker ${markerCount + 1}`;
+    onAddRecordingMarker(seconds, label);
+    setMarkerLabel('');
+  }, [formattedTime, markerCount, markerLabel, onAddRecordingMarker]);
 
   const handleDownloadBundle = useCallback(async () => {
     if (recordedFiles.length === 0) return;
@@ -546,6 +663,7 @@ export function RecordingPanel({
       files: recordedFiles,
       captionSegments,
       captionLanguage,
+      markers: sortedRecordingMarkers,
     };
 
     setIsBundling(true);
@@ -559,7 +677,7 @@ export function RecordingPanel({
     } finally {
       setIsBundling(false);
     }
-  }, [activeSessionId, captionLanguage, captionSegments, formattedTime, recordedFiles, roomName, sessions]);
+  }, [activeSessionId, captionLanguage, captionSegments, formattedTime, recordedFiles, roomName, sessions, sortedRecordingMarkers]);
 
   const handleDownloadSingle = useCallback((file: RecordedFile) => {
     downloadBlob(file.blob, file.fileName);
@@ -598,7 +716,8 @@ export function RecordingPanel({
     setRecordedFiles([]);
     setActiveSessionId(null);
     setPreview(null);
-  }, []);
+    onClearRecordingMarkers?.();
+  }, [onClearRecordingMarkers]);
 
   const handlePreviewFile = useCallback((file: RecordedFile) => {
     setPreview((current) => {
@@ -622,12 +741,17 @@ export function RecordingPanel({
       })));
       setActiveSessionId(session.id);
       setPreview(null);
+      if (onReplaceRecordingMarkers) {
+        onReplaceRecordingMarkers(session.markers || []);
+      } else {
+        onClearRecordingMarkers?.();
+      }
     } catch (err) {
       console.error('Failed to load recording session:', err);
     } finally {
       setLibraryBusyId(null);
     }
-  }, [loadFiles]);
+  }, [loadFiles, onClearRecordingMarkers, onReplaceRecordingMarkers]);
 
   const handleDownloadSessionBundle = useCallback(async (session: LocalRecordingSession) => {
     setLibraryBusyId(session.id);
@@ -644,6 +768,7 @@ export function RecordingPanel({
           blob: file.blob,
           fileName: file.fileName,
         })),
+        markers: session.id === activeSessionId ? sortedRecordingMarkers : session.markers,
         ...(session.id === activeSessionId ? { captionSegments, captionLanguage } : {}),
       };
       const bundle = await createRecordingBundle(source);
@@ -654,7 +779,7 @@ export function RecordingPanel({
     } finally {
       setLibraryBusyId(null);
     }
-  }, [activeSessionId, captionLanguage, captionSegments, loadFiles]);
+  }, [activeSessionId, captionLanguage, captionSegments, loadFiles, sortedRecordingMarkers]);
 
   const handleDeleteSession = useCallback(async (sessionId: string) => {
     setLibraryBusyId(sessionId);
@@ -664,13 +789,14 @@ export function RecordingPanel({
         setRecordedFiles([]);
         setActiveSessionId(null);
         setPreview(null);
+        onClearRecordingMarkers?.();
       }
     } catch (err) {
       console.error('Failed to delete recording session:', err);
     } finally {
       setLibraryBusyId(null);
     }
-  }, [activeSessionId, deleteSession]);
+  }, [activeSessionId, deleteSession, onClearRecordingMarkers]);
 
   return (
     <div style={styles.panel}>
@@ -704,7 +830,26 @@ export function RecordingPanel({
                 <span style={styles.trackBadge}>+{visibleTrackLabels.length - 6}</span>
               )}
               {finalCaptionCount > 0 && <span style={styles.trackBadge}>CC {finalCaptionCount}</span>}
+              {markerCount > 0 && <span style={styles.trackBadge}>Markers {markerCount}</span>}
             </div>
+            {onAddRecordingMarker && (
+              <div style={styles.markerComposer}>
+                <input
+                  aria-label="Recording marker label"
+                  style={styles.markerInput}
+                  value={markerLabel}
+                  onChange={(event) => setMarkerLabel(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') handleAddMarker();
+                  }}
+                  placeholder={`Marker ${markerCount + 1}`}
+                  maxLength={120}
+                />
+                <button type="button" style={styles.markerBtn} onClick={handleAddMarker}>
+                  Add Marker
+                </button>
+              </div>
+            )}
             <button
               className="hover-scale"
               style={styles.stopBtn}
@@ -713,6 +858,35 @@ export function RecordingPanel({
             >
               {isStopping ? 'Stopping...' : 'Stop Recording'}
             </button>
+          </div>
+        )}
+
+        {markerCount > 0 && (
+          <div style={styles.markerList}>
+            <div style={styles.markerListHeader}>
+              <span>Markers</span>
+              {onClearRecordingMarkers && (
+                <button type="button" style={styles.markerClearBtn} onClick={onClearRecordingMarkers}>
+                  Clear
+                </button>
+              )}
+            </div>
+            {sortedRecordingMarkers.slice(-8).map((marker) => (
+              <div key={marker.id} style={styles.markerRow}>
+                <span style={styles.markerTime}>{formatDuration(marker.seconds)}</span>
+                <span style={styles.markerText}>{marker.label}</span>
+                {onRemoveRecordingMarker && (
+                  <button
+                    type="button"
+                    aria-label={`Remove ${marker.label}`}
+                    style={styles.markerRemoveBtn}
+                    onClick={() => onRemoveRecordingMarker(marker.id)}
+                  >
+                    x
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
         )}
 
@@ -838,6 +1012,11 @@ export function RecordingPanel({
                   ZIP includes captions as TXT and WebVTT sidecars.
                 </div>
               )}
+              {markerCount > 0 && (
+                <div style={styles.captionSidecarNote}>
+                  ZIP includes recording markers as JSON and CSV sidecars.
+                </div>
+              )}
               <button
                 className="hover-lift"
                 style={{
@@ -920,7 +1099,7 @@ export function RecordingPanel({
                   <div style={styles.sessionInfo}>
                     <span style={styles.sessionName}>{session.roomName}</span>
                     <span style={styles.sessionMeta}>
-                      {formatDateTime(session.createdAt)} | {formatDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'} | {formatFileSize(session.totalBytes)}
+                      {formatDateTime(session.createdAt)} | {formatDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'} | {session.markers?.length || 0} mark{(session.markers?.length || 0) === 1 ? '' : 's'} | {formatFileSize(session.totalBytes)}
                     </span>
                   </div>
                 </div>
@@ -1041,6 +1220,8 @@ const styles: Record<string, React.CSSProperties> = {
   trackIndicators: {
     display: 'flex',
     gap: 6,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
   },
   trackBadge: {
     fontSize: 10,
@@ -1049,6 +1230,94 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     background: 'rgba(99, 102, 241, 0.15)',
     color: '#818cf8',
+  },
+  markerComposer: {
+    width: '100%',
+    display: 'grid',
+    gridTemplateColumns: '1fr auto',
+    gap: 6,
+  },
+  markerInput: {
+    minWidth: 0,
+    height: 34,
+    borderRadius: 7,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-primary)',
+    padding: '0 10px',
+    fontSize: 12,
+    outline: 'none',
+  },
+  markerBtn: {
+    height: 34,
+    borderRadius: 7,
+    border: 'none',
+    background: '#6366f1',
+    color: 'white',
+    padding: '0 10px',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap' as const,
+  },
+  markerList: {
+    background: 'var(--bg-tertiary)',
+    borderRadius: 10,
+    padding: 10,
+    border: '1px solid var(--border)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 7,
+  },
+  markerListHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    fontWeight: 700,
+  },
+  markerClearBtn: {
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+    padding: 0,
+  },
+  markerRow: {
+    display: 'grid',
+    gridTemplateColumns: '48px 1fr 24px',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 26,
+  },
+  markerTime: {
+    color: '#a5b4fc',
+    fontSize: 10,
+    fontWeight: 700,
+    fontFamily: 'monospace',
+  },
+  markerText: {
+    minWidth: 0,
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  markerRemoveBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-muted)',
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
+    padding: 0,
   },
   stopBtn: {
     width: '100%',

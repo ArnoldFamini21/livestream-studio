@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
+import { buildStudioCalendarInvite } from '@studio/shared';
 
 interface InvitePanelProps {
   roomName: string;
@@ -52,6 +53,16 @@ function downloadDataUrl(dataUrl: string, fileName: string) {
   link.href = dataUrl;
   link.download = fileName;
   link.click();
+}
+
+function downloadTextFile(text: string, fileName: string, type: string) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 function safeFileName(value: string): string {
@@ -110,6 +121,15 @@ export function InvitePanel({
     const body = encodeURIComponent(inviteDetails);
     return `mailto:?subject=${subject}&body=${body}`;
   }, [inviteDetails, roomName]);
+
+  const calendarInvite = useMemo(() => buildStudioCalendarInvite({
+    roomName,
+    hostName,
+    inviteUrl,
+    scheduledFor,
+    uid: `studio-${roomId}`,
+    passwordProtected,
+  }), [hostName, inviteUrl, passwordProtected, roomId, roomName, scheduledFor]);
 
   const coHostExpiresLabel = useMemo(() => {
     if (!coHostInvite) return null;
@@ -187,6 +207,11 @@ export function InvitePanel({
   const handleDownloadQr = () => {
     if (!qrDataUrl) return;
     downloadDataUrl(qrDataUrl, `${safeFileName(roomName)}_guest_invite_qr.png`);
+  };
+
+  const handleDownloadCalendar = () => {
+    if (!calendarInvite) return;
+    downloadTextFile(calendarInvite, `${safeFileName(roomName)}_calendar.ics`, 'text/calendar;charset=utf-8');
   };
 
   const handleCreateCoHostInvite = async () => {
@@ -415,6 +440,17 @@ export function InvitePanel({
             </svg>
             Email
           </a>
+          {calendarInvite && (
+            <button type="button" style={styles.actionBtn} onClick={handleDownloadCalendar}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" />
+                <line x1="16" y1="2" x2="16" y2="6" />
+                <line x1="8" y1="2" x2="8" y2="6" />
+                <line x1="3" y1="10" x2="21" y2="10" />
+              </svg>
+              Calendar
+            </button>
+          )}
           <a style={styles.actionBtn} href={inviteUrl} target="_blank" rel="noreferrer">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M15 3h6v6" />

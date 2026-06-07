@@ -24,6 +24,13 @@ export interface LocalRecordingFileRecord extends LocalRecordingFileMetadata {
   blob: Blob;
 }
 
+export interface LocalRecordingMarker {
+  id: string;
+  label: string;
+  seconds: number;
+  createdAt: string;
+}
+
 export interface LocalRecordingSession {
   id: string;
   roomName: string;
@@ -32,12 +39,14 @@ export interface LocalRecordingSession {
   totalBytes: number;
   durationSeconds: number | null;
   files: LocalRecordingFileMetadata[];
+  markers?: LocalRecordingMarker[];
 }
 
 interface SaveRecordingSessionInput {
   roomName: string;
   durationSeconds?: number | null;
   files: LocalRecordingFileInput[];
+  markers?: LocalRecordingMarker[];
 }
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
@@ -108,6 +117,13 @@ async function saveRecordingSession(input: SaveRecordingSessionInput): Promise<L
       totalBytes: files.reduce((total, file) => total + file.size, 0),
       durationSeconds: input.durationSeconds ?? null,
       files,
+      markers: (input.markers || []).filter((marker) => (
+        marker &&
+        typeof marker.id === 'string' &&
+        typeof marker.label === 'string' &&
+        Number.isFinite(marker.seconds) &&
+        typeof marker.createdAt === 'string'
+      )),
     };
 
     const transaction = db.transaction([SESSION_STORE, FILE_STORE], 'readwrite');

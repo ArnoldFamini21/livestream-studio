@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll } from '@studio/shared';
+import { ROOM_NOT_OPEN_ERROR_CODE } from '@studio/shared';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
@@ -34,6 +35,7 @@ import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience } from './WebinarQA
 import { SessionHealthPanel } from './SessionHealthPanel.tsx';
 import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
+import type { RecordingMarker } from './RecordingPanel.tsx';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -86,6 +88,10 @@ function getStudioStateKey(roomId: string): string {
 
 function getRecordingSourceId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'track';
+}
+
+function normalizeRecordingMarkerLabel(value: string): string {
+  return value.trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, 120) || 'Marker';
 }
 
 function LazyPanelFallback() {
@@ -392,6 +398,7 @@ export function StudioRoom() {
   const [pipCorner, setPipCorner] = useState<'TL' | 'TR' | 'BL' | 'BR'>('BR');
   const [focusedVideoItemId, setFocusedVideoItemId] = useState<string | null>(null);
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
+  const [recordingMarkers, setRecordingMarkers] = useState<RecordingMarker[]>([]);
 
   // Cleanup blob URLs when logoUrl changes
   useEffect(() => {
@@ -1058,7 +1065,11 @@ export function StudioRoom() {
           if (message.payload.code === 'ROOM_NOT_FOUND') {
             setConnectionError('This room does not exist or has ended.');
           }
-          if (message.payload.code === 'ROOM_PASSWORD_REQUIRED' || message.payload.code === 'ROOM_PASSWORD_INVALID') {
+          if (
+            message.payload.code === 'ROOM_PASSWORD_REQUIRED' ||
+            message.payload.code === 'ROOM_PASSWORD_INVALID' ||
+            message.payload.code === ROOM_NOT_OPEN_ERROR_CODE
+          ) {
             if (roomId) sessionStorage.removeItem(`roomPassword:${roomId}`);
             cleanupRef.current();
             stopMediaRef.current();
@@ -1335,8 +1346,42 @@ export function StudioRoom() {
     }
 
     if (sources.length === 0) return;
+    setRecordingMarkers([]);
     void startLocalRecording(sources).catch((err) => console.error('Failed to start local recording:', err));
   };
+
+  const onAddRecordingMarker = useCallback((seconds: number, label: string) => {
+    const safeSeconds = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+    setRecordingMarkers((current) => [
+      ...current,
+      {
+        id: `marker-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        label: normalizeRecordingMarkerLabel(label),
+        seconds: safeSeconds,
+        createdAt: new Date().toISOString(),
+      },
+    ].slice(-200));
+  }, []);
+
+  const onRemoveRecordingMarker = useCallback((markerId: string) => {
+    setRecordingMarkers((current) => current.filter((marker) => marker.id !== markerId));
+  }, []);
+
+  const onClearRecordingMarkers = useCallback(() => {
+    setRecordingMarkers([]);
+  }, []);
+
+  const onReplaceRecordingMarkers = useCallback((markers: RecordingMarker[]) => {
+    setRecordingMarkers(markers
+      .filter((marker) => marker && Number.isFinite(marker.seconds))
+      .map((marker) => ({
+        id: marker.id || `marker-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        label: normalizeRecordingMarkerLabel(marker.label),
+        seconds: Math.max(0, Math.floor(marker.seconds)),
+        createdAt: Number.isFinite(Date.parse(marker.createdAt)) ? marker.createdAt : new Date().toISOString(),
+      }))
+      .slice(-200));
+  }, []);
 
   // Chat
   const onSendChat = (content: string, isBackstage = false) => {
@@ -2815,8 +2860,13 @@ export function StudioRoom() {
               isRecording={isLocalRecording}
               formattedTime={localRecFormattedTime}
               recordingTrackLabels={localRecordingLabels}
+              recordingMarkers={recordingMarkers}
               onStartRecording={onStartLocalRecording}
               onStopRecording={stopLocalRecording}
+              onAddRecordingMarker={onAddRecordingMarker}
+              onRemoveRecordingMarker={onRemoveRecordingMarker}
+              onClearRecordingMarkers={onClearRecordingMarkers}
+              onReplaceRecordingMarkers={onReplaceRecordingMarkers}
               roomName={room?.name || 'Studio'}
               captionSegments={captionSegments}
               captionLanguage={captionLanguage}
