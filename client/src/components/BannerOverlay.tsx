@@ -8,6 +8,7 @@ export interface BannerData {
   isTicker: boolean;
   position: 'top' | 'bottom';
   visible: boolean;
+  durationSeconds?: number;
 }
 
 interface BannerManagerProps {
@@ -34,6 +35,13 @@ const CUSTOM_COLOR_PRESETS = [
   '#be185d',
 ];
 
+const BANNER_DURATION_OPTIONS = [
+  { label: 'Manual', value: 0 },
+  { label: '10s', value: 10 },
+  { label: '20s', value: 20 },
+  { label: '60s', value: 60 },
+] as const;
+
 function getStyleColor(style: BannerData['style'], customColor?: string): string {
   if (style === 'custom') return customColor || '#7c3aed';
   return STYLE_PRESETS[style].bg;
@@ -45,6 +53,8 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
   const [customColor, setCustomColor] = useState('#7c3aed');
   const [isTicker, setIsTicker] = useState(false);
   const [position, setPosition] = useState<'top' | 'bottom'>('bottom');
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const textLimit = isTicker ? 1000 : 200;
 
   const handleAdd = () => {
     if (!text.trim()) return;
@@ -54,8 +64,17 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
       customColor: style === 'custom' ? customColor : undefined,
       isTicker,
       position,
+      durationSeconds: durationSeconds || undefined,
     });
     setText('');
+  };
+
+  const handleTickerToggle = () => {
+    setIsTicker((current) => {
+      const next = !current;
+      if (!next) setText((value) => value.slice(0, 200));
+      return next;
+    });
   };
 
   return (
@@ -80,6 +99,7 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
                 <span style={styles.itemTag}>{banner.style}</span>
                 {banner.isTicker && <span style={styles.itemTag}>ticker</span>}
                 <span style={styles.itemTag}>{banner.position}</span>
+                {banner.durationSeconds && <span style={styles.itemTag}>{banner.durationSeconds}s</span>}
               </div>
             </div>
             <div style={styles.itemActions}>
@@ -110,10 +130,11 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
           style={styles.input}
           placeholder="Banner text"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => setText(e.target.value.slice(0, textLimit))}
           onKeyDown={(e) => {
             if (e.key === 'Enter') handleAdd();
           }}
+          maxLength={textLimit}
         />
 
         {/* Style selector */}
@@ -166,7 +187,7 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
                 ? { background: 'var(--accent-subtle)', color: 'var(--accent-hover)', borderColor: 'var(--accent)' }
                 : {}),
             }}
-            onClick={() => setIsTicker(!isTicker)}
+            onClick={handleTickerToggle}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M5 12h14" />
@@ -198,6 +219,24 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
             </svg>
             {position === 'top' ? 'Top' : 'Bottom'}
           </button>
+        </div>
+
+        <div style={styles.durationGroup}>
+          <span style={styles.durationLabel}>Duration</span>
+          <div style={styles.durationRow}>
+            {BANNER_DURATION_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                style={{
+                  ...styles.durationBtn,
+                  ...(durationSeconds === option.value ? styles.durationBtnActive : {}),
+                }}
+                onClick={() => setDurationSeconds(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <button
@@ -468,6 +507,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   itemMeta: {
     display: 'flex',
+    flexWrap: 'wrap',
     gap: 4,
     paddingLeft: 14,
   },
@@ -535,7 +575,9 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     background: 'var(--bg-tertiary)',
     color: 'var(--text-muted)',
-    border: '1px solid var(--border)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
     cursor: 'pointer',
     textTransform: 'capitalize',
   },
@@ -560,6 +602,40 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 4,
   },
+  durationGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  durationLabel: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  durationRow: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+    gap: 4,
+  },
+  durationBtn: {
+    fontSize: 10,
+    fontWeight: 600,
+    padding: '5px 0',
+    borderRadius: 6,
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-muted)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
+    cursor: 'pointer',
+  },
+  durationBtnActive: {
+    background: 'var(--accent-subtle)',
+    color: 'var(--accent-hover)',
+    borderColor: 'var(--accent)',
+  },
   optionBtn: {
     flex: 1,
     display: 'flex',
@@ -572,7 +648,9 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     background: 'var(--bg-tertiary)',
     color: 'var(--text-muted)',
-    border: '1px solid var(--border)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
     cursor: 'pointer',
   },
   addBtn: {

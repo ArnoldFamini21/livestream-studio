@@ -402,7 +402,9 @@ export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const userName = sessionStorage.getItem('userName') || 'Anonymous';
-  const userRole = (sessionStorage.getItem('userRole') || 'guest') as 'host' | 'co-host' | 'guest';
+  const storedUserRole = (sessionStorage.getItem('userRole') || 'guest') as 'host' | 'co-host' | 'guest';
+  const roomHostToken = roomId ? sessionStorage.getItem(`hostToken:${roomId}`) || '' : '';
+  const userRole: 'host' | 'co-host' | 'guest' = roomHostToken ? 'host' : storedUserRole;
 
   const [room, setRoom] = useState<Room | null>(null);
   const [myParticipant, setMyParticipant] = useState<Participant | null>(null);
@@ -600,6 +602,7 @@ export function StudioRoom() {
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
+  const bannerAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
   const videoEnabledRef = useRef(videoEnabled);
@@ -818,6 +821,42 @@ export function StudioRoom() {
   // Keep function refs in sync
   useEffect(() => { connectToPeerRef.current = connectToPeer; }, [connectToPeer]);
 
+  useEffect(() => () => {
+    bannerAutoDismissTimersRef.current.forEach(({ timer }) => clearTimeout(timer));
+    bannerAutoDismissTimersRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    const autoDismissTimers = bannerAutoDismissTimersRef.current;
+    const activeTimedBannerIds = new Set<string>();
+
+    banners.forEach((banner) => {
+      const durationSeconds = Number(banner.durationSeconds);
+      if (!banner.visible || !Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
+
+      const normalizedDuration = Math.min(3600, Math.max(1, Math.round(durationSeconds)));
+      activeTimedBannerIds.add(banner.id);
+      const existing = autoDismissTimers.get(banner.id);
+      if (existing?.durationSeconds === normalizedDuration) return;
+
+      if (existing) clearTimeout(existing.timer);
+      const timer = setTimeout(() => {
+        autoDismissTimers.delete(banner.id);
+        setBanners((prev) => prev.map((item) => (
+          item.id === banner.id && item.visible ? { ...item, visible: false } : item
+        )));
+      }, normalizedDuration * 1000);
+
+      autoDismissTimers.set(banner.id, { timer, durationSeconds: normalizedDuration });
+    });
+
+    autoDismissTimers.forEach(({ timer }, bannerId) => {
+      if (activeTimedBannerIds.has(bannerId)) return;
+      clearTimeout(timer);
+      autoDismissTimers.delete(bannerId);
+    });
+  }, [banners]);
+
   // Once we know our own participant ID, dial each peer in the initial roster.
   // Driven by myParticipant?.id rather than a setTimeout race.
   useEffect(() => {
@@ -937,7 +976,7 @@ export function StudioRoom() {
       joinedRef.current = true;
       // Only present hostToken when claiming host — guests never have one to send.
       const hostToken = userRole === 'host'
-        ? sessionStorage.getItem(`hostToken:${roomId}`) || undefined
+        ? roomHostToken || undefined
         : undefined;
       const coHostInviteToken = userRole === 'co-host'
         ? sessionStorage.getItem(`coHostInviteToken:${roomId}`) || undefined
@@ -949,7 +988,7 @@ export function StudioRoom() {
         payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, roomPassword, joinSessionId },
       });
     }
-  }, [connected, localStream, mediaError, mediaAttemptComplete, roomId, userName, userRole, send]);
+  }, [connected, localStream, mediaError, mediaAttemptComplete, roomId, roomHostToken, userName, userRole, send]);
 
   useEffect(() => {
     if (!guestNotification) return;
