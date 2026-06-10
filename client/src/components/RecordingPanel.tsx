@@ -69,6 +69,14 @@ interface RecordingMarkerFile {
   type: string;
 }
 
+interface RecordingEditorFile {
+  label: string;
+  format: 'json' | 'csv' | 'txt';
+  zipPath: string;
+  size: number;
+  type: string;
+}
+
 interface ZipEntry {
   path: string;
   blob: Blob;
@@ -337,12 +345,135 @@ function buildRecordingMarkersCsv(markers: RecordingMarker[]): string {
   return rows.map((row) => row.map(csvEscape).join(',')).join('\n');
 }
 
+function inferEditorTrackKind(file: RecordingBundleFile): 'audio' | 'video' | 'screen' {
+  const label = file.label.toLowerCase();
+  const fileName = file.fileName.toLowerCase();
+  if (label.includes('screen') || fileName.includes('screen')) return 'screen';
+  if (file.type.startsWith('audio/')) return 'audio';
+  return 'video';
+}
+
+function createEditorTimeline(
+  source: RecordingBundleSource,
+  files: RecordingBundleFile[],
+  markers: RecordingMarker[],
+  exportedAt: string
+) {
+  return {
+    app: 'livestream-studio',
+    exportType: 'editor-timeline',
+    version: 1,
+    exportedAt,
+    session: {
+      id: source.sessionId,
+      roomName: source.roomName,
+      createdAt: source.createdAt,
+      durationSeconds: source.durationSeconds,
+      timebase: {
+        frameRate: 30,
+        dropFrame: false,
+      },
+    },
+    tracks: files.map((file, index) => {
+      const kind = inferEditorTrackKind(file);
+      return {
+        trackIndex: index + 1,
+        lane: index + 1,
+        role: kind,
+        kind,
+        label: file.label,
+        source: {
+          zipPath: file.zipPath,
+          fileName: file.fileName,
+          type: file.type,
+          size: file.size,
+        },
+        timeline: {
+          startSeconds: 0,
+          durationSeconds: source.durationSeconds,
+          startTimecode: '0:00',
+          durationTimecode: formatDuration(source.durationSeconds),
+        },
+      };
+    }),
+    markers: markers.map((marker, index) => ({
+      index: index + 1,
+      label: marker.label,
+      seconds: marker.seconds,
+      timecode: formatDuration(marker.seconds),
+      createdAt: marker.createdAt,
+    })),
+  };
+}
+
+function buildEditorTimelineCsv(
+  source: RecordingBundleSource,
+  files: RecordingBundleFile[]
+): string {
+  const rows = [
+    [
+      'trackIndex',
+      'lane',
+      'role',
+      'kind',
+      'label',
+      'startTimecode',
+      'startSeconds',
+      'durationTimecode',
+      'durationSeconds',
+      'sourcePath',
+      'fileName',
+      'mimeType',
+      'sizeBytes',
+    ],
+    ...files.map((file, index) => {
+      const kind = inferEditorTrackKind(file);
+      return [
+        index + 1,
+        index + 1,
+        kind,
+        kind,
+        file.label,
+        '0:00',
+        0,
+        formatDuration(source.durationSeconds),
+        source.durationSeconds,
+        file.zipPath,
+        file.fileName,
+        file.type,
+        file.size,
+      ];
+    }),
+  ];
+  return rows.map((row) => row.map(csvEscape).join(',')).join('\n');
+}
+
+function buildEditorReadme(source: RecordingBundleSource): string {
+  return [
+    'LiveStream Studio Editor Export',
+    '',
+    `Room: ${source.roomName}`,
+    `Created: ${source.createdAt}`,
+    `Duration: ${formatDuration(source.durationSeconds)}`,
+    '',
+    'Files:',
+    '- tracks/: isolated local recording tracks',
+    '- editor/local_recording_timeline.json: structured timeline metadata',
+    '- editor/local_recording_timeline.csv: spreadsheet/editor-friendly track layout',
+    '- markers/: recording markers when present',
+    '- captions/: live caption sidecars when present',
+    '',
+    'Import the tracks into your editor, place each track at 0:00, and use the timeline CSV/JSON plus marker files as the sync map.',
+  ].join('\n');
+}
+
 function createRecordingManifest(
   source: RecordingBundleSource,
   files: RecordingBundleFile[],
   exportedAt: string,
   captionFiles: RecordingCaptionFile[],
-  markerFiles: RecordingMarkerFile[]
+  markerFiles: RecordingMarkerFile[],
+  editorFiles: RecordingEditorFile[]
 ) {
   const totalBytes = files.reduce((total, file) => total + file.size, 0);
   const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
@@ -368,6 +499,10 @@ function createRecordingManifest(
       size: file.size,
       type: file.type,
     })),
+    editor: {
+      timelineVersion: 1,
+      files: editorFiles,
+    },
     ...(finalCaptionSegments.length > 0
       ? {
           captions: {
@@ -470,7 +605,7 @@ async function createZipBundle(entries: ZipEntry[]): Promise<Blob> {
   return new Blob([...localParts, ...centralParts, endHeader.buffer], { type: 'application/zip' });
 }
 
-async function createRecordingBundle(source: RecordingBundleSource): Promise<Blob> {
+export async function createRecordingBundle(source: RecordingBundleSource): Promise<Blob> {
   const exportedAt = new Date().toISOString();
   const seenPaths = new Set<string>();
   const trackEntries = source.files.map((file, index) => ({
@@ -533,12 +668,41 @@ async function createRecordingBundle(source: RecordingBundleSource): Promise<Blo
     size: entry.blob.size,
     type: entry.blob.type,
   }));
-  const manifest = createRecordingManifest(source, manifestFiles, exportedAt, captionFiles, markerFiles);
+  const editorTimeline = createEditorTimeline(source, manifestFiles, sortedMarkers, exportedAt);
+  const editorEntries = [
+    {
+      path: 'editor/local_recording_timeline.json',
+      blob: new Blob([JSON.stringify(editorTimeline, null, 2)], { type: 'application/json' }),
+      label: 'Editor timeline JSON',
+      format: 'json' as const,
+    },
+    {
+      path: 'editor/local_recording_timeline.csv',
+      blob: new Blob([buildEditorTimelineCsv(source, manifestFiles)], { type: 'text/csv;charset=utf-8' }),
+      label: 'Editor timeline CSV',
+      format: 'csv' as const,
+    },
+    {
+      path: 'editor/README.txt',
+      blob: new Blob([buildEditorReadme(source)], { type: 'text/plain;charset=utf-8' }),
+      label: 'Editor export notes',
+      format: 'txt' as const,
+    },
+  ];
+  const editorFiles: RecordingEditorFile[] = editorEntries.map((entry) => ({
+    label: entry.label,
+    format: entry.format,
+    zipPath: entry.path,
+    size: entry.blob.size,
+    type: entry.blob.type,
+  }));
+  const manifest = createRecordingManifest(source, manifestFiles, exportedAt, captionFiles, markerFiles, editorFiles);
   const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
 
   return createZipBundle([
     { path: 'manifest.json', blob: manifestBlob },
     ...trackEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    ...editorEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...captionEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...markerEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
   ]);
@@ -1007,6 +1171,9 @@ export function RecordingPanel({
 
             {/* Action buttons */}
             <div style={styles.actions}>
+              <div style={styles.captionSidecarNote}>
+                ZIP includes editor timeline JSON and CSV for track alignment.
+              </div>
               {finalCaptionCount > 0 && (
                 <div style={styles.captionSidecarNote}>
                   ZIP includes captions as TXT and WebVTT sidecars.
