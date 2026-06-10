@@ -57,7 +57,7 @@ export function JoinRoom() {
   const hostToken = sessionHostToken || savedHostToken;
   const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
   const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
-  const isHostSession = Boolean(roomId && hostToken && (sessionStorage.getItem('userRole') === 'host' || savedHostToken));
+  const isHostSession = Boolean(roomId && hostToken);
   const initialName = isHostSession
     ? savedHostStudio?.hostName || sessionStorage.getItem('userName') || ''
     : sessionStorage.getItem('userName') || savedHostStudio?.hostName || '';
