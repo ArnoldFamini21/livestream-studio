@@ -19,10 +19,12 @@ import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
 import {
+  clearUrlHostToken,
   getHostSession,
   getSavedHostStudio,
   getStoredParticipantRole,
   getStoredUserName,
+  getUrlHostToken,
   persistHostSession,
   removeSavedHostStudio,
 } from '../utils/hostSession.ts';
@@ -398,7 +400,8 @@ export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const savedHostStudio = useMemo(() => (roomId ? getSavedHostStudio(roomId) : null), [roomId]);
-  const hostSession = useMemo(() => (roomId ? getHostSession(roomId) : null), [roomId]);
+  const urlHostToken = roomId ? getUrlHostToken() : '';
+  const hostSession = useMemo(() => (roomId ? getHostSession(roomId, urlHostToken) : null), [roomId, urlHostToken]);
   const storedUserRole = getStoredParticipantRole();
   const userName = hostSession?.hostName || getStoredUserName() || savedHostStudio?.hostName || 'Anonymous';
   const roomHostToken = hostSession?.hostToken || '';
@@ -601,7 +604,10 @@ export function StudioRoom() {
   useEffect(() => {
     if (!roomId || !hostSession) return;
     persistHostSession({ roomId, hostName: hostSession.hostName, hostToken: hostSession.hostToken });
-  }, [roomId, hostSession]);
+    if (hostSession.source === 'url') {
+      clearUrlHostToken();
+    }
+  }, [roomId, hostSession?.hostName, hostSession?.hostToken, hostSession?.source]);
 
   const joinedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);

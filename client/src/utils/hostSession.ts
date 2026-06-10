@@ -22,7 +22,7 @@ export interface HostSession {
   roomId: string;
   hostName: string;
   hostToken: string;
-  source: 'session' | 'saved';
+  source: 'url' | 'session' | 'saved';
 }
 
 function getSessionItem(key: string): string {
@@ -65,7 +65,7 @@ function setLocalItem(key: string, value: string) {
   }
 }
 
-function isValidHostToken(value: string): boolean {
+export function isValidHostToken(value: string): boolean {
   return /^[A-Za-z0-9_-]{16,256}$/.test(value);
 }
 
@@ -105,6 +105,40 @@ function mergeHostStudios(primary: SavedHostStudio[], legacy: SavedHostStudio[])
 
 function hostTokenKey(roomId: string): string {
   return `${HOST_TOKEN_PREFIX}${roomId}`;
+}
+
+export function buildHostEntryPath(roomId: string, hostToken?: string): string {
+  const path = `/join/${encodeURIComponent(roomId)}?role=host`;
+  if (!hostToken || !isValidHostToken(hostToken)) return path;
+  return `${path}#hostToken=${encodeURIComponent(hostToken)}`;
+}
+
+export function buildHostEntryUrl(baseUrl: string, roomId: string, hostToken?: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}${buildHostEntryPath(roomId, hostToken)}`;
+}
+
+export function readHostTokenFromHash(hash: string): string {
+  const normalized = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!normalized) return '';
+  try {
+    const params = new URLSearchParams(normalized);
+    const token = params.get('hostToken') || params.get('host') || '';
+    return isValidHostToken(token) ? token : '';
+  } catch {
+    return '';
+  }
+}
+
+export function getUrlHostToken(): string {
+  if (typeof window === 'undefined') return '';
+  return readHostTokenFromHash(window.location.hash || '');
+}
+
+export function clearUrlHostToken() {
+  if (typeof window === 'undefined') return;
+  if (!readHostTokenFromHash(window.location.hash || '')) return;
+  const cleanUrl = `${window.location.pathname}${window.location.search}`;
+  window.history.replaceState(null, '', cleanUrl);
 }
 
 export function getStoredUserName(): string {
@@ -147,9 +181,18 @@ export function removeSavedHostStudio(roomId: string): SavedHostStudio[] {
   return next;
 }
 
-export function getHostSession(roomId: string): HostSession | null {
-  const sessionHostToken = getSessionItem(hostTokenKey(roomId));
+export function getHostSession(roomId: string, urlHostToken = ''): HostSession | null {
   const savedHostStudio = getSavedHostStudio(roomId);
+  if (isValidHostToken(urlHostToken)) {
+    return {
+      roomId,
+      hostName: savedHostStudio?.hostName || getStoredUserName() || 'Host',
+      hostToken: urlHostToken,
+      source: 'url',
+    };
+  }
+
+  const sessionHostToken = getSessionItem(hostTokenKey(roomId));
   const hasValidSessionToken = isValidHostToken(sessionHostToken);
   const hostToken = hasValidSessionToken ? sessionHostToken : savedHostStudio?.hostToken || '';
   if (!isValidHostToken(hostToken)) return null;

@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { buildStudioCalendarInvite } from '@studio/shared';
 import {
+  buildHostEntryPath,
+  buildHostEntryUrl,
   persistHostSession,
   readSavedHostStudios,
   removeSavedHostStudio,
@@ -94,10 +96,6 @@ function getScheduleState(room: SavedScheduledStudio): string {
   return scheduledAt > Date.now() ? 'Upcoming' : 'Ready';
 }
 
-function buildHostEntryPath(roomId: string): string {
-  return `/join/${roomId}?role=host`;
-}
-
 export function HomePage() {
   const [roomName, setRoomName] = useState('');
   const [hostName, setHostName] = useState('');
@@ -113,7 +111,9 @@ export function HomePage() {
   // Invite link modal state
   const [scheduledRoom, setScheduledRoom] = useState<ScheduledRoomModal | null>(null);
   const [copied, setCopied] = useState(false);
+  const [hostCopied, setHostCopied] = useState(false);
   const [savedRoomCopiedId, setSavedRoomCopiedId] = useState<string | null>(null);
+  const [savedHostCopiedId, setSavedHostCopiedId] = useState<string | null>(null);
 
   const createRoom = async () => {
     if (!roomName.trim() || !hostName.trim()) return;
@@ -211,7 +211,9 @@ export function HomePage() {
   };
 
   const inviteLink = scheduledRoom ? `${INVITE_BASE_URL}/join/${scheduledRoom.id}` : '';
+  const hostEntryLink = scheduledRoom ? buildHostEntryUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.hostToken) : '';
   const buildInviteLink = (roomId: string) => `${INVITE_BASE_URL}/join/${roomId}`;
+  const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
 
   const copyToClipboard = async () => {
     await writeClipboardText(inviteLink);
@@ -219,10 +221,23 @@ export function HomePage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const copyHostEntryLink = async () => {
+    if (!hostEntryLink) return;
+    await writeClipboardText(hostEntryLink);
+    setHostCopied(true);
+    setTimeout(() => setHostCopied(false), 2000);
+  };
+
   const copySavedInviteLink = async (room: SavedScheduledStudio) => {
     await writeClipboardText(buildInviteLink(room.id));
     setSavedRoomCopiedId(room.id);
     setTimeout(() => setSavedRoomCopiedId(null), 2000);
+  };
+
+  const copySavedHostLink = async (room: SavedScheduledStudio) => {
+    await writeClipboardText(buildHostLink(room));
+    setSavedHostCopiedId(room.id);
+    setTimeout(() => setSavedHostCopiedId(null), 2000);
   };
 
   const downloadCalendarInvite = (room: SavedScheduledStudio) => {
@@ -257,6 +272,7 @@ export function HomePage() {
   const closeModal = () => {
     setScheduledRoom(null);
     setCopied(false);
+    setHostCopied(false);
     setRoomName('');
     setHostName('');
     setScheduledFor('');
@@ -438,7 +454,13 @@ export function HomePage() {
                           style={styles.savedRoomAction}
                           onClick={() => copySavedInviteLink(room)}
                         >
-                          {savedRoomCopiedId === room.id ? 'Copied' : 'Copy'}
+                          {savedRoomCopiedId === room.id ? 'Copied' : 'Guest Link'}
+                        </button>
+                        <button
+                          style={styles.savedRoomAction}
+                          onClick={() => copySavedHostLink(room)}
+                        >
+                          {savedHostCopiedId === room.id ? 'Copied' : 'Host Link'}
                         </button>
                         {room.scheduledFor && (
                           <button
@@ -531,7 +553,7 @@ export function HomePage() {
                     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                   </svg>
                 )}
-                {copied ? 'Copied!' : 'Copy'}
+                {copied ? 'Copied!' : 'Copy Guest'}
               </button>
             </div>
 
@@ -542,6 +564,9 @@ export function HomePage() {
                 onClick={goToStudioAsHost}
               >
                 Start Studio Now
+              </button>
+              <button style={styles.modalDoneButton} onClick={copyHostEntryLink}>
+                {hostCopied ? 'Host Link Copied' : 'Copy Host Link'}
               </button>
               {scheduledRoom.scheduledFor && (
                 <button style={styles.modalDoneButton} onClick={() => downloadCalendarInvite(scheduledRoom)}>

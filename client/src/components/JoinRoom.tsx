@@ -3,10 +3,18 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { getScheduledGuestOpenAtMs, isScheduledGuestAccessBlocked } from '@studio/shared';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
-import { getHostSession, getSavedHostStudio, getStoredUserName, persistHostSession } from '../utils/hostSession.ts';
+import {
+  clearUrlHostToken,
+  getHostSession,
+  getSavedHostStudio,
+  getStoredUserName,
+  getUrlHostToken,
+  persistHostSession,
+  upsertSavedHostStudio,
+} from '../utils/hostSession.ts';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
-const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing in this browser. Open this studio from Your Studios on the home screen, or create a new studio.';
+const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing in this browser. Open this studio from Your Studios, use your private host link, or create a new studio.';
 
 function formatGuestOpenCountdown(ms: number): string {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -26,7 +34,8 @@ export function JoinRoom() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const savedHostStudio = roomId ? getSavedHostStudio(roomId) : null;
-  const hostSession = roomId ? getHostSession(roomId) : null;
+  const urlHostToken = roomId ? getUrlHostToken() : '';
+  const hostSession = roomId ? getHostSession(roomId, urlHostToken) : null;
   const hostToken = hostSession?.hostToken || '';
   const isHostEntryRequested = searchParams.get('role') === 'host';
   const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
@@ -186,6 +195,28 @@ export function JoinRoom() {
     return () => window.clearInterval(timer);
   }, [scheduledGuestBlocked]);
 
+  useEffect(() => {
+    if (!roomId || !hostSession) return;
+    persistHostSession({ roomId, hostName: hostSession.hostName, hostToken: hostSession.hostToken });
+    if (hostSession.source === 'url') {
+      clearUrlHostToken();
+    }
+  }, [roomId, hostSession?.hostName, hostSession?.hostToken, hostSession?.source]);
+
+  useEffect(() => {
+    if (!roomId || !hostSession || !roomInfo) return;
+    upsertSavedHostStudio({
+      id: roomId,
+      name: roomInfo.name,
+      hostName: roomInfo.hostName || hostSession.hostName,
+      hostToken: hostSession.hostToken,
+      createdAt: savedHostStudio?.createdAt || new Date().toISOString(),
+      scheduledFor: roomInfo.scheduledFor,
+      passwordProtected: Boolean(roomInfo.passwordProtected),
+      status: roomInfo.status,
+    });
+  }, [roomId, hostSession?.hostName, hostSession?.hostToken, roomInfo, savedHostStudio?.createdAt]);
+
   const joinStudio = () => {
     if (!guestName.trim()) return;
     if (hostAccessMissing) return;
@@ -317,7 +348,7 @@ export function JoinRoom() {
         )}
         {hostAccessMissing && (
           <div style={styles.hostAccessNotice}>
-            <strong>Use your saved host entry</strong>
+            <strong>Use a host entry</strong>
             <span>The guest invite link cannot prove host ownership by name alone.</span>
             <button style={styles.hostAccessAction} onClick={() => navigate('/')}>
               Open Your Studios
