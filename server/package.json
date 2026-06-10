@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -b",
     "start": "node dist/index.js",
-    "lint": "tsc -b ../shared && tsc --noEmit"
+    "lint": "tsc -b ../shared && tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "@studio/shared": "*",

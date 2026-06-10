@@ -101,7 +101,7 @@ const endingTimers = new Map<string, NodeJS.Timeout>();
 const roomsByCreatorIp = new Map<string, Set<string>>();
 
 // Stale room cleanup: never-joined rooms expire after 30 min, joined rooms after 24h.
-setInterval(() => {
+const staleRoomCleanupTimer = setInterval(() => {
   const now = Date.now();
   rooms.forEach((roomState, id) => {
     if (roomState.participants.size > 0) return;
@@ -113,6 +113,7 @@ setInterval(() => {
     }
   });
 }, 10 * 60 * 1000); // Every 10 minutes
+staleRoomCleanupTimer.unref?.();
 
 // WebSocket per-connection rate limiting
 const wsMessageCounts = new Map<WebSocket, { count: number; resetAt: number }>();
@@ -214,8 +215,46 @@ function scheduleEmptyRoomDeletion(roomId: string, roomState: RoomState) {
       console.log(`Room ${roomId} deleted (empty for >${Math.round(EMPTY_ROOM_GRACE_MS / 1000)}s)`);
     }
   }, EMPTY_ROOM_GRACE_MS);
+  roomState.emptyRoomTimer.unref?.();
 
   console.log(`Room ${roomId} is empty; cleanup scheduled in ${Math.round(EMPTY_ROOM_GRACE_MS / 1000)}s`);
+}
+
+function clearRoomEndingTimer(roomId: string) {
+  const endingTimer = endingTimers.get(roomId);
+  if (!endingTimer) return false;
+  clearTimeout(endingTimer);
+  endingTimers.delete(roomId);
+  return true;
+}
+
+function replaceExistingHostSession(roomId: string, roomState: RoomState, existingHostId: string) {
+  const existingHost = roomState.participants.get(existingHostId);
+  if (!existingHost) return;
+
+  send(existingHost.ws, {
+    type: 'participant-removed',
+    payload: { reason: 'Your host session was replaced by a newer host login.' },
+  });
+
+  roomState.participants.delete(existingHostId);
+  wsToParticipant.delete(existingHost.ws);
+  roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== existingHostId);
+
+  if (clearRoomEndingTimer(roomId)) {
+    broadcastToRoom(roomId, {
+      type: 'room-ending-cancelled',
+      payload: {},
+    });
+  }
+
+  broadcastToRoom(roomId, {
+    type: 'participant-left',
+    payload: { participantId: existingHostId },
+  });
+
+  existingHost.ws.close(4000, 'Host session replaced');
+  console.log(`Host session for room ${roomId} was replaced by a newer host login`);
 }
 
 export function createRoom(
@@ -496,29 +535,30 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     return;
   }
 
+  // Host role requires the secret token returned at room creation. If the token
+  // is valid, allow the creator to reclaim the host seat from a stale tab/socket.
+  let effectiveRole: Participant['role'] = requestedRole === 'host' ? 'host' : 'guest';
+  if (requestedRole === 'host') {
+    const presented = typeof payload.hostToken === 'string' ? payload.hostToken : '';
+    if (!presented || !safeEqual(presented, roomState.hostToken)) {
+      sendError(ws, 'Host access is missing or expired. Reopen this studio from the creator browser or saved host entry.', 'HOST_TOKEN_INVALID');
+      return;
+    } else {
+      const existingHostId = roomState.room.hostId;
+      const hostStillConnected =
+        existingHostId !== '' && roomState.participants.has(existingHostId);
+      if (hostStillConnected) {
+        replaceExistingHostSession(roomId, roomState, existingHostId);
+      }
+    }
+  }
+
   if (roomState.participants.size >= roomState.room.settings.maxParticipants) {
     sendError(ws, 'Room is full (max 7 participants)', 'ROOM_FULL');
     return;
   }
 
-  // Host role requires the secret token returned at room creation. Without a valid
-  // token, the join is silently demoted to 'guest' — anyone who only has the room
-  // URL cannot claim host.
-  let effectiveRole: Participant['role'] = requestedRole === 'host' ? 'host' : 'guest';
-  if (requestedRole === 'host') {
-    const presented = typeof payload.hostToken === 'string' ? payload.hostToken : '';
-    if (!presented || !safeEqual(presented, roomState.hostToken)) {
-      effectiveRole = 'guest';
-    } else {
-      // Token valid — but also defend against takeover if a previously-authenticated host is still here.
-      const existingHostId = roomState.room.hostId;
-      const hostStillConnected =
-        existingHostId !== '' && roomState.participants.has(existingHostId);
-      if (hostStillConnected) {
-        effectiveRole = 'guest';
-      }
-    }
-  } else if (requestedRole === 'co-host') {
+  if (requestedRole === 'co-host') {
     if (consumeCoHostInviteToken(roomState, payload.coHostInviteToken)) {
       effectiveRole = 'co-host';
     } else {
@@ -1485,6 +1525,7 @@ function handleEndRoom(ws: WebSocket) {
     endingTimers.delete(roomId);
     endRoomImmediately(roomId);
   }, END_ROOM_GRACE_MS);
+  timer.unref?.();
 
   endingTimers.set(roomId, timer);
 }
@@ -1513,10 +1554,7 @@ function handleDisconnect(ws: WebSocket) {
     // If the host disconnected, clean up ending timer and attempt co-host handoff.
     if (wasHost) {
       // Clear any active ending timer for this room
-      const endingTimer = endingTimers.get(roomId);
-      if (endingTimer) {
-        clearTimeout(endingTimer);
-        endingTimers.delete(roomId);
+      if (clearRoomEndingTimer(roomId)) {
         // Notify remaining participants that the end was cancelled
         broadcastToRoom(roomId, {
           type: 'room-ending-cancelled',

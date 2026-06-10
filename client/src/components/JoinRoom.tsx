@@ -55,16 +55,19 @@ export function JoinRoom() {
   const sessionHostToken = roomId ? sessionStorage.getItem(`hostToken:${roomId}`) || '' : '';
   const savedHostToken = savedHostStudio?.hostToken || '';
   const hostToken = sessionHostToken || savedHostToken;
+  const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
+  const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
+  const isHostSession = Boolean(roomId && hostToken && (sessionStorage.getItem('userRole') === 'host' || savedHostToken));
+  const initialName = isHostSession
+    ? savedHostStudio?.hostName || sessionStorage.getItem('userName') || ''
+    : sessionStorage.getItem('userName') || savedHostStudio?.hostName || '';
   // Auto-fill from sessionStorage for Hosts
-  const [guestName, setGuestName] = useState(sessionStorage.getItem('userName') || savedHostStudio?.hostName || '');
+  const [guestName, setGuestName] = useState(initialName);
   const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number; status?: string; hostName?: string; scheduledFor?: string; passwordProtected?: boolean } | null>(null);
   const [roomPassword, setRoomPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
-  const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
-  const isHostSession = Boolean(roomId && hostToken && (sessionStorage.getItem('userRole') === 'host' || savedHostToken));
   const needsRoomPassword = Boolean(roomInfo?.passwordProtected && !isHostSession && !isCoHostInvite);
   const guestOpenAtMs = getScheduledGuestOpenAtMs(roomInfo?.scheduledFor);
   const scheduledGuestBlocked = Boolean(
