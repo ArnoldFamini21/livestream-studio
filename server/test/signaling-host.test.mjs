@@ -242,3 +242,69 @@ describe('chat engagement', () => {
     }
   });
 });
+
+describe('guest moderation bans', () => {
+  it('prevents a banned guest session from rejoining the same room', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Guest ban test', 'Arnold', {
+      creatorIp: `guest-ban-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+        joinSessionId: 'guest-browser-session-1',
+      });
+      const guestJoin = await guestJoined;
+
+      const guestRemoved = waitForMessage(guest, 'participant-removed');
+      const hostSawLeave = waitForMessage(host, 'participant-left', (message) => (
+        message.payload.participantId === guestJoin.payload.participant.id
+      ));
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: {
+          action: 'ban',
+          targetParticipantId: guestJoin.payload.participant.id,
+          performedBy: 'client-claimed-performer',
+        },
+      });
+
+      const [removed] = await Promise.all([guestRemoved, hostSawLeave]);
+      assert.match(removed.payload.reason, /banned/i);
+      assert.ok(roomState.bannedJoinSessionIds.has('guest-browser-session-1'));
+
+      const returningGuest = await connectClient(harness.url);
+      const bannedError = waitForMessage(returningGuest, 'error');
+      joinRoom(returningGuest, {
+        roomId: room.id,
+        name: 'Guest Again',
+        role: 'guest',
+        joinSessionId: 'guest-browser-session-1',
+      });
+
+      const error = await bannedError;
+      assert.equal(error.payload.code, 'PARTICIPANT_BANNED');
+      assert.equal(getRooms().get(room.id)?.participants.size, 1);
+    } finally {
+      await harness.close();
+    }
+  });
+});
