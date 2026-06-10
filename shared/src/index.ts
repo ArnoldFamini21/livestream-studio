@@ -120,6 +120,7 @@ export interface RoomSettings {
 }
 
 export type VideoResolution = '720p' | '1080p' | '4k';
+export type BroadcastOrientation = 'landscape' | 'portrait';
 
 export const RESOLUTION_MAP: Record<VideoResolution, { width: number; height: number }> = {
   '720p': { width: 1280, height: 720 },

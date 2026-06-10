@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -74,6 +74,38 @@ function forgetSavedHostStudio(roomId: string) {
   } catch {
     // Ignore malformed local host-token cache.
   }
+}
+
+interface SavedHostStudio {
+  id: string;
+  hostName: string;
+  hostToken: string;
+}
+
+function getSavedHostStudio(roomId: string): SavedHostStudio | null {
+  try {
+    const raw = localStorage.getItem(HOST_STUDIOS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const match = parsed.find((item) => item && item.id === roomId);
+    if (
+      match &&
+      typeof match.id === 'string' &&
+      typeof match.hostName === 'string' &&
+      typeof match.hostToken === 'string' &&
+      match.hostToken.length > 0
+    ) {
+      return {
+        id: match.id,
+        hostName: match.hostName,
+        hostToken: match.hostToken,
+      };
+    }
+  } catch {
+    // Ignore malformed local host-token cache.
+  }
+  return null;
 }
 
 function isValidJoinSessionId(value: string | null): value is string {
@@ -401,10 +433,15 @@ function getLogoSizeStyle(size: LogoSize): React.CSSProperties {
 export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const userName = sessionStorage.getItem('userName') || 'Anonymous';
+  const savedHostStudio = useMemo(() => (roomId ? getSavedHostStudio(roomId) : null), [roomId]);
+  const userName = sessionStorage.getItem('userName') || savedHostStudio?.hostName || 'Anonymous';
   const storedUserRole = (sessionStorage.getItem('userRole') || 'guest') as 'host' | 'co-host' | 'guest';
-  const roomHostToken = roomId ? sessionStorage.getItem(`hostToken:${roomId}`) || '' : '';
-  const userRole: 'host' | 'co-host' | 'guest' = roomHostToken ? 'host' : storedUserRole;
+  const roomHostToken = roomId ? sessionStorage.getItem(`hostToken:${roomId}`) || savedHostStudio?.hostToken || '' : '';
+  const userRole: 'host' | 'co-host' | 'guest' = roomHostToken
+    ? 'host'
+    : storedUserRole === 'host'
+      ? 'guest'
+      : storedUserRole;
 
   const [room, setRoom] = useState<Room | null>(null);
   const [myParticipant, setMyParticipant] = useState<Participant | null>(null);
@@ -446,6 +483,7 @@ export function StudioRoom() {
 
   // Stream destinations
   const [destinations, setDestinations] = useState<StreamDestination[]>([]);
+  const [broadcastOrientation, setBroadcastOrientation] = useState<BroadcastOrientation>('landscape');
   const [isLive, setIsLive] = useState(false);
 
   // Room ending countdown — driven by server-issued absolute end time.
@@ -593,6 +631,21 @@ export function StudioRoom() {
     maxSegments: 500,
   });
   const broadcastCaption = captionsAllowed ? activeCaption : null;
+
+  useEffect(() => {
+    if (!roomId || !savedHostStudio?.hostToken) return;
+    try {
+      if (!sessionStorage.getItem(`hostToken:${roomId}`)) {
+        sessionStorage.setItem(`hostToken:${roomId}`, savedHostStudio.hostToken);
+      }
+      if (!sessionStorage.getItem('userName') && savedHostStudio.hostName) {
+        sessionStorage.setItem('userName', savedHostStudio.hostName);
+      }
+      sessionStorage.setItem('userRole', 'host');
+    } catch {
+      // Host-token recovery is best-effort; the join payload still uses the in-memory token.
+    }
+  }, [roomId, savedHostStudio?.hostName, savedHostStudio?.hostToken]);
 
   const joinedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1658,6 +1711,7 @@ export function StudioRoom() {
       const token = await requestLiveStreamToken();
       await startRelay({
         token,
+        orientation: broadcastOrientation,
         destinations: enabledDestinations.map((destination) => ({
           id: destination.id,
           name: destination.name,
@@ -2828,6 +2882,8 @@ export function StudioRoom() {
               onUpdate={onUpdateDestination}
               onRemove={onRemoveDestination}
               onToggle={onToggleDestination}
+              broadcastOrientation={broadcastOrientation}
+              onBroadcastOrientationChange={setBroadcastOrientation}
               isLive={isLive}
               relayStats={relayStats}
               onGoLive={onGoLive}

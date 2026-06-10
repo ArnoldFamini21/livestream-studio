@@ -91,8 +91,8 @@ function clampNumber(value: number, fallback: number, min: number, max: number):
 
 export function normalizeVideoConfig(config: RtmpRelayVideoConfig): RtmpRelayVideoConfig {
   return {
-    width: clampNumber(config.width, 1920, 320, 1920),
-    height: clampNumber(config.height, 1080, 180, 1080),
+    width: clampNumber(config.width, 1920, 180, 1920),
+    height: clampNumber(config.height, 1080, 180, 1920),
     frameRate: clampNumber(config.frameRate, 30, 15, 30),
     videoBitsPerSecond: clampNumber(config.videoBitsPerSecond, 4_500_000, 500_000, 8_000_000),
   };
