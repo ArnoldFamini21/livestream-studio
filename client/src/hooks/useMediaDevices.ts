@@ -34,7 +34,7 @@ export function useMediaDevices() {
 
   const streamRef = useRef<MediaStream | null>(null);
   const switchingRef = useRef(false);
-  const audioOutputIdRef = useRef<string>('');
+  const audioOutputIdRef = useRef<string>(selectedAudioOutputDeviceId);
 
   const publishStreamUpdate = useCallback(() => {
     if (!streamRef.current) {
@@ -43,6 +43,10 @@ export function useMediaDevices() {
     }
     setLocalStream(new MediaStream(streamRef.current.getTracks()));
   }, []);
+
+  useEffect(() => {
+    audioOutputIdRef.current = selectedAudioOutputDeviceId;
+  }, [selectedAudioOutputDeviceId]);
 
   // Enumerate all available media devices
   const enumerateDevices = useCallback(async () => {

@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { getScheduledGuestOpenAtMs, isScheduledGuestAccessBlocked } from '@studio/shared';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
+import { createSpeakerTestToneBlob } from '../utils/speakerTestTone.ts';
 import {
   clearUrlHostToken,
   getHostSession,
@@ -84,10 +85,14 @@ export function JoinRoom() {
     toggleVideo,
     audioDevices,
     videoDevices,
+    audioOutputDevices,
     selectedAudioDeviceId,
     selectedVideoDeviceId,
+    selectedAudioOutputDeviceId,
     switchAudioDevice,
     switchVideoDevice,
+    applyAudioOutput,
+    onAudioOutputDeviceChange,
   } = useMediaDevices();
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -96,7 +101,10 @@ export function JoinRoom() {
   const animFrameRef = useRef<number>(0);
   const audioEnabledRef = useRef(audioEnabled);
   const videoEnabledRef = useRef(videoEnabled);
+  const speakerTestAudioRef = useRef<HTMLAudioElement | null>(null);
+  const speakerTestUrlRef = useRef<string>('');
   const [audioLevel, setAudioLevel] = useState(0);
+  const [speakerTestPlaying, setSpeakerTestPlaying] = useState(false);
 
   useEffect(() => {
     audioEnabledRef.current = audioEnabled;
@@ -217,6 +225,22 @@ export function JoinRoom() {
     });
   }, [roomId, hostSession?.hostName, hostSession?.hostToken, roomInfo, savedHostStudio?.createdAt]);
 
+  useEffect(() => {
+    return () => {
+      const audio = speakerTestAudioRef.current;
+      if (audio) {
+        audio.pause();
+        audio.onended = null;
+        audio.onerror = null;
+        audio.src = '';
+      }
+      if (speakerTestUrlRef.current) {
+        URL.revokeObjectURL(speakerTestUrlRef.current);
+        speakerTestUrlRef.current = '';
+      }
+    };
+  }, []);
+
   const joinStudio = () => {
     if (!guestName.trim()) return;
     if (hostAccessMissing) return;
@@ -259,6 +283,35 @@ export function JoinRoom() {
       // Device switch failed
     }
   };
+
+  const onSpeakerDeviceChange = async (deviceId: string) => {
+    try {
+      await onAudioOutputDeviceChange(deviceId);
+    } catch (err) {
+      // Speaker switch failed
+    }
+  };
+
+  const playSpeakerTest = useCallback(async () => {
+    const audio = speakerTestAudioRef.current || new Audio();
+    speakerTestAudioRef.current = audio;
+    if (!speakerTestUrlRef.current) {
+      speakerTestUrlRef.current = URL.createObjectURL(createSpeakerTestToneBlob());
+    }
+
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.src = speakerTestUrlRef.current;
+      audio.onended = () => setSpeakerTestPlaying(false);
+      audio.onerror = () => setSpeakerTestPlaying(false);
+      setSpeakerTestPlaying(true);
+      await applyAudioOutput(audio);
+      await audio.play();
+    } catch (err) {
+      setSpeakerTestPlaying(false);
+    }
+  }, [applyAudioOutput]);
 
   if (loading) {
     return (
@@ -472,6 +525,40 @@ export function JoinRoom() {
                   <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
                 ))}
               </select>
+            </div>
+          )}
+          {audioOutputDevices.length > 0 && (
+            <div style={styles.deviceField}>
+              <label style={styles.deviceLabel}>Speaker</label>
+              <div style={styles.speakerControlRow}>
+                <select
+                  style={{ ...styles.deviceSelect, ...styles.speakerSelect }}
+                  value={selectedAudioOutputDeviceId}
+                  onChange={(e) => onSpeakerDeviceChange(e.target.value)}
+                >
+                  <option value="">System default</option>
+                  {audioOutputDevices.map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.speakerTestButton,
+                    ...(speakerTestPlaying ? styles.speakerTestButtonActive : {}),
+                  }}
+                  onClick={() => void playSpeakerTest()}
+                  disabled={speakerTestPlaying}
+                  title="Play speaker test sound"
+                  aria-label="Play speaker test sound"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                  </svg>
+                  {speakerTestPlaying ? 'Playing' : 'Test'}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -773,6 +860,34 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-tertiary)',
     color: 'var(--text-primary)',
     cursor: 'pointer',
+  },
+  speakerControlRow: {
+    display: 'flex',
+    alignItems: 'stretch',
+    gap: 8,
+  },
+  speakerSelect: {
+    flex: 1,
+    minWidth: 0,
+  },
+  speakerTestButton: {
+    minWidth: 86,
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid rgba(103, 232, 249, 0.26)',
+    background: 'rgba(103, 232, 249, 0.08)',
+    color: '#67e8f9',
+    fontSize: 12,
+    fontWeight: 700,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    cursor: 'pointer',
+    padding: '0 10px',
+  },
+  speakerTestButtonActive: {
+    opacity: 0.78,
+    cursor: 'wait',
   },
   
   advancedAudio: {
