@@ -35,6 +35,7 @@ export function useMediaDevices() {
   const streamRef = useRef<MediaStream | null>(null);
   const switchingRef = useRef(false);
   const audioOutputIdRef = useRef<string>('');
+  const audioProcessingOptionsRef = useRef({ echoCancellation: true, noiseSuppression: true });
 
   const publishStreamUpdate = useCallback(() => {
     if (!streamRef.current) {
@@ -99,6 +100,10 @@ export function useMediaDevices() {
     }
 
     try {
+      audioProcessingOptionsRef.current = {
+        echoCancellation: options.echoCancellation ?? true,
+        noiseSuppression: options.noiseSuppression ?? true,
+      };
       // Stop any existing tracks first
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
@@ -257,6 +262,10 @@ export function useMediaDevices() {
     if (!streamRef.current) return null;
     if (switchingRef.current) return null;
     switchingRef.current = true;
+    audioProcessingOptionsRef.current = {
+      echoCancellation: options.echoCancellation ?? true,
+      noiseSuppression: options.noiseSuppression ?? true,
+    };
 
     try {
       const newAudioStream = await navigator.mediaDevices.getUserMedia({
@@ -400,12 +409,13 @@ export function useMediaDevices() {
           );
           if (fallbackAudio) {
             console.log('Audio device disconnected, switching to fallback:', fallbackAudio.label);
+            const audioProcessing = audioProcessingOptionsRef.current;
             try {
               const newStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                   deviceId: { exact: fallbackAudio.deviceId },
-                  echoCancellation: true,
-                  noiseSuppression: true,
+                  echoCancellation: audioProcessing.echoCancellation,
+                  noiseSuppression: audioProcessing.noiseSuppression,
                   autoGainControl: true,
                 },
               });
