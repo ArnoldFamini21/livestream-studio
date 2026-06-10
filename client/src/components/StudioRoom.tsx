@@ -18,6 +18,14 @@ import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
+import {
+  getHostSession,
+  getSavedHostStudio,
+  getStoredParticipantRole,
+  getStoredUserName,
+  persistHostSession,
+  removeSavedHostStudio,
+} from '../utils/hostSession.ts';
 import { VideoTile } from './VideoTile.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
@@ -41,8 +49,8 @@ const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_STUDIO_SCENES = 12;
-const HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
 const GUEST_JOIN_SESSION_STORAGE_KEY = 'livestream-studio:guest-join-session-id';
+const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing or expired. Reopen this studio from the saved host entry on the home screen.';
 
 const StreamDestinationsPanel = lazy(() => import('./StreamDestinations.tsx').then((module) => ({ default: module.StreamDestinations })));
 const InvitePanel = lazy(() => import('./InvitePanel.tsx').then((module) => ({ default: module.InvitePanel })));
@@ -62,50 +70,6 @@ function upsertChatMessage(messages: ChatMessage[], incoming: ChatMessage): Chat
     next[index] = incoming;
   }
   return next.length > 500 ? next.slice(-500) : next;
-}
-
-function forgetSavedHostStudio(roomId: string) {
-  try {
-    const raw = localStorage.getItem(HOST_STUDIOS_STORAGE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return;
-    localStorage.setItem(HOST_STUDIOS_STORAGE_KEY, JSON.stringify(parsed.filter((item) => item?.id !== roomId)));
-  } catch {
-    // Ignore malformed local host-token cache.
-  }
-}
-
-interface SavedHostStudio {
-  id: string;
-  hostName: string;
-  hostToken: string;
-}
-
-function getSavedHostStudio(roomId: string): SavedHostStudio | null {
-  try {
-    const raw = localStorage.getItem(HOST_STUDIOS_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return null;
-    const match = parsed.find((item) => item && item.id === roomId);
-    if (
-      match &&
-      typeof match.id === 'string' &&
-      typeof match.hostName === 'string' &&
-      typeof match.hostToken === 'string' &&
-      match.hostToken.length > 0
-    ) {
-      return {
-        id: match.id,
-        hostName: match.hostName,
-        hostToken: match.hostToken,
-      };
-    }
-  } catch {
-    // Ignore malformed local host-token cache.
-  }
-  return null;
 }
 
 function isValidJoinSessionId(value: string | null): value is string {
@@ -434,10 +398,12 @@ export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const savedHostStudio = useMemo(() => (roomId ? getSavedHostStudio(roomId) : null), [roomId]);
-  const userName = sessionStorage.getItem('userName') || savedHostStudio?.hostName || 'Anonymous';
-  const storedUserRole = (sessionStorage.getItem('userRole') || 'guest') as 'host' | 'co-host' | 'guest';
-  const roomHostToken = roomId ? sessionStorage.getItem(`hostToken:${roomId}`) || savedHostStudio?.hostToken || '' : '';
-  const userRole: 'host' | 'co-host' | 'guest' = roomHostToken
+  const hostSession = useMemo(() => (roomId ? getHostSession(roomId) : null), [roomId]);
+  const storedUserRole = getStoredParticipantRole();
+  const userName = hostSession?.hostName || getStoredUserName() || savedHostStudio?.hostName || 'Anonymous';
+  const roomHostToken = hostSession?.hostToken || '';
+  const missingHostAccess = Boolean(roomId && !hostSession && storedUserRole === 'host');
+  const userRole: 'host' | 'co-host' | 'guest' = hostSession
     ? 'host'
     : storedUserRole === 'host'
       ? 'guest'
@@ -633,19 +599,9 @@ export function StudioRoom() {
   const broadcastCaption = captionsAllowed ? activeCaption : null;
 
   useEffect(() => {
-    if (!roomId || !savedHostStudio?.hostToken) return;
-    try {
-      if (!sessionStorage.getItem(`hostToken:${roomId}`)) {
-        sessionStorage.setItem(`hostToken:${roomId}`, savedHostStudio.hostToken);
-      }
-      if (!sessionStorage.getItem('userName') && savedHostStudio.hostName) {
-        sessionStorage.setItem('userName', savedHostStudio.hostName);
-      }
-      sessionStorage.setItem('userRole', 'host');
-    } catch {
-      // Host-token recovery is best-effort; the join payload still uses the in-memory token.
-    }
-  }, [roomId, savedHostStudio?.hostName, savedHostStudio?.hostToken]);
+    if (!roomId || !hostSession) return;
+    persistHostSession({ roomId, hostName: hostSession.hostName, hostToken: hostSession.hostToken });
+  }, [roomId, hostSession]);
 
   const joinedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1018,14 +974,21 @@ export function StudioRoom() {
   }, [connected]);
 
   useEffect(() => {
-    if (connected) {
+    if (connected && !missingHostAccess) {
       setConnectionError(null);
     }
-  }, [connected]);
+  }, [connected, missingHostAccess]);
+
+  useEffect(() => {
+    if (missingHostAccess) {
+      setConnectionError(HOST_ACCESS_MISSING_MESSAGE);
+    }
+  }, [missingHostAccess]);
 
   // Join room once connected
   useEffect(() => {
     if (connected && roomId && !joinedRef.current && (localStream || mediaError || mediaAttemptComplete)) {
+      if (missingHostAccess) return;
       joinedRef.current = true;
       // Only present hostToken when claiming host — guests never have one to send.
       const hostToken = userRole === 'host'
@@ -1041,7 +1004,7 @@ export function StudioRoom() {
         payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, roomPassword, joinSessionId },
       });
     }
-  }, [connected, localStream, mediaError, mediaAttemptComplete, roomId, roomHostToken, userName, userRole, send]);
+  }, [connected, localStream, mediaError, mediaAttemptComplete, missingHostAccess, roomId, roomHostToken, userName, userRole, send]);
 
   useEffect(() => {
     if (!guestNotification) return;
@@ -1244,7 +1207,7 @@ export function StudioRoom() {
           if (message.payload.code === 'HOST_TOKEN_INVALID') {
             if (roomId) {
               sessionStorage.removeItem(`hostToken:${roomId}`);
-              forgetSavedHostStudio(roomId);
+              removeSavedHostStudio(roomId);
             }
             sessionStorage.setItem('userRole', 'guest');
             cleanupRef.current();

@@ -3,36 +3,9 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { getScheduledGuestOpenAtMs, isScheduledGuestAccessBlocked } from '@studio/shared';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
+import { getHostSession, getSavedHostStudio, getStoredUserName, persistHostSession } from '../utils/hostSession.ts';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
-const SCHEDULED_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
-
-interface SavedScheduledStudio {
-  id: string;
-  hostName: string;
-  hostToken: string;
-}
-
-function getSavedScheduledStudio(roomId: string): SavedScheduledStudio | null {
-  try {
-    const raw = localStorage.getItem(SCHEDULED_STUDIOS_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return null;
-    const match = parsed.find((item) => item && item.id === roomId);
-    if (
-      match &&
-      typeof match.id === 'string' &&
-      typeof match.hostName === 'string' &&
-      typeof match.hostToken === 'string'
-    ) {
-      return match;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
 
 function formatGuestOpenCountdown(ms: number): string {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -51,16 +24,15 @@ export function JoinRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const savedHostStudio = roomId ? getSavedScheduledStudio(roomId) : null;
-  const sessionHostToken = roomId ? sessionStorage.getItem(`hostToken:${roomId}`) || '' : '';
-  const savedHostToken = savedHostStudio?.hostToken || '';
-  const hostToken = sessionHostToken || savedHostToken;
+  const savedHostStudio = roomId ? getSavedHostStudio(roomId) : null;
+  const hostSession = roomId ? getHostSession(roomId) : null;
+  const hostToken = hostSession?.hostToken || '';
   const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
   const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
-  const isHostSession = Boolean(roomId && hostToken);
-  const initialName = isHostSession
-    ? savedHostStudio?.hostName || sessionStorage.getItem('userName') || ''
-    : sessionStorage.getItem('userName') || savedHostStudio?.hostName || '';
+  const isHostSession = Boolean(hostSession);
+  const initialName = hostSession
+    ? hostSession.hostName
+    : getStoredUserName() || savedHostStudio?.hostName || '';
   // Auto-fill from sessionStorage for Hosts
   const [guestName, setGuestName] = useState(initialName);
   const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number; status?: string; hostName?: string; scheduledFor?: string; passwordProtected?: boolean } | null>(null);
@@ -215,8 +187,7 @@ export function JoinRoom() {
     stopMedia();
     
     if (isHostSession) {
-      sessionStorage.setItem('userRole', 'host');
-      if (roomId) sessionStorage.setItem(`hostToken:${roomId}`, hostToken);
+      if (roomId) persistHostSession({ roomId, hostName: guestName.trim(), hostToken });
     } else if (isCoHostInvite && roomId) {
       sessionStorage.setItem('userRole', 'co-host');
       sessionStorage.setItem(`coHostInviteToken:${roomId}`, coHostInviteToken);
