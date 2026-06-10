@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  BroadcastOrientation,
   RtmpRelayDestination,
   RtmpRelayDestinationStatus,
   RtmpRelayServerMessage,
+  RtmpRelayVideoConfig,
 } from '@studio/shared';
 
 interface UseRtmpRelayOptions {
@@ -18,15 +20,22 @@ interface UseRtmpRelayOptions {
 interface StartRelayOptions {
   token: string;
   destinations: RtmpRelayDestination[];
+  orientation: BroadcastOrientation;
 }
 
 interface MixerResources {
   audioContext: AudioContext;
   stream: MediaStream;
+  videoResources: RelayVideoResources;
   sources: MediaStreamAudioSourceNode[];
   gains: GainNode[];
   participantGains: Map<string, GainNode>;
   silentOscillator?: OscillatorNode;
+}
+
+interface RelayVideoResources {
+  stream: MediaStream;
+  cleanup: () => void;
 }
 
 export interface RtmpRelayStats {
@@ -47,10 +56,21 @@ interface BitrateSample {
 }
 
 const RELAY_VIDEO = {
-  width: 1920,
-  height: 1080,
   frameRate: 30,
   videoBitsPerSecond: 4_500_000,
+};
+
+const RELAY_VIDEO_BY_ORIENTATION: Record<BroadcastOrientation, RtmpRelayVideoConfig> = {
+  landscape: {
+    width: 1920,
+    height: 1080,
+    ...RELAY_VIDEO,
+  },
+  portrait: {
+    width: 1080,
+    height: 1920,
+    ...RELAY_VIDEO,
+  },
 };
 
 const RELAY_AUDIO = {
@@ -128,15 +148,111 @@ function collectAudioSources(
   return sources;
 }
 
+function getRelayVideoConfig(orientation: BroadcastOrientation): RtmpRelayVideoConfig {
+  return RELAY_VIDEO_BY_ORIENTATION[orientation] || RELAY_VIDEO_BY_ORIENTATION.landscape;
+}
+
+function drawVideoCover(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  width: number,
+  height: number
+) {
+  if (video.videoWidth <= 0 || video.videoHeight <= 0) return;
+
+  const sourceRatio = video.videoWidth / video.videoHeight;
+  const targetRatio = width / height;
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceWidth = video.videoWidth;
+  let sourceHeight = video.videoHeight;
+
+  if (sourceRatio > targetRatio) {
+    sourceWidth = video.videoHeight * targetRatio;
+    sourceX = (video.videoWidth - sourceWidth) / 2;
+  } else {
+    sourceHeight = video.videoWidth / targetRatio;
+    sourceY = (video.videoHeight - sourceHeight) / 2;
+  }
+
+  ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
+}
+
+async function createRelayVideoStream(
+  compositeStream: MediaStream,
+  videoConfig: RtmpRelayVideoConfig
+): Promise<RelayVideoResources> {
+  const videoTrack = compositeStream.getVideoTracks()[0];
+  if (!videoTrack || videoTrack.readyState !== 'live') {
+    throw new Error('The composited studio video stream is not ready.');
+  }
+
+  if (videoConfig.width === 1920 && videoConfig.height === 1080) {
+    return {
+      stream: new MediaStream([videoTrack]),
+      cleanup: () => undefined,
+    };
+  }
+
+  const sourceStream = new MediaStream([videoTrack]);
+  const sourceVideo = document.createElement('video');
+  sourceVideo.muted = true;
+  sourceVideo.playsInline = true;
+  sourceVideo.srcObject = sourceStream;
+
+  await new Promise<void>((resolve) => {
+    if (sourceVideo.readyState >= 1) {
+      resolve();
+      return;
+    }
+    const timeout = window.setTimeout(resolve, 1_000);
+    sourceVideo.onloadedmetadata = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+  });
+  await sourceVideo.play().catch(() => undefined);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = videoConfig.width;
+  canvas.height = videoConfig.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas output is unavailable for portrait streaming.');
+
+  let frame = 0;
+  const draw = () => {
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (sourceVideo.readyState >= 2) {
+      drawVideoCover(ctx, sourceVideo, canvas.width, canvas.height);
+    }
+    frame = window.requestAnimationFrame(draw);
+  };
+  draw();
+
+  const stream = canvas.captureStream(videoConfig.frameRate);
+  return {
+    stream,
+    cleanup: () => {
+      window.cancelAnimationFrame(frame);
+      stream.getTracks().forEach((track) => track.stop());
+      sourceVideo.pause();
+      sourceVideo.srcObject = null;
+    },
+  };
+}
+
 async function createMixedBroadcastStream(
   compositeStream: MediaStream,
+  videoConfig: RtmpRelayVideoConfig,
   localStream: MediaStream | null,
   localParticipantId: string | null | undefined,
   remoteStreams: Map<string, MediaStream>,
   screenStream: MediaStream | null,
   participantVolumes: Record<string, number>
 ): Promise<MixerResources> {
-  const videoTrack = compositeStream.getVideoTracks()[0];
+  const videoResources = await createRelayVideoStream(compositeStream, videoConfig);
+  const videoTrack = videoResources.stream.getVideoTracks()[0];
   if (!videoTrack || videoTrack.readyState !== 'live') {
     throw new Error('The composited studio video stream is not ready.');
   }
@@ -180,7 +296,7 @@ async function createMixedBroadcastStream(
     ...destination.stream.getAudioTracks(),
   ]);
 
-  return { audioContext, stream: mixedStream, sources, gains, participantGains, silentOscillator };
+  return { audioContext, stream: mixedStream, videoResources, sources, gains, participantGains, silentOscillator };
 }
 
 function cleanupMixer(mixer: MixerResources | null) {
@@ -191,6 +307,7 @@ function cleanupMixer(mixer: MixerResources | null) {
     // Already stopped.
   }
   mixer.stream.getAudioTracks().forEach((track) => track.stop());
+  mixer.videoResources.cleanup();
   mixer.sources.forEach((source) => source.disconnect());
   mixer.gains.forEach((gain) => gain.disconnect());
   void mixer.audioContext.close();
@@ -291,7 +408,7 @@ export function useRtmpRelay({
   }, [cleanup]);
 
   const startRelay = useCallback(
-    async ({ token, destinations }: StartRelayOptions): Promise<void> => {
+    async ({ token, destinations, orientation }: StartRelayOptions): Promise<void> => {
       if (wsRef.current) {
         throw new Error('A live relay session is already active.');
       }
@@ -309,8 +426,10 @@ export function useRtmpRelay({
         throw new Error('This browser does not support WebM recording for RTMP relay.');
       }
 
+      const videoConfig = getRelayVideoConfig(orientation);
       const mixer = await createMixedBroadcastStream(
         compositeStream,
+        videoConfig,
         localStream,
         localParticipantId,
         remoteStreams,
@@ -339,7 +458,7 @@ export function useRtmpRelay({
         const startRecorder = () => {
           const recorder = new MediaRecorder(mixer.stream, {
             mimeType,
-            videoBitsPerSecond: RELAY_VIDEO.videoBitsPerSecond,
+            videoBitsPerSecond: videoConfig.videoBitsPerSecond,
             audioBitsPerSecond: RELAY_AUDIO.audioBitsPerSecond,
           });
           recorderRef.current = recorder;
@@ -378,7 +497,7 @@ export function useRtmpRelay({
             payload: {
               token,
               destinations,
-              video: RELAY_VIDEO,
+              video: videoConfig,
               audio: RELAY_AUDIO,
             },
           }));

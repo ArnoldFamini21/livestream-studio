@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { StreamDestination } from '@studio/shared';
+import type { BroadcastOrientation, StreamDestination } from '@studio/shared';
 import type { RtmpRelayStats } from '../hooks/useRtmpRelay.ts';
 
 interface StreamDestinationsProps {
@@ -8,6 +8,8 @@ interface StreamDestinationsProps {
   onUpdate: (id: string, dest: Omit<StreamDestination, 'id' | 'status'>) => void;
   onRemove: (id: string) => void;
   onToggle: (id: string) => void;
+  broadcastOrientation: BroadcastOrientation;
+  onBroadcastOrientationChange: (orientation: BroadcastOrientation) => void;
   isLive: boolean;
   relayStats?: RtmpRelayStats;
   onGoLive: () => void | Promise<void>;
@@ -19,6 +21,11 @@ const MAX_ENABLED_DESTINATIONS = 3;
 const TARGET_RELAY_KBPS = 4660;
 const STALE_CHUNK_MS = 5_000;
 const BITRATE_BAR_COUNT = 24;
+
+const ORIENTATION_OPTIONS: Array<{ value: BroadcastOrientation; label: string; detail: string }> = [
+  { value: 'landscape', label: 'Landscape', detail: '16:9 1920x1080' },
+  { value: 'portrait', label: 'Portrait', detail: '9:16 1080x1920' },
+];
 
 const PLATFORMS: Array<{ value: StreamDestination['platform']; label: string; color: string; dashUrl?: string }> = [
   { value: 'youtube', label: 'YouTube', color: '#FF0000', dashUrl: 'https://studio.youtube.com/channel/UC/livestreaming' },
@@ -35,6 +42,8 @@ export function StreamDestinations({
   onUpdate,
   onRemove,
   onToggle,
+  broadcastOrientation,
+  onBroadcastOrientationChange,
   isLive,
   relayStats,
   onGoLive,
@@ -116,6 +125,7 @@ export function StreamDestinations({
     .map((dest) => ({ dest, issue: getDestinationIssue(dest) }))
     .filter((item): item is { dest: StreamDestination; issue: string } => Boolean(item.issue));
   const enabledCount = enabledDestinations.length;
+  const selectedOrientation = ORIENTATION_OPTIONS.find((option) => option.value === broadcastOrientation) || ORIENTATION_OPTIONS[0];
   const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
   const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled;
   const preflightIssue = enabledCount === 0
@@ -148,6 +158,34 @@ export function StreamDestinations({
       </div>
 
       <div style={styles.body}>
+        <div style={styles.orientationCard}>
+          <div style={styles.orientationHeader}>
+            <span style={styles.orientationTitle}>Output Orientation</span>
+            <span style={styles.orientationHint}>{selectedOrientation.detail}</span>
+          </div>
+          <div style={styles.orientationRow}>
+            {ORIENTATION_OPTIONS.map((option) => {
+              const active = option.value === broadcastOrientation;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  style={{
+                    ...styles.orientationBtn,
+                    ...(active ? styles.orientationBtnActive : {}),
+                    ...(isLive ? styles.orientationBtnDisabled : {}),
+                  }}
+                  onClick={() => onBroadcastOrientationChange(option.value)}
+                  disabled={isLive}
+                >
+                  <span style={styles.orientationLabel}>{option.label}</span>
+                  <span style={styles.orientationDetail}>{option.detail}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {destinations.length > 0 && (
           <div style={{ ...styles.preflight, ...(canGoLive ? styles.preflightReady : styles.preflightWarn) }}>
             <div style={styles.preflightTop}>
@@ -324,6 +362,9 @@ export function StreamDestinations({
                 onChange={(e) => { setRtmpUrl(e.target.value); setFormError(null); }}
                 readOnly={platform !== 'custom'} 
               />
+              {platform === 'instagram' && (
+                <span style={styles.inputHint}>Instagram Live expects portrait output.</span>
+              )}
             </div>
 
             <div style={styles.inputGroup}>
@@ -567,6 +608,32 @@ const styles: Record<string, React.CSSProperties> = {
   },
   closeBtn: { background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4, borderRadius: 6, display: 'flex' },
   body: { flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 },
+  orientationCard: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 },
+  orientationHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  orientationTitle: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
+  orientationHint: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600 },
+  orientationRow: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 },
+  orientationBtn: {
+    minWidth: 0,
+    minHeight: 54,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
+    borderRadius: 7,
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-secondary)',
+    cursor: 'pointer',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    gap: 3,
+    padding: '7px 8px',
+    textAlign: 'left',
+  },
+  orientationBtnActive: { background: 'rgba(96, 165, 250, 0.12)', borderColor: '#60a5fa', color: '#bfdbfe' },
+  orientationBtnDisabled: { opacity: 0.58, cursor: 'not-allowed' },
+  orientationLabel: { fontSize: 12, fontWeight: 800, color: 'inherit' },
+  orientationDetail: { fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   preflight: { borderRadius: 8, padding: '10px 12px', border: '1px solid', display: 'flex', flexDirection: 'column', gap: 4 },
   preflightReady: { background: 'rgba(34,197,94,0.08)', borderColor: 'rgba(34,197,94,0.22)' },
   preflightWarn: { background: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.22)' },

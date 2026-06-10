@@ -80,4 +80,22 @@ describe('RTMP relay utilities', () => {
     assert.equal(args.includes('flv'), true);
     assert.equal(args.includes('30'), true);
   });
+
+  it('builds FFmpeg args for portrait 1080x1920 relay output', () => {
+    const args = createFfmpegArgs(destination, {
+      video: {
+        width: 1080,
+        height: 1920,
+        frameRate: 30,
+        videoBitsPerSecond: 4_500_000,
+      },
+      audio: {
+        sampleRate: 48_000,
+        channelCount: 2,
+        audioBitsPerSecond: 160_000,
+      },
+    });
+
+    assert.equal(args.includes('scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2'), true);
+  });
 });
