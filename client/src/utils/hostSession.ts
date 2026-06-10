@@ -1,8 +1,9 @@
 import type { ParticipantRole } from '@studio/shared';
 
-export const HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
+export const HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:host-studios';
 
 const HOST_TOKEN_PREFIX = 'hostToken:';
+const LEGACY_HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
 const USER_NAME_KEY = 'userName';
 const USER_ROLE_KEY = 'userRole';
 
@@ -68,6 +69,40 @@ function isValidHostToken(value: string): boolean {
   return /^[A-Za-z0-9_-]{16,256}$/.test(value);
 }
 
+function sortHostStudios(rooms: SavedHostStudio[]): SavedHostStudio[] {
+  return rooms.sort((a, b) => {
+    const aTime = Date.parse(a.scheduledFor || a.createdAt || '');
+    const bTime = Date.parse(b.scheduledFor || b.createdAt || '');
+    if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0;
+    if (!Number.isFinite(aTime)) return 1;
+    if (!Number.isFinite(bTime)) return -1;
+    return aTime - bTime;
+  });
+}
+
+function parseSavedHostStudios(raw: string): SavedHostStudio[] {
+  try {
+    const parsed = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is SavedHostStudio => (
+      item &&
+      typeof item.id === 'string' &&
+      typeof item.hostName === 'string' &&
+      typeof item.hostToken === 'string' &&
+      isValidHostToken(item.hostToken)
+    ));
+  } catch {
+    return [];
+  }
+}
+
+function mergeHostStudios(primary: SavedHostStudio[], legacy: SavedHostStudio[]): SavedHostStudio[] {
+  const byId = new Map<string, SavedHostStudio>();
+  for (const studio of legacy) byId.set(studio.id, studio);
+  for (const studio of primary) byId.set(studio.id, studio);
+  return sortHostStudios(Array.from(byId.values()));
+}
+
 function hostTokenKey(roomId: string): string {
   return `${HOST_TOKEN_PREFIX}${roomId}`;
 }
@@ -82,28 +117,13 @@ export function getStoredParticipantRole(): ParticipantRole {
 }
 
 export function readSavedHostStudios(): SavedHostStudio[] {
-  try {
-    const parsed = JSON.parse(getLocalItem(HOST_STUDIOS_STORAGE_KEY) || '[]');
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is SavedHostStudio => (
-        item &&
-        typeof item.id === 'string' &&
-        typeof item.hostName === 'string' &&
-        typeof item.hostToken === 'string' &&
-        isValidHostToken(item.hostToken)
-      ))
-      .sort((a, b) => {
-        const aTime = Date.parse(a.scheduledFor || a.createdAt || '');
-        const bTime = Date.parse(b.scheduledFor || b.createdAt || '');
-        if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0;
-        if (!Number.isFinite(aTime)) return 1;
-        if (!Number.isFinite(bTime)) return -1;
-        return aTime - bTime;
-      });
-  } catch {
-    return [];
+  const primary = parseSavedHostStudios(getLocalItem(HOST_STUDIOS_STORAGE_KEY));
+  const legacy = parseSavedHostStudios(getLocalItem(LEGACY_HOST_STUDIOS_STORAGE_KEY));
+  const rooms = mergeHostStudios(primary, legacy);
+  if (legacy.length > 0 && primary.length !== rooms.length) {
+    setLocalItem(HOST_STUDIOS_STORAGE_KEY, JSON.stringify(rooms.slice(0, 20)));
   }
+  return rooms;
 }
 
 export function getSavedHostStudio(roomId: string): SavedHostStudio | null {
@@ -112,16 +132,7 @@ export function getSavedHostStudio(roomId: string): SavedHostStudio | null {
 
 export function upsertSavedHostStudio(studio: SavedHostStudio): SavedHostStudio[] {
   if (!isValidHostToken(studio.hostToken)) return readSavedHostStudios();
-  const next = [studio, ...readSavedHostStudios().filter((item) => item.id !== studio.id)]
-    .slice(0, 20)
-    .sort((a, b) => {
-      const aTime = Date.parse(a.scheduledFor || a.createdAt || '');
-      const bTime = Date.parse(b.scheduledFor || b.createdAt || '');
-      if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0;
-      if (!Number.isFinite(aTime)) return 1;
-      if (!Number.isFinite(bTime)) return -1;
-      return aTime - bTime;
-    });
+  const next = sortHostStudios([studio, ...readSavedHostStudios().filter((item) => item.id !== studio.id)]).slice(0, 20);
   setLocalItem(HOST_STUDIOS_STORAGE_KEY, JSON.stringify(next));
   return next;
 }
@@ -129,6 +140,9 @@ export function upsertSavedHostStudio(studio: SavedHostStudio): SavedHostStudio[
 export function removeSavedHostStudio(roomId: string): SavedHostStudio[] {
   const next = readSavedHostStudios().filter((item) => item.id !== roomId);
   setLocalItem(HOST_STUDIOS_STORAGE_KEY, JSON.stringify(next));
+  const nextLegacy = parseSavedHostStudios(getLocalItem(LEGACY_HOST_STUDIOS_STORAGE_KEY))
+    .filter((item) => item.id !== roomId);
+  setLocalItem(LEGACY_HOST_STUDIOS_STORAGE_KEY, JSON.stringify(nextLegacy));
   removeSessionItem(hostTokenKey(roomId));
   return next;
 }

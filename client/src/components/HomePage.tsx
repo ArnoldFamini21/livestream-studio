@@ -94,6 +94,10 @@ function getScheduleState(room: SavedScheduledStudio): string {
   return scheduledAt > Date.now() ? 'Upcoming' : 'Ready';
 }
 
+function buildHostEntryPath(roomId: string): string {
+  return `/join/${roomId}?role=host`;
+}
+
 export function HomePage() {
   const [roomName, setRoomName] = useState('');
   const [hostName, setHostName] = useState('');
@@ -132,21 +136,23 @@ export function HomePage() {
         return;
       }
       const room = await res.json();
-      if (typeof room.hostToken === 'string') {
-        const savedHostName = room.hostName || hostName;
-        // Scoped per room so old tokens don't leak across rooms.
-        persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
-        setSavedScheduledRooms(upsertSavedScheduledStudio({
-          id: room.id,
-          name: room.name,
-          hostName: savedHostName,
-          hostToken: room.hostToken,
-          createdAt: room.createdAt || new Date().toISOString(),
-          passwordProtected: Boolean(room.settings?.passwordProtected),
-          status: room.status,
-        }));
+      if (typeof room.hostToken !== 'string') {
+        setError('Studio was created, but host access was not returned. Please create a new studio.');
+        return;
       }
-      navigate(`/join/${room.id}`);
+      const savedHostName = room.hostName || hostName;
+      // Scoped per room so old tokens don't leak across rooms.
+      persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
+      setSavedScheduledRooms(upsertSavedScheduledStudio({
+        id: room.id,
+        name: room.name,
+        hostName: savedHostName,
+        hostToken: room.hostToken,
+        createdAt: room.createdAt || new Date().toISOString(),
+        passwordProtected: Boolean(room.settings?.passwordProtected),
+        status: room.status,
+      }));
+      navigate(buildHostEntryPath(room.id));
     } catch (err) {
       console.error('Failed to create room:', err);
       setError('Network error. Please check your connection and try again.');
@@ -178,9 +184,11 @@ export function HomePage() {
       }
       const room = await res.json();
       const savedHostName = room.hostName || hostName;
-      if (typeof room.hostToken === 'string') {
-        persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
+      if (typeof room.hostToken !== 'string') {
+        setError('Studio was scheduled, but host access was not returned. Please schedule it again.');
+        return;
       }
+      persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
       const savedRoom: ScheduledRoomModal = {
         id: room.id,
         name: room.name,
@@ -233,7 +241,7 @@ export function HomePage() {
 
   const openScheduledAsHost = (room: SavedScheduledStudio) => {
     persistHostSession({ roomId: room.id, hostName: room.hostName || hostName || 'Host', hostToken: room.hostToken });
-    navigate(`/join/${room.id}`);
+    navigate(buildHostEntryPath(room.id));
   };
 
   const forgetScheduledRoom = (roomId: string) => {
@@ -243,7 +251,7 @@ export function HomePage() {
   const goToStudioAsHost = () => {
     if (!scheduledRoom) return;
     persistHostSession({ roomId: scheduledRoom.id, hostName: scheduledRoom.hostName || hostName || 'Host', hostToken: scheduledRoom.hostToken });
-    navigate(`/join/${scheduledRoom.id}`);
+    navigate(buildHostEntryPath(scheduledRoom.id));
   };
 
   const closeModal = () => {

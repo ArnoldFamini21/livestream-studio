@@ -6,6 +6,7 @@ import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.
 import { getHostSession, getSavedHostStudio, getStoredUserName, persistHostSession } from '../utils/hostSession.ts';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
+const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing in this browser. Open this studio from Your Studios on the home screen, or create a new studio.';
 
 function formatGuestOpenCountdown(ms: number): string {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -27,12 +28,17 @@ export function JoinRoom() {
   const savedHostStudio = roomId ? getSavedHostStudio(roomId) : null;
   const hostSession = roomId ? getHostSession(roomId) : null;
   const hostToken = hostSession?.hostToken || '';
+  const isHostEntryRequested = searchParams.get('role') === 'host';
   const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
   const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
   const isHostSession = Boolean(hostSession);
+  const hostEntryMode = isHostSession || isHostEntryRequested;
+  const hostAccessMissing = Boolean(isHostEntryRequested && !hostSession);
   const initialName = hostSession
     ? hostSession.hostName
-    : getStoredUserName() || savedHostStudio?.hostName || '';
+    : isHostEntryRequested
+      ? savedHostStudio?.hostName || getStoredUserName() || ''
+      : getStoredUserName() || savedHostStudio?.hostName || '';
   // Auto-fill from sessionStorage for Hosts
   const [guestName, setGuestName] = useState(initialName);
   const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number; status?: string; hostName?: string; scheduledFor?: string; passwordProtected?: boolean } | null>(null);
@@ -40,10 +46,10 @@ export function JoinRoom() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const needsRoomPassword = Boolean(roomInfo?.passwordProtected && !isHostSession && !isCoHostInvite);
+  const needsRoomPassword = Boolean(roomInfo?.passwordProtected && !hostEntryMode && !isCoHostInvite);
   const guestOpenAtMs = getScheduledGuestOpenAtMs(roomInfo?.scheduledFor);
   const scheduledGuestBlocked = Boolean(
-    !isHostSession &&
+    !hostEntryMode &&
     !isCoHostInvite &&
     isScheduledGuestAccessBlocked(roomInfo?.scheduledFor, nowMs)
   );
@@ -182,6 +188,7 @@ export function JoinRoom() {
 
   const joinStudio = () => {
     if (!guestName.trim()) return;
+    if (hostAccessMissing) return;
     if (scheduledGuestBlocked) return;
     if (needsRoomPassword && !roomPassword.trim()) return;
     stopMedia();
@@ -271,7 +278,7 @@ export function JoinRoom() {
           {roomInfo?.passwordProtected && (
             <span style={styles.scheduledBadge}>Password</span>
           )}
-          {isHostSession && (
+          {hostEntryMode && (
             <span style={styles.scheduledBadge}>Host</span>
           )}
           {isCoHostInvite && (
@@ -281,7 +288,9 @@ export function JoinRoom() {
 
         <h2 style={styles.cardTitle}>You're invited</h2>
         <p style={styles.text}>
-          {isHostSession
+          {hostAccessMissing
+            ? HOST_ACCESS_MISSING_MESSAGE
+            : isHostSession
             ? `Hosted by ${roomInfo?.hostName || savedHostStudio?.hostName || 'you'}`
             : roomInfo?.status === 'scheduled'
             ? `Hosted by ${roomInfo?.hostName || 'the organizer'}. Enter your name to join when the session starts.`
@@ -304,6 +313,15 @@ export function JoinRoom() {
             <strong>Guest access opens {guestOpenLabel}</strong>
             <span>Hosts and co-hosts can enter now to prepare the studio.</span>
             <span>{guestOpenCountdown} remaining</span>
+          </div>
+        )}
+        {hostAccessMissing && (
+          <div style={styles.hostAccessNotice}>
+            <strong>Use your saved host entry</strong>
+            <span>The guest invite link cannot prove host ownership by name alone.</span>
+            <button style={styles.hostAccessAction} onClick={() => navigate('/')}>
+              Open Your Studios
+            </button>
           </div>
         )}
 
@@ -476,9 +494,9 @@ export function JoinRoom() {
           className="btn-primary"
           style={styles.joinButton}
           onClick={joinStudio}
-          disabled={!guestName.trim() || scheduledGuestBlocked || Boolean(needsRoomPassword && !roomPassword.trim())}
+          disabled={!guestName.trim() || hostAccessMissing || scheduledGuestBlocked || Boolean(needsRoomPassword && !roomPassword.trim())}
         >
-          {scheduledGuestBlocked ? 'Not Open Yet' : isHostSession ? 'Enter as Host' : isCoHostInvite ? 'Join as Co-host' : 'Join Studio'}
+          {hostAccessMissing ? 'Host Access Missing' : scheduledGuestBlocked ? 'Not Open Yet' : isHostSession ? 'Enter as Host' : isCoHostInvite ? 'Join as Co-host' : 'Join Studio'}
         </button>
 
         <p style={styles.finePrint}>No account or download required</p>
@@ -584,6 +602,32 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     lineHeight: 1.4,
     textAlign: 'left',
+  },
+  hostAccessNotice: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'stretch',
+    gap: 8,
+    padding: '12px 14px',
+    marginBottom: 16,
+    border: '1px solid rgba(245, 158, 11, 0.32)',
+    borderRadius: 10,
+    background: 'rgba(245, 158, 11, 0.1)',
+    color: 'var(--text-secondary)',
+    fontSize: 12,
+    lineHeight: 1.4,
+    textAlign: 'left',
+  },
+  hostAccessAction: {
+    alignSelf: 'flex-start',
+    border: '1px solid rgba(245, 158, 11, 0.42)',
+    borderRadius: 8,
+    background: 'rgba(245, 158, 11, 0.16)',
+    color: '#fbbf24',
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 700,
+    padding: '7px 10px',
   },
 
   // Camera preview
