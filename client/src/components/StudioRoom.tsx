@@ -41,6 +41,7 @@ const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_STUDIO_SCENES = 12;
+const HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
 
 const StreamDestinationsPanel = lazy(() => import('./StreamDestinations.tsx').then((module) => ({ default: module.StreamDestinations })));
 const InvitePanel = lazy(() => import('./InvitePanel.tsx').then((module) => ({ default: module.InvitePanel })));
@@ -49,6 +50,18 @@ const Teleprompter = lazy(() => import('./Teleprompter.tsx').then((module) => ({
 const BackgroundMusic = lazy(() => import('./BackgroundMusic.tsx').then((module) => ({ default: module.BackgroundMusic })));
 const RecordingPanel = lazy(() => import('./RecordingPanel.tsx').then((module) => ({ default: module.RecordingPanel })));
 const ProducerPanel = lazy(() => import('./ProducerPanel.tsx').then((module) => ({ default: module.ProducerPanel })));
+
+function forgetSavedHostStudio(roomId: string) {
+  try {
+    const raw = localStorage.getItem(HOST_STUDIOS_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    localStorage.setItem(HOST_STUDIOS_STORAGE_KEY, JSON.stringify(parsed.filter((item) => item?.id !== roomId)));
+  } catch {
+    // Ignore malformed local host-token cache.
+  }
+}
 
 interface PersistedStudioState {
   version: typeof STUDIO_STATE_VERSION;
@@ -1071,6 +1084,18 @@ export function StudioRoom() {
             message.payload.code === ROOM_NOT_OPEN_ERROR_CODE
           ) {
             if (roomId) sessionStorage.removeItem(`roomPassword:${roomId}`);
+            cleanupRef.current();
+            stopMediaRef.current();
+            stopScreenShareRef.current();
+            disconnectRef.current();
+            setConnectionError(message.payload.message);
+          }
+          if (message.payload.code === 'HOST_TOKEN_INVALID') {
+            if (roomId) {
+              sessionStorage.removeItem(`hostToken:${roomId}`);
+              forgetSavedHostStudio(roomId);
+            }
+            sessionStorage.setItem('userRole', 'guest');
             cleanupRef.current();
             stopMediaRef.current();
             stopScreenShareRef.current();
@@ -2188,7 +2213,8 @@ export function StudioRoom() {
   // Connection error
   if (connectionError) {
     const passwordError = connectionError === 'This room requires a password' || connectionError === 'Incorrect room password';
-    const joinRecoverableError = passwordError || connectionError === 'Co-host invite link is invalid or expired';
+    const hostAccessError = connectionError.includes('Host access is missing or expired');
+    const joinRecoverableError = passwordError || hostAccessError || connectionError === 'Co-host invite link is invalid or expired';
     return (
       <div style={styles.loading}>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round">

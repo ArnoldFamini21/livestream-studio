@@ -160,6 +160,15 @@ export function HomePage() {
       if (typeof room.hostToken === 'string') {
         // Scoped per room so old tokens don't leak across rooms.
         sessionStorage.setItem(`hostToken:${room.id}`, room.hostToken);
+        setSavedScheduledRooms(upsertSavedScheduledStudio({
+          id: room.id,
+          name: room.name,
+          hostName: room.hostName || hostName,
+          hostToken: room.hostToken,
+          createdAt: room.createdAt || new Date().toISOString(),
+          passwordProtected: Boolean(room.settings?.passwordProtected),
+          status: room.status,
+        }));
       }
       navigate(`/join/${room.id}`);
     } catch (err) {
@@ -420,7 +429,7 @@ export function HomePage() {
           {savedScheduledRooms.length > 0 && (
             <section style={styles.schedulePanel}>
               <div style={styles.schedulePanelHeader}>
-                <h2 style={styles.schedulePanelTitle}>Scheduled Studios</h2>
+                <h2 style={styles.schedulePanelTitle}>Your Studios</h2>
                 <span style={styles.schedulePanelCount}>{savedScheduledRooms.length}</span>
               </div>
               <div style={styles.savedRoomList}>
