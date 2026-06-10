@@ -155,6 +155,9 @@ export type SignalMessage =
   | { type: 'ice-candidate'; payload: ICEPayload }
   | { type: 'media-state-changed'; payload: MediaStatePayload }
   | { type: 'chat-message'; payload: ChatMessage }
+  | { type: 'chat-message-updated'; payload: ChatMessage }
+  | { type: 'chat-reaction'; payload: ChatReactionPayload }
+  | { type: 'chat-star-update'; payload: ChatStarUpdatePayload }
   | { type: 'qa-question-submitted'; payload: { id?: string; content: string } }
   | { type: 'qa-question-updated'; payload: QAQuestion }
   | { type: 'qa-question-update'; payload: { questionId: string; updates: Partial<Pick<QAQuestion, 'status' | 'answer' | 'highlighted'>> } }
@@ -192,6 +195,7 @@ export interface RoomJoinedPayload {
   room: Room;
   participant: Participant;
   participants: Participant[];
+  chatMessages?: ChatMessage[];
   qaQuestions?: QAQuestion[];
   polls?: LivePoll[];
   recordingState?: RecordingStatePayload;
@@ -261,11 +265,41 @@ export interface CoHostInviteTokenIssuedPayload {
 
 export interface ChatMessage {
   id: string;
+  clientId?: string;
   senderId: string;
   senderName: string;
   content: string;
   timestamp: string;
   isBackstage: boolean;
+  starred?: boolean;
+  starredBy?: string;
+  starredAt?: string;
+  reactions?: Partial<Record<ChatReactionType, number>>;
+}
+
+export const CHAT_REACTION_TYPES = ['like', 'love', 'clap', 'laugh', 'wow'] as const;
+export type ChatReactionType = typeof CHAT_REACTION_TYPES[number];
+
+export const CHAT_REACTION_LABELS: Record<ChatReactionType, string> = {
+  like: 'Like',
+  love: 'Love',
+  clap: 'Clap',
+  laugh: 'Laugh',
+  wow: 'Wow',
+};
+
+export function isChatReactionType(value: unknown): value is ChatReactionType {
+  return typeof value === 'string' && (CHAT_REACTION_TYPES as readonly string[]).includes(value);
+}
+
+export interface ChatReactionPayload {
+  messageId: string;
+  reaction: ChatReactionType;
+}
+
+export interface ChatStarUpdatePayload {
+  messageId: string;
+  starred: boolean;
 }
 
 export interface QAQuestion {

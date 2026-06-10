@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   SCHEDULED_GUEST_EARLY_JOIN_MS,
   buildStudioCalendarInvite,
+  isChatReactionType,
   getScheduledGuestOpenAtMs,
   isScheduledGuestAccessBlocked,
 } from '../dist/index.js';
@@ -60,5 +61,17 @@ describe('scheduled guest access helpers', () => {
       inviteUrl: 'https://example.com/join/abc123',
       scheduledFor: undefined,
     }), null);
+  });
+});
+
+describe('chat reaction helpers', () => {
+  it('accepts only supported chat reaction types', () => {
+    assert.equal(isChatReactionType('like'), true);
+    assert.equal(isChatReactionType('love'), true);
+    assert.equal(isChatReactionType('clap'), true);
+    assert.equal(isChatReactionType('laugh'), true);
+    assert.equal(isChatReactionType('wow'), true);
+    assert.equal(isChatReactionType('thumbs-up'), false);
+    assert.equal(isChatReactionType(undefined), false);
   });
 });

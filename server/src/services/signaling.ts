@@ -8,6 +8,7 @@ import type {
   JoinRoomPayload,
   MediaStatePayload,
   ChatMessage,
+  ChatReactionType,
   QAQuestion,
   LivePoll,
   StageActionPayload,
@@ -17,6 +18,7 @@ import type {
 import {
   ROOM_NOT_OPEN_ERROR_CODE,
   SCHEDULED_GUEST_ACCESS_MESSAGE,
+  isChatReactionType,
   isScheduledGuestAccessBlocked,
 } from '@studio/shared';
 
@@ -26,6 +28,8 @@ type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'i
 interface RoomState {
   room: Room;
   participants: Map<string, { participant: Participant; ws: WebSocket }>;
+  chatMessages: Map<string, ChatMessage>;
+  chatReactions: Map<string, Map<ChatReactionType, Set<string>>>;
   qaQuestions: Map<string, QAQuestion>;
   qaVotes: Map<string, Set<string>>;
   polls: Map<string, LivePoll>;
@@ -57,6 +61,8 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'ice-candidate',
   'media-state-changed',
   'chat-message',
+  'chat-reaction',
+  'chat-star-update',
   'qa-question-submitted',
   'qa-question-update',
   'qa-question-upvote',
@@ -122,6 +128,7 @@ const WS_RATE_LIMIT_MAX = 100; // 100 messages per 10 seconds
 
 // Max lengths for user input
 const MAX_CHAT_MESSAGE_LENGTH = 2000;
+const MAX_CHAT_HISTORY_PER_ROOM = 500;
 const MAX_QA_QUESTION_LENGTH = 500;
 const MAX_QA_ANSWER_LENGTH = 1000;
 const MAX_POLL_QUESTION_LENGTH = 240;
@@ -300,6 +307,8 @@ export function createRoom(
   rooms.set(room.id, {
     room,
     participants: new Map(),
+    chatMessages: new Map(),
+    chatReactions: new Map(),
     qaQuestions: new Map(),
     qaVotes: new Map(),
     polls: new Map(),
@@ -472,6 +481,12 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'chat-message':
       handleChatMessage(ws, message.payload);
       break;
+    case 'chat-reaction':
+      handleChatReaction(ws, message.payload);
+      break;
+    case 'chat-star-update':
+      handleChatStarUpdate(ws, message.payload);
+      break;
     case 'qa-question-submitted':
       handleQAQuestionSubmitted(ws, message.payload);
       break;
@@ -629,6 +644,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   const allParticipants = Array.from(roomState.participants.values())
     .map((p) => p.participant)
     .filter((p) => p.id !== participant.id);
+  const chatMessages = getVisibleChatMessages(roomState, participant, participant.id);
   const qaQuestions = Array.from(roomState.qaQuestions.values())
     .filter((q) => effectiveRole === 'host' || effectiveRole === 'co-host' || q.status === 'approved' || q.status === 'answered');
   const polls = Array.from(roomState.polls.values())
@@ -640,6 +656,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       room: roomState.room,
       participant,
       participants: allParticipants,
+      chatMessages,
       qaQuestions,
       polls,
       recordingState: roomState.recordingStartedAt
@@ -1058,6 +1075,62 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
   }, mapping.participantId);
 }
 
+function canSeeChatMessage(message: ChatMessage, participant: Participant, participantId: string): boolean {
+  if (!message.isBackstage) return true;
+  return (
+    participant.role === 'host' ||
+    participant.role === 'co-host' ||
+    participant.status === 'backstage' ||
+    participantId === message.senderId
+  );
+}
+
+function getVisibleChatMessages(roomState: RoomState, participant: Participant, participantId: string): ChatMessage[] {
+  return Array.from(roomState.chatMessages.values())
+    .filter((message) => canSeeChatMessage(message, participant, participantId));
+}
+
+function getChatReactionCounts(reactions: Map<ChatReactionType, Set<string>> | undefined): ChatMessage['reactions'] {
+  if (!reactions) return undefined;
+  const counts: ChatMessage['reactions'] = {};
+  for (const [reaction, participantIds] of reactions) {
+    if (participantIds.size > 0) {
+      counts[reaction] = participantIds.size;
+    }
+  }
+  return Object.keys(counts).length > 0 ? counts : undefined;
+}
+
+function refreshStoredChatReactionCounts(roomState: RoomState, message: ChatMessage): ChatMessage {
+  const reactions = getChatReactionCounts(roomState.chatReactions.get(message.id));
+  const updated: ChatMessage = { ...message };
+  if (reactions) {
+    updated.reactions = reactions;
+  } else {
+    delete updated.reactions;
+  }
+  roomState.chatMessages.set(updated.id, updated);
+  return updated;
+}
+
+function storeChatMessage(roomState: RoomState, message: ChatMessage) {
+  roomState.chatMessages.set(message.id, message);
+  while (roomState.chatMessages.size > MAX_CHAT_HISTORY_PER_ROOM) {
+    const oldestId = roomState.chatMessages.keys().next().value;
+    if (oldestId === undefined) break;
+    roomState.chatMessages.delete(oldestId);
+    roomState.chatReactions.delete(oldestId);
+  }
+}
+
+function sendChatToVisibleParticipants(roomId: string, roomState: RoomState, message: ChatMessage, type: 'chat-message' | 'chat-message-updated') {
+  for (const [participantId, { participant, ws }] of roomState.participants) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (!canSeeChatMessage(message, participant, participantId)) continue;
+    send(ws, { type, payload: message });
+  }
+}
+
 function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
@@ -1085,6 +1158,7 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
 
   const sanitizedPayload: ChatMessage = {
     id: nanoid(10),
+    clientId: typeof payload.id === 'string' ? payload.id : undefined,
     content: sanitizedContent,
     senderId: mapping.participantId,
     senderName: senderEntry.participant.name,
@@ -1092,29 +1166,106 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
     isBackstage: payload.isBackstage === true,
   };
 
-  // Backstage messages are visible to the production team and guests who are
-  // currently backstage. Green-room participants remain isolated above.
-  if (sanitizedPayload.isBackstage) {
-    for (const [id, { participant, ws: targetWs }] of roomState.participants) {
-      if (
-        targetWs.readyState === WebSocket.OPEN &&
-        (
-          participant.role === 'host' ||
-          participant.role === 'co-host' ||
-          participant.status === 'backstage' ||
-          id === mapping.participantId
-        )
-      ) {
-        send(targetWs, { type: 'chat-message', payload: sanitizedPayload });
-      }
-    }
-  } else {
-    // Exclude sender — the client already adds the message optimistically
-    broadcastToRoom(mapping.roomId, {
-      type: 'chat-message',
-      payload: sanitizedPayload,
-    }, mapping.participantId);
+  storeChatMessage(roomState, sanitizedPayload);
+  sendChatToVisibleParticipants(mapping.roomId, roomState, sanitizedPayload, 'chat-message');
+}
+
+function handleChatReaction(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'chat-reaction' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const participantEntry = roomState.participants.get(mapping.participantId);
+  if (!participantEntry) return;
+  if (participantEntry.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before reacting to chat messages', 'PARTICIPANT_NOT_ADMITTED');
+    return;
   }
+
+  if (typeof payload.messageId !== 'string' || !isChatReactionType(payload.reaction)) {
+    sendError(ws, 'Invalid chat reaction', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const message = roomState.chatMessages.get(payload.messageId);
+  if (!message || !canSeeChatMessage(message, participantEntry.participant, mapping.participantId)) return;
+
+  const reactions = roomState.chatReactions.get(message.id) || new Map<ChatReactionType, Set<string>>();
+  const participantIds = reactions.get(payload.reaction) || new Set<string>();
+  if (participantIds.has(mapping.participantId)) {
+    participantIds.delete(mapping.participantId);
+  } else {
+    participantIds.add(mapping.participantId);
+  }
+
+  if (participantIds.size > 0) {
+    reactions.set(payload.reaction, participantIds);
+  } else {
+    reactions.delete(payload.reaction);
+  }
+  if (reactions.size > 0) {
+    roomState.chatReactions.set(message.id, reactions);
+  } else {
+    roomState.chatReactions.delete(message.id);
+  }
+
+  const updated = refreshStoredChatReactionCounts(roomState, message);
+  sendChatToVisibleParticipants(mapping.roomId, roomState, updated, 'chat-message-updated');
+}
+
+function handleChatStarUpdate(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'chat-star-update' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can star chat messages', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before starring chat messages', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  if (typeof payload.messageId !== 'string' || typeof payload.starred !== 'boolean') {
+    sendError(ws, 'Invalid chat star update', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const message = roomState.chatMessages.get(payload.messageId);
+  if (!message || !canSeeChatMessage(message, performer.participant, mapping.participantId)) return;
+  if (message.isBackstage) {
+    sendError(ws, 'Backstage messages cannot be starred for broadcast', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const updated: ChatMessage = {
+    ...message,
+    starred: payload.starred,
+    starredBy: payload.starred ? mapping.participantId : undefined,
+    starredAt: payload.starred ? new Date().toISOString() : undefined,
+  };
+  if (!payload.starred) {
+    delete updated.starred;
+    delete updated.starredBy;
+    delete updated.starredAt;
+  }
+
+  roomState.chatMessages.set(updated.id, updated);
+  const refreshed = refreshStoredChatReactionCounts(roomState, updated);
+  sendChatToVisibleParticipants(mapping.roomId, roomState, refreshed, 'chat-message-updated');
 }
 
 function handleQAQuestionSubmitted(
