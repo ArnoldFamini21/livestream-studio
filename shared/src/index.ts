@@ -189,6 +189,7 @@ export interface JoinRoomPayload {
   hostToken?: string;
   coHostInviteToken?: string;
   roomPassword?: string;
+  joinSessionId?: string;
 }
 
 export interface RoomJoinedPayload {
@@ -221,7 +222,7 @@ export interface MediaStatePayload {
 }
 
 export interface StageActionPayload {
-  action: 'move-to-stage' | 'move-to-backstage' | 'move-to-green-room' | 'notify-next' | 'promote-co-host' | 'demote-to-guest' | 'mute' | 'unmute' | 'remove';
+  action: 'move-to-stage' | 'move-to-backstage' | 'move-to-green-room' | 'notify-next' | 'promote-co-host' | 'demote-to-guest' | 'mute' | 'unmute' | 'remove' | 'ban';
   targetParticipantId: string;
   performedBy: string;
 }

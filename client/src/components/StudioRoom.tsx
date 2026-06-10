@@ -42,6 +42,7 @@ const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.
 const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_STUDIO_SCENES = 12;
 const HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
+const GUEST_JOIN_SESSION_STORAGE_KEY = 'livestream-studio:guest-join-session-id';
 
 const StreamDestinationsPanel = lazy(() => import('./StreamDestinations.tsx').then((module) => ({ default: module.StreamDestinations })));
 const InvitePanel = lazy(() => import('./InvitePanel.tsx').then((module) => ({ default: module.InvitePanel })));
@@ -73,6 +74,49 @@ function forgetSavedHostStudio(roomId: string) {
   } catch {
     // Ignore malformed local host-token cache.
   }
+}
+
+function isValidJoinSessionId(value: string | null): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(value);
+}
+
+function createJoinSessionId(): string {
+  if (window.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return `guest-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+  }
+  return `guest-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 18)}`;
+}
+
+function getGuestJoinSessionId(): string | undefined {
+  let existing: string | null = null;
+  try {
+    existing = localStorage.getItem(GUEST_JOIN_SESSION_STORAGE_KEY);
+  } catch {
+    existing = null;
+  }
+  if (isValidJoinSessionId(existing)) return existing;
+
+  let fallbackExisting: string | null = null;
+  try {
+    fallbackExisting = sessionStorage.getItem(GUEST_JOIN_SESSION_STORAGE_KEY);
+  } catch {
+    fallbackExisting = null;
+  }
+  if (isValidJoinSessionId(fallbackExisting)) return fallbackExisting;
+
+  const created = createJoinSessionId();
+  try {
+    localStorage.setItem(GUEST_JOIN_SESSION_STORAGE_KEY, created);
+  } catch {
+    try {
+      sessionStorage.setItem(GUEST_JOIN_SESSION_STORAGE_KEY, created);
+    } catch {
+      return created;
+    }
+  }
+  return created;
 }
 
 interface PersistedStudioState {
@@ -899,9 +943,10 @@ export function StudioRoom() {
         ? sessionStorage.getItem(`coHostInviteToken:${roomId}`) || undefined
         : undefined;
       const roomPassword = hostToken || coHostInviteToken ? undefined : sessionStorage.getItem(`roomPassword:${roomId}`) || undefined;
+      const joinSessionId = userRole === 'host' ? undefined : getGuestJoinSessionId();
       send({
         type: 'join-room',
-        payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, roomPassword },
+        payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, roomPassword, joinSessionId },
       });
     }
   }, [connected, localStream, mediaError, mediaAttemptComplete, roomId, userName, userRole, send]);
@@ -1094,7 +1139,8 @@ export function StudioRoom() {
           if (
             message.payload.code === 'ROOM_PASSWORD_REQUIRED' ||
             message.payload.code === 'ROOM_PASSWORD_INVALID' ||
-            message.payload.code === ROOM_NOT_OPEN_ERROR_CODE
+            message.payload.code === ROOM_NOT_OPEN_ERROR_CODE ||
+            message.payload.code === 'PARTICIPANT_BANNED'
           ) {
             if (roomId) sessionStorage.removeItem(`roomPassword:${roomId}`);
             cleanupRef.current();

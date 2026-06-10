@@ -27,7 +27,8 @@ type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'i
 // In-memory store (replace with Redis/PostgreSQL later)
 interface RoomState {
   room: Room;
-  participants: Map<string, { participant: Participant; ws: WebSocket }>;
+  participants: Map<string, { participant: Participant; ws: WebSocket; joinSessionId?: string }>;
+  bannedJoinSessionIds: Set<string>;
   chatMessages: Map<string, ChatMessage>;
   chatReactions: Map<string, Map<ChatReactionType, Set<string>>>;
   qaQuestions: Map<string, QAQuestion>;
@@ -86,6 +87,7 @@ const STAGE_ACTIONS = new Set<StageActionPayload['action']>([
   'mute',
   'unmute',
   'remove',
+  'ban',
 ]);
 
 const MAX_ROOMS = 1000;
@@ -136,6 +138,7 @@ const MAX_POLL_OPTION_LENGTH = 80;
 const MAX_POLL_OPTIONS = 6;
 const MAX_ACTIVE_POLLS_PER_ROOM = 20;
 const MAX_PARTICIPANT_NAME_LENGTH = 50;
+const MAX_JOIN_SESSION_ID_LENGTH = 128;
 const MAX_ROOM_PASSWORD_LENGTH = 100;
 const LIVE_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
 const CO_HOST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -307,6 +310,7 @@ export function createRoom(
   rooms.set(room.id, {
     room,
     participants: new Map(),
+    bannedJoinSessionIds: new Set(),
     chatMessages: new Map(),
     chatReactions: new Map(),
     qaQuestions: new Map(),
@@ -344,6 +348,14 @@ function verifyRoomPassword(roomState: RoomState, password: unknown): boolean {
   const actual = scryptSync(sanitized, roomState.passwordSalt, 32);
   const expected = Buffer.from(roomState.passwordHash, 'base64url');
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function normalizeJoinSessionId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (normalized.length < 8 || normalized.length > MAX_JOIN_SESSION_ID_LENGTH) return undefined;
+  if (!/^[a-zA-Z0-9_-]+$/.test(normalized)) return undefined;
+  return normalized;
 }
 
 // Constant-time comparison to thwart timing attacks on the host token.
@@ -541,6 +553,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   const { roomId } = payload;
   const requestedRole: Participant['role'] =
     payload.role === 'host' || payload.role === 'co-host' ? payload.role : 'guest';
+  const joinSessionId = normalizeJoinSessionId(payload.joinSessionId);
   // Sanitize and validate participant name
   const name = (typeof payload.name === 'string' ? payload.name : '').trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, MAX_PARTICIPANT_NAME_LENGTH) || 'Anonymous';
   const roomState = rooms.get(roomId);
@@ -570,6 +583,15 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
 
   if (roomState.participants.size >= roomState.room.settings.maxParticipants) {
     sendError(ws, 'Room is full (max 7 participants)', 'ROOM_FULL');
+    return;
+  }
+
+  if (
+    requestedRole !== 'host' &&
+    joinSessionId &&
+    roomState.bannedJoinSessionIds.has(joinSessionId)
+  ) {
+    sendError(ws, 'You have been banned from this studio.', 'PARTICIPANT_BANNED');
     return;
   }
 
@@ -636,7 +658,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   cancelEmptyRoomDeletion(roomId, roomState);
 
   // Store participant
-  roomState.participants.set(participant.id, { participant, ws });
+  roomState.participants.set(participant.id, { participant, ws, joinSessionId });
   wsToParticipant.set(ws, { roomId, participantId: participant.id });
   roomState.hasBeenJoined = true;
 
@@ -718,6 +740,7 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     if (
       payload.action === 'demote-to-guest' ||
       payload.action === 'remove' ||
+      payload.action === 'ban' ||
       payload.action === 'move-to-backstage' ||
       payload.action === 'move-to-green-room' ||
       payload.action === 'notify-next'
@@ -791,6 +814,17 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       });
       // Close the target's WebSocket to trigger disconnect
       target.ws.close(1000, 'Removed by host');
+      return;
+    case 'ban':
+      if (target.joinSessionId) {
+        roomState.bannedJoinSessionIds.add(target.joinSessionId);
+      }
+      send(target.ws, {
+        type: 'participant-removed',
+        payload: { reason: 'Banned by host' },
+      });
+      // Close the target's WebSocket to trigger disconnect
+      target.ws.close(1000, 'Banned by host');
       return;
   }
 
