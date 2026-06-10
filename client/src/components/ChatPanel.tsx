@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import type { ChatMessage } from '@studio/shared';
+import type { ChatMessage, ChatReactionType } from '@studio/shared';
+import { CHAT_REACTION_LABELS } from '@studio/shared';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   onSend: (content: string) => void;
+  onReact?: (messageId: string, reaction: ChatReactionType) => void;
   onClose: () => void;
   senderName: string;
   title?: string;
@@ -18,6 +20,7 @@ const CHAR_COUNT_THRESHOLD = 1800;
 export function ChatPanel({
   messages,
   onSend,
+  onReact,
   onClose,
   senderName,
   title = 'Chat',
@@ -86,6 +89,7 @@ export function ChatPanel({
               key={msg.id}
               style={{
                 ...styles.message,
+                ...(msg.starred ? styles.messageStarred : {}),
                 animation: 'slideUp 0.2s ease-out',
               }}
             >
@@ -99,8 +103,24 @@ export function ChatPanel({
                 <span style={styles.msgTime}>
                   {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
+                {msg.starred && <span style={styles.starBadge}>Starred</span>}
               </div>
               <p style={styles.msgContent}>{msg.content}</p>
+              {onReact && (
+                <div style={styles.reactionRow}>
+                  {(Object.keys(CHAT_REACTION_LABELS) as ChatReactionType[]).map((reaction) => (
+                    <button
+                      key={reaction}
+                      type="button"
+                      style={styles.reactionBtn}
+                      onClick={() => onReact(msg.id, reaction)}
+                      title={`${CHAT_REACTION_LABELS[reaction]} reaction`}
+                    >
+                      {CHAT_REACTION_LABELS[reaction]}{msg.reactions?.[reaction] ? ` ${msg.reactions[reaction]}` : ''}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
@@ -211,7 +231,14 @@ const styles: Record<string, React.CSSProperties> = {
   message: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 2,
+    gap: 5,
+    padding: 8,
+    borderRadius: 8,
+    border: '1px solid transparent',
+  },
+  messageStarred: {
+    borderColor: 'rgba(245, 158, 11, 0.28)',
+    background: 'rgba(245, 158, 11, 0.06)',
   },
   msgHeader: {
     display: 'flex',
@@ -226,12 +253,38 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: 'var(--text-muted)',
   },
+  starBadge: {
+    fontSize: 9,
+    fontWeight: 700,
+    padding: '1px 5px',
+    borderRadius: 4,
+    background: 'rgba(245, 158, 11, 0.14)',
+    color: '#fbbf24',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
   msgContent: {
     fontSize: 13,
     color: 'var(--text-secondary)',
     lineHeight: 1.4,
     wordBreak: 'break-word',
     margin: 0,
+  },
+  reactionRow: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: 5,
+  },
+  reactionBtn: {
+    minHeight: 24,
+    border: '1px solid var(--border)',
+    background: 'rgba(255, 255, 255, 0.04)',
+    color: 'var(--text-muted)',
+    borderRadius: 6,
+    padding: '0 7px',
+    fontSize: 10,
+    fontWeight: 700,
+    cursor: 'pointer',
   },
   inputArea: {
     borderTop: '1px solid var(--border)',

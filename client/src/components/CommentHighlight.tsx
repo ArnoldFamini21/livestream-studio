@@ -154,7 +154,12 @@ export function CommentHighlightManager({
     });
   };
 
-  const recentMessages = chatMessages.slice(-20);
+  const publicMessages = chatMessages.filter((msg) => !msg.isBackstage);
+  const starredMessages = publicMessages.filter((msg) => msg.starred);
+  const recentMessages = [
+    ...starredMessages,
+    ...publicMessages.filter((msg) => !msg.starred).slice(-20),
+  ].slice(-20);
 
   return (
     <div style={styles.container}>
@@ -208,7 +213,7 @@ export function CommentHighlightManager({
 
       {/* From Chat section */}
       <div style={styles.chatSection}>
-        <span style={styles.fieldLabel}>From Chat</span>
+        <span style={styles.fieldLabel}>Starred & Recent</span>
         <div ref={listRef} style={styles.chatList}>
           {recentMessages.length === 0 && (
             <div style={styles.emptyChat}>
@@ -218,7 +223,10 @@ export function CommentHighlightManager({
           {recentMessages.map((msg) => (
             <div key={msg.id} className="participant-item" style={styles.chatRow}>
               <div style={styles.chatRowInfo}>
-                <span style={styles.chatRowName}>{msg.senderName}</span>
+                <span style={styles.chatRowName}>
+                  {msg.senderName}
+                  {msg.starred && <span style={styles.chatStarBadge}>Starred</span>}
+                </span>
                 <span style={styles.chatRowText}>{msg.content}</span>
               </div>
               <button
@@ -506,9 +514,22 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
   },
   chatRowName: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
     fontSize: 11,
     fontWeight: 600,
     color: 'var(--text-primary)',
+  },
+  chatStarBadge: {
+    fontSize: 8,
+    fontWeight: 800,
+    padding: '1px 4px',
+    borderRadius: 4,
+    background: 'rgba(245, 158, 11, 0.14)',
+    color: '#fbbf24',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
   },
   chatRowText: {
     fontSize: 11,

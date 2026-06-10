@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -50,6 +50,18 @@ const Teleprompter = lazy(() => import('./Teleprompter.tsx').then((module) => ({
 const BackgroundMusic = lazy(() => import('./BackgroundMusic.tsx').then((module) => ({ default: module.BackgroundMusic })));
 const RecordingPanel = lazy(() => import('./RecordingPanel.tsx').then((module) => ({ default: module.RecordingPanel })));
 const ProducerPanel = lazy(() => import('./ProducerPanel.tsx').then((module) => ({ default: module.ProducerPanel })));
+
+function upsertChatMessage(messages: ChatMessage[], incoming: ChatMessage): ChatMessage[] {
+  const index = messages.findIndex((message) => (
+    message.id === incoming.id ||
+    (incoming.clientId !== undefined && message.id === incoming.clientId)
+  ));
+  const next = index >= 0 ? [...messages] : [...messages, incoming];
+  if (index >= 0) {
+    next[index] = incoming;
+  }
+  return next.length > 500 ? next.slice(-500) : next;
+}
 
 function forgetSavedHostStudio(roomId: string) {
   try {
@@ -909,10 +921,11 @@ export function StudioRoom() {
     (message: SignalMessage) => {
       switch (message.type) {
         case 'room-joined': {
-          const { room: roomData, participant, participants: existing, qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState } = message.payload;
+          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState } = message.payload;
           setRoom(roomData);
           setMyParticipant(participant);
           setJoined(true);
+          setChatMessages(existingChatMessages);
           setQAQuestions(existingQuestions);
           setPolls(existingPolls);
           setSessionRecordingStartedAt(recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null);
@@ -975,12 +988,12 @@ export function StudioRoom() {
           break;
         }
         case 'chat-message':
-          setChatMessages((prev) => {
-            // Deduplicate: the sender already added this message optimistically
-            if (prev.some((m) => m.id === message.payload.id)) return prev;
-            const next = [...prev, message.payload];
-            return next.length > 500 ? next.slice(-500) : next;
-          });
+          setChatMessages((prev) => upsertChatMessage(prev, message.payload));
+          break;
+        case 'chat-message-updated':
+          setChatMessages((prev) => prev.map((chatMessage) => (
+            chatMessage.id === message.payload.id ? message.payload : chatMessage
+          )));
           break;
         case 'qa-question-updated': {
           const updated = message.payload;
@@ -1137,6 +1150,8 @@ export function StudioRoom() {
         // Client-to-server messages: not expected here but listed for exhaustive check
         case 'join-room':
         case 'stage-action':
+        case 'chat-reaction':
+        case 'chat-star-update':
         case 'qa-question-submitted':
         case 'qa-question-update':
         case 'qa-question-upvote':
@@ -1431,6 +1446,14 @@ export function StudioRoom() {
     }
 
     send({ type: 'chat-message', payload: msg });
+  };
+
+  const onReactChat = (messageId: string, reaction: ChatReactionType) => {
+    send({ type: 'chat-reaction', payload: { messageId, reaction } });
+  };
+
+  const onToggleChatStar = (messageId: string, starred: boolean) => {
+    send({ type: 'chat-star-update', payload: { messageId, starred } });
   };
 
   // Lower thirds
@@ -2394,6 +2417,7 @@ export function StudioRoom() {
           <ChatPanel
             messages={chatMessages.filter((msg) => msg.isBackstage)}
             onSend={(content) => onSendChat(content, true)}
+            onReact={onReactChat}
             onClose={() => setShowGuestChat(false)}
             senderName={userName}
             title="Backstage Chat"
@@ -2733,6 +2757,7 @@ export function StudioRoom() {
           <ChatPanel
             messages={chatMessages.filter((msg) => !msg.isBackstage)}
             onSend={onSendChat}
+            onReact={onReactChat}
             onClose={() => setShowGuestChat(false)}
             senderName={userName}
           />
@@ -2795,6 +2820,8 @@ export function StudioRoom() {
             onDismissComment={onDismissComment}
             chatPanelMessages={chatMessages}
             onSendChat={onSendChat}
+            onReactChat={onReactChat}
+            onToggleChatStar={onToggleChatStar}
             chatSenderName={userName}
             allParticipants={allParticipantsMap}
             myParticipantId={myParticipant?.id || ''}

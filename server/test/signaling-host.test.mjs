@@ -33,7 +33,7 @@ async function connectClient(url) {
   return ws;
 }
 
-function waitForMessage(ws, type) {
+function waitForMessage(ws, type, predicate = () => true) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       cleanup();
@@ -54,6 +54,7 @@ function waitForMessage(ws, type) {
     function onMessage(data) {
       const message = JSON.parse(data.toString());
       if (message.type !== type) return;
+      if (!predicate(message)) return;
       cleanup();
       resolve(message);
     }
@@ -65,6 +66,10 @@ function waitForMessage(ws, type) {
 
 function joinRoom(ws, payload) {
   ws.send(JSON.stringify({ type: 'join-room', payload }));
+}
+
+function sendSignal(ws, message) {
+  ws.send(JSON.stringify(message));
 }
 
 describe('host admission', () => {
@@ -127,6 +132,111 @@ describe('host admission', () => {
       const error = await errorMessage;
       assert.equal(error.payload.code, 'HOST_TOKEN_INVALID');
       assert.equal(getRooms().get(room.id)?.participants.size, 0);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('chat engagement', () => {
+  it('broadcasts starred comments and reaction counts through canonical chat messages', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Chat engagement test', 'Arnold', {
+      creatorIp: `chat-engagement-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const hostChat = waitForMessage(host, 'chat-message');
+      const guestChat = waitForMessage(guest, 'chat-message');
+      sendSignal(guest, {
+        type: 'chat-message',
+        payload: {
+          id: 'guest-message-1',
+          senderId: 'client-claimed-id',
+          senderName: 'Client claimed name',
+          content: 'Question from chat',
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+
+      const [hostMessage, guestMessage] = await Promise.all([hostChat, guestChat]);
+      assert.equal(hostMessage.payload.content, 'Question from chat');
+      assert.equal(hostMessage.payload.senderName, 'Guest');
+      assert.equal(hostMessage.payload.clientId, 'guest-message-1');
+      assert.equal(guestMessage.payload.id, hostMessage.payload.id);
+
+      const starError = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'chat-star-update',
+        payload: {
+          messageId: hostMessage.payload.id,
+          starred: true,
+        },
+      });
+      const unauthorized = await starError;
+      assert.match(unauthorized.payload.message, /Only hosts/);
+
+      const hostStarred = waitForMessage(host, 'chat-message-updated', (message) => message.payload.starred === true);
+      const guestStarred = waitForMessage(guest, 'chat-message-updated', (message) => message.payload.starred === true);
+      sendSignal(host, {
+        type: 'chat-star-update',
+        payload: {
+          messageId: hostMessage.payload.id,
+          starred: true,
+        },
+      });
+      const [hostStarredMessage, guestStarredMessage] = await Promise.all([hostStarred, guestStarred]);
+      assert.equal(hostStarredMessage.payload.starred, true);
+      assert.equal(guestStarredMessage.payload.starred, true);
+
+      const hostReacted = waitForMessage(host, 'chat-message-updated', (message) => message.payload.reactions?.like === 1);
+      const guestReacted = waitForMessage(guest, 'chat-message-updated', (message) => message.payload.reactions?.like === 1);
+      sendSignal(guest, {
+        type: 'chat-reaction',
+        payload: {
+          messageId: hostMessage.payload.id,
+          reaction: 'like',
+        },
+      });
+      const [hostReactedMessage, guestReactedMessage] = await Promise.all([hostReacted, guestReacted]);
+      assert.equal(hostReactedMessage.payload.reactions.like, 1);
+      assert.equal(guestReactedMessage.payload.reactions.like, 1);
+
+      const lateGuest = await connectClient(harness.url);
+      const lateJoined = waitForMessage(lateGuest, 'room-joined');
+      joinRoom(lateGuest, {
+        roomId: room.id,
+        name: 'Late Guest',
+        role: 'guest',
+      });
+      const late = await lateJoined;
+      const savedMessage = late.payload.chatMessages.find((message) => message.id === hostMessage.payload.id);
+      assert.ok(savedMessage);
+      assert.equal(savedMessage.starred, true);
+      assert.equal(savedMessage.reactions.like, 1);
     } finally {
       await harness.close();
     }
