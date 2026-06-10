@@ -1470,8 +1470,9 @@ export function StudioRoom() {
   const onStartLocalRecording = () => {
     if (!myParticipant) return;
     const sources: LocalRecordingSource[] = [];
-    const localAudioTracks = localStream?.getAudioTracks().filter((track) => track.readyState === 'live') || [];
-    const localVideoTracks = localStream?.getVideoTracks().filter((track) => track.readyState === 'live') || [];
+    const liveTracks = (tracks: MediaStreamTrack[]) => tracks.filter((track) => track.readyState === 'live');
+    const localAudioTracks = liveTracks(localStream?.getAudioTracks() || []);
+    const localVideoTracks = liveTracks(localStream?.getVideoTracks() || []);
     const localId = getRecordingSourceId(myParticipant.id);
 
     if (localAudioTracks.length > 0) {
@@ -1498,27 +1499,51 @@ export function StudioRoom() {
       if (participant.status !== 'on-stage') continue;
       const remoteStream = remoteStreams.get(id);
       if (!remoteStream) continue;
-      const remoteTracks = remoteStream.getTracks().filter((track) => track.readyState === 'live');
-      if (remoteTracks.length === 0) continue;
-      const hasVideo = remoteTracks.some((track) => track.kind === 'video');
-      sources.push({
-        id: `${getRecordingSourceId(id)}-isolated`,
-        label: participant.screenSharing ? `${participant.name} screen` : `${participant.name} isolated`,
-        kind: hasVideo ? 'video' : 'audio',
-        stream: new MediaStream(remoteTracks),
-        bitsPerSecond: hasVideo ? 8_000_000 : 256_000,
-      });
+      const remoteId = getRecordingSourceId(id);
+      const remoteAudioTracks = liveTracks(remoteStream.getAudioTracks());
+      const remoteVideoTracks = liveTracks(remoteStream.getVideoTracks());
+
+      if (remoteAudioTracks.length > 0) {
+        sources.push({
+          id: `${remoteId}-audio`,
+          label: `${participant.name} audio`,
+          kind: 'audio',
+          stream: new MediaStream(remoteAudioTracks),
+          bitsPerSecond: 256_000,
+        });
+      }
+
+      if (remoteVideoTracks.length > 0) {
+        const isRemoteScreen = participant.screenSharing;
+        sources.push({
+          id: `${remoteId}-${isRemoteScreen ? 'screen' : 'camera'}`,
+          label: `${participant.name} ${isRemoteScreen ? 'screen' : 'camera'}`,
+          kind: isRemoteScreen ? 'screen' : 'video',
+          stream: new MediaStream(remoteVideoTracks),
+          bitsPerSecond: 8_000_000,
+        });
+      }
     }
 
     if (isScreenSharing && screenStream) {
-      const screenTracks = screenStream.getTracks().filter((track) => track.readyState === 'live');
-      if (screenTracks.length > 0) {
+      const screenVideoTracks = liveTracks(screenStream.getVideoTracks());
+      const screenAudioTracks = liveTracks(screenStream.getAudioTracks());
+      if (screenVideoTracks.length > 0) {
         sources.push({
           id: `${localId}-screen`,
           label: `${myParticipant.name} screen`,
           kind: 'screen',
-          stream: new MediaStream(screenTracks),
+          stream: new MediaStream(screenVideoTracks),
           bitsPerSecond: 8_000_000,
+        });
+      }
+      if (screenAudioTracks.length > 0) {
+        sources.push({
+          id: `${localId}-screen-audio`,
+          label: `${myParticipant.name} screen audio`,
+          kind: 'audio',
+          stream: new MediaStream(screenAudioTracks),
+          bitsPerSecond: 256_000,
         });
       }
     }
