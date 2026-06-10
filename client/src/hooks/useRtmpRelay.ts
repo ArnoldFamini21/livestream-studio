@@ -14,6 +14,7 @@ interface UseRtmpRelayOptions {
   remoteStreams: Map<string, MediaStream>;
   screenStream: MediaStream | null;
   participantVolumes?: Record<string, number>;
+  readinessEnabled?: boolean;
   onDestinationStatus: (destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => void;
 }
 
@@ -48,6 +49,13 @@ export interface RtmpRelayStats {
   bitrateKbps: number;
   bitrateHistory: Array<{ at: number; kbps: number }>;
   droppedChunks: number;
+}
+
+export interface RtmpRelayReadiness {
+  status: 'checking' | 'ready' | 'unavailable';
+  message: string;
+  mediaWsUrl: string;
+  checkedAt: number | null;
 }
 
 interface BitrateSample {
@@ -93,6 +101,14 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
 
 const BITRATE_WINDOW_MS = 5_000;
 const BITRATE_HISTORY_WINDOW_MS = 60_000;
+const RELAY_PREFLIGHT_TIMEOUT_MS = 4_000;
+
+const INITIAL_RELAY_READINESS: RtmpRelayReadiness = {
+  status: 'checking',
+  message: 'Checking media relay...',
+  mediaWsUrl: '',
+  checkedAt: null,
+};
 
 function clampVolume(volume: number | undefined): number {
   if (!Number.isFinite(volume)) return 1;
@@ -110,12 +126,55 @@ function getMediaWsUrl(): string {
 }
 
 function getRelayMimeType(): string {
+  if (!('MediaRecorder' in window) || typeof MediaRecorder.isTypeSupported !== 'function') return '';
   const candidates = [
     'video/webm;codecs=vp8,opus',
     'video/webm;codecs=vp9,opus',
     'video/webm',
   ];
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
+}
+
+function getBrowserRelayIssue(): string | null {
+  if (!('WebSocket' in window)) return 'This browser does not support WebSocket streaming.';
+  if (!('MediaRecorder' in window)) return 'This browser does not support MediaRecorder streaming.';
+  if (!getRelayMimeType()) return 'This browser does not support WebM recording for RTMP relay.';
+  return null;
+}
+
+function probeRelayWebSocket(mediaWsUrl: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let ws: WebSocket;
+    let settled = false;
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close(1000, 'Relay preflight complete');
+      }
+      if (error) reject(error);
+      else resolve();
+    };
+
+    const timeout = window.setTimeout(() => {
+      finish(new Error('Media relay did not respond in time.'));
+    }, RELAY_PREFLIGHT_TIMEOUT_MS);
+
+    try {
+      ws = new WebSocket(mediaWsUrl);
+    } catch (err) {
+      window.clearTimeout(timeout);
+      const message = err instanceof Error ? err.message : 'Invalid media relay URL.';
+      reject(new Error(message));
+      return;
+    }
+
+    ws.onopen = () => finish();
+    ws.onerror = () => finish(new Error('Unable to reach the media relay server.'));
+    ws.onclose = () => finish(new Error('Media relay connection closed before it was ready.'));
+  });
 }
 
 function collectAudioSources(
@@ -320,6 +379,7 @@ export function useRtmpRelay({
   remoteStreams,
   screenStream,
   participantVolumes = {},
+  readinessEnabled = true,
   onDestinationStatus,
 }: UseRtmpRelayOptions) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -328,7 +388,9 @@ export function useRtmpRelay({
   const activeDestinationIdsRef = useRef<string[]>([]);
   const bitrateSamplesRef = useRef<BitrateSample[]>([]);
   const sentBytesRef = useRef(0);
+  const readinessCheckIdRef = useRef(0);
   const [stats, setStats] = useState<RtmpRelayStats>(INITIAL_RELAY_STATS);
+  const [readiness, setReadiness] = useState<RtmpRelayReadiness>(INITIAL_RELAY_READINESS);
 
   const setRelayStatus = useCallback((status: RtmpRelayStats['status']) => {
     setStats((current) => ({ ...current, status, updatedAt: Date.now() }));
@@ -407,6 +469,52 @@ export function useRtmpRelay({
     cleanup();
   }, [cleanup]);
 
+  const checkRelayReadiness = useCallback(async (): Promise<RtmpRelayReadiness> => {
+    const checkId = readinessCheckIdRef.current + 1;
+    readinessCheckIdRef.current = checkId;
+    const mediaWsUrl = getMediaWsUrl();
+    const checking: RtmpRelayReadiness = {
+      status: 'checking',
+      message: 'Checking media relay...',
+      mediaWsUrl,
+      checkedAt: Date.now(),
+    };
+    setReadiness(checking);
+
+    const browserIssue = getBrowserRelayIssue();
+    if (browserIssue) {
+      const unavailable: RtmpRelayReadiness = {
+        status: 'unavailable',
+        message: browserIssue,
+        mediaWsUrl,
+        checkedAt: Date.now(),
+      };
+      if (readinessCheckIdRef.current === checkId) setReadiness(unavailable);
+      return unavailable;
+    }
+
+    try {
+      await probeRelayWebSocket(mediaWsUrl);
+      const ready: RtmpRelayReadiness = {
+        status: 'ready',
+        message: 'Media relay is reachable.',
+        mediaWsUrl,
+        checkedAt: Date.now(),
+      };
+      if (readinessCheckIdRef.current === checkId) setReadiness(ready);
+      return ready;
+    } catch (err) {
+      const unavailable: RtmpRelayReadiness = {
+        status: 'unavailable',
+        message: err instanceof Error ? err.message : 'Media relay is unavailable.',
+        mediaWsUrl,
+        checkedAt: Date.now(),
+      };
+      if (readinessCheckIdRef.current === checkId) setReadiness(unavailable);
+      return unavailable;
+    }
+  }, []);
+
   const startRelay = useCallback(
     async ({ token, destinations, orientation }: StartRelayOptions): Promise<void> => {
       if (wsRef.current) {
@@ -414,6 +522,11 @@ export function useRtmpRelay({
       }
       if (destinations.length === 0) {
         throw new Error('At least one stream destination is required.');
+      }
+
+      const browserIssue = getBrowserRelayIssue();
+      if (browserIssue) {
+        throw new Error(browserIssue);
       }
 
       const compositeStream = compositeStreamRef.current;
@@ -571,6 +684,12 @@ export function useRtmpRelay({
   );
 
   useEffect(() => {
+    if (!readinessEnabled) return;
+    if (wsRef.current || stats.status !== 'idle') return;
+    void checkRelayReadiness();
+  }, [checkRelayReadiness, readinessEnabled, stats.status]);
+
+  useEffect(() => {
     const mixer = mixerRef.current;
     if (!mixer) return;
     for (const [participantId, gain] of mixer.participantGains) {
@@ -594,5 +713,5 @@ export function useRtmpRelay({
 
   useEffect(() => cleanup, [cleanup]);
 
-  return { startRelay, stopRelay, stats };
+  return { startRelay, stopRelay, stats, readiness, checkRelayReadiness };
 }
