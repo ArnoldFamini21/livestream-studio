@@ -73,7 +73,7 @@ interface RecordingMarkerFile {
 
 interface RecordingEditorFile {
   label: string;
-  format: 'json' | 'csv' | 'txt' | 'fcpxml';
+  format: 'json' | 'csv' | 'txt' | 'fcpxml' | 'premiere-xml';
   zipPath: string;
   size: number;
   type: string;
@@ -580,6 +580,11 @@ function formatFcpxDuration(seconds: number | null | undefined): string {
   return `${frames}/30s`;
 }
 
+function getTimelineFrameCount(seconds: number | null | undefined): number {
+  if (!Number.isFinite(seconds) || Number(seconds) <= 0) return 1;
+  return Math.max(1, Math.round(Number(seconds) * 30));
+}
+
 export function buildRecordingMarkersCsv(markers: RecordingMarker[]): string {
   const rows = [
     ['index', 'timecode', 'seconds', 'label', 'createdAt'],
@@ -879,6 +884,145 @@ export function buildFinalCutProXml(
   ].join('\n');
 }
 
+export function buildPremiereProXml(
+  source: RecordingBundleSource,
+  files: RecordingBundleFile[],
+  audioStemFiles: RecordingAudioStemFile[],
+  markers: RecordingMarker[]
+): string {
+  const durationFrames = getTimelineFrameCount(source.durationSeconds);
+  const projectName = source.roomName || 'LiveStream Studio Recording';
+  const audioStemBySourcePath = new Map(audioStemFiles.map((file) => [file.sourceZipPath, file]));
+  const sequenceTracks = files.map((file, index) => {
+    const kind = inferEditorTrackKind(file);
+    const audioStem = audioStemBySourcePath.get(file.zipPath);
+    return {
+      id: `clip-${index + 1}`,
+      fileId: `file-${index + 1}`,
+      kind,
+      label: file.label || file.fileName,
+      zipPath: file.zipPath,
+      fileName: file.fileName,
+      type: file.type,
+      durationFrames,
+      audioStem,
+    };
+  });
+  const markerLines = getSortedRecordingMarkers(markers).map((marker) => (
+    [
+      '        <marker>',
+      `          <name>${xmlEscape(marker.label)}</name>`,
+      `          <comment>${xmlEscape(formatDuration(marker.seconds))}</comment>`,
+      `          <in>${getTimelineFrameCount(marker.seconds)}</in>`,
+      `          <out>${getTimelineFrameCount(marker.seconds) + 1}</out>`,
+      '        </marker>',
+    ].join('\n')
+  ));
+  const fileLines = sequenceTracks.map((track) => (
+    [
+      `              <file id="${track.fileId}">`,
+      `                <name>${xmlEscape(track.fileName)}</name>`,
+      `                <pathurl>${xmlEscape(`../${track.zipPath}`)}</pathurl>`,
+      `                <duration>${track.durationFrames}</duration>`,
+      '                <rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate>',
+      '                <media>',
+      track.kind === 'audio'
+        ? '                  <audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>1</channelcount></audio>'
+        : '                  <video><samplecharacteristics><width>1920</width><height>1080</height><anamorphic>FALSE</anamorphic><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></video>',
+      '                </media>',
+      '              </file>',
+    ].join('\n')
+  ));
+  const videoClipLines = sequenceTracks
+    .filter((track) => track.kind !== 'audio')
+    .map((track, index) => (
+      [
+        `            <clipitem id="${track.id}">`,
+        `              <name>${xmlEscape(track.label)}</name>`,
+        `              <start>0</start><end>${track.durationFrames}</end><in>0</in><out>${track.durationFrames}</out>`,
+        `              <enabled>TRUE</enabled>`,
+        `              <file id="${track.fileId}"/>`,
+        '            </clipitem>',
+      ].join('\n')
+    ));
+  const audioClipLines = [
+    ...sequenceTracks
+      .filter((track) => track.kind === 'audio')
+      .map((track) => ({
+        id: track.id,
+        fileId: track.fileId,
+        label: track.label,
+        durationFrames: track.durationFrames,
+      })),
+    ...sequenceTracks
+      .filter((track) => track.audioStem)
+      .map((track, index) => ({
+        id: `stem-clip-${index + 1}`,
+        fileId: `stem-file-${index + 1}`,
+        label: track.audioStem?.label || `${track.label} WAV stem`,
+        durationFrames: track.durationFrames,
+        zipPath: track.audioStem?.zipPath || '',
+        fileName: track.audioStem?.zipPath.split('/').pop() || '',
+      })),
+  ].map((track) => (
+    [
+      `            <clipitem id="${track.id}">`,
+      `              <name>${xmlEscape(track.label)}</name>`,
+      `              <start>0</start><end>${track.durationFrames}</end><in>0</in><out>${track.durationFrames}</out>`,
+      '              <enabled>TRUE</enabled>',
+      `              <file id="${track.fileId}"/>`,
+      '            </clipitem>',
+    ].join('\n')
+  ));
+  const stemFileLines = sequenceTracks
+    .filter((track) => track.audioStem)
+    .map((track, index) => {
+      const stem = track.audioStem as RecordingAudioStemFile;
+      return [
+        `              <file id="stem-file-${index + 1}">`,
+        `                <name>${xmlEscape(stem.zipPath.split('/').pop() || stem.label)}</name>`,
+        `                <pathurl>${xmlEscape(`../${stem.zipPath}`)}</pathurl>`,
+        `                <duration>${track.durationFrames}</duration>`,
+        '                <rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate>',
+        '                <media>',
+        `                  <audio><samplecharacteristics><depth>${stem.bitDepth}</depth><samplerate>${stem.sampleRate}</samplerate></samplecharacteristics><channelcount>${stem.channels}</channelcount></audio>`,
+        '                </media>',
+        '              </file>',
+      ].join('\n');
+    });
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE xmeml>',
+    '<xmeml version="5">',
+    `  <sequence id="sequence-1">`,
+    `    <name>${xmlEscape(projectName)}</name>`,
+    `    <duration>${durationFrames}</duration>`,
+    '    <rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate>',
+    '    <media>',
+    '      <video>',
+    '        <format><samplecharacteristics><width>1920</width><height>1080</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>',
+    '        <track>',
+    ...videoClipLines,
+    '        </track>',
+    '      </video>',
+    '      <audio>',
+    '        <track>',
+    ...audioClipLines,
+    '        </track>',
+    '      </audio>',
+    '    </media>',
+    ...markerLines,
+    '    <files>',
+    ...fileLines,
+    ...stemFileLines,
+    '    </files>',
+    '  </sequence>',
+    '</xmeml>',
+    '',
+  ].join('\n');
+}
+
 function buildEditorReadme(source: RecordingBundleSource): string {
   return [
     'LiveStream Studio Editor Export',
@@ -893,10 +1037,11 @@ function buildEditorReadme(source: RecordingBundleSource): string {
     '- editor/local_recording_timeline.json: structured timeline metadata',
     '- editor/local_recording_timeline.csv: spreadsheet/editor-friendly track layout',
     '- editor/local_recording_timeline.fcpxml: Final Cut Pro XML project starter',
+    '- editor/premiere_pro_sequence.xml: Adobe Premiere Pro XML sequence starter',
     '- markers/: recording markers when present',
     '- captions/: live caption sidecars when present',
     '',
-    'Import the FCPXML into Final Cut Pro, or place each track at 0:00 in another editor and use the timeline CSV/JSON plus marker files as the sync map.',
+    'Import the FCPXML into Final Cut Pro, the Premiere XML into Adobe Premiere Pro, or place each track at 0:00 in another editor and use the timeline CSV/JSON plus marker files as the sync map.',
   ].join('\n');
 }
 
@@ -1138,6 +1283,12 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
       blob: new Blob([buildFinalCutProXml(source, manifestFiles, audioStemResult.files, sortedMarkers)], { type: 'application/xml;charset=utf-8' }),
       label: 'Final Cut Pro XML',
       format: 'fcpxml' as const,
+    },
+    {
+      path: 'editor/premiere_pro_sequence.xml',
+      blob: new Blob([buildPremiereProXml(source, manifestFiles, audioStemResult.files, sortedMarkers)], { type: 'application/xml;charset=utf-8' }),
+      label: 'Adobe Premiere Pro XML',
+      format: 'premiere-xml' as const,
     },
     {
       path: 'editor/README.txt',
@@ -1704,7 +1855,7 @@ export function RecordingPanel({
             {/* Action buttons */}
             <div style={styles.actions}>
               <div style={styles.captionSidecarNote}>
-                ZIP includes editor timeline JSON/CSV, Final Cut Pro XML, and WAV audio stems when supported.
+                ZIP includes editor timeline JSON/CSV, Final Cut Pro XML, Premiere Pro XML, and WAV audio stems when supported.
               </div>
               {finalCaptionCount > 0 && (
                 <div style={styles.captionSidecarNote}>

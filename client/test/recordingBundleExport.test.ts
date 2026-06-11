@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   buildFinalCutProXml,
+  buildPremiereProXml,
   createRecordingBundle,
   type RecordingMarker,
 } from '../src/components/RecordingPanel.tsx';
@@ -89,5 +90,37 @@ describe('recording bundle editor export', () => {
     assert.match(text, /editor\/local_recording_timeline\.fcpxml/);
     assert.match(text, /Final Cut Pro XML/);
     assert.match(text, /<fcpxml version="1\.10">/);
+  });
+
+  it('builds an Adobe Premiere Pro XML sequence starter with tracks, stems, and markers', () => {
+    const xml = buildPremiereProXml(source, bundleFiles, audioStemFiles, markers);
+
+    assert.match(xml, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
+    assert.match(xml, /<xmeml version="5">/);
+    assert.match(xml, /Launch &lt;Demo&gt; &amp; Review/);
+    assert.match(xml, /<pathurl>\.\.\/tracks\/01_host\.webm<\/pathurl>/);
+    assert.match(xml, /<pathurl>\.\.\/audio-stems\/02_host-audio\.wav<\/pathurl>/);
+    assert.match(xml, /<name>Clip this &quot;answer&quot;<\/name>/);
+    assert.match(xml, /<timebase>30<\/timebase>/);
+  });
+
+  it('includes the Premiere XML sidecar and manifest entry in recording bundles', async () => {
+    const bundle = await createRecordingBundle({
+      ...source,
+      files: [
+        {
+          label: 'Host Camera',
+          fileName: 'host.webm',
+          blob: new Blob(['video-track'], { type: 'video/webm' }),
+          kind: 'video',
+        },
+      ],
+      markers,
+    } as any);
+    const text = new TextDecoder().decode(await bundle.arrayBuffer());
+
+    assert.match(text, /editor\/premiere_pro_sequence\.xml/);
+    assert.match(text, /Adobe Premiere Pro XML/);
+    assert.match(text, /<xmeml version="5">/);
   });
 });
