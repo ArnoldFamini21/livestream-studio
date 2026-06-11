@@ -565,6 +565,69 @@ function csvEscape(value: string | number | null): string {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+function formatIsoTimestamp(value: string): string {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return value;
+  return new Date(parsed).toISOString();
+}
+
+function getRecordingLibraryMarkerSummary(session: LocalRecordingSession): string {
+  return getSortedRecordingMarkers(session.markers || [])
+    .map((marker) => `${formatDuration(marker.seconds)} ${marker.label}`)
+    .join('; ');
+}
+
+export function buildRecordingLibraryCatalogCsv(sessions: LocalRecordingSession[]): string {
+  const header = [
+    'sessionId',
+    'roomName',
+    'createdAt',
+    'durationTimecode',
+    'durationSeconds',
+    'trackCount',
+    'totalBytes',
+    'markerCount',
+    'markers',
+    'trackIndex',
+    'trackLabel',
+    'trackKind',
+    'fileName',
+    'mimeType',
+    'sizeBytes',
+  ];
+  const rows = sessions.flatMap((session) => {
+    const markers = session.markers || [];
+    const base = [
+      session.id,
+      session.roomName,
+      formatIsoTimestamp(session.createdAt),
+      formatDuration(session.durationSeconds),
+      session.durationSeconds ?? '',
+      session.trackCount,
+      session.totalBytes,
+      markers.length,
+      getRecordingLibraryMarkerSummary(session),
+    ];
+    if (session.files.length === 0) return [[...base, '', '', '', '', '', '']];
+    return session.files.map((file, index) => [
+      ...base,
+      index + 1,
+      file.label,
+      file.kind || '',
+      file.fileName,
+      file.type,
+      file.size,
+    ]);
+  });
+
+  return [header, ...rows].map((row) => row.map(csvEscape).join(',')).join('\n') + '\n';
+}
+
+export function buildRecordingLibraryCatalogFilename(now = new Date()): string {
+  const stamp = now.toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
+  return `studio_recording_library_${stamp}.csv`;
+}
+
 function xmlEscape(value: string | number | null | undefined): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -1481,6 +1544,15 @@ export function RecordingPanel({
     downloadTextFile(buildRecordingMarkersCsv(sortedRecordingMarkers), fileName, 'text/csv;charset=utf-8');
   }, [roomName, sortedRecordingMarkers]);
 
+  const handleExportLibraryCatalog = useCallback(() => {
+    if (filteredSessions.length === 0) return;
+    downloadTextFile(
+      buildRecordingLibraryCatalogCsv(filteredSessions),
+      buildRecordingLibraryCatalogFilename(),
+      'text/csv;charset=utf-8'
+    );
+  }, [filteredSessions]);
+
   const handleImportMarkersCsv = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
@@ -1956,9 +2028,24 @@ export function RecordingPanel({
         <div style={styles.librarySection}>
           <div style={styles.filesHeader}>
             <span style={styles.filesTitle}>Recording Library</span>
-            <span style={styles.filesCount}>
-              {filteredSessions.length}/{sessions.length} saved | {formatFileSize(libraryTotalBytes)}
-            </span>
+            <div style={styles.libraryHeaderActions}>
+              <span style={styles.filesCount}>
+                {filteredSessions.length}/{sessions.length} saved | {formatFileSize(libraryTotalBytes)}
+              </span>
+              {sessions.length > 0 && (
+                <button
+                  type="button"
+                  style={{
+                    ...styles.libraryExportBtn,
+                    ...(filteredSessions.length === 0 ? styles.libraryExportBtnDisabled : {}),
+                  }}
+                  onClick={handleExportLibraryCatalog}
+                  disabled={filteredSessions.length === 0}
+                >
+                  CSV
+                </button>
+              )}
+            </div>
           </div>
 
           {sessions.length > 0 && (
@@ -2324,6 +2411,28 @@ const styles: Record<string, React.CSSProperties> = {
   filesCount: {
     fontSize: 11,
     color: 'var(--text-muted)',
+  },
+  libraryHeaderActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  libraryExportBtn: {
+    height: 24,
+    minWidth: 42,
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: '#c7d2fe',
+    fontSize: 10,
+    fontWeight: 800,
+    cursor: 'pointer',
+    padding: '0 8px',
+  },
+  libraryExportBtnDisabled: {
+    opacity: 0.45,
+    cursor: 'not-allowed',
   },
   fileCard: {
     background: 'var(--bg-tertiary)',

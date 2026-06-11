@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LocalRecordingSession } from '../src/hooks/useRecordingLibrary.ts';
-import { filterRecordingLibrarySessions } from '../src/components/RecordingPanel.tsx';
+import {
+  buildRecordingLibraryCatalogCsv,
+  buildRecordingLibraryCatalogFilename,
+  filterRecordingLibrarySessions,
+} from '../src/components/RecordingPanel.tsx';
 
 const sessions: LocalRecordingSession[] = [
   {
@@ -120,6 +124,40 @@ describe('recording library filters', () => {
     assert.deepEqual(
       filterRecordingLibrarySessions(sessions, '', 'markers').map((session) => session.id),
       ['recording-1']
+    );
+  });
+
+  it('exports a recording library catalog row for each saved track', () => {
+    const csv = buildRecordingLibraryCatalogCsv([sessions[0]]);
+    const lines = csv.trimEnd().split('\n');
+
+    assert.equal(lines.length, 4);
+    assert.match(lines[0], /sessionId,roomName,createdAt,durationTimecode/);
+    assert.match(lines[1], /recording-1,Weekly Launch Show,2026-06-01T12:00:00\.000Z,30:00,1800,3,1024,1,7:00 Product demo,1,Host audio,audio,weekly_launch_host_audio\.webm,audio\/webm,256/);
+    assert.match(lines[3], /Deck screen,screen,weekly_launch_deck_screen\.webm/);
+  });
+
+  it('escapes catalog CSV cells and builds deterministic filenames', () => {
+    const csv = buildRecordingLibraryCatalogCsv([
+      {
+        ...sessions[0],
+        roomName: 'Launch, "Demo"',
+        markers: [
+          {
+            id: 'marker-quote',
+            label: 'Clip "this", please',
+            seconds: 12,
+            createdAt: '2026-06-01T12:00:12.000Z',
+          },
+        ],
+      },
+    ]);
+
+    assert.match(csv, /"Launch, ""Demo"""/);
+    assert.match(csv, /"0:12 Clip ""this"", please"/);
+    assert.equal(
+      buildRecordingLibraryCatalogFilename(new Date('2026-06-11T05:30:00.000Z')),
+      'studio_recording_library_2026-06-11_05-30.csv'
     );
   });
 });
