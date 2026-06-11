@@ -12,6 +12,8 @@ export interface HighlightedComment {
   avatarColor?: string;
 }
 
+export type CommentHighlightFilter = 'ready' | 'recent' | 'all';
+
 interface CommentHighlightOverlayProps {
   comment: HighlightedComment | null;
 }
@@ -34,12 +36,56 @@ const AVATAR_COLORS = [
   '#3b82f6', '#2563eb',
 ];
 
+const COMMENT_FILTERS: Array<{ value: CommentHighlightFilter; label: string }> = [
+  { value: 'ready', label: 'Ready' },
+  { value: 'recent', label: 'Recent' },
+  { value: 'all', label: 'All' },
+];
+
 function getAvatarColor(name: string): string {
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
   }
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+function getCommentTimestamp(message: ChatMessage): number {
+  const parsed = Date.parse(message.starredAt || message.timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getCommentSearchText(message: ChatMessage): string {
+  return [
+    message.senderName,
+    message.content,
+    message.starred ? 'starred ready' : '',
+    new Date(message.timestamp).toLocaleString(),
+  ].join(' ').toLowerCase();
+}
+
+export function getHighlightableChatMessages(
+  chatMessages: ChatMessage[],
+  query: string,
+  filter: CommentHighlightFilter,
+  limit = 30
+): ChatMessage[] {
+  const publicMessages = chatMessages.filter((message) => !message.isBackstage);
+  const candidates = filter === 'ready'
+    ? publicMessages.filter((message) => message.starred)
+    : filter === 'recent'
+      ? publicMessages.slice(-20)
+      : publicMessages;
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+  return candidates
+    .filter((message) => {
+      if (terms.length === 0) return true;
+      const searchText = getCommentSearchText(message);
+      return terms.every((term) => searchText.includes(term));
+    })
+    .sort((a, b) => getCommentTimestamp(b) - getCommentTimestamp(a))
+    .slice(0, Math.max(1, limit));
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +179,8 @@ export function CommentHighlightManager({
 }: CommentHighlightManagerProps) {
   const [customName, setCustomName] = useState('');
   const [customContent, setCustomContent] = useState('');
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<CommentHighlightFilter>('ready');
   const listRef = useRef<HTMLDivElement>(null);
 
   const handleShowCustom = () => {
@@ -154,12 +202,7 @@ export function CommentHighlightManager({
     });
   };
 
-  const publicMessages = chatMessages.filter((msg) => !msg.isBackstage);
-  const starredMessages = publicMessages.filter((msg) => msg.starred);
-  const recentMessages = [
-    ...starredMessages,
-    ...publicMessages.filter((msg) => !msg.starred).slice(-20),
-  ].slice(-20);
+  const visibleMessages = getHighlightableChatMessages(chatMessages, query, filter);
 
   return (
     <div style={styles.container}>
@@ -213,14 +256,45 @@ export function CommentHighlightManager({
 
       {/* From Chat section */}
       <div style={styles.chatSection}>
-        <span style={styles.fieldLabel}>Starred & Recent</span>
+        <div style={styles.chatSectionHeader}>
+          <span style={styles.fieldLabel}>Comments</span>
+          <span style={styles.chatCount}>{visibleMessages.length}</span>
+        </div>
+        <input
+          aria-label="Search comments to highlight"
+          style={styles.searchInput}
+          placeholder="Search comments"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          maxLength={120}
+        />
+        <div style={styles.filterRow} role="group" aria-label="Comment highlight filter">
+          {COMMENT_FILTERS.map((item) => {
+            const active = filter === item.value;
+            return (
+              <button
+                key={item.value}
+                type="button"
+                style={{
+                  ...styles.filterBtn,
+                  ...(active ? styles.filterBtnActive : {}),
+                }}
+                onClick={() => setFilter(item.value)}
+              >
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
         <div ref={listRef} style={styles.chatList}>
-          {recentMessages.length === 0 && (
+          {visibleMessages.length === 0 && (
             <div style={styles.emptyChat}>
-              <span style={styles.emptyChatText}>No chat messages yet</span>
+              <span style={styles.emptyChatText}>
+                {query.trim() ? 'No matching comments' : filter === 'ready' ? 'No starred comments yet' : 'No chat messages yet'}
+              </span>
             </div>
           )}
-          {recentMessages.map((msg) => (
+          {visibleMessages.map((msg) => (
             <div key={msg.id} className="participant-item" style={styles.chatRow}>
               <div style={styles.chatRowInfo}>
                 <span style={styles.chatRowName}>
@@ -478,6 +552,49 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
+  },
+  chatSectionHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  chatCount: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    fontWeight: 700,
+    paddingRight: 4,
+  },
+  searchInput: {
+    width: '100%',
+    height: 32,
+    borderRadius: 7,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
+    padding: '0 9px',
+    fontSize: 12,
+    outline: 'none',
+    boxSizing: 'border-box',
+  },
+  filterRow: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gap: 4,
+  },
+  filterBtn: {
+    height: 27,
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  filterBtnActive: {
+    background: 'rgba(245, 158, 11, 0.14)',
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    color: '#fbbf24',
   },
   chatList: {
     display: 'flex',
