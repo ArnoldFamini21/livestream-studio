@@ -670,13 +670,20 @@ export function StudioRoom() {
     )));
   }, []);
 
-  const { startRelay, stopRelay, stats: relayStats } = useRtmpRelay({
+  const {
+    startRelay,
+    stopRelay,
+    stats: relayStats,
+    readiness: relayReadiness,
+    checkRelayReadiness,
+  } = useRtmpRelay({
     compositeStreamRef,
     localStream,
     localParticipantId: myParticipant?.id || null,
     remoteStreams: broadcastRemoteStreams,
     screenStream,
     participantVolumes,
+    readinessEnabled: isHostOrCoHost,
     onDestinationStatus: handleRelayDestinationStatus,
   });
 
@@ -1695,6 +1702,12 @@ export function StudioRoom() {
       enabledDestinations.length > 3 ||
       enabledDestinations.some((d) => getStreamDestinationIssue(d))
     ) {
+      setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'error' } : d));
+      return;
+    }
+
+    const readiness = await checkRelayReadiness();
+    if (readiness.status !== 'ready') {
       setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'error' } : d));
       return;
     }
@@ -2880,6 +2893,8 @@ export function StudioRoom() {
               onBroadcastOrientationChange={setBroadcastOrientation}
               isLive={isLive}
               relayStats={relayStats}
+              relayReadiness={relayReadiness}
+              onRetryRelayReadiness={checkRelayReadiness}
               onGoLive={onGoLive}
               onStopLive={onStopLive}
               onClose={() => setShowStreamDest(false)}
