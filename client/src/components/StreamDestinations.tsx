@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import type { BroadcastOrientation, StreamDestination } from '@studio/shared';
 import type { RtmpRelayReadiness, RtmpRelayStats } from '../hooks/useRtmpRelay.ts';
+import {
+  getDefaultRtmpUrl,
+  getEnabledDestinationPreflightIssue,
+  getStreamDestinationIssue,
+  maskStreamKey,
+  MAX_ENABLED_DESTINATIONS,
+} from '../utils/streamDestinations.ts';
 
 interface StreamDestinationsProps {
   destinations: StreamDestination[];
@@ -19,7 +26,6 @@ interface StreamDestinationsProps {
   onClose: () => void;
 }
 
-const MAX_ENABLED_DESTINATIONS = 3;
 const TARGET_RELAY_KBPS = 4660;
 const STALE_CHUNK_MS = 5_000;
 const BITRATE_BAR_COUNT = 24;
@@ -99,7 +105,7 @@ export function StreamDestinations({
       : undefined;
     const finalRtmp = rtmpUrl.trim() || getDefaultRtmpUrl(platform);
     const finalStreamKey = streamKey.trim() || existing?.streamKey || '';
-    const issue = getDestinationIssue({ rtmpUrl: finalRtmp, streamKey: finalStreamKey });
+    const issue = getStreamDestinationIssue({ rtmpUrl: finalRtmp, streamKey: finalStreamKey });
     if (issue) {
       setFormError(issue);
       return;
@@ -126,21 +132,15 @@ export function StreamDestinations({
 
   const enabledDestinations = destinations.filter((d) => d.enabled);
   const enabledIssues = enabledDestinations
-    .map((dest) => ({ dest, issue: getDestinationIssue(dest) }))
+    .map((dest) => ({ dest, issue: getStreamDestinationIssue(dest) }))
     .filter((item): item is { dest: StreamDestination; issue: string } => Boolean(item.issue));
   const enabledCount = enabledDestinations.length;
   const selectedOrientation = ORIENTATION_OPTIONS.find((option) => option.value === broadcastOrientation) || ORIENTATION_OPTIONS[0];
   const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
   const relayIssue = getRelayReadinessIssue(relayReadiness);
   const relayStatus = getRelayReadinessStatus(relayReadiness);
+  const preflightIssue = getEnabledDestinationPreflightIssue(destinations, relayIssue);
   const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue;
-  const preflightIssue = enabledCount === 0
-    ? 'Enable at least one destination.'
-    : tooManyEnabled
-      ? `Disable ${enabledCount - MAX_ENABLED_DESTINATIONS} destination${enabledCount - MAX_ENABLED_DESTINATIONS === 1 ? '' : 's'} to stay within the ${MAX_ENABLED_DESTINATIONS}-destination limit.`
-      : enabledIssues[0]
-        ? `${enabledIssues[0].dest.name}: ${enabledIssues[0].issue}`
-        : relayIssue;
   const relayQuality = relayStats ? getRelayQuality(relayStats) : null;
   const bitrateBars = relayStats ? buildBitrateBars(relayStats.bitrateHistory, TARGET_RELAY_KBPS, BITRATE_BAR_COUNT) : [];
 
@@ -290,7 +290,7 @@ export function StreamDestinations({
         {/* Destinations list */}
         {destinations.map((dest) => {
           const platformInfo = PLATFORMS.find((p) => p.value === dest.platform);
-          const issue = dest.enabled ? getDestinationIssue(dest) : null;
+          const issue = dest.enabled ? getStreamDestinationIssue(dest) : null;
           return (
             <div key={dest.id} className="participant-item" style={styles.destCard}>
               <div style={styles.destHeader}>
@@ -476,33 +476,6 @@ export function StreamDestinations({
   );
 }
 
-function getDefaultRtmpUrl(platform: StreamDestination['platform']): string {
-  switch (platform) {
-    case 'youtube': return 'rtmp://a.rtmp.youtube.com/live2';
-    case 'facebook': return 'rtmps://live-api-s.facebook.com:443/rtmp/';
-    case 'twitch': return 'rtmp://live.twitch.tv/app/';
-    case 'linkedin': return 'rtmps://rtmp-api.linkedin.com:443/rtmp/';
-    case 'instagram': return 'rtmps://live-upload.instagram.com:443/rtmp/';
-    default: return '';
-  }
-}
-
-function isValidRtmpUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'rtmp:' || parsed.protocol === 'rtmps:';
-  } catch {
-    return false;
-  }
-}
-
-function getDestinationIssue(dest: Pick<StreamDestination, 'rtmpUrl' | 'streamKey'>): string | null {
-  if (!dest.rtmpUrl.trim()) return 'Missing RTMP server URL';
-  if (!isValidRtmpUrl(dest.rtmpUrl.trim())) return 'RTMP URL must start with rtmp:// or rtmps://';
-  if (!dest.streamKey.trim()) return 'Missing stream key';
-  return null;
-}
-
 function getRelayReadinessIssue(readiness: RtmpRelayReadiness | undefined): string | null {
   if (!readiness) return 'Media relay readiness has not been checked.';
   if (readiness.status === 'ready') return null;
@@ -533,12 +506,6 @@ function getRelayReadinessStatus(readiness: RtmpRelayReadiness | undefined) {
     background: 'rgba(96,165,250,0.08)',
     border: 'rgba(96,165,250,0.22)',
   };
-}
-
-function maskStreamKey(streamKey: string): string {
-  const trimmed = streamKey.trim();
-  if (trimmed.length <= 4) return '••••';
-  return `${'•'.repeat(Math.min(trimmed.length - 4, 12))}${trimmed.slice(-4)}`;
 }
 
 function formatBitrate(kbps: number): string {

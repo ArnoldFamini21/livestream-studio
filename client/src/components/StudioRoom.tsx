@@ -50,6 +50,7 @@ import {
   getProductionSceneTemplateConfig,
   type ProductionSceneTemplate,
 } from '../utils/productionSceneTemplates.ts';
+import { getStreamDestinationIssue } from '../utils/streamDestinations.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -215,21 +216,6 @@ function formatDuration(seconds: number): string {
   const s = seconds % 60;
   if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function getStreamDestinationIssue(dest: Pick<StreamDestination, 'rtmpUrl' | 'streamKey'>): string | null {
-  const rtmpUrl = dest.rtmpUrl.trim();
-  if (!rtmpUrl) return 'Missing RTMP server URL';
-  try {
-    const parsed = new URL(rtmpUrl);
-    if (parsed.protocol !== 'rtmp:' && parsed.protocol !== 'rtmps:') {
-      return 'Invalid RTMP server URL';
-    }
-  } catch {
-    return 'Invalid RTMP server URL';
-  }
-  if (!dest.streamKey.trim()) return 'Missing stream key';
-  return null;
 }
 
 function getDestinationStatusMessage(status: RtmpRelayDestinationStatus, message?: string): string | undefined {
