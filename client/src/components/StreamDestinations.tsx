@@ -4,8 +4,8 @@ import type { RtmpRelayReadiness, RtmpRelayStats } from '../hooks/useRtmpRelay.t
 
 interface StreamDestinationsProps {
   destinations: StreamDestination[];
-  onAdd: (dest: Omit<StreamDestination, 'id' | 'status'>) => void;
-  onUpdate: (id: string, dest: Omit<StreamDestination, 'id' | 'status'>) => void;
+  onAdd: (dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => void;
+  onUpdate: (id: string, dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => void;
   onRemove: (id: string) => void;
   onToggle: (id: string) => void;
   broadcastOrientation: BroadcastOrientation;
@@ -339,6 +339,7 @@ export function StreamDestinations({
                 Key: {maskStreamKey(dest.streamKey)}
               </div>
               <div style={styles.destRtmp}>{dest.rtmpUrl}</div>
+              {dest.statusMessage && !issue && <div style={styles.destStatusMessage}>{dest.statusMessage}</div>}
               {issue && <div style={styles.destIssue}>{issue}</div>}
             </div>
           );
@@ -737,6 +738,7 @@ const styles: Record<string, React.CSSProperties> = {
   removeBtn: { width: 22, height: 22, borderRadius: 5, background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 },
   destKey: { fontSize: 10, color: 'var(--text-muted)', marginTop: 6, fontFamily: 'monospace' },
   destRtmp: { fontSize: 10, color: 'var(--text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' },
+  destStatusMessage: { fontSize: 10, color: '#93c5fd', marginTop: 5, lineHeight: 1.35 },
   destIssue: { fontSize: 10, color: '#ef4444', marginTop: 5, lineHeight: 1.3 },
   form: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 12, border: '1px solid var(--border)' },
   formHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },

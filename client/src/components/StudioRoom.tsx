@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -227,6 +227,14 @@ function getStreamDestinationIssue(dest: Pick<StreamDestination, 'rtmpUrl' | 'st
   }
   if (!dest.streamKey.trim()) return 'Missing stream key';
   return null;
+}
+
+function getDestinationStatusMessage(status: RtmpRelayDestinationStatus, message?: string): string | undefined {
+  const trimmed = message?.trim();
+  if (trimmed) return trimmed.slice(0, 240);
+  if (status === 'connecting') return 'Connecting to RTMP destination...';
+  if (status === 'error') return 'Destination relay reported an error.';
+  return undefined;
 }
 
 function canExchangeStudioMedia(a: Participant | null | undefined, b: Participant | null | undefined): boolean {
@@ -665,9 +673,11 @@ export function StudioRoom() {
     logoSize,
   });
 
-  const handleRelayDestinationStatus = useCallback((destinationId: string, status: 'connecting' | 'live' | 'error' | 'idle') => {
+  const handleRelayDestinationStatus = useCallback((destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => {
     setDestinations((prev) => prev.map((destination) => (
-      destination.id === destinationId ? { ...destination, status } : destination
+      destination.id === destinationId
+        ? { ...destination, status, statusMessage: getDestinationStatusMessage(status, message) }
+        : destination
     )));
   }, []);
 
@@ -1678,19 +1688,21 @@ export function StudioRoom() {
   }, [inviteUrl, send]);
 
   // Stream destinations
-  const onAddDestination = (dest: Omit<StreamDestination, 'id' | 'status'>) => {
-    setDestinations((prev) => [...prev, { ...dest, id: `dest-${++idCounters.current.dest}`, status: 'idle' }]);
+  const onAddDestination = (dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => {
+    setDestinations((prev) => [...prev, { ...dest, id: `dest-${++idCounters.current.dest}`, status: 'idle', statusMessage: undefined }]);
   };
-  const onUpdateDestination = (id: string, dest: Omit<StreamDestination, 'id' | 'status'>) => {
+  const onUpdateDestination = (id: string, dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => {
     setDestinations((prev) => prev.map((destination) => (
-      destination.id === id ? { ...destination, ...dest, status: 'idle' } : destination
+      destination.id === id ? { ...destination, ...dest, status: 'idle', statusMessage: undefined } : destination
     )));
   };
   const onRemoveDestination = (id: string) => {
     setDestinations((prev) => prev.filter((d) => d.id !== id));
   };
   const onToggleDestination = (id: string) => {
-    setDestinations((prev) => prev.map((d) => d.id === id ? { ...d, enabled: !d.enabled } : d));
+    setDestinations((prev) => prev.map((d) => (
+      d.id === id ? { ...d, enabled: !d.enabled, status: 'idle', statusMessage: undefined } : d
+    )));
   };
   const onGoLive = async () => {
     if (liveStatusTimerRef.current) {
@@ -1704,18 +1716,30 @@ export function StudioRoom() {
       enabledDestinations.length > 3 ||
       enabledDestinations.some((d) => getStreamDestinationIssue(d))
     ) {
-      setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'error' } : d));
+      setDestinations((prev) => prev.map((d) => (
+        d.enabled
+          ? { ...d, status: 'error', statusMessage: getStreamDestinationIssue(d) || 'Check destination settings before going live.' }
+          : { ...d, status: 'idle', statusMessage: undefined }
+      )));
       return;
     }
 
     const readiness = await checkRelayReadiness();
     if (readiness.status !== 'ready') {
-      setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'error' } : d));
+      setDestinations((prev) => prev.map((d) => (
+        d.enabled
+          ? { ...d, status: 'error', statusMessage: readiness.message }
+          : { ...d, status: 'idle', statusMessage: undefined }
+      )));
       return;
     }
 
     setIsLive(true);
-    setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'connecting' } : { ...d, status: 'idle' }));
+    setDestinations((prev) => prev.map((d) => (
+      d.enabled
+        ? { ...d, status: 'connecting', statusMessage: 'Starting relay session...' }
+        : { ...d, status: 'idle', statusMessage: undefined }
+    )));
     try {
       const token = await requestLiveStreamToken();
       await startRelay({
@@ -1732,7 +1756,12 @@ export function StudioRoom() {
       console.error('Failed to start live stream:', err);
       stopRelay();
       setIsLive(false);
-      setDestinations((prev) => prev.map((d) => d.enabled ? { ...d, status: 'error' } : { ...d, status: 'idle' }));
+      const message = err instanceof Error ? err.message : 'Failed to start live stream.';
+      setDestinations((prev) => prev.map((d) => (
+        d.enabled
+          ? { ...d, status: 'error', statusMessage: message }
+          : { ...d, status: 'idle', statusMessage: undefined }
+      )));
     }
   };
   const onStopLive = () => {
@@ -1742,7 +1771,7 @@ export function StudioRoom() {
     }
     stopRelay();
     setIsLive(false);
-    setDestinations((prev) => prev.map((d) => ({ ...d, status: 'idle' })));
+    setDestinations((prev) => prev.map((d) => ({ ...d, status: 'idle', statusMessage: undefined })));
   };
 
   // Stage actions (participant management)

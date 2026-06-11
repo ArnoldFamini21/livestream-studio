@@ -427,6 +427,7 @@ export interface StreamDestination {
   streamKey: string;
   enabled: boolean;
   status: 'idle' | 'connecting' | 'live' | 'error';
+  statusMessage?: string;
 }
 
 // ============ RTMP Relay Protocol Types ============
