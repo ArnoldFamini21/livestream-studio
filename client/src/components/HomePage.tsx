@@ -14,6 +14,15 @@ import {
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
+const INVITE_QR_OPTIONS = {
+  errorCorrectionLevel: 'M',
+  margin: 2,
+  width: 220,
+  color: {
+    dark: '#0f172a',
+    light: '#ffffff',
+  },
+} as const;
 
 interface SavedScheduledStudio extends SavedHostStudio {
   name: string;
@@ -80,6 +89,10 @@ function downloadDataUrl(dataUrl: string, fileName: string) {
   link.click();
 }
 
+function createInviteQrDataUrl(inviteUrl: string): Promise<string> {
+  return QRCode.toDataURL(inviteUrl, INVITE_QR_OPTIONS);
+}
+
 function safeFileName(value: string): string {
   return value
     .trim()
@@ -124,6 +137,7 @@ export function HomePage() {
   const [scheduledQrError, setScheduledQrError] = useState('');
   const [savedRoomCopiedId, setSavedRoomCopiedId] = useState<string | null>(null);
   const [savedHostCopiedId, setSavedHostCopiedId] = useState<string | null>(null);
+  const [savedQrDownloadingId, setSavedQrDownloadingId] = useState<string | null>(null);
 
   const createRoom = async () => {
     if (!roomName.trim() || !hostName.trim()) return;
@@ -236,15 +250,7 @@ export function HomePage() {
     let cancelled = false;
     setScheduledQrDataUrl('');
     setScheduledQrError('');
-    QRCode.toDataURL(inviteLink, {
-      errorCorrectionLevel: 'M',
-      margin: 2,
-      width: 220,
-      color: {
-        dark: '#0f172a',
-        light: '#ffffff',
-      },
-    })
+    createInviteQrDataUrl(inviteLink)
       .then((dataUrl) => {
         if (!cancelled) setScheduledQrDataUrl(dataUrl);
       })
@@ -299,6 +305,20 @@ export function HomePage() {
   const downloadScheduledInviteQr = () => {
     if (!scheduledRoom || !scheduledQrDataUrl) return;
     downloadDataUrl(scheduledQrDataUrl, `${safeFileName(scheduledRoom.name)}_guest_invite_qr.png`);
+  };
+
+  const downloadSavedInviteQr = async (room: SavedScheduledStudio) => {
+    if (savedQrDownloadingId) return;
+    setError(null);
+    setSavedQrDownloadingId(room.id);
+    try {
+      const dataUrl = await createInviteQrDataUrl(buildInviteLink(room.id));
+      downloadDataUrl(dataUrl, `${safeFileName(room.name)}_guest_invite_qr.png`);
+    } catch {
+      setError('Could not generate a QR code for that studio.');
+    } finally {
+      setSavedQrDownloadingId(null);
+    }
   };
 
   const openScheduledAsHost = (room: SavedScheduledStudio) => {
@@ -510,6 +530,13 @@ export function HomePage() {
                           onClick={() => copySavedHostLink(room)}
                         >
                           {savedHostCopiedId === room.id ? 'Copied' : 'Host Link'}
+                        </button>
+                        <button
+                          style={styles.savedRoomAction}
+                          onClick={() => void downloadSavedInviteQr(room)}
+                          disabled={savedQrDownloadingId === room.id}
+                        >
+                          {savedQrDownloadingId === room.id ? 'QR...' : 'QR'}
                         </button>
                         {room.scheduledFor && (
                           <button
