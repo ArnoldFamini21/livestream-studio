@@ -170,6 +170,7 @@ export type SignalMessage =
   | { type: 'stage-action'; payload: StageActionPayload }
   | { type: 'participant-notification'; payload: ParticipantNotificationPayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
+  | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
   | { type: 'live-stream-token-request'; payload: LiveStreamTokenRequestPayload }
   | { type: 'live-stream-token-issued'; payload: LiveStreamTokenIssuedPayload }
   | { type: 'co-host-invite-token-request'; payload: CoHostInviteTokenRequestPayload }
@@ -201,6 +202,7 @@ export interface RoomJoinedPayload {
   qaQuestions?: QAQuestion[];
   polls?: LivePoll[];
   recordingState?: RecordingStatePayload;
+  liveStreamState?: LiveStreamStatePayload;
 }
 
 export interface SDPPayload {
@@ -240,6 +242,13 @@ export interface ParticipantNotificationPayload {
 
 export interface RecordingStatePayload {
   recording: boolean;
+  startedAt?: string;
+  stoppedAt?: string;
+  performedBy: string;
+}
+
+export interface LiveStreamStatePayload {
+  live: boolean;
   startedAt?: string;
   stoppedAt?: string;
   performedBy: string;

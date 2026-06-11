@@ -256,6 +256,176 @@ describe('live stream token authorization', () => {
   });
 });
 
+describe('live stream state synchronization', () => {
+  it('broadcasts authoritative live state and replays it to late joiners', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Live state sync test', 'Arnold', {
+      creatorIp: `live-state-sync-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      const hostJoin = await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const hostLive = waitForMessage(host, 'live-stream-state-changed', (message) => message.payload.live === true);
+      const guestLive = waitForMessage(guest, 'live-stream-state-changed', (message) => message.payload.live === true);
+      sendSignal(host, {
+        type: 'live-stream-state-changed',
+        payload: {
+          live: true,
+          performedBy: 'client-claimed-host',
+          startedAt: '2000-01-01T00:00:00.000Z',
+        },
+      });
+
+      const [hostLiveMessage, guestLiveMessage] = await Promise.all([hostLive, guestLive]);
+      assert.equal(hostLiveMessage.payload.performedBy, hostJoin.payload.participant.id);
+      assert.equal(guestLiveMessage.payload.performedBy, hostJoin.payload.participant.id);
+      assert.notEqual(hostLiveMessage.payload.startedAt, '2000-01-01T00:00:00.000Z');
+      assert.equal(roomState.room.status, 'live');
+
+      const lateGuest = await connectClient(harness.url);
+      const lateJoined = waitForMessage(lateGuest, 'room-joined');
+      joinRoom(lateGuest, {
+        roomId: room.id,
+        name: 'Late Guest',
+        role: 'guest',
+      });
+      const late = await lateJoined;
+      assert.equal(late.payload.room.status, 'live');
+      assert.equal(late.payload.liveStreamState.live, true);
+      assert.equal(late.payload.liveStreamState.performedBy, hostJoin.payload.participant.id);
+      assert.equal(late.payload.liveStreamState.startedAt, hostLiveMessage.payload.startedAt);
+
+      const hostStopped = waitForMessage(host, 'live-stream-state-changed', (message) => message.payload.live === false);
+      const guestStopped = waitForMessage(guest, 'live-stream-state-changed', (message) => message.payload.live === false);
+      sendSignal(host, {
+        type: 'live-stream-state-changed',
+        payload: {
+          live: false,
+          performedBy: 'client-claimed-host',
+        },
+      });
+
+      const [hostStopMessage, guestStopMessage] = await Promise.all([hostStopped, guestStopped]);
+      assert.equal(hostStopMessage.payload.performedBy, hostJoin.payload.participant.id);
+      assert.equal(guestStopMessage.payload.performedBy, hostJoin.payload.participant.id);
+      assert.equal(typeof hostStopMessage.payload.stoppedAt, 'string');
+      assert.equal(roomState.room.status, 'waiting');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('keeps recording status when a live stream stops during recording', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Live state recording test', 'Arnold', {
+      creatorIp: `live-state-recording-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const recordingStarted = waitForMessage(host, 'recording-state-changed', (message) => message.payload.recording === true);
+      sendSignal(host, {
+        type: 'recording-state-changed',
+        payload: {
+          recording: true,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      await recordingStarted;
+      assert.equal(roomState.room.status, 'recording');
+
+      const liveStarted = waitForMessage(host, 'live-stream-state-changed', (message) => message.payload.live === true);
+      sendSignal(host, {
+        type: 'live-stream-state-changed',
+        payload: {
+          live: true,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      await liveStarted;
+      assert.equal(roomState.room.status, 'live');
+
+      const liveStopped = waitForMessage(host, 'live-stream-state-changed', (message) => message.payload.live === false);
+      sendSignal(host, {
+        type: 'live-stream-state-changed',
+        payload: {
+          live: false,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      await liveStopped;
+      assert.equal(roomState.room.status, 'recording');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects guest live state changes', async () => {
+    const harness = await createSignalingHarness();
+    const { room } = createRoom('Live state guest test', 'Arnold', {
+      creatorIp: `live-state-guest-${Date.now()}`,
+    });
+
+    try {
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const unauthorized = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'live-stream-state-changed',
+        payload: {
+          live: true,
+          performedBy: 'client-claimed-guest',
+        },
+      });
+
+      const error = await unauthorized;
+      assert.match(error.payload.message, /Only hosts and co-hosts/);
+      assert.equal(getRooms().get(room.id)?.room.status, 'waiting');
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('chat engagement', () => {
   it('broadcasts starred comments and reaction counts through canonical chat messages', async () => {
     const harness = await createSignalingHarness();
