@@ -117,6 +117,23 @@ function getScheduleState(room: SavedScheduledStudio): string {
   return scheduledAt > Date.now() ? 'Upcoming' : 'Ready';
 }
 
+function buildGuestInviteDetails(room: SavedScheduledStudio, inviteUrl: string): string {
+  return [
+    room.name,
+    room.hostName ? `Host: ${room.hostName}` : null,
+    `Status: ${getScheduleState(room)}`,
+    room.scheduledFor ? `Time: ${formatScheduledDate(room.scheduledFor)}` : null,
+    `Join: ${inviteUrl}`,
+    room.passwordProtected ? 'Password protected. Ask the host for the password.' : null,
+  ].filter(Boolean).join('\n');
+}
+
+function buildGuestInviteEmailHref(room: SavedScheduledStudio, inviteUrl: string): string {
+  const subject = encodeURIComponent(`Join ${room.name}`);
+  const body = encodeURIComponent(buildGuestInviteDetails(room, inviteUrl));
+  return `mailto:?subject=${subject}&body=${body}`;
+}
+
 export function HomePage() {
   const [roomName, setRoomName] = useState('');
   const [hostName, setHostName] = useState('');
@@ -319,6 +336,15 @@ export function HomePage() {
     } finally {
       setSavedQrDownloadingId(null);
     }
+  };
+
+  const emailGuestInvite = (room: SavedScheduledStudio) => {
+    window.location.href = buildGuestInviteEmailHref(room, buildInviteLink(room.id));
+  };
+
+  const emailScheduledGuestInvite = () => {
+    if (!scheduledRoom || !inviteLink) return;
+    window.location.href = buildGuestInviteEmailHref(scheduledRoom, inviteLink);
   };
 
   const openScheduledAsHost = (room: SavedScheduledStudio) => {
@@ -527,6 +553,12 @@ export function HomePage() {
                         </button>
                         <button
                           style={styles.savedRoomAction}
+                          onClick={() => emailGuestInvite(room)}
+                        >
+                          Email
+                        </button>
+                        <button
+                          style={styles.savedRoomAction}
                           onClick={() => copySavedHostLink(room)}
                         >
                           {savedHostCopiedId === room.id ? 'Copied' : 'Host Link'}
@@ -668,6 +700,9 @@ export function HomePage() {
               </button>
               <button style={styles.modalDoneButton} onClick={copyHostEntryLink}>
                 {hostCopied ? 'Host Link Copied' : 'Copy Host Link'}
+              </button>
+              <button style={styles.modalDoneButton} onClick={emailScheduledGuestInvite}>
+                Email Guest
               </button>
               <button style={styles.modalDoneButton} onClick={downloadScheduledInviteQr} disabled={!scheduledQrDataUrl}>
                 Download QR
