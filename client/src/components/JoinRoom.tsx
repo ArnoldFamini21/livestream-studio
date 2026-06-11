@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { getScheduledGuestOpenAtMs, isScheduledGuestAccessBlocked } from '@studio/shared';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
+import { readPreferredAudioProcessing, writePreferredAudioProcessing } from '../utils/mediaPreferences.ts';
 import { createSpeakerTestToneBlob } from '../utils/speakerTestTone.ts';
 import {
   clearUrlHostToken,
@@ -71,8 +72,8 @@ export function JoinRoom() {
     : '';
   
   // Advanced Audio Settings
-  const [echoCancellation, setEchoCancellation] = useState(true);
-  const [noiseSuppression, setNoiseSuppression] = useState(true);
+  const [echoCancellation, setEchoCancellation] = useState(() => readPreferredAudioProcessing().echoCancellation);
+  const [noiseSuppression, setNoiseSuppression] = useState(() => readPreferredAudioProcessing().noiseSuppression);
 
   // Media preview
   const {
@@ -260,6 +261,7 @@ export function JoinRoom() {
     sessionStorage.setItem('userName', guestName);
     sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
     sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
+    writePreferredAudioProcessing({ echoCancellation, noiseSuppression });
     if (roomId && needsRoomPassword) {
       sessionStorage.setItem(`roomPassword:${roomId}`, roomPassword);
     } else if (roomId) {

@@ -46,6 +46,7 @@ import { SessionHealthPanel } from './SessionHealthPanel.tsx';
 import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import type { RecordingMarker } from './RecordingPanel.tsx';
+import { readPreferredAudioProcessing } from '../utils/mediaPreferences.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -940,9 +941,11 @@ export function StudioRoom() {
     const fallbackTimer = setTimeout(() => {
       if (active) setMediaAttemptComplete(true);
     }, 3000);
+    const audioProcessing = readPreferredAudioProcessing();
     startMedia(undefined, undefined, {
       audioEnabled: sessionStorage.getItem('preferredAudioEnabled') !== 'false',
       videoEnabled: sessionStorage.getItem('preferredVideoEnabled') !== 'false',
+      ...audioProcessing,
     }).finally(() => {
       if (!active) return;
       clearTimeout(fallbackTimer);
@@ -1360,7 +1363,7 @@ export function StudioRoom() {
   };
 
   const onAudioDeviceChange = async (id: string) => {
-    try { const t = await switchAudioDevice(id); if (t) await replaceTrack(t); }
+    try { const t = await switchAudioDevice(id, readPreferredAudioProcessing()); if (t) await replaceTrack(t); }
     catch (err) { console.error('Failed to switch audio device:', err); }
   };
   const onVideoDeviceChange = async (id: string) => {
