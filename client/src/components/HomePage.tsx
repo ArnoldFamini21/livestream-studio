@@ -5,6 +5,7 @@ import { buildStudioCalendarInvite } from '@studio/shared';
 import {
   buildHostEntryPath,
   buildHostEntryUrl,
+  persistLegacyHostSession,
   persistHostSession,
   readSavedHostStudios,
   removeSavedHostStudio,
@@ -180,15 +181,16 @@ export function HomePage() {
         hostName,
         password: roomPassword.trim() || undefined,
       });
-      if (typeof room.hostToken !== 'string') {
-        setError('Studio was created, but host access was not returned. Please create a new studio.');
-        return;
-      }
       if (typeof room.id !== 'string' || typeof room.name !== 'string') {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
       }
       const savedHostName = room.hostName || hostName;
+      if (typeof room.hostToken !== 'string') {
+        persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
+        navigate(`/studio/${encodeURIComponent(room.id)}`);
+        return;
+      }
       // Scoped per room so old tokens don't leak across rooms.
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
       setSavedScheduledRooms(upsertSavedScheduledStudio({
@@ -222,12 +224,24 @@ export function HomePage() {
         password: roomPassword.trim() || undefined,
       });
       const savedHostName = room.hostName || hostName;
-      if (typeof room.hostToken !== 'string') {
-        setError('Studio was scheduled, but host access was not returned. Please schedule it again.');
-        return;
-      }
       if (typeof room.id !== 'string' || typeof room.name !== 'string') {
         setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
+        return;
+      }
+      if (typeof room.hostToken !== 'string') {
+        persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
+        setScheduledRoom({
+          id: room.id,
+          name: room.name,
+          hostName: savedHostName,
+          hostToken: '',
+          createdAt: room.createdAt || new Date().toISOString(),
+          scheduledFor: room.scheduledFor || undefined,
+          passwordProtected: Boolean(room.settings?.passwordProtected),
+          status: room.status,
+        });
+        setCopied(false);
+        setHostCopied(false);
         return;
       }
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });

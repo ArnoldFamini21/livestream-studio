@@ -3,6 +3,7 @@ import type { ParticipantRole } from '@studio/shared';
 export const HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:host-studios';
 
 const HOST_TOKEN_PREFIX = 'hostToken:';
+const LEGACY_HOST_SESSION_PREFIX = 'legacyHost:';
 const LEGACY_HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
 const USER_NAME_KEY = 'userName';
 const USER_ROLE_KEY = 'userRole';
@@ -23,6 +24,11 @@ export interface HostSession {
   hostName: string;
   hostToken: string;
   source: 'url' | 'session' | 'saved';
+}
+
+export interface LegacyHostSession {
+  roomId: string;
+  hostName: string;
 }
 
 function getSessionItem(key: string): string {
@@ -107,6 +113,10 @@ function hostTokenKey(roomId: string): string {
   return `${HOST_TOKEN_PREFIX}${roomId}`;
 }
 
+function legacyHostKey(roomId: string): string {
+  return `${LEGACY_HOST_SESSION_PREFIX}${roomId}`;
+}
+
 export function buildHostEntryPath(roomId: string, hostToken?: string): string {
   const path = `/join/${encodeURIComponent(roomId)}?role=host`;
   if (!hostToken || !isValidHostToken(hostToken)) return path;
@@ -178,6 +188,7 @@ export function removeSavedHostStudio(roomId: string): SavedHostStudio[] {
     .filter((item) => item.id !== roomId);
   setLocalItem(LEGACY_HOST_STUDIOS_STORAGE_KEY, JSON.stringify(nextLegacy));
   removeSessionItem(hostTokenKey(roomId));
+  removeSessionItem(legacyHostKey(roomId));
   return next;
 }
 
@@ -212,4 +223,19 @@ export function persistHostSession(input: { roomId: string; hostName: string; ho
   setSessionItem(USER_ROLE_KEY, 'host');
   setSessionItem(USER_NAME_KEY, input.hostName || 'Host');
   setSessionItem(hostTokenKey(input.roomId), input.hostToken);
+  removeSessionItem(legacyHostKey(input.roomId));
+}
+
+export function getLegacyHostSession(roomId: string): LegacyHostSession | null {
+  if (getSessionItem(legacyHostKey(roomId)) !== '1') return null;
+  return {
+    roomId,
+    hostName: getStoredUserName() || 'Host',
+  };
+}
+
+export function persistLegacyHostSession(input: { roomId: string; hostName: string }) {
+  setSessionItem(USER_ROLE_KEY, 'host');
+  setSessionItem(USER_NAME_KEY, input.hostName || 'Host');
+  setSessionItem(legacyHostKey(input.roomId), '1');
 }

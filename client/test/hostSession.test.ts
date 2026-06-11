@@ -4,7 +4,9 @@ import {
   buildHostEntryPath,
   buildHostEntryUrl,
   clearUrlHostToken,
+  getLegacyHostSession,
   getHostSession,
+  persistLegacyHostSession,
   persistHostSession,
   readHostTokenFromHash,
   upsertSavedHostStudio,
@@ -73,6 +75,16 @@ describe('host session links', () => {
     assert.equal(hostSession?.source, 'url');
     assert.equal(hostSession?.hostToken, URL_TOKEN);
     assert.equal(hostSession?.hostName, 'Saved Host');
+  });
+
+  it('keeps legacy no-token host access scoped to the current browser session', () => {
+    persistLegacyHostSession({ roomId: ROOM_ID, hostName: 'Legacy Host' });
+
+    const legacyHostSession = getLegacyHostSession(ROOM_ID);
+
+    assert.equal(legacyHostSession?.roomId, ROOM_ID);
+    assert.equal(legacyHostSession?.hostName, 'Legacy Host');
+    assert.equal(getHostSession(ROOM_ID), null);
   });
 
   it('strips a restored host token from the visible URL', () => {
