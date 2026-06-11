@@ -73,7 +73,7 @@ interface RecordingMarkerFile {
 
 interface RecordingEditorFile {
   label: string;
-  format: 'json' | 'csv' | 'txt';
+  format: 'json' | 'csv' | 'txt' | 'fcpxml';
   zipPath: string;
   size: number;
   type: string;
@@ -565,6 +565,21 @@ function csvEscape(value: string | number | null): string {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+function xmlEscape(value: string | number | null | undefined): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function formatFcpxDuration(seconds: number | null | undefined): string {
+  if (!Number.isFinite(seconds) || Number(seconds) <= 0) return '1/30s';
+  const frames = Math.max(1, Math.round(Number(seconds) * 30));
+  return `${frames}/30s`;
+}
+
 export function buildRecordingMarkersCsv(markers: RecordingMarker[]): string {
   const rows = [
     ['index', 'timecode', 'seconds', 'label', 'createdAt'],
@@ -799,6 +814,71 @@ function buildEditorTimelineCsv(
   return rows.map((row) => row.map(csvEscape).join(',')).join('\n');
 }
 
+export function buildFinalCutProXml(
+  source: RecordingBundleSource,
+  files: RecordingBundleFile[],
+  audioStemFiles: RecordingAudioStemFile[],
+  markers: RecordingMarker[]
+): string {
+  const duration = formatFcpxDuration(source.durationSeconds);
+  const projectName = source.roomName || 'LiveStream Studio Recording';
+  const audioStemBySourcePath = new Map(audioStemFiles.map((file) => [file.sourceZipPath, file]));
+  const fileAssets = files.map((file, index) => ({
+    id: `asset${index + 1}`,
+    name: file.label || file.fileName,
+    src: `../${file.zipPath}`,
+    kind: inferEditorTrackKind(file),
+  }));
+  const stemAssets = files
+    .map((file, index) => {
+      const stem = audioStemBySourcePath.get(file.zipPath);
+      if (!stem) return null;
+      return {
+        id: `stem${index + 1}`,
+        name: stem.label,
+        src: `../${stem.zipPath}`,
+        kind: 'audio' as const,
+      };
+    })
+    .filter((asset): asset is { id: string; name: string; src: string; kind: 'audio' } => Boolean(asset));
+  const assets = [...fileAssets, ...stemAssets];
+  const markerLines = getSortedRecordingMarkers(markers).map((marker) => (
+    `            <marker start="${formatFcpxDuration(marker.seconds)}" duration="1/30s" value="${xmlEscape(marker.label)}"/>`
+  ));
+  const assetResourceLines = assets.map((asset) => (
+    `    <asset id="${asset.id}" name="${xmlEscape(asset.name)}" src="${xmlEscape(asset.src)}" start="0s" duration="${duration}" hasVideo="${asset.kind === 'audio' ? '0' : '1'}" hasAudio="1"/>`
+  ));
+  const clipLines = assets.map((asset, index) => {
+    const lane = index === 0 ? '' : ` lane="${index}"`;
+    const audioRole = asset.kind === 'audio' ? ' audioRole="dialogue"' : '';
+    return `          <asset-clip name="${xmlEscape(asset.name)}" ref="${asset.id}" offset="0s" start="0s" duration="${duration}"${lane}${audioRole}/>`;
+  });
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE fcpxml>',
+    '<fcpxml version="1.10">',
+    '  <resources>',
+    '    <format id="fmt30" name="FFVideoFormat1080p30" frameDuration="1/30s" width="1920" height="1080"/>',
+    ...assetResourceLines,
+    '  </resources>',
+    '  <library>',
+    `    <event name="${xmlEscape(projectName)}">`,
+    `      <project name="${xmlEscape(projectName)}">`,
+    `        <sequence duration="${duration}" format="fmt30" tcStart="0s" tcFormat="NDF">`,
+    '          <spine>',
+    ...clipLines,
+    ...markerLines,
+    '          </spine>',
+    '        </sequence>',
+    '      </project>',
+    '    </event>',
+    '  </library>',
+    '</fcpxml>',
+    '',
+  ].join('\n');
+}
+
 function buildEditorReadme(source: RecordingBundleSource): string {
   return [
     'LiveStream Studio Editor Export',
@@ -812,10 +892,11 @@ function buildEditorReadme(source: RecordingBundleSource): string {
     '- audio-stems/: PCM WAV audio stems generated from audio-only tracks when supported',
     '- editor/local_recording_timeline.json: structured timeline metadata',
     '- editor/local_recording_timeline.csv: spreadsheet/editor-friendly track layout',
+    '- editor/local_recording_timeline.fcpxml: Final Cut Pro XML project starter',
     '- markers/: recording markers when present',
     '- captions/: live caption sidecars when present',
     '',
-    'Import the tracks into your editor, place each track at 0:00, and use the timeline CSV/JSON plus marker files as the sync map.',
+    'Import the FCPXML into Final Cut Pro, or place each track at 0:00 in another editor and use the timeline CSV/JSON plus marker files as the sync map.',
   ].join('\n');
 }
 
@@ -1051,6 +1132,12 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
       blob: new Blob([buildEditorTimelineCsv(source, manifestFiles, audioStemResult.files)], { type: 'text/csv;charset=utf-8' }),
       label: 'Editor timeline CSV',
       format: 'csv' as const,
+    },
+    {
+      path: 'editor/local_recording_timeline.fcpxml',
+      blob: new Blob([buildFinalCutProXml(source, manifestFiles, audioStemResult.files, sortedMarkers)], { type: 'application/xml;charset=utf-8' }),
+      label: 'Final Cut Pro XML',
+      format: 'fcpxml' as const,
     },
     {
       path: 'editor/README.txt',
@@ -1617,7 +1704,7 @@ export function RecordingPanel({
             {/* Action buttons */}
             <div style={styles.actions}>
               <div style={styles.captionSidecarNote}>
-                ZIP includes editor timeline JSON/CSV and WAV audio stems when supported.
+                ZIP includes editor timeline JSON/CSV, Final Cut Pro XML, and WAV audio stems when supported.
               </div>
               {finalCaptionCount > 0 && (
                 <div style={styles.captionSidecarNote}>
