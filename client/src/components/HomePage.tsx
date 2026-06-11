@@ -5,6 +5,7 @@ import { buildStudioCalendarInvite } from '@studio/shared';
 import {
   buildHostEntryPath,
   buildHostEntryUrl,
+  getValidHostToken,
   persistLegacyHostSession,
   persistHostSession,
   readSavedHostStudios,
@@ -15,6 +16,8 @@ import {
 import { getApiErrorMessage, postJson } from '../utils/apiClient.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
+const CREATE_STUDIO_TIMEOUT_MS = 90_000;
+const SERVER_WAKE_NOTICE_DELAY_MS = 6_000;
 const INVITE_QR_OPTIONS = {
   errorCorrectionLevel: 'M',
   margin: 2,
@@ -155,6 +158,7 @@ export function HomePage() {
   const [roomPassword, setRoomPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [schedulingLoading, setSchedulingLoading] = useState(false);
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [savedScheduledRooms, setSavedScheduledRooms] = useState<SavedScheduledStudio[]>(() => readSavedScheduledStudios());
   const navigate = useNavigate();
 
@@ -174,39 +178,48 @@ export function HomePage() {
     if (!roomName.trim() || !hostName.trim()) return;
     setLoading(true);
     setError(null);
+    setProgressMessage(null);
+    const progressTimer = window.setTimeout(() => {
+      setProgressMessage('Still creating. The studio server is waking up and may need a moment.');
+    }, SERVER_WAKE_NOTICE_DELAY_MS);
 
     try {
       const room = await postJson<CreatedRoomResponse>('/api/rooms', {
         name: roomName,
         hostName,
         password: roomPassword.trim() || undefined,
+      }, {
+        timeoutMs: CREATE_STUDIO_TIMEOUT_MS,
       });
       if (typeof room.id !== 'string' || typeof room.name !== 'string') {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
       }
       const savedHostName = room.hostName || hostName;
-      if (typeof room.hostToken !== 'string') {
+      const hostToken = getValidHostToken(room.hostToken);
+      if (!hostToken) {
         persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
         navigate(`/studio/${encodeURIComponent(room.id)}`);
         return;
       }
       // Scoped per room so old tokens don't leak across rooms.
-      persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
+      persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
       setSavedScheduledRooms(upsertSavedScheduledStudio({
         id: room.id,
         name: room.name,
         hostName: savedHostName,
-        hostToken: room.hostToken,
+        hostToken,
         createdAt: room.createdAt || new Date().toISOString(),
         passwordProtected: Boolean(room.settings?.passwordProtected),
         status: room.status,
       }));
-      navigate(buildHostEntryPath(room.id, room.hostToken));
+      navigate(buildHostEntryPath(room.id, hostToken));
     } catch (err) {
       console.error('Failed to create room:', err);
       setError(getApiErrorMessage(err, 'Failed to create studio. Please try again.'));
     } finally {
+      window.clearTimeout(progressTimer);
+      setProgressMessage(null);
       setLoading(false);
     }
   };
@@ -215,6 +228,10 @@ export function HomePage() {
     if (!roomName.trim() || !hostName.trim()) return;
     setSchedulingLoading(true);
     setError(null);
+    setProgressMessage(null);
+    const progressTimer = window.setTimeout(() => {
+      setProgressMessage('Still scheduling. The studio server is waking up and may need a moment.');
+    }, SERVER_WAKE_NOTICE_DELAY_MS);
 
     try {
       const room = await postJson<CreatedRoomResponse>('/api/rooms/schedule', {
@@ -222,13 +239,16 @@ export function HomePage() {
         hostName,
         scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
         password: roomPassword.trim() || undefined,
+      }, {
+        timeoutMs: CREATE_STUDIO_TIMEOUT_MS,
       });
       const savedHostName = room.hostName || hostName;
       if (typeof room.id !== 'string' || typeof room.name !== 'string') {
         setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
         return;
       }
-      if (typeof room.hostToken !== 'string') {
+      const hostToken = getValidHostToken(room.hostToken);
+      if (!hostToken) {
         persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
         setScheduledRoom({
           id: room.id,
@@ -244,12 +264,12 @@ export function HomePage() {
         setHostCopied(false);
         return;
       }
-      persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
+      persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
       const savedRoom: ScheduledRoomModal = {
         id: room.id,
         name: room.name,
         hostName: savedHostName,
-        hostToken: room.hostToken,
+        hostToken,
         createdAt: room.createdAt || new Date().toISOString(),
         scheduledFor: room.scheduledFor || undefined,
         passwordProtected: Boolean(room.settings?.passwordProtected),
@@ -263,6 +283,8 @@ export function HomePage() {
       console.error('Failed to schedule room:', err);
       setError(getApiErrorMessage(err, 'Failed to schedule studio. Please try again.'));
     } finally {
+      window.clearTimeout(progressTimer);
+      setProgressMessage(null);
       setSchedulingLoading(false);
     }
   };
@@ -363,8 +385,15 @@ export function HomePage() {
   };
 
   const openScheduledAsHost = (room: SavedScheduledStudio) => {
-    persistHostSession({ roomId: room.id, hostName: room.hostName || hostName || 'Host', hostToken: room.hostToken });
-    navigate(buildHostEntryPath(room.id, room.hostToken));
+    const savedHostName = room.hostName || hostName || 'Host';
+    const hostToken = getValidHostToken(room.hostToken);
+    if (!hostToken) {
+      persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
+      navigate(`/studio/${encodeURIComponent(room.id)}`);
+      return;
+    }
+    persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
+    navigate(buildHostEntryPath(room.id, hostToken));
   };
 
   const forgetScheduledRoom = (roomId: string) => {
@@ -373,8 +402,15 @@ export function HomePage() {
 
   const goToStudioAsHost = () => {
     if (!scheduledRoom) return;
-    persistHostSession({ roomId: scheduledRoom.id, hostName: scheduledRoom.hostName || hostName || 'Host', hostToken: scheduledRoom.hostToken });
-    navigate(buildHostEntryPath(scheduledRoom.id, scheduledRoom.hostToken));
+    const savedHostName = scheduledRoom.hostName || hostName || 'Host';
+    const hostToken = getValidHostToken(scheduledRoom.hostToken);
+    if (!hostToken) {
+      persistLegacyHostSession({ roomId: scheduledRoom.id, hostName: savedHostName });
+      navigate(`/studio/${encodeURIComponent(scheduledRoom.id)}`);
+      return;
+    }
+    persistHostSession({ roomId: scheduledRoom.id, hostName: savedHostName, hostToken });
+    navigate(buildHostEntryPath(scheduledRoom.id, hostToken));
   };
 
   const closeModal = () => {
@@ -485,6 +521,9 @@ export function HomePage() {
 
               {error && (
                 <p style={styles.error}>{error}</p>
+              )}
+              {progressMessage && !error && (
+                <p style={styles.progress}>{progressMessage}</p>
               )}
 
               <button
@@ -892,6 +931,13 @@ const styles: Record<string, React.CSSProperties> = {
   error: {
     fontSize: 13,
     color: '#ef4444',
+    marginTop: 0,
+    marginBottom: 8,
+    lineHeight: 1.4,
+  },
+  progress: {
+    fontSize: 12,
+    color: '#93c5fd',
     marginTop: 0,
     marginBottom: 8,
     lineHeight: 1.4,
