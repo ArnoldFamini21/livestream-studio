@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import QRCode from 'qrcode';
 import { buildStudioCalendarInvite } from '@studio/shared';
 import {
   buildHostEntryPath,
@@ -72,6 +73,13 @@ function downloadTextFile(text: string, fileName: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+function downloadDataUrl(dataUrl: string, fileName: string) {
+  const link = document.createElement('a');
+  link.href = dataUrl;
+  link.download = fileName;
+  link.click();
+}
+
 function safeFileName(value: string): string {
   return value
     .trim()
@@ -112,6 +120,8 @@ export function HomePage() {
   const [scheduledRoom, setScheduledRoom] = useState<ScheduledRoomModal | null>(null);
   const [copied, setCopied] = useState(false);
   const [hostCopied, setHostCopied] = useState(false);
+  const [scheduledQrDataUrl, setScheduledQrDataUrl] = useState('');
+  const [scheduledQrError, setScheduledQrError] = useState('');
   const [savedRoomCopiedId, setSavedRoomCopiedId] = useState<string | null>(null);
   const [savedHostCopiedId, setSavedHostCopiedId] = useState<string | null>(null);
 
@@ -202,6 +212,7 @@ export function HomePage() {
       setSavedScheduledRooms(upsertSavedScheduledStudio(savedRoom));
       setScheduledRoom(savedRoom);
       setCopied(false);
+      setHostCopied(false);
     } catch (err) {
       console.error('Failed to schedule room:', err);
       setError('Network error. Please check your connection and try again.');
@@ -214,6 +225,37 @@ export function HomePage() {
   const hostEntryLink = scheduledRoom ? buildHostEntryUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.hostToken) : '';
   const buildInviteLink = (roomId: string) => `${INVITE_BASE_URL}/join/${roomId}`;
   const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
+
+  useEffect(() => {
+    if (!scheduledRoom || !inviteLink) {
+      setScheduledQrDataUrl('');
+      setScheduledQrError('');
+      return;
+    }
+
+    let cancelled = false;
+    setScheduledQrDataUrl('');
+    setScheduledQrError('');
+    QRCode.toDataURL(inviteLink, {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 220,
+      color: {
+        dark: '#0f172a',
+        light: '#ffffff',
+      },
+    })
+      .then((dataUrl) => {
+        if (!cancelled) setScheduledQrDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setScheduledQrError('Could not generate guest QR code.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [inviteLink, scheduledRoom]);
 
   const copyToClipboard = async () => {
     await writeClipboardText(inviteLink);
@@ -254,6 +296,11 @@ export function HomePage() {
     downloadTextFile(calendar, `${safeFileName(room.name)}_calendar.ics`, 'text/calendar;charset=utf-8');
   };
 
+  const downloadScheduledInviteQr = () => {
+    if (!scheduledRoom || !scheduledQrDataUrl) return;
+    downloadDataUrl(scheduledQrDataUrl, `${safeFileName(scheduledRoom.name)}_guest_invite_qr.png`);
+  };
+
   const openScheduledAsHost = (room: SavedScheduledStudio) => {
     persistHostSession({ roomId: room.id, hostName: room.hostName || hostName || 'Host', hostToken: room.hostToken });
     navigate(buildHostEntryPath(room.id));
@@ -273,6 +320,8 @@ export function HomePage() {
     setScheduledRoom(null);
     setCopied(false);
     setHostCopied(false);
+    setScheduledQrDataUrl('');
+    setScheduledQrError('');
     setRoomName('');
     setHostName('');
     setScheduledFor('');
@@ -557,6 +606,31 @@ export function HomePage() {
               </button>
             </div>
 
+            <div style={styles.modalQrCard}>
+              <div style={styles.modalQrPreview}>
+                {scheduledQrDataUrl ? (
+                  <img src={scheduledQrDataUrl} alt="Guest invite QR code" style={styles.modalQrImage} />
+                ) : (
+                  <div style={styles.modalQrPlaceholder}>
+                    {scheduledQrError ? (
+                      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="8" x2="12" y2="12" />
+                        <line x1="12" y1="16" x2="12.01" y2="16" />
+                      </svg>
+                    ) : (
+                      <span style={styles.modalQrLoadingDot} />
+                    )}
+                  </div>
+                )}
+              </div>
+              <div style={styles.modalQrCopy}>
+                <span style={styles.modalQrLabel}>Guest QR</span>
+                <span style={styles.modalQrText}>Guests can scan this to open the join link on a phone.</span>
+                {scheduledQrError && <span style={styles.modalQrError}>{scheduledQrError}</span>}
+              </div>
+            </div>
+
             <div style={styles.modalActions}>
               <button
                 className="btn-primary"
@@ -567,6 +641,9 @@ export function HomePage() {
               </button>
               <button style={styles.modalDoneButton} onClick={copyHostEntryLink}>
                 {hostCopied ? 'Host Link Copied' : 'Copy Host Link'}
+              </button>
+              <button style={styles.modalDoneButton} onClick={downloadScheduledInviteQr} disabled={!scheduledQrDataUrl}>
+                Download QR
               </button>
               {scheduledRoom.scheduledFor && (
                 <button style={styles.modalDoneButton} onClick={() => downloadCalendarInvite(scheduledRoom)}>
@@ -988,6 +1065,71 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
+  modalQrCard: {
+    display: 'grid',
+    gridTemplateColumns: '108px minmax(0, 1fr)',
+    gap: 12,
+    alignItems: 'center',
+    padding: 10,
+    marginBottom: 20,
+    borderRadius: 12,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    background: 'rgba(255, 255, 255, 0.04)',
+    textAlign: 'left',
+  },
+  modalQrPreview: {
+    width: 108,
+    height: 108,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    background: '#ffffff',
+    overflow: 'hidden',
+  },
+  modalQrImage: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+    display: 'block',
+  },
+  modalQrPlaceholder: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: '#f8fafc',
+  },
+  modalQrLoadingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: '50%',
+    background: '#0f172a',
+    animation: 'pulse 1s infinite',
+  },
+  modalQrCopy: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 5,
+  },
+  modalQrLabel: {
+    fontSize: 11,
+    fontWeight: 800,
+    color: '#67e8f9',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+  },
+  modalQrText: {
+    fontSize: 12,
+    lineHeight: 1.4,
+    color: 'var(--text-secondary)',
+  },
+  modalQrError: {
+    fontSize: 11,
+    color: '#fca5a5',
+  },
   copyButton: {
     display: 'flex',
     alignItems: 'center',
@@ -1006,6 +1148,7 @@ const styles: Record<string, React.CSSProperties> = {
   modalActions: {
     display: 'flex',
     gap: 10,
+    flexWrap: 'wrap',
   },
   modalStartButton: {
     flex: 1,
