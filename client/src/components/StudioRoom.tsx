@@ -35,7 +35,6 @@ import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { detectMediaType } from './MediaLibrary.tsx';
-import type { ProductionSceneTemplate } from './SceneManager.tsx';
 import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
@@ -47,6 +46,10 @@ import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import type { RecordingMarker } from './RecordingPanel.tsx';
 import { readPreferredAudioProcessing } from '../utils/mediaPreferences.ts';
+import {
+  getProductionSceneTemplateConfig,
+  type ProductionSceneTemplate,
+} from '../utils/productionSceneTemplates.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -280,105 +283,6 @@ function getMediaNameFromUrl(url: string, type: 'video' | 'image'): string {
     // Fall back to a readable generated name below.
   }
   return type === 'video' ? 'Video URL' : 'Image URL';
-}
-
-function getTemplateSceneConfig(template: ProductionSceneTemplate): {
-  name: string;
-  layout: LayoutMode;
-  background: StageBackground;
-  brandColor: string;
-  cameraShape: CameraShape;
-  nameTagStyle: NameTagStyle;
-  banner?: Omit<BannerData, 'id'>;
-  ticker?: Omit<TickerData, 'id'>;
-  timer?: Omit<TimerData, 'id'>;
-} {
-  switch (template) {
-    case 'starting-soon':
-      return {
-        name: 'Starting Soon',
-        layout: 'single',
-        background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #312e81 55%, #0e7490 100%)' },
-        brandColor: '#67e8f9',
-        cameraShape: 'rounded',
-        nameTagStyle: 'minimal',
-        banner: {
-          text: 'Starting Soon',
-          visible: true,
-          style: 'custom',
-          customColor: '#0e7490',
-          isTicker: false,
-          position: 'top',
-        },
-        ticker: {
-          text: 'Welcome. The live broadcast will begin shortly.',
-          visible: true,
-          speed: 'normal',
-          backgroundColor: '#0f172a',
-          textColor: '#e0f2fe',
-          separator: '•',
-        },
-        timer: {
-          mode: 'countdown',
-          durationSeconds: 300,
-          remainingSeconds: 300,
-          isRunning: false,
-          visible: true,
-          position: 'top-right',
-          style: 'bold',
-        },
-      };
-    case 'brb':
-      return {
-        name: 'Be Right Back',
-        layout: 'single',
-        background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #14532d 58%, #065f46 100%)' },
-        brandColor: '#34d399',
-        cameraShape: 'rounded',
-        nameTagStyle: 'minimal',
-        banner: {
-          text: 'Be Right Back',
-          visible: true,
-          style: 'custom',
-          customColor: '#059669',
-          isTicker: false,
-          position: 'top',
-        },
-        ticker: {
-          text: 'We will be back in a moment.',
-          visible: true,
-          speed: 'slow',
-          backgroundColor: '#052e16',
-          textColor: '#bbf7d0',
-          separator: '•',
-        },
-      };
-    case 'ending':
-      return {
-        name: 'Ending',
-        layout: 'single',
-        background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 58%, #991b1b 100%)' },
-        brandColor: '#f87171',
-        cameraShape: 'rounded',
-        nameTagStyle: 'block',
-        banner: {
-          text: 'Thanks for watching',
-          visible: true,
-          style: 'custom',
-          customColor: '#dc2626',
-          isTicker: false,
-          position: 'top',
-        },
-        ticker: {
-          text: 'Follow the host for the next live session.',
-          visible: true,
-          speed: 'normal',
-          backgroundColor: '#450a0a',
-          textColor: '#fee2e2',
-          separator: '•',
-        },
-      };
-  }
 }
 
 function getLogoPlacementStyle(placement: LogoPlacement): React.CSSProperties {
@@ -1900,7 +1804,7 @@ export function StudioRoom() {
 
   const onCreateTemplateScene = (template: ProductionSceneTemplate) => {
     if (scenes.length >= MAX_STUDIO_SCENES) return;
-    const config = getTemplateSceneConfig(template);
+    const config = getProductionSceneTemplateConfig(template);
     const visibleOverlayIds: string[] = [];
     let nextBanner: BannerData | null = null;
     let nextTicker: TickerData | null = null;

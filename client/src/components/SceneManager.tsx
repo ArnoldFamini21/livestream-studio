@@ -1,5 +1,12 @@
 import { useState } from 'react';
 import type { Scene, LayoutMode } from '@studio/shared';
+import {
+  getBackgroundPreview,
+  PRODUCTION_SCENE_TEMPLATE_CARDS,
+} from '../utils/productionSceneTemplates.ts';
+import type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
+
+export type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
 
 interface SceneManagerProps {
   scenes: Scene[];
@@ -12,38 +19,6 @@ interface SceneManagerProps {
 }
 
 const MAX_SCENES = 12;
-
-export type ProductionSceneTemplate = 'starting-soon' | 'brb' | 'ending';
-
-const templateCards: Array<{
-  id: ProductionSceneTemplate;
-  name: string;
-  layout: LayoutMode;
-  background: Scene['background'];
-  accent: string;
-}> = [
-  {
-    id: 'starting-soon',
-    name: 'Starting Soon',
-    layout: 'single',
-    background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #312e81 55%, #0e7490 100%)' },
-    accent: '#67e8f9',
-  },
-  {
-    id: 'brb',
-    name: 'BRB',
-    layout: 'single',
-    background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #14532d 58%, #065f46 100%)' },
-    accent: '#34d399',
-  },
-  {
-    id: 'ending',
-    name: 'Ending',
-    layout: 'single',
-    background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 58%, #991b1b 100%)' },
-    accent: '#f87171',
-  },
-];
 
 const LAYOUT_LABELS: Record<LayoutMode, string> = {
   grid: 'Grid',
@@ -95,20 +70,6 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
     </svg>
   ),
 };
-
-function getBackgroundPreview(bg: Scene['background']): string {
-  switch (bg.type) {
-    case 'color':
-      return bg.value;
-    case 'gradient':
-      return bg.value;
-    case 'image':
-      return `url(${bg.value}) center/cover no-repeat`;
-    case 'none':
-    default:
-      return '#09090b';
-  }
-}
 
 export function SceneManager({
   scenes,
@@ -241,7 +202,7 @@ export function SceneManager({
           <span style={styles.templateHint}>Production scenes</span>
         </div>
         <div style={styles.templateGrid}>
-          {templateCards.map((template) => (
+          {PRODUCTION_SCENE_TEMPLATE_CARDS.map((template) => (
             <button
               key={template.id}
               type="button"
