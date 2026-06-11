@@ -6,6 +6,7 @@ import {
   clearUrlHostToken,
   getLegacyHostSession,
   getHostSession,
+  getValidHostToken,
   persistLegacyHostSession,
   persistHostSession,
   readHostTokenFromHash,
@@ -64,6 +65,14 @@ describe('host session links', () => {
     assert.equal(readHostTokenFromHash(`#hostToken=${encodeURIComponent(URL_TOKEN)}`), URL_TOKEN);
     assert.equal(readHostTokenFromHash('#hostToken=short'), '');
     assert.equal(readHostTokenFromHash('#other=value'), '');
+  });
+
+  it('normalizes host tokens before trusting create-room responses', () => {
+    assert.equal(getValidHostToken(URL_TOKEN), URL_TOKEN);
+    assert.equal(getValidHostToken(` ${URL_TOKEN} `), URL_TOKEN);
+    assert.equal(getValidHostToken(''), '');
+    assert.equal(getValidHostToken('short'), '');
+    assert.equal(getValidHostToken(undefined), '');
   });
 
   it('uses URL host access ahead of stale session or saved tokens', () => {

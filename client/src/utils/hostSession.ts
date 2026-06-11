@@ -75,6 +75,12 @@ export function isValidHostToken(value: string): boolean {
   return /^[A-Za-z0-9_-]{16,256}$/.test(value);
 }
 
+export function getValidHostToken(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  return isValidHostToken(normalized) ? normalized : '';
+}
+
 function sortHostStudios(rooms: SavedHostStudio[]): SavedHostStudio[] {
   return rooms.sort((a, b) => {
     const aTime = Date.parse(a.scheduledFor || a.createdAt || '');
