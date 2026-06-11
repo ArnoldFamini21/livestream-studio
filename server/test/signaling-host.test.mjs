@@ -424,6 +424,148 @@ describe('live stream state synchronization', () => {
       await harness.close();
     }
   });
+
+  it('clears live state when the streaming host disconnects during co-host handoff', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Live host disconnect test', 'Arnold', {
+      creatorIp: `live-host-disconnect-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      const hostJoin = await hostJoined;
+
+      const coHost = await connectClient(harness.url);
+      const coHostJoined = waitForMessage(coHost, 'room-joined');
+      joinRoom(coHost, {
+        roomId: room.id,
+        name: 'Producer',
+        role: 'guest',
+      });
+      const coHostJoin = await coHostJoined;
+
+      const promoted = waitForMessage(coHost, 'participant-updated', (message) => (
+        message.payload.id === coHostJoin.payload.participant.id &&
+        message.payload.role === 'co-host'
+      ));
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: {
+          action: 'promote-co-host',
+          targetParticipantId: coHostJoin.payload.participant.id,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      await promoted;
+
+      const liveStarted = waitForMessage(coHost, 'live-stream-state-changed', (message) => message.payload.live === true);
+      sendSignal(host, {
+        type: 'live-stream-state-changed',
+        payload: {
+          live: true,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      await liveStarted;
+      assert.equal(roomState.liveStreamStartedBy, hostJoin.payload.participant.id);
+      assert.equal(roomState.room.status, 'live');
+
+      const liveStopped = waitForMessage(coHost, 'live-stream-state-changed', (message) => message.payload.live === false);
+      const hostChanged = waitForMessage(coHost, 'host-changed', (message) => (
+        message.payload.newHostId === coHostJoin.payload.participant.id
+      ));
+      host.close(1000, 'Host tab closed');
+
+      const [stopped] = await Promise.all([liveStopped, hostChanged]);
+      assert.equal(stopped.payload.performedBy, hostJoin.payload.participant.id);
+      assert.equal(typeof stopped.payload.stoppedAt, 'string');
+      assert.equal(roomState.liveStreamStartedAt, undefined);
+      assert.equal(roomState.liveStreamStartedBy, undefined);
+      assert.equal(roomState.room.status, 'waiting');
+      assert.equal(roomState.room.hostId, coHostJoin.payload.participant.id);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('clears live state when a streaming co-host disconnects', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Live co-host disconnect test', 'Arnold', {
+      creatorIp: `live-cohost-disconnect-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const coHost = await connectClient(harness.url);
+      const coHostJoined = waitForMessage(coHost, 'room-joined');
+      joinRoom(coHost, {
+        roomId: room.id,
+        name: 'Producer',
+        role: 'guest',
+      });
+      const coHostJoin = await coHostJoined;
+
+      const promoted = waitForMessage(host, 'participant-updated', (message) => (
+        message.payload.id === coHostJoin.payload.participant.id &&
+        message.payload.role === 'co-host'
+      ));
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: {
+          action: 'promote-co-host',
+          targetParticipantId: coHostJoin.payload.participant.id,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      await promoted;
+
+      const liveStarted = waitForMessage(host, 'live-stream-state-changed', (message) => message.payload.live === true);
+      sendSignal(coHost, {
+        type: 'live-stream-state-changed',
+        payload: {
+          live: true,
+          performedBy: 'client-claimed-cohost',
+        },
+      });
+      await liveStarted;
+      assert.equal(roomState.liveStreamStartedBy, coHostJoin.payload.participant.id);
+      assert.equal(roomState.room.status, 'live');
+
+      const liveStopped = waitForMessage(host, 'live-stream-state-changed', (message) => message.payload.live === false);
+      coHost.close(1000, 'Co-host tab closed');
+
+      const stopped = await liveStopped;
+      assert.equal(stopped.payload.performedBy, coHostJoin.payload.participant.id);
+      assert.equal(roomState.liveStreamStartedAt, undefined);
+      assert.equal(roomState.liveStreamStartedBy, undefined);
+      assert.equal(roomState.room.status, 'waiting');
+      assert.equal(roomState.participants.size, 1);
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 describe('chat engagement', () => {

@@ -253,6 +253,24 @@ function updateRoomActivityStatus(roomState: RoomState) {
   }
 }
 
+function clearLiveStreamStateForParticipant(roomId: string, roomState: RoomState, participantId: string): boolean {
+  if (roomState.liveStreamStartedBy !== participantId) return false;
+
+  roomState.liveStreamStartedAt = undefined;
+  roomState.liveStreamStartedBy = undefined;
+  updateRoomActivityStatus(roomState);
+
+  broadcastToRoom(roomId, {
+    type: 'live-stream-state-changed',
+    payload: {
+      live: false,
+      stoppedAt: new Date().toISOString(),
+      performedBy: participantId,
+    },
+  });
+  return true;
+}
+
 function replaceExistingHostSession(roomId: string, roomState: RoomState, existingHostId: string) {
   const existingHost = roomState.participants.get(existingHostId);
   if (!existingHost) return;
@@ -1805,6 +1823,8 @@ function handleDisconnect(ws: WebSocket) {
 
     roomState.participants.delete(participantId);
     wsToParticipant.delete(ws);
+
+    clearLiveStreamStateForParticipant(roomId, roomState, participantId);
 
     // Remove from co-host list if applicable
     roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== participantId);
