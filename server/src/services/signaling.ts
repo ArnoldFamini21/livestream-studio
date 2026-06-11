@@ -13,6 +13,7 @@ import type {
   LivePoll,
   StageActionPayload,
   RecordingStatePayload,
+  LiveStreamStatePayload,
   LiveStreamTokenClaims,
 } from '@studio/shared';
 import {
@@ -37,6 +38,8 @@ interface RoomState {
   pollVotes: Map<string, Map<string, string>>;
   coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   recordingStartedAt?: string;
+  liveStreamStartedAt?: string;
+  liveStreamStartedBy?: string;
   // Server-issued secret returned to the room creator and required on host join-room.
   hostToken: string;
   // Optional guest password verifier. The raw password is never stored.
@@ -72,6 +75,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'poll-update',
   'stage-action',
   'recording-state-changed',
+  'live-stream-state-changed',
   'live-stream-token-request',
   'co-host-invite-token-request',
   'end-room',
@@ -236,6 +240,17 @@ function clearRoomEndingTimer(roomId: string) {
   clearTimeout(endingTimer);
   endingTimers.delete(roomId);
   return true;
+}
+
+function updateRoomActivityStatus(roomState: RoomState) {
+  if (roomState.room.status === 'ended' || roomState.room.status === 'scheduled') return;
+  if (roomState.liveStreamStartedAt) {
+    roomState.room.status = 'live';
+  } else if (roomState.recordingStartedAt) {
+    roomState.room.status = 'recording';
+  } else {
+    roomState.room.status = 'waiting';
+  }
 }
 
 function replaceExistingHostSession(roomId: string, roomState: RoomState, existingHostId: string) {
@@ -527,6 +542,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'recording-state-changed':
       handleRecordingStateChange(ws, message.payload);
       break;
+    case 'live-stream-state-changed':
+      handleLiveStreamStateChange(ws, message.payload);
+      break;
     case 'live-stream-token-request':
       handleLiveStreamTokenRequest(ws, message.payload);
       break;
@@ -675,6 +693,13 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     .filter((q) => effectiveRole === 'host' || effectiveRole === 'co-host' || q.status === 'approved' || q.status === 'answered');
   const polls = Array.from(roomState.polls.values())
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  const liveStreamState: LiveStreamStatePayload | undefined = roomState.liveStreamStartedAt
+    ? {
+        live: true,
+        startedAt: roomState.liveStreamStartedAt,
+        performedBy: roomState.liveStreamStartedBy || roomState.room.hostId,
+      }
+    : undefined;
 
   send(ws, {
     type: 'room-joined',
@@ -692,6 +717,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
             performedBy: roomState.room.hostId,
           }
         : undefined,
+      liveStreamState,
     },
   });
 
@@ -879,16 +905,59 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
 
   if (payload.recording) {
     roomState.recordingStartedAt = now;
-    roomState.room.status = 'recording';
-  } else if (roomState.room.status === 'recording') {
-    roomState.recordingStartedAt = undefined;
-    roomState.room.status = 'waiting';
   } else {
     roomState.recordingStartedAt = undefined;
   }
+  updateRoomActivityStatus(roomState);
 
   broadcastToRoom(mapping.roomId, {
     type: 'recording-state-changed',
+    payload: authoritativePayload,
+  });
+}
+
+function handleLiveStreamStateChange(ws: WebSocket, payload: LiveStreamStatePayload) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can change live stream state', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before changing live stream state', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  if (typeof payload.live !== 'boolean') {
+    sendError(ws, 'Invalid live stream state', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const startedAt = payload.live ? roomState.liveStreamStartedAt || now : undefined;
+  const authoritativePayload: LiveStreamStatePayload = {
+    live: payload.live,
+    performedBy: mapping.participantId,
+    ...(payload.live ? { startedAt } : { stoppedAt: now }),
+  };
+
+  if (payload.live) {
+    roomState.liveStreamStartedAt = startedAt;
+    roomState.liveStreamStartedBy = mapping.participantId;
+  } else {
+    roomState.liveStreamStartedAt = undefined;
+    roomState.liveStreamStartedBy = undefined;
+  }
+  updateRoomActivityStatus(roomState);
+
+  broadcastToRoom(mapping.roomId, {
+    type: 'live-stream-state-changed',
     payload: authoritativePayload,
   });
 }

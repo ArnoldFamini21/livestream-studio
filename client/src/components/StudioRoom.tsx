@@ -226,6 +226,12 @@ function getDestinationStatusMessage(status: RtmpRelayDestinationStatus, message
   return undefined;
 }
 
+function getRoomActivityStatus(live: boolean, recordingStartedAt: string | null): Room['status'] {
+  if (live) return 'live';
+  if (recordingStartedAt) return 'recording';
+  return 'waiting';
+}
+
 function canExchangeStudioMedia(a: Participant | null | undefined, b: Participant | null | undefined): boolean {
   return a?.status === 'on-stage' && b?.status === 'on-stage';
 }
@@ -522,6 +528,8 @@ export function StudioRoom() {
   const videoEnabledRef = useRef(videoEnabled);
   const isScreenSharingRef = useRef(isScreenSharing);
   const localStreamRef = useRef<MediaStream | null>(localStream);
+  const isLiveRef = useRef(isLive);
+  const sessionRecordingStartedAtRef = useRef<string | null>(sessionRecordingStartedAt);
   const publishedTrackIdsRef = useRef<{ audio?: string; video?: string }>({});
 
   // Refs for signaling handler dependencies to reduce recreation frequency
@@ -740,6 +748,8 @@ export function StudioRoom() {
   useEffect(() => { videoEnabledRef.current = effectiveVideoEnabled; }, [effectiveVideoEnabled]);
   useEffect(() => { isScreenSharingRef.current = isScreenSharing; }, [isScreenSharing]);
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+  useEffect(() => { isLiveRef.current = isLive; }, [isLive]);
+  useEffect(() => { sessionRecordingStartedAtRef.current = sessionRecordingStartedAt; }, [sessionRecordingStartedAt]);
 
   // Keep function refs in sync
   useEffect(() => { connectToPeerRef.current = connectToPeer; }, [connectToPeer]);
@@ -937,14 +947,19 @@ export function StudioRoom() {
     (message: SignalMessage) => {
       switch (message.type) {
         case 'room-joined': {
-          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState } = message.payload;
+          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState } = message.payload;
+          const live = Boolean(liveStreamState?.live || roomData.status === 'live');
+          const recordingStartedAt = recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null;
+          isLiveRef.current = live;
+          sessionRecordingStartedAtRef.current = recordingStartedAt;
           setRoom(roomData);
+          setIsLive(live);
           setMyParticipant(participant);
           setJoined(true);
           setChatMessages(existingChatMessages);
           setQAQuestions(existingQuestions);
           setPolls(existingPolls);
-          setSessionRecordingStartedAt(recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null);
+          setSessionRecordingStartedAt(recordingStartedAt);
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
           setParticipants(map);
@@ -1071,8 +1086,17 @@ export function StudioRoom() {
           setRoom((prev) => prev ? { ...prev, hostId: message.payload.newHostId } : prev);
           break;
         case 'recording-state-changed':
-          setSessionRecordingStartedAt(message.payload.recording ? message.payload.startedAt || new Date().toISOString() : null);
-          setRoom((prev) => prev ? { ...prev, status: message.payload.recording ? 'recording' : 'waiting' } : prev);
+          sessionRecordingStartedAtRef.current = message.payload.recording ? message.payload.startedAt || new Date().toISOString() : null;
+          setSessionRecordingStartedAt(sessionRecordingStartedAtRef.current);
+          setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(isLiveRef.current, sessionRecordingStartedAtRef.current) } : prev);
+          break;
+        case 'live-stream-state-changed':
+          isLiveRef.current = message.payload.live;
+          setIsLive(message.payload.live);
+          setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(message.payload.live, sessionRecordingStartedAtRef.current) } : prev);
+          if (!message.payload.live) {
+            setDestinations((prev) => prev.map((destination) => ({ ...destination, status: 'idle', statusMessage: undefined })));
+          }
           break;
         case 'live-stream-token-issued': {
           const pending = liveTokenRequestsRef.current.get(message.payload.requestId);
@@ -1642,6 +1666,13 @@ export function StudioRoom() {
           streamKey: destination.streamKey,
         })),
       });
+      send({
+        type: 'live-stream-state-changed',
+        payload: {
+          live: true,
+          performedBy: myParticipantRef.current?.id || '',
+        },
+      });
     } catch (err) {
       console.error('Failed to start live stream:', err);
       stopRelay();
@@ -1661,6 +1692,13 @@ export function StudioRoom() {
     }
     stopRelay();
     setIsLive(false);
+    send({
+      type: 'live-stream-state-changed',
+      payload: {
+        live: false,
+        performedBy: myParticipantRef.current?.id || '',
+      },
+    });
     setDestinations((prev) => prev.map((d) => ({ ...d, status: 'idle', statusMessage: undefined })));
   };
 
