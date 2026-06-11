@@ -106,6 +106,16 @@ interface AudioStemBuildResult {
   candidateCount: number;
 }
 
+export type RecordingLibraryFilter = 'all' | 'audio' | 'video' | 'screen' | 'markers';
+
+const RECORDING_LIBRARY_FILTERS: Array<{ value: RecordingLibraryFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'audio', label: 'Audio' },
+  { value: 'video', label: 'Video' },
+  { value: 'screen', label: 'Screen' },
+  { value: 'markers', label: 'Marked' },
+];
+
 const ZIP_UINT32_MAX = 0xffffffff;
 const ZIP_UINT16_MAX = 0xffff;
 const ZIP_ENCODER = new TextEncoder();
@@ -272,6 +282,45 @@ function makeBundleFileName(roomName: string, createdAt: string): string {
   const roomPrefix = sanitizeFileName(roomName, 'studio');
   const timestamp = createdAt.slice(0, 19).replace(/[:T]/g, '-');
   return `${roomPrefix}_recording_bundle_${timestamp}.zip`;
+}
+
+function getRecordingSessionSearchText(session: LocalRecordingSession): string {
+  return [
+    session.roomName,
+    session.createdAt,
+    new Date(session.createdAt).toLocaleString(),
+    formatDuration(session.durationSeconds),
+    ...session.files.flatMap((file) => [
+      file.label,
+      file.fileName,
+      file.kind || '',
+      file.type,
+    ]),
+    ...(session.markers || []).flatMap((marker) => [
+      marker.label,
+      formatDuration(marker.seconds),
+    ]),
+  ].join(' ').toLowerCase();
+}
+
+function sessionMatchesRecordingFilter(session: LocalRecordingSession, filter: RecordingLibraryFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'markers') return Boolean(session.markers?.length);
+  return session.files.some((file) => file.kind === filter);
+}
+
+export function filterRecordingLibrarySessions(
+  sessions: LocalRecordingSession[],
+  query: string,
+  filter: RecordingLibraryFilter
+): LocalRecordingSession[] {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return sessions.filter((session) => {
+    if (!sessionMatchesRecordingFilter(session, filter)) return false;
+    if (terms.length === 0) return true;
+    const searchText = getRecordingSessionSearchText(session);
+    return terms.every((term) => searchText.includes(term));
+  });
 }
 
 export function encodePcm16Wav(channels: Float32Array[], sampleRate: number): Blob {
@@ -1067,6 +1116,8 @@ export function RecordingPanel({
   const markerImportInputRef = useRef<HTMLInputElement>(null);
   const [markerImportMessage, setMarkerImportMessage] = useState<string | null>(null);
   const [markerImportError, setMarkerImportError] = useState<string | null>(null);
+  const [libraryQuery, setLibraryQuery] = useState('');
+  const [libraryFilter, setLibraryFilter] = useState<RecordingLibraryFilter>('all');
 
   const {
     authorize,
@@ -1090,6 +1141,14 @@ export function RecordingPanel({
   const finalCaptionCount = getFinalCaptionSegments(captionSegments).length;
   const sortedRecordingMarkers = useMemo(() => getSortedRecordingMarkers(recordingMarkers), [recordingMarkers]);
   const markerCount = sortedRecordingMarkers.length;
+  const filteredSessions = useMemo(
+    () => filterRecordingLibrarySessions(sessions, libraryQuery, libraryFilter),
+    [libraryFilter, libraryQuery, sessions]
+  );
+  const libraryTotalBytes = useMemo(
+    () => sessions.reduce((total, session) => total + session.totalBytes, 0),
+    [sessions]
+  );
 
   useEffect(() => {
     return () => {
@@ -1634,16 +1693,52 @@ export function RecordingPanel({
         <div style={styles.librarySection}>
           <div style={styles.filesHeader}>
             <span style={styles.filesTitle}>Recording Library</span>
-            <span style={styles.filesCount}>{sessions.length} saved</span>
+            <span style={styles.filesCount}>
+              {filteredSessions.length}/{sessions.length} saved | {formatFileSize(libraryTotalBytes)}
+            </span>
           </div>
+
+          {sessions.length > 0 && (
+            <div style={styles.libraryControls}>
+              <input
+                aria-label="Search recording library"
+                style={styles.librarySearch}
+                value={libraryQuery}
+                onChange={(event) => setLibraryQuery(event.target.value)}
+                placeholder="Search recordings"
+                maxLength={120}
+              />
+              <div style={styles.libraryFilterRow} role="group" aria-label="Filter recording library">
+                {RECORDING_LIBRARY_FILTERS.map((filter) => {
+                  const active = libraryFilter === filter.value;
+                  return (
+                    <button
+                      key={filter.value}
+                      type="button"
+                      style={{
+                        ...styles.libraryFilterBtn,
+                        ...(active ? styles.libraryFilterBtnActive : {}),
+                      }}
+                      onClick={() => setLibraryFilter(filter.value)}
+                    >
+                      {filter.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {libraryError && <div style={styles.errorBadge}>{libraryError}</div>}
           {libraryLoading && <div style={styles.libraryEmpty}>Loading saved recordings...</div>}
           {!libraryLoading && sessions.length === 0 && (
             <div style={styles.libraryEmpty}>Saved sessions will appear here after you stop a recording.</div>
           )}
+          {!libraryLoading && sessions.length > 0 && filteredSessions.length === 0 && (
+            <div style={styles.libraryEmpty}>No saved recordings match the current search and filters.</div>
+          )}
 
-          {sessions.map((session) => {
+          {filteredSessions.map((session) => {
             const isActive = activeSessionId === session.id;
             const isBusy = libraryBusyId === session.id;
             return (
@@ -2195,6 +2290,45 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(255,255,255,0.03)',
     border: '1px solid var(--border)',
     borderRadius: 8,
+  },
+  libraryControls: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 7,
+  },
+  librarySearch: {
+    width: '100%',
+    height: 34,
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-primary)',
+    padding: '0 10px',
+    fontSize: 12,
+    outline: 'none',
+    boxSizing: 'border-box' as const,
+  },
+  libraryFilterRow: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+    gap: 4,
+  },
+  libraryFilterBtn: {
+    minWidth: 0,
+    height: 28,
+    borderRadius: 7,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 700,
+    cursor: 'pointer',
+    padding: '0 4px',
+  },
+  libraryFilterBtnActive: {
+    background: 'rgba(99, 102, 241, 0.16)',
+    borderColor: 'rgba(129, 140, 248, 0.5)',
+    color: '#c7d2fe',
   },
   sessionCard: {
     background: 'var(--bg-tertiary)',
