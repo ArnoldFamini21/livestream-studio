@@ -193,7 +193,7 @@ export function HomePage() {
         passwordProtected: Boolean(room.settings?.passwordProtected),
         status: room.status,
       }));
-      navigate(buildHostEntryPath(room.id));
+      navigate(buildHostEntryPath(room.id, room.hostToken));
     } catch (err) {
       console.error('Failed to create room:', err);
       setError('Network error. Please check your connection and try again.');
@@ -349,7 +349,7 @@ export function HomePage() {
 
   const openScheduledAsHost = (room: SavedScheduledStudio) => {
     persistHostSession({ roomId: room.id, hostName: room.hostName || hostName || 'Host', hostToken: room.hostToken });
-    navigate(buildHostEntryPath(room.id));
+    navigate(buildHostEntryPath(room.id, room.hostToken));
   };
 
   const forgetScheduledRoom = (roomId: string) => {
@@ -359,7 +359,7 @@ export function HomePage() {
   const goToStudioAsHost = () => {
     if (!scheduledRoom) return;
     persistHostSession({ roomId: scheduledRoom.id, hostName: scheduledRoom.hostName || hostName || 'Host', hostToken: scheduledRoom.hostToken });
-    navigate(buildHostEntryPath(scheduledRoom.id));
+    navigate(buildHostEntryPath(scheduledRoom.id, scheduledRoom.hostToken));
   };
 
   const closeModal = () => {
