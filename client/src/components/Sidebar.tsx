@@ -9,6 +9,11 @@ import { SceneManager, type ProductionSceneTemplate } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
 import { CommentHighlightManager, type HighlightedComment } from './CommentHighlight.tsx';
 import { MediaLibrary } from './MediaLibrary.tsx';
+import {
+  buildChatTranscriptCsv,
+  buildChatTranscriptFilename,
+  type ChatTranscriptScope,
+} from '../utils/chatTranscript.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -160,6 +165,16 @@ const tabDefs: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
     ),
   },
 ];
+
+function downloadTextFile(text: string, fileName: string, type: string) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
 
 // ---------------------------------------------------------------------------
 // Main Sidebar component
@@ -762,6 +777,8 @@ function ChatContent({
   const starredMessages = publicMessages.filter((msg) => msg.starred);
   const backstageMessages = messages.filter((msg) => msg.isBackstage);
   const visibleMessages = mode === 'backstage' ? backstageMessages : mode === 'starred' ? starredMessages : publicMessages;
+  const exportScope: ChatTranscriptScope = mode;
+  const exportLabel = mode === 'backstage' ? 'Export Backstage' : mode === 'starred' ? 'Export Starred' : 'Export Public';
 
   const handleScroll = () => {
     const el = containerRef.current;
@@ -780,10 +797,29 @@ function ChatContent({
     setInput('');
   };
 
+  const handleExport = () => {
+    if (visibleMessages.length === 0) return;
+    downloadTextFile(
+      buildChatTranscriptCsv(messages, exportScope),
+      buildChatTranscriptFilename(exportScope),
+      'text/csv;charset=utf-8'
+    );
+  };
+
   return (
     <div style={st.panelFull}>
       <div style={st.panelHeader}>
-        <h3 style={st.panelTitle}>Chat</h3>
+        <div style={st.panelTitleRow}>
+          <h3 style={st.panelTitle}>Chat</h3>
+          <button
+            type="button"
+            style={{ ...st.chatExportBtn, ...(visibleMessages.length === 0 ? st.chatExportBtnDisabled : {}) }}
+            onClick={handleExport}
+            disabled={visibleMessages.length === 0}
+          >
+            {exportLabel}
+          </button>
+        </div>
         <div style={st.chatTabs} role="tablist" aria-label="Chat channel">
           <button
             type="button"
@@ -1022,6 +1058,7 @@ const st: Record<string, React.CSSProperties> = {
   // Panel layout
   panelFull: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
   panelHeader: { padding: '14px 16px 10px', borderBottom: '1px solid var(--border)' },
+  panelTitleRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   panelTitle: { fontSize: 14, fontWeight: 600, margin: 0 },
   panelSub: { fontSize: 11, color: 'var(--text-muted)', margin: 0, marginTop: 2 },
   panelBody: { flex: 1, overflowY: 'auto', padding: '8px 0' },
@@ -1070,6 +1107,8 @@ const st: Record<string, React.CSSProperties> = {
   overlayPackBtn: { minHeight: 34, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer' },
   // Chat
   chatTabs: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
+  chatExportBtn: { minHeight: 28, padding: '0 10px', borderRadius: 7, border: '1px solid rgba(96, 165, 250, 0.28)', background: 'rgba(96, 165, 250, 0.1)', color: '#bfdbfe', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' },
+  chatExportBtnDisabled: { opacity: 0.45, cursor: 'not-allowed' },
   chatTab: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, height: 28, padding: '0 8px', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
   chatTabActive: { background: 'rgba(96, 165, 250, 0.14)', color: '#93c5fd' },
   chatTabActiveStarred: { background: 'rgba(245, 158, 11, 0.16)', color: '#fbbf24' },
