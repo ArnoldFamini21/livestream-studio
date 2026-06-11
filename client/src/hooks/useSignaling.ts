@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import type { SignalMessage } from '@studio/shared';
+import { resolveWebSocketUrl } from '../utils/apiClient.ts';
 
 type MessageHandler = (message: SignalMessage) => void;
 
@@ -38,8 +39,7 @@ export function useSignaling() {
 
     intentionalDisconnectRef.current = false;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = import.meta.env.VITE_WS_URL || `${protocol}//${window.location.host}/ws`;
+    const wsUrl = resolveWebSocketUrl();
     connectTimerRef.current = setTimeout(() => {
       connectTimerRef.current = null;
       if (intentionalDisconnectRef.current) return;

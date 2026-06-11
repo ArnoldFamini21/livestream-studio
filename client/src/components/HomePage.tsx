@@ -11,8 +11,8 @@ import {
   upsertSavedHostStudio,
   type SavedHostStudio,
 } from '../utils/hostSession.ts';
+import { getApiErrorMessage, postJson } from '../utils/apiClient.ts';
 
-const API_URL = import.meta.env.VITE_API_URL || '';
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const INVITE_QR_OPTIONS = {
   errorCorrectionLevel: 'M',
@@ -31,6 +31,19 @@ interface SavedScheduledStudio extends SavedHostStudio {
 }
 
 interface ScheduledRoomModal extends SavedScheduledStudio {}
+
+interface CreatedRoomResponse {
+  id?: unknown;
+  name?: unknown;
+  status?: string;
+  createdAt?: string;
+  hostName?: string;
+  hostToken?: unknown;
+  scheduledFor?: string;
+  settings?: {
+    passwordProtected?: boolean;
+  };
+}
 
 function toDateTimeLocalValue(date: Date): string {
   const timezoneOffsetMs = date.getTimezoneOffset() * 60_000;
@@ -162,23 +175,17 @@ export function HomePage() {
     setError(null);
 
     try {
-      const res = await fetch(`${API_URL}/api/rooms`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: roomName,
-          hostName,
-          password: roomPassword.trim() || undefined,
-        }),
+      const room = await postJson<CreatedRoomResponse>('/api/rooms', {
+        name: roomName,
+        hostName,
+        password: roomPassword.trim() || undefined,
       });
-      if (!res.ok) {
-        const errorText = await res.text().catch(() => 'Unknown error');
-        setError(`Failed to create room: ${res.status} ${errorText}`);
-        return;
-      }
-      const room = await res.json();
       if (typeof room.hostToken !== 'string') {
         setError('Studio was created, but host access was not returned. Please create a new studio.');
+        return;
+      }
+      if (typeof room.id !== 'string' || typeof room.name !== 'string') {
+        setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
       }
       const savedHostName = room.hostName || hostName;
@@ -196,7 +203,7 @@ export function HomePage() {
       navigate(buildHostEntryPath(room.id, room.hostToken));
     } catch (err) {
       console.error('Failed to create room:', err);
-      setError('Network error. Please check your connection and try again.');
+      setError(getApiErrorMessage(err, 'Failed to create studio. Please try again.'));
     } finally {
       setLoading(false);
     }
@@ -208,25 +215,19 @@ export function HomePage() {
     setError(null);
 
     try {
-      const res = await fetch(`${API_URL}/api/rooms/schedule`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: roomName,
-          hostName,
-          scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
-          password: roomPassword.trim() || undefined,
-        }),
+      const room = await postJson<CreatedRoomResponse>('/api/rooms/schedule', {
+        name: roomName,
+        hostName,
+        scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
+        password: roomPassword.trim() || undefined,
       });
-      if (!res.ok) {
-        const errorText = await res.text().catch(() => 'Unknown error');
-        setError(`Failed to schedule room: ${res.status} ${errorText}`);
-        return;
-      }
-      const room = await res.json();
       const savedHostName = room.hostName || hostName;
       if (typeof room.hostToken !== 'string') {
         setError('Studio was scheduled, but host access was not returned. Please schedule it again.');
+        return;
+      }
+      if (typeof room.id !== 'string' || typeof room.name !== 'string') {
+        setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
         return;
       }
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
@@ -246,7 +247,7 @@ export function HomePage() {
       setHostCopied(false);
     } catch (err) {
       console.error('Failed to schedule room:', err);
-      setError('Network error. Please check your connection and try again.');
+      setError(getApiErrorMessage(err, 'Failed to schedule studio. Please try again.'));
     } finally {
       setSchedulingLoading(false);
     }
