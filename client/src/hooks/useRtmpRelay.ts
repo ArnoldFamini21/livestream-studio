@@ -16,6 +16,7 @@ interface UseRtmpRelayOptions {
   participantVolumes?: Record<string, number>;
   readinessEnabled?: boolean;
   onDestinationStatus: (destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => void;
+  onRelayStopped?: (message: string) => void;
 }
 
 interface StartRelayOptions {
@@ -381,11 +382,13 @@ export function useRtmpRelay({
   participantVolumes = {},
   readinessEnabled = true,
   onDestinationStatus,
+  onRelayStopped,
 }: UseRtmpRelayOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const mixerRef = useRef<MixerResources | null>(null);
   const activeDestinationIdsRef = useRef<string[]>([]);
+  const intentionalStopRef = useRef(false);
   const bitrateSamplesRef = useRef<BitrateSample[]>([]);
   const sentBytesRef = useRef(0);
   const readinessCheckIdRef = useRef(0);
@@ -439,7 +442,7 @@ export function useRtmpRelay({
     }));
   }, []);
 
-  const cleanup = useCallback(() => {
+  const cleanup = useCallback((status: RtmpRelayStats['status'] = 'idle') => {
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
       try {
@@ -462,10 +465,11 @@ export function useRtmpRelay({
     cleanupMixer(mixerRef.current);
     mixerRef.current = null;
     activeDestinationIdsRef.current = [];
-    resetStats();
+    resetStats(status);
   }, [resetStats]);
 
   const stopRelay = useCallback(() => {
+    intentionalStopRef.current = true;
     cleanup();
   }, [cleanup]);
 
@@ -551,17 +555,29 @@ export function useRtmpRelay({
       );
       mixerRef.current = mixer;
       activeDestinationIdsRef.current = destinations.map((destination) => destination.id);
+      intentionalStopRef.current = false;
       resetStats('connecting');
 
       await new Promise<void>((resolve, reject) => {
         let started = false;
+        let stopReported = false;
         const ws = new WebSocket(getMediaWsUrl());
         ws.binaryType = 'arraybuffer';
         wsRef.current = ws;
 
         const fail = (error: Error) => {
-          cleanup();
+          cleanup('error');
           reject(error);
+        };
+
+        const reportUnexpectedStop = (message: string) => {
+          if (!started || stopReported || intentionalStopRef.current) return;
+          stopReported = true;
+          setRelayStatus('error');
+          activeDestinationIdsRef.current.forEach((id) => {
+            onDestinationStatus(id, 'error', message);
+          });
+          onRelayStopped?.(message);
         };
 
         const startTimeout = window.setTimeout(() => {
@@ -634,7 +650,16 @@ export function useRtmpRelay({
           }
 
           if (message.type === 'session-stopped') {
-            cleanup();
+            const stopMessage = message.payload.reason
+              ? `Media relay stopped: ${message.payload.reason}`
+              : 'Media relay stopped unexpectedly.';
+            if (!started) {
+              window.clearTimeout(startTimeout);
+              fail(new Error(stopMessage));
+              return;
+            }
+            reportUnexpectedStop(stopMessage);
+            cleanup(intentionalStopRef.current ? 'idle' : 'error');
             return;
           }
 
@@ -676,11 +701,18 @@ export function useRtmpRelay({
             cleanupMixer(mixerRef.current);
             mixerRef.current = null;
             setRelayStatus('error');
+            wsRef.current = null;
+            activeDestinationIdsRef.current = [];
+            return;
+          }
+          if (!intentionalStopRef.current) {
+            reportUnexpectedStop('Media relay connection closed unexpectedly.');
+            cleanup('error');
           }
         };
       });
     },
-    [cleanup, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, onDestinationStatus, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus]
+    [cleanup, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, onDestinationStatus, onRelayStopped, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus]
   );
 
   useEffect(() => {

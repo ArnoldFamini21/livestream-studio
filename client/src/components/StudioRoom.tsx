@@ -579,6 +579,25 @@ export function StudioRoom() {
     )));
   }, []);
 
+  const handleRelayStopped = useCallback((message: string) => {
+    const statusMessage = message.trim() || 'Media relay stopped unexpectedly.';
+    isLiveRef.current = false;
+    setIsLive(false);
+    setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(false, sessionRecordingStartedAtRef.current) } : prev);
+    send({
+      type: 'live-stream-state-changed',
+      payload: {
+        live: false,
+        performedBy: myParticipantRef.current?.id || '',
+      },
+    });
+    setDestinations((prev) => prev.map((destination) => (
+      destination.enabled
+        ? { ...destination, status: 'error', statusMessage }
+        : { ...destination, status: 'idle', statusMessage: undefined }
+    )));
+  }, [send]);
+
   const {
     startRelay,
     stopRelay,
@@ -594,6 +613,7 @@ export function StudioRoom() {
     participantVolumes,
     readinessEnabled: isHostOrCoHost,
     onDestinationStatus: handleRelayDestinationStatus,
+    onRelayStopped: handleRelayStopped,
   });
 
   const handleParticipantVolumeChange = useCallback((participantId: string, volume: number) => {
