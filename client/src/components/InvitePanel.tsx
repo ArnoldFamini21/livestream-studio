@@ -139,6 +139,20 @@ export function InvitePanel({
     });
   }, [coHostInvite]);
 
+  const coHostMailtoHref = useMemo(() => {
+    if (!coHostInvite) return '';
+    const details = [
+      `${roomName}`,
+      hostName ? `Host: ${hostName}` : null,
+      'Role: Co-host',
+      coHostExpiresLabel ? `Expires: ${coHostExpiresLabel}` : null,
+      `Join as co-host: ${coHostInvite.inviteUrl}`,
+    ].filter(Boolean);
+    const subject = encodeURIComponent(`Co-host invite for ${roomName}`);
+    const body = encodeURIComponent(details.join('\n'));
+    return `mailto:?subject=${subject}&body=${body}`;
+  }, [coHostExpiresLabel, coHostInvite, hostName, roomName]);
+
   useEffect(() => {
     closeButtonRef.current?.focus();
   }, []);
@@ -418,6 +432,17 @@ export function InvitePanel({
               </button>
             </div>
           )}
+          {coHostInvite && (
+            <div style={styles.coHostActions}>
+              <a style={styles.coHostActionBtn} href={coHostMailtoHref}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="m22 7-10 6L2 7" />
+                </svg>
+                Email Co-host
+              </a>
+            </div>
+          )}
           {coHostError && <span style={styles.errorText}>{coHostError}</span>}
         </div>
 
@@ -611,6 +636,28 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
+  },
+  coHostActions: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr)',
+    gap: 8,
+  },
+  coHostActionBtn: {
+    minHeight: 36,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    minWidth: 0,
+    padding: '0 10px',
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    background: 'rgba(96, 165, 250, 0.09)',
+    color: '#bfdbfe',
+    fontSize: 12,
+    fontWeight: 800,
+    textDecoration: 'none',
+    cursor: 'pointer',
   },
   linkLabel: {
     display: 'block',
