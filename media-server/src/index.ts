@@ -11,6 +11,7 @@ import type {
   LiveStreamTokenClaims,
 } from '@studio/shared';
 import { getLiveStreamTokenSecret, verifyLiveStreamToken } from './auth.js';
+import { buildAllowedOrigins, isAllowedOrigin } from './origins.js';
 import {
   createFfmpegArgs,
   normalizeAudioConfig,
@@ -25,6 +26,7 @@ const MAX_WS_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 const MAX_DESTINATION_RESTARTS = 2;
 const DESTINATION_RESTART_DELAY_MS = 1_500;
+const isProduction = process.env.NODE_ENV === 'production';
 
 interface RelayProcess {
   destination: RtmpRelayDestination;
@@ -44,35 +46,7 @@ interface RelaySession {
   restartAttempts: Map<string, number>;
 }
 
-const allowedOrigins = new Set<string>([
-  'https://studio.arnoldfamini.com',
-  'http://localhost:5173',
-]);
-
-function normalizeOrigin(value: string): string | null {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
-function addAllowedOrigins(value?: string) {
-  if (!value) return;
-  for (const item of value.split(',')) {
-    const origin = normalizeOrigin(item.trim());
-    if (origin) allowedOrigins.add(origin);
-  }
-}
-
-addAllowedOrigins(process.env.CLIENT_URL);
-addAllowedOrigins(process.env.CLIENT_URLS);
-
-function isAllowedOrigin(origin?: string): boolean {
-  if (!origin) return true;
-  const normalized = normalizeOrigin(origin);
-  return Boolean(normalized && allowedOrigins.has(normalized));
-}
+const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
 
 function sendJson(ws: WebSocket, message: RtmpRelayServerMessage) {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -320,7 +294,7 @@ const wss = new WebSocketServer({
   verifyClient: (info, done) => {
     const headerOrigin = info.req.headers.origin;
     const origin = info.origin || (Array.isArray(headerOrigin) ? headerOrigin[0] : headerOrigin);
-    if (isAllowedOrigin(origin)) {
+    if (isAllowedOrigin(origin, { allowedOrigins, production: isProduction })) {
       done(true);
     } else {
       console.warn(`RTMP relay connection rejected from origin: ${origin}`);
