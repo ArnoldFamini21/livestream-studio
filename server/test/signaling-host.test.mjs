@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { describe, it } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createRoom, getRooms, setupSignalingServer } from '../dist/services/signaling.js';
@@ -72,6 +73,15 @@ function sendSignal(ws, message) {
   ws.send(JSON.stringify(message));
 }
 
+function verifySignedLiveToken(token, secret) {
+  const [body, signature] = token.split('.');
+  assert.ok(body);
+  assert.ok(signature);
+  const expected = createHmac('sha256', secret).update(body).digest('base64url');
+  assert.equal(signature, expected);
+  return JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+}
+
 describe('host admission', () => {
   it('keeps a valid host-token login on stage when replacing a stale host session', async () => {
     const harness = await createSignalingHarness();
@@ -132,6 +142,114 @@ describe('host admission', () => {
       const error = await errorMessage;
       assert.equal(error.payload.code, 'HOST_TOKEN_INVALID');
       assert.equal(getRooms().get(room.id)?.participants.size, 0);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('live stream token authorization', () => {
+  it('issues a signed short-lived live token to the host', async () => {
+    const previousSecret = process.env.LIVE_STREAM_TOKEN_SECRET;
+    const secret = 'test-live-stream-token-secret-1234567890';
+    process.env.LIVE_STREAM_TOKEN_SECRET = secret;
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Live token host test', 'Arnold', {
+      creatorIp: `live-token-host-${Date.now()}`,
+    });
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      const joined = await hostJoined;
+
+      const issuedToken = waitForMessage(host, 'live-stream-token-issued', (message) => (
+        message.payload.requestId === 'live-request-1'
+      ));
+      sendSignal(host, {
+        type: 'live-stream-token-request',
+        payload: { requestId: 'live-request-1' },
+      });
+
+      const tokenMessage = await issuedToken;
+      const claims = verifySignedLiveToken(tokenMessage.payload.token, secret);
+      assert.equal(claims.v, 1);
+      assert.equal(claims.roomId, room.id);
+      assert.equal(claims.participantId, joined.payload.participant.id);
+      assert.equal(claims.role, 'host');
+      assert.equal(typeof claims.nonce, 'string');
+      assert.ok(claims.exp > Date.now());
+      assert.ok(Date.parse(tokenMessage.payload.expiresAt) > Date.now());
+    } finally {
+      if (previousSecret === undefined) {
+        delete process.env.LIVE_STREAM_TOKEN_SECRET;
+      } else {
+        process.env.LIVE_STREAM_TOKEN_SECRET = previousSecret;
+      }
+      await harness.close();
+    }
+  });
+
+  it('rejects guest live token requests', async () => {
+    const harness = await createSignalingHarness();
+    const { room } = createRoom('Live token guest test', 'Arnold', {
+      creatorIp: `live-token-guest-${Date.now()}`,
+    });
+
+    try {
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const unauthorized = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'live-stream-token-request',
+        payload: { requestId: 'guest-live-request' },
+      });
+
+      const error = await unauthorized;
+      assert.match(error.payload.message, /Only hosts and co-hosts/);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects malformed live token request ids', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Malformed live token request test', 'Arnold', {
+      creatorIp: `live-token-invalid-request-${Date.now()}`,
+    });
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const validationError = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'live-stream-token-request',
+        payload: { requestId: '' },
+      });
+
+      const error = await validationError;
+      assert.match(error.payload.message, /Invalid live stream token request/);
     } finally {
       await harness.close();
     }
