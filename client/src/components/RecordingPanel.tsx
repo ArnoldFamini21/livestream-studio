@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
-import type { RecordingResult } from '../hooks/useLocalRecording';
+import type { LocalRecordingFileResult, RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
 import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary';
 
@@ -32,6 +32,7 @@ interface RecordedFile {
   label: string;
   blob: Blob;
   fileName: string;
+  kind?: LocalRecordingFileResult['kind'];
 }
 
 interface RecordingBundleFile {
@@ -40,6 +41,7 @@ interface RecordingBundleFile {
   zipPath: string;
   size: number;
   type: string;
+  kind?: LocalRecordingFileResult['kind'];
 }
 
 interface RecordingBundleSource {
@@ -77,10 +79,31 @@ interface RecordingEditorFile {
   type: string;
 }
 
+interface RecordingAudioStemFile {
+  label: string;
+  format: 'wav';
+  zipPath: string;
+  size: number;
+  type: string;
+  sourceTrackIndex: number;
+  sourceZipPath: string;
+  sampleRate: number;
+  channels: number;
+  bitDepth: 16;
+  encoding: 'pcm_s16le';
+}
+
 interface ZipEntry {
   path: string;
   blob: Blob;
   modifiedAt?: Date;
+}
+
+interface AudioStemBuildResult {
+  entries: ZipEntry[];
+  files: RecordingAudioStemFile[];
+  skippedCount: number;
+  candidateCount: number;
 }
 
 const ZIP_UINT32_MAX = 0xffffffff;
@@ -150,6 +173,13 @@ function makeRecordingFileName(roomName: string, label: string, timestamp: strin
   return `${roomPrefix}_${String(index + 1).padStart(2, '0')}_${labelPart}_${timestamp}.${getBlobExtension(blob)}`;
 }
 
+function getRecordingFileType(file: RecordedFile): string {
+  if (file.blob.type) return file.blob.type;
+  if (file.kind === 'audio') return 'audio/webm';
+  if (file.kind === 'video' || file.kind === 'screen') return 'video/webm';
+  return 'application/octet-stream';
+}
+
 function createCrc32Table(): Uint32Array {
   const table = new Uint32Array(256);
   for (let i = 0; i < table.length; i++) {
@@ -214,10 +244,155 @@ function makeUniqueZipPath(fileName: string, index: number, seenPaths: Set<strin
   return candidate;
 }
 
+function makeUniqueAudioStemZipPath(fileName: string, index: number, seenPaths: Set<string>): string {
+  const cleaned = sanitizeFileName(fileName.replace(/\.[^.]+$/, ''), `track_${index + 1}_audio`);
+  let candidate = `audio-stems/${String(index + 1).padStart(2, '0')}_${cleaned}.wav`;
+  let suffix = 2;
+
+  while (seenPaths.has(candidate)) {
+    candidate = `audio-stems/${String(index + 1).padStart(2, '0')}_${cleaned}_${suffix}.wav`;
+    suffix += 1;
+  }
+
+  seenPaths.add(candidate);
+  return candidate;
+}
+
 function makeBundleFileName(roomName: string, createdAt: string): string {
   const roomPrefix = sanitizeFileName(roomName, 'studio');
   const timestamp = createdAt.slice(0, 19).replace(/[:T]/g, '-');
   return `${roomPrefix}_recording_bundle_${timestamp}.zip`;
+}
+
+export function encodePcm16Wav(channels: Float32Array[], sampleRate: number): Blob {
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+    throw new Error('A valid sample rate is required for WAV export');
+  }
+
+  const channelCount = Math.max(1, channels.length);
+  const frameCount = channels.reduce((max, channel) => Math.max(max, channel.length), 0);
+  const bytesPerSample = 2;
+  const blockAlign = channelCount * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = frameCount * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeAscii = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i++) {
+      view.setUint8(offset + i, value.charCodeAt(i));
+    }
+  };
+
+  writeAscii(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeAscii(8, 'WAVE');
+  writeAscii(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channelCount, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let frame = 0; frame < frameCount; frame++) {
+    for (let channel = 0; channel < channelCount; channel++) {
+      const sample = Math.max(-1, Math.min(1, channels[channel]?.[frame] || 0));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += bytesPerSample;
+    }
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
+
+function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
+  const globalWithWebkit = globalThis as typeof globalThis & {
+    webkitAudioContext?: BrowserAudioContextConstructor;
+  };
+  return globalWithWebkit.AudioContext || globalWithWebkit.webkitAudioContext || null;
+}
+
+function isAudioStemCandidate(file: RecordingBundleFile): boolean {
+  return file.kind === 'audio' || file.type.startsWith('audio/');
+}
+
+async function createWavAudioStem(
+  file: RecordedFile,
+  manifestFile: RecordingBundleFile,
+  trackIndex: number,
+  seenPaths: Set<string>
+): Promise<{ entry: ZipEntry; file: RecordingAudioStemFile } | null> {
+  const AudioContextConstructor = getAudioContextConstructor();
+  if (!AudioContextConstructor) return null;
+
+  let audioContext: AudioContext | null = null;
+  try {
+    audioContext = new AudioContextConstructor();
+    const sourceBuffer = await file.blob.arrayBuffer();
+    const decoded = await audioContext.decodeAudioData(sourceBuffer.slice(0));
+    const channels = Array.from({ length: decoded.numberOfChannels }, (_, channel) => decoded.getChannelData(channel));
+    const stemBlob = encodePcm16Wav(channels, decoded.sampleRate);
+    const zipPath = makeUniqueAudioStemZipPath(file.fileName, trackIndex, seenPaths);
+    return {
+      entry: {
+        path: zipPath,
+        blob: stemBlob,
+      },
+      file: {
+        label: `${file.label} WAV stem`,
+        format: 'wav',
+        zipPath,
+        size: stemBlob.size,
+        type: stemBlob.type,
+        sourceTrackIndex: trackIndex + 1,
+        sourceZipPath: manifestFile.zipPath,
+        sampleRate: decoded.sampleRate,
+        channels: decoded.numberOfChannels,
+        bitDepth: 16,
+        encoding: 'pcm_s16le',
+      },
+    };
+  } catch (err) {
+    console.warn(`Could not create WAV stem for ${file.label}`, err);
+    return null;
+  } finally {
+    if (audioContext && audioContext.state !== 'closed') {
+      await audioContext.close().catch(() => {});
+    }
+  }
+}
+
+async function buildWavAudioStems(
+  trackEntries: Array<{ path: string; blob: Blob; file: RecordedFile }>,
+  manifestFiles: RecordingBundleFile[],
+  seenPaths: Set<string>
+): Promise<AudioStemBuildResult> {
+  const entries: ZipEntry[] = [];
+  const files: RecordingAudioStemFile[] = [];
+  let skippedCount = 0;
+  let candidateCount = 0;
+
+  for (let index = 0; index < manifestFiles.length; index++) {
+    const manifestFile = manifestFiles[index];
+    if (!isAudioStemCandidate(manifestFile)) continue;
+    candidateCount += 1;
+    const stem = await createWavAudioStem(trackEntries[index].file, manifestFile, index, seenPaths);
+    if (!stem) {
+      skippedCount += 1;
+      continue;
+    }
+    entries.push(stem.entry);
+    files.push(stem.file);
+  }
+
+  return { entries, files, skippedCount, candidateCount };
 }
 
 function getFinalCaptionSegments(segments: LiveCaptionSegment[] | undefined): LiveCaptionSegment[] {
@@ -356,9 +531,11 @@ function inferEditorTrackKind(file: RecordingBundleFile): 'audio' | 'video' | 's
 function createEditorTimeline(
   source: RecordingBundleSource,
   files: RecordingBundleFile[],
+  audioStemFiles: RecordingAudioStemFile[],
   markers: RecordingMarker[],
   exportedAt: string
 ) {
+  const audioStemBySourcePath = new Map(audioStemFiles.map((file) => [file.sourceZipPath, file]));
   return {
     app: 'livestream-studio',
     exportType: 'editor-timeline',
@@ -376,6 +553,7 @@ function createEditorTimeline(
     },
     tracks: files.map((file, index) => {
       const kind = inferEditorTrackKind(file);
+      const audioStem = audioStemBySourcePath.get(file.zipPath);
       return {
         trackIndex: index + 1,
         lane: index + 1,
@@ -388,6 +566,14 @@ function createEditorTimeline(
           type: file.type,
           size: file.size,
         },
+        audioStem: audioStem ? {
+          zipPath: audioStem.zipPath,
+          type: audioStem.type,
+          sampleRate: audioStem.sampleRate,
+          channels: audioStem.channels,
+          bitDepth: audioStem.bitDepth,
+          encoding: audioStem.encoding,
+        } : null,
         timeline: {
           startSeconds: 0,
           durationSeconds: source.durationSeconds,
@@ -408,8 +594,10 @@ function createEditorTimeline(
 
 function buildEditorTimelineCsv(
   source: RecordingBundleSource,
-  files: RecordingBundleFile[]
+  files: RecordingBundleFile[],
+  audioStemFiles: RecordingAudioStemFile[]
 ): string {
+  const audioStemBySourcePath = new Map(audioStemFiles.map((file) => [file.sourceZipPath, file]));
   const rows = [
     [
       'trackIndex',
@@ -422,6 +610,7 @@ function buildEditorTimelineCsv(
       'durationTimecode',
       'durationSeconds',
       'sourcePath',
+      'wavStemPath',
       'fileName',
       'mimeType',
       'sizeBytes',
@@ -439,6 +628,7 @@ function buildEditorTimelineCsv(
         formatDuration(source.durationSeconds),
         source.durationSeconds,
         file.zipPath,
+        audioStemBySourcePath.get(file.zipPath)?.zipPath || '',
         file.fileName,
         file.type,
         file.size,
@@ -458,6 +648,7 @@ function buildEditorReadme(source: RecordingBundleSource): string {
     '',
     'Files:',
     '- tracks/: isolated local recording tracks',
+    '- audio-stems/: PCM WAV audio stems generated from audio-only tracks when supported',
     '- editor/local_recording_timeline.json: structured timeline metadata',
     '- editor/local_recording_timeline.csv: spreadsheet/editor-friendly track layout',
     '- markers/: recording markers when present',
@@ -473,7 +664,10 @@ function createRecordingManifest(
   exportedAt: string,
   captionFiles: RecordingCaptionFile[],
   markerFiles: RecordingMarkerFile[],
-  editorFiles: RecordingEditorFile[]
+  editorFiles: RecordingEditorFile[],
+  audioStemFiles: RecordingAudioStemFile[],
+  skippedAudioStemCount: number,
+  audioStemCandidateCount: number
 ) {
   const totalBytes = files.reduce((total, file) => total + file.size, 0);
   const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
@@ -498,7 +692,20 @@ function createRecordingManifest(
       zipPath: file.zipPath,
       size: file.size,
       type: file.type,
+      kind: file.kind || inferEditorTrackKind(file),
     })),
+    ...(audioStemCandidateCount > 0
+      ? {
+          audioStems: {
+            format: 'wav',
+            encoding: 'pcm_s16le',
+            bitDepth: 16,
+            generatedCount: audioStemFiles.length,
+            skippedCount: skippedAudioStemCount,
+            files: audioStemFiles,
+          },
+        }
+      : {}),
     editor: {
       timelineVersion: 1,
       files: editorFiles,
@@ -618,8 +825,10 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     fileName: entry.file.fileName,
     zipPath: entry.path,
     size: entry.file.blob.size,
-    type: entry.file.blob.type || 'application/octet-stream',
+    type: getRecordingFileType(entry.file),
+    kind: entry.file.kind,
   }));
+  const audioStemResult = await buildWavAudioStems(trackEntries, manifestFiles, seenPaths);
   const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
   const captionEntries = finalCaptionSegments.length > 0
     ? [
@@ -668,7 +877,7 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     size: entry.blob.size,
     type: entry.blob.type,
   }));
-  const editorTimeline = createEditorTimeline(source, manifestFiles, sortedMarkers, exportedAt);
+  const editorTimeline = createEditorTimeline(source, manifestFiles, audioStemResult.files, sortedMarkers, exportedAt);
   const editorEntries = [
     {
       path: 'editor/local_recording_timeline.json',
@@ -678,7 +887,7 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     },
     {
       path: 'editor/local_recording_timeline.csv',
-      blob: new Blob([buildEditorTimelineCsv(source, manifestFiles)], { type: 'text/csv;charset=utf-8' }),
+      blob: new Blob([buildEditorTimelineCsv(source, manifestFiles, audioStemResult.files)], { type: 'text/csv;charset=utf-8' }),
       label: 'Editor timeline CSV',
       format: 'csv' as const,
     },
@@ -696,12 +905,23 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     size: entry.blob.size,
     type: entry.blob.type,
   }));
-  const manifest = createRecordingManifest(source, manifestFiles, exportedAt, captionFiles, markerFiles, editorFiles);
+  const manifest = createRecordingManifest(
+    source,
+    manifestFiles,
+    exportedAt,
+    captionFiles,
+    markerFiles,
+    editorFiles,
+    audioStemResult.files,
+    audioStemResult.skippedCount,
+    audioStemResult.candidateCount
+  );
   const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
 
   return createZipBundle([
     { path: 'manifest.json', blob: manifestBlob },
     ...trackEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    ...audioStemResult.entries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...editorEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...captionEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...markerEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
@@ -770,9 +990,9 @@ export function RecordingPanel({
       const resultFiles = result.files.length > 0
         ? result.files
         : [
-            { label: 'Audio', blob: result.audio },
-            { label: 'Video', blob: result.video },
-            ...(result.screen ? [{ label: 'Screen', blob: result.screen }] : []),
+            { label: 'Audio', kind: 'audio' as const, blob: result.audio },
+            { label: 'Video', kind: 'video' as const, blob: result.video },
+            ...(result.screen ? [{ label: 'Screen', kind: 'screen' as const, blob: result.screen }] : []),
           ];
       const files: RecordedFile[] = resultFiles
         .filter((file) => file.blob.size > 0)
@@ -780,6 +1000,7 @@ export function RecordingPanel({
           label: file.label,
           blob: file.blob,
           fileName: makeRecordingFileName(roomName, file.label, timestamp, index, file.blob),
+          kind: file.kind,
         }));
 
       setRecordedFiles(files);
@@ -902,6 +1123,7 @@ export function RecordingPanel({
         label: file.label,
         blob: file.blob,
         fileName: file.fileName,
+        kind: file.kind,
       })));
       setActiveSessionId(session.id);
       setPreview(null);
@@ -931,6 +1153,7 @@ export function RecordingPanel({
           label: file.label,
           blob: file.blob,
           fileName: file.fileName,
+          kind: file.kind,
         })),
         markers: session.id === activeSessionId ? sortedRecordingMarkers : session.markers,
         ...(session.id === activeSessionId ? { captionSegments, captionLanguage } : {}),
@@ -1172,7 +1395,7 @@ export function RecordingPanel({
             {/* Action buttons */}
             <div style={styles.actions}>
               <div style={styles.captionSidecarNote}>
-                ZIP includes editor timeline JSON and CSV for track alignment.
+                ZIP includes editor timeline JSON/CSV and WAV audio stems when supported.
               </div>
               {finalCaptionCount > 0 && (
                 <div style={styles.captionSidecarNote}>

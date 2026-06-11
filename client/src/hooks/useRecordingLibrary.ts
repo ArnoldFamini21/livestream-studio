@@ -9,6 +9,7 @@ export interface LocalRecordingFileInput {
   label: string;
   blob: Blob;
   fileName: string;
+  kind?: LocalRecordingTrackKind;
 }
 
 export interface LocalRecordingFileMetadata {
@@ -17,6 +18,7 @@ export interface LocalRecordingFileMetadata {
   fileName: string;
   size: number;
   type: string;
+  kind?: LocalRecordingTrackKind;
 }
 
 export interface LocalRecordingFileRecord extends LocalRecordingFileMetadata {
@@ -48,6 +50,8 @@ interface SaveRecordingSessionInput {
   files: LocalRecordingFileInput[];
   markers?: LocalRecordingMarker[];
 }
+
+type LocalRecordingTrackKind = 'audio' | 'video' | 'screen';
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -108,6 +112,7 @@ async function saveRecordingSession(input: SaveRecordingSessionInput): Promise<L
       fileName: file.fileName,
       size: file.blob.size,
       type: file.blob.type || 'application/octet-stream',
+      kind: file.kind,
     }));
     const session: LocalRecordingSession = {
       id: sessionId,
