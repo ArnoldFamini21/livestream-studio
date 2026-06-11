@@ -402,6 +402,10 @@ function consumeCoHostInviteToken(roomState: RoomState, token: unknown): boolean
   return false;
 }
 
+function isValidRequestId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
+}
+
 // Fix #10: Validate incoming messages before processing
 function validateMessage(data: unknown): data is SignalMessage {
   if (typeof data !== 'object' || data === null) return false;
@@ -896,7 +900,7 @@ function handleLiveStreamTokenRequest(
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
 
-  if (typeof payload.requestId !== 'string' || payload.requestId.length > 80) {
+  if (!isValidRequestId(payload.requestId)) {
     sendError(ws, 'Invalid live stream token request', 'VALIDATION_ERROR');
     return;
   }
@@ -948,7 +952,7 @@ function handleCoHostInviteTokenRequest(
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
 
-  if (typeof payload.requestId !== 'string' || payload.requestId.length > 80) {
+  if (!isValidRequestId(payload.requestId)) {
     sendError(ws, 'Invalid co-host invite request', 'VALIDATION_ERROR');
     return;
   }
