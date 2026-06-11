@@ -1,20 +1,23 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { buildStudioCalendarInvite } from '@studio/shared';
+import {
+  buildHostEntryPath,
+  buildHostEntryUrl,
+  persistHostSession,
+  readSavedHostStudios,
+  removeSavedHostStudio,
+  upsertSavedHostStudio,
+  type SavedHostStudio,
+} from '../utils/hostSession.ts';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
-const SCHEDULED_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
 
-interface SavedScheduledStudio {
-  id: string;
+interface SavedScheduledStudio extends SavedHostStudio {
   name: string;
-  hostName: string;
-  hostToken: string;
   createdAt: string;
-  scheduledFor?: string;
   passwordProtected: boolean;
-  status?: string;
 }
 
 interface ScheduledRoomModal extends SavedScheduledStudio {}
@@ -25,49 +28,25 @@ function toDateTimeLocalValue(date: Date): string {
 }
 
 function readSavedScheduledStudios(): SavedScheduledStudio[] {
-  try {
-    const raw = localStorage.getItem(SCHEDULED_STUDIOS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is SavedScheduledStudio => (
-        item &&
-        typeof item.id === 'string' &&
-        typeof item.name === 'string' &&
-        typeof item.hostName === 'string' &&
-        typeof item.hostToken === 'string' &&
-        typeof item.createdAt === 'string'
-      ))
-      .sort((a, b) => {
-        const aTime = Date.parse(a.scheduledFor || a.createdAt);
-        const bTime = Date.parse(b.scheduledFor || b.createdAt);
-        return aTime - bTime;
-      });
-  } catch {
-    return [];
-  }
-}
-
-function writeSavedScheduledStudios(rooms: SavedScheduledStudio[]) {
-  localStorage.setItem(SCHEDULED_STUDIOS_STORAGE_KEY, JSON.stringify(rooms.slice(0, 20)));
+  return readSavedHostStudios()
+    .filter((item): item is SavedScheduledStudio => (
+      typeof item.name === 'string' &&
+      typeof item.createdAt === 'string'
+    ))
+    .map((item) => ({
+      ...item,
+      passwordProtected: Boolean(item.passwordProtected),
+    }));
 }
 
 function upsertSavedScheduledStudio(room: SavedScheduledStudio): SavedScheduledStudio[] {
-  const next = [room, ...readSavedScheduledStudios().filter((item) => item.id !== room.id)]
-    .sort((a, b) => {
-      const aTime = Date.parse(a.scheduledFor || a.createdAt);
-      const bTime = Date.parse(b.scheduledFor || b.createdAt);
-      return aTime - bTime;
-    });
-  writeSavedScheduledStudios(next);
-  return next;
+  upsertSavedHostStudio(room);
+  return readSavedScheduledStudios();
 }
 
 function removeSavedScheduledStudio(roomId: string): SavedScheduledStudio[] {
-  const next = readSavedScheduledStudios().filter((item) => item.id !== roomId);
-  writeSavedScheduledStudios(next);
-  return next;
+  removeSavedHostStudio(roomId);
+  return readSavedScheduledStudios();
 }
 
 async function writeClipboardText(text: string): Promise<void> {
@@ -132,7 +111,9 @@ export function HomePage() {
   // Invite link modal state
   const [scheduledRoom, setScheduledRoom] = useState<ScheduledRoomModal | null>(null);
   const [copied, setCopied] = useState(false);
+  const [hostCopied, setHostCopied] = useState(false);
   const [savedRoomCopiedId, setSavedRoomCopiedId] = useState<string | null>(null);
+  const [savedHostCopiedId, setSavedHostCopiedId] = useState<string | null>(null);
 
   const createRoom = async () => {
     if (!roomName.trim() || !hostName.trim()) return;
@@ -155,22 +136,23 @@ export function HomePage() {
         return;
       }
       const room = await res.json();
-      sessionStorage.setItem('userName', hostName);
-      sessionStorage.setItem('userRole', 'host');
-      if (typeof room.hostToken === 'string') {
-        // Scoped per room so old tokens don't leak across rooms.
-        sessionStorage.setItem(`hostToken:${room.id}`, room.hostToken);
-        setSavedScheduledRooms(upsertSavedScheduledStudio({
-          id: room.id,
-          name: room.name,
-          hostName: room.hostName || hostName,
-          hostToken: room.hostToken,
-          createdAt: room.createdAt || new Date().toISOString(),
-          passwordProtected: Boolean(room.settings?.passwordProtected),
-          status: room.status,
-        }));
+      if (typeof room.hostToken !== 'string') {
+        setError('Studio was created, but host access was not returned. Please create a new studio.');
+        return;
       }
-      navigate(`/join/${room.id}`);
+      const savedHostName = room.hostName || hostName;
+      // Scoped per room so old tokens don't leak across rooms.
+      persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
+      setSavedScheduledRooms(upsertSavedScheduledStudio({
+        id: room.id,
+        name: room.name,
+        hostName: savedHostName,
+        hostToken: room.hostToken,
+        createdAt: room.createdAt || new Date().toISOString(),
+        passwordProtected: Boolean(room.settings?.passwordProtected),
+        status: room.status,
+      }));
+      navigate(buildHostEntryPath(room.id));
     } catch (err) {
       console.error('Failed to create room:', err);
       setError('Network error. Please check your connection and try again.');
@@ -201,13 +183,16 @@ export function HomePage() {
         return;
       }
       const room = await res.json();
-      if (typeof room.hostToken === 'string') {
-        sessionStorage.setItem(`hostToken:${room.id}`, room.hostToken);
+      const savedHostName = room.hostName || hostName;
+      if (typeof room.hostToken !== 'string') {
+        setError('Studio was scheduled, but host access was not returned. Please schedule it again.');
+        return;
       }
+      persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken: room.hostToken });
       const savedRoom: ScheduledRoomModal = {
         id: room.id,
         name: room.name,
-        hostName: room.hostName || hostName,
+        hostName: savedHostName,
         hostToken: room.hostToken,
         createdAt: room.createdAt || new Date().toISOString(),
         scheduledFor: room.scheduledFor || undefined,
@@ -226,7 +211,9 @@ export function HomePage() {
   };
 
   const inviteLink = scheduledRoom ? `${INVITE_BASE_URL}/join/${scheduledRoom.id}` : '';
+  const hostEntryLink = scheduledRoom ? buildHostEntryUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.hostToken) : '';
   const buildInviteLink = (roomId: string) => `${INVITE_BASE_URL}/join/${roomId}`;
+  const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
 
   const copyToClipboard = async () => {
     await writeClipboardText(inviteLink);
@@ -234,10 +221,23 @@ export function HomePage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const copyHostEntryLink = async () => {
+    if (!hostEntryLink) return;
+    await writeClipboardText(hostEntryLink);
+    setHostCopied(true);
+    setTimeout(() => setHostCopied(false), 2000);
+  };
+
   const copySavedInviteLink = async (room: SavedScheduledStudio) => {
     await writeClipboardText(buildInviteLink(room.id));
     setSavedRoomCopiedId(room.id);
     setTimeout(() => setSavedRoomCopiedId(null), 2000);
+  };
+
+  const copySavedHostLink = async (room: SavedScheduledStudio) => {
+    await writeClipboardText(buildHostLink(room));
+    setSavedHostCopiedId(room.id);
+    setTimeout(() => setSavedHostCopiedId(null), 2000);
   };
 
   const downloadCalendarInvite = (room: SavedScheduledStudio) => {
@@ -255,28 +255,24 @@ export function HomePage() {
   };
 
   const openScheduledAsHost = (room: SavedScheduledStudio) => {
-    sessionStorage.setItem('userName', room.hostName || hostName || 'Host');
-    sessionStorage.setItem('userRole', 'host');
-    sessionStorage.setItem(`hostToken:${room.id}`, room.hostToken);
-    navigate(`/join/${room.id}`);
+    persistHostSession({ roomId: room.id, hostName: room.hostName || hostName || 'Host', hostToken: room.hostToken });
+    navigate(buildHostEntryPath(room.id));
   };
 
   const forgetScheduledRoom = (roomId: string) => {
     setSavedScheduledRooms(removeSavedScheduledStudio(roomId));
-    sessionStorage.removeItem(`hostToken:${roomId}`);
   };
 
   const goToStudioAsHost = () => {
     if (!scheduledRoom) return;
-    sessionStorage.setItem('userName', scheduledRoom.hostName || hostName);
-    sessionStorage.setItem('userRole', 'host');
-    sessionStorage.setItem(`hostToken:${scheduledRoom.id}`, scheduledRoom.hostToken);
-    navigate(`/join/${scheduledRoom.id}`);
+    persistHostSession({ roomId: scheduledRoom.id, hostName: scheduledRoom.hostName || hostName || 'Host', hostToken: scheduledRoom.hostToken });
+    navigate(buildHostEntryPath(scheduledRoom.id));
   };
 
   const closeModal = () => {
     setScheduledRoom(null);
     setCopied(false);
+    setHostCopied(false);
     setRoomName('');
     setHostName('');
     setScheduledFor('');
@@ -458,7 +454,13 @@ export function HomePage() {
                           style={styles.savedRoomAction}
                           onClick={() => copySavedInviteLink(room)}
                         >
-                          {savedRoomCopiedId === room.id ? 'Copied' : 'Copy'}
+                          {savedRoomCopiedId === room.id ? 'Copied' : 'Guest Link'}
+                        </button>
+                        <button
+                          style={styles.savedRoomAction}
+                          onClick={() => copySavedHostLink(room)}
+                        >
+                          {savedHostCopiedId === room.id ? 'Copied' : 'Host Link'}
                         </button>
                         {room.scheduledFor && (
                           <button
@@ -551,7 +553,7 @@ export function HomePage() {
                     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                   </svg>
                 )}
-                {copied ? 'Copied!' : 'Copy'}
+                {copied ? 'Copied!' : 'Copy Guest'}
               </button>
             </div>
 
@@ -562,6 +564,9 @@ export function HomePage() {
                 onClick={goToStudioAsHost}
               >
                 Start Studio Now
+              </button>
+              <button style={styles.modalDoneButton} onClick={copyHostEntryLink}>
+                {hostCopied ? 'Host Link Copied' : 'Copy Host Link'}
               </button>
               {scheduledRoom.scheduledFor && (
                 <button style={styles.modalDoneButton} onClick={() => downloadCalendarInvite(scheduledRoom)}>

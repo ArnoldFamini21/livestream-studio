@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { BroadcastOrientation, StreamDestination } from '@studio/shared';
-import type { RtmpRelayStats } from '../hooks/useRtmpRelay.ts';
+import type { RtmpRelayReadiness, RtmpRelayStats } from '../hooks/useRtmpRelay.ts';
 
 interface StreamDestinationsProps {
   destinations: StreamDestination[];
@@ -12,6 +12,8 @@ interface StreamDestinationsProps {
   onBroadcastOrientationChange: (orientation: BroadcastOrientation) => void;
   isLive: boolean;
   relayStats?: RtmpRelayStats;
+  relayReadiness?: RtmpRelayReadiness;
+  onRetryRelayReadiness?: () => void | Promise<unknown>;
   onGoLive: () => void | Promise<void>;
   onStopLive: () => void | Promise<void>;
   onClose: () => void;
@@ -46,6 +48,8 @@ export function StreamDestinations({
   onBroadcastOrientationChange,
   isLive,
   relayStats,
+  relayReadiness,
+  onRetryRelayReadiness,
   onGoLive,
   onStopLive,
   onClose,
@@ -127,14 +131,16 @@ export function StreamDestinations({
   const enabledCount = enabledDestinations.length;
   const selectedOrientation = ORIENTATION_OPTIONS.find((option) => option.value === broadcastOrientation) || ORIENTATION_OPTIONS[0];
   const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
-  const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled;
+  const relayIssue = getRelayReadinessIssue(relayReadiness);
+  const relayStatus = getRelayReadinessStatus(relayReadiness);
+  const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue;
   const preflightIssue = enabledCount === 0
     ? 'Enable at least one destination.'
     : tooManyEnabled
       ? `Disable ${enabledCount - MAX_ENABLED_DESTINATIONS} destination${enabledCount - MAX_ENABLED_DESTINATIONS === 1 ? '' : 's'} to stay within the ${MAX_ENABLED_DESTINATIONS}-destination limit.`
       : enabledIssues[0]
         ? `${enabledIssues[0].dest.name}: ${enabledIssues[0].issue}`
-        : null;
+        : relayIssue;
   const relayQuality = relayStats ? getRelayQuality(relayStats) : null;
   const bitrateBars = relayStats ? buildBitrateBars(relayStats.bitrateHistory, TARGET_RELAY_KBPS, BITRATE_BAR_COUNT) : [];
 
@@ -185,6 +191,34 @@ export function StreamDestinations({
             })}
           </div>
         </div>
+
+        {relayReadiness && (
+          <div style={{
+            ...styles.relayReadyCard,
+            borderColor: relayStatus.border,
+            background: relayStatus.background,
+          }}>
+            <div style={styles.relayReadyTop}>
+              <div>
+                <span style={styles.relayReadyLabel}>Media Relay</span>
+                <p style={styles.relayReadyDetail}>{relayReadiness.message}</p>
+              </div>
+              <span style={{ ...styles.relayReadyBadge, color: relayStatus.color, borderColor: relayStatus.border }}>
+                {relayStatus.label}
+              </span>
+            </div>
+            {relayReadiness.status === 'unavailable' && onRetryRelayReadiness && !isLive && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={styles.retryRelayBtn}
+                onClick={onRetryRelayReadiness}
+              >
+                Retry Check
+              </button>
+            )}
+          </div>
+        )}
 
         {destinations.length > 0 && (
           <div style={{ ...styles.preflight, ...(canGoLive ? styles.preflightReady : styles.preflightWarn) }}>
@@ -468,6 +502,38 @@ function getDestinationIssue(dest: Pick<StreamDestination, 'rtmpUrl' | 'streamKe
   return null;
 }
 
+function getRelayReadinessIssue(readiness: RtmpRelayReadiness | undefined): string | null {
+  if (!readiness) return 'Media relay readiness has not been checked.';
+  if (readiness.status === 'ready') return null;
+  if (readiness.status === 'checking') return 'Media relay readiness check is still running.';
+  return readiness.message;
+}
+
+function getRelayReadinessStatus(readiness: RtmpRelayReadiness | undefined) {
+  if (readiness?.status === 'ready') {
+    return {
+      label: 'Ready',
+      color: '#86efac',
+      background: 'rgba(34,197,94,0.08)',
+      border: 'rgba(34,197,94,0.22)',
+    };
+  }
+  if (readiness?.status === 'unavailable') {
+    return {
+      label: 'Unavailable',
+      color: '#fca5a5',
+      background: 'rgba(239,68,68,0.09)',
+      border: 'rgba(239,68,68,0.24)',
+    };
+  }
+  return {
+    label: 'Checking',
+    color: '#93c5fd',
+    background: 'rgba(96,165,250,0.08)',
+    border: 'rgba(96,165,250,0.22)',
+  };
+}
+
 function maskStreamKey(streamKey: string): string {
   const trimmed = streamKey.trim();
   if (trimmed.length <= 4) return '••••';
@@ -641,6 +707,12 @@ const styles: Record<string, React.CSSProperties> = {
   preflightLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
   preflightCount: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' },
   preflightIssue: { fontSize: 11, color: '#fbbf24', lineHeight: 1.35 },
+  relayReadyCard: { borderRadius: 8, padding: '10px 12px', border: '1px solid', display: 'flex', flexDirection: 'column', gap: 8 },
+  relayReadyTop: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  relayReadyLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
+  relayReadyDetail: { margin: '2px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
+  relayReadyBadge: { flexShrink: 0, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', borderRadius: 999, border: '1px solid', padding: '3px 7px', letterSpacing: '0.04em' },
+  retryRelayBtn: { alignSelf: 'flex-start', fontSize: 11, padding: '6px 10px' },
   healthCard: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 },
   healthTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
   healthLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
