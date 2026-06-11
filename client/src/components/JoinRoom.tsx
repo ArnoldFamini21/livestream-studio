@@ -14,9 +14,18 @@ import {
   persistHostSession,
   upsertSavedHostStudio,
 } from '../utils/hostSession.ts';
+import { getJson, isAbortError } from '../utils/apiClient.ts';
 
-const API_URL = import.meta.env.VITE_API_URL || '';
 const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing in this browser. Open this studio from Your Studios, use your private host link, or create a new studio.';
+
+interface RoomExistsResponse {
+  name: string;
+  participantCount: number;
+  status?: string;
+  hostName?: string;
+  scheduledFor?: string;
+  passwordProtected?: boolean;
+}
 
 function formatGuestOpenCountdown(ms: number): string {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -180,18 +189,19 @@ export function JoinRoom() {
 
   // Fetch room info
   useEffect(() => {
+    if (!roomId) {
+      setNotFound(true);
+      setLoading(false);
+      return;
+    }
     const controller = new AbortController();
-    fetch(`${API_URL}/api/rooms/${roomId}/exists`, { signal: controller.signal })
-      .then((res) => {
-        if (!res.ok) throw new Error('Not found');
-        return res.json();
-      })
+    getJson<RoomExistsResponse>(`/api/rooms/${encodeURIComponent(roomId)}/exists`, { signal: controller.signal })
       .then((data) => {
         setRoomInfo(data);
         setLoading(false);
       })
       .catch((err) => {
-        if (err.name === 'AbortError') return;
+        if (isAbortError(err)) return;
         setNotFound(true);
         setLoading(false);
       });

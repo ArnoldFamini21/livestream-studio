@@ -6,6 +6,7 @@ import type {
   RtmpRelayServerMessage,
   RtmpRelayVideoConfig,
 } from '@studio/shared';
+import { resolveMediaWsUrl } from '../utils/apiClient.ts';
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -117,13 +118,7 @@ function clampVolume(volume: number | undefined): number {
 }
 
 function getMediaWsUrl(): string {
-  const configured = import.meta.env.VITE_MEDIA_WS_URL;
-  if (configured) return configured;
-
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
-  if (isLocalhost) return `${protocol}//localhost:3002/rtmp`;
-  return `${protocol}//${window.location.host}/rtmp`;
+  return resolveMediaWsUrl();
 }
 
 function getRelayMimeType(): string {

@@ -34,6 +34,11 @@ jobs:
 
       - name: Build client
         run: npm run -w client build
+        env:
+          VITE_API_URL: https://livestream-studio-server.onrender.com
+          VITE_WS_URL: wss://livestream-studio-server.onrender.com/ws
+          VITE_MEDIA_WS_URL: wss://livestream-studio-media-server.onrender.com/rtmp
+          VITE_INVITE_BASE_URL: https://studio.arnoldfamini.com
 
       - name: Deploy to deploy branch
         uses: peaceiris/actions-gh-pages@v4
