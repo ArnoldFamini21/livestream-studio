@@ -1525,7 +1525,6 @@ export function StudioRoom() {
     }
 
     if (sources.length === 0) return;
-    setRecordingMarkers([]);
     void startLocalRecording(sources).catch((err) => console.error('Failed to start local recording:', err));
   };
 

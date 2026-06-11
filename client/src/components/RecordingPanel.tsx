@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { LocalRecordingFileResult, RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
@@ -109,6 +109,7 @@ interface AudioStemBuildResult {
 const ZIP_UINT32_MAX = 0xffffffff;
 const ZIP_UINT16_MAX = 0xffff;
 const ZIP_ENCODER = new TextEncoder();
+const MAX_MARKER_IMPORT_ROWS = 200;
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -126,6 +127,10 @@ function downloadBlob(blob: Blob, fileName: string) {
   a.click();
   // Delay revocation to allow download to initiate
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function downloadTextFile(text: string, fileName: string, type: string) {
+  downloadBlob(new Blob([text], { type }), fileName);
 }
 
 function parseDurationSeconds(value: string): number | null {
@@ -223,6 +228,11 @@ function sanitizeFileName(value: string, fallback: string): string {
     .replace(/\s+/g, '_')
     .replace(/^\.+/, '')
     .slice(0, 120);
+  return cleaned || fallback;
+}
+
+function sanitizeMarkerLabel(value: string, fallback: string): string {
+  const cleaned = value.trim().replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
   return cleaned || fallback;
 }
 
@@ -506,7 +516,7 @@ function csvEscape(value: string | number | null): string {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function buildRecordingMarkersCsv(markers: RecordingMarker[]): string {
+export function buildRecordingMarkersCsv(markers: RecordingMarker[]): string {
   const rows = [
     ['index', 'timecode', 'seconds', 'label', 'createdAt'],
     ...markers.map((marker, index) => [
@@ -518,6 +528,108 @@ function buildRecordingMarkersCsv(markers: RecordingMarker[]): string {
     ]),
   ];
   return rows.map((row) => row.map(csvEscape).join(',')).join('\n');
+}
+
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (inQuotes) {
+      if (char === '"' && next === '"') {
+        cell += '"';
+        index += 1;
+      } else if (char === '"') {
+        inQuotes = false;
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = true;
+    } else if (char === ',') {
+      row.push(cell);
+      cell = '';
+    } else if (char === '\n' || char === '\r') {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+      if (char === '\r' && next === '\n') index += 1;
+    } else {
+      cell += char;
+    }
+  }
+
+  if (cell || row.length > 0) {
+    row.push(cell);
+    rows.push(row);
+  }
+
+  return rows.filter((candidate) => candidate.some((value) => value.trim()));
+}
+
+function normalizeCsvHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function parseMarkerSeconds(secondsValue: string | undefined, timecodeValue: string | undefined): number | null {
+  const trimmedSeconds = secondsValue?.trim();
+  if (trimmedSeconds) {
+    const parsedSeconds = Number(trimmedSeconds);
+    if (Number.isFinite(parsedSeconds) && parsedSeconds >= 0) return Math.floor(parsedSeconds);
+  }
+  if (!timecodeValue) return null;
+  return parseDurationSeconds(timecodeValue.trim());
+}
+
+export function parseRecordingMarkersCsv(text: string, importedAt = new Date().toISOString()): {
+  markers: RecordingMarker[];
+  skippedRows: number;
+} {
+  const rows = parseCsvRows(text);
+  if (rows.length === 0) return { markers: [], skippedRows: 0 };
+
+  const headers = rows[0].map(normalizeCsvHeader);
+  const hasHeader = headers.some((header) => ['timecode', 'seconds', 'label', 'createdat'].includes(header));
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const columnIndex = (name: string, fallback: number) => {
+    const index = headers.indexOf(name);
+    return index >= 0 ? index : fallback;
+  };
+  const timecodeIndex = hasHeader ? columnIndex('timecode', 1) : 1;
+  const secondsIndex = hasHeader ? columnIndex('seconds', 2) : 2;
+  const labelIndex = hasHeader ? columnIndex('label', 3) : 3;
+  const createdAtIndex = hasHeader ? columnIndex('createdat', 4) : 4;
+  const markers: RecordingMarker[] = [];
+  let skippedRows = 0;
+
+  for (const row of dataRows) {
+    if (markers.length >= MAX_MARKER_IMPORT_ROWS) {
+      skippedRows += 1;
+      continue;
+    }
+    const seconds = parseMarkerSeconds(row[secondsIndex], row[timecodeIndex]);
+    if (seconds === null || seconds < 0) {
+      skippedRows += 1;
+      continue;
+    }
+    const createdAt = Number.isFinite(Date.parse(row[createdAtIndex] || '')) ? row[createdAtIndex] : importedAt;
+    markers.push({
+      id: `marker-import-${importedAt.replace(/[^a-zA-Z0-9]/g, '')}-${markers.length + 1}`,
+      label: sanitizeMarkerLabel(row[labelIndex] || '', `Marker ${markers.length + 1}`),
+      seconds,
+      createdAt,
+    });
+  }
+
+  return { markers: getSortedRecordingMarkers(markers), skippedRows };
 }
 
 function inferEditorTrackKind(file: RecordingBundleFile): 'audio' | 'video' | 'screen' {
@@ -952,6 +1064,9 @@ export function RecordingPanel({
   const [isBundling, setIsBundling] = useState(false);
   const [bundleError, setBundleError] = useState<string | null>(null);
   const [markerLabel, setMarkerLabel] = useState('');
+  const markerImportInputRef = useRef<HTMLInputElement>(null);
+  const [markerImportMessage, setMarkerImportMessage] = useState<string | null>(null);
+  const [markerImportError, setMarkerImportError] = useState<string | null>(null);
 
   const {
     authorize,
@@ -1035,7 +1150,35 @@ export function RecordingPanel({
     const label = markerLabel.trim() || `Marker ${markerCount + 1}`;
     onAddRecordingMarker(seconds, label);
     setMarkerLabel('');
+    setMarkerImportMessage(null);
+    setMarkerImportError(null);
   }, [formattedTime, markerCount, markerLabel, onAddRecordingMarker]);
+
+  const handleDownloadMarkersCsv = useCallback(() => {
+    const fileName = `${sanitizeFileName(roomName, 'studio')}_recording_markers.csv`;
+    downloadTextFile(buildRecordingMarkersCsv(sortedRecordingMarkers), fileName, 'text/csv;charset=utf-8');
+  }, [roomName, sortedRecordingMarkers]);
+
+  const handleImportMarkersCsv = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file || !onReplaceRecordingMarkers) return;
+
+    setMarkerImportMessage(null);
+    setMarkerImportError(null);
+    try {
+      const text = await file.text();
+      const result = parseRecordingMarkersCsv(text);
+      if (result.markers.length === 0) {
+        setMarkerImportError('No valid markers found in CSV.');
+        return;
+      }
+      onReplaceRecordingMarkers(result.markers);
+      setMarkerImportMessage(`Imported ${result.markers.length} marker${result.markers.length === 1 ? '' : 's'}${result.skippedRows > 0 ? `, skipped ${result.skippedRows}` : ''}.`);
+    } catch (err) {
+      setMarkerImportError(err instanceof Error ? err.message : 'Could not import marker CSV.');
+    }
+  }, [onReplaceRecordingMarkers]);
 
   const handleDownloadBundle = useCallback(async () => {
     if (recordedFiles.length === 0) return;
@@ -1245,6 +1388,26 @@ export function RecordingPanel({
             >
               {isStopping ? 'Stopping...' : 'Stop Recording'}
             </button>
+          </div>
+        )}
+
+        {onReplaceRecordingMarkers && (
+          <div style={styles.markerTools}>
+            <input
+              ref={markerImportInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              style={{ display: 'none' }}
+              onChange={handleImportMarkersCsv}
+            />
+            <button type="button" style={styles.markerToolBtn} onClick={() => markerImportInputRef.current?.click()}>
+              Import CSV
+            </button>
+            <button type="button" style={styles.markerToolBtn} onClick={handleDownloadMarkersCsv}>
+              {markerCount > 0 ? 'Export CSV' : 'CSV Template'}
+            </button>
+            {markerImportMessage && <span style={styles.markerImportOk}>{markerImportMessage}</span>}
+            {markerImportError && <span style={styles.markerImportError}>{markerImportError}</span>}
           </div>
         )}
 
@@ -1649,6 +1812,38 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     cursor: 'pointer',
     whiteSpace: 'nowrap' as const,
+  },
+  markerTools: {
+    background: 'rgba(255,255,255,0.035)',
+    borderRadius: 10,
+    padding: 10,
+    border: '1px solid var(--border)',
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap' as const,
+    gap: 8,
+  },
+  markerToolBtn: {
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-secondary)',
+    borderRadius: 7,
+    padding: '7px 10px',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  markerImportOk: {
+    flexBasis: '100%',
+    color: '#86efac',
+    fontSize: 11,
+    lineHeight: 1.35,
+  },
+  markerImportError: {
+    flexBasis: '100%',
+    color: '#fca5a5',
+    fontSize: 11,
+    lineHeight: 1.35,
   },
   markerList: {
     background: 'var(--bg-tertiary)',
