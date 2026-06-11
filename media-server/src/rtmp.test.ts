@@ -5,6 +5,7 @@ import { signLiveStreamToken, verifyLiveStreamToken } from './auth.js';
 import {
   buildRtmpOutputUrl,
   createFfmpegArgs,
+  hasRemainingRelayWork,
   redactDestinationUrl,
   validateDestinations,
   validateRtmpUrl,
@@ -40,6 +41,13 @@ describe('RTMP relay utilities', () => {
 
   it('redacts stream keys from destination URLs', () => {
     assert.equal(redactDestinationUrl(destination), 'rtmps://live.example.com/app/[stream-key]');
+  });
+
+  it('keeps relay sessions open while any destination is active or reconnecting', () => {
+    assert.equal(hasRemainingRelayWork([]), false);
+    assert.equal(hasRemainingRelayWork([{ exited: true }, { exited: true }]), false);
+    assert.equal(hasRemainingRelayWork([{ exited: true }, { exited: false }]), true);
+    assert.equal(hasRemainingRelayWork([{ exited: true, restartPending: true }]), true);
   });
 
   it('signs and verifies short-lived live stream tokens', () => {

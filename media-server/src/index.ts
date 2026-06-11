@@ -14,6 +14,7 @@ import { getLiveStreamTokenSecret, verifyLiveStreamToken } from './auth.js';
 import { buildAllowedOrigins, isAllowedOrigin } from './origins.js';
 import {
   createFfmpegArgs,
+  hasRemainingRelayWork,
   normalizeAudioConfig,
   normalizeVideoConfig,
   redactDestinationUrl,
@@ -119,6 +120,16 @@ function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
   sendJson(ws, { type: 'session-stopped', payload: { reason } });
 }
 
+function stopSessionIfNoRelayWork(ws: WebSocket, session: RelaySession) {
+  if (!session.started || session.stopping) return;
+  const relayWork = Array.from(session.relays.entries()).map(([destinationId, relay]) => ({
+    exited: relay.exited,
+    restartPending: session.restartTimers.has(destinationId),
+  }));
+  if (hasRemainingRelayWork(relayWork)) return;
+  stopSession(ws, session, 'All RTMP destinations stopped.');
+}
+
 function spawnRelay(
   ws: WebSocket,
   session: RelaySession,
@@ -198,6 +209,7 @@ function spawnRelay(
       type: 'destination-status',
       payload: { destinationId: destination.id, status: 'error', message },
     });
+    stopSessionIfNoRelayWork(ws, session);
   });
 }
 

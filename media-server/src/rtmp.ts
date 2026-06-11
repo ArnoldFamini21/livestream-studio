@@ -13,6 +13,15 @@ export interface FfmpegRelayOptions {
   audio: RtmpRelayAudioConfig;
 }
 
+export interface RelayWorkState {
+  exited: boolean;
+  restartPending?: boolean;
+}
+
+export function hasRemainingRelayWork(relays: RelayWorkState[]): boolean {
+  return relays.some((relay) => !relay.exited || Boolean(relay.restartPending));
+}
+
 export function validateRtmpUrl(url: string): string | null {
   const trimmed = url.trim();
   if (!trimmed) return 'Missing RTMP server URL';
