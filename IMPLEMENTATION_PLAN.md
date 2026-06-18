@@ -67,25 +67,25 @@
 
 ## Phase 4: RTMP Live Streaming (Priority: High)
 ### 4A. Server-Side FFmpeg Relay
-- [ ] Capture composite canvas as MediaStream
-- [ ] Stream canvas frames + mixed audio to server via WebSocket
-- [ ] Server-side FFmpeg transcodes and pushes RTMP to destinations
+- [x] Capture composite canvas as MediaStream
+- [x] Stream canvas frames + mixed audio to server via WebSocket
+- [x] Server-side FFmpeg transcodes and pushes RTMP to destinations
 - [ ] Configurable output: resolution (720p/1080p/4K), bitrate (2500-8000 kbps), framerate (30/60)
 
 ### 4B. Multi-Destination Streaming
-- [ ] YouTube Live RTMP integration (stream key input)
-- [ ] Facebook Live RTMP integration
-- [ ] Custom RTMP URL support (Twitch, LinkedIn, etc.)
-- [ ] Simultaneous multi-stream to 3+ destinations
-- [ ] Per-destination enable/disable toggle
+- [x] YouTube Live RTMP integration (stream key input)
+- [x] Facebook Live RTMP integration
+- [x] Custom RTMP URL support (Twitch, LinkedIn, etc.)
+- [x] Simultaneous multi-stream to up to 3 destinations
+- [x] Per-destination enable/disable toggle
 
 ### 4C. Stream Health Dashboard
-- [ ] Real-time bitrate graph
+- [x] Real-time bitrate graph
 - [ ] Dropped frames counter
-- [ ] Connection quality indicator (green/yellow/red)
-- [ ] Per-destination stream status (connected/buffering/error)
+- [x] Connection quality indicator (green/yellow/red)
+- [x] Per-destination stream status (connected/buffering/error)
 - [ ] Latency display
-- [ ] Auto-reconnect on stream drop
+- [x] Auto-reconnect on stream drop
 
 ---
 
