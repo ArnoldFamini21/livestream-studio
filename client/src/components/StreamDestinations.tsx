@@ -319,7 +319,11 @@ export function StreamDestinations({
               </div>
               <div style={styles.healthMetric}>
                 <span style={styles.healthValue}>{relayStats.droppedChunks}</span>
-                <span style={styles.healthCaption}>Dropped</span>
+                <span style={styles.healthCaption}>Dropped Chunks</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{relayStats.droppedFrames}</span>
+                <span style={styles.healthCaption}>Dropped Frames</span>
               </div>
               <div style={styles.healthMetric}>
                 <span style={styles.healthValue}>{relayStats.reconnectAttempts}</span>
@@ -624,10 +628,12 @@ function getRelayQuality(stats: RtmpRelayStats, targetKbps: number, outputLabel:
     };
   }
 
-  if (stats.droppedChunks > 0 && stats.bitrateKbps < safeTargetKbps * 0.55) {
+  if ((stats.droppedChunks > 0 || stats.droppedFrames > 0) && stats.bitrateKbps < safeTargetKbps * 0.55) {
     return {
       label: 'Degraded',
-      detail: 'Upload is live but chunks are being dropped.',
+      detail: stats.droppedFrames > 0
+        ? 'Upload is live but frames were dropped before reaching the relay.'
+        : 'Upload is live but chunks are being dropped.',
       color: '#fcd34d',
       background: 'rgba(245, 158, 11, 0.12)',
       border: 'rgba(245, 158, 11, 0.25)',

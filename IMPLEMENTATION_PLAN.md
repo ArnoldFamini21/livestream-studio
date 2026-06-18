@@ -81,7 +81,7 @@
 
 ### 4C. Stream Health Dashboard
 - [x] Real-time bitrate graph
-- [ ] Dropped frames counter
+- [x] Estimated dropped frames counter
 - [x] Connection quality indicator (green/yellow/red)
 - [x] Per-destination stream status (connected/buffering/error)
 - [x] Relay round-trip latency display
