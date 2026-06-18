@@ -9,6 +9,7 @@ import { SceneManager, type ProductionSceneTemplate } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
 import { CommentHighlightManager, type HighlightedComment } from './CommentHighlight.tsx';
 import { MediaLibrary } from './MediaLibrary.tsx';
+import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import {
   buildChatTranscriptCsv,
   buildChatTranscriptFilename,
@@ -597,6 +598,7 @@ function PeopleContent({
             {canAdjustOwnVolume && (
               <ParticipantVolumeControl
                 participant={myP}
+                stream={localStream}
                 value={participantVolumes[myP.id] ?? 1}
                 onChange={onParticipantVolumeChange}
               />
@@ -690,6 +692,7 @@ function PeopleSection({
                 {canAdjustVolume && onParticipantVolumeChange && (
                   <ParticipantVolumeControl
                     participant={p}
+                    stream={getStream(p.id)}
                     value={participantVolumes[p.id] ?? 1}
                     onChange={onParticipantVolumeChange}
                   />
@@ -705,14 +708,17 @@ function PeopleSection({
 
 function ParticipantVolumeControl({
   participant,
+  stream,
   value,
   onChange,
 }: {
   participant: Participant;
+  stream: MediaStream | null;
   value: number;
   onChange: (participantId: string, volume: number) => void;
 }) {
   const percentage = Math.round(Math.min(1, Math.max(0, Number.isFinite(value) ? value : 1)) * 100);
+  const meterStream = participant.audioEnabled ? stream : null;
 
   return (
     <div style={st.volumeControl}>
@@ -731,17 +737,22 @@ function ParticipantVolumeControl({
           </svg>
         )}
       </div>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        step={1}
-        value={percentage}
-        onChange={(event) => onChange(participant.id, Number(event.currentTarget.value) / 100)}
-        aria-label={`Broadcast mix for ${participant.name}`}
-        title={`Broadcast mix for ${participant.name}`}
-        style={st.volumeSlider}
-      />
+      <div style={st.volumeStack}>
+        <div style={st.volumeMeter} title={`Live audio level for ${participant.name}`}>
+          <AudioLevelMeter stream={meterStream} size="small" orientation="horizontal" />
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={percentage}
+          onChange={(event) => onChange(participant.id, Number(event.currentTarget.value) / 100)}
+          aria-label={`Broadcast mix for ${participant.name}`}
+          title={`Broadcast mix for ${participant.name}`}
+          style={st.volumeSlider}
+        />
+      </div>
       <span style={st.volumeValue}>{percentage}%</span>
     </div>
   );
@@ -1096,6 +1107,8 @@ const st: Record<string, React.CSSProperties> = {
   smallBtn: { fontSize: 10, fontWeight: 600, padding: '3px 7px', borderRadius: 5, background: 'transparent', border: '1px solid', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 150ms' },
   volumeControl: { display: 'grid', gridTemplateColumns: '18px minmax(0, 1fr) 34px', alignItems: 'center', gap: 7, paddingLeft: 56 },
   volumeIcon: { width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' },
+  volumeStack: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 },
+  volumeMeter: { width: '100%', minWidth: 0, height: 3 },
   volumeSlider: { width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' },
   volumeValue: { fontSize: 10, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)', textAlign: 'right' },
   admitAllBtn: { margin: '8px 16px', width: 'calc(100% - 32px)', fontSize: 13, padding: '8px 14px' },
