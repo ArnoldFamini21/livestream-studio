@@ -568,6 +568,83 @@ describe('live stream state synchronization', () => {
   });
 });
 
+describe('participant media moderation', () => {
+  it('force-mutes guests but treats unmute as a guest-controlled request', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Media moderation test', 'Arnold', {
+      creatorIp: `media-moderation-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      const guestJoin = await guestJoined;
+      const guestId = guestJoin.payload.participant.id;
+      assert.equal(roomState.participants.get(guestId)?.participant.audioEnabled, true);
+
+      const muteUpdate = waitForMessage(host, 'participant-updated', (message) => (
+        message.payload.id === guestId &&
+        message.payload.audioEnabled === false
+      ));
+      const muteNotice = waitForMessage(guest, 'participant-notification', (message) => (
+        message.payload.targetParticipantId === guestId &&
+        /muted/i.test(message.payload.title)
+      ));
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: {
+          action: 'mute',
+          targetParticipantId: guestId,
+          performedBy: 'client-claimed-host',
+        },
+      });
+
+      const [muted, mutedNotice] = await Promise.all([muteUpdate, muteNotice]);
+      assert.equal(muted.payload.audioEnabled, false);
+      assert.equal(mutedNotice.payload.tone, 'warning');
+      assert.equal(roomState.participants.get(guestId)?.participant.audioEnabled, false);
+
+      const unmuteNotice = waitForMessage(guest, 'participant-notification', (message) => (
+        message.payload.targetParticipantId === guestId &&
+        /unmute requested/i.test(message.payload.title)
+      ));
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: {
+          action: 'unmute',
+          targetParticipantId: guestId,
+          performedBy: 'client-claimed-host',
+        },
+      });
+
+      const requested = await unmuteNotice;
+      assert.equal(requested.payload.tone, 'info');
+      assert.match(requested.payload.message, /turn your microphone on/i);
+      assert.equal(roomState.participants.get(guestId)?.participant.audioEnabled, false);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('chat engagement', () => {
   it('broadcasts starred comments and reaction counts through canonical chat messages', async () => {
     const harness = await createSignalingHarness();

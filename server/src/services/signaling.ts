@@ -851,10 +851,38 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       break;
     case 'mute':
       target.participant.audioEnabled = false;
+      send(target.ws, {
+        type: 'participant-notification',
+        payload: {
+          id: nanoid(8),
+          targetParticipantId: target.participant.id,
+          title: 'Microphone muted',
+          message: `${performer.participant.name} muted your microphone.`,
+          tone: 'warning',
+          issuedAt: new Date().toISOString(),
+          issuedBy: mapping.participantId,
+        },
+      });
       break;
     case 'unmute':
-      target.participant.audioEnabled = true;
-      break;
+      send(target.ws, {
+        type: 'participant-notification',
+        payload: {
+          id: nanoid(8),
+          targetParticipantId: target.participant.id,
+          title: 'Unmute requested',
+          message: `${performer.participant.name} asked you to turn your microphone on.`,
+          tone: 'info',
+          issuedAt: new Date().toISOString(),
+          issuedBy: mapping.participantId,
+        },
+      });
+      broadcastToRoom(mapping.roomId, {
+        type: 'stage-action',
+        payload: authoritativePayload,
+      });
+      console.log(`Stage action: unmute requested for ${target.participant.name} by ${performer.participant.name}`);
+      return;
     case 'remove':
       send(target.ws, {
         type: 'participant-removed',

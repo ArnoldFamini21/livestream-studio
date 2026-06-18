@@ -369,31 +369,37 @@ export function useMediaDevices() {
     }
   }, []);
 
-  const toggleAudio = useCallback(() => {
-    if (streamRef.current) {
-      const audioTrack = streamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setAudioEnabled(audioTrack.enabled);
-        return audioTrack.enabled;
-      }
+  const setAudioTrackEnabled = useCallback((enabled: boolean) => {
+    const audioTrack = streamRef.current?.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.enabled = enabled;
+      setAudioEnabled(audioTrack.enabled);
+      return audioTrack.enabled;
     }
     setAudioEnabled(false);
     return false;
-  }, [audioEnabled]);
+  }, []);
 
-  const toggleVideo = useCallback(() => {
-    if (streamRef.current) {
-      const videoTrack = streamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setVideoEnabled(videoTrack.enabled);
-        return videoTrack.enabled;
-      }
+  const setVideoTrackEnabled = useCallback((enabled: boolean) => {
+    const videoTrack = streamRef.current?.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.enabled = enabled;
+      setVideoEnabled(videoTrack.enabled);
+      return videoTrack.enabled;
     }
     setVideoEnabled(false);
     return false;
-  }, [videoEnabled]);
+  }, []);
+
+  const toggleAudio = useCallback(() => {
+    const audioTrack = streamRef.current?.getAudioTracks()[0];
+    return setAudioTrackEnabled(!audioTrack?.enabled);
+  }, [setAudioTrackEnabled]);
+
+  const toggleVideo = useCallback(() => {
+    const videoTrack = streamRef.current?.getVideoTracks()[0];
+    return setVideoTrackEnabled(!videoTrack?.enabled);
+  }, [setVideoTrackEnabled]);
 
   // Listen for device changes (plugging in / removing devices)
   useEffect(() => {
@@ -547,6 +553,8 @@ export function useMediaDevices() {
     // Actions
     startMedia,
     stopMedia,
+    setAudioTrackEnabled,
+    setVideoTrackEnabled,
     toggleAudio,
     toggleVideo,
     switchAudioDevice,

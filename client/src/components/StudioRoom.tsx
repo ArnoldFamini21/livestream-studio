@@ -421,7 +421,7 @@ export function StudioRoom() {
   const {
     localStream: rawLocalStream, audioEnabled, videoEnabled,
     error: mediaError,
-    startMedia, stopMedia, toggleAudio, toggleVideo,
+    startMedia, stopMedia, setAudioTrackEnabled, setVideoTrackEnabled, toggleAudio, toggleVideo,
     switchAudioDevice, switchVideoDevice,
     audioDevices, videoDevices, audioOutputDevices,
     selectedAudioDeviceId, selectedVideoDeviceId,
@@ -484,8 +484,8 @@ export function StudioRoom() {
     stopRecording: stopLocalRecording,
   } = useLocalRecording();
 
-  const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]);
-  const effectiveVideoEnabled = videoEnabled && Boolean(localStream?.getVideoTracks()[0]);
+  const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]?.enabled);
+  const effectiveVideoEnabled = videoEnabled && Boolean(localStream?.getVideoTracks()[0]?.enabled);
   const isHostOrCoHost = myParticipant?.role === 'host' || myParticipant?.role === 'co-host';
   const sessionHealth = useSessionHealth({
     localStream,
@@ -961,13 +961,9 @@ export function StudioRoom() {
 
   useEffect(() => {
     if (!guestNotification) return;
-    if (myParticipant?.status === 'on-stage') {
-      setGuestNotification(null);
-      return;
-    }
     const timer = window.setTimeout(() => setGuestNotification(null), 20_000);
     return () => window.clearTimeout(timer);
-  }, [guestNotification, myParticipant?.status]);
+  }, [guestNotification]);
 
   // Signaling message handler
   const handleSignalingMessage = useCallback(
@@ -1268,13 +1264,13 @@ export function StudioRoom() {
     if (!myParticipant || !localStream) return;
     const audioTrack = localStream.getAudioTracks()[0];
     if (audioTrack && audioTrack.enabled !== myParticipant.audioEnabled) {
-      audioTrack.enabled = myParticipant.audioEnabled;
+      setAudioTrackEnabled(myParticipant.audioEnabled);
     }
     const videoTrack = localStream.getVideoTracks()[0];
     if (videoTrack && videoTrack.enabled !== myParticipant.videoEnabled) {
-      videoTrack.enabled = myParticipant.videoEnabled;
+      setVideoTrackEnabled(myParticipant.videoEnabled);
     }
-  }, [myParticipant?.audioEnabled, myParticipant?.videoEnabled, localStream]);
+  }, [myParticipant?.audioEnabled, myParticipant?.videoEnabled, localStream, setAudioTrackEnabled, setVideoTrackEnabled]);
 
   useEffect(() => {
     if (!myParticipant) return;
@@ -2671,6 +2667,28 @@ export function StudioRoom() {
         </div>
       </div>
 
+      {guestNotification && (
+        <div style={styles.studioNoticeWrap} role="status" aria-live="polite">
+          <div style={{
+            ...styles.waitingNotice,
+            ...styles.studioNotice,
+            ...(guestNotification.tone === 'warning' ? styles.waitingNoticeWarning : {}),
+            ...(guestNotification.tone === 'success' ? styles.waitingNoticeSuccess : {}),
+          }}>
+            <span style={styles.waitingNoticeIcon}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 2 11 13" />
+                <path d="m22 2-7 20-4-9-9-4 20-7z" />
+              </svg>
+            </span>
+            <span style={styles.waitingNoticeCopy}>
+              <strong style={styles.waitingNoticeTitle}>{guestNotification.title}</strong>
+              <span style={styles.waitingNoticeText}>{guestNotification.message}</span>
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Main Area */}
       <div style={styles.main}>
         {/* Stage */}
@@ -3384,6 +3402,22 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(96, 165, 250, 0.1)',
     color: '#bfdbfe',
     boxShadow: '0 10px 28px rgba(0, 0, 0, 0.18)',
+  },
+  studioNoticeWrap: {
+    position: 'fixed',
+    top: 58,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 80,
+    width: 'min(420px, calc(100vw - 32px))',
+    pointerEvents: 'none',
+  },
+  studioNotice: {
+    width: '100%',
+    pointerEvents: 'auto',
+    background: 'rgba(15, 23, 42, 0.94)',
+    backdropFilter: 'blur(14px)',
+    WebkitBackdropFilter: 'blur(14px)',
   },
   waitingNoticeSuccess: {
     borderColor: 'rgba(34, 197, 94, 0.28)',
