@@ -70,7 +70,7 @@
 - [x] Capture composite canvas as MediaStream
 - [x] Stream canvas frames + mixed audio to server via WebSocket
 - [x] Server-side FFmpeg transcodes and pushes RTMP to destinations
-- [ ] Configurable output: resolution (720p/1080p/4K), bitrate (2500-8000 kbps), framerate (30/60)
+- [ ] Configurable output: 720p/1080p 30fps bitrate presets are implemented; 4K and 60fps remain future live-relay work
 
 ### 4B. Multi-Destination Streaming
 - [x] YouTube Live RTMP integration (stream key input)

@@ -8,6 +8,13 @@ import {
   maskStreamKey,
   MAX_ENABLED_DESTINATIONS,
 } from '../utils/streamDestinations.ts';
+import {
+  formatRtmpRelayOutputSummary,
+  getRtmpRelayOutputPreset,
+  getRtmpRelayTargetKbps,
+  RTMP_RELAY_OUTPUT_PRESETS,
+  type RtmpRelayOutputPresetId,
+} from '../utils/rtmpRelayOutput.ts';
 
 interface StreamDestinationsProps {
   destinations: StreamDestination[];
@@ -17,6 +24,8 @@ interface StreamDestinationsProps {
   onToggle: (id: string) => void;
   broadcastOrientation: BroadcastOrientation;
   onBroadcastOrientationChange: (orientation: BroadcastOrientation) => void;
+  relayOutputPreset: RtmpRelayOutputPresetId;
+  onRelayOutputPresetChange: (preset: RtmpRelayOutputPresetId) => void;
   isLive: boolean;
   relayStats?: RtmpRelayStats;
   relayReadiness?: RtmpRelayReadiness;
@@ -26,13 +35,12 @@ interface StreamDestinationsProps {
   onClose: () => void;
 }
 
-const TARGET_RELAY_KBPS = 4660;
 const STALE_CHUNK_MS = 5_000;
 const BITRATE_BAR_COUNT = 24;
 
 const ORIENTATION_OPTIONS: Array<{ value: BroadcastOrientation; label: string; detail: string }> = [
-  { value: 'landscape', label: 'Landscape', detail: '16:9 1920x1080' },
-  { value: 'portrait', label: 'Portrait', detail: '9:16 1080x1920' },
+  { value: 'landscape', label: 'Landscape', detail: '16:9 output' },
+  { value: 'portrait', label: 'Portrait', detail: '9:16 output' },
 ];
 
 const PLATFORMS: Array<{ value: StreamDestination['platform']; label: string; color: string; dashUrl?: string }> = [
@@ -52,6 +60,8 @@ export function StreamDestinations({
   onToggle,
   broadcastOrientation,
   onBroadcastOrientationChange,
+  relayOutputPreset,
+  onRelayOutputPresetChange,
   isLive,
   relayStats,
   relayReadiness,
@@ -136,13 +146,16 @@ export function StreamDestinations({
     .filter((item): item is { dest: StreamDestination; issue: string } => Boolean(item.issue));
   const enabledCount = enabledDestinations.length;
   const selectedOrientation = ORIENTATION_OPTIONS.find((option) => option.value === broadcastOrientation) || ORIENTATION_OPTIONS[0];
+  const selectedOutputPreset = getRtmpRelayOutputPreset(relayOutputPreset);
+  const selectedOutputSummary = formatRtmpRelayOutputSummary(broadcastOrientation, relayOutputPreset);
+  const relayTargetKbps = getRtmpRelayTargetKbps(relayOutputPreset);
   const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
   const relayIssue = getRelayReadinessIssue(relayReadiness);
   const relayStatus = getRelayReadinessStatus(relayReadiness);
   const preflightIssue = getEnabledDestinationPreflightIssue(destinations, relayIssue);
   const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue;
-  const relayQuality = relayStats ? getRelayQuality(relayStats) : null;
-  const bitrateBars = relayStats ? buildBitrateBars(relayStats.bitrateHistory, TARGET_RELAY_KBPS, BITRATE_BAR_COUNT) : [];
+  const relayQuality = relayStats ? getRelayQuality(relayStats, relayTargetKbps, selectedOutputPreset.label) : null;
+  const bitrateBars = relayStats ? buildBitrateBars(relayStats.bitrateHistory, relayTargetKbps, BITRATE_BAR_COUNT) : [];
 
   return (
     <div style={styles.panel}>
@@ -186,6 +199,34 @@ export function StreamDestinations({
                 >
                   <span style={styles.orientationLabel}>{option.label}</span>
                   <span style={styles.orientationDetail}>{option.detail}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={styles.outputCard}>
+          <div style={styles.outputHeader}>
+            <span style={styles.outputTitle}>Output Quality</span>
+            <span style={styles.outputHint}>{selectedOutputSummary}</span>
+          </div>
+          <div style={styles.outputPresetGrid}>
+            {RTMP_RELAY_OUTPUT_PRESETS.map((preset) => {
+              const active = preset.id === relayOutputPreset;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  style={{
+                    ...styles.outputPresetBtn,
+                    ...(active ? styles.outputPresetBtnActive : {}),
+                    ...(isLive ? styles.outputPresetBtnDisabled : {}),
+                  }}
+                  onClick={() => onRelayOutputPresetChange(preset.id)}
+                  disabled={isLive}
+                >
+                  <span style={styles.outputPresetLabel}>{preset.label}</span>
+                  <span style={styles.outputPresetDetail}>{preset.detail}</span>
                 </button>
               );
             })}
@@ -543,9 +584,10 @@ function formatLastChunkAge(lastChunkAt: number | null, updatedAt: number): stri
   return `${minutes}m ${seconds}s`;
 }
 
-function getRelayQuality(stats: RtmpRelayStats) {
+function getRelayQuality(stats: RtmpRelayStats, targetKbps: number, outputLabel: string) {
   const now = stats.updatedAt || Date.now();
   const chunkAge = stats.lastChunkAt ? now - stats.lastChunkAt : null;
+  const safeTargetKbps = Math.max(1, targetKbps);
 
   if (stats.status === 'error') {
     return {
@@ -577,7 +619,7 @@ function getRelayQuality(stats: RtmpRelayStats) {
     };
   }
 
-  if (stats.droppedChunks > 0 && stats.bitrateKbps < TARGET_RELAY_KBPS * 0.55) {
+  if (stats.droppedChunks > 0 && stats.bitrateKbps < safeTargetKbps * 0.55) {
     return {
       label: 'Degraded',
       detail: 'Upload is live but chunks are being dropped.',
@@ -587,10 +629,10 @@ function getRelayQuality(stats: RtmpRelayStats) {
     };
   }
 
-  if (stats.bitrateKbps >= TARGET_RELAY_KBPS * 0.7) {
+  if (stats.bitrateKbps >= safeTargetKbps * 0.7) {
     return {
       label: 'Stable',
-      detail: 'Browser upload is near the 1080p target.',
+      detail: `Browser upload is near the ${outputLabel} target.`,
       color: '#86efac',
       background: 'rgba(34, 197, 94, 0.12)',
       border: 'rgba(34, 197, 94, 0.25)',
@@ -600,7 +642,7 @@ function getRelayQuality(stats: RtmpRelayStats) {
   if (stats.bitrateKbps > 0) {
     return {
       label: 'Low',
-      detail: 'Upload is below the 1080p target bitrate.',
+      detail: `Upload is below the ${formatBitrate(safeTargetKbps)} target.`,
       color: '#fcd34d',
       background: 'rgba(245, 158, 11, 0.12)',
       border: 'rgba(245, 158, 11, 0.25)',
@@ -672,6 +714,32 @@ const styles: Record<string, React.CSSProperties> = {
   orientationBtnDisabled: { opacity: 0.58, cursor: 'not-allowed' },
   orientationLabel: { fontSize: 12, fontWeight: 800, color: 'inherit' },
   orientationDetail: { fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  outputCard: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 },
+  outputHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  outputTitle: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
+  outputHint: { minWidth: 0, fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  outputPresetGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 },
+  outputPresetBtn: {
+    minWidth: 0,
+    minHeight: 58,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
+    borderRadius: 7,
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-secondary)',
+    cursor: 'pointer',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    gap: 3,
+    padding: '7px 7px',
+    textAlign: 'left',
+  },
+  outputPresetBtnActive: { background: 'rgba(34, 197, 94, 0.1)', borderColor: '#22c55e', color: '#bbf7d0' },
+  outputPresetBtnDisabled: { opacity: 0.58, cursor: 'not-allowed' },
+  outputPresetLabel: { fontSize: 11, fontWeight: 800, color: 'inherit', lineHeight: 1.15 },
+  outputPresetDetail: { fontSize: 9, color: 'var(--text-muted)', lineHeight: 1.2 },
   preflight: { borderRadius: 8, padding: '10px 12px', border: '1px solid', display: 'flex', flexDirection: 'column', gap: 4 },
   preflightReady: { background: 'rgba(34,197,94,0.08)', borderColor: 'rgba(34,197,94,0.22)' },
   preflightWarn: { background: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.22)' },
