@@ -52,6 +52,10 @@ import {
   type ProductionSceneTemplate,
 } from '../utils/productionSceneTemplates.ts';
 import { getStreamDestinationIssue } from '../utils/streamDestinations.ts';
+import {
+  DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID,
+  type RtmpRelayOutputPresetId,
+} from '../utils/rtmpRelayOutput.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -360,6 +364,7 @@ export function StudioRoom() {
   // Stream destinations
   const [destinations, setDestinations] = useState<StreamDestination[]>([]);
   const [broadcastOrientation, setBroadcastOrientation] = useState<BroadcastOrientation>('landscape');
+  const [rtmpRelayOutputPreset, setRtmpRelayOutputPreset] = useState<RtmpRelayOutputPresetId>(DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID);
   const [isLive, setIsLive] = useState(false);
 
   // Room ending countdown — driven by server-issued absolute end time.
@@ -1682,6 +1687,7 @@ export function StudioRoom() {
         token,
         refreshToken: requestLiveStreamToken,
         orientation: broadcastOrientation,
+        outputPreset: rtmpRelayOutputPreset,
         destinations: enabledDestinations.map((destination) => ({
           id: destination.id,
           name: destination.name,
@@ -2873,6 +2879,8 @@ export function StudioRoom() {
               onToggle={onToggleDestination}
               broadcastOrientation={broadcastOrientation}
               onBroadcastOrientationChange={setBroadcastOrientation}
+              relayOutputPreset={rtmpRelayOutputPreset}
+              onRelayOutputPresetChange={setRtmpRelayOutputPreset}
               isLive={isLive}
               relayStats={relayStats}
               relayReadiness={relayReadiness}

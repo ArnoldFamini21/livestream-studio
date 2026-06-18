@@ -12,6 +12,11 @@ import {
   MAX_RELAY_RECONNECT_ATTEMPTS,
   RELAY_RECONNECT_DELAY_MS,
 } from '../utils/rtmpRelayReconnect.ts';
+import {
+  getRtmpRelayVideoConfig,
+  RTMP_RELAY_AUDIO_BITS_PER_SECOND,
+  type RtmpRelayOutputPresetId,
+} from '../utils/rtmpRelayOutput.ts';
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -30,6 +35,7 @@ interface StartRelayOptions {
   refreshToken?: () => Promise<string>;
   destinations: RtmpRelayDestination[];
   orientation: BroadcastOrientation;
+  outputPreset: RtmpRelayOutputPresetId;
 }
 
 interface MixerResources {
@@ -72,28 +78,10 @@ interface BitrateSample {
   bytes: number;
 }
 
-const RELAY_VIDEO = {
-  frameRate: 30,
-  videoBitsPerSecond: 4_500_000,
-};
-
-const RELAY_VIDEO_BY_ORIENTATION: Record<BroadcastOrientation, RtmpRelayVideoConfig> = {
-  landscape: {
-    width: 1920,
-    height: 1080,
-    ...RELAY_VIDEO,
-  },
-  portrait: {
-    width: 1080,
-    height: 1920,
-    ...RELAY_VIDEO,
-  },
-};
-
 const RELAY_AUDIO = {
   sampleRate: 48_000,
   channelCount: 2,
-  audioBitsPerSecond: 160_000,
+  audioBitsPerSecond: RTMP_RELAY_AUDIO_BITS_PER_SECOND,
 };
 
 const INITIAL_RELAY_STATS: RtmpRelayStats = {
@@ -209,10 +197,6 @@ function collectAudioSources(
   const screenAudioTracks = screenStream?.getAudioTracks().filter((track) => track.readyState === 'live') || [];
   if (screenAudioTracks.length > 0) sources.push({ stream: new MediaStream(screenAudioTracks), volume: 1 });
   return sources;
-}
-
-function getRelayVideoConfig(orientation: BroadcastOrientation): RtmpRelayVideoConfig {
-  return RELAY_VIDEO_BY_ORIENTATION[orientation] || RELAY_VIDEO_BY_ORIENTATION.landscape;
 }
 
 function drawVideoCover(
@@ -544,7 +528,7 @@ export function useRtmpRelay({
   }, []);
 
   const startRelay = useCallback(
-    async ({ token, refreshToken, destinations, orientation }: StartRelayOptions): Promise<void> => {
+    async ({ token, refreshToken, destinations, orientation, outputPreset }: StartRelayOptions): Promise<void> => {
       if (wsRef.current || reconnectTimerRef.current) {
         throw new Error('A live relay session is already active.');
       }
@@ -567,7 +551,7 @@ export function useRtmpRelay({
         throw new Error('This browser does not support WebM recording for RTMP relay.');
       }
 
-      const videoConfig = getRelayVideoConfig(orientation);
+      const videoConfig = getRtmpRelayVideoConfig(orientation, outputPreset);
       activeDestinationIdsRef.current = destinations.map((destination) => destination.id);
       intentionalStopRef.current = false;
       reconnectAttemptsRef.current = 0;
