@@ -1680,6 +1680,7 @@ export function StudioRoom() {
       const token = await requestLiveStreamToken();
       await startRelay({
         token,
+        refreshToken: requestLiveStreamToken,
         orientation: broadcastOrientation,
         destinations: enabledDestinations.map((destination) => ({
           id: destination.id,

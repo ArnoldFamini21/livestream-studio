@@ -276,6 +276,10 @@ export function StreamDestinations({
                 <span style={styles.healthCaption}>Dropped</span>
               </div>
               <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{relayStats.reconnectAttempts}</span>
+                <span style={styles.healthCaption}>Reconnects</span>
+              </div>
+              <div style={styles.healthMetric}>
                 <span style={styles.healthValue}>{relayStats.chunksSent}</span>
                 <span style={styles.healthCaption}>Chunks</span>
               </div>

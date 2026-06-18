@@ -7,6 +7,11 @@ import type {
   RtmpRelayVideoConfig,
 } from '@studio/shared';
 import { resolveMediaWsUrl } from '../utils/apiClient.ts';
+import {
+  getRelayReconnectPlan,
+  MAX_RELAY_RECONNECT_ATTEMPTS,
+  RELAY_RECONNECT_DELAY_MS,
+} from '../utils/rtmpRelayReconnect.ts';
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -22,6 +27,7 @@ interface UseRtmpRelayOptions {
 
 interface StartRelayOptions {
   token: string;
+  refreshToken?: () => Promise<string>;
   destinations: RtmpRelayDestination[];
   orientation: BroadcastOrientation;
 }
@@ -51,6 +57,7 @@ export interface RtmpRelayStats {
   bitrateKbps: number;
   bitrateHistory: Array<{ at: number; kbps: number }>;
   droppedChunks: number;
+  reconnectAttempts: number;
 }
 
 export interface RtmpRelayReadiness {
@@ -99,6 +106,7 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
   bitrateKbps: 0,
   bitrateHistory: [],
   droppedChunks: 0,
+  reconnectAttempts: 0,
 };
 
 const BITRATE_WINDOW_MS = 5_000;
@@ -384,6 +392,8 @@ export function useRtmpRelay({
   const mixerRef = useRef<MixerResources | null>(null);
   const activeDestinationIdsRef = useRef<string[]>([]);
   const intentionalStopRef = useRef(false);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptsRef = useRef(0);
   const bitrateSamplesRef = useRef<BitrateSample[]>([]);
   const sentBytesRef = useRef(0);
   const readinessCheckIdRef = useRef(0);
@@ -437,7 +447,14 @@ export function useRtmpRelay({
     }));
   }, []);
 
-  const cleanup = useCallback((status: RtmpRelayStats['status'] = 'idle') => {
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const stopActiveRelayTransport = useCallback((sendStop: boolean) => {
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
       try {
@@ -449,19 +466,31 @@ export function useRtmpRelay({
     recorderRef.current = null;
 
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'stop' }));
-      ws.close(1000, 'Relay stopped');
-    } else if (ws && ws.readyState === WebSocket.CONNECTING) {
-      ws.close(1000, 'Relay stopped');
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      if (sendStop && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stop' }));
+      }
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close(1000, 'Relay stopped');
+      }
     }
     wsRef.current = null;
 
     cleanupMixer(mixerRef.current);
     mixerRef.current = null;
+  }, []);
+
+  const cleanup = useCallback((status: RtmpRelayStats['status'] = 'idle') => {
+    clearReconnectTimer();
+    stopActiveRelayTransport(true);
     activeDestinationIdsRef.current = [];
+    reconnectAttemptsRef.current = 0;
     resetStats(status);
-  }, [resetStats]);
+  }, [clearReconnectTimer, resetStats, stopActiveRelayTransport]);
 
   const stopRelay = useCallback(() => {
     intentionalStopRef.current = true;
@@ -515,8 +544,8 @@ export function useRtmpRelay({
   }, []);
 
   const startRelay = useCallback(
-    async ({ token, destinations, orientation }: StartRelayOptions): Promise<void> => {
-      if (wsRef.current) {
+    async ({ token, refreshToken, destinations, orientation }: StartRelayOptions): Promise<void> => {
+      if (wsRef.current || reconnectTimerRef.current) {
         throw new Error('A live relay session is already active.');
       }
       if (destinations.length === 0) {
@@ -539,175 +568,242 @@ export function useRtmpRelay({
       }
 
       const videoConfig = getRelayVideoConfig(orientation);
-      const mixer = await createMixedBroadcastStream(
-        compositeStream,
-        videoConfig,
-        localStream,
-        localParticipantId,
-        remoteStreams,
-        screenStream,
-        participantVolumes
-      );
-      mixerRef.current = mixer;
       activeDestinationIdsRef.current = destinations.map((destination) => destination.id);
       intentionalStopRef.current = false;
+      reconnectAttemptsRef.current = 0;
       resetStats('connecting');
 
-      await new Promise<void>((resolve, reject) => {
-        let started = false;
-        let stopReported = false;
-        const ws = new WebSocket(getMediaWsUrl());
-        ws.binaryType = 'arraybuffer';
-        wsRef.current = ws;
+      let currentToken = token;
+      let finalStopReported = false;
 
-        const fail = (error: Error) => {
-          cleanup('error');
-          reject(error);
-        };
+      const reportFinalStop = (message: string) => {
+        if (finalStopReported || intentionalStopRef.current) return;
+        finalStopReported = true;
+        setRelayStatus('error');
+        activeDestinationIdsRef.current.forEach((id) => {
+          onDestinationStatus(id, 'error', message);
+        });
+        onRelayStopped?.(message);
+        cleanup('error');
+      };
 
-        const reportUnexpectedStop = (message: string) => {
-          if (!started || stopReported || intentionalStopRef.current) return;
-          stopReported = true;
-          setRelayStatus('error');
-          activeDestinationIdsRef.current.forEach((id) => {
-            onDestinationStatus(id, 'error', message);
-          });
-          onRelayStopped?.(message);
-        };
+      const connectRelay = async (connectionToken: string): Promise<void> => {
+        const currentBrowserIssue = getBrowserRelayIssue();
+        if (currentBrowserIssue) {
+          throw new Error(currentBrowserIssue);
+        }
 
-        const startTimeout = window.setTimeout(() => {
-          fail(new Error('Timed out while starting the RTMP relay.'));
-        }, 12_000);
+        const currentCompositeStream = compositeStreamRef.current;
+        if (!currentCompositeStream) {
+          throw new Error('The composited studio stream is not ready.');
+        }
 
-        const startRecorder = () => {
-          const recorder = new MediaRecorder(mixer.stream, {
-            mimeType,
-            videoBitsPerSecond: videoConfig.videoBitsPerSecond,
-            audioBitsPerSecond: RELAY_AUDIO.audioBitsPerSecond,
-          });
-          recorderRef.current = recorder;
+        const mixer = await createMixedBroadcastStream(
+          currentCompositeStream,
+          videoConfig,
+          localStream,
+          localParticipantId,
+          remoteStreams,
+          screenStream,
+          participantVolumes
+        );
+        mixerRef.current = mixer;
 
-          recorder.ondataavailable = (event) => {
-            if (event.data.size === 0) return;
-            if (ws.readyState !== WebSocket.OPEN) {
-              markDroppedChunk();
-              return;
-            }
-            event.data.arrayBuffer()
-              .then((buffer) => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(buffer);
-                  markChunkSent(buffer.byteLength);
-                } else {
-                  markDroppedChunk();
-                }
-              })
-              .catch((err) => console.error('Failed to send RTMP relay chunk:', err));
-          };
+        await new Promise<void>((resolve, reject) => {
+          let started = false;
+          let startTimeout: number | null = null;
+          const ws = new WebSocket(getMediaWsUrl());
+          ws.binaryType = 'arraybuffer';
+          wsRef.current = ws;
 
-          recorder.onerror = () => {
-            setRelayStatus('error');
-            activeDestinationIdsRef.current.forEach((id) => {
-              onDestinationStatus(id, 'error', 'Browser recording failed.');
-            });
-          };
-
-          recorder.start(1000);
-        };
-
-        ws.onopen = () => {
-          ws.send(JSON.stringify({
-            type: 'start',
-            payload: {
-              token,
-              destinations,
-              video: videoConfig,
-              audio: RELAY_AUDIO,
-            },
-          }));
-        };
-
-        ws.onmessage = (event) => {
-          let message: RtmpRelayServerMessage;
-          try {
-            message = JSON.parse(String(event.data)) as RtmpRelayServerMessage;
-          } catch {
-            return;
-          }
-
-          if (message.type === 'session-started') {
-            window.clearTimeout(startTimeout);
-            started = true;
-            setRelayStatus('live');
-            startRecorder();
-            resolve();
-            return;
-          }
-
-          if (message.type === 'session-stopped') {
-            const stopMessage = message.payload.reason
-              ? `Media relay stopped: ${message.payload.reason}`
-              : 'Media relay stopped unexpectedly.';
-            if (!started) {
+          const clearStartTimeout = () => {
+            if (startTimeout) {
               window.clearTimeout(startTimeout);
-              fail(new Error(stopMessage));
-              return;
+              startTimeout = null;
             }
-            reportUnexpectedStop(stopMessage);
-            cleanup(intentionalStopRef.current ? 'idle' : 'error');
-            return;
-          }
+          };
 
-          if (message.type === 'destination-status') {
-            if (message.payload.status === 'error') setRelayStatus('error');
-            if (message.payload.status === 'live') setRelayStatus('live');
-            onDestinationStatus(
-              message.payload.destinationId,
-              message.payload.status,
-              message.payload.message
+          const fail = (error: Error) => {
+            clearStartTimeout();
+            stopActiveRelayTransport(false);
+            reject(error);
+          };
+
+          const scheduleReconnect = (message: string): boolean => {
+            if (intentionalStopRef.current || finalStopReported) return false;
+            const plan = getRelayReconnectPlan(
+              reconnectAttemptsRef.current,
+              message,
+              MAX_RELAY_RECONNECT_ATTEMPTS
             );
-            return;
-          }
+            if (!plan) return false;
 
-          if (message.type === 'error') {
-            setRelayStatus('error');
-            if (message.payload.destinationId) {
-              onDestinationStatus(message.payload.destinationId, 'error', message.payload.message);
+            reconnectAttemptsRef.current = plan.attempt;
+            stopActiveRelayTransport(false);
+            activeDestinationIdsRef.current.forEach((id) => {
+              onDestinationStatus(id, 'connecting', plan.message);
+            });
+            setStats((current) => ({
+              ...current,
+              status: 'connecting',
+              reconnectAttempts: plan.attempt,
+              updatedAt: Date.now(),
+            }));
+
+            clearReconnectTimer();
+            reconnectTimerRef.current = window.setTimeout(() => {
+              reconnectTimerRef.current = null;
+              void (async () => {
+                try {
+                  currentToken = refreshToken ? await refreshToken() : currentToken;
+                  await connectRelay(currentToken);
+                } catch (err) {
+                  const retryMessage = err instanceof Error ? err.message : 'Unable to reconnect media relay.';
+                  if (!scheduleReconnect(retryMessage)) {
+                    reportFinalStop(retryMessage);
+                  }
+                }
+              })();
+            }, RELAY_RECONNECT_DELAY_MS);
+
+            return true;
+          };
+
+          const handleUnexpectedStop = (message: string) => {
+            if (!started || intentionalStopRef.current) return;
+            if (!scheduleReconnect(message)) {
+              reportFinalStop(message);
             }
+          };
+
+          startTimeout = window.setTimeout(() => {
+            fail(new Error('Timed out while starting the RTMP relay.'));
+          }, 12_000);
+
+          const startRecorder = () => {
+            const recorder = new MediaRecorder(mixer.stream, {
+              mimeType,
+              videoBitsPerSecond: videoConfig.videoBitsPerSecond,
+              audioBitsPerSecond: RELAY_AUDIO.audioBitsPerSecond,
+            });
+            recorderRef.current = recorder;
+
+            recorder.ondataavailable = (event) => {
+              if (event.data.size === 0) return;
+              if (ws.readyState !== WebSocket.OPEN) {
+                markDroppedChunk();
+                return;
+              }
+              event.data.arrayBuffer()
+                .then((buffer) => {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(buffer);
+                    markChunkSent(buffer.byteLength);
+                  } else {
+                    markDroppedChunk();
+                  }
+                })
+                .catch((err) => console.error('Failed to send RTMP relay chunk:', err));
+            };
+
+            recorder.onerror = () => {
+              setRelayStatus('error');
+              activeDestinationIdsRef.current.forEach((id) => {
+                onDestinationStatus(id, 'error', 'Browser recording failed.');
+              });
+            };
+
+            recorder.start(1000);
+          };
+
+          ws.onopen = () => {
+            ws.send(JSON.stringify({
+              type: 'start',
+              payload: {
+                token: connectionToken,
+                destinations,
+                video: videoConfig,
+                audio: RELAY_AUDIO,
+              },
+            }));
+          };
+
+          ws.onmessage = (event) => {
+            let message: RtmpRelayServerMessage;
+            try {
+              message = JSON.parse(String(event.data)) as RtmpRelayServerMessage;
+            } catch {
+              return;
+            }
+
+            if (message.type === 'session-started') {
+              clearStartTimeout();
+              started = true;
+              setRelayStatus('live');
+              startRecorder();
+              resolve();
+              return;
+            }
+
+            if (message.type === 'session-stopped') {
+              const stopMessage = message.payload.reason
+                ? `Media relay stopped: ${message.payload.reason}`
+                : 'Media relay stopped unexpectedly.';
+              if (!started) {
+                fail(new Error(stopMessage));
+                return;
+              }
+              handleUnexpectedStop(stopMessage);
+              return;
+            }
+
+            if (message.type === 'destination-status') {
+              if (message.payload.status === 'error') setRelayStatus('error');
+              if (message.payload.status === 'live') setRelayStatus('live');
+              onDestinationStatus(
+                message.payload.destinationId,
+                message.payload.status,
+                message.payload.message
+              );
+              return;
+            }
+
+            if (message.type === 'error') {
+              setRelayStatus('error');
+              if (message.payload.destinationId) {
+                onDestinationStatus(message.payload.destinationId, 'error', message.payload.message);
+              }
+              if (!started) {
+                fail(new Error(message.payload.message));
+              }
+            }
+          };
+
+          ws.onerror = () => {
             if (!started) {
-              window.clearTimeout(startTimeout);
-              fail(new Error(message.payload.message));
+              setRelayStatus('error');
+              fail(new Error('Unable to connect to the RTMP relay server.'));
             }
-          }
-        };
+          };
 
-        ws.onerror = () => {
-          if (!started) {
-            window.clearTimeout(startTimeout);
-            setRelayStatus('error');
-            fail(new Error('Unable to connect to the RTMP relay server.'));
-          }
-        };
+          ws.onclose = () => {
+            clearStartTimeout();
+            if (!started) {
+              reject(new Error('The RTMP relay connection closed before streaming started.'));
+              stopActiveRelayTransport(false);
+              setRelayStatus('error');
+              return;
+            }
+            if (!intentionalStopRef.current) {
+              handleUnexpectedStop('Media relay connection closed unexpectedly.');
+            }
+          };
+        });
+      };
 
-        ws.onclose = () => {
-          window.clearTimeout(startTimeout);
-          if (!started) {
-            reject(new Error('The RTMP relay connection closed before streaming started.'));
-            cleanupMixer(mixerRef.current);
-            mixerRef.current = null;
-            setRelayStatus('error');
-            wsRef.current = null;
-            activeDestinationIdsRef.current = [];
-            return;
-          }
-          if (!intentionalStopRef.current) {
-            reportUnexpectedStop('Media relay connection closed unexpectedly.');
-            cleanup('error');
-          }
-        };
-      });
+      await connectRelay(currentToken);
     },
-    [cleanup, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, onDestinationStatus, onRelayStopped, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus]
+    [cleanup, clearReconnectTimer, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, onDestinationStatus, onRelayStopped, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, stopActiveRelayTransport]
   );
 
   useEffect(() => {
