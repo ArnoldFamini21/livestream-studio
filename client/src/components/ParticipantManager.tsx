@@ -74,7 +74,7 @@ export function ParticipantManager({
                 <ActionBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />
               )}
               {!p.audioEnabled && (
-                <ActionBtn label="Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />
+                <ActionBtn label="Ask Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />
               )}
               <ActionBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
               {p.role === 'guest' && (

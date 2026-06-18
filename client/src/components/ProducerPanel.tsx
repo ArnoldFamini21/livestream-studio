@@ -244,7 +244,7 @@ function ParticipantRow({
               className="participant-action-btn"
               style={{ ...rowStyles.actionBtn, color: 'var(--success)', borderColor: 'rgba(34, 197, 94, 0.25)', '--btn-hover-bg': 'rgba(34, 197, 94, 0.1)' } as React.CSSProperties}
               onClick={() => onStageAction('unmute', participant.id)}
-              title="Unmute"
+              title="Ask to unmute"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
