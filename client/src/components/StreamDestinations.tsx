@@ -15,6 +15,7 @@ import {
   RTMP_RELAY_OUTPUT_PRESETS,
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
+import { formatRelayLatency } from '../utils/rtmpRelayLatency.ts';
 
 interface StreamDestinationsProps {
   destinations: StreamDestination[];
@@ -311,6 +312,10 @@ export function StreamDestinations({
               <div style={styles.healthMetric}>
                 <span style={styles.healthValue}>{formatLastChunkAge(relayStats.lastChunkAt, relayStats.updatedAt)}</span>
                 <span style={styles.healthCaption}>Last Chunk</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{formatRelayLatency(relayStats.relayLatencyMs)}</span>
+                <span style={styles.healthCaption}>Relay RTT</span>
               </div>
               <div style={styles.healthMetric}>
                 <span style={styles.healthValue}>{relayStats.droppedChunks}</span>

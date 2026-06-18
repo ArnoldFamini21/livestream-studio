@@ -12,6 +12,7 @@ import {
   MAX_RELAY_RECONNECT_ATTEMPTS,
   RELAY_RECONNECT_DELAY_MS,
 } from '../utils/rtmpRelayReconnect.ts';
+import { getRelayLatencyMs } from '../utils/rtmpRelayLatency.ts';
 import {
   getRtmpRelayVideoConfig,
   RTMP_RELAY_AUDIO_BITS_PER_SECOND,
@@ -64,6 +65,7 @@ export interface RtmpRelayStats {
   bitrateHistory: Array<{ at: number; kbps: number }>;
   droppedChunks: number;
   reconnectAttempts: number;
+  relayLatencyMs: number | null;
 }
 
 export interface RtmpRelayReadiness {
@@ -95,11 +97,14 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
   bitrateHistory: [],
   droppedChunks: 0,
   reconnectAttempts: 0,
+  relayLatencyMs: null,
 };
 
 const BITRATE_WINDOW_MS = 5_000;
 const BITRATE_HISTORY_WINDOW_MS = 60_000;
 const RELAY_PREFLIGHT_TIMEOUT_MS = 4_000;
+const RELAY_HEARTBEAT_INTERVAL_MS = 5_000;
+const MAX_PENDING_RELAY_PINGS = 8;
 
 const INITIAL_RELAY_READINESS: RtmpRelayReadiness = {
   status: 'checking',
@@ -378,6 +383,9 @@ export function useRtmpRelay({
   const intentionalStopRef = useRef(false);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const heartbeatTimerRef = useRef<number | null>(null);
+  const heartbeatSequenceRef = useRef(0);
+  const pendingHeartbeatsRef = useRef<Map<number, number>>(new Map());
   const bitrateSamplesRef = useRef<BitrateSample[]>([]);
   const sentBytesRef = useRef(0);
   const readinessCheckIdRef = useRef(0);
@@ -438,7 +446,56 @@ export function useRtmpRelay({
     }
   }, []);
 
+  const clearHeartbeatTimer = useCallback(() => {
+    if (heartbeatTimerRef.current) {
+      window.clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+    pendingHeartbeatsRef.current.clear();
+  }, []);
+
+  const markRelayLatency = useCallback((sequence: number, sentAt: number) => {
+    const pendingSentAt = pendingHeartbeatsRef.current.get(sequence);
+    pendingHeartbeatsRef.current.delete(sequence);
+    const latencyMs = getRelayLatencyMs(Date.now(), pendingSentAt ?? sentAt);
+    if (latencyMs === null) return;
+    setStats((current) => ({
+      ...current,
+      relayLatencyMs: latencyMs,
+      updatedAt: Date.now(),
+    }));
+  }, []);
+
+  const startHeartbeatTimer = useCallback((ws: WebSocket) => {
+    clearHeartbeatTimer();
+    const sendHeartbeat = () => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const sequence = heartbeatSequenceRef.current + 1;
+      heartbeatSequenceRef.current = sequence;
+      const sentAt = Date.now();
+      pendingHeartbeatsRef.current.set(sequence, sentAt);
+      const pending = Array.from(pendingHeartbeatsRef.current.keys());
+      if (pending.length > MAX_PENDING_RELAY_PINGS) {
+        pending.slice(0, pending.length - MAX_PENDING_RELAY_PINGS).forEach((key) => {
+          pendingHeartbeatsRef.current.delete(key);
+        });
+      }
+      try {
+        ws.send(JSON.stringify({
+          type: 'ping',
+          payload: { sentAt, sequence },
+        }));
+      } catch {
+        pendingHeartbeatsRef.current.delete(sequence);
+      }
+    };
+
+    sendHeartbeat();
+    heartbeatTimerRef.current = window.setInterval(sendHeartbeat, RELAY_HEARTBEAT_INTERVAL_MS);
+  }, [clearHeartbeatTimer]);
+
   const stopActiveRelayTransport = useCallback((sendStop: boolean) => {
+    clearHeartbeatTimer();
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
       try {
@@ -466,7 +523,7 @@ export function useRtmpRelay({
 
     cleanupMixer(mixerRef.current);
     mixerRef.current = null;
-  }, []);
+  }, [clearHeartbeatTimer]);
 
   const cleanup = useCallback((status: RtmpRelayStats['status'] = 'idle') => {
     clearReconnectTimer();
@@ -724,6 +781,7 @@ export function useRtmpRelay({
               clearStartTimeout();
               started = true;
               setRelayStatus('live');
+              startHeartbeatTimer(ws);
               startRecorder();
               resolve();
               return;
@@ -749,6 +807,11 @@ export function useRtmpRelay({
                 message.payload.status,
                 message.payload.message
               );
+              return;
+            }
+
+            if (message.type === 'pong') {
+              markRelayLatency(message.payload.sequence, message.payload.sentAt);
               return;
             }
 
@@ -787,7 +850,7 @@ export function useRtmpRelay({
 
       await connectRelay(currentToken);
     },
-    [cleanup, clearReconnectTimer, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, onDestinationStatus, onRelayStopped, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, stopActiveRelayTransport]
+    [cleanup, clearReconnectTimer, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
   );
 
   useEffect(() => {

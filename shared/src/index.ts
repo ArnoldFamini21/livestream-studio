@@ -477,15 +477,22 @@ export interface RtmpRelayStartPayload {
   audio: RtmpRelayAudioConfig;
 }
 
+export interface RtmpRelayPingPayload {
+  sentAt: number;
+  sequence: number;
+}
+
 export type RtmpRelayClientMessage =
   | { type: 'start'; payload: RtmpRelayStartPayload }
-  | { type: 'stop'; payload?: Record<string, never> };
+  | { type: 'stop'; payload?: Record<string, never> }
+  | { type: 'ping'; payload: RtmpRelayPingPayload };
 
 export type RtmpRelayDestinationStatus = 'connecting' | 'live' | 'error' | 'idle';
 
 export type RtmpRelayServerMessage =
   | { type: 'session-started'; payload: { roomId: string; destinationIds: string[] } }
   | { type: 'session-stopped'; payload: { reason?: string } }
+  | { type: 'pong'; payload: RtmpRelayPingPayload & { receivedAt: number } }
   | { type: 'destination-status'; payload: { destinationId: string; status: RtmpRelayDestinationStatus; message?: string } }
   | { type: 'error'; payload: { code: string; message: string; destinationId?: string } };
 
