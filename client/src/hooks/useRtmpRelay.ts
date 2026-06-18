@@ -12,6 +12,7 @@ import {
   MAX_RELAY_RECONNECT_ATTEMPTS,
   RELAY_RECONNECT_DELAY_MS,
 } from '../utils/rtmpRelayReconnect.ts';
+import { estimateDroppedFrames } from '../utils/rtmpRelayDrops.ts';
 import { getRelayLatencyMs } from '../utils/rtmpRelayLatency.ts';
 import {
   getRtmpRelayVideoConfig,
@@ -64,6 +65,7 @@ export interface RtmpRelayStats {
   bitrateKbps: number;
   bitrateHistory: Array<{ at: number; kbps: number }>;
   droppedChunks: number;
+  droppedFrames: number;
   reconnectAttempts: number;
   relayLatencyMs: number | null;
 }
@@ -96,6 +98,7 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
   bitrateKbps: 0,
   bitrateHistory: [],
   droppedChunks: 0,
+  droppedFrames: 0,
   reconnectAttempts: 0,
   relayLatencyMs: null,
 };
@@ -105,6 +108,7 @@ const BITRATE_HISTORY_WINDOW_MS = 60_000;
 const RELAY_PREFLIGHT_TIMEOUT_MS = 4_000;
 const RELAY_HEARTBEAT_INTERVAL_MS = 5_000;
 const MAX_PENDING_RELAY_PINGS = 8;
+const RELAY_RECORDER_TIMESLICE_MS = 1_000;
 
 const INITIAL_RELAY_READINESS: RtmpRelayReadiness = {
   status: 'checking',
@@ -407,10 +411,11 @@ export function useRtmpRelay({
     });
   }, []);
 
-  const markDroppedChunk = useCallback(() => {
+  const markDroppedChunk = useCallback((estimatedFrames = 0) => {
     setStats((current) => ({
       ...current,
       droppedChunks: current.droppedChunks + 1,
+      droppedFrames: current.droppedFrames + Math.max(0, Math.round(estimatedFrames)),
       status: current.status === 'idle' ? 'error' : current.status,
       updatedAt: Date.now(),
     }));
@@ -722,6 +727,10 @@ export function useRtmpRelay({
           }, 12_000);
 
           const startRecorder = () => {
+            const estimatedFramesPerChunk = estimateDroppedFrames(
+              videoConfig.frameRate,
+              RELAY_RECORDER_TIMESLICE_MS
+            );
             const recorder = new MediaRecorder(mixer.stream, {
               mimeType,
               videoBitsPerSecond: videoConfig.videoBitsPerSecond,
@@ -732,7 +741,7 @@ export function useRtmpRelay({
             recorder.ondataavailable = (event) => {
               if (event.data.size === 0) return;
               if (ws.readyState !== WebSocket.OPEN) {
-                markDroppedChunk();
+                markDroppedChunk(estimatedFramesPerChunk);
                 return;
               }
               event.data.arrayBuffer()
@@ -741,7 +750,7 @@ export function useRtmpRelay({
                     ws.send(buffer);
                     markChunkSent(buffer.byteLength);
                   } else {
-                    markDroppedChunk();
+                    markDroppedChunk(estimatedFramesPerChunk);
                   }
                 })
                 .catch((err) => console.error('Failed to send RTMP relay chunk:', err));
@@ -754,7 +763,7 @@ export function useRtmpRelay({
               });
             };
 
-            recorder.start(1000);
+            recorder.start(RELAY_RECORDER_TIMESLICE_MS);
           };
 
           ws.onopen = () => {
