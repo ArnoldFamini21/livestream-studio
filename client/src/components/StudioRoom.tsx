@@ -56,6 +56,12 @@ import {
   DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID,
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
+import {
+  applyStageItemOrder,
+  moveStageItemInOrder,
+  normalizeStageItemOrder,
+  type StageItemOrderDirection,
+} from '../utils/stageItemOrder.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -138,6 +144,7 @@ interface PersistedStudioState {
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
   pipCorner: 'TL' | 'TR' | 'BL' | 'BR';
+  stageItemOrder: string[];
   mediaAssets: StudioMediaAsset[];
   scenes: Scene[];
   activeSceneId: string | null;
@@ -387,6 +394,7 @@ export function StudioRoom() {
   const [nameTagStyle, setNameTagStyle] = useState<NameTagStyle>('classic');
   const [pipCorner, setPipCorner] = useState<'TL' | 'TR' | 'BL' | 'BR'>('BR');
   const [focusedVideoItemId, setFocusedVideoItemId] = useState<string | null>(null);
+  const [stageItemOrder, setStageItemOrder] = useState<string[]>([]);
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [recordingMarkers, setRecordingMarkers] = useState<RecordingMarker[]>([]);
 
@@ -701,6 +709,7 @@ export function StudioRoom() {
           if (parsed.cameraShape) setCameraShape(parsed.cameraShape);
           if (parsed.nameTagStyle) setNameTagStyle(parsed.nameTagStyle);
           if (parsed.pipCorner) setPipCorner(parsed.pipCorner);
+          if (Array.isArray(parsed.stageItemOrder)) setStageItemOrder(parsed.stageItemOrder.filter((id): id is string => typeof id === 'string'));
           if (Array.isArray(parsed.mediaAssets)) setMediaAssets(parsed.mediaAssets.filter((asset) => asset.source === 'url'));
           if (Array.isArray(parsed.scenes)) {
             setScenes(parsed.scenes);
@@ -748,6 +757,7 @@ export function StudioRoom() {
         cameraShape,
         nameTagStyle,
         pipCorner,
+        stageItemOrder,
         mediaAssets: mediaAssets.filter((asset) => asset.source === 'url'),
         scenes: getPersistableScenes(scenes),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
@@ -765,7 +775,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, mediaAssets, scenes, activeSceneId, lowerThirds, banners, timers, tickers]);
+  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, lowerThirds, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -2059,23 +2069,25 @@ export function StudioRoom() {
     return items;
   }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream, participantVolumes]);
 
-  const orderedVideoItems = useMemo(() => {
-    if (!focusedVideoItemId) return videoItems;
-    const focusedIndex = videoItems.findIndex((item) => item.id === focusedVideoItemId);
-    if (focusedIndex <= 0) return videoItems;
-    const focusedItem = videoItems[focusedIndex];
-    return [
-      focusedItem,
-      ...videoItems.slice(0, focusedIndex),
-      ...videoItems.slice(focusedIndex + 1),
-    ];
-  }, [videoItems, focusedVideoItemId]);
+  const availableStageItemIds = useMemo(() => videoItems.map((item) => item.id), [videoItems]);
+
+  useEffect(() => {
+    setStageItemOrder((current) => normalizeStageItemOrder(current, availableStageItemIds));
+  }, [availableStageItemIds]);
+
+  const orderedVideoItems = useMemo(() => (
+    applyStageItemOrder(videoItems, stageItemOrder, focusedVideoItemId)
+  ), [videoItems, stageItemOrder, focusedVideoItemId]);
 
   useEffect(() => {
     if (focusedVideoItemId && !videoItems.some((item) => item.id === focusedVideoItemId)) {
       setFocusedVideoItemId(null);
     }
   }, [focusedVideoItemId, videoItems]);
+
+  const moveStageItem = useCallback((itemId: string, direction: StageItemOrderDirection) => {
+    setStageItemOrder((current) => moveStageItemInOrder(current, availableStageItemIds, itemId, direction));
+  }, [availableStageItemIds]);
 
   // Auto-switch layout when participant count changes
   useEffect(() => {
@@ -2721,6 +2733,9 @@ export function StudioRoom() {
                     const isPipSmallTile = layout === 'pip' && i === 1;
                     const isFocusedTile = focusedVideoItemId === item.id;
                     const canFocusTile = isHostOrCoHost && orderedVideoItems.length > 1;
+                    const orderedIndex = orderedVideoItems.findIndex((orderedItem) => orderedItem.id === item.id);
+                    const canMoveEarlier = canFocusTile && orderedIndex > 0;
+                    const canMoveLater = canFocusTile && orderedIndex >= 0 && orderedIndex < orderedVideoItems.length - 1;
                     return (
                       <div
                         key={item.id}
@@ -2738,25 +2753,60 @@ export function StudioRoom() {
                         title={isPipSmallTile ? 'Click to move PiP position' : undefined}
                       >
                         {canFocusTile && (
-                          <button
-                            type="button"
-                            style={{ ...styles.focusTileBtn, ...(isFocusedTile ? styles.focusTileBtnActive : {}) }}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              if (isFocusedTile) {
-                                setFocusedVideoItemId(null);
-                                return;
-                              }
-                              setFocusedVideoItemId(item.id);
-                              if (layout === 'grid') setLayout('spotlight');
-                            }}
-                            aria-label={isFocusedTile ? `Clear main stage focus for ${item.name}` : `Make ${item.name} the main stage tile`}
-                            title={isFocusedTile ? 'Clear main stage focus' : 'Make main stage tile'}
-                          >
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill={isFocusedTile ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                            </svg>
-                          </button>
+                          <div style={styles.tileControls}>
+                            <button
+                              type="button"
+                              style={{ ...styles.focusTileBtn, ...(isFocusedTile ? styles.focusTileBtnActive : {}) }}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (isFocusedTile) {
+                                  setFocusedVideoItemId(null);
+                                  return;
+                                }
+                                moveStageItem(item.id, 'first');
+                                setFocusedVideoItemId(item.id);
+                                if (layout === 'grid') setLayout('spotlight');
+                              }}
+                              aria-label={isFocusedTile ? `Clear main stage focus for ${item.name}` : `Make ${item.name} the main stage tile`}
+                              title={isFocusedTile ? 'Clear main stage focus' : 'Make main stage tile'}
+                            >
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill={isFocusedTile ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                              </svg>
+                            </button>
+                            {canMoveEarlier && (
+                              <button
+                                type="button"
+                                style={styles.stageOrderBtn}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  moveStageItem(item.id, 'left');
+                                }}
+                                aria-label={`Move ${item.name} earlier in the stage order`}
+                                title="Move earlier"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="m15 18-6-6 6-6" />
+                                </svg>
+                              </button>
+                            )}
+                            {canMoveLater && (
+                              <button
+                                type="button"
+                                style={styles.stageOrderBtn}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  moveStageItem(item.id, 'right');
+                                }}
+                                aria-label={`Move ${item.name} later in the stage order`}
+                                title="Move later"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="m9 18 6-6-6-6" />
+                                </svg>
+                              </button>
+                            )}
+                          </div>
                         )}
                         <VideoTile
                           stream={item.stream}
@@ -3516,11 +3566,16 @@ const styles: Record<string, React.CSSProperties> = {
     outline: '2px solid var(--accent)',
     outlineOffset: -2,
   },
-  focusTileBtn: {
+  tileControls: {
     position: 'absolute',
     top: 8,
     right: 8,
     zIndex: 12,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  focusTileBtn: {
     width: 30,
     height: 30,
     borderRadius: 8,
@@ -3533,6 +3588,22 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 0,
     cursor: 'pointer',
     boxShadow: '0 4px 14px rgba(0, 0, 0, 0.24)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+  },
+  stageOrderBtn: {
+    width: 30,
+    height: 28,
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.16)',
+    background: 'rgba(15, 23, 42, 0.64)',
+    color: 'rgba(255, 255, 255, 0.78)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    cursor: 'pointer',
+    boxShadow: '0 4px 14px rgba(0, 0, 0, 0.2)',
     backdropFilter: 'blur(10px)',
     WebkitBackdropFilter: 'blur(10px)',
   },
