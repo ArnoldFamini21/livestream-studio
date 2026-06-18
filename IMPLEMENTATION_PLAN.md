@@ -84,7 +84,7 @@
 - [ ] Dropped frames counter
 - [x] Connection quality indicator (green/yellow/red)
 - [x] Per-destination stream status (connected/buffering/error)
-- [ ] Latency display
+- [x] Relay round-trip latency display
 - [x] Auto-reconnect on stream drop
 
 ---

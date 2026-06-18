@@ -4,7 +4,6 @@ import type { Readable, Writable } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import ffmpegStaticPath from 'ffmpeg-static';
 import type {
-  RtmpRelayClientMessage,
   RtmpRelayDestination,
   RtmpRelayServerMessage,
   RtmpRelayStartPayload,
@@ -12,6 +11,7 @@ import type {
 } from '@studio/shared';
 import { getLiveStreamTokenSecret, verifyLiveStreamToken } from './auth.js';
 import { buildAllowedOrigins, isAllowedOrigin } from './origins.js';
+import { parseControlMessage } from './protocol.js';
 import {
   createFfmpegArgs,
   hasRemainingRelayWork,
@@ -56,31 +56,6 @@ function sendJson(ws: WebSocket, message: RtmpRelayServerMessage) {
 
 function sendError(ws: WebSocket, code: string, message: string, destinationId?: string) {
   sendJson(ws, { type: 'error', payload: { code, message, destinationId } });
-}
-
-function isStartPayload(payload: unknown): payload is RtmpRelayStartPayload {
-  if (!payload || typeof payload !== 'object') return false;
-  const candidate = payload as Record<string, unknown>;
-  return (
-    typeof candidate.token === 'string' &&
-    Array.isArray(candidate.destinations) &&
-    typeof candidate.video === 'object' &&
-    candidate.video !== null &&
-    typeof candidate.audio === 'object' &&
-    candidate.audio !== null
-  );
-}
-
-function parseControlMessage(data: RawData): RtmpRelayClientMessage | null {
-  if (!Buffer.isBuffer(data)) return null;
-  try {
-    const parsed = JSON.parse(data.toString('utf8')) as RtmpRelayClientMessage;
-    if (parsed?.type === 'stop') return { type: 'stop' };
-    if (parsed?.type === 'start' && isStartPayload(parsed.payload)) return parsed;
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 function getFfmpegPath(): string | null {
@@ -341,6 +316,15 @@ wss.on('connection', (ws) => {
 
     if (message.type === 'start') {
       handleStart(ws, session, message.payload);
+    } else if (message.type === 'ping') {
+      sendJson(ws, {
+        type: 'pong',
+        payload: {
+          sentAt: message.payload.sentAt,
+          sequence: message.payload.sequence,
+          receivedAt: Date.now(),
+        },
+      });
     } else {
       stopSession(ws, session, 'client requested stop');
       ws.close(1000, 'Relay stopped');
