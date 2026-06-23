@@ -264,7 +264,7 @@ function ChatMessageCard({
   onTogglePin: (messageId: string, pinned: boolean) => void;
 }) {
   return (
-    <article style={{ ...styles.messageCard, ...(message.starred ? styles.messageCardStarred : {}), ...(message.pinned ? styles.messageCardPinned : {}) }}>
+    <article className="chat-msg-enter" style={{ ...styles.messageCard, ...(message.starred ? styles.messageCardStarred : {}), ...(message.pinned ? styles.messageCardPinned : {}) }}>
       <div style={styles.messageHeader}>
         <span style={{ ...styles.messageSender, color: isMine ? 'var(--accent-hover)' : 'var(--text-primary)' }}>
           {message.senderName}
