@@ -62,6 +62,7 @@ import {
   normalizeStageItemOrder,
   type StageItemOrderDirection,
 } from '../utils/stageItemOrder.ts';
+import { addLowerThird, toggleLowerThirdVisibility, type LowerThirdDraft } from '../utils/lowerThirds.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -1555,11 +1556,11 @@ export function StudioRoom() {
   };
 
   // Lower thirds
-  const onAddLowerThird = (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => {
-    setLowerThirds((prev) => [...prev, { ...lt, id: `lt-${++idCounters.current.lt}`, visible: lt.visible ?? false }]);
+  const onAddLowerThird = (lt: LowerThirdDraft) => {
+    setLowerThirds((prev) => addLowerThird(prev, lt, `lt-${++idCounters.current.lt}`));
   };
   const onToggleLowerThird = (id: string) => {
-    setLowerThirds((prev) => prev.map((lt) => ({ ...lt, visible: lt.id === id ? !lt.visible : lt.visible })));
+    setLowerThirds((prev) => toggleLowerThirdVisibility(prev, id));
   };
   const onRemoveLowerThird = (id: string) => {
     setLowerThirds((prev) => prev.filter((lt) => lt.id !== id));

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import type { Participant, ParticipantRole } from '@studio/shared';
 
 interface LowerThirdData {
   id: string;
@@ -10,15 +11,28 @@ interface LowerThirdData {
 
 interface LowerThirdManagerProps {
   lowerThirds: LowerThirdData[];
-  onAdd: (lt: Omit<LowerThirdData, 'id' | 'visible'>) => void;
+  participants?: Participant[];
+  onAdd: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
 }
 
-export function LowerThirdManager({ lowerThirds, onAdd, onToggle, onRemove }: LowerThirdManagerProps) {
+function getParticipantLowerThirdTitle(role: ParticipantRole): string {
+  switch (role) {
+    case 'host':
+      return 'Host';
+    case 'co-host':
+      return 'Co-host';
+    case 'guest':
+      return 'Guest';
+  }
+}
+
+export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onToggle, onRemove }: LowerThirdManagerProps) {
   const [name, setName] = useState('');
   const [title, setTitle] = useState('');
   const [style, setStyle] = useState<LowerThirdData['style']>('minimal');
+  const onStageParticipants = participants.filter((participant) => participant.status === 'on-stage');
 
   const handleAdd = () => {
     if (!name.trim()) return;
@@ -30,6 +44,35 @@ export function LowerThirdManager({ lowerThirds, onAdd, onToggle, onRemove }: Lo
   return (
     <div style={styles.container}>
       <h4 style={styles.sectionTitle}>Lower Thirds</h4>
+
+      {onStageParticipants.length > 0 && (
+        <div style={styles.quickBlock}>
+          <div style={styles.quickHeader}>
+            <span style={styles.quickTitle}>On-Stage Names</span>
+            <span style={styles.quickCount}>{onStageParticipants.length}</span>
+          </div>
+          <div style={styles.quickList}>
+            {onStageParticipants.map((participant) => (
+              <button
+                key={participant.id}
+                type="button"
+                style={styles.quickParticipantBtn}
+                onClick={() => onAdd({
+                  name: participant.name,
+                  title: getParticipantLowerThirdTitle(participant.role),
+                  style: 'bold',
+                  visible: true,
+                })}
+                aria-label={`Show lower third for ${participant.name}`}
+                title={`Show lower third for ${participant.name}`}
+              >
+                <span style={styles.quickParticipantName}>{participant.name}</span>
+                <span style={styles.quickParticipantRole}>{getParticipantLowerThirdTitle(participant.role)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Existing lower thirds */}
       <div style={styles.list}>
@@ -231,6 +274,71 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 4,
     padding: '0 12px',
     marginBottom: 12,
+  },
+  quickBlock: {
+    padding: '0 12px 12px',
+  },
+  quickHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 6,
+  },
+  quickTitle: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+  },
+  quickCount: {
+    minWidth: 18,
+    height: 18,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 5,
+    background: 'rgba(167, 139, 250, 0.14)',
+    color: '#c4b5fd',
+    fontSize: 10,
+    fontWeight: 800,
+    fontVariantNumeric: 'tabular-nums',
+  },
+  quickList: {
+    display: 'grid',
+    gridTemplateColumns: '1fr',
+    gap: 5,
+  },
+  quickParticipantBtn: {
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    minHeight: 34,
+    padding: '6px 9px',
+    borderRadius: 7,
+    border: '1px solid rgba(167, 139, 250, 0.24)',
+    background: 'rgba(167, 139, 250, 0.08)',
+    color: 'var(--text-primary)',
+    cursor: 'pointer',
+  },
+  quickParticipantName: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: 12,
+    fontWeight: 700,
+  },
+  quickParticipantRole: {
+    flexShrink: 0,
+    fontSize: 9,
+    fontWeight: 800,
+    color: '#c4b5fd',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
   },
   item: {
     display: 'flex',
