@@ -122,7 +122,7 @@
 - [ ] Real-time WebSocket chat panel (host + guests)
 - [ ] Chat message animations (slide in from right)
 - [ ] Emoji reactions
-- [ ] Pin messages
+- [x] Pin messages
 - [x] Private messages between host and individual guests
 
 ### 6B. Live Chat Integration

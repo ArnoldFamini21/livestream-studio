@@ -59,6 +59,7 @@ function getCommentSearchText(message: ChatMessage): string {
   return [
     message.senderName,
     message.content,
+    message.pinned ? 'pinned' : '',
     message.starred ? 'starred ready' : '',
     new Date(message.timestamp).toLocaleString(),
   ].join(' ').toLowerCase();
@@ -299,6 +300,7 @@ export function CommentHighlightManager({
               <div style={styles.chatRowInfo}>
                 <span style={styles.chatRowName}>
                   {msg.senderName}
+                  {msg.pinned && <span style={styles.chatPinBadge}>Pinned</span>}
                   {msg.starred && <span style={styles.chatStarBadge}>Starred</span>}
                 </span>
                 <span style={styles.chatRowText}>{msg.content}</span>
@@ -645,6 +647,16 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     background: 'rgba(245, 158, 11, 0.14)',
     color: '#fbbf24',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  chatPinBadge: {
+    fontSize: 8,
+    fontWeight: 800,
+    padding: '1px 4px',
+    borderRadius: 4,
+    background: 'rgba(34, 211, 238, 0.12)',
+    color: '#67e8f9',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
   },

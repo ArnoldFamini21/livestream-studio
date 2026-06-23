@@ -1493,6 +1493,7 @@ export function StudioRoom() {
         case 'stage-action':
         case 'chat-reaction':
         case 'chat-star-update':
+        case 'chat-pin-update':
         case 'qa-question-submitted':
         case 'qa-question-update':
         case 'qa-question-upvote':
@@ -1829,14 +1830,20 @@ export function StudioRoom() {
     send({ type: 'chat-star-update', payload: { messageId, starred } });
   };
 
+  const onToggleChatPin = (messageId: string, pinned: boolean) => {
+    send({ type: 'chat-pin-update', payload: { messageId, pinned } });
+  };
+
   const popoutSendChatRef = useRef(onSendChat);
   const popoutReactChatRef = useRef(onReactChat);
   const popoutToggleChatStarRef = useRef(onToggleChatStar);
+  const popoutToggleChatPinRef = useRef(onToggleChatPin);
 
   useEffect(() => {
     popoutSendChatRef.current = onSendChat;
     popoutReactChatRef.current = onReactChat;
     popoutToggleChatStarRef.current = onToggleChatStar;
+    popoutToggleChatPinRef.current = onToggleChatPin;
   });
 
   const postPopoutChatState = useCallback(() => {
@@ -1887,6 +1894,10 @@ export function StudioRoom() {
       }
       if (message.type === 'toggle-star') {
         popoutToggleChatStarRef.current(message.payload.messageId, message.payload.starred);
+        return;
+      }
+      if (message.type === 'toggle-pin') {
+        popoutToggleChatPinRef.current(message.payload.messageId, message.payload.pinned);
       }
     };
 
@@ -3577,6 +3588,7 @@ export function StudioRoom() {
             onSendChat={onSendChat}
             onReactChat={onReactChat}
             onToggleChatStar={onToggleChatStar}
+            onToggleChatPin={onToggleChatPin}
             chatSenderName={userName}
             onOpenPopoutChat={onOpenPopoutChat}
             allParticipants={allParticipantsMap}

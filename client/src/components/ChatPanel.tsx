@@ -36,6 +36,13 @@ export function ChatPanel({
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
   const selectedRecipient = directRecipients.find((recipient) => recipient.id === recipientId);
+  const pinnedMessage = messages.reduce<ChatMessage | null>((latest, message) => {
+    if (!message.pinned || message.isBackstage || message.recipientId) return latest;
+    if (!latest) return message;
+    const messageTime = Date.parse(message.pinnedAt || message.timestamp);
+    const latestTime = Date.parse(latest.pinnedAt || latest.timestamp);
+    return messageTime >= latestTime ? message : latest;
+  }, null);
 
   const handleScroll = () => {
     const container = messagesContainerRef.current;
@@ -80,6 +87,12 @@ export function ChatPanel({
 
       {/* Messages */}
       <div ref={messagesContainerRef} style={styles.messages} onScroll={handleScroll} role="log" aria-live="polite" aria-label="Chat messages">
+        {pinnedMessage && (
+          <div style={styles.pinnedBanner}>
+            <span style={styles.pinnedLabel}>Pinned</span>
+            <span style={styles.pinnedText}>{pinnedMessage.content}</span>
+          </div>
+        )}
         {messages.length === 0 && (
           <div style={styles.empty}>
             <p style={styles.emptyText}>{emptyText}</p>
@@ -94,6 +107,7 @@ export function ChatPanel({
               style={{
                 ...styles.message,
                 ...(msg.starred ? styles.messageStarred : {}),
+                ...(msg.pinned ? styles.messagePinned : {}),
                 animation: 'slideUp 0.2s ease-out',
               }}
             >
@@ -109,6 +123,7 @@ export function ChatPanel({
                 </span>
                 {msg.recipientId && <span style={styles.privateBadge}>Private</span>}
                 {msg.recipientId && <span style={styles.privateMeta}>to {msg.recipientName || 'participant'}</span>}
+                {msg.pinned && <span style={styles.pinBadge}>Pinned</span>}
                 {msg.starred && <span style={styles.starBadge}>Starred</span>}
               </div>
               <p style={styles.msgContent}>{msg.content}</p>
@@ -231,6 +246,33 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 12,
   },
+  pinnedBanner: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '9px 10px',
+    borderRadius: 8,
+    border: '1px solid rgba(34, 211, 238, 0.28)',
+    background: 'rgba(34, 211, 238, 0.08)',
+  },
+  pinnedLabel: {
+    flexShrink: 0,
+    fontSize: 9,
+    fontWeight: 800,
+    color: '#67e8f9',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  pinnedText: {
+    minWidth: 0,
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 1.35,
+    color: 'var(--text-secondary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
   empty: {
     flex: 1,
     display: 'flex',
@@ -260,6 +302,10 @@ const styles: Record<string, React.CSSProperties> = {
   messageStarred: {
     borderColor: 'rgba(245, 158, 11, 0.28)',
     background: 'rgba(245, 158, 11, 0.06)',
+  },
+  messagePinned: {
+    borderColor: 'rgba(34, 211, 238, 0.28)',
+    background: 'rgba(34, 211, 238, 0.055)',
   },
   msgHeader: {
     display: 'flex',
@@ -300,6 +346,16 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
+  },
+  pinBadge: {
+    fontSize: 9,
+    fontWeight: 700,
+    padding: '1px 5px',
+    borderRadius: 4,
+    background: 'rgba(34, 211, 238, 0.12)',
+    color: '#67e8f9',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
   },
   msgContent: {
     fontSize: 13,

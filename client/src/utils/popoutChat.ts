@@ -19,7 +19,8 @@ export type PopoutChatCommand =
   | { type: 'request-state' }
   | { type: 'send-message'; payload: { content: string; isBackstage: boolean } }
   | { type: 'react'; payload: { messageId: string; reaction: ChatReactionType } }
-  | { type: 'toggle-star'; payload: { messageId: string; starred: boolean } };
+  | { type: 'toggle-star'; payload: { messageId: string; starred: boolean } }
+  | { type: 'toggle-pin'; payload: { messageId: string; pinned: boolean } };
 
 export type PopoutChatMessage = PopoutChatState | PopoutChatCommand;
 
@@ -83,6 +84,9 @@ export function isPopoutChatCommand(value: unknown): value is PopoutChatCommand 
   }
   if (message.type === 'toggle-star') {
     return typeof payload.messageId === 'string' && typeof payload.starred === 'boolean';
+  }
+  if (message.type === 'toggle-pin') {
+    return typeof payload.messageId === 'string' && typeof payload.pinned === 'boolean';
   }
   return false;
 }

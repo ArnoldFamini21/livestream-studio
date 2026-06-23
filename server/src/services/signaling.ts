@@ -67,6 +67,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'chat-message',
   'chat-reaction',
   'chat-star-update',
+  'chat-pin-update',
   'qa-question-submitted',
   'qa-question-update',
   'qa-question-upvote',
@@ -535,6 +536,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'chat-star-update':
       handleChatStarUpdate(ws, message.payload);
+      break;
+    case 'chat-pin-update':
+      handleChatPinUpdate(ws, message.payload);
       break;
     case 'qa-question-submitted':
       handleQAQuestionSubmitted(ws, message.payload);
@@ -1456,6 +1460,60 @@ function handleChatStarUpdate(
     delete updated.starred;
     delete updated.starredBy;
     delete updated.starredAt;
+  }
+
+  roomState.chatMessages.set(updated.id, updated);
+  const refreshed = refreshStoredChatReactionCounts(roomState, updated);
+  sendChatToVisibleParticipants(mapping.roomId, roomState, refreshed, 'chat-message-updated');
+}
+
+function handleChatPinUpdate(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'chat-pin-update' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can pin chat messages', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before pinning chat messages', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  if (typeof payload.messageId !== 'string' || typeof payload.pinned !== 'boolean') {
+    sendError(ws, 'Invalid chat pin update', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const message = roomState.chatMessages.get(payload.messageId);
+  if (!message || !canSeeChatMessage(message, performer.participant, mapping.participantId)) return;
+  if (message.recipientId) {
+    sendError(ws, 'Private messages cannot be pinned for broadcast', 'VALIDATION_ERROR');
+    return;
+  }
+  if (message.isBackstage) {
+    sendError(ws, 'Backstage messages cannot be pinned for broadcast', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const updated: ChatMessage = {
+    ...message,
+    pinned: payload.pinned,
+    pinnedBy: payload.pinned ? mapping.participantId : undefined,
+    pinnedAt: payload.pinned ? new Date().toISOString() : undefined,
+  };
+  if (!payload.pinned) {
+    delete updated.pinned;
+    delete updated.pinnedBy;
+    delete updated.pinnedAt;
   }
 
   roomState.chatMessages.set(updated.id, updated);
