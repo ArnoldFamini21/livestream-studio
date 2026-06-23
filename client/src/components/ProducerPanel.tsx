@@ -15,6 +15,8 @@ interface ProducerPanelProps {
 
   currentLayout: LayoutMode;
   onLayoutChange: (layout: LayoutMode) => void;
+  focusedParticipantId: string | null;
+  onSpotlightParticipant: (participantId: string | null) => void;
 
   onClose: () => void;
 }
@@ -160,12 +162,19 @@ function ParticipantRow({
   participant,
   isMe,
   onStageAction,
+  focusedParticipantId,
+  onSpotlightParticipant,
 }: {
   participant: Participant;
   isMe: boolean;
   onStageAction: (action: StageActionPayload['action'], targetId: string) => void;
+  focusedParticipantId: string | null;
+  onSpotlightParticipant: (participantId: string | null) => void;
 }) {
   const initial = participant.name.charAt(0).toUpperCase();
+  const isSpotlighted = focusedParticipantId === participant.id;
+  const canSpotlight = participant.status === 'on-stage';
+  const canUseModerationActions = !isMe && participant.role !== 'host';
 
   return (
     <div className="participant-item" style={rowStyles.row}>
@@ -195,9 +204,22 @@ function ParticipantRow({
         </div>
       </div>
 
-      {!isMe && participant.role !== 'host' && (
+      {(canSpotlight || canUseModerationActions) && (
         <div style={rowStyles.actions}>
-          {(participant.status === 'backstage' || participant.status === 'green-room') && (
+          {canSpotlight && (
+            <button
+              className="participant-action-btn"
+              style={{ ...rowStyles.actionBtn, color: isSpotlighted ? 'white' : 'var(--accent)', borderColor: 'rgba(124, 58, 237, 0.28)', background: isSpotlighted ? 'var(--accent)' : undefined, '--btn-hover-bg': isSpotlighted ? 'var(--accent)' : 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
+              onClick={() => onSpotlightParticipant(isSpotlighted ? null : participant.id)}
+              title={isSpotlighted ? 'Clear spotlight' : 'Make main stage tile'}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill={isSpotlighted ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+              </svg>
+              {isSpotlighted ? 'Clear' : 'Spotlight'}
+            </button>
+          )}
+          {canUseModerationActions && (participant.status === 'backstage' || participant.status === 'green-room') && (
             <button
               className="participant-action-btn"
               style={{ ...rowStyles.actionBtn, color: 'var(--accent)', borderColor: 'rgba(124, 58, 237, 0.25)', '--btn-hover-bg': 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
@@ -211,7 +233,7 @@ function ParticipantRow({
               Next
             </button>
           )}
-          {(participant.status === 'backstage' || participant.status === 'green-room') && (
+          {canUseModerationActions && (participant.status === 'backstage' || participant.status === 'green-room') && (
             <button
               className="participant-action-btn"
               style={{ ...rowStyles.actionBtn, color: 'var(--success)', borderColor: 'rgba(34, 197, 94, 0.25)', '--btn-hover-bg': 'rgba(34, 197, 94, 0.1)' } as React.CSSProperties}
@@ -225,7 +247,7 @@ function ParticipantRow({
               Stage
             </button>
           )}
-          {participant.status === 'on-stage' && (
+          {canUseModerationActions && participant.status === 'on-stage' && (
             <button
               className="participant-action-btn"
               style={{ ...rowStyles.actionBtn, color: 'var(--warning, #f59e0b)', borderColor: 'rgba(245, 158, 11, 0.25)', '--btn-hover-bg': 'rgba(245, 158, 11, 0.1)' } as React.CSSProperties}
@@ -239,7 +261,7 @@ function ParticipantRow({
               Off
             </button>
           )}
-          {participant.status !== 'green-room' && (
+          {canUseModerationActions && participant.status !== 'green-room' && (
             <button
               className="participant-action-btn"
               style={{ ...rowStyles.actionBtn, color: '#fbbf24', borderColor: 'rgba(245, 158, 11, 0.22)', '--btn-hover-bg': 'rgba(245, 158, 11, 0.1)' } as React.CSSProperties}
@@ -255,7 +277,7 @@ function ParticipantRow({
               Hold
             </button>
           )}
-          {participant.status === 'on-stage' && participant.audioEnabled && (
+          {canUseModerationActions && participant.status === 'on-stage' && participant.audioEnabled && (
             <button
               className="participant-action-btn"
               style={{ ...rowStyles.actionBtn, color: 'var(--text-muted)', borderColor: 'var(--border)', '--btn-hover-bg': 'rgba(255, 255, 255, 0.05)' } as React.CSSProperties}
@@ -269,7 +291,7 @@ function ParticipantRow({
               </svg>
             </button>
           )}
-          {participant.status === 'on-stage' && !participant.audioEnabled && (
+          {canUseModerationActions && participant.status === 'on-stage' && !participant.audioEnabled && (
             <button
               className="participant-action-btn"
               style={{ ...rowStyles.actionBtn, color: 'var(--success)', borderColor: 'rgba(34, 197, 94, 0.25)', '--btn-hover-bg': 'rgba(34, 197, 94, 0.1)' } as React.CSSProperties}
@@ -282,17 +304,19 @@ function ParticipantRow({
               </svg>
             </button>
           )}
-          <button
-            className="participant-action-btn"
-            style={{ ...rowStyles.actionBtn, color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)', '--btn-hover-bg': 'rgba(239, 68, 68, 0.1)' } as React.CSSProperties}
-            onClick={() => onStageAction('remove', participant.id)}
-            title="Remove from session"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          {canUseModerationActions && (
+            <button
+              className="participant-action-btn"
+              style={{ ...rowStyles.actionBtn, color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)', '--btn-hover-bg': 'rgba(239, 68, 68, 0.1)' } as React.CSSProperties}
+              onClick={() => onStageAction('remove', participant.id)}
+              title="Remove from session"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -312,6 +336,8 @@ export function ProducerPanel({
   formattedTime,
   currentLayout,
   onLayoutChange,
+  focusedParticipantId,
+  onSpotlightParticipant,
   onClose,
 }: ProducerPanelProps) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -573,6 +599,8 @@ export function ProducerPanel({
                   participant={p}
                   isMe={p.id === myParticipantId}
                   onStageAction={onStageAction}
+                  focusedParticipantId={focusedParticipantId}
+                  onSpotlightParticipant={onSpotlightParticipant}
                 />
               ))
             )}

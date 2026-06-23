@@ -107,8 +107,8 @@
 - [x] Host can move guests between: Green Room → On-Stage → Backstage, including hold-to-green-room controls
 - [x] Mute/unmute individual participants (host power)
 - [x] Remove participant from session
-- [ ] Spotlight participant (make them the main feed)
-- [ ] Reorder participant display order
+- [x] Spotlight participant (make them the main feed) from stage, Producer Mode, and People controls
+- [x] Reorder participant display order with stage-order controls
 
 ### 5D. Backstage
 - [ ] Private audio/video channel for host + selected guests

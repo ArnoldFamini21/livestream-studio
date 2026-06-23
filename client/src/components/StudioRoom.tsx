@@ -2580,6 +2580,18 @@ export function StudioRoom() {
     setStageItemOrder((current) => moveStageItemInOrder(current, availableStageItemIds, itemId, direction));
   }, [availableStageItemIds]);
 
+  const onSpotlightParticipant = useCallback((participantId: string | null) => {
+    if (!participantId) {
+      setFocusedVideoItemId(null);
+      return;
+    }
+    if (!availableStageItemIds.includes(participantId)) return;
+
+    setStageItemOrder((current) => moveStageItemInOrder(current, availableStageItemIds, participantId, 'first'));
+    setFocusedVideoItemId(participantId);
+    setLayout(availableStageItemIds.length > 1 ? 'spotlight' : 'single');
+  }, [availableStageItemIds]);
+
   // Auto-switch layout when participant count changes
   useEffect(() => {
     const count = videoItems.length;
@@ -3254,12 +3266,10 @@ export function StudioRoom() {
                               onClick={(event) => {
                                 event.stopPropagation();
                                 if (isFocusedTile) {
-                                  setFocusedVideoItemId(null);
+                                  onSpotlightParticipant(null);
                                   return;
                                 }
-                                moveStageItem(item.id, 'first');
-                                setFocusedVideoItemId(item.id);
-                                if (layout === 'grid') setLayout('spotlight');
+                                onSpotlightParticipant(item.id);
                               }}
                               aria-label={isFocusedTile ? `Clear main stage focus for ${item.name}` : `Make ${item.name} the main stage tile`}
                               title={isFocusedTile ? 'Clear main stage focus' : 'Make main stage tile'}
@@ -3557,6 +3567,8 @@ export function StudioRoom() {
             myParticipantId={myParticipant?.id || ''}
             myRole={myParticipant?.role || 'guest'}
             onStageAction={onStageAction}
+            focusedParticipantId={focusedVideoItemId}
+            onSpotlightParticipant={onSpotlightParticipant}
             remoteStreams={remoteStreams}
             localStream={localStream}
             participantVolumes={participantVolumes}
@@ -3709,6 +3721,8 @@ export function StudioRoom() {
             formattedTime={recordingStatus.formattedTime}
             currentLayout={layout}
             onLayoutChange={setLayout}
+            focusedParticipantId={focusedVideoItemId}
+            onSpotlightParticipant={onSpotlightParticipant}
             onClose={() => setShowProducerPanel(false)}
           />
         </Suspense>
