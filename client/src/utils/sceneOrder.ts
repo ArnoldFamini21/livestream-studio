@@ -55,3 +55,16 @@ export function duplicateSceneInOrder<T extends { id: string; name: string }>(
   next.splice(index + 1, 0, duplicateScene);
   return next;
 }
+
+export function replaceSceneInOrder<T extends { id: string }>(
+  scenes: T[],
+  sceneId: string,
+  replacement: T
+): T[] {
+  const index = scenes.findIndex((scene) => scene.id === sceneId);
+  if (index < 0 || replacement.id !== sceneId) return scenes;
+
+  const next = [...scenes];
+  next[index] = replacement;
+  return next;
+}
