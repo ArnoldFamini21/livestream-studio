@@ -61,6 +61,11 @@ import {
   type RecordingParticipantReadiness,
 } from '../utils/recordingReadiness.ts';
 import {
+  canControlStudioRecording,
+  canUseAdmittedOperatorControls,
+  isStudioOperator,
+} from '../utils/studioAccess.ts';
+import {
   applyStageItemOrder,
   moveStageItemInOrder,
   normalizeStageItemOrder,
@@ -564,8 +569,10 @@ export function StudioRoom() {
 
   const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]?.enabled);
   const effectiveVideoEnabled = videoEnabled && Boolean(localStream?.getVideoTracks()[0]?.enabled);
-  const isHostOrCoHost = myParticipant?.role === 'host' || myParticipant?.role === 'co-host';
-  const captionsAllowed = Boolean(isHostOrCoHost && myParticipant?.status !== 'green-room');
+  const isHostOrCoHost = isStudioOperator(myParticipant);
+  const canUseOperatorControls = canUseAdmittedOperatorControls(myParticipant);
+  const canControlRecording = canControlStudioRecording(myParticipant);
+  const captionsAllowed = canUseOperatorControls;
   const sessionHealth = useSessionHealth({
     localStream,
     connected,
@@ -761,7 +768,7 @@ export function StudioRoom() {
     remoteStreams: broadcastRemoteStreams,
     screenStream,
     participantVolumes,
-    readinessEnabled: isHostOrCoHost,
+    readinessEnabled: canUseOperatorControls,
     onDestinationStatus: handleRelayDestinationStatus,
     onRelayStopped: handleRelayStopped,
   });
@@ -959,6 +966,12 @@ export function StudioRoom() {
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
   useEffect(() => { isLiveRef.current = isLive; }, [isLive]);
   useEffect(() => { sessionRecordingStartedAtRef.current = sessionRecordingStartedAt; }, [sessionRecordingStartedAt]);
+
+  useEffect(() => {
+    if (canControlRecording || !isLocalRecording) return;
+    setShowRecordingPanel(false);
+    void stopLocalRecording().catch((err) => console.error('Failed to stop local recording after access changed:', err));
+  }, [canControlRecording, isLocalRecording, stopLocalRecording]);
 
   // Keep function refs in sync
   useEffect(() => { connectToPeerRef.current = connectToPeer; }, [connectToPeer]);
@@ -1628,7 +1641,7 @@ export function StudioRoom() {
 
   // Recording
   const onToggleRecording = async () => {
-    if (!myParticipant) return;
+    if (!myParticipant || !canControlRecording) return;
     if (isRecording) {
       await downloadRecordings();
       send({
@@ -1666,7 +1679,7 @@ export function StudioRoom() {
 
   // Local recording (separate on-stage tracks)
   const onStartLocalRecording = () => {
-    if (!myParticipant || !recordingReadiness.canStart) return;
+    if (!myParticipant || !canControlRecording || !recordingReadiness.canStart) return;
     const sources: LocalRecordingSource[] = [];
     const liveTracks = (tracks: MediaStreamTrack[]) => tracks.filter((track) => track.readyState === 'live');
     const localAudioTracks = liveTracks(localStream?.getAudioTracks() || []);
@@ -3627,7 +3640,7 @@ export function StudioRoom() {
         )}
 
         {/* Recording Panel */}
-        {showRecordingPanel && (
+        {canControlRecording && showRecordingPanel && (
           <Suspense fallback={<LazyPanelFallback />}>
             <RecordingPanel
               isRecording={isLocalRecording}
@@ -3662,7 +3675,7 @@ export function StudioRoom() {
         isHost={isHostOrCoHost}
         isRecording={isRecording}
         formattedTime={formattedTime}
-        onToggleRecording={onToggleRecording}
+        onToggleRecording={canControlRecording ? onToggleRecording : undefined}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={onToggleScreenShare}
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
@@ -3673,7 +3686,7 @@ export function StudioRoom() {
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
         onOpenMediaPanel={() => { setShowSidebar(true); setSidebarActiveTab('media'); }}
         onOpenBackgroundMusic={() => setShowBackgroundMusic(!showBackgroundMusic)}
-        onOpenRecordingPanel={() => setShowRecordingPanel(!showRecordingPanel)}
+        onOpenRecordingPanel={canControlRecording ? () => setShowRecordingPanel(!showRecordingPanel) : undefined}
         onOpenProducerPanel={() => setShowProducerPanel(!showProducerPanel)}
         onOpenWebinarQA={() => setShowWebinarQA(!showWebinarQA)}
         onOpenPolls={() => setShowPolls(!showPolls)}
