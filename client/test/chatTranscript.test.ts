@@ -23,6 +23,7 @@ const messages: ChatMessage[] = [
     content: 'Can you show the pricing slide?',
     timestamp: '2026-06-11T10:05:00.000Z',
     isBackstage: false,
+    pinned: true,
     starred: true,
     reactions: { like: 2, clap: 1 },
   },
@@ -57,6 +58,7 @@ describe('chat transcript export', () => {
 
     assert.match(csv, /"Ari"/);
     assert.match(csv, /"Hello, ""team""\nGreat demo"/);
+    assert.match(csv, /"Pinned","Starred"/);
     assert.match(csv, /"Like: 2; Clap: 1"/);
     assert.doesNotMatch(csv, /Guest mic is hot/);
     assert.doesNotMatch(csv, /You are next/);

@@ -57,12 +57,13 @@ export function buildChatTranscriptCsv(
   messages: ChatMessage[],
   scope: ChatTranscriptScope
 ): string {
-  const header = ['Timestamp', 'Sender', 'Recipient', 'Channel', 'Starred', 'Reactions', 'Message'];
+  const header = ['Timestamp', 'Sender', 'Recipient', 'Channel', 'Pinned', 'Starred', 'Reactions', 'Message'];
   const rows = getChatTranscriptMessages(messages, scope).map((message) => [
     formatTimestamp(message.timestamp),
     message.senderName,
     message.recipientName || '',
     SCOPE_LABELS[message.recipientId ? 'direct' : message.isBackstage ? 'backstage' : 'public'],
+    message.pinned ? 'Yes' : 'No',
     message.starred ? 'Yes' : 'No',
     formatReactions(message.reactions),
     message.content,

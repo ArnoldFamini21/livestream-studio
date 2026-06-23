@@ -105,6 +105,7 @@ interface SidebarProps {
   onSendChat: (content: string, isBackstage?: boolean, recipientId?: string) => void;
   onReactChat: (messageId: string, reaction: ChatReactionType) => void;
   onToggleChatStar: (messageId: string, starred: boolean) => void;
+  onToggleChatPin: (messageId: string, pinned: boolean) => void;
   chatSenderName: string;
   onOpenPopoutChat?: () => void;
   // People props
@@ -335,6 +336,7 @@ export function Sidebar(props: SidebarProps) {
               onSend={props.onSendChat}
               onReact={props.onReactChat}
               onToggleStar={props.onToggleChatStar}
+              onTogglePin={props.onToggleChatPin}
               senderName={props.chatSenderName}
               onOpenPopoutChat={props.onOpenPopoutChat}
               participants={props.allParticipants}
@@ -947,6 +949,7 @@ function ChatContent({
   onSend,
   onReact,
   onToggleStar,
+  onTogglePin,
   senderName,
   onOpenPopoutChat,
   participants,
@@ -956,6 +959,7 @@ function ChatContent({
   onSend: (c: string, isBackstage?: boolean, recipientId?: string) => void;
   onReact: (messageId: string, reaction: ChatReactionType) => void;
   onToggleStar: (messageId: string, starred: boolean) => void;
+  onTogglePin: (messageId: string, pinned: boolean) => void;
   senderName: string;
   onOpenPopoutChat?: () => void;
   participants: Map<string, Participant>;
@@ -969,6 +973,13 @@ function ChatContent({
   const isNearBottomRef = useRef(true);
   const publicMessages = messages.filter((msg) => !msg.isBackstage && !msg.recipientId);
   const starredMessages = publicMessages.filter((msg) => msg.starred);
+  const pinnedMessage = publicMessages.reduce<ChatMessage | null>((latest, message) => {
+    if (!message.pinned) return latest;
+    if (!latest) return message;
+    const messageTime = Date.parse(message.pinnedAt || message.timestamp);
+    const latestTime = Date.parse(latest.pinnedAt || latest.timestamp);
+    return messageTime >= latestTime ? message : latest;
+  }, null);
   const backstageMessages = messages.filter((msg) => msg.isBackstage);
   const directMessages = messages.filter((msg) => Boolean(msg.recipientId));
   const visibleMessages = mode === 'backstage'
@@ -1089,6 +1100,12 @@ function ChatContent({
         </div>
       </div>
       <div ref={containerRef} style={st.chatMessages} onScroll={handleScroll}>
+        {pinnedMessage && (mode === 'public' || mode === 'starred') && (
+          <div style={st.chatPinnedBanner}>
+            <span style={st.chatPinnedLabel}>Pinned</span>
+            <span style={st.chatPinnedText}>{pinnedMessage.content}</span>
+          </div>
+        )}
         {visibleMessages.length === 0 && (
           <div style={st.chatEmpty}>
             <p style={st.chatEmptyText}>{mode === 'backstage' ? 'No backstage notes yet' : mode === 'direct' ? 'No direct messages yet' : mode === 'starred' ? 'No starred comments yet' : 'No public messages yet'}</p>
@@ -1096,26 +1113,37 @@ function ChatContent({
           </div>
         )}
         {visibleMessages.map((msg) => (
-          <div key={msg.id} className="chat-msg-enter" style={{ ...st.chatMsg, ...(msg.starred ? st.chatMsgStarred : {}) }}>
+          <div key={msg.id} className="chat-msg-enter" style={{ ...st.chatMsg, ...(msg.starred ? st.chatMsgStarred : {}), ...(msg.pinned ? st.chatMsgPinned : {}) }}>
             <div style={st.chatMsgHead}>
               <span style={{ ...st.chatMsgName, color: msg.senderName === senderName ? 'var(--accent-hover)' : 'var(--text-primary)' }}>{msg.senderName}</span>
               {msg.isBackstage && <span style={st.chatBackstageBadge}>Backstage</span>}
               {msg.recipientId && <span style={st.chatPrivateBadge}>Private</span>}
               {msg.recipientId && <span style={st.chatPrivateMeta}>to {msg.recipientName || 'participant'}</span>}
+              {msg.pinned && <span style={st.chatPinBadge}>Pinned</span>}
               {msg.starred && <span style={st.chatStarBadge}>Starred</span>}
               <span style={st.chatMsgTime}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
             <p style={st.chatMsgContent}>{msg.content}</p>
             <div style={st.chatMsgActions}>
               {!msg.isBackstage && !msg.recipientId && (
-                <button
-                  type="button"
-                  style={{ ...st.chatMiniBtn, ...(msg.starred ? st.chatMiniBtnActive : {}) }}
-                  onClick={() => onToggleStar(msg.id, !msg.starred)}
-                  title={msg.starred ? 'Remove from starred comments' : 'Star this comment'}
-                >
-                  {msg.starred ? 'Unstar' : 'Star'}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    style={{ ...st.chatMiniBtn, ...(msg.pinned ? st.chatMiniBtnPinned : {}) }}
+                    onClick={() => onTogglePin(msg.id, !msg.pinned)}
+                    title={msg.pinned ? 'Unpin this comment' : 'Pin this comment'}
+                  >
+                    {msg.pinned ? 'Unpin' : 'Pin'}
+                  </button>
+                  <button
+                    type="button"
+                    style={{ ...st.chatMiniBtn, ...(msg.starred ? st.chatMiniBtnActive : {}) }}
+                    onClick={() => onToggleStar(msg.id, !msg.starred)}
+                    title={msg.starred ? 'Remove from starred comments' : 'Star this comment'}
+                  >
+                    {msg.starred ? 'Unstar' : 'Star'}
+                  </button>
+                </>
               )}
               {(Object.keys(CHAT_REACTION_LABELS) as ChatReactionType[]).map((reaction) => (
                 <button
@@ -1390,22 +1418,28 @@ const st: Record<string, React.CSSProperties> = {
   chatTabActiveBackstage: { background: 'rgba(245, 158, 11, 0.16)', color: '#fbbf24' },
   chatTabCount: { minWidth: 16, height: 16, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px', borderRadius: 8, background: 'rgba(255, 255, 255, 0.08)', color: 'inherit', fontSize: 9, lineHeight: 1 },
   chatMessages: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 },
+  chatPinnedBanner: { display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 8, border: '1px solid rgba(34, 211, 238, 0.28)', background: 'rgba(34, 211, 238, 0.08)' },
+  chatPinnedLabel: { flexShrink: 0, fontSize: 9, fontWeight: 800, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  chatPinnedText: { minWidth: 0, flex: 1, fontSize: 12, lineHeight: 1.35, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   chatEmpty: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4 },
   chatEmptyText: { fontSize: 13, color: 'var(--text-muted)', fontWeight: 500 },
   chatEmptyHint: { fontSize: 12, color: 'var(--text-muted)', opacity: 0.6 },
   chatMsg: { display: 'flex', flexDirection: 'column', gap: 5, padding: 8, borderRadius: 8, border: '1px solid transparent' },
   chatMsgStarred: { borderColor: 'rgba(245, 158, 11, 0.28)', background: 'rgba(245, 158, 11, 0.06)' },
+  chatMsgPinned: { borderColor: 'rgba(34, 211, 238, 0.28)', background: 'rgba(34, 211, 238, 0.055)' },
   chatMsgHead: { display: 'flex', alignItems: 'baseline', gap: 8 },
   chatMsgName: { fontSize: 12, fontWeight: 600 },
   chatBackstageBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.14)', color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatPrivateBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(34, 197, 94, 0.13)', color: '#86efac', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatPrivateMeta: { fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  chatPinBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(34, 211, 238, 0.12)', color: '#67e8f9', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatStarBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.14)', color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatMsgTime: { fontSize: 10, color: 'var(--text-muted)' },
   chatMsgContent: { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.4, wordBreak: 'break-word', margin: 0 },
   chatMsgActions: { display: 'flex', flexWrap: 'wrap', gap: 5 },
   chatMiniBtn: { minHeight: 24, border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.04)', color: 'var(--text-muted)', borderRadius: 6, padding: '0 7px', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
   chatMiniBtnActive: { borderColor: 'rgba(245, 158, 11, 0.36)', background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24' },
+  chatMiniBtnPinned: { borderColor: 'rgba(34, 211, 238, 0.36)', background: 'rgba(34, 211, 238, 0.12)', color: '#67e8f9' },
   chatDirectControls: { padding: '10px 12px 0', borderTop: '1px solid var(--border)' },
   chatDirectSelect: { width: '100%', minHeight: 34, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' },
   chatInputBar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderTop: '1px solid var(--border)' },

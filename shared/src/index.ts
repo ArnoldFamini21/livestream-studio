@@ -159,6 +159,7 @@ export type SignalMessage =
   | { type: 'chat-message-updated'; payload: ChatMessage }
   | { type: 'chat-reaction'; payload: ChatReactionPayload }
   | { type: 'chat-star-update'; payload: ChatStarUpdatePayload }
+  | { type: 'chat-pin-update'; payload: ChatPinUpdatePayload }
   | { type: 'qa-question-submitted'; payload: { id?: string; content: string } }
   | { type: 'qa-question-updated'; payload: QAQuestion }
   | { type: 'qa-question-update'; payload: { questionId: string; updates: Partial<Pick<QAQuestion, 'status' | 'answer' | 'highlighted'>> } }
@@ -287,6 +288,9 @@ export interface ChatMessage {
   starred?: boolean;
   starredBy?: string;
   starredAt?: string;
+  pinned?: boolean;
+  pinnedBy?: string;
+  pinnedAt?: string;
   reactions?: Partial<Record<ChatReactionType, number>>;
 }
 
@@ -313,6 +317,11 @@ export interface ChatReactionPayload {
 export interface ChatStarUpdatePayload {
   messageId: string;
   starred: boolean;
+}
+
+export interface ChatPinUpdatePayload {
+  messageId: string;
+  pinned: boolean;
 }
 
 export interface QAQuestion {

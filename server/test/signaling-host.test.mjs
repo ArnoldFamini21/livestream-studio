@@ -805,7 +805,7 @@ describe('participant media moderation', () => {
 });
 
 describe('chat engagement', () => {
-  it('broadcasts starred comments and reaction counts through canonical chat messages', async () => {
+  it('broadcasts starred, pinned, and reacted comments through canonical chat messages', async () => {
     const harness = await createSignalingHarness();
     const { room, hostToken } = createRoom('Chat engagement test', 'Arnold', {
       creatorIp: `chat-engagement-${Date.now()}`,
@@ -865,6 +865,17 @@ describe('chat engagement', () => {
       const unauthorized = await starError;
       assert.match(unauthorized.payload.message, /Only hosts/);
 
+      const pinError = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'chat-pin-update',
+        payload: {
+          messageId: hostMessage.payload.id,
+          pinned: true,
+        },
+      });
+      const unauthorizedPin = await pinError;
+      assert.match(unauthorizedPin.payload.message, /Only hosts/);
+
       const hostStarred = waitForMessage(host, 'chat-message-updated', (message) => message.payload.starred === true);
       const guestStarred = waitForMessage(guest, 'chat-message-updated', (message) => message.payload.starred === true);
       sendSignal(host, {
@@ -877,6 +888,19 @@ describe('chat engagement', () => {
       const [hostStarredMessage, guestStarredMessage] = await Promise.all([hostStarred, guestStarred]);
       assert.equal(hostStarredMessage.payload.starred, true);
       assert.equal(guestStarredMessage.payload.starred, true);
+
+      const hostPinned = waitForMessage(host, 'chat-message-updated', (message) => message.payload.pinned === true);
+      const guestPinned = waitForMessage(guest, 'chat-message-updated', (message) => message.payload.pinned === true);
+      sendSignal(host, {
+        type: 'chat-pin-update',
+        payload: {
+          messageId: hostMessage.payload.id,
+          pinned: true,
+        },
+      });
+      const [hostPinnedMessage, guestPinnedMessage] = await Promise.all([hostPinned, guestPinned]);
+      assert.equal(hostPinnedMessage.payload.pinned, true);
+      assert.equal(guestPinnedMessage.payload.pinned, true);
 
       const hostReacted = waitForMessage(host, 'chat-message-updated', (message) => message.payload.reactions?.like === 1);
       const guestReacted = waitForMessage(guest, 'chat-message-updated', (message) => message.payload.reactions?.like === 1);
@@ -902,7 +926,29 @@ describe('chat engagement', () => {
       const savedMessage = late.payload.chatMessages.find((message) => message.id === hostMessage.payload.id);
       assert.ok(savedMessage);
       assert.equal(savedMessage.starred, true);
+      assert.equal(savedMessage.pinned, true);
       assert.equal(savedMessage.reactions.like, 1);
+
+      const hostUnpinned = waitForMessage(host, 'chat-message-updated', (message) => (
+        message.payload.id === hostMessage.payload.id && message.payload.pinned !== true
+      ));
+      const guestUnpinned = waitForMessage(guest, 'chat-message-updated', (message) => (
+        message.payload.id === hostMessage.payload.id && message.payload.pinned !== true
+      ));
+      const lateUnpinned = waitForMessage(lateGuest, 'chat-message-updated', (message) => (
+        message.payload.id === hostMessage.payload.id && message.payload.pinned !== true
+      ));
+      sendSignal(host, {
+        type: 'chat-pin-update',
+        payload: {
+          messageId: hostMessage.payload.id,
+          pinned: false,
+        },
+      });
+      const [hostUnpinnedMessage, guestUnpinnedMessage, lateUnpinnedMessage] = await Promise.all([hostUnpinned, guestUnpinned, lateUnpinned]);
+      assert.equal(hostUnpinnedMessage.payload.pinned, undefined);
+      assert.equal(guestUnpinnedMessage.payload.pinned, undefined);
+      assert.equal(lateUnpinnedMessage.payload.pinned, undefined);
     } finally {
       await harness.close();
     }
@@ -981,6 +1027,17 @@ describe('chat engagement', () => {
       });
       const privateStarError = await starPrivateError;
       assert.match(privateStarError.payload.message, /Private messages cannot be starred/i);
+
+      const pinPrivateError = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'chat-pin-update',
+        payload: {
+          messageId: hostDirect.payload.id,
+          pinned: true,
+        },
+      });
+      const privatePinError = await pinPrivateError;
+      assert.match(privatePinError.payload.message, /Private messages cannot be pinned/i);
 
       const hostReplyMessage = waitForMessage(host, 'chat-message', (message) => message.payload.content === 'Private reply');
       const guestReplyMessage = waitForMessage(guest, 'chat-message', (message) => message.payload.content === 'Private reply');
@@ -1164,6 +1221,17 @@ describe('chat engagement', () => {
       });
       const starError = await starBackstageError;
       assert.match(starError.payload.message, /Backstage messages cannot be starred/i);
+
+      const pinBackstageError = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'chat-pin-update',
+        payload: {
+          messageId: hostPrivate.payload.id,
+          pinned: true,
+        },
+      });
+      const pinError = await pinBackstageError;
+      assert.match(pinError.payload.message, /Backstage messages cannot be pinned/i);
 
       const latePublicGuest = await connectClient(harness.url);
       const latePublicGuestJoined = waitForMessage(latePublicGuest, 'room-joined');

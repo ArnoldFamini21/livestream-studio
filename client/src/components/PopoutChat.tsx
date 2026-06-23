@@ -29,6 +29,13 @@ export function PopoutChat() {
   const messages = state?.messages || [];
   const publicMessages = messages.filter((message) => !message.isBackstage && !message.recipientId);
   const starredMessages = publicMessages.filter((message) => message.starred);
+  const pinnedMessage = publicMessages.reduce<ChatMessage | null>((latest, message) => {
+    if (!message.pinned) return latest;
+    if (!latest) return message;
+    const messageTime = Date.parse(message.pinnedAt || message.timestamp);
+    const latestTime = Date.parse(latest.pinnedAt || latest.timestamp);
+    return messageTime >= latestTime ? message : latest;
+  }, null);
   const backstageMessages = messages.filter((message) => message.isBackstage);
   const directMessages = messages.filter((message) => Boolean(message.recipientId));
   const visibleMessages = mode === 'backstage'
@@ -101,6 +108,10 @@ export function PopoutChat() {
     postCommand({ type: 'toggle-star', payload: { messageId, starred } });
   };
 
+  const handleTogglePin = (messageId: string, pinned: boolean) => {
+    postCommand({ type: 'toggle-pin', payload: { messageId, pinned } });
+  };
+
   const statusLabel = status === 'connected'
     ? state?.connected ? 'Synced' : 'Studio offline'
     : status === 'waiting'
@@ -138,6 +149,12 @@ export function PopoutChat() {
       </div>
 
       <section style={styles.messages} aria-live="polite" aria-label="Chat messages">
+        {pinnedMessage && (mode === 'public' || mode === 'starred') && (
+          <div style={styles.pinnedBanner}>
+            <span style={styles.pinnedLabel}>Pinned</span>
+            <span style={styles.pinnedText}>{pinnedMessage.content}</span>
+          </div>
+        )}
         {visibleMessages.length === 0 && (
           <div style={styles.empty}>
             <p style={styles.emptyTitle}>
@@ -172,6 +189,7 @@ export function PopoutChat() {
             isMine={message.senderName === state?.senderName}
             onReact={handleReact}
             onToggleStar={handleToggleStar}
+            onTogglePin={handleTogglePin}
           />
         ))}
         <div ref={bottomRef} />
@@ -237,14 +255,16 @@ function ChatMessageCard({
   isMine,
   onReact,
   onToggleStar,
+  onTogglePin,
 }: {
   message: ChatMessage;
   isMine: boolean;
   onReact: (messageId: string, reaction: ChatReactionType) => void;
   onToggleStar: (messageId: string, starred: boolean) => void;
+  onTogglePin: (messageId: string, pinned: boolean) => void;
 }) {
   return (
-    <article style={{ ...styles.messageCard, ...(message.starred ? styles.messageCardStarred : {}) }}>
+    <article style={{ ...styles.messageCard, ...(message.starred ? styles.messageCardStarred : {}), ...(message.pinned ? styles.messageCardPinned : {}) }}>
       <div style={styles.messageHeader}>
         <span style={{ ...styles.messageSender, color: isMine ? 'var(--accent-hover)' : 'var(--text-primary)' }}>
           {message.senderName}
@@ -252,19 +272,29 @@ function ChatMessageCard({
         {message.isBackstage && <span style={styles.backstageBadge}>Backstage</span>}
         {message.recipientId && <span style={styles.privateBadge}>Private</span>}
         {message.recipientId && <span style={styles.privateMeta}>to {message.recipientName || 'participant'}</span>}
+        {message.pinned && <span style={styles.pinBadge}>Pinned</span>}
         {message.starred && <span style={styles.starBadge}>Starred</span>}
         <time style={styles.messageTime}>{new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
       </div>
       <p style={styles.messageContent}>{message.content}</p>
       <div style={styles.actions}>
         {!message.isBackstage && !message.recipientId && (
-          <button
-            type="button"
-            style={{ ...styles.actionButton, ...(message.starred ? styles.actionButtonActive : {}) }}
-            onClick={() => onToggleStar(message.id, !message.starred)}
-          >
-            {message.starred ? 'Unstar' : 'Star'}
-          </button>
+          <>
+            <button
+              type="button"
+              style={{ ...styles.actionButton, ...(message.pinned ? styles.actionButtonPinned : {}) }}
+              onClick={() => onTogglePin(message.id, !message.pinned)}
+            >
+              {message.pinned ? 'Unpin' : 'Pin'}
+            </button>
+            <button
+              type="button"
+              style={{ ...styles.actionButton, ...(message.starred ? styles.actionButtonActive : {}) }}
+              onClick={() => onToggleStar(message.id, !message.starred)}
+            >
+              {message.starred ? 'Unstar' : 'Star'}
+            </button>
+          </>
         )}
         {(Object.keys(CHAT_REACTION_LABELS) as ChatReactionType[]).map((reaction) => (
           <button
@@ -314,22 +344,28 @@ const styles: Record<string, React.CSSProperties> = {
   tabButtonActive: { borderColor: 'rgba(167, 139, 250, 0.55)', background: 'rgba(167, 139, 250, 0.13)', color: '#ddd6fe' },
   tabCount: { minWidth: 18, height: 18, borderRadius: 999, background: 'rgba(255,255,255,0.08)', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10 },
   messages: { minHeight: 0, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 },
+  pinnedBanner: { border: '1px solid rgba(34, 211, 238, 0.26)', borderRadius: 8, background: 'rgba(34, 211, 238, 0.08)', padding: '9px 10px', display: 'flex', alignItems: 'center', gap: 8 },
+  pinnedLabel: { flexShrink: 0, fontSize: 9, fontWeight: 900, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0 },
+  pinnedText: { minWidth: 0, flex: 1, fontSize: 12, lineHeight: 1.35, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   empty: { height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5, textAlign: 'center', padding: 24 },
   emptyTitle: { margin: 0, fontSize: 14, fontWeight: 800, color: 'var(--text-secondary)' },
   emptyDetail: { margin: 0, maxWidth: 300, fontSize: 12, lineHeight: 1.4, color: 'var(--text-muted)' },
   messageCard: { border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, background: 'rgba(255,255,255,0.035)', padding: 10, display: 'flex', flexDirection: 'column', gap: 7 },
   messageCardStarred: { borderColor: 'rgba(245, 158, 11, 0.3)', background: 'rgba(245, 158, 11, 0.07)' },
+  messageCardPinned: { borderColor: 'rgba(34, 211, 238, 0.3)', background: 'rgba(34, 211, 238, 0.055)' },
   messageHeader: { minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' },
   messageSender: { minWidth: 0, maxWidth: '100%', fontSize: 12, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   messageTime: { marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)' },
   backstageBadge: { fontSize: 9, fontWeight: 800, color: '#93c5fd', background: 'rgba(59, 130, 246, 0.12)', borderRadius: 999, padding: '2px 6px', textTransform: 'uppercase', letterSpacing: 0 },
   privateBadge: { fontSize: 9, fontWeight: 800, color: '#86efac', background: 'rgba(34, 197, 94, 0.13)', borderRadius: 999, padding: '2px 6px', textTransform: 'uppercase', letterSpacing: 0 },
   privateMeta: { fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  pinBadge: { fontSize: 9, fontWeight: 800, color: '#67e8f9', background: 'rgba(34, 211, 238, 0.12)', borderRadius: 999, padding: '2px 6px', textTransform: 'uppercase', letterSpacing: 0 },
   starBadge: { fontSize: 9, fontWeight: 800, color: '#fbbf24', background: 'rgba(245, 158, 11, 0.14)', borderRadius: 999, padding: '2px 6px', textTransform: 'uppercase', letterSpacing: 0 },
   messageContent: { margin: 0, fontSize: 13, lineHeight: 1.45, color: 'var(--text-secondary)', wordBreak: 'break-word', whiteSpace: 'pre-wrap' },
   actions: { display: 'flex', flexWrap: 'wrap', gap: 6 },
   actionButton: { minHeight: 25, border: '1px solid var(--border)', borderRadius: 7, background: 'rgba(255,255,255,0.04)', color: 'var(--text-muted)', padding: '0 8px', fontSize: 10, fontWeight: 800, cursor: 'pointer' },
   actionButtonActive: { color: '#fbbf24', borderColor: 'rgba(245, 158, 11, 0.32)', background: 'rgba(245, 158, 11, 0.12)' },
+  actionButtonPinned: { color: '#67e8f9', borderColor: 'rgba(34, 211, 238, 0.32)', background: 'rgba(34, 211, 238, 0.12)' },
   composer: { display: 'grid', gridTemplateColumns: '1fr 38px', gap: 8, padding: 12, borderTop: '1px solid var(--border)', background: 'rgba(15, 23, 42, 0.92)' },
   input: { minWidth: 0, height: 38, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', padding: '0 12px', fontSize: 13, outline: 'none' },
   sendButton: { width: 38, height: 38, borderRadius: 8, border: 'none', background: 'var(--accent-solid)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' },

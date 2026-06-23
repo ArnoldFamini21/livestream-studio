@@ -45,9 +45,11 @@ describe('pop-out chat utilities', () => {
     assert.equal(isPopoutChatCommand({ type: 'send-message', payload: { content: 'Hello', isBackstage: false } }), true);
     assert.equal(isPopoutChatCommand({ type: 'react', payload: { messageId: 'm1', reaction: 'love' } }), true);
     assert.equal(isPopoutChatCommand({ type: 'toggle-star', payload: { messageId: 'm1', starred: true } }), true);
+    assert.equal(isPopoutChatCommand({ type: 'toggle-pin', payload: { messageId: 'm1', pinned: true } }), true);
 
     assert.equal(isPopoutChatCommand({ type: 'send-message', payload: { content: '', isBackstage: false } }), false);
     assert.equal(isPopoutChatCommand({ type: 'react', payload: { messageId: 'm1', reaction: 'unknown' } }), false);
     assert.equal(isPopoutChatCommand({ type: 'toggle-star', payload: { messageId: 'm1', starred: 'yes' } }), false);
+    assert.equal(isPopoutChatCommand({ type: 'toggle-pin', payload: { messageId: 'm1', pinned: 'yes' } }), false);
   });
 });
