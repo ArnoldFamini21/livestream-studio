@@ -180,7 +180,7 @@ function PollCard({
       </div>
       <h4 style={styles.pollQuestion}>{poll.question}</h4>
       <div style={styles.pollOptions}>
-        {poll.options.map((option) => {
+        {poll.options.map((option, index) => {
           const percent = poll.totalVotes > 0 ? Math.round((option.votes / poll.totalVotes) * 100) : 0;
           const selected = selectedOptionId === option.id;
           return (
@@ -198,6 +198,7 @@ function PollCard({
               disabled={isClosed || !canVotePolls}
             >
               <span style={{ ...styles.voteFill, width: `${percent}%` }} />
+              <span style={styles.voteIndex}>{index + 1}</span>
               <span style={styles.voteText}>{option.text}</span>
               <span style={styles.votePercent}>{percent}%</span>
             </button>
@@ -220,11 +221,12 @@ export function LivePollOverlay({ poll }: LivePollOverlayProps) {
         </div>
         <h3 style={overlayStyles.question}>{poll.question}</h3>
         <div style={overlayStyles.options}>
-          {poll.options.map((option) => {
+          {poll.options.map((option, index) => {
             const percent = poll.totalVotes > 0 ? Math.round((option.votes / poll.totalVotes) * 100) : 0;
             return (
               <div key={option.id} style={overlayStyles.option}>
                 <span style={{ ...overlayStyles.optionFill, width: `${percent}%` }} />
+                <span style={overlayStyles.optionIndex}>{index + 1}</span>
                 <span style={overlayStyles.optionText}>{option.text}</span>
                 <span style={overlayStyles.optionPercent}>{percent}%</span>
               </div>
@@ -280,9 +282,10 @@ const styles: Record<string, React.CSSProperties> = {
   iconBtn: { height: 24, padding: '0 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-surface)', color: 'var(--text-secondary)', fontSize: 10, fontWeight: 800, cursor: 'pointer' },
   pollQuestion: { margin: 0, fontSize: 13, lineHeight: 1.35, color: 'var(--text-primary)' },
   pollOptions: { display: 'flex', flexDirection: 'column', gap: 6 },
-  voteOption: { position: 'relative', minHeight: 34, overflow: 'hidden', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 8, alignItems: 'center', textAlign: 'left', padding: '0 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.035)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 },
+  voteOption: { position: 'relative', minHeight: 34, overflow: 'hidden', display: 'grid', gridTemplateColumns: '22px minmax(0, 1fr) auto', gap: 8, alignItems: 'center', textAlign: 'left', padding: '0 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.035)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 },
   voteOptionSelected: { borderColor: 'rgba(103, 232, 249, 0.42)', color: 'var(--text-primary)' },
   voteFill: { position: 'absolute', inset: '0 auto 0 0', background: 'rgba(103, 232, 249, 0.12)', pointerEvents: 'none' },
+  voteIndex: { position: 'relative', width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'rgba(255,255,255,0.08)', color: '#cffafe', fontSize: 11, fontWeight: 900, fontVariantNumeric: 'tabular-nums' },
   voteText: { position: 'relative', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   votePercent: { position: 'relative', fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)', fontSize: 11 },
 };
@@ -295,8 +298,9 @@ const overlayStyles: Record<string, React.CSSProperties> = {
   votes: { fontSize: 11, fontWeight: 800, color: 'var(--text-muted)' },
   question: { margin: '0 0 12px', fontSize: 18, lineHeight: 1.25, color: 'white' },
   options: { display: 'flex', flexDirection: 'column', gap: 8 },
-  option: { position: 'relative', minHeight: 34, overflow: 'hidden', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 8, alignItems: 'center', padding: '0 10px', borderRadius: 7, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.08)' },
+  option: { position: 'relative', minHeight: 36, overflow: 'hidden', display: 'grid', gridTemplateColumns: '24px minmax(0, 1fr) auto', gap: 8, alignItems: 'center', padding: '0 10px', borderRadius: 7, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.08)' },
   optionFill: { position: 'absolute', inset: '0 auto 0 0', background: 'rgba(103, 232, 249, 0.25)', pointerEvents: 'none' },
+  optionIndex: { position: 'relative', width: 24, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'rgba(255,255,255,0.12)', color: '#cffafe', fontSize: 12, fontWeight: 900, fontVariantNumeric: 'tabular-nums' },
   optionText: { position: 'relative', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'white', fontSize: 13, fontWeight: 800 },
   optionPercent: { position: 'relative', color: '#cffafe', fontSize: 12, fontWeight: 900, fontVariantNumeric: 'tabular-nums' },
 };

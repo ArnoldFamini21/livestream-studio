@@ -1251,6 +1251,122 @@ describe('chat engagement', () => {
   });
 });
 
+describe('live poll engagement', () => {
+  it('counts public chat vote commands against the highlighted open poll', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Poll chat commands test', 'Arnold', {
+      creatorIp: `poll-chat-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const firstPollCreated = waitForMessage(host, 'poll-updated', (message) => message.payload.id === 'poll-a');
+      sendSignal(host, {
+        type: 'poll-create',
+        payload: {
+          id: 'poll-a',
+          question: 'Which topic should go first?',
+          options: ['Launch checklist', 'Audience questions'],
+        },
+      });
+      await firstPollCreated;
+
+      const secondPollCreated = waitForMessage(host, 'poll-updated', (message) => message.payload.id === 'poll-b');
+      sendSignal(host, {
+        type: 'poll-create',
+        payload: {
+          id: 'poll-b',
+          question: 'Which camera angle next?',
+          options: ['Wide', 'Close'],
+        },
+      });
+      await secondPollCreated;
+
+      const firstPollHighlighted = waitForMessage(host, 'poll-updated', (message) => (
+        message.payload.id === 'poll-a' && message.payload.highlighted === true
+      ));
+      sendSignal(host, {
+        type: 'poll-update',
+        payload: {
+          pollId: 'poll-a',
+          updates: { highlighted: true },
+        },
+      });
+      await firstPollHighlighted;
+
+      const hostVoted = waitForMessage(host, 'poll-updated', (message) => (
+        message.payload.id === 'poll-a' &&
+        message.payload.totalVotes === 1 &&
+        message.payload.options[1].votes === 1
+      ));
+      const guestVoted = waitForMessage(guest, 'poll-updated', (message) => (
+        message.payload.id === 'poll-a' &&
+        message.payload.totalVotes === 1 &&
+        message.payload.options[1].votes === 1
+      ));
+      sendSignal(guest, {
+        type: 'chat-message',
+        payload: {
+          id: 'guest-poll-vote',
+          senderId: 'client-claimed-guest',
+          senderName: 'Client claimed guest',
+          content: '!vote 2',
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+      const [hostPoll, guestPoll] = await Promise.all([hostVoted, guestVoted]);
+      assert.equal(hostPoll.payload.options[1].text, 'Audience questions');
+      assert.equal(guestPoll.payload.options[1].votes, 1);
+      assert.equal(roomState.polls.get('poll-b')?.totalVotes, 0);
+
+      const revoted = waitForMessage(host, 'poll-updated', (message) => (
+        message.payload.id === 'poll-a' &&
+        message.payload.totalVotes === 1 &&
+        message.payload.options[0].votes === 1 &&
+        message.payload.options[1].votes === 0
+      ));
+      sendSignal(guest, {
+        type: 'chat-message',
+        payload: {
+          id: 'guest-poll-revote',
+          senderId: 'client-claimed-guest',
+          senderName: 'Client claimed guest',
+          content: '/vote a',
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+      const updatedPoll = await revoted;
+      assert.equal(updatedPoll.payload.options[0].text, 'Launch checklist');
+      assert.equal(updatedPoll.payload.totalVotes, 1);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('guest moderation bans', () => {
   it('prevents a banned guest session from rejoining the same room', async () => {
     const harness = await createSignalingHarness();
