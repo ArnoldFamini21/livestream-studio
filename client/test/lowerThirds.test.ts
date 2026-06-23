@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { LowerThirdData } from '../src/components/LowerThird.tsx';
 import {
   addLowerThird,
+  normalizeLowerThirdAccentColor,
   normalizeLowerThirdDurationSeconds,
   toggleLowerThirdVisibility,
 } from '../src/utils/lowerThirds.ts';
@@ -36,6 +37,7 @@ describe('lower third visibility utilities', () => {
       title: 'Guest',
       style: 'bold',
       durationSeconds: 10,
+      accentColor: '#0891b2',
       visible: true,
     }, 'lt-3');
 
@@ -48,6 +50,7 @@ describe('lower third visibility utilities', () => {
       ],
     );
     assert.equal(next[2].durationSeconds, 10);
+    assert.equal(next[2].accentColor, '#0891b2');
   });
 
   it('toggles one lower third on while hiding the previous one', () => {
@@ -82,5 +85,14 @@ describe('lower third visibility utilities', () => {
     assert.equal(normalizeLowerThirdDurationSeconds(10.5), 11);
     assert.equal(normalizeLowerThirdDurationSeconds(-5), null);
     assert.equal(normalizeLowerThirdDurationSeconds(9999), 3600);
+  });
+
+  it('normalizes lower third accent colors to plain six-digit hex values', () => {
+    assert.equal(normalizeLowerThirdAccentColor('#0891b2'), '#0891b2');
+    assert.equal(normalizeLowerThirdAccentColor(' #DB2777 '), '#db2777');
+    assert.equal(normalizeLowerThirdAccentColor('#fff'), undefined);
+    assert.equal(normalizeLowerThirdAccentColor('var(--accent)'), undefined);
+    assert.equal(normalizeLowerThirdAccentColor('url(https://example.com)'), undefined);
+    assert.equal(normalizeLowerThirdAccentColor(null), undefined);
   });
 });

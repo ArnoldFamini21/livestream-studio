@@ -2,6 +2,14 @@ import type { LowerThirdData } from '../components/LowerThird.tsx';
 
 export type LowerThirdDraft = Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean };
 
+const LOWER_THIRD_HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+
+export function normalizeLowerThirdAccentColor(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return LOWER_THIRD_HEX_COLOR_RE.test(trimmed) ? trimmed.toLowerCase() : undefined;
+}
+
 export function normalizeLowerThirdDurationSeconds(value: unknown): number | null {
   const durationSeconds = Number(value);
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return null;
