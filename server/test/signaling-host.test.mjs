@@ -674,6 +674,134 @@ describe('participant media moderation', () => {
       await harness.close();
     }
   });
+
+  it('keeps backstage participants out of media relay and clears screen sharing', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Backstage media privacy test', 'Arnold', {
+      creatorIp: `backstage-media-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const stageGuest = await connectClient(harness.url);
+      const stageGuestJoined = waitForMessage(stageGuest, 'room-joined');
+      joinRoom(stageGuest, {
+        roomId: room.id,
+        name: 'Stage Guest',
+        role: 'guest',
+      });
+      const stageGuestState = await stageGuestJoined;
+
+      const backstageGuest = await connectClient(harness.url);
+      const backstageGuestJoined = waitForMessage(backstageGuest, 'room-joined');
+      joinRoom(backstageGuest, {
+        roomId: room.id,
+        name: 'Backstage Guest',
+        role: 'guest',
+      });
+      const backstageGuestState = await backstageGuestJoined;
+
+      const onStageOffer = waitForMessage(backstageGuest, 'offer', (message) => (
+        message.payload.from === stageGuestState.payload.participant.id
+      ));
+      sendSignal(stageGuest, {
+        type: 'offer',
+        payload: {
+          to: backstageGuestState.payload.participant.id,
+          sdp: { type: 'offer', sdp: 'v=0\r\n' },
+        },
+      });
+      const relayedOffer = await onStageOffer;
+      assert.equal(relayedOffer.payload.from, stageGuestState.payload.participant.id);
+
+      const screenStarted = waitForMessage(host, 'media-state-changed', (message) => (
+        message.payload.participantId === backstageGuestState.payload.participant.id &&
+        message.payload.screenSharing === true
+      ));
+      sendSignal(backstageGuest, {
+        type: 'media-state-changed',
+        payload: {
+          participantId: backstageGuestState.payload.participant.id,
+          audioEnabled: true,
+          videoEnabled: true,
+          screenSharing: true,
+        },
+      });
+      await screenStarted;
+      assert.equal(roomState.participants.get(backstageGuestState.payload.participant.id)?.participant.screenSharing, true);
+
+      const backstageUpdated = waitForMessage(backstageGuest, 'participant-updated', (message) => (
+        message.payload.id === backstageGuestState.payload.participant.id &&
+        message.payload.status === 'backstage'
+      ));
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: {
+          action: 'move-to-backstage',
+          targetParticipantId: backstageGuestState.payload.participant.id,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      const updated = await backstageUpdated;
+      assert.equal(updated.payload.screenSharing, false);
+      assert.equal(roomState.participants.get(backstageGuestState.payload.participant.id)?.participant.screenSharing, false);
+
+      const stageToBackstageBlocked = expectNoMessage(backstageGuest, 'offer', (message) => (
+        message.payload.from === stageGuestState.payload.participant.id
+      ));
+      sendSignal(stageGuest, {
+        type: 'offer',
+        payload: {
+          to: backstageGuestState.payload.participant.id,
+          sdp: { type: 'offer', sdp: 'v=0\r\n' },
+        },
+      });
+      await stageToBackstageBlocked;
+
+      const backstageToStageBlocked = expectNoMessage(stageGuest, 'offer', (message) => (
+        message.payload.from === backstageGuestState.payload.participant.id
+      ));
+      sendSignal(backstageGuest, {
+        type: 'offer',
+        payload: {
+          to: stageGuestState.payload.participant.id,
+          sdp: { type: 'offer', sdp: 'v=0\r\n' },
+        },
+      });
+      await backstageToStageBlocked;
+
+      const offStageScreenClaim = waitForMessage(host, 'media-state-changed', (message) => (
+        message.payload.participantId === backstageGuestState.payload.participant.id &&
+        message.payload.screenSharing === false
+      ));
+      sendSignal(backstageGuest, {
+        type: 'media-state-changed',
+        payload: {
+          participantId: backstageGuestState.payload.participant.id,
+          audioEnabled: true,
+          videoEnabled: true,
+          screenSharing: true,
+        },
+      });
+      const normalizedClaim = await offStageScreenClaim;
+      assert.equal(normalizedClaim.payload.screenSharing, false);
+      assert.equal(roomState.participants.get(backstageGuestState.payload.participant.id)?.participant.screenSharing, false);
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 describe('chat engagement', () => {

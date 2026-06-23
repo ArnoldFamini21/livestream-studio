@@ -833,9 +833,11 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       break;
     case 'move-to-backstage':
       target.participant.status = 'backstage';
+      target.participant.screenSharing = false;
       break;
     case 'move-to-green-room':
       target.participant.status = 'green-room';
+      target.participant.screenSharing = false;
       break;
     case 'promote-co-host':
       target.participant.role = 'co-host';
@@ -1209,17 +1211,18 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
   }
 
   const entry = roomState.participants.get(mapping.participantId);
+  const screenSharing = entry?.participant.status === 'on-stage' ? payload.screenSharing : false;
   if (entry) {
     entry.participant.audioEnabled = payload.audioEnabled;
     entry.participant.videoEnabled = payload.videoEnabled;
-    entry.participant.screenSharing = payload.screenSharing;
+    entry.participant.screenSharing = screenSharing;
   }
 
   const authoritativePayload: MediaStatePayload = {
     participantId: mapping.participantId,
     audioEnabled: payload.audioEnabled,
     videoEnabled: payload.videoEnabled,
-    screenSharing: payload.screenSharing,
+    screenSharing,
   };
 
   broadcastToRoom(mapping.roomId, {
