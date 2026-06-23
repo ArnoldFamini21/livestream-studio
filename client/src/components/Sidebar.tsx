@@ -32,6 +32,8 @@ interface SidebarProps {
   onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleLowerThird: (id: string) => void;
   onRemoveLowerThird: (id: string) => void;
+  autoSpeakerLowerThirds: boolean;
+  onAutoSpeakerLowerThirdsChange: (enabled: boolean) => void;
   banners: BannerData[];
   onAddBanner: (banner: Omit<BannerData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleBanner: (id: string) => void;
@@ -303,6 +305,8 @@ export function Sidebar(props: SidebarProps) {
                 onAdd={props.onAddLowerThird}
                 onToggle={props.onToggleLowerThird}
                 onRemove={props.onRemoveLowerThird}
+                autoSpeakerEnabled={props.autoSpeakerLowerThirds}
+                onAutoSpeakerEnabledChange={props.onAutoSpeakerLowerThirdsChange}
               />
               <div style={st.divider} />
               <BannerManager

@@ -63,10 +63,15 @@ import {
   type StageItemOrderDirection,
 } from '../utils/stageItemOrder.ts';
 import {
+  AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS,
   addLowerThird,
   normalizeLowerThirdDurationSeconds,
+  getParticipantLowerThirdTitle,
+  selectAutoSpeakerLowerThirdCandidate,
   toggleLowerThirdVisibility,
+  type AutoSpeakerLowerThirdCandidate,
   type LowerThirdDraft,
+  upsertAutoSpeakerLowerThird,
 } from '../utils/lowerThirds.ts';
 
 const STUDIO_STATE_VERSION = 1;
@@ -155,6 +160,7 @@ interface PersistedStudioState {
   scenes: Scene[];
   activeSceneId: string | null;
   lowerThirds: LowerThirdData[];
+  autoSpeakerLowerThirds?: boolean;
   banners: BannerData[];
   timers: TimerData[];
   tickers: TickerData[];
@@ -367,6 +373,7 @@ export function StudioRoom() {
 
   // Lower thirds
   const [lowerThirds, setLowerThirds] = useState<LowerThirdData[]>([]);
+  const [autoSpeakerLowerThirds, setAutoSpeakerLowerThirds] = useState(false);
 
   // Banners
   const [banners, setBanners] = useState<BannerData[]>([]);
@@ -402,6 +409,7 @@ export function StudioRoom() {
   const [focusedVideoItemId, setFocusedVideoItemId] = useState<string | null>(null);
   const [stageItemOrder, setStageItemOrder] = useState<string[]>([]);
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
+  const [stageAudioLevels, setStageAudioLevels] = useState<Record<string, number>>({});
   const [recordingMarkers, setRecordingMarkers] = useState<RecordingMarker[]>([]);
 
   // Cleanup blob URLs when logoUrl changes
@@ -545,6 +553,7 @@ export function StudioRoom() {
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
   const bannerAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const lowerThirdAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
+  const lastAutoSpeakerLowerThirdRef = useRef<{ participantId: string; shownAt: number } | null>(null);
   const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
   const videoEnabledRef = useRef(videoEnabled);
@@ -646,6 +655,14 @@ export function StudioRoom() {
     });
   }, []);
 
+  const handleStageAudioLevelChange = useCallback((participantId: string, level: number) => {
+    const rounded = Math.max(0, Math.min(100, Math.round(Number.isFinite(level) ? level : 0)));
+    setStageAudioLevels((current) => {
+      if (current[participantId] === rounded) return current;
+      return { ...current, [participantId]: rounded };
+    });
+  }, []);
+
   useEffect(() => {
     setParticipantVolumes((current) => {
       let changed = false;
@@ -723,6 +740,7 @@ export function StudioRoom() {
             setActiveSceneId(parsed.activeSceneId && parsed.scenes.some((scene) => scene.id === parsed.activeSceneId) ? parsed.activeSceneId : null);
           }
           if (Array.isArray(parsed.lowerThirds)) setLowerThirds(parsed.lowerThirds);
+          if (typeof parsed.autoSpeakerLowerThirds === 'boolean') setAutoSpeakerLowerThirds(parsed.autoSpeakerLowerThirds);
           if (Array.isArray(parsed.banners)) setBanners(parsed.banners);
           if (Array.isArray(parsed.timers)) setTimers(parsed.timers.map((timer) => ({ ...timer, isRunning: false })));
           if (Array.isArray(parsed.tickers)) setTickers(parsed.tickers);
@@ -768,7 +786,8 @@ export function StudioRoom() {
         mediaAssets: mediaAssets.filter((asset) => asset.source === 'url'),
         scenes: getPersistableScenes(scenes),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
-        lowerThirds,
+        lowerThirds: lowerThirds.filter((lowerThird) => lowerThird.source !== 'auto-speaker'),
+        autoSpeakerLowerThirds,
         banners,
         timers: timers.map((timer) => ({ ...timer, isRunning: false })),
         tickers,
@@ -782,7 +801,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, lowerThirds, banners, timers, tickers]);
+  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, lowerThirds, autoSpeakerLowerThirds, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -834,6 +853,64 @@ export function StudioRoom() {
       autoDismissTimers.delete(lowerThirdId);
     });
   }, [lowerThirds]);
+
+  useEffect(() => {
+    if (!autoSpeakerLowerThirds || !isHostOrCoHost || myParticipant?.status === 'green-room') return;
+    if (lowerThirds.some((lowerThird) => lowerThird.visible && lowerThird.source !== 'auto-speaker')) return;
+
+    const candidates: AutoSpeakerLowerThirdCandidate[] = [];
+    if (myParticipant) {
+      candidates.push({
+        participantId: myParticipant.id,
+        name: myParticipant.name,
+        title: getParticipantLowerThirdTitle(myParticipant.role),
+        audioLevel: stageAudioLevels[myParticipant.id] || 0,
+        eligible: myParticipant.status === 'on-stage' && effectiveAudioEnabled,
+      });
+    }
+
+    participants.forEach((participant, participantId) => {
+      candidates.push({
+        participantId,
+        name: participant.name,
+        title: getParticipantLowerThirdTitle(participant.role),
+        audioLevel: stageAudioLevels[participantId] || 0,
+        eligible: participant.status === 'on-stage' && participant.audioEnabled && !participant.screenSharing,
+      });
+    });
+
+    const speaker = selectAutoSpeakerLowerThirdCandidate(candidates);
+    if (!speaker) return;
+
+    const visibleAutoLowerThird = lowerThirds.find((lowerThird) => (
+      lowerThird.visible
+      && lowerThird.source === 'auto-speaker'
+      && lowerThird.participantId === speaker.participantId
+    ));
+    if (visibleAutoLowerThird) return;
+
+    const now = Date.now();
+    const last = lastAutoSpeakerLowerThirdRef.current;
+    const cooldownMs = (AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS + 2) * 1000;
+    if (last?.participantId === speaker.participantId && now - last.shownAt < cooldownMs) return;
+
+    lastAutoSpeakerLowerThirdRef.current = { participantId: speaker.participantId, shownAt: now };
+    setLowerThirds((prev) => upsertAutoSpeakerLowerThird(prev, speaker, `lt-${++idCounters.current.lt}`));
+  }, [autoSpeakerLowerThirds, effectiveAudioEnabled, isHostOrCoHost, lowerThirds, myParticipant, participants, stageAudioLevels]);
+
+  useEffect(() => {
+    if (autoSpeakerLowerThirds) return;
+    lastAutoSpeakerLowerThirdRef.current = null;
+    setLowerThirds((prev) => {
+      let changed = false;
+      const next = prev.map((lowerThird) => {
+        if (lowerThird.source !== 'auto-speaker' || !lowerThird.visible) return lowerThird;
+        changed = true;
+        return { ...lowerThird, visible: false };
+      });
+      return changed ? next : prev;
+    });
+  }, [autoSpeakerLowerThirds]);
 
   useEffect(() => {
     const autoDismissTimers = bannerAutoDismissTimersRef.current;
@@ -2114,6 +2191,22 @@ export function StudioRoom() {
     setStageItemOrder((current) => normalizeStageItemOrder(current, availableStageItemIds));
   }, [availableStageItemIds]);
 
+  useEffect(() => {
+    const activeIds = new Set(availableStageItemIds);
+    setStageAudioLevels((current) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [participantId, level] of Object.entries(current)) {
+        if (activeIds.has(participantId)) {
+          next[participantId] = level;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [availableStageItemIds]);
+
   const orderedVideoItems = useMemo(() => (
     applyStageItemOrder(videoItems, stageItemOrder, focusedVideoItemId)
   ), [videoItems, stageItemOrder, focusedVideoItemId]);
@@ -2848,6 +2941,7 @@ export function StudioRoom() {
                           </div>
                         )}
                         <VideoTile
+                          participantId={item.id}
                           stream={item.stream}
                           name={item.name}
                           isLocal={item.isLocal}
@@ -2858,6 +2952,7 @@ export function StudioRoom() {
                           brandColor={brandColor}
                           cameraShape={cameraShape}
                           nameTagStyle={nameTagStyle}
+                          onAudioLevelChange={handleStageAudioLevelChange}
                         />
                       </div>
                     );
@@ -3019,6 +3114,8 @@ export function StudioRoom() {
             onAddLowerThird={onAddLowerThird}
             onToggleLowerThird={onToggleLowerThird}
             onRemoveLowerThird={onRemoveLowerThird}
+            autoSpeakerLowerThirds={autoSpeakerLowerThirds}
+            onAutoSpeakerLowerThirdsChange={setAutoSpeakerLowerThirds}
             banners={banners}
             onAddBanner={onAddBanner}
             onToggleBanner={onToggleBanner}
