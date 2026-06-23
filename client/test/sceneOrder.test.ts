@@ -4,6 +4,7 @@ import {
   buildDuplicatedSceneName,
   duplicateSceneInOrder,
   moveSceneInOrder,
+  replaceSceneInOrder,
 } from '../src/utils/sceneOrder.ts';
 
 const scenes = [
@@ -55,5 +56,20 @@ describe('scene ordering', () => {
 
     assert.equal(copyName.length, 16);
     assert.equal(copyName, 'A very long Copy');
+  });
+
+  it('replaces a scene without changing its position', () => {
+    const replacement = { id: 'qa', name: 'Audience Questions' };
+    const updated = replaceSceneInOrder(scenes, 'qa', replacement);
+
+    assert.deepEqual(updated.map((scene) => scene.id), ['starting', 'qa', 'brb']);
+    assert.equal(updated[1], replacement);
+    assert.equal(updated[0], scenes[0]);
+    assert.equal(updated[2], scenes[2]);
+  });
+
+  it('preserves the scene array for missing or mismatched replacements', () => {
+    assert.equal(replaceSceneInOrder(scenes, 'missing', { id: 'missing', name: 'Missing' }), scenes);
+    assert.equal(replaceSceneInOrder(scenes, 'qa', { id: 'wrong', name: 'Wrong' }), scenes);
   });
 });

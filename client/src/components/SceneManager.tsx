@@ -22,6 +22,7 @@ interface SceneManagerProps {
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
+  onUpdateScene: (sceneId: string) => void | Promise<void>;
   onDuplicateScene: (sceneId: string) => void;
   onReorderScene: (sceneId: string, direction: SceneOrderDirection) => void;
 }
@@ -87,6 +88,7 @@ export function SceneManager({
   onApplyScene,
   onDeleteScene,
   onRenameScene,
+  onUpdateScene,
   onDuplicateScene,
   onReorderScene,
 }: SceneManagerProps) {
@@ -146,6 +148,11 @@ export function SceneManager({
     if (atLimit) return;
     setMenuOpenId(null);
     onDuplicateScene(sceneId);
+  };
+
+  const startUpdate = (sceneId: string) => {
+    setMenuOpenId(null);
+    onUpdateScene(sceneId);
   };
 
   return (
@@ -383,6 +390,19 @@ export function SceneManager({
                             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                           </svg>
                           Rename
+                        </button>
+                        <button
+                          style={styles.menuItem}
+                          onClick={() => startUpdate(scene.id)}
+                          title="Update from current stage"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M21 12a9 9 0 0 1-15.6 6.1" />
+                            <path d="M3 12a9 9 0 0 1 15.6-6.1" />
+                            <path d="M18 3v4h-4" />
+                            <path d="M6 21v-4h4" />
+                          </svg>
+                          Update
                         </button>
                         <button
                           style={{

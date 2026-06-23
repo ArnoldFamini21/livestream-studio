@@ -62,7 +62,7 @@ import {
   normalizeStageItemOrder,
   type StageItemOrderDirection,
 } from '../utils/stageItemOrder.ts';
-import { duplicateSceneInOrder, moveSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
+import { duplicateSceneInOrder, moveSceneInOrder, replaceSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
 import {
   AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS,
   addLowerThird,
@@ -1972,9 +1972,7 @@ export function StudioRoom() {
   };
 
   // Scenes
-  const onSaveScene = async (name: string) => {
-    if (scenes.length >= MAX_STUDIO_SCENES) return;
-
+  const buildCurrentSceneSnapshot = async (id: string, name: string): Promise<Scene> => {
     // Convert blob URL to data URL so the scene survives blob revocation
     let persistedLogoUrl = logoUrl;
     if (logoUrl && logoUrl.startsWith('blob:')) {
@@ -1993,8 +1991,8 @@ export function StudioRoom() {
       }
     }
 
-    const newScene: Scene = {
-      id: `scene-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    return {
+      id,
       name,
       layout,
       background: persistedBackground,
@@ -2011,6 +2009,15 @@ export function StudioRoom() {
         ...tickers.filter(t => t.visible).map(t => t.id),
       ],
     };
+  };
+
+  const onSaveScene = async (name: string) => {
+    if (scenes.length >= MAX_STUDIO_SCENES) return;
+
+    const newScene = await buildCurrentSceneSnapshot(
+      `scene-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name
+    );
     setScenes(prev => [...prev, newScene]);
     setActiveSceneId(newScene.id);
   };
@@ -2108,6 +2115,16 @@ export function StudioRoom() {
   };
   const onRenameScene = (sceneId: string, newName: string) => {
     setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, name: newName } : s));
+  };
+  const onUpdateScene = async (sceneId: string) => {
+    const scene = scenes.find(s => s.id === sceneId);
+    if (!scene) return;
+    const updatedScene = await buildCurrentSceneSnapshot(sceneId, scene.name);
+    setScenes(prev => {
+      const currentScene = prev.find(s => s.id === sceneId);
+      if (!currentScene) return prev;
+      return replaceSceneInOrder(prev, sceneId, { ...updatedScene, name: currentScene.name });
+    });
   };
   const onDuplicateScene = (sceneId: string) => {
     if (scenes.length >= MAX_STUDIO_SCENES) return;
@@ -3220,6 +3237,7 @@ export function StudioRoom() {
             onApplyScene={onApplyScene}
             onDeleteScene={onDeleteScene}
             onRenameScene={onRenameScene}
+            onUpdateScene={onUpdateScene}
             onDuplicateScene={onDuplicateScene}
             onReorderScene={onReorderScene}
             tickers={tickers}
