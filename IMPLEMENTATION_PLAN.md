@@ -144,8 +144,8 @@
 ### 7A. Per-Participant Audio Controls
 - [x] Individual volume sliders
 - [x] Real-time audio level meters (VU meters)
-- [ ] Noise suppression (RNNoise / Web Audio API)
-- [ ] Echo cancellation tuning
+- [x] Noise suppression (browser mic processing controls)
+- [x] Echo cancellation tuning (live mic processing controls)
 - [x] Audio ducking (lower others when someone speaks)
 
 ### 7B. Audio Mixing

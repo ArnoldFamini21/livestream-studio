@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { MediaDeviceInfo } from '../hooks/useMediaDevices.ts';
 import type { VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
+import type { AudioProcessingPreferences } from '../utils/mediaPreferences.ts';
 import { VirtualBackgroundPicker } from './VirtualBackgroundPicker.tsx';
 
 interface DeviceSelectorProps {
@@ -13,6 +14,8 @@ interface DeviceSelectorProps {
   onAudioDeviceChange: (deviceId: string) => void;
   onVideoDeviceChange: (deviceId: string) => void;
   onAudioOutputDeviceChange: (deviceId: string) => void;
+  audioProcessing?: AudioProcessingPreferences;
+  onAudioProcessingChange?: (next: AudioProcessingPreferences) => void;
   onClose: () => void;
   // Virtual background controls. Optional so callers can opt out.
   virtualBackground?: VirtualBackgroundConfig;
@@ -31,6 +34,8 @@ export function DeviceSelector({
   onAudioDeviceChange,
   onVideoDeviceChange,
   onAudioOutputDeviceChange,
+  audioProcessing,
+  onAudioProcessingChange,
   onClose,
   virtualBackground,
   onVirtualBackgroundChange,
@@ -38,6 +43,10 @@ export function DeviceSelector({
   virtualBackgroundError,
 }: DeviceSelectorProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const updateAudioProcessing = (key: keyof AudioProcessingPreferences, value: boolean) => {
+    if (!audioProcessing || !onAudioProcessingChange) return;
+    onAudioProcessingChange({ ...audioProcessing, [key]: value });
+  };
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -126,6 +135,38 @@ export function DeviceSelector({
               onChange={onAudioOutputDeviceChange}
               emptyText="No speakers detected"
             />
+          )}
+
+          {audioProcessing && onAudioProcessingChange && (
+            <div style={styles.processingSection}>
+              <div style={styles.processingHeader}>
+                <span style={styles.processingTitle}>Audio Processing</span>
+              </div>
+              <div style={styles.processingGrid}>
+                <label style={styles.processingOption}>
+                  <span style={styles.processingLabel}>Echo cancellation</span>
+                  <span style={styles.processingState}>{audioProcessing.echoCancellation ? 'On' : 'Off'}</span>
+                  <input
+                    type="checkbox"
+                    checked={audioProcessing.echoCancellation}
+                    onChange={(e) => updateAudioProcessing('echoCancellation', e.target.checked)}
+                    aria-label="Toggle echo cancellation"
+                    style={styles.processingCheckbox}
+                  />
+                </label>
+                <label style={styles.processingOption}>
+                  <span style={styles.processingLabel}>Noise suppression</span>
+                  <span style={styles.processingState}>{audioProcessing.noiseSuppression ? 'On' : 'Off'}</span>
+                  <input
+                    type="checkbox"
+                    checked={audioProcessing.noiseSuppression}
+                    onChange={(e) => updateAudioProcessing('noiseSuppression', e.target.checked)}
+                    aria-label="Toggle noise suppression"
+                    style={styles.processingCheckbox}
+                  />
+                </label>
+              </div>
+            </div>
           )}
 
           {virtualBackground && onVirtualBackgroundChange && (
@@ -246,6 +287,57 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 20,
+  },
+  processingSection: {
+    borderTop: '1px solid var(--border)',
+    paddingTop: 14,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+  },
+  processingHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  processingTitle: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+  },
+  processingGrid: {
+    display: 'grid',
+    gap: 8,
+  },
+  processingOption: {
+    minHeight: 42,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto auto',
+    alignItems: 'center',
+    gap: 10,
+    padding: '9px 10px',
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    cursor: 'pointer',
+  },
+  processingLabel: {
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+  },
+  processingState: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+  },
+  processingCheckbox: {
+    width: 18,
+    height: 18,
+    accentColor: 'var(--accent)',
+    cursor: 'pointer',
   },
 };
 

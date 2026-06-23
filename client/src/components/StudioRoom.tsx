@@ -46,7 +46,7 @@ import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
 import type { RecordingMarker } from './RecordingPanel.tsx';
-import { readPreferredAudioProcessing } from '../utils/mediaPreferences.ts';
+import { readPreferredAudioProcessing, type AudioProcessingPreferences } from '../utils/mediaPreferences.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
@@ -505,6 +505,8 @@ export function StudioRoom() {
     audioDevices, videoDevices, audioOutputDevices,
     selectedAudioDeviceId, selectedVideoDeviceId,
     selectedAudioOutputDeviceId,
+    audioProcessing,
+    updateAudioProcessing,
     onAudioOutputDeviceChange,
   } = useMediaDevices();
 
@@ -1611,8 +1613,12 @@ export function StudioRoom() {
   };
 
   const onAudioDeviceChange = async (id: string) => {
-    try { const t = await switchAudioDevice(id, readPreferredAudioProcessing()); if (t) await replaceTrack(t); }
+    try { const t = await switchAudioDevice(id, audioProcessing); if (t) await replaceTrack(t); }
     catch (err) { console.error('Failed to switch audio device:', err); }
+  };
+  const onAudioProcessingChange = async (next: AudioProcessingPreferences) => {
+    try { const t = await updateAudioProcessing(next); if (t) await replaceTrack(t); }
+    catch (err) { console.error('Failed to update audio processing:', err); }
   };
   const onVideoDeviceChange = async (id: string) => {
     try { const t = await switchVideoDevice(id); if (t) await replaceTrack(t); }
@@ -3144,6 +3150,8 @@ export function StudioRoom() {
             onAudioDeviceChange={onAudioDeviceChange}
             onVideoDeviceChange={onVideoDeviceChange}
             onAudioOutputDeviceChange={onAudioOutputDeviceChange}
+            audioProcessing={audioProcessing}
+            onAudioProcessingChange={onAudioProcessingChange}
             onClose={() => setShowDeviceSettings(false)}
             virtualBackground={vbConfig}
             onVirtualBackgroundChange={setVbConfig}
@@ -3830,6 +3838,8 @@ export function StudioRoom() {
           onAudioDeviceChange={onAudioDeviceChange}
           onVideoDeviceChange={onVideoDeviceChange}
           onAudioOutputDeviceChange={onAudioOutputDeviceChange}
+          audioProcessing={audioProcessing}
+          onAudioProcessingChange={onAudioProcessingChange}
           onClose={() => setShowDeviceSettings(false)}
           virtualBackground={vbConfig}
           onVirtualBackgroundChange={setVbConfig}
