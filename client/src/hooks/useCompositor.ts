@@ -1,8 +1,9 @@
 import { useEffect, useRef, useCallback } from 'react';
-import type { ActiveMedia, LivePoll, LogoPlacement, LogoSize, QAQuestion, StageBackground } from '@studio/shared';
+import { CHAT_REACTION_EMOJIS, type ActiveMedia, type LivePoll, type LogoPlacement, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
 import type { BannerData } from '../components/BannerOverlay.tsx';
 import type { HighlightedComment } from '../components/CommentHighlight.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
+import { REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from '../components/ReactionOverlay.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
 import { normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
@@ -19,6 +20,7 @@ interface CompositorProps {
   highlightedComment?: HighlightedComment | null;
   highlightedQA?: QAQuestion | null;
   highlightedPoll?: LivePoll | null;
+  floatingReactions?: FloatingReaction[];
   caption?: LiveCaptionSegment | null;
   stageBackground?: StageBackground;
   brandColor?: string;
@@ -884,6 +886,40 @@ function drawBroadcastPoll(
   return height;
 }
 
+function drawBroadcastReactions(
+  ctx: CanvasRenderingContext2D,
+  reactions: FloatingReaction[],
+  now: number
+) {
+  if (reactions.length === 0) return;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const item of reactions) {
+    const elapsed = now - item.createdAt - item.delayMs;
+    if (elapsed < 0 || elapsed > REACTION_OVERLAY_DURATION_MS) continue;
+
+    const progress = elapsed / REACTION_OVERLAY_DURATION_MS;
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const x = (item.lane / 100) * 1920 + Math.sin(progress * Math.PI * 2) * 28;
+    const y = 1000 - eased * 420;
+    const opacity = progress < 0.14
+      ? progress / 0.14
+      : Math.max(0, 1 - Math.max(0, progress - 0.72) / 0.28);
+    const scale = 0.78 + Math.sin(Math.min(progress, 1) * Math.PI) * 0.28;
+    const emoji = CHAT_REACTION_EMOJIS[item.reaction];
+
+    ctx.globalAlpha = Math.min(1, opacity);
+    ctx.font = `${Math.round(item.size * 2.1 * scale)}px Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif`;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.38)';
+    ctx.shadowBlur = 22;
+    ctx.shadowOffsetY = 10;
+    ctx.fillText(emoji, x, y);
+  }
+  ctx.restore();
+}
+
 export function useCompositor({
   containerRef,
   isLive,
@@ -895,6 +931,7 @@ export function useCompositor({
   highlightedComment,
   highlightedQA,
   highlightedPoll,
+  floatingReactions = [],
   caption,
   stageBackground,
   brandColor = '#3b82f6',
@@ -1136,10 +1173,11 @@ export function useCompositor({
     if (highlightedComment) {
       drawBroadcastComment(ctx, highlightedComment, Math.max(reservedBottom, 96));
     }
+    drawBroadcastReactions(ctx, floatingReactions, Date.now());
 
     // Loop
     rAF.current = requestAnimationFrame(drawLoop);
-  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, caption, stageBackground, brandColor, logoPlacement, logoSize]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoSize]);
 
   useEffect(() => {
     if (isLive) {

@@ -44,6 +44,7 @@ import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience } from './WebinarQA
 import { SessionHealthPanel } from './SessionHealthPanel.tsx';
 import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
+import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
 import type { RecordingMarker } from './RecordingPanel.tsx';
 import { readPreferredAudioProcessing } from '../utils/mediaPreferences.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
@@ -488,6 +489,7 @@ export function StudioRoom() {
   const [myUpvotes, setMyUpvotes] = useState<Set<string>>(new Set());
   const [polls, setPolls] = useState<LivePoll[]>([]);
   const [myPollVotes, setMyPollVotes] = useState<Record<string, string>>({});
+  const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
   const [captionLanguage, setCaptionLanguage] = useState('en-US');
 
@@ -680,6 +682,7 @@ export function StudioRoom() {
   const isLiveRef = useRef(isLive);
   const sessionRecordingStartedAtRef = useRef<string | null>(sessionRecordingStartedAt);
   const publishedTrackIdsRef = useRef<{ audio?: string; video?: string }>({});
+  const reactionSequenceRef = useRef(0);
 
   // Refs for signaling handler dependencies to reduce recreation frequency
   const connectToPeerRef = useRef(connectToPeer);
@@ -712,6 +715,7 @@ export function StudioRoom() {
     highlightedComment,
     highlightedQA: qaQuestions.find((question) => question.highlighted) || null,
     highlightedPoll: polls.find((poll) => poll.highlighted) || null,
+    floatingReactions,
     caption: broadcastCaption,
     stageBackground,
     brandColor,
@@ -1326,6 +1330,20 @@ export function StudioRoom() {
             chatMessage.id === message.payload.id ? message.payload : chatMessage
           )));
           break;
+        case 'chat-reaction': {
+          const reaction = createFloatingReaction(
+            message.payload.reaction,
+            ++reactionSequenceRef.current
+          );
+          setFloatingReactions((prev) => [
+            ...prev.filter((item) => Date.now() - item.createdAt < REACTION_OVERLAY_DURATION_MS + 500).slice(-17),
+            reaction,
+          ]);
+          window.setTimeout(() => {
+            setFloatingReactions((prev) => prev.filter((item) => item.id !== reaction.id));
+          }, REACTION_OVERLAY_DURATION_MS + reaction.delayMs + 250);
+          break;
+        }
         case 'qa-question-updated': {
           const updated = message.payload;
           setQAQuestions((prev) => {
@@ -1491,7 +1509,6 @@ export function StudioRoom() {
         // Client-to-server messages: not expected here but listed for exhaustive check
         case 'join-room':
         case 'stage-action':
-        case 'chat-reaction':
         case 'chat-star-update':
         case 'chat-pin-update':
         case 'qa-question-submitted':
@@ -3404,6 +3421,9 @@ export function StudioRoom() {
 
                 {/* Live Poll Overlay */}
                 <LivePollOverlay poll={highlightedPoll} />
+
+                {/* Floating Reaction Overlay */}
+                <ReactionOverlay reactions={floatingReactions} />
 
                 {/* Live Caption Overlay */}
                 <LiveCaptionOverlay

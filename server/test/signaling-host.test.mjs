@@ -904,6 +904,12 @@ describe('chat engagement', () => {
 
       const hostReacted = waitForMessage(host, 'chat-message-updated', (message) => message.payload.reactions?.like === 1);
       const guestReacted = waitForMessage(guest, 'chat-message-updated', (message) => message.payload.reactions?.like === 1);
+      const hostReactionOverlay = waitForMessage(host, 'chat-reaction', (message) => (
+        message.payload.messageId === hostMessage.payload.id && message.payload.reaction === 'like'
+      ));
+      const guestReactionOverlay = waitForMessage(guest, 'chat-reaction', (message) => (
+        message.payload.messageId === hostMessage.payload.id && message.payload.reaction === 'like'
+      ));
       sendSignal(guest, {
         type: 'chat-reaction',
         payload: {
@@ -911,9 +917,16 @@ describe('chat engagement', () => {
           reaction: 'like',
         },
       });
-      const [hostReactedMessage, guestReactedMessage] = await Promise.all([hostReacted, guestReacted]);
+      const [hostReactedMessage, guestReactedMessage, hostOverlay, guestOverlay] = await Promise.all([
+        hostReacted,
+        guestReacted,
+        hostReactionOverlay,
+        guestReactionOverlay,
+      ]);
       assert.equal(hostReactedMessage.payload.reactions.like, 1);
       assert.equal(guestReactedMessage.payload.reactions.like, 1);
+      assert.equal(hostOverlay.payload.reaction, 'like');
+      assert.equal(guestOverlay.payload.messageId, hostMessage.payload.id);
 
       const lateGuest = await connectClient(harness.url);
       const lateJoined = waitForMessage(lateGuest, 'room-joined');

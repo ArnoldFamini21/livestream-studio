@@ -1296,6 +1296,19 @@ function sendChatToVisibleParticipants(roomId: string, roomState: RoomState, mes
   }
 }
 
+function sendChatReactionToVisibleParticipants(
+  roomId: string,
+  roomState: RoomState,
+  message: ChatMessage,
+  payload: Extract<SignalMessage, { type: 'chat-reaction' }>['payload']
+) {
+  for (const [participantId, { participant, ws }] of roomState.participants) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (!canSeeChatMessage(message, participant, participantId)) continue;
+    send(ws, { type: 'chat-reaction', payload });
+  }
+}
+
 function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
@@ -1479,10 +1492,12 @@ function handleChatReaction(
 
   const reactions = roomState.chatReactions.get(message.id) || new Map<ChatReactionType, Set<string>>();
   const participantIds = reactions.get(payload.reaction) || new Set<string>();
+  let addedReaction = false;
   if (participantIds.has(mapping.participantId)) {
     participantIds.delete(mapping.participantId);
   } else {
     participantIds.add(mapping.participantId);
+    addedReaction = true;
   }
 
   if (participantIds.size > 0) {
@@ -1498,6 +1513,12 @@ function handleChatReaction(
 
   const updated = refreshStoredChatReactionCounts(roomState, message);
   sendChatToVisibleParticipants(mapping.roomId, roomState, updated, 'chat-message-updated');
+  if (addedReaction && !message.isBackstage && !message.recipientId) {
+    sendChatReactionToVisibleParticipants(mapping.roomId, roomState, updated, {
+      messageId: updated.id,
+      reaction: payload.reaction,
+    });
+  }
 }
 
 function handleChatStarUpdate(
