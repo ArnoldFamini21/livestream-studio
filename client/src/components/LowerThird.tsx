@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import type { Participant } from '@studio/shared';
 import { getParticipantLowerThirdTitle, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 
-interface LowerThirdData {
+export interface LowerThirdData {
   id: string;
   name: string;
   title: string;
@@ -707,5 +707,3 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '7px 12px',
   },
 };
-
-export type { LowerThirdData };
