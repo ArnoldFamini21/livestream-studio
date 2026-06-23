@@ -130,7 +130,7 @@
 - [ ] Facebook Live Comments API integration
 - [ ] Unified chat view merging all platforms
 - [x] Highlight/feature a chat message on screen (overlay)
-- [ ] Animated comment pop-up on stream (StreamYard-style)
+- [x] Animated comment pop-up on stream (StreamYard-style)
 
 ### 6C. Audience Engagement
 - [ ] Live polls (host creates, audience votes via chat commands)
