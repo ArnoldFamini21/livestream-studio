@@ -4,6 +4,11 @@ import {
   getBackgroundPreview,
   PRODUCTION_SCENE_TEMPLATE_CARDS,
 } from '../utils/productionSceneTemplates.ts';
+import {
+  getScenePreviewLogoPosition,
+  getScenePreviewOverlays,
+  getScenePreviewTiles,
+} from '../utils/scenePreview.ts';
 import type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
 import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
 
@@ -271,9 +276,7 @@ export function SceneManager({
                     background: getBackgroundPreview(scene.background),
                   }}
                 >
-                  <div style={styles.layoutIcon}>
-                    {layoutIcons[scene.layout]}
-                  </div>
+                  <ScenePreviewThumbnail scene={scene} />
                   {/* Layout badge */}
                   <span style={styles.layoutBadge}>
                     {LAYOUT_LABELS[scene.layout]}
@@ -391,6 +394,61 @@ export function SceneManager({
             );
           })}
         </div>
+      )}
+    </div>
+  );
+}
+
+function ScenePreviewThumbnail({ scene }: { scene: Scene }) {
+  const tiles = getScenePreviewTiles(scene.layout);
+  const overlays = getScenePreviewOverlays(scene);
+  const cameraRadius = scene.cameraShape === 'circle'
+    ? 999
+    : scene.cameraShape === 'square'
+      ? 4
+      : scene.cameraShape === 'rounded'
+        ? 8
+        : 3;
+
+  return (
+    <div data-testid="scene-preview-thumbnail" style={styles.scenePreviewFrame} aria-label={`Preview of ${scene.name}`}>
+      {tiles.map((tile, index) => (
+        <span
+          key={`${scene.id}-preview-tile-${index}`}
+          data-preview-tile="true"
+          style={{
+            ...styles.scenePreviewTile,
+            ...(tile.primary ? styles.scenePreviewTilePrimary : {}),
+            ...(tile.floating ? styles.scenePreviewTileFloating : {}),
+            left: tile.left,
+            top: tile.top,
+            width: tile.width,
+            height: tile.height,
+            borderRadius: cameraRadius,
+            borderColor: tile.primary ? scene.brandColor : 'rgba(255, 255, 255, 0.24)',
+          }}
+        >
+          <span
+            style={{
+              ...styles.scenePreviewTileAccent,
+              background: scene.brandColor,
+              opacity: tile.primary ? 0.82 : 0.44,
+            }}
+          />
+        </span>
+      ))}
+
+      {overlays.banner && <span style={{ ...styles.scenePreviewBanner, background: scene.brandColor }} />}
+      {overlays.timer && <span style={styles.scenePreviewTimer} />}
+      {overlays.lowerThird && <span style={{ ...styles.scenePreviewLowerThird, borderColor: scene.brandColor }} />}
+      {overlays.ticker && <span style={styles.scenePreviewTicker} />}
+      {overlays.logo && (
+        <span
+          style={{
+            ...styles.scenePreviewLogo,
+            ...getScenePreviewLogoPosition(scene.logoPlacement),
+          }}
+        />
       )}
     </div>
   );
@@ -591,11 +649,82 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  layoutIcon: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: 'rgba(255, 255, 255, 0.6)',
+  scenePreviewFrame: {
+    position: 'absolute',
+    inset: 0,
+    overflow: 'hidden',
+  },
+  scenePreviewTile: {
+    position: 'absolute',
+    display: 'block',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    background: 'rgba(15, 23, 42, 0.58)',
+    boxShadow: 'inset 0 0 0 1px rgba(255, 255, 255, 0.05)',
+    overflow: 'hidden',
+  },
+  scenePreviewTilePrimary: {
+    borderWidth: 1.5,
+    background: 'rgba(15, 23, 42, 0.72)',
+  },
+  scenePreviewTileFloating: {
+    boxShadow: '0 7px 16px rgba(0, 0, 0, 0.32), inset 0 0 0 1px rgba(255, 255, 255, 0.07)',
+  },
+  scenePreviewTileAccent: {
+    position: 'absolute',
+    left: '18%',
+    right: '18%',
+    bottom: '17%',
+    height: 3,
+    borderRadius: 999,
+  },
+  scenePreviewBanner: {
+    position: 'absolute',
+    left: '8%',
+    right: '8%',
+    top: '8%',
+    height: 7,
+    borderRadius: 999,
+    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.22)',
+  },
+  scenePreviewTimer: {
+    position: 'absolute',
+    top: '9%',
+    right: '9%',
+    width: 18,
+    height: 8,
+    borderRadius: 999,
+    background: 'rgba(255, 255, 255, 0.82)',
+    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.2)',
+  },
+  scenePreviewLowerThird: {
+    position: 'absolute',
+    left: '10%',
+    bottom: '22%',
+    width: '42%',
+    height: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    background: 'rgba(2, 6, 23, 0.72)',
+    boxShadow: '0 7px 16px rgba(0, 0, 0, 0.24)',
+  },
+  scenePreviewTicker: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 8,
+    background: 'rgba(2, 6, 23, 0.82)',
+    borderTop: '1px solid rgba(255, 255, 255, 0.12)',
+  },
+  scenePreviewLogo: {
+    position: 'absolute',
+    width: 10,
+    height: 10,
+    borderRadius: 3,
+    background: 'rgba(255, 255, 255, 0.86)',
+    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.24)',
   },
   layoutBadge: {
     position: 'absolute',
