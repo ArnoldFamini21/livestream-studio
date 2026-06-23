@@ -104,11 +104,11 @@ export function ChatPanel({
           return (
             <div
               key={msg.id}
+              className="chat-msg-enter"
               style={{
                 ...styles.message,
                 ...(msg.starred ? styles.messageStarred : {}),
                 ...(msg.pinned ? styles.messagePinned : {}),
-                animation: 'slideUp 0.2s ease-out',
               }}
             >
               <div style={styles.msgHeader}>
