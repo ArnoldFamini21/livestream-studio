@@ -691,51 +691,72 @@ function drawLiveCaption(
 }
 
 function drawBroadcastComment(ctx: CanvasRenderingContext2D, comment: HighlightedComment, bottom: number) {
+  const isFlash = comment.displayMode === 'flash';
   const width = 760;
   const padding = 26;
   const avatarSize = 56;
   const x = (1920 - width) / 2;
   const textX = x + padding + avatarSize + 20;
   const maxTextWidth = width - padding * 2 - avatarSize - 20;
+  const label = isFlash ? 'AUDIENCE FLASH' : 'FEATURED COMMENT';
 
   ctx.save();
   ctx.font = '500 28px Inter, Arial, sans-serif';
   const contentLines = wrapCanvasText(ctx, comment.content, maxTextWidth, 2);
-  const height = Math.max(112, padding * 2 + 26 + contentLines.length * 34);
+  const height = Math.max(126, padding * 2 + 42 + contentLines.length * 34);
   const y = 1080 - bottom - height;
 
   ctx.shadowColor = 'rgba(0, 0, 0, 0.36)';
   ctx.shadowBlur = 34;
   ctx.shadowOffsetY = 12;
-  ctx.fillStyle = 'rgba(15, 15, 20, 0.82)';
+  ctx.fillStyle = isFlash ? 'rgba(31, 23, 25, 0.86)' : 'rgba(15, 15, 20, 0.82)';
   drawRoundedRect(ctx, x, y, width, height, 22);
   ctx.shadowColor = 'transparent';
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+  ctx.strokeStyle = isFlash ? 'rgba(251, 191, 36, 0.28)' : 'rgba(255, 255, 255, 0.12)';
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, 22);
   ctx.stroke();
 
+  const accent = ctx.createLinearGradient(x, y, x + width, y);
+  if (isFlash) {
+    accent.addColorStop(0, '#facc15');
+    accent.addColorStop(0.52, '#fb7185');
+    accent.addColorStop(1, '#a78bfa');
+  } else {
+    accent.addColorStop(0, '#22d3ee');
+    accent.addColorStop(0.48, '#a78bfa');
+    accent.addColorStop(1, '#f472b6');
+  }
+  ctx.fillStyle = accent;
+  drawRoundedRect(ctx, x, y, width, 8, 4);
+
+  ctx.fillStyle = isFlash ? '#fef3c7' : '#cffafe';
+  ctx.font = '800 18px Inter, Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(label, x + padding, y + padding - 4);
+
   ctx.fillStyle = comment.avatarColor || getAvatarColor(comment.senderName);
   ctx.beginPath();
-  ctx.arc(x + padding + avatarSize / 2, y + padding + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+  ctx.arc(x + padding + avatarSize / 2, y + padding + 26 + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.fillStyle = 'white';
   ctx.font = '800 24px Inter, Arial, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(comment.senderName.charAt(0).toUpperCase(), x + padding + avatarSize / 2, y + padding + avatarSize / 2 + 1);
+  ctx.fillText(comment.senderName.charAt(0).toUpperCase(), x + padding + avatarSize / 2, y + padding + 26 + avatarSize / 2 + 1);
 
   ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
   ctx.font = '800 25px Inter, Arial, sans-serif';
-  ctx.fillText(truncateCanvasText(ctx, comment.senderName, maxTextWidth), textX, y + padding + 24);
+  ctx.fillText(truncateCanvasText(ctx, comment.senderName, maxTextWidth), textX, y + padding + 50);
 
   ctx.fillStyle = 'rgba(255, 255, 255, 0.82)';
   ctx.font = '500 28px Inter, Arial, sans-serif';
   contentLines.forEach((line, index) => {
-    ctx.fillText(line, textX, y + padding + 64 + index * 34);
+    ctx.fillText(line, textX, y + padding + 90 + index * 34);
   });
   ctx.restore();
 }

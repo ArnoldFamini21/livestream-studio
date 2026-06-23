@@ -7,21 +7,30 @@ import type { ChatMessage } from '@studio/shared';
 
 export interface HighlightedComment {
   id: string;
+  sourceMessageId?: string;
   senderName: string;
   content: string;
   avatarColor?: string;
+  displayMode?: CommentDisplayMode;
+  durationMs?: number;
 }
 
+export type CommentDisplayMode = 'featured' | 'flash';
 export type CommentHighlightFilter = 'ready' | 'recent' | 'all';
+
+export const FEATURED_COMMENT_DURATION_MS = 8000;
+export const FLASH_COMMENT_DURATION_MS = 4200;
 
 interface CommentHighlightOverlayProps {
   comment: HighlightedComment | null;
+  onExpired?: () => void;
 }
 
 interface CommentHighlightManagerProps {
   chatMessages: ChatMessage[];
   activeComment: HighlightedComment | null;
   onHighlightComment: (comment: HighlightedComment) => void;
+  onFlashComment: (comment: HighlightedComment) => void;
   onDismissComment: () => void;
 }
 
@@ -65,13 +74,29 @@ function getCommentSearchText(message: ChatMessage): string {
   ].join(' ').toLowerCase();
 }
 
-export function createHighlightedCommentFromChatMessage(message: ChatMessage): HighlightedComment | null {
+interface CreateHighlightedCommentOptions {
+  id?: string;
+  displayMode?: CommentDisplayMode;
+  durationMs?: number;
+}
+
+export function createHighlightedCommentFromChatMessage(
+  message: ChatMessage,
+  options: CreateHighlightedCommentOptions = {}
+): HighlightedComment | null {
   if (message.isBackstage || message.recipientId) return null;
   return {
-    id: message.id,
+    id: options.id || message.id,
+    sourceMessageId: message.id,
     senderName: message.senderName,
     content: message.content,
+    displayMode: options.displayMode || 'featured',
+    durationMs: options.durationMs || FEATURED_COMMENT_DURATION_MS,
   };
+}
+
+export function isHighlightedCommentSource(comment: HighlightedComment | null, messageId: string): boolean {
+  return Boolean(comment && (comment.id === messageId || comment.sourceMessageId === messageId));
 }
 
 export function getHighlightableChatMessages(
@@ -102,11 +127,16 @@ export function getHighlightableChatMessages(
 // CommentHighlightOverlay — the on-screen display overlay
 // ---------------------------------------------------------------------------
 
-export function CommentHighlightOverlay({ comment }: CommentHighlightOverlayProps) {
+export function CommentHighlightOverlay({ comment, onExpired }: CommentHighlightOverlayProps) {
   const [visible, setVisible] = useState(false);
   const [current, setCurrent] = useState<HighlightedComment | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onExpiredRef = useRef(onExpired);
+
+  useEffect(() => {
+    onExpiredRef.current = onExpired;
+  }, [onExpired]);
 
   useEffect(() => {
     // Clear any existing timers
@@ -118,9 +148,14 @@ export function CommentHighlightOverlay({ comment }: CommentHighlightOverlayProp
       // Small delay to ensure the DOM has the element before animating in
       requestAnimationFrame(() => setVisible(true));
 
-      // Auto-dismiss after 8 seconds
+      const durationMs = Math.min(
+        15000,
+        Math.max(1200, comment.durationMs || FEATURED_COMMENT_DURATION_MS)
+      );
+
       timerRef.current = setTimeout(() => {
         setVisible(false);
+        onExpiredRef.current?.();
         // Wait for exit animation before removing from DOM
         dismissTimerRef.current = setTimeout(() => {
           setCurrent(null);
@@ -144,6 +179,7 @@ export function CommentHighlightOverlay({ comment }: CommentHighlightOverlayProp
 
   const color = current.avatarColor || getAvatarColor(current.senderName);
   const initial = current.senderName.charAt(0).toUpperCase();
+  const isFlash = current.displayMode === 'flash';
 
   return (
     <div
@@ -160,20 +196,24 @@ export function CommentHighlightOverlay({ comment }: CommentHighlightOverlayProp
       <div
         style={{
           ...overlayCard,
+          ...(isFlash ? overlayCardFlash : {}),
           animation: visible
-            ? 'commentPopIn 560ms cubic-bezier(0.16, 1, 0.3, 1) both, commentGlow 3s ease-in-out 700ms infinite'
+            ? `${isFlash ? 'commentFlashIn 420ms cubic-bezier(0.16, 1, 0.3, 1)' : 'commentPopIn 560ms cubic-bezier(0.16, 1, 0.3, 1)'} both, ${isFlash ? 'commentFlashGlow 1.4s ease-in-out 260ms 2' : 'commentGlow 3s ease-in-out 700ms infinite'}`
             : 'commentPopOut 260ms ease-in both',
         }}
       >
         <div
           style={{
             ...overlayAccent,
+            ...(isFlash ? overlayAccentFlash : {}),
             animation: visible ? 'commentAccentSweep 1100ms ease-out 120ms both' : undefined,
           }}
         />
 
         <div style={overlayMetaRow}>
-          <span style={overlayPill}>Featured comment</span>
+          <span style={{ ...overlayPill, ...(isFlash ? overlayPillFlash : {}) }}>
+            {isFlash ? 'Audience flash' : 'Featured comment'}
+          </span>
         </div>
 
         <div style={overlayBody}>
@@ -206,6 +246,7 @@ export function CommentHighlightManager({
   chatMessages,
   activeComment,
   onHighlightComment,
+  onFlashComment,
   onDismissComment,
 }: CommentHighlightManagerProps) {
   const [customName, setCustomName] = useState('');
@@ -220,6 +261,21 @@ export function CommentHighlightManager({
       id: `custom-${Date.now()}`,
       senderName: customName.trim(),
       content: customContent.trim(),
+      displayMode: 'featured',
+      durationMs: FEATURED_COMMENT_DURATION_MS,
+    });
+    setCustomName('');
+    setCustomContent('');
+  };
+
+  const handleFlashCustom = () => {
+    if (!customName.trim() || !customContent.trim()) return;
+    onFlashComment({
+      id: `custom-flash-${Date.now()}`,
+      senderName: customName.trim(),
+      content: customContent.trim(),
+      displayMode: 'flash',
+      durationMs: FLASH_COMMENT_DURATION_MS,
     });
     setCustomName('');
     setCustomContent('');
@@ -228,6 +284,15 @@ export function CommentHighlightManager({
   const handleHighlightChat = (msg: ChatMessage) => {
     const comment = createHighlightedCommentFromChatMessage(msg);
     if (comment) onHighlightComment(comment);
+  };
+
+  const handleFlashChat = (msg: ChatMessage) => {
+    const comment = createHighlightedCommentFromChatMessage(msg, {
+      id: `flash-${msg.id}-${Date.now()}`,
+      displayMode: 'flash',
+      durationMs: FLASH_COMMENT_DURATION_MS,
+    });
+    if (comment) onFlashComment(comment);
   };
 
   const visibleMessages = getHighlightableChatMessages(chatMessages, query, filter);
@@ -269,14 +334,24 @@ export function CommentHighlightManager({
           onChange={(e) => setCustomContent(e.target.value)}
           rows={2}
         />
-        <button
-          className="btn-primary"
-          style={styles.showBtn}
-          onClick={handleShowCustom}
-          disabled={!customName.trim() || !customContent.trim()}
-        >
-          Show on Screen
-        </button>
+        <div style={styles.customActionRow}>
+          <button
+            className="btn-secondary"
+            style={styles.showBtn}
+            onClick={handleFlashCustom}
+            disabled={!customName.trim() || !customContent.trim()}
+          >
+            Flash
+          </button>
+          <button
+            className="btn-primary"
+            style={styles.showBtn}
+            onClick={handleShowCustom}
+            disabled={!customName.trim() || !customContent.trim()}
+          >
+            Show on Screen
+          </button>
+        </div>
       </div>
 
       {/* Divider */}
@@ -332,25 +407,24 @@ export function CommentHighlightManager({
                 </span>
                 <span style={styles.chatRowText}>{msg.content}</span>
               </div>
-              <button
-                className="participant-action-btn"
-                style={styles.highlightBtn}
-                onClick={() => handleHighlightChat(msg)}
-                title="Highlight this comment"
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              <div style={styles.chatRowActions}>
+                <button
+                  className="participant-action-btn"
+                  style={styles.flashBtn}
+                  onClick={() => handleFlashChat(msg)}
+                  title="Flash this comment briefly"
                 >
-                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                </svg>
-              </button>
+                  Flash
+                </button>
+                <button
+                  className="participant-action-btn"
+                  style={styles.highlightBtn}
+                  onClick={() => handleHighlightChat(msg)}
+                  title="Show this comment on screen"
+                >
+                  Show
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -375,6 +449,12 @@ const overlayKeyframes = `
   100% { opacity: 0; transform: translateY(18px) scale(0.97); filter: blur(4px); }
 }
 
+@keyframes commentFlashIn {
+  0% { opacity: 0; transform: translateY(26px) scale(0.92); filter: blur(8px) brightness(1.3); }
+  46% { opacity: 1; transform: translateY(-7px) scale(1.03); filter: blur(0) brightness(1.12); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0) brightness(1); }
+}
+
 @keyframes commentAccentSweep {
   0% { transform: translateX(-102%); opacity: 0; }
   22% { opacity: 1; }
@@ -384,6 +464,11 @@ const overlayKeyframes = `
 @keyframes commentGlow {
   0%, 100% { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16), 0 0 28px rgba(34,211,238,0.12); }
   50% { box-shadow: 0 20px 48px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,255,255,0.2), 0 0 34px rgba(167,139,250,0.16); }
+}
+
+@keyframes commentFlashGlow {
+  0%, 100% { box-shadow: 0 18px 42px rgba(0,0,0,0.36), 0 0 0 1px rgba(255,255,255,0.18), 0 0 24px rgba(251,191,36,0.14); }
+  50% { box-shadow: 0 24px 56px rgba(0,0,0,0.46), 0 0 0 1px rgba(251,191,36,0.38), 0 0 44px rgba(244,114,182,0.22); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -397,12 +482,22 @@ const overlayKeyframes = `
     to { opacity: 0; transform: translateY(8px); filter: none; }
   }
 
+  @keyframes commentFlashIn {
+    from { opacity: 0; transform: translateY(8px); filter: none; }
+    to { opacity: 1; transform: translateY(0); filter: none; }
+  }
+
   @keyframes commentAccentSweep {
     from { transform: translateX(0); opacity: 1; }
     to { transform: translateX(0); opacity: 1; }
   }
 
   @keyframes commentGlow {
+    from { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16); }
+    to { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16); }
+  }
+
+  @keyframes commentFlashGlow {
     from { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16); }
     to { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16); }
   }
@@ -445,6 +540,11 @@ const overlayCard: React.CSSProperties = {
   transformOrigin: 'bottom center',
 };
 
+const overlayCardFlash: React.CSSProperties = {
+  background: 'linear-gradient(135deg, rgba(24, 21, 16, 0.92), rgba(30, 16, 34, 0.82))',
+  border: '1px solid rgba(251, 191, 36, 0.3)',
+};
+
 const overlayAccent: React.CSSProperties = {
   position: 'absolute',
   top: 0,
@@ -452,6 +552,11 @@ const overlayAccent: React.CSSProperties = {
   right: 0,
   height: 4,
   background: 'linear-gradient(90deg, #22d3ee 0%, #a78bfa 48%, #f472b6 100%)',
+};
+
+const overlayAccentFlash: React.CSSProperties = {
+  height: 5,
+  background: 'linear-gradient(90deg, #facc15 0%, #fb7185 52%, #a78bfa 100%)',
 };
 
 const overlayMetaRow: React.CSSProperties = {
@@ -477,6 +582,12 @@ const overlayPill: React.CSSProperties = {
   lineHeight: 1,
   letterSpacing: 0,
   textTransform: 'uppercase',
+};
+
+const overlayPillFlash: React.CSSProperties = {
+  background: 'rgba(251, 191, 36, 0.17)',
+  border: '1px solid rgba(251, 191, 36, 0.34)',
+  color: '#fef3c7',
 };
 
 const overlayBody: React.CSSProperties = {
@@ -659,6 +770,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     padding: '7px 12px',
   },
+  customActionRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(72px, 0.7fr) minmax(0, 1.3fr)',
+    gap: 6,
+  },
 
   // Divider
   divider: {
@@ -786,18 +902,40 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  chatRowActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+    flexShrink: 0,
+  },
+  flashBtn: {
+    height: 28,
+    minWidth: 50,
+    borderRadius: 6,
+    background: 'rgba(251, 191, 36, 0.12)',
+    border: '1px solid rgba(251, 191, 36, 0.32)',
+    color: '#fbbf24',
+    cursor: 'pointer',
+    fontSize: 10,
+    fontWeight: 800,
+    padding: '0 8px',
+    flexShrink: 0,
+    transition: 'all 0.15s ease',
+  },
   highlightBtn: {
-    width: 28,
+    minWidth: 46,
     height: 28,
     borderRadius: 6,
     background: 'var(--bg-surface)',
     border: '1px solid var(--border)',
     color: 'var(--text-muted)',
     cursor: 'pointer',
-    display: 'flex',
+    display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 0,
+    padding: '0 8px',
+    fontSize: 10,
+    fontWeight: 800,
     flexShrink: 0,
     transition: 'all 0.15s ease',
   },

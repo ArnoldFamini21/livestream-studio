@@ -9,7 +9,9 @@ import { SceneManager, type ProductionSceneTemplate } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
 import {
   CommentHighlightManager,
+  FLASH_COMMENT_DURATION_MS,
   createHighlightedCommentFromChatMessage,
+  isHighlightedCommentSource,
   type HighlightedComment,
 } from './CommentHighlight.tsx';
 import { MediaLibrary } from './MediaLibrary.tsx';
@@ -66,6 +68,7 @@ interface SidebarProps {
   chatMessages: ChatMessage[];
   highlightedComment: HighlightedComment | null;
   onHighlightComment: (comment: HighlightedComment) => void;
+  onFlashComment: (comment: HighlightedComment) => void;
   onDismissComment: () => void;
   // Brand props
   stageBackground: StageBackground;
@@ -343,6 +346,7 @@ export function Sidebar(props: SidebarProps) {
               onTogglePin={props.onToggleChatPin}
               highlightedComment={props.highlightedComment}
               onHighlightComment={props.onHighlightComment}
+              onFlashComment={props.onFlashComment}
               onDismissComment={props.onDismissComment}
               senderName={props.chatSenderName}
               onOpenPopoutChat={props.onOpenPopoutChat}
@@ -419,6 +423,7 @@ export function Sidebar(props: SidebarProps) {
                 chatMessages={props.chatMessages}
                 activeComment={props.highlightedComment}
                 onHighlightComment={props.onHighlightComment}
+                onFlashComment={props.onFlashComment}
                 onDismissComment={props.onDismissComment}
               />
             </div>
@@ -959,6 +964,7 @@ function ChatContent({
   onTogglePin,
   highlightedComment,
   onHighlightComment,
+  onFlashComment,
   onDismissComment,
   senderName,
   onOpenPopoutChat,
@@ -972,6 +978,7 @@ function ChatContent({
   onTogglePin: (messageId: string, pinned: boolean) => void;
   highlightedComment: HighlightedComment | null;
   onHighlightComment: (comment: HighlightedComment) => void;
+  onFlashComment: (comment: HighlightedComment) => void;
   onDismissComment: () => void;
   senderName: string;
   onOpenPopoutChat?: () => void;
@@ -1017,12 +1024,23 @@ function ChatContent({
   const canSend = input.trim().length > 0 && (mode !== 'direct' || Boolean(selectedRecipient));
 
   const handleFeatureMessage = (message: ChatMessage) => {
-    if (highlightedComment?.id === message.id) {
+    const isFeaturedMessage = isHighlightedCommentSource(highlightedComment, message.id)
+      && highlightedComment?.displayMode !== 'flash';
+    if (isFeaturedMessage) {
       onDismissComment();
       return;
     }
     const comment = createHighlightedCommentFromChatMessage(message);
     if (comment) onHighlightComment(comment);
+  };
+
+  const handleFlashMessage = (message: ChatMessage) => {
+    const comment = createHighlightedCommentFromChatMessage(message, {
+      id: `flash-${message.id}-${Date.now()}`,
+      displayMode: 'flash',
+      durationMs: FLASH_COMMENT_DURATION_MS,
+    });
+    if (comment) onFlashComment(comment);
   };
 
   const handleScroll = () => {
@@ -1134,63 +1152,76 @@ function ChatContent({
             <p style={st.chatEmptyHint}>{mode === 'backstage' ? 'Coordinate with producers, co-hosts, and backstage guests.' : mode === 'direct' ? 'Send a private note to one participant.' : mode === 'starred' ? 'Star comments to keep them ready for the broadcast.' : 'Messages here are visible to everyone.'}</p>
           </div>
         )}
-        {visibleMessages.map((msg) => (
-          <div key={msg.id} className="chat-msg-enter" style={{ ...st.chatMsg, ...(msg.starred ? st.chatMsgStarred : {}), ...(msg.pinned ? st.chatMsgPinned : {}) }}>
-            <div style={st.chatMsgHead}>
-              <span style={{ ...st.chatMsgName, color: msg.senderName === senderName ? 'var(--accent-hover)' : 'var(--text-primary)' }}>{msg.senderName}</span>
-              {msg.isBackstage && <span style={st.chatBackstageBadge}>Backstage</span>}
-              {msg.recipientId && <span style={st.chatPrivateBadge}>Private</span>}
-              {msg.recipientId && <span style={st.chatPrivateMeta}>to {msg.recipientName || 'participant'}</span>}
-              {msg.pinned && <span style={st.chatPinBadge}>Pinned</span>}
-              {msg.starred && <span style={st.chatStarBadge}>Starred</span>}
-              <span style={st.chatMsgTime}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        {visibleMessages.map((msg) => {
+          const isFeaturedMessage = isHighlightedCommentSource(highlightedComment, msg.id)
+            && highlightedComment?.displayMode !== 'flash';
+
+          return (
+            <div key={msg.id} className="chat-msg-enter" style={{ ...st.chatMsg, ...(msg.starred ? st.chatMsgStarred : {}), ...(msg.pinned ? st.chatMsgPinned : {}) }}>
+              <div style={st.chatMsgHead}>
+                <span style={{ ...st.chatMsgName, color: msg.senderName === senderName ? 'var(--accent-hover)' : 'var(--text-primary)' }}>{msg.senderName}</span>
+                {msg.isBackstage && <span style={st.chatBackstageBadge}>Backstage</span>}
+                {msg.recipientId && <span style={st.chatPrivateBadge}>Private</span>}
+                {msg.recipientId && <span style={st.chatPrivateMeta}>to {msg.recipientName || 'participant'}</span>}
+                {msg.pinned && <span style={st.chatPinBadge}>Pinned</span>}
+                {msg.starred && <span style={st.chatStarBadge}>Starred</span>}
+                <span style={st.chatMsgTime}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+              <p style={st.chatMsgContent}>{msg.content}</p>
+              <div style={st.chatMsgActions}>
+                {!msg.isBackstage && !msg.recipientId && (
+                  <>
+                    <button
+                      type="button"
+                      style={{ ...st.chatMiniBtn, ...st.chatMiniBtnFlash }}
+                      onClick={() => handleFlashMessage(msg)}
+                      title="Flash this comment briefly on screen"
+                    >
+                      Flash
+                    </button>
+                    <button
+                      type="button"
+                      style={{ ...st.chatMiniBtn, ...(isFeaturedMessage ? st.chatMiniBtnFeatured : {}) }}
+                      onClick={() => handleFeatureMessage(msg)}
+                      title={isFeaturedMessage ? 'Hide this comment from the broadcast' : 'Show this comment on screen'}
+                    >
+                      {isFeaturedMessage ? 'Hide' : 'Show'}
+                    </button>
+                    <button
+                      type="button"
+                      style={{ ...st.chatMiniBtn, ...(msg.pinned ? st.chatMiniBtnPinned : {}) }}
+                      onClick={() => onTogglePin(msg.id, !msg.pinned)}
+                      title={msg.pinned ? 'Unpin this comment' : 'Pin this comment'}
+                    >
+                      {msg.pinned ? 'Unpin' : 'Pin'}
+                    </button>
+                    <button
+                      type="button"
+                      style={{ ...st.chatMiniBtn, ...(msg.starred ? st.chatMiniBtnActive : {}) }}
+                      onClick={() => onToggleStar(msg.id, !msg.starred)}
+                      title={msg.starred ? 'Remove from starred comments' : 'Star this comment'}
+                    >
+                      {msg.starred ? 'Unstar' : 'Star'}
+                    </button>
+                  </>
+                )}
+                {CHAT_REACTION_TYPES.map((reaction) => (
+                  <button
+                    key={reaction}
+                    type="button"
+                    style={{ ...st.chatMiniBtn, ...st.chatReactionBtn }}
+                    onClick={() => onReact(msg.id, reaction)}
+                    title={`${CHAT_REACTION_LABELS[reaction]} reaction`}
+                    aria-label={`${CHAT_REACTION_LABELS[reaction]} reaction${msg.reactions?.[reaction] ? `, ${msg.reactions[reaction]} total` : ''}`}
+                  >
+                    <span aria-hidden="true" style={st.chatReactionEmoji}>{CHAT_REACTION_EMOJIS[reaction]}</span>
+                    {msg.reactions?.[reaction] ? <span style={st.chatReactionCount}>{msg.reactions[reaction]}</span> : null}
+                  </button>
+                ))}
+              </div>
             </div>
-            <p style={st.chatMsgContent}>{msg.content}</p>
-            <div style={st.chatMsgActions}>
-              {!msg.isBackstage && !msg.recipientId && (
-                <>
-                  <button
-                    type="button"
-                    style={{ ...st.chatMiniBtn, ...(highlightedComment?.id === msg.id ? st.chatMiniBtnFeatured : {}) }}
-                    onClick={() => handleFeatureMessage(msg)}
-                    title={highlightedComment?.id === msg.id ? 'Hide this comment from the broadcast' : 'Show this comment on screen'}
-                  >
-                    {highlightedComment?.id === msg.id ? 'Hide' : 'Show'}
-                  </button>
-                  <button
-                    type="button"
-                    style={{ ...st.chatMiniBtn, ...(msg.pinned ? st.chatMiniBtnPinned : {}) }}
-                    onClick={() => onTogglePin(msg.id, !msg.pinned)}
-                    title={msg.pinned ? 'Unpin this comment' : 'Pin this comment'}
-                  >
-                    {msg.pinned ? 'Unpin' : 'Pin'}
-                  </button>
-                  <button
-                    type="button"
-                    style={{ ...st.chatMiniBtn, ...(msg.starred ? st.chatMiniBtnActive : {}) }}
-                    onClick={() => onToggleStar(msg.id, !msg.starred)}
-                    title={msg.starred ? 'Remove from starred comments' : 'Star this comment'}
-                  >
-                    {msg.starred ? 'Unstar' : 'Star'}
-                  </button>
-                </>
-              )}
-              {CHAT_REACTION_TYPES.map((reaction) => (
-                <button
-                  key={reaction}
-                  type="button"
-                  style={{ ...st.chatMiniBtn, ...st.chatReactionBtn }}
-                  onClick={() => onReact(msg.id, reaction)}
-                  title={`${CHAT_REACTION_LABELS[reaction]} reaction`}
-                  aria-label={`${CHAT_REACTION_LABELS[reaction]} reaction${msg.reactions?.[reaction] ? `, ${msg.reactions[reaction]} total` : ''}`}
-                >
-                  <span aria-hidden="true" style={st.chatReactionEmoji}>{CHAT_REACTION_EMOJIS[reaction]}</span>
-                  {msg.reactions?.[reaction] ? <span style={st.chatReactionCount}>{msg.reactions[reaction]}</span> : null}
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={bottomRef} />
       </div>
       {mode === 'direct' && (
@@ -1471,6 +1502,7 @@ const st: Record<string, React.CSSProperties> = {
   chatMsgActions: { display: 'flex', flexWrap: 'wrap', gap: 5 },
   chatMiniBtn: { minHeight: 24, border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.04)', color: 'var(--text-muted)', borderRadius: 6, padding: '0 7px', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
   chatMiniBtnFeatured: { borderColor: 'rgba(167, 139, 250, 0.4)', background: 'rgba(167, 139, 250, 0.14)', color: '#ddd6fe' },
+  chatMiniBtnFlash: { borderColor: 'rgba(251, 191, 36, 0.34)', background: 'rgba(251, 191, 36, 0.12)', color: '#fbbf24' },
   chatMiniBtnActive: { borderColor: 'rgba(245, 158, 11, 0.36)', background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24' },
   chatMiniBtnPinned: { borderColor: 'rgba(34, 211, 238, 0.36)', background: 'rgba(34, 211, 238, 0.12)', color: '#67e8f9' },
   chatReactionBtn: { minWidth: 32, gap: 4, padding: '0 7px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' },

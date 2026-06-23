@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ChatMessage } from '@studio/shared';
 import {
+  FLASH_COMMENT_DURATION_MS,
+  FEATURED_COMMENT_DURATION_MS,
   createHighlightedCommentFromChatMessage,
   getHighlightableChatMessages,
+  isHighlightedCommentSource,
 } from '../src/components/CommentHighlight.tsx';
 
 const messages: ChatMessage[] = [
@@ -63,12 +66,34 @@ describe('comment highlight selection', () => {
       createHighlightedCommentFromChatMessage(messages[0]),
       {
         id: 'msg-1',
+        sourceMessageId: 'msg-1',
         senderName: 'Ari',
         content: 'Great launch segment',
+        displayMode: 'featured',
+        durationMs: FEATURED_COMMENT_DURATION_MS,
       }
     );
     assert.equal(createHighlightedCommentFromChatMessage(messages[1]), null);
     assert.equal(createHighlightedCommentFromChatMessage(messages[4]), null);
+  });
+
+  it('creates flash overlay comments that still map back to the source chat message', () => {
+    const flash = createHighlightedCommentFromChatMessage(messages[0], {
+      id: 'flash-msg-1-123',
+      displayMode: 'flash',
+      durationMs: FLASH_COMMENT_DURATION_MS,
+    });
+
+    assert.deepEqual(flash, {
+      id: 'flash-msg-1-123',
+      sourceMessageId: 'msg-1',
+      senderName: 'Ari',
+      content: 'Great launch segment',
+      displayMode: 'flash',
+      durationMs: FLASH_COMMENT_DURATION_MS,
+    });
+    assert.equal(isHighlightedCommentSource(flash, 'msg-1'), true);
+    assert.equal(isHighlightedCommentSource(flash, 'msg-2'), false);
   });
 
   it('returns starred public comments first for the ready filter', () => {
