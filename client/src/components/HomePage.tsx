@@ -14,6 +14,7 @@ import {
   type SavedHostStudio,
 } from '../utils/hostSession.ts';
 import { getApiErrorMessage, postJson } from '../utils/apiClient.ts';
+import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
@@ -289,9 +290,9 @@ export function HomePage() {
     }
   };
 
-  const inviteLink = scheduledRoom ? `${INVITE_BASE_URL}/join/${scheduledRoom.id}` : '';
+  const inviteLink = scheduledRoom ? buildGuestInviteUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.name) : '';
   const hostEntryLink = scheduledRoom ? buildHostEntryUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.hostToken) : '';
-  const buildInviteLink = (roomId: string) => `${INVITE_BASE_URL}/join/${roomId}`;
+  const buildInviteLink = (room: SavedScheduledStudio) => buildGuestInviteUrl(INVITE_BASE_URL, room.id, room.name);
   const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
 
   useEffect(() => {
@@ -331,7 +332,7 @@ export function HomePage() {
   };
 
   const copySavedInviteLink = async (room: SavedScheduledStudio) => {
-    await writeClipboardText(buildInviteLink(room.id));
+    await writeClipboardText(buildInviteLink(room));
     setSavedRoomCopiedId(room.id);
     setTimeout(() => setSavedRoomCopiedId(null), 2000);
   };
@@ -346,7 +347,7 @@ export function HomePage() {
     const calendar = buildStudioCalendarInvite({
       roomName: room.name,
       hostName: room.hostName,
-      inviteUrl: buildInviteLink(room.id),
+      inviteUrl: buildInviteLink(room),
       scheduledFor: room.scheduledFor,
       createdAt: room.createdAt,
       uid: `studio-${room.id}`,
@@ -366,7 +367,7 @@ export function HomePage() {
     setError(null);
     setSavedQrDownloadingId(room.id);
     try {
-      const dataUrl = await createInviteQrDataUrl(buildInviteLink(room.id));
+      const dataUrl = await createInviteQrDataUrl(buildInviteLink(room));
       downloadDataUrl(dataUrl, `${safeFileName(room.name)}_guest_invite_qr.png`);
     } catch {
       setError('Could not generate a QR code for that studio.');
@@ -376,7 +377,7 @@ export function HomePage() {
   };
 
   const emailGuestInvite = (room: SavedScheduledStudio) => {
-    window.location.href = buildGuestInviteEmailHref(room, buildInviteLink(room.id));
+    window.location.href = buildGuestInviteEmailHref(room, buildInviteLink(room));
   };
 
   const emailScheduledGuestInvite = () => {
@@ -579,7 +580,7 @@ export function HomePage() {
               </div>
               <div style={styles.savedRoomList}>
                 {savedScheduledRooms.map((room) => {
-                  const roomInviteLink = buildInviteLink(room.id);
+                  const roomInviteLink = buildInviteLink(room);
                   const scheduleState = getScheduleState(room);
                   return (
                     <div key={room.id} style={styles.savedRoomCard}>

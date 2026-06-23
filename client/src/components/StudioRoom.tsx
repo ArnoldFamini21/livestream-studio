@@ -47,6 +47,7 @@ import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import type { RecordingMarker } from './RecordingPanel.tsx';
 import { readPreferredAudioProcessing } from '../utils/mediaPreferences.ts';
+import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
   getProductionSceneTemplateConfig,
@@ -1951,8 +1952,8 @@ export function StudioRoom() {
   useTimerTick(timers, onUpdateTimer);
 
   const inviteUrl = useMemo(() => (
-    `${INVITE_BASE_URL.replace(/\/+$/, '')}/join/${roomId || ''}`
-  ), [roomId]);
+    buildGuestInviteUrl(INVITE_BASE_URL, roomId || '', room?.name || 'Studio')
+  ), [room?.name, roomId]);
 
   const requestLiveStreamToken = useCallback((): Promise<string> => {
     const requestId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -3040,6 +3041,7 @@ export function StudioRoom() {
           onLeave={onLeave}
           onOpenDeviceSettings={() => setShowDeviceSettings(true)}
           roomId={roomId || ''}
+          roomName={room?.name || 'Studio'}
           isHost={false}
           isScreenSharing={false}
           onOpenChat={offStageGuestStatus === 'backstage' ? () => setShowGuestChat(!showGuestChat) : undefined}
@@ -3667,6 +3669,7 @@ export function StudioRoom() {
         onLeave={onLeave}
         onOpenDeviceSettings={() => setShowDeviceSettings(true)}
         roomId={roomId || ''}
+        roomName={room?.name || 'Studio'}
         isHost={isHostOrCoHost}
         isRecording={recordingStatus.active}
         formattedTime={recordingStatus.formattedTime}

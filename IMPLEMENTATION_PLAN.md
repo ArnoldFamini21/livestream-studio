@@ -91,10 +91,10 @@
 
 ## Phase 5: Guest & Participant Management (Priority: High)
 ### 5A. Invite System
-- [ ] Shareable join links with room name embedded
+- [x] Shareable join links with room name embedded
 - [ ] Optional password-protected rooms
 - [ ] Email invite with magic link
-- [ ] QR code for mobile guests
+- [x] QR code for mobile guests
 
 ### 5B. Green Room / Waiting Room
 - [ ] Guests land in green room by default
