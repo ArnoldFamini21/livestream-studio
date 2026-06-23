@@ -142,6 +142,8 @@ const MAX_POLL_QUESTION_LENGTH = 240;
 const MAX_POLL_OPTION_LENGTH = 80;
 const MAX_POLL_OPTIONS = 6;
 const MAX_ACTIVE_POLLS_PER_ROOM = 20;
+const POLL_VOTE_COMMAND = /^(?:!|\/)vote\s+([1-6a-f])$/i;
+const POLL_VOTE_OPTION_LETTERS = ['a', 'b', 'c', 'd', 'e', 'f'];
 const MAX_PARTICIPANT_NAME_LENGTH = 50;
 const MAX_JOIN_SESSION_ID_LENGTH = 128;
 const MAX_ROOM_PASSWORD_LENGTH = 100;
@@ -1363,6 +1365,91 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
 
   storeChatMessage(roomState, sanitizedPayload);
   sendChatToVisibleParticipants(mapping.roomId, roomState, sanitizedPayload, 'chat-message');
+
+  if (!sanitizedPayload.isBackstage && !sanitizedPayload.recipientId) {
+    handlePollVoteCommand(ws, mapping, roomState, sanitizedContent);
+  }
+}
+
+function parsePollVoteCommand(content: string): number | null {
+  const match = content.trim().match(POLL_VOTE_COMMAND);
+  if (!match) return null;
+
+  const token = match[1].toLowerCase();
+  const numeric = Number(token);
+  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= MAX_POLL_OPTIONS) {
+    return numeric - 1;
+  }
+
+  const letterIndex = POLL_VOTE_OPTION_LETTERS.indexOf(token);
+  return letterIndex >= 0 ? letterIndex : null;
+}
+
+function getActivePollForChatVote(roomState: RoomState): LivePoll | undefined {
+  const openPolls = Array.from(roomState.polls.values()).filter((poll) => poll.status === 'open');
+  if (openPolls.length === 0) return undefined;
+
+  const highlighted = openPolls.find((poll) => poll.highlighted);
+  if (highlighted) return highlighted;
+
+  return openPolls.sort((a, b) => {
+    const bTime = Date.parse(b.createdAt);
+    const aTime = Date.parse(a.createdAt);
+    return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+  })[0];
+}
+
+function applyPollVote(roomState: RoomState, participantId: string, poll: LivePoll, optionId: string): LivePoll | null {
+  if (poll.status !== 'open') return null;
+  if (!poll.options.some((option) => option.id === optionId)) return null;
+
+  const votes = roomState.pollVotes.get(poll.id) || new Map<string, string>();
+  votes.set(participantId, optionId);
+  roomState.pollVotes.set(poll.id, votes);
+
+  const totals = new Map<string, number>();
+  for (const selectedOptionId of votes.values()) {
+    totals.set(selectedOptionId, (totals.get(selectedOptionId) || 0) + 1);
+  }
+
+  const updated: LivePoll = {
+    ...poll,
+    options: poll.options.map((option) => ({
+      ...option,
+      votes: totals.get(option.id) || 0,
+    })),
+    totalVotes: votes.size,
+  };
+
+  roomState.polls.set(updated.id, updated);
+  return updated;
+}
+
+function handlePollVoteCommand(
+  ws: WebSocket,
+  mapping: { roomId: string; participantId: string },
+  roomState: RoomState,
+  content: string
+) {
+  const optionIndex = parsePollVoteCommand(content);
+  if (optionIndex === null) return;
+
+  const poll = getActivePollForChatVote(roomState);
+  if (!poll) {
+    sendError(ws, 'No open poll is accepting chat votes', 'POLL_NOT_OPEN');
+    return;
+  }
+
+  const option = poll.options[optionIndex];
+  if (!option) {
+    sendError(ws, 'Poll option is not available', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const updated = applyPollVote(roomState, mapping.participantId, poll, option.id);
+  if (updated) {
+    broadcastPoll(mapping.roomId, updated);
+  }
 }
 
 function handleChatReaction(
@@ -1786,30 +1873,12 @@ function handlePollVote(
 
   const poll = roomState.polls.get(payload.pollId);
   if (!poll || poll.status !== 'open') return;
-  if (!poll.options.some((option) => option.id === payload.optionId)) {
+  const updated = applyPollVote(roomState, mapping.participantId, poll, payload.optionId);
+  if (!updated) {
     sendError(ws, 'Invalid poll option', 'VALIDATION_ERROR');
     return;
   }
 
-  const votes = roomState.pollVotes.get(poll.id) || new Map<string, string>();
-  votes.set(mapping.participantId, payload.optionId);
-  roomState.pollVotes.set(poll.id, votes);
-
-  const totals = new Map<string, number>();
-  for (const optionId of votes.values()) {
-    totals.set(optionId, (totals.get(optionId) || 0) + 1);
-  }
-
-  const updated: LivePoll = {
-    ...poll,
-    options: poll.options.map((option) => ({
-      ...option,
-      votes: totals.get(option.id) || 0,
-    })),
-    totalVotes: votes.size,
-  };
-
-  roomState.polls.set(updated.id, updated);
   broadcastPoll(mapping.roomId, updated);
 }
 

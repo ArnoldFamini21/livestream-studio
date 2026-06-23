@@ -133,7 +133,7 @@
 - [x] Animated comment pop-up on stream (StreamYard-style)
 
 ### 6C. Audience Engagement
-- [ ] Live polls (host creates, audience votes via chat commands)
+- [x] Live polls (host creates, audience votes via chat commands)
 - [ ] Q&A queue (audience submits, host picks to display)
 - [ ] On-screen audience comment flashing with animations
 - [ ] Reaction overlays (hearts, claps, fire floating up)
