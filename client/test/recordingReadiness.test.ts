@@ -80,6 +80,37 @@ describe('recording readiness summary', () => {
     assert.match(summary.blockingIssue || '', /No on-stage/);
   });
 
+  it('excludes backstage and green-room tracks from expected recording tracks', () => {
+    const summary = buildRecordingReadinessSummary({
+      ...readyOptions,
+      participants: [
+        readyOptions.participants[0],
+        {
+          id: 'backstage-guest',
+          name: 'Backstage Guest',
+          status: 'backstage',
+          hasStream: true,
+          hasAudio: true,
+          hasVideo: true,
+        },
+        {
+          id: 'green-room-guest',
+          name: 'Green Room Guest',
+          status: 'green-room',
+          hasStream: true,
+          hasAudio: true,
+          hasVideo: true,
+        },
+      ],
+    });
+
+    assert.equal(summary.status, 'good');
+    assert.deepEqual(
+      summary.expectedTracks.map((track) => track.label),
+      ['Host audio', 'Host camera']
+    );
+  });
+
   it('warns when an on-stage remote stream is not connected', () => {
     const summary = buildRecordingReadinessSummary({
       ...readyOptions,
