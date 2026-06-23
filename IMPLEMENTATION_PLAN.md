@@ -104,7 +104,7 @@
 - [x] "You're next" notification for waiting guests
 
 ### 5C. On-Stage Management
-- [x] Host can move guests between: Green Room → On-Stage → Backstage
+- [x] Host can move guests between: Green Room → On-Stage → Backstage, including hold-to-green-room controls
 - [x] Mute/unmute individual participants (host power)
 - [x] Remove participant from session
 - [ ] Spotlight participant (make them the main feed)
