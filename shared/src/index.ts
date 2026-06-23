@@ -509,6 +509,9 @@ export interface Scene {
   nameTagStyle?: NameTagStyle;
   logoPlacement?: LogoPlacement;
   logoSize?: LogoSize;
+  pipCorner?: 'TL' | 'TR' | 'BL' | 'BR';
+  focusedVideoItemId?: string | null;
+  stageItemOrder?: string[];
   // Which overlay IDs should be visible when this scene is active
   visibleOverlayIds: string[];
 }

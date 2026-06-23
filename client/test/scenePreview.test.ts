@@ -4,6 +4,7 @@ import type { LayoutMode } from '@studio/shared';
 import {
   getScenePreviewLogoPosition,
   getScenePreviewOverlays,
+  getScenePreviewPipTilePosition,
   getScenePreviewTiles,
 } from '../src/utils/scenePreview.ts';
 
@@ -33,6 +34,18 @@ describe('scene preview thumbnails', () => {
     assert.equal(getScenePreviewTiles('spotlight')[0].primary, true);
     assert.equal(getScenePreviewTiles('featured')[0].primary, true);
     assert.equal(getScenePreviewTiles('pip')[1].floating, true);
+  });
+
+  it('positions PiP preview tiles from saved scene corners', () => {
+    assert.deepEqual(getScenePreviewPipTilePosition('TL'), { left: '10%', top: '14%' });
+    assert.deepEqual(getScenePreviewPipTilePosition('TR'), { left: '63%', top: '14%' });
+    assert.deepEqual(getScenePreviewPipTilePosition('BL'), { left: '10%', top: '54%' });
+    assert.deepEqual(getScenePreviewPipTilePosition('BR'), { left: '63%', top: '54%' });
+    assert.deepEqual(getScenePreviewPipTilePosition(undefined), { left: '63%', top: '54%' });
+
+    const topLeftPipTile = getScenePreviewTiles('pip', { pipCorner: 'TL' })[1];
+    assert.equal(topLeftPipTile.left, '10%');
+    assert.equal(topLeftPipTile.top, '14%');
   });
 
   it('detects saved scene overlay cues from existing scene ids', () => {
