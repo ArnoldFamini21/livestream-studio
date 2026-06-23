@@ -78,6 +78,7 @@ const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_STUDIO_SCENES = 12;
+const SCENE_TRANSITION_DURATION_MS = 520;
 const GUEST_JOIN_SESSION_STORAGE_KEY = 'livestream-studio:guest-join-session-id';
 const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing or expired. Reopen this studio from the saved host entry on the home screen.';
 
@@ -176,6 +177,12 @@ interface PendingCoHostInviteRequest {
   resolve: (payload: { token: string; expiresAt: string }) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+interface SceneTransitionState {
+  sceneId: string;
+  sceneName: string;
+  visible: boolean;
 }
 
 function getStudioStateKey(roomId: string): string {
@@ -423,6 +430,7 @@ export function StudioRoom() {
   // Scenes
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  const [sceneTransition, setSceneTransition] = useState<SceneTransitionState | null>(null);
 
   // Comment highlighting
   const [highlightedComment, setHighlightedComment] = useState<HighlightedComment | null>(null);
@@ -553,6 +561,8 @@ export function StudioRoom() {
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
   const bannerAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const lowerThirdAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
+  const sceneTransitionTimerRef = useRef<number | null>(null);
+  const sceneTransitionFrameRef = useRef<number | null>(null);
   const lastAutoSpeakerLowerThirdRef = useRef<{ participantId: string; shownAt: number } | null>(null);
   const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
@@ -663,6 +673,31 @@ export function StudioRoom() {
     });
   }, []);
 
+  const triggerSceneTransition = useCallback((scene: Pick<Scene, 'id' | 'name'>) => {
+    if (sceneTransitionTimerRef.current !== null) {
+      window.clearTimeout(sceneTransitionTimerRef.current);
+      sceneTransitionTimerRef.current = null;
+    }
+    if (sceneTransitionFrameRef.current !== null) {
+      window.cancelAnimationFrame(sceneTransitionFrameRef.current);
+      sceneTransitionFrameRef.current = null;
+    }
+
+    setSceneTransition({ sceneId: scene.id, sceneName: scene.name, visible: true });
+    sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
+      sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
+        setSceneTransition((current) => (
+          current?.sceneId === scene.id ? { ...current, visible: false } : current
+        ));
+        sceneTransitionFrameRef.current = null;
+      });
+    });
+    sceneTransitionTimerRef.current = window.setTimeout(() => {
+      setSceneTransition((current) => (current?.sceneId === scene.id ? null : current));
+      sceneTransitionTimerRef.current = null;
+    }, SCENE_TRANSITION_DURATION_MS);
+  }, []);
+
   useEffect(() => {
     setParticipantVolumes((current) => {
       let changed = false;
@@ -681,6 +716,8 @@ export function StudioRoom() {
   useEffect(() => {
     return () => {
       if (liveStatusTimerRef.current) clearTimeout(liveStatusTimerRef.current);
+      if (sceneTransitionTimerRef.current !== null) window.clearTimeout(sceneTransitionTimerRef.current);
+      if (sceneTransitionFrameRef.current !== null) window.cancelAnimationFrame(sceneTransitionFrameRef.current);
       for (const request of liveTokenRequestsRef.current.values()) {
         clearTimeout(request.timer);
         request.reject(new Error('Studio closed before live stream authorization completed.'));
@@ -2039,6 +2076,7 @@ export function StudioRoom() {
       setTickers(prev => prev.map(t => ({ ...t, visible: false })));
     }
     setActiveSceneId(newScene.id);
+    triggerSceneTransition(newScene);
   };
 
   const onApplyScene = (sceneId: string) => {
@@ -2061,6 +2099,7 @@ export function StudioRoom() {
     setTimers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id), isRunning: visibleIds.has(t.id) ? t.isRunning : false })));
     setTickers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id) })));
     setActiveSceneId(sceneId);
+    triggerSceneTransition(scene);
   };
   const onDeleteScene = (sceneId: string) => {
     setScenes(prev => prev.filter(s => s.id !== sceneId));
@@ -3031,6 +3070,21 @@ export function StudioRoom() {
                 </div>
               )}
 
+              {sceneTransition && (
+                <div
+                  data-testid="scene-transition-overlay"
+                  role="status"
+                  aria-live="polite"
+                  aria-label={`Scene transition: ${sceneTransition.sceneName}`}
+                  style={{
+                    ...styles.sceneTransitionOverlay,
+                    opacity: sceneTransition.visible ? 1 : 0,
+                  }}
+                >
+                  <span style={styles.sceneTransitionLabel}>{sceneTransition.sceneName}</span>
+                </div>
+              )}
+
               {/* Debug Compositor Preview (development only) */}
               {showCompositorDebug && (
                 <div style={{ position: 'absolute', top: 16, right: 16, width: 240, aspectRatio: '16/9', border: '2px solid red', borderRadius: 8, overflow: 'hidden', zIndex: 1000, background: '#000', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
@@ -3680,6 +3734,36 @@ const styles: Record<string, React.CSSProperties> = {
     border: '2px solid rgba(255, 255, 255, 0.08)',
     boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
     background: '#0f172a',
+  },
+  sceneTransitionOverlay: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 70,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+    background: 'rgba(2, 6, 23, 0.38)',
+    backdropFilter: 'blur(2px)',
+    WebkitBackdropFilter: 'blur(2px)',
+    transition: `opacity ${SCENE_TRANSITION_DURATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+    willChange: 'opacity',
+  },
+  sceneTransitionLabel: {
+    maxWidth: 'min(70%, 520px)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    padding: '10px 16px',
+    borderRadius: 999,
+    border: '1px solid rgba(255, 255, 255, 0.22)',
+    background: 'rgba(15, 23, 42, 0.72)',
+    boxShadow: '0 18px 48px rgba(0, 0, 0, 0.28)',
+    color: '#f8fafc',
+    fontSize: 14,
+    fontWeight: 700,
+    lineHeight: 1.2,
+    letterSpacing: 0,
   },
   // Base grid container — actual layout props are merged from layoutResult.containerStyle
   gridBase: {
