@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import type { ChatMessage, ChatReactionType } from '@studio/shared';
-import { CHAT_REACTION_LABELS } from '@studio/shared';
+import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
 import {
   getPopoutChatChannelName,
   readPopoutChatSession,
@@ -296,14 +296,17 @@ function ChatMessageCard({
             </button>
           </>
         )}
-        {(Object.keys(CHAT_REACTION_LABELS) as ChatReactionType[]).map((reaction) => (
+        {CHAT_REACTION_TYPES.map((reaction) => (
           <button
             key={reaction}
             type="button"
-            style={styles.actionButton}
+            style={{ ...styles.actionButton, ...styles.reactionButton }}
             onClick={() => onReact(message.id, reaction)}
+            title={`${CHAT_REACTION_LABELS[reaction]} reaction`}
+            aria-label={`${CHAT_REACTION_LABELS[reaction]} reaction${message.reactions?.[reaction] ? `, ${message.reactions[reaction]} total` : ''}`}
           >
-            {CHAT_REACTION_LABELS[reaction]}{message.reactions?.[reaction] ? ` ${message.reactions[reaction]}` : ''}
+            <span aria-hidden="true" style={styles.reactionEmoji}>{CHAT_REACTION_EMOJIS[reaction]}</span>
+            {message.reactions?.[reaction] ? <span style={styles.reactionCount}>{message.reactions[reaction]}</span> : null}
           </button>
         ))}
       </div>
@@ -366,6 +369,9 @@ const styles: Record<string, React.CSSProperties> = {
   actionButton: { minHeight: 25, border: '1px solid var(--border)', borderRadius: 7, background: 'rgba(255,255,255,0.04)', color: 'var(--text-muted)', padding: '0 8px', fontSize: 10, fontWeight: 800, cursor: 'pointer' },
   actionButtonActive: { color: '#fbbf24', borderColor: 'rgba(245, 158, 11, 0.32)', background: 'rgba(245, 158, 11, 0.12)' },
   actionButtonPinned: { color: '#67e8f9', borderColor: 'rgba(34, 211, 238, 0.32)', background: 'rgba(34, 211, 238, 0.12)' },
+  reactionButton: { minWidth: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--text-secondary)' },
+  reactionEmoji: { fontSize: 14, lineHeight: 1 },
+  reactionCount: { minWidth: 14, height: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', borderRadius: 999, background: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)', fontSize: 9, lineHeight: 1 },
   composer: { display: 'grid', gridTemplateColumns: '1fr 38px', gap: 8, padding: 12, borderTop: '1px solid var(--border)', background: 'rgba(15, 23, 42, 0.92)' },
   input: { minWidth: 0, height: 38, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', padding: '0 12px', fontSize: 13, outline: 'none' },
   sendButton: { width: 38, height: 38, borderRadius: 8, border: 'none', background: 'var(--accent-solid)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' },
