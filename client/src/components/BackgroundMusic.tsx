@@ -1,7 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import type { BroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 
 interface BackgroundMusicProps {
   onClose: () => void;
+  broadcastAudio?: BroadcastAudioBus;
 }
 
 interface Track {
@@ -11,7 +13,7 @@ interface Track {
   duration: number;
 }
 
-export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
+export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProps) {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -23,12 +25,47 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
   const [duration, setDuration] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const mediaElementSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const routingGainRef = useRef<GainNode | null>(null);
+  const cleanupAudioRoutingRef = useRef<(() => void) | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const fadeFrameRef = useRef<number | null>(null);
   const isFadingRef = useRef(false);
 
   // Keep a stable reference to the target volume for fades
   const targetVolumeRef = useRef(volume / 100);
+
+  const setOutputVolume = useCallback((value: number) => {
+    const clamped = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 1));
+    if (routingGainRef.current) {
+      routingGainRef.current.gain.value = clamped;
+      if (audioRef.current) audioRef.current.volume = 1;
+      return;
+    }
+    if (audioRef.current) audioRef.current.volume = clamped;
+  }, []);
+
+  const getOutputVolume = useCallback(() => (
+    routingGainRef.current?.gain.value ?? audioRef.current?.volume ?? targetVolumeRef.current
+  ), []);
+
+  const ensureBroadcastRouting = useCallback(() => {
+    if (!broadcastAudio || !audioRef.current) return;
+    const audioContext = broadcastAudio.getContext();
+    if (audioContext.state === 'suspended') {
+      void audioContext.resume();
+    }
+    if (mediaElementSourceRef.current) return;
+
+    const source = audioContext.createMediaElementSource(audioRef.current);
+    const gain = audioContext.createGain();
+    gain.gain.value = targetVolumeRef.current;
+    source.connect(gain);
+    cleanupAudioRoutingRef.current = broadcastAudio.connectNode(gain, { monitor: true });
+    mediaElementSourceRef.current = source;
+    routingGainRef.current = gain;
+    audioRef.current.volume = 1;
+  }, [broadcastAudio]);
 
   // Escape key to close
   useEffect(() => {
@@ -66,6 +103,16 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
       audio.removeEventListener('ended', onEnded);
       audio.pause();
       audio.src = '';
+      cleanupAudioRoutingRef.current?.();
+      cleanupAudioRoutingRef.current = null;
+      try {
+        mediaElementSourceRef.current?.disconnect();
+        routingGainRef.current?.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+      mediaElementSourceRef.current = null;
+      routingGainRef.current = null;
       if (fadeFrameRef.current !== null) {
         cancelAnimationFrame(fadeFrameRef.current);
       }
@@ -87,10 +134,10 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
   // Sync volume (when not fading)
   useEffect(() => {
     targetVolumeRef.current = volume / 100;
-    if (audioRef.current && !isFadingRef.current) {
-      audioRef.current.volume = volume / 100;
+    if (!isFadingRef.current) {
+      setOutputVolume(volume / 100);
     }
-  }, [volume]);
+  }, [setOutputVolume, volume]);
 
   // Fade helper
   const fadeAudio = useCallback(
@@ -114,12 +161,12 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
           ? 2 * progress * progress
           : 1 - Math.pow(-2 * progress + 2, 2) / 2;
 
-        audio.volume = from + (to - from) * eased;
+        setOutputVolume(from + (to - from) * eased);
 
         if (progress < 1) {
           fadeFrameRef.current = requestAnimationFrame(step);
         } else {
-          audio.volume = to;
+          setOutputVolume(to);
           isFadingRef.current = false;
           fadeFrameRef.current = null;
           onComplete?.();
@@ -128,7 +175,7 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
 
       fadeFrameRef.current = requestAnimationFrame(step);
     },
-    []
+    [setOutputVolume]
   );
 
   const loadTrack = useCallback(
@@ -160,19 +207,20 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
       if (track && track.id !== currentTrackId) {
         loadTrack(track);
       }
+      ensureBroadcastRouting();
 
       if (fadeEnabled && fadeDuration > 0) {
-        audio.volume = 0;
+        setOutputVolume(0);
         audio.play().then(() => {
           fadeAudio(0, targetVolumeRef.current, fadeDuration);
         }).catch(() => {});
       } else {
-        audio.volume = targetVolumeRef.current;
+        setOutputVolume(targetVolumeRef.current);
         audio.play().catch(() => {});
       }
       setIsPlaying(true);
     },
-    [currentTrackId, fadeEnabled, fadeDuration, loadTrack, fadeAudio]
+    [currentTrackId, ensureBroadcastRouting, fadeEnabled, fadeDuration, loadTrack, fadeAudio, setOutputVolume]
   );
 
   const pauseTrack = useCallback(() => {
@@ -180,7 +228,7 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
     if (!audio) return;
 
     if (fadeEnabled && fadeDuration > 0) {
-      fadeAudio(audio.volume, 0, fadeDuration, () => {
+      fadeAudio(getOutputVolume(), 0, fadeDuration, () => {
         audio.pause();
         setIsPlaying(false);
       });
@@ -188,7 +236,7 @@ export function BackgroundMusic({ onClose }: BackgroundMusicProps) {
       audio.pause();
       setIsPlaying(false);
     }
-  }, [fadeEnabled, fadeDuration, fadeAudio]);
+  }, [fadeEnabled, fadeDuration, fadeAudio, getOutputVolume]);
 
   const togglePlayPause = useCallback(() => {
     if (isPlaying) {

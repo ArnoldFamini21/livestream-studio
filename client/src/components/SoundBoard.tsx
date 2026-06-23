@@ -1,7 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import type { BroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 
 interface SoundBoardProps {
   onClose: () => void;
+  broadcastAudio?: BroadcastAudioBus;
 }
 
 interface SoundEffect {
@@ -332,19 +334,27 @@ interface CustomSound {
   buffer: AudioBuffer;
 }
 
-export function SoundBoard({ onClose }: SoundBoardProps) {
+export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
   const [volume, setVolume] = useState(0.7);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [customSounds, setCustomSounds] = useState<CustomSound[]>([]);
   const [showUpload, setShowUpload] = useState(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
+  const cleanupMasterGainRef = useRef<(() => void) | null>(null);
+  const ownsAudioContextRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Close AudioContext on unmount
   useEffect(() => {
     return () => {
-      audioCtxRef.current?.close().catch(() => {});
+      cleanupMasterGainRef.current?.();
+      cleanupMasterGainRef.current = null;
+      if (ownsAudioContextRef.current) {
+        audioCtxRef.current?.close().catch(() => {});
+      }
+      audioCtxRef.current = null;
+      masterGainRef.current = null;
     };
   }, []);
 
@@ -360,18 +370,46 @@ export function SoundBoard({ onClose }: SoundBoardProps) {
   }, [onClose]);
 
   const getAudioContext = useCallback(() => {
+    if (broadcastAudio) {
+      const ctx = broadcastAudio.getContext();
+      if (ctx.state === 'suspended') {
+        void ctx.resume();
+      }
+
+      if (audioCtxRef.current !== ctx || !masterGainRef.current) {
+        cleanupMasterGainRef.current?.();
+        cleanupMasterGainRef.current = null;
+        audioCtxRef.current = ctx;
+        ownsAudioContextRef.current = false;
+        masterGainRef.current = ctx.createGain();
+        masterGainRef.current.gain.value = volume;
+        cleanupMasterGainRef.current = broadcastAudio.connectNode(masterGainRef.current, { monitor: true });
+      }
+
+      masterGainRef.current.gain.value = volume;
+      return { ctx, masterGain: masterGainRef.current };
+    }
+
     if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
       audioCtxRef.current = new AudioContext();
       masterGainRef.current = audioCtxRef.current.createGain();
       masterGainRef.current.gain.value = volume;
       masterGainRef.current.connect(audioCtxRef.current.destination);
+      cleanupMasterGainRef.current = () => {
+        try {
+          masterGainRef.current?.disconnect();
+        } catch {
+          // Already disconnected.
+        }
+      };
+      ownsAudioContextRef.current = true;
     }
     if (audioCtxRef.current.state === 'suspended') {
       audioCtxRef.current.resume();
     }
     masterGainRef.current!.gain.value = volume;
     return { ctx: audioCtxRef.current, masterGain: masterGainRef.current! };
-  }, [volume]);
+  }, [broadcastAudio, volume]);
 
   const handlePlay = useCallback((effect: SoundEffect) => {
     const { ctx, masterGain } = getAudioContext();

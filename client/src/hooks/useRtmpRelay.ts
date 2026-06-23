@@ -20,6 +20,7 @@ import {
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
+import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -27,6 +28,8 @@ interface UseRtmpRelayOptions {
   localParticipantId?: string | null;
   remoteStreams: Map<string, MediaStream>;
   screenStream: MediaStream | null;
+  auxiliaryAudioStream?: MediaStream | null;
+  ensureAuxiliaryAudioStream?: () => MediaStream | null;
   participantVolumes?: Record<string, number>;
   participantAudioLevels?: Record<string, number>;
   audioDuckingEnabled?: boolean;
@@ -186,18 +189,20 @@ function collectAudioSources(
   localParticipantId: string | null | undefined,
   remoteStreams: Map<string, MediaStream>,
   screenStream: MediaStream | null,
+  auxiliaryAudioStream: MediaStream | null | undefined,
   participantVolumes: Record<string, number>
 ): Array<{ stream: MediaStream; volume: number; participantId?: string }> {
   const sources: Array<{ stream: MediaStream; volume: number; participantId?: string }> = [];
-  if (localStream?.getAudioTracks().some((track) => track.readyState === 'live')) {
+  const localAudioTracks = getLiveAudioTracks(localStream);
+  if (localAudioTracks.length > 0) {
     sources.push({
-      stream: new MediaStream(localStream.getAudioTracks()),
+      stream: new MediaStream(localAudioTracks),
       volume: localParticipantId ? clampVolume(participantVolumes[localParticipantId]) : 1,
       participantId: localParticipantId || undefined,
     });
   }
   for (const [participantId, stream] of remoteStreams) {
-    const audioTracks = stream.getAudioTracks().filter((track) => track.readyState === 'live');
+    const audioTracks = getLiveAudioTracks(stream);
     if (audioTracks.length > 0) {
       sources.push({
         stream: new MediaStream(audioTracks),
@@ -206,8 +211,12 @@ function collectAudioSources(
       });
     }
   }
-  const screenAudioTracks = screenStream?.getAudioTracks().filter((track) => track.readyState === 'live') || [];
+  const screenAudioTracks = getLiveAudioTracks(screenStream);
   if (screenAudioTracks.length > 0) sources.push({ stream: new MediaStream(screenAudioTracks), volume: 1 });
+  const auxiliaryAudioTracks = getLiveAudioTracks(auxiliaryAudioStream);
+  if (auxiliaryAudioTracks.length > 0) {
+    sources.push({ stream: new MediaStream(auxiliaryAudioTracks), volume: 1 });
+  }
   return sources;
 }
 
@@ -308,6 +317,7 @@ async function createMixedBroadcastStream(
   localParticipantId: string | null | undefined,
   remoteStreams: Map<string, MediaStream>,
   screenStream: MediaStream | null,
+  auxiliaryAudioStream: MediaStream | null | undefined,
   participantVolumes: Record<string, number>
 ): Promise<MixerResources> {
   const videoResources = await createRelayVideoStream(compositeStream, videoConfig);
@@ -326,7 +336,14 @@ async function createMixedBroadcastStream(
   const sources: MediaStreamAudioSourceNode[] = [];
   const gains: GainNode[] = [];
   const participantGains = new Map<string, GainNode>();
-  const audioSources = collectAudioSources(localStream, localParticipantId, remoteStreams, screenStream, participantVolumes);
+  const audioSources = collectAudioSources(
+    localStream,
+    localParticipantId,
+    remoteStreams,
+    screenStream,
+    auxiliaryAudioStream,
+    participantVolumes
+  );
 
   for (const audioSource of audioSources) {
     const source = audioContext.createMediaStreamSource(audioSource.stream);
@@ -378,6 +395,8 @@ export function useRtmpRelay({
   localParticipantId,
   remoteStreams,
   screenStream,
+  auxiliaryAudioStream,
+  ensureAuxiliaryAudioStream,
   participantVolumes = {},
   participantAudioLevels = {},
   audioDuckingEnabled = false,
@@ -658,6 +677,7 @@ export function useRtmpRelay({
             ...remoteStreams.keys(),
           ],
         });
+        const currentAuxiliaryAudioStream = ensureAuxiliaryAudioStream?.() ?? auxiliaryAudioStream ?? null;
         const mixer = await createMixedBroadcastStream(
           currentCompositeStream,
           videoConfig,
@@ -665,6 +685,7 @@ export function useRtmpRelay({
           localParticipantId,
           remoteStreams,
           screenStream,
+          currentAuxiliaryAudioStream,
           initialParticipantVolumes
         );
         mixerRef.current = mixer;
@@ -873,7 +894,7 @@ export function useRtmpRelay({
 
       await connectRelay(currentToken);
     },
-    [audioDuckingEnabled, cleanup, clearReconnectTimer, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, participantAudioLevels, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
+    [audioDuckingEnabled, auxiliaryAudioStream, cleanup, clearReconnectTimer, compositeStreamRef, ensureAuxiliaryAudioStream, localParticipantId, localStream, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, participantAudioLevels, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
   );
 
   useEffect(() => {
