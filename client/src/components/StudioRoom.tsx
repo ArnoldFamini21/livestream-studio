@@ -2478,7 +2478,18 @@ export function StudioRoom() {
   };
 
   // Comment highlighting
-  const onHighlightComment = (comment: HighlightedComment) => setHighlightedComment(comment);
+  const onHighlightComment = (comment: HighlightedComment) => {
+    setHighlightedComment({
+      ...comment,
+      displayMode: 'featured',
+    });
+  };
+  const onFlashComment = (comment: HighlightedComment) => {
+    setHighlightedComment({
+      ...comment,
+      displayMode: 'flash',
+    });
+  };
   const onDismissComment = () => setHighlightedComment(null);
 
   // Webinar Q&A
@@ -3414,7 +3425,7 @@ export function StudioRoom() {
                 ))}
 
                 {/* Comment Highlight Overlay */}
-                <CommentHighlightOverlay comment={highlightedComment} />
+                <CommentHighlightOverlay comment={highlightedComment} onExpired={onDismissComment} />
 
                 {/* Webinar Q&A Overlay */}
                 <WebinarQAOverlay question={highlightedQA} />
@@ -3603,6 +3614,7 @@ export function StudioRoom() {
             chatMessages={chatMessages}
             highlightedComment={highlightedComment}
             onHighlightComment={onHighlightComment}
+            onFlashComment={onFlashComment}
             onDismissComment={onDismissComment}
             chatPanelMessages={chatMessages}
             onSendChat={onSendChat}
