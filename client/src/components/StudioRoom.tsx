@@ -20,7 +20,6 @@ import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
 import {
   clearUrlHostToken,
-  getLegacyHostSession,
   getHostSession,
   getSavedHostStudio,
   getStoredParticipantRole,
@@ -383,13 +382,12 @@ export function StudioRoom() {
   const savedHostStudio = useMemo(() => (roomId ? getSavedHostStudio(roomId) : null), [roomId]);
   const urlHostToken = roomId ? getUrlHostToken() : '';
   const hostSession = useMemo(() => (roomId ? getHostSession(roomId, urlHostToken) : null), [roomId, urlHostToken]);
-  const legacyHostSession = useMemo(() => (roomId ? getLegacyHostSession(roomId) : null), [roomId]);
   const storedUserRole = getStoredParticipantRole();
-  const userName = hostSession?.hostName || legacyHostSession?.hostName || getStoredUserName() || savedHostStudio?.hostName || 'Anonymous';
+  const userName = hostSession?.hostName || getStoredUserName() || savedHostStudio?.hostName || 'Anonymous';
   const roomHostToken = hostSession?.hostToken || '';
   const popoutChatSessionId = useMemo(() => (roomId ? createPopoutChatSessionId() : ''), [roomId]);
-  const missingHostAccess = Boolean(roomId && !hostSession && !legacyHostSession && storedUserRole === 'host');
-  const userRole: 'host' | 'co-host' | 'guest' = hostSession || legacyHostSession
+  const missingHostAccess = Boolean(roomId && !hostSession && storedUserRole === 'host');
+  const userRole: 'host' | 'co-host' | 'guest' = hostSession
     ? 'host'
     : storedUserRole === 'host'
       ? 'guest'

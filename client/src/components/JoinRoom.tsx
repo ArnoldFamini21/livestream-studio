@@ -7,12 +7,10 @@ import { readPreferredAudioProcessing, writePreferredAudioProcessing } from '../
 import { createSpeakerTestToneBlob } from '../utils/speakerTestTone.ts';
 import {
   clearUrlHostToken,
-  getLegacyHostSession,
   getHostSession,
   getSavedHostStudio,
   getStoredUserName,
   getUrlHostToken,
-  persistLegacyHostSession,
   persistHostSession,
   upsertSavedHostStudio,
 } from '../utils/hostSession.ts';
@@ -50,20 +48,16 @@ export function JoinRoom() {
   const savedHostStudio = roomId ? getSavedHostStudio(roomId) : null;
   const urlHostToken = roomId ? getUrlHostToken() : '';
   const hostSession = roomId ? getHostSession(roomId, urlHostToken) : null;
-  const legacyHostSession = roomId ? getLegacyHostSession(roomId) : null;
   const hostToken = hostSession?.hostToken || '';
   const isHostEntryRequested = searchParams.get('role') === 'host';
   const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
   const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
   const inviteStudioName = getInviteStudioName(searchParams);
   const isHostSession = Boolean(hostSession);
-  const isLegacyHostSession = Boolean(legacyHostSession);
-  const hostEntryMode = isHostSession || isLegacyHostSession || isHostEntryRequested;
-  const hostAccessMissing = Boolean(isHostEntryRequested && !hostSession && !legacyHostSession);
+  const hostEntryMode = isHostSession || isHostEntryRequested;
+  const hostAccessMissing = Boolean(isHostEntryRequested && !hostSession);
   const initialName = hostSession
     ? hostSession.hostName
-    : legacyHostSession
-      ? legacyHostSession.hostName
     : isHostEntryRequested
       ? savedHostStudio?.hostName || getStoredUserName() || ''
       : getStoredUserName() || savedHostStudio?.hostName || '';
@@ -269,8 +263,6 @@ export function JoinRoom() {
     
     if (isHostSession) {
       if (roomId) persistHostSession({ roomId, hostName: guestName.trim(), hostToken });
-    } else if (isLegacyHostSession) {
-      if (roomId) persistLegacyHostSession({ roomId, hostName: guestName.trim() });
     } else if (isCoHostInvite && roomId) {
       sessionStorage.setItem('userRole', 'co-host');
       sessionStorage.setItem(`coHostInviteToken:${roomId}`, coHostInviteToken);
@@ -640,7 +632,7 @@ export function JoinRoom() {
           onClick={joinStudio}
           disabled={!guestName.trim() || hostAccessMissing || scheduledGuestBlocked || Boolean(needsRoomPassword && !roomPassword.trim())}
         >
-          {hostAccessMissing ? 'Host Access Missing' : scheduledGuestBlocked ? 'Not Open Yet' : (isHostSession || isLegacyHostSession) ? 'Enter as Host' : isCoHostInvite ? 'Join as Co-host' : 'Join Studio'}
+          {hostAccessMissing ? 'Host Access Missing' : scheduledGuestBlocked ? 'Not Open Yet' : isHostSession ? 'Enter as Host' : isCoHostInvite ? 'Join as Co-host' : 'Join Studio'}
         </button>
 
         <p style={styles.finePrint}>No account or download required</p>

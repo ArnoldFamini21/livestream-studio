@@ -6,7 +6,6 @@ import {
   buildHostEntryPath,
   buildHostEntryUrl,
   getValidHostToken,
-  persistLegacyHostSession,
   persistHostSession,
   readSavedHostStudios,
   removeSavedHostStudio,
@@ -19,6 +18,9 @@ import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
 const SERVER_WAKE_NOTICE_DELAY_MS = 6_000;
+const MISSING_HOST_TOKEN_MESSAGE = 'Studio was created, but host access was not returned. Please try again in a moment.';
+const MISSING_SCHEDULED_HOST_TOKEN_MESSAGE = 'Studio was scheduled, but host access was not returned. Please schedule it again in a moment.';
+const SAVED_HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing for this studio. Create a new studio to get a fresh private host link.';
 const INVITE_QR_OPTIONS = {
   errorCorrectionLevel: 'M',
   margin: 2,
@@ -199,8 +201,7 @@ export function HomePage() {
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
-        persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
-        navigate(`/studio/${encodeURIComponent(room.id)}`);
+        setError(MISSING_HOST_TOKEN_MESSAGE);
         return;
       }
       // Scoped per room so old tokens don't leak across rooms.
@@ -250,19 +251,7 @@ export function HomePage() {
       }
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
-        persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
-        setScheduledRoom({
-          id: room.id,
-          name: room.name,
-          hostName: savedHostName,
-          hostToken: '',
-          createdAt: room.createdAt || new Date().toISOString(),
-          scheduledFor: room.scheduledFor || undefined,
-          passwordProtected: Boolean(room.settings?.passwordProtected),
-          status: room.status,
-        });
-        setCopied(false);
-        setHostCopied(false);
+        setError(MISSING_SCHEDULED_HOST_TOKEN_MESSAGE);
         return;
       }
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
@@ -389,8 +378,7 @@ export function HomePage() {
     const savedHostName = room.hostName || hostName || 'Host';
     const hostToken = getValidHostToken(room.hostToken);
     if (!hostToken) {
-      persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
-      navigate(`/studio/${encodeURIComponent(room.id)}`);
+      setError(SAVED_HOST_ACCESS_MISSING_MESSAGE);
       return;
     }
     persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
@@ -406,8 +394,7 @@ export function HomePage() {
     const savedHostName = scheduledRoom.hostName || hostName || 'Host';
     const hostToken = getValidHostToken(scheduledRoom.hostToken);
     if (!hostToken) {
-      persistLegacyHostSession({ roomId: scheduledRoom.id, hostName: savedHostName });
-      navigate(`/studio/${encodeURIComponent(scheduledRoom.id)}`);
+      setError(SAVED_HOST_ACCESS_MISSING_MESSAGE);
       return;
     }
     persistHostSession({ roomId: scheduledRoom.id, hostName: savedHostName, hostToken });

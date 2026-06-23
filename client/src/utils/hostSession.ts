@@ -26,11 +26,6 @@ export interface HostSession {
   source: 'url' | 'session' | 'saved';
 }
 
-export interface LegacyHostSession {
-  roomId: string;
-  hostName: string;
-}
-
 function getSessionItem(key: string): string {
   try {
     return sessionStorage.getItem(key) || '';
@@ -230,18 +225,4 @@ export function persistHostSession(input: { roomId: string; hostName: string; ho
   setSessionItem(USER_NAME_KEY, input.hostName || 'Host');
   setSessionItem(hostTokenKey(input.roomId), input.hostToken);
   removeSessionItem(legacyHostKey(input.roomId));
-}
-
-export function getLegacyHostSession(roomId: string): LegacyHostSession | null {
-  if (getSessionItem(legacyHostKey(roomId)) !== '1') return null;
-  return {
-    roomId,
-    hostName: getStoredUserName() || 'Host',
-  };
-}
-
-export function persistLegacyHostSession(input: { roomId: string; hostName: string }) {
-  setSessionItem(USER_ROLE_KEY, 'host');
-  setSessionItem(USER_NAME_KEY, input.hostName || 'Host');
-  setSessionItem(legacyHostKey(input.roomId), '1');
 }
