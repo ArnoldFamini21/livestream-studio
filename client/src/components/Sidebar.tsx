@@ -85,6 +85,7 @@ interface SidebarProps {
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
+  onDuplicateScene: (sceneId: string) => void;
   onReorderScene: (sceneId: string, direction: SceneOrderDirection) => void;
   // Chat props
   chatPanelMessages: ChatMessage[];
@@ -476,6 +477,7 @@ export function Sidebar(props: SidebarProps) {
                   onApplyScene={props.onApplyScene}
                   onDeleteScene={props.onDeleteScene}
                   onRenameScene={props.onRenameScene}
+                  onDuplicateScene={props.onDuplicateScene}
                   onReorderScene={props.onReorderScene}
                 />
               </div>

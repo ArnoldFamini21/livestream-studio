@@ -22,6 +22,7 @@ interface SceneManagerProps {
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
+  onDuplicateScene: (sceneId: string) => void;
   onReorderScene: (sceneId: string, direction: SceneOrderDirection) => void;
 }
 
@@ -86,6 +87,7 @@ export function SceneManager({
   onApplyScene,
   onDeleteScene,
   onRenameScene,
+  onDuplicateScene,
   onReorderScene,
 }: SceneManagerProps) {
   const [isCreating, setIsCreating] = useState(false);
@@ -138,6 +140,12 @@ export function SceneManager({
   const startDelete = (sceneId: string) => {
     setMenuOpenId(null);
     onDeleteScene(sceneId);
+  };
+
+  const startDuplicate = (sceneId: string) => {
+    if (atLimit) return;
+    setMenuOpenId(null);
+    onDuplicateScene(sceneId);
   };
 
   return (
@@ -375,6 +383,21 @@ export function SceneManager({
                             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                           </svg>
                           Rename
+                        </button>
+                        <button
+                          style={{
+                            ...styles.menuItem,
+                            ...(atLimit ? styles.menuItemDisabled : {}),
+                          }}
+                          onClick={() => startDuplicate(scene.id)}
+                          disabled={atLimit}
+                          title={atLimit ? `Maximum of ${MAX_SCENES} scenes reached` : 'Duplicate scene'}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="8" y="8" width="12" height="12" rx="2" />
+                            <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                          </svg>
+                          Duplicate
                         </button>
                         <button
                           style={{ ...styles.menuItem, ...styles.menuItemDanger }}
@@ -833,6 +856,10 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
     cursor: 'pointer',
     textAlign: 'left',
+  },
+  menuItemDisabled: {
+    opacity: 0.42,
+    cursor: 'not-allowed',
   },
   menuItemDanger: {
     color: 'var(--danger)',
