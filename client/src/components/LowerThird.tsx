@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Participant, ParticipantRole } from '@studio/shared';
+import { normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 
 interface LowerThirdData {
   id: string;
@@ -8,6 +9,7 @@ interface LowerThirdData {
   style: 'minimal' | 'bold' | 'gradient' | 'glass';
   visible: boolean;
   durationSeconds?: number;
+  accentColor?: string;
 }
 
 interface LowerThirdManagerProps {
@@ -23,6 +25,15 @@ const LOWER_THIRD_DURATION_OPTIONS = [
   { label: '10s', value: 10 },
   { label: '20s', value: 20 },
   { label: '60s', value: 60 },
+] as const;
+
+const LOWER_THIRD_ACCENT_COLORS = [
+  '#7c3aed',
+  '#0891b2',
+  '#059669',
+  '#db2777',
+  '#ea580c',
+  '#2563eb',
 ] as const;
 
 function getParticipantLowerThirdTitle(role: ParticipantRole): string {
@@ -41,6 +52,7 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
   const [title, setTitle] = useState('');
   const [style, setStyle] = useState<LowerThirdData['style']>('minimal');
   const [durationSeconds, setDurationSeconds] = useState(0);
+  const [accentColor, setAccentColor] = useState('');
   const onStageParticipants = participants.filter((participant) => participant.status === 'on-stage');
 
   const handleAdd = () => {
@@ -50,6 +62,7 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
       title: title.trim(),
       style,
       durationSeconds: durationSeconds || undefined,
+      accentColor: normalizeLowerThirdAccentColor(accentColor),
     });
     setName('');
     setTitle('');
@@ -94,7 +107,15 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
         {lowerThirds.map((lt) => (
           <div key={lt.id} className="participant-item" style={styles.item}>
             <div style={styles.itemInfo}>
-              <span style={styles.itemName}>{lt.name}</span>
+              <div style={styles.itemNameRow}>
+                <span
+                  style={{
+                    ...styles.itemDot,
+                    background: normalizeLowerThirdAccentColor(lt.accentColor) || 'var(--accent)',
+                  }}
+                />
+                <span style={styles.itemName}>{lt.name}</span>
+              </div>
               {lt.title && <span style={styles.itemTitle}>{lt.title}</span>}
               {lt.durationSeconds && <span style={styles.itemMeta}>{lt.durationSeconds}s auto-hide</span>}
             </div>
@@ -166,6 +187,36 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
             ))}
           </div>
         </div>
+        <div style={styles.accentGroup}>
+          <span style={styles.durationLabel}>Accent</span>
+          <div style={styles.accentRow}>
+            <button
+              type="button"
+              style={{
+                ...styles.accentBrandBtn,
+                ...(accentColor === '' ? styles.accentBrandBtnActive : {}),
+              }}
+              onClick={() => setAccentColor('')}
+            >
+              Brand
+            </button>
+            {LOWER_THIRD_ACCENT_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                style={{
+                  ...styles.accentSwatch,
+                  background: color,
+                  outline: accentColor === color ? `2px solid ${color}` : 'none',
+                  outlineOffset: 2,
+                }}
+                onClick={() => setAccentColor(color)}
+                aria-label={`Use ${color} accent`}
+                title={color}
+              />
+            ))}
+          </div>
+        </div>
         <button
           className="btn-primary"
           style={styles.addBtn}
@@ -208,7 +259,7 @@ export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
 
   if (!mounted) return null;
 
-  const overlayStyles = getOverlayStyle(data.style);
+  const overlayStyles = getOverlayStyle(data.style, normalizeLowerThirdAccentColor(data.accentColor));
 
   return (
     <div
@@ -234,7 +285,8 @@ export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
   );
 }
 
-function getOverlayStyle(style: LowerThirdData['style']) {
+function getOverlayStyle(style: LowerThirdData['style'], accentColor?: string) {
+  const accent = accentColor || 'var(--accent)';
   const base = {
     container: {} as React.CSSProperties,
     nameBar: { padding: '6px 16px' } as React.CSSProperties,
@@ -248,20 +300,20 @@ function getOverlayStyle(style: LowerThirdData['style']) {
       return {
         ...base,
         container: { background: 'rgba(0,0,0,0.75)', borderRadius: 8, overflow: 'hidden' },
-        nameBar: { ...base.nameBar, borderLeft: '3px solid var(--accent)' },
+        nameBar: { ...base.nameBar, borderLeft: `3px solid ${accent}` },
       };
     case 'bold':
       return {
         ...base,
         container: { overflow: 'hidden', borderRadius: 8 },
-        nameBar: { ...base.nameBar, background: 'var(--accent)', padding: '8px 18px' },
+        nameBar: { ...base.nameBar, background: accent, padding: '8px 18px' },
         name: { ...base.name, fontSize: 16, letterSpacing: '0.02em' },
         titleBar: { ...base.titleBar, background: 'rgba(0,0,0,0.8)', padding: '6px 18px' },
       };
     case 'gradient':
       return {
         ...base,
-        container: { background: 'linear-gradient(135deg, #7c3aed, #ec4899)', borderRadius: 10, overflow: 'hidden' },
+        container: { background: `linear-gradient(135deg, ${accentColor || '#7c3aed'}, #ec4899)`, borderRadius: 10, overflow: 'hidden' },
         nameBar: { ...base.nameBar, padding: '8px 18px' },
         titleBar: { ...base.titleBar, background: 'rgba(0,0,0,0.2)' },
       };
@@ -272,7 +324,7 @@ function getOverlayStyle(style: LowerThirdData['style']) {
           background: 'rgba(255,255,255,0.1)',
           backdropFilter: 'blur(16px)',
           borderRadius: 10,
-          border: '1px solid rgba(255,255,255,0.15)',
+          border: accentColor ? `1px solid ${accentColor}` : '1px solid rgba(255,255,255,0.15)',
           overflow: 'hidden',
         },
         nameBar: { ...base.nameBar, padding: '8px 16px' },
@@ -390,7 +442,20 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     flex: 1,
   },
+  itemNameRow: {
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  itemDot: {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    flexShrink: 0,
+  },
   itemName: {
+    minWidth: 0,
     fontSize: 13,
     fontWeight: 500,
     color: 'var(--text-primary)',
@@ -472,7 +537,9 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     background: 'var(--bg-tertiary)',
     color: 'var(--text-muted)',
-    border: '1px solid var(--border)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
     cursor: 'pointer',
     textTransform: 'capitalize',
   },
@@ -502,7 +569,9 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     height: 26,
     borderRadius: 6,
-    border: '1px solid var(--border)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
     background: 'var(--bg-tertiary)',
     color: 'var(--text-muted)',
     fontSize: 10,
@@ -513,6 +582,43 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(167, 139, 250, 0.14)',
     borderColor: 'var(--accent)',
     color: '#c4b5fd',
+  },
+  accentGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 5,
+  },
+  accentRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  accentBrandBtn: {
+    height: 24,
+    padding: '0 8px',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  accentBrandBtnActive: {
+    background: 'var(--accent-subtle)',
+    borderColor: 'var(--accent)',
+    color: 'var(--accent-hover)',
+  },
+  accentSwatch: {
+    width: 20,
+    height: 20,
+    borderRadius: '50%',
+    border: 'none',
+    cursor: 'pointer',
+    flexShrink: 0,
   },
   addBtn: {
     fontSize: 12,

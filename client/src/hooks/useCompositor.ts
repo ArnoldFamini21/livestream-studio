@@ -5,6 +5,7 @@ import type { HighlightedComment } from '../components/CommentHighlight.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
+import { normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 import type { LiveCaptionSegment } from './useLiveCaptions.ts';
 
 interface CompositorProps {
@@ -552,6 +553,8 @@ function drawLowerThird(
   const y = 1080 - bottom - height;
   const maxWidth = 720;
   const minWidth = 360;
+  const normalizedAccentColor = normalizeLowerThirdAccentColor(lowerThird.accentColor);
+  const accentColor = normalizedAccentColor || brandColor;
 
   ctx.save();
   ctx.font = lowerThird.style === 'bold' ? '700 34px Inter, Arial, sans-serif' : '700 32px Inter, Arial, sans-serif';
@@ -566,7 +569,7 @@ function drawLowerThird(
 
   if (lowerThird.style === 'gradient') {
     const gradient = ctx.createLinearGradient(x, y, x + width, y + height);
-    gradient.addColorStop(0, '#7c3aed');
+    gradient.addColorStop(0, accentColor);
     gradient.addColorStop(1, '#ec4899');
     ctx.fillStyle = gradient;
     drawRoundedRect(ctx, x, y, width, height, 18);
@@ -574,13 +577,13 @@ function drawLowerThird(
     ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
     drawRoundedRect(ctx, x, y, width, height, 18);
     ctx.shadowColor = 'transparent';
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+    ctx.strokeStyle = normalizedAccentColor || 'rgba(255, 255, 255, 0.28)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.roundRect(x, y, width, height, 18);
     ctx.stroke();
   } else if (lowerThird.style === 'bold') {
-    ctx.fillStyle = brandColor;
+    ctx.fillStyle = accentColor;
     drawRoundedRect(ctx, x, y, width, nameHeight, 14);
     if (titleHeight > 0) {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
@@ -590,7 +593,7 @@ function drawLowerThird(
     ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
     drawRoundedRect(ctx, x, y, width, height, 14);
     ctx.shadowColor = 'transparent';
-    ctx.fillStyle = brandColor;
+    ctx.fillStyle = accentColor;
     ctx.fillRect(x, y, 8, height);
   }
 
