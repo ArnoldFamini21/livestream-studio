@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { BroadcastOrientation, StreamDestination } from '@studio/shared';
+import type { SessionHealthSummary } from '../hooks/useSessionHealth.ts';
 import type { RtmpRelayReadiness, RtmpRelayStats } from '../hooks/useRtmpRelay.ts';
 import {
   getDefaultRtmpUrl,
@@ -16,6 +17,7 @@ import {
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
 import { formatRelayLatency } from '../utils/rtmpRelayLatency.ts';
+import { buildLivePreflightChecklist, type LivePreflightStatus } from '../utils/livePreflight.ts';
 
 interface StreamDestinationsProps {
   destinations: StreamDestination[];
@@ -30,6 +32,8 @@ interface StreamDestinationsProps {
   isLive: boolean;
   relayStats?: RtmpRelayStats;
   relayReadiness?: RtmpRelayReadiness;
+  sessionHealth?: SessionHealthSummary;
+  sceneCount?: number;
   onRetryRelayReadiness?: () => void | Promise<unknown>;
   onGoLive: () => void | Promise<void>;
   onStopLive: () => void | Promise<void>;
@@ -66,6 +70,8 @@ export function StreamDestinations({
   isLive,
   relayStats,
   relayReadiness,
+  sessionHealth,
+  sceneCount = 0,
   onRetryRelayReadiness,
   onGoLive,
   onStopLive,
@@ -153,8 +159,15 @@ export function StreamDestinations({
   const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
   const relayIssue = getRelayReadinessIssue(relayReadiness);
   const relayStatus = getRelayReadinessStatus(relayReadiness);
-  const preflightIssue = getEnabledDestinationPreflightIssue(destinations, relayIssue);
-  const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue;
+  const livePreflight = buildLivePreflightChecklist({
+    destinations,
+    relayReadiness,
+    sessionHealth,
+    sceneCount,
+    outputSummary: selectedOutputSummary,
+  });
+  const preflightIssue = livePreflight.blockingIssue || getEnabledDestinationPreflightIssue(destinations, relayIssue);
+  const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue && !livePreflight.blockingIssue;
   const relayQuality = relayStats ? getRelayQuality(relayStats, relayTargetKbps, selectedOutputPreset.label) : null;
   const bitrateBars = relayStats ? buildBitrateBars(relayStats.bitrateHistory, relayTargetKbps, BITRATE_BAR_COUNT) : [];
 
@@ -271,6 +284,45 @@ export function StreamDestinations({
             {preflightIssue && <div style={styles.preflightIssue}>{preflightIssue}</div>}
           </div>
         )}
+
+        <div style={styles.checklistCard}>
+          <div style={styles.checklistHeader}>
+            <div>
+              <span style={styles.checklistTitle}>Go Live Checklist</span>
+              <p style={styles.checklistSubtitle}>
+                {livePreflight.blockedCount > 0
+                  ? `${livePreflight.blockedCount} blocked item${livePreflight.blockedCount === 1 ? '' : 's'}`
+                  : livePreflight.warningCount > 0
+                    ? `${livePreflight.warningCount} item${livePreflight.warningCount === 1 ? '' : 's'} to review`
+                    : 'All required checks are ready'}
+              </p>
+            </div>
+            <span style={{
+              ...styles.checklistBadge,
+              color: getPreflightStatusColor(livePreflight.status),
+              borderColor: getPreflightStatusBorder(livePreflight.status),
+              background: getPreflightStatusBackground(livePreflight.status),
+            }}>
+              {livePreflight.label}
+            </span>
+          </div>
+          <div style={styles.checklistList}>
+            {livePreflight.items.map((item) => (
+              <div key={item.id} style={styles.checklistItem}>
+                <span style={{ ...styles.checklistDot, background: getPreflightStatusColor(item.status) }} />
+                <div style={styles.checklistBody}>
+                  <div style={styles.checklistTopLine}>
+                    <span style={styles.checklistItemLabel}>{item.label}</span>
+                    <span style={{ ...styles.checklistItemStatus, color: getPreflightStatusColor(item.status) }}>
+                      {getPreflightStatusLabel(item.status)}
+                    </span>
+                  </div>
+                  <p style={styles.checklistDetail}>{item.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
 
         {isLive && relayStats && (
           <div style={styles.healthCard}>
@@ -562,6 +614,38 @@ function getRelayReadinessStatus(readiness: RtmpRelayReadiness | undefined) {
   };
 }
 
+function getPreflightStatusColor(status: LivePreflightStatus): string {
+  switch (status) {
+    case 'good': return '#86efac';
+    case 'warning': return '#fcd34d';
+    case 'bad': return '#fca5a5';
+  }
+}
+
+function getPreflightStatusBackground(status: LivePreflightStatus): string {
+  switch (status) {
+    case 'good': return 'rgba(34, 197, 94, 0.1)';
+    case 'warning': return 'rgba(245, 158, 11, 0.1)';
+    case 'bad': return 'rgba(239, 68, 68, 0.1)';
+  }
+}
+
+function getPreflightStatusBorder(status: LivePreflightStatus): string {
+  switch (status) {
+    case 'good': return 'rgba(34, 197, 94, 0.24)';
+    case 'warning': return 'rgba(245, 158, 11, 0.25)';
+    case 'bad': return 'rgba(239, 68, 68, 0.26)';
+  }
+}
+
+function getPreflightStatusLabel(status: LivePreflightStatus): string {
+  switch (status) {
+    case 'good': return 'Ready';
+    case 'warning': return 'Review';
+    case 'bad': return 'Blocked';
+  }
+}
+
 function formatBitrate(kbps: number): string {
   if (kbps <= 0) return '0 kbps';
   if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
@@ -758,17 +842,30 @@ const styles: Record<string, React.CSSProperties> = {
   preflightLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
   preflightCount: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' },
   preflightIssue: { fontSize: 11, color: '#fbbf24', lineHeight: 1.35 },
+  checklistCard: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 9 },
+  checklistHeader: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  checklistTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
+  checklistSubtitle: { margin: '2px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
+  checklistBadge: { flexShrink: 0, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', borderRadius: 999, border: '1px solid', padding: '3px 7px', letterSpacing: 0 },
+  checklistList: { display: 'flex', flexDirection: 'column', gap: 7 },
+  checklistItem: { display: 'grid', gridTemplateColumns: '8px 1fr', gap: 8, alignItems: 'start' },
+  checklistDot: { width: 8, height: 8, borderRadius: 999, marginTop: 4 },
+  checklistBody: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 },
+  checklistTopLine: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  checklistItemLabel: { minWidth: 0, fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  checklistItemStatus: { flexShrink: 0, fontSize: 9, fontWeight: 800, textTransform: 'uppercase' },
+  checklistDetail: { margin: 0, fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
   relayReadyCard: { borderRadius: 8, padding: '10px 12px', border: '1px solid', display: 'flex', flexDirection: 'column', gap: 8 },
   relayReadyTop: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
   relayReadyLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
   relayReadyDetail: { margin: '2px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
-  relayReadyBadge: { flexShrink: 0, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', borderRadius: 999, border: '1px solid', padding: '3px 7px', letterSpacing: '0.04em' },
+  relayReadyBadge: { flexShrink: 0, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', borderRadius: 999, border: '1px solid', padding: '3px 7px', letterSpacing: 0 },
   retryRelayBtn: { alignSelf: 'flex-start', fontSize: 11, padding: '6px 10px' },
   healthCard: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 },
   healthTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
   healthLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
   healthDetail: { margin: '2px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
-  healthStatus: { flexShrink: 0, fontSize: 10, fontWeight: 800, textTransform: 'uppercase', borderRadius: 999, border: '1px solid', padding: '3px 7px', letterSpacing: '0.04em' },
+  healthStatus: { flexShrink: 0, fontSize: 10, fontWeight: 800, textTransform: 'uppercase', borderRadius: 999, border: '1px solid', padding: '3px 7px', letterSpacing: 0 },
   bitrateGraph: { height: 38, display: 'flex', alignItems: 'flex-end', gap: 2, padding: '6px 6px 4px', borderRadius: 7, background: 'rgba(0,0,0,0.18)', overflow: 'hidden' },
   bitrateBar: { flex: 1, minWidth: 2, borderRadius: 2, transition: 'height 0.2s ease' },
   healthGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 },
@@ -793,7 +890,7 @@ const styles: Record<string, React.CSSProperties> = {
   form: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 12, border: '1px solid var(--border)' },
   formHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   formTitle: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
-  formMode: { fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  formMode: { fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0 },
   platformGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 },
   platformBtn: { fontSize: 11, fontWeight: 500, padding: '6px 4px', borderRadius: 6, border: '1px solid', cursor: 'pointer', background: 'var(--bg-tertiary)', textAlign: 'center' as const },
   inputGroup: { display: 'flex', flexDirection: 'column', gap: 4 },

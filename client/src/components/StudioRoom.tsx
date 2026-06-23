@@ -3289,6 +3289,8 @@ export function StudioRoom() {
               isLive={isLive}
               relayStats={relayStats}
               relayReadiness={relayReadiness}
+              sessionHealth={sessionHealth}
+              sceneCount={scenes.length}
               onRetryRelayReadiness={checkRelayReadiness}
               onGoLive={onGoLive}
               onStopLive={onStopLive}
