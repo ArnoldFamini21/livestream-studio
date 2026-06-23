@@ -19,6 +19,7 @@ import {
   RTMP_RELAY_AUDIO_BITS_PER_SECOND,
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
+import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -27,6 +28,8 @@ interface UseRtmpRelayOptions {
   remoteStreams: Map<string, MediaStream>;
   screenStream: MediaStream | null;
   participantVolumes?: Record<string, number>;
+  participantAudioLevels?: Record<string, number>;
+  audioDuckingEnabled?: boolean;
   readinessEnabled?: boolean;
   onDestinationStatus: (destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => void;
   onRelayStopped?: (message: string) => void;
@@ -376,6 +379,8 @@ export function useRtmpRelay({
   remoteStreams,
   screenStream,
   participantVolumes = {},
+  participantAudioLevels = {},
+  audioDuckingEnabled = false,
   readinessEnabled = true,
   onDestinationStatus,
   onRelayStopped,
@@ -644,6 +649,15 @@ export function useRtmpRelay({
           throw new Error('The composited studio stream is not ready.');
         }
 
+        const initialParticipantVolumes = getDuckedParticipantVolumes({
+          enabled: audioDuckingEnabled,
+          participantVolumes,
+          participantAudioLevels,
+          participantIds: [
+            ...(localParticipantId ? [localParticipantId] : []),
+            ...remoteStreams.keys(),
+          ],
+        });
         const mixer = await createMixedBroadcastStream(
           currentCompositeStream,
           videoConfig,
@@ -651,7 +665,7 @@ export function useRtmpRelay({
           localParticipantId,
           remoteStreams,
           screenStream,
-          participantVolumes
+          initialParticipantVolumes
         );
         mixerRef.current = mixer;
 
@@ -859,7 +873,7 @@ export function useRtmpRelay({
 
       await connectRelay(currentToken);
     },
-    [cleanup, clearReconnectTimer, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
+    [audioDuckingEnabled, cleanup, clearReconnectTimer, compositeStreamRef, localParticipantId, localStream, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, participantAudioLevels, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
   );
 
   useEffect(() => {
@@ -871,14 +885,20 @@ export function useRtmpRelay({
   useEffect(() => {
     const mixer = mixerRef.current;
     if (!mixer) return;
+    const effectiveVolumes = getDuckedParticipantVolumes({
+      enabled: audioDuckingEnabled,
+      participantVolumes,
+      participantAudioLevels,
+      participantIds: mixer.participantGains.keys(),
+    });
     for (const [participantId, gain] of mixer.participantGains) {
       gain.gain.setTargetAtTime(
-        clampVolume(participantVolumes[participantId]),
+        clampVolume(effectiveVolumes[participantId]),
         mixer.audioContext.currentTime,
-        0.03
+        0.08
       );
     }
-  }, [participantVolumes]);
+  }, [audioDuckingEnabled, participantAudioLevels, participantVolumes]);
 
   useEffect(() => {
     if (stats.status === 'idle') return;

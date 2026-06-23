@@ -190,6 +190,7 @@ interface PersistedStudioState {
   activeSceneId: string | null;
   lowerThirds: LowerThirdData[];
   autoSpeakerLowerThirds?: boolean;
+  audioDuckingEnabled?: boolean;
   banners: BannerData[];
   timers: TimerData[];
   tickers: TickerData[];
@@ -461,6 +462,7 @@ export function StudioRoom() {
   const [focusedVideoItemId, setFocusedVideoItemId] = useState<string | null>(null);
   const [stageItemOrder, setStageItemOrder] = useState<string[]>([]);
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
+  const [audioDuckingEnabled, setAudioDuckingEnabled] = useState(false);
   const [stageAudioLevels, setStageAudioLevels] = useState<Record<string, number>>({});
   const [recordingMarkers, setRecordingMarkers] = useState<RecordingMarker[]>([]);
 
@@ -764,6 +766,8 @@ export function StudioRoom() {
     remoteStreams: broadcastRemoteStreams,
     screenStream,
     participantVolumes,
+    participantAudioLevels: stageAudioLevels,
+    audioDuckingEnabled,
     readinessEnabled: canUseOperatorControls,
     onDestinationStatus: handleRelayDestinationStatus,
     onRelayStopped: handleRelayStopped,
@@ -890,6 +894,7 @@ export function StudioRoom() {
           }
           if (Array.isArray(parsed.lowerThirds)) setLowerThirds(parsed.lowerThirds);
           if (typeof parsed.autoSpeakerLowerThirds === 'boolean') setAutoSpeakerLowerThirds(parsed.autoSpeakerLowerThirds);
+          if (typeof parsed.audioDuckingEnabled === 'boolean') setAudioDuckingEnabled(parsed.audioDuckingEnabled);
           if (Array.isArray(parsed.banners)) setBanners(parsed.banners);
           if (Array.isArray(parsed.timers)) setTimers(parsed.timers.map((timer) => ({ ...timer, isRunning: false })));
           if (Array.isArray(parsed.tickers)) setTickers(parsed.tickers);
@@ -937,6 +942,7 @@ export function StudioRoom() {
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
         lowerThirds: lowerThirds.filter((lowerThird) => lowerThird.source !== 'auto-speaker'),
         autoSpeakerLowerThirds,
+        audioDuckingEnabled,
         banners,
         timers: timers.map((timer) => ({ ...timer, isRunning: false })),
         tickers,
@@ -950,7 +956,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, lowerThirds, autoSpeakerLowerThirds, banners, timers, tickers]);
+  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -3633,6 +3639,8 @@ export function StudioRoom() {
             localStream={localStream}
             participantVolumes={participantVolumes}
             onParticipantVolumeChange={handleParticipantVolumeChange}
+            audioDuckingEnabled={audioDuckingEnabled}
+            onAudioDuckingEnabledChange={setAudioDuckingEnabled}
           />
         )}
 
