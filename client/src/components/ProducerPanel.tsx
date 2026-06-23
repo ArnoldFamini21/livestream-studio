@@ -200,6 +200,20 @@ function ParticipantRow({
           {(participant.status === 'backstage' || participant.status === 'green-room') && (
             <button
               className="participant-action-btn"
+              style={{ ...rowStyles.actionBtn, color: 'var(--accent)', borderColor: 'rgba(124, 58, 237, 0.25)', '--btn-hover-bg': 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
+              onClick={() => onStageAction('notify-next', participant.id)}
+              title="Notify this guest they are next"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 2 11 13" />
+                <path d="m22 2-7 20-4-9-9-4 20-7z" />
+              </svg>
+              Next
+            </button>
+          )}
+          {(participant.status === 'backstage' || participant.status === 'green-room') && (
+            <button
+              className="participant-action-btn"
               style={{ ...rowStyles.actionBtn, color: 'var(--success)', borderColor: 'rgba(34, 197, 94, 0.25)', '--btn-hover-bg': 'rgba(34, 197, 94, 0.1)' } as React.CSSProperties}
               onClick={() => onStageAction('move-to-stage', participant.id)}
               title="Bring to Stage"
@@ -312,6 +326,19 @@ export function ProducerPanel({
       counts: { onStage: onStageCount, greenRoom: greenRoomCount, backstage: backstageCount, total: allList.length },
     };
   }, [participants]);
+
+  const waitingParticipants = useMemo(
+    () => allParticipants.filter((participant) => participant.status === 'green-room' && participant.role !== 'host'),
+    [allParticipants]
+  );
+
+  const notifyAllWaiting = () => {
+    waitingParticipants.forEach((participant) => onStageAction('notify-next', participant.id));
+  };
+
+  const admitAllWaiting = () => {
+    waitingParticipants.forEach((participant) => onStageAction('move-to-stage', participant.id));
+  };
 
   // Filtered participants for the right panel
   const filteredParticipants = useMemo(() => {
@@ -495,6 +522,27 @@ export function ProducerPanel({
               {counts.backstage} backstage
             </span>
           </div>
+
+          {waitingParticipants.length > 0 && (
+            <div style={styles.waitingActions}>
+              <button
+                type="button"
+                style={styles.waitingActionBtn}
+                onClick={notifyAllWaiting}
+                title="Notify every waiting guest that they are next"
+              >
+                Next All
+              </button>
+              <button
+                type="button"
+                style={{ ...styles.waitingActionBtn, ...styles.waitingActionBtnPrimary }}
+                onClick={admitAllWaiting}
+                title="Admit every waiting guest to the live stage"
+              >
+                Admit All ({waitingParticipants.length})
+              </button>
+            </div>
+          )}
 
           {/* Participant list */}
           <div style={styles.participantList}>
@@ -839,7 +887,7 @@ const styles: Record<string, React.CSSProperties> = {
   statusSummary: {
     display: 'flex',
     gap: 8,
-    padding: '8px 16px',
+    padding: '8px 16px 6px',
     flexShrink: 0,
     flexWrap: 'wrap',
   },
@@ -859,6 +907,29 @@ const styles: Record<string, React.CSSProperties> = {
     height: 6,
     borderRadius: '50%',
     flexShrink: 0,
+  },
+  waitingActions: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+    gap: 8,
+    padding: '0 16px 10px',
+    flexShrink: 0,
+  },
+  waitingActionBtn: {
+    minHeight: 34,
+    borderRadius: 8,
+    border: '1px solid rgba(124, 58, 237, 0.28)',
+    background: 'rgba(124, 58, 237, 0.1)',
+    color: 'var(--accent)',
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  waitingActionBtnPrimary: {
+    border: '1px solid rgba(34, 197, 94, 0.28)',
+    background: 'rgba(34, 197, 94, 0.12)',
+    color: 'var(--success)',
   },
   participantList: {
     flex: 1,

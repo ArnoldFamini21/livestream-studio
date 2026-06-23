@@ -92,21 +92,21 @@
 ## Phase 5: Guest & Participant Management (Priority: High)
 ### 5A. Invite System
 - [x] Shareable join links with room name embedded
-- [ ] Optional password-protected rooms
+- [x] Optional password-protected rooms
 - [ ] Email invite with magic link
 - [x] QR code for mobile guests
 
 ### 5B. Green Room / Waiting Room
-- [ ] Guests land in green room by default
-- [ ] Camera/mic preview and device test in green room
-- [ ] Host sees list of waiting guests with admit/deny buttons
-- [ ] Bulk admit all
-- [ ] "You're next" notification for waiting guests
+- [x] Guests land in green room by default
+- [x] Camera/mic preview and device test in green room
+- [x] Host sees list of waiting guests with admit/deny buttons
+- [x] Bulk admit all
+- [x] "You're next" notification for waiting guests
 
 ### 5C. On-Stage Management
-- [ ] Host can move guests between: Green Room → On-Stage → Backstage
-- [ ] Mute/unmute individual participants (host power)
-- [ ] Remove participant from session
+- [x] Host can move guests between: Green Room → On-Stage → Backstage
+- [x] Mute/unmute individual participants (host power)
+- [x] Remove participant from session
 - [ ] Spotlight participant (make them the main feed)
 - [ ] Reorder participant display order
 
