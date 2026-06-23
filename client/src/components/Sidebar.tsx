@@ -15,6 +15,7 @@ import {
   buildChatTranscriptFilename,
   type ChatTranscriptScope,
 } from '../utils/chatTranscript.ts';
+import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -84,6 +85,7 @@ interface SidebarProps {
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
+  onReorderScene: (sceneId: string, direction: SceneOrderDirection) => void;
   // Chat props
   chatPanelMessages: ChatMessage[];
   onSendChat: (content: string, isBackstage?: boolean) => void;
@@ -466,7 +468,16 @@ export function Sidebar(props: SidebarProps) {
           {activeTab === 'scenes' && (
             <div style={st.scrollContent}>
               <div style={st.section}>
-                <SceneManager scenes={props.scenes} activeSceneId={props.activeSceneId} onSaveScene={props.onSaveScene} onCreateTemplateScene={props.onCreateTemplateScene} onApplyScene={props.onApplyScene} onDeleteScene={props.onDeleteScene} onRenameScene={props.onRenameScene} />
+                <SceneManager
+                  scenes={props.scenes}
+                  activeSceneId={props.activeSceneId}
+                  onSaveScene={props.onSaveScene}
+                  onCreateTemplateScene={props.onCreateTemplateScene}
+                  onApplyScene={props.onApplyScene}
+                  onDeleteScene={props.onDeleteScene}
+                  onRenameScene={props.onRenameScene}
+                  onReorderScene={props.onReorderScene}
+                />
               </div>
             </div>
           )}
