@@ -7,7 +7,11 @@ import { TimerManager, type TimerData } from './TimerOverlay.tsx';
 import { BackgroundPicker } from './BackgroundPicker.tsx';
 import { SceneManager, type ProductionSceneTemplate } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
-import { CommentHighlightManager, type HighlightedComment } from './CommentHighlight.tsx';
+import {
+  CommentHighlightManager,
+  createHighlightedCommentFromChatMessage,
+  type HighlightedComment,
+} from './CommentHighlight.tsx';
 import { MediaLibrary } from './MediaLibrary.tsx';
 import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import {
@@ -337,6 +341,9 @@ export function Sidebar(props: SidebarProps) {
               onReact={props.onReactChat}
               onToggleStar={props.onToggleChatStar}
               onTogglePin={props.onToggleChatPin}
+              highlightedComment={props.highlightedComment}
+              onHighlightComment={props.onHighlightComment}
+              onDismissComment={props.onDismissComment}
               senderName={props.chatSenderName}
               onOpenPopoutChat={props.onOpenPopoutChat}
               participants={props.allParticipants}
@@ -950,6 +957,9 @@ function ChatContent({
   onReact,
   onToggleStar,
   onTogglePin,
+  highlightedComment,
+  onHighlightComment,
+  onDismissComment,
   senderName,
   onOpenPopoutChat,
   participants,
@@ -960,6 +970,9 @@ function ChatContent({
   onReact: (messageId: string, reaction: ChatReactionType) => void;
   onToggleStar: (messageId: string, starred: boolean) => void;
   onTogglePin: (messageId: string, pinned: boolean) => void;
+  highlightedComment: HighlightedComment | null;
+  onHighlightComment: (comment: HighlightedComment) => void;
+  onDismissComment: () => void;
   senderName: string;
   onOpenPopoutChat?: () => void;
   participants: Map<string, Participant>;
@@ -1002,6 +1015,15 @@ function ChatContent({
     .sort((a, b) => a.name.localeCompare(b.name));
   const selectedRecipient = directRecipients.find((participant) => participant.id === directRecipientId);
   const canSend = input.trim().length > 0 && (mode !== 'direct' || Boolean(selectedRecipient));
+
+  const handleFeatureMessage = (message: ChatMessage) => {
+    if (highlightedComment?.id === message.id) {
+      onDismissComment();
+      return;
+    }
+    const comment = createHighlightedCommentFromChatMessage(message);
+    if (comment) onHighlightComment(comment);
+  };
 
   const handleScroll = () => {
     const el = containerRef.current;
@@ -1127,6 +1149,14 @@ function ChatContent({
             <div style={st.chatMsgActions}>
               {!msg.isBackstage && !msg.recipientId && (
                 <>
+                  <button
+                    type="button"
+                    style={{ ...st.chatMiniBtn, ...(highlightedComment?.id === msg.id ? st.chatMiniBtnFeatured : {}) }}
+                    onClick={() => handleFeatureMessage(msg)}
+                    title={highlightedComment?.id === msg.id ? 'Hide this comment from the broadcast' : 'Show this comment on screen'}
+                  >
+                    {highlightedComment?.id === msg.id ? 'Hide' : 'Show'}
+                  </button>
                   <button
                     type="button"
                     style={{ ...st.chatMiniBtn, ...(msg.pinned ? st.chatMiniBtnPinned : {}) }}
@@ -1440,6 +1470,7 @@ const st: Record<string, React.CSSProperties> = {
   chatMsgContent: { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.4, wordBreak: 'break-word', margin: 0 },
   chatMsgActions: { display: 'flex', flexWrap: 'wrap', gap: 5 },
   chatMiniBtn: { minHeight: 24, border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.04)', color: 'var(--text-muted)', borderRadius: 6, padding: '0 7px', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
+  chatMiniBtnFeatured: { borderColor: 'rgba(167, 139, 250, 0.4)', background: 'rgba(167, 139, 250, 0.14)', color: '#ddd6fe' },
   chatMiniBtnActive: { borderColor: 'rgba(245, 158, 11, 0.36)', background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24' },
   chatMiniBtnPinned: { borderColor: 'rgba(34, 211, 238, 0.36)', background: 'rgba(34, 211, 238, 0.12)', color: '#67e8f9' },
   chatReactionBtn: { minWidth: 32, gap: 4, padding: '0 7px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' },
