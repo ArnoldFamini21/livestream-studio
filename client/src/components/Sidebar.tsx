@@ -127,6 +127,8 @@ interface SidebarProps {
   localStream: MediaStream | null;
   participantVolumes: Record<string, number>;
   onParticipantVolumeChange: (participantId: string, volume: number) => void;
+  audioDuckingEnabled: boolean;
+  onAudioDuckingEnabledChange: (enabled: boolean) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +336,8 @@ export function Sidebar(props: SidebarProps) {
               localStream={props.localStream}
               participantVolumes={props.participantVolumes}
               onParticipantVolumeChange={props.onParticipantVolumeChange}
+              audioDuckingEnabled={props.audioDuckingEnabled}
+              onAudioDuckingEnabledChange={props.onAudioDuckingEnabledChange}
             />
           )}
 
@@ -712,6 +716,8 @@ function PeopleContent({
   localStream,
   participantVolumes,
   onParticipantVolumeChange,
+  audioDuckingEnabled,
+  onAudioDuckingEnabledChange,
 }: {
   participants: Map<string, Participant>; myParticipantId: string;
   myRole: 'host' | 'co-host' | 'guest';
@@ -722,6 +728,8 @@ function PeopleContent({
   localStream: MediaStream | null;
   participantVolumes: Record<string, number>;
   onParticipantVolumeChange: (participantId: string, volume: number) => void;
+  audioDuckingEnabled: boolean;
+  onAudioDuckingEnabledChange: (enabled: boolean) => void;
 }) {
   const isHostOrCoHost = myRole === 'host' || myRole === 'co-host';
   type PStatus = 'on-stage' | 'backstage' | 'green-room';
@@ -792,6 +800,21 @@ function PeopleContent({
               />
             )}
           </div>
+        )}
+        {isHostOrCoHost && (
+          <label style={st.duckingControl} title="Lower non-speaking broadcast audio while one participant is clearly speaking">
+            <span style={st.duckingText}>
+              <span style={st.duckingTitle}>Auto ducking</span>
+              <span style={st.duckingState}>{audioDuckingEnabled ? 'On' : 'Off'}</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={audioDuckingEnabled}
+              onChange={(event) => onAudioDuckingEnabledChange(event.currentTarget.checked)}
+              aria-label="Auto ducking"
+              style={st.duckingCheckbox}
+            />
+          </label>
         )}
         {grouped['green-room'].length > 0 && (
           <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
@@ -1461,6 +1484,11 @@ const st: Record<string, React.CSSProperties> = {
   volumeMeter: { width: '100%', minWidth: 0, height: 3 },
   volumeSlider: { width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' },
   volumeValue: { fontSize: 10, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)', textAlign: 'right' },
+  duckingControl: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, margin: '0 16px 8px', padding: '9px 10px', borderRadius: 8, border: '1px solid rgba(96, 165, 250, 0.24)', background: 'rgba(96, 165, 250, 0.08)', cursor: 'pointer' },
+  duckingText: { minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 },
+  duckingTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
+  duckingState: { fontSize: 10, fontWeight: 800, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  duckingCheckbox: { width: 16, height: 16, margin: 0, accentColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 },
   admitAllBtn: { margin: '8px 16px', width: 'calc(100% - 32px)', fontSize: 13, padding: '8px 14px' },
   // Overlay quick actions
   overlayQuick: { padding: 12, display: 'flex', flexDirection: 'column', gap: 10 },

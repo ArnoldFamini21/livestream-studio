@@ -142,11 +142,11 @@
 
 ## Phase 7: Audio Processing (Priority: Medium)
 ### 7A. Per-Participant Audio Controls
-- [ ] Individual volume sliders
-- [ ] Real-time audio level meters (VU meters)
+- [x] Individual volume sliders
+- [x] Real-time audio level meters (VU meters)
 - [ ] Noise suppression (RNNoise / Web Audio API)
 - [ ] Echo cancellation tuning
-- [ ] Audio ducking (lower others when someone speaks)
+- [x] Audio ducking (lower others when someone speaks)
 
 ### 7B. Audio Mixing
 - [ ] Background music player (upload MP3/WAV, play during stream)
