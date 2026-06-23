@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Scene, LayoutMode } from '@studio/shared';
 import {
   getBackgroundPreview,
@@ -25,6 +25,9 @@ interface SceneManagerProps {
   onUpdateScene: (sceneId: string) => void | Promise<void>;
   onDuplicateScene: (sceneId: string) => void;
   onReorderScene: (sceneId: string, direction: SceneOrderDirection) => void;
+  onExportScenePack: () => void;
+  onImportScenePack: (file: File) => void | Promise<void>;
+  scenePackMessage?: string | null;
 }
 
 const MAX_SCENES = 12;
@@ -91,12 +94,16 @@ export function SceneManager({
   onUpdateScene,
   onDuplicateScene,
   onReorderScene,
+  onExportScenePack,
+  onImportScenePack,
+  scenePackMessage,
 }: SceneManagerProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const atLimit = scenes.length >= MAX_SCENES;
 
@@ -153,6 +160,12 @@ export function SceneManager({
   const startUpdate = (sceneId: string) => {
     setMenuOpenId(null);
     onUpdateScene(sceneId);
+  };
+
+  const handleImportScenePack = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.currentTarget.files?.[0];
+    if (file) void onImportScenePack(file);
+    e.currentTarget.value = '';
   };
 
   return (
@@ -218,6 +231,52 @@ export function SceneManager({
       {atLimit && (
         <span style={styles.limitNote}>Maximum of {MAX_SCENES} scenes reached.</span>
       )}
+
+      <div style={styles.packActions}>
+        <button
+          type="button"
+          style={{
+            ...styles.packBtn,
+            ...(scenes.length === 0 ? styles.packBtnDisabled : {}),
+          }}
+          onClick={onExportScenePack}
+          disabled={scenes.length === 0}
+          title={scenes.length === 0 ? 'Save a scene before exporting' : 'Export scene pack'}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="M7 10l5 5 5-5" />
+            <path d="M12 15V3" />
+          </svg>
+          Export
+        </button>
+        <button
+          type="button"
+          style={{
+            ...styles.packBtn,
+            ...(atLimit ? styles.packBtnDisabled : {}),
+          }}
+          onClick={() => importInputRef.current?.click()}
+          disabled={atLimit}
+          title={atLimit ? `Maximum of ${MAX_SCENES} scenes reached` : 'Import scene pack'}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="M17 8l-5-5-5 5" />
+            <path d="M12 3v12" />
+          </svg>
+          Import
+        </button>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,application/json"
+          style={{ display: 'none' }}
+          onChange={handleImportScenePack}
+        />
+      </div>
+
+      {scenePackMessage && <span style={styles.packMessage}>{scenePackMessage}</span>}
 
       <div style={styles.templateSection}>
         <div style={styles.templateHeader}>
@@ -579,6 +638,37 @@ const styles: Record<string, React.CSSProperties> = {
   addBtnDisabled: {
     opacity: 0.4,
     cursor: 'not-allowed',
+  },
+  packActions: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 6,
+  },
+  packBtn: {
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    padding: '7px 10px',
+    fontSize: 11,
+    fontWeight: 700,
+    background: 'var(--bg-surface)',
+    color: 'var(--text-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius)',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  packBtnDisabled: {
+    opacity: 0.45,
+    cursor: 'not-allowed',
+  },
+  packMessage: {
+    fontSize: 10,
+    lineHeight: 1.4,
+    color: 'var(--text-muted)',
+    textAlign: 'center',
   },
   limitNote: {
     fontSize: 10,

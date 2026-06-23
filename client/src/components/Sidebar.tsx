@@ -88,6 +88,9 @@ interface SidebarProps {
   onUpdateScene: (sceneId: string) => void | Promise<void>;
   onDuplicateScene: (sceneId: string) => void;
   onReorderScene: (sceneId: string, direction: SceneOrderDirection) => void;
+  onExportScenePack: () => void;
+  onImportScenePack: (file: File) => void | Promise<void>;
+  scenePackMessage?: string | null;
   // Chat props
   chatPanelMessages: ChatMessage[];
   onSendChat: (content: string, isBackstage?: boolean) => void;
@@ -481,6 +484,9 @@ export function Sidebar(props: SidebarProps) {
                   onUpdateScene={props.onUpdateScene}
                   onDuplicateScene={props.onDuplicateScene}
                   onReorderScene={props.onReorderScene}
+                  onExportScenePack={props.onExportScenePack}
+                  onImportScenePack={props.onImportScenePack}
+                  scenePackMessage={props.scenePackMessage}
                 />
               </div>
             </div>

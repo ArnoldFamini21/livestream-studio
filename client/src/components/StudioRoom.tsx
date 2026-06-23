@@ -74,6 +74,14 @@ import {
   type LowerThirdDraft,
   upsertAutoSpeakerLowerThird,
 } from '../utils/lowerThirds.ts';
+import {
+  MAX_SCENE_PACK_BYTES,
+  buildScenePack,
+  buildScenePackFilename,
+  importScenePack,
+  parseScenePackJson,
+  type ScenePackOverlayKind,
+} from '../utils/scenePacks.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -298,6 +306,19 @@ function getPersistableScenes(scenes: Scene[]): Scene[] {
   });
 }
 
+function downloadJsonFile(fileName: string, contents: string) {
+  const blob = new Blob([contents], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 function getMaxNumericSuffix(items: Array<{ id: string }> | undefined, prefix: string): number {
   if (!items) return 0;
   return items.reduce((max, item) => {
@@ -443,6 +464,7 @@ export function StudioRoom() {
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
   const [sceneTransition, setSceneTransition] = useState<SceneTransitionState | null>(null);
+  const [scenePackMessage, setScenePackMessage] = useState<string | null>(null);
 
   // Comment highlighting
   const [highlightedComment, setHighlightedComment] = useState<HighlightedComment | null>(null);
@@ -2164,6 +2186,77 @@ export function StudioRoom() {
   const onReorderScene = (sceneId: string, direction: SceneOrderDirection) => {
     setScenes(prev => moveSceneInOrder(prev, sceneId, direction));
   };
+  const onExportScenePack = () => {
+    if (scenes.length === 0) {
+      setScenePackMessage('Save a scene before exporting.');
+      return;
+    }
+
+    const pack = buildScenePack({
+      scenes: getPersistableScenes(scenes),
+      lowerThirds,
+      banners,
+      timers,
+      tickers,
+    });
+
+    downloadJsonFile(
+      buildScenePackFilename(room?.name || 'Studio'),
+      JSON.stringify(pack, null, 2)
+    );
+    setScenePackMessage(`Exported ${pack.scenes.length} scene${pack.scenes.length === 1 ? '' : 's'}.`);
+  };
+  const onImportScenePack = async (file: File) => {
+    if (file.size > MAX_SCENE_PACK_BYTES) {
+      setScenePackMessage('Scene pack file is too large.');
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      if (text.length > MAX_SCENE_PACK_BYTES) {
+        setScenePackMessage('Scene pack file is too large.');
+        return;
+      }
+
+      const pack = parseScenePackJson(text);
+      const imported = importScenePack(pack, {
+        existingScenes: scenes,
+        maxScenes: MAX_STUDIO_SCENES,
+        sceneIdFactory: (_scene, index) => `scene-import-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        overlayIdFactory: (kind: ScenePackOverlayKind) => {
+          switch (kind) {
+            case 'lowerThird':
+              return `lt-${++idCounters.current.lt}`;
+            case 'banner':
+              return `banner-${++idCounters.current.banner}`;
+            case 'timer':
+              return `timer-${++idCounters.current.timer}`;
+            case 'ticker':
+              return `ticker-${++idCounters.current.ticker}`;
+            default:
+              return assertNever(kind);
+          }
+        },
+      });
+
+      if (imported.importedScenes === 0) {
+        setScenePackMessage('Maximum scenes reached.');
+        return;
+      }
+
+      setLowerThirds(prev => [...prev, ...imported.lowerThirds]);
+      setBanners(prev => [...prev, ...imported.banners]);
+      setTimers(prev => [...prev, ...imported.timers]);
+      setTickers(prev => [...prev, ...imported.tickers]);
+      setScenes(prev => [...prev, ...imported.scenes].slice(0, MAX_STUDIO_SCENES));
+      setScenePackMessage(
+        `Imported ${imported.importedScenes} scene${imported.importedScenes === 1 ? '' : 's'}${imported.skippedScenes ? `, skipped ${imported.skippedScenes}` : ''}.`
+      );
+    } catch (err) {
+      setScenePackMessage(err instanceof Error ? err.message : 'Could not import scene pack.');
+    }
+  };
 
   // Tickers
   const onAddTicker = (ticker: Omit<TickerData, 'id' | 'visible'> & { visible?: boolean }) => {
@@ -3266,6 +3359,9 @@ export function StudioRoom() {
             onUpdateScene={onUpdateScene}
             onDuplicateScene={onDuplicateScene}
             onReorderScene={onReorderScene}
+            onExportScenePack={onExportScenePack}
+            onImportScenePack={onImportScenePack}
+            scenePackMessage={scenePackMessage}
             tickers={tickers}
             onAddTicker={onAddTicker}
             onToggleTicker={onToggleTicker}
