@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { ActiveMedia, LogoPlacement, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset } from '@studio/shared';
-import { CHAT_REACTION_LABELS } from '@studio/shared';
+import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
@@ -1145,15 +1145,17 @@ function ChatContent({
                   </button>
                 </>
               )}
-              {(Object.keys(CHAT_REACTION_LABELS) as ChatReactionType[]).map((reaction) => (
+              {CHAT_REACTION_TYPES.map((reaction) => (
                 <button
                   key={reaction}
                   type="button"
-                  style={st.chatMiniBtn}
+                  style={{ ...st.chatMiniBtn, ...st.chatReactionBtn }}
                   onClick={() => onReact(msg.id, reaction)}
                   title={`${CHAT_REACTION_LABELS[reaction]} reaction`}
+                  aria-label={`${CHAT_REACTION_LABELS[reaction]} reaction${msg.reactions?.[reaction] ? `, ${msg.reactions[reaction]} total` : ''}`}
                 >
-                  {CHAT_REACTION_LABELS[reaction]}{msg.reactions?.[reaction] ? ` ${msg.reactions[reaction]}` : ''}
+                  <span aria-hidden="true" style={st.chatReactionEmoji}>{CHAT_REACTION_EMOJIS[reaction]}</span>
+                  {msg.reactions?.[reaction] ? <span style={st.chatReactionCount}>{msg.reactions[reaction]}</span> : null}
                 </button>
               ))}
             </div>
@@ -1440,6 +1442,9 @@ const st: Record<string, React.CSSProperties> = {
   chatMiniBtn: { minHeight: 24, border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.04)', color: 'var(--text-muted)', borderRadius: 6, padding: '0 7px', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
   chatMiniBtnActive: { borderColor: 'rgba(245, 158, 11, 0.36)', background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24' },
   chatMiniBtnPinned: { borderColor: 'rgba(34, 211, 238, 0.36)', background: 'rgba(34, 211, 238, 0.12)', color: '#67e8f9' },
+  chatReactionBtn: { minWidth: 32, gap: 4, padding: '0 7px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' },
+  chatReactionEmoji: { fontSize: 14, lineHeight: 1 },
+  chatReactionCount: { minWidth: 14, height: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', borderRadius: 999, background: 'rgba(255, 255, 255, 0.08)', color: 'var(--text-primary)', fontSize: 9, lineHeight: 1 },
   chatDirectControls: { padding: '10px 12px 0', borderTop: '1px solid var(--border)' },
   chatDirectSelect: { width: '100%', minHeight: 34, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' },
   chatInputBar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderTop: '1px solid var(--border)' },

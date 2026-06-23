@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   SCHEDULED_GUEST_EARLY_JOIN_MS,
+  CHAT_REACTION_EMOJIS,
+  CHAT_REACTION_TYPES,
   buildStudioCalendarInvite,
   isChatReactionType,
   getScheduledGuestOpenAtMs,
@@ -73,5 +75,12 @@ describe('chat reaction helpers', () => {
     assert.equal(isChatReactionType('wow'), true);
     assert.equal(isChatReactionType('thumbs-up'), false);
     assert.equal(isChatReactionType(undefined), false);
+  });
+
+  it('provides display emoji for each supported reaction', () => {
+    for (const reaction of CHAT_REACTION_TYPES) {
+      assert.equal(typeof CHAT_REACTION_EMOJIS[reaction], 'string');
+      assert.ok(CHAT_REACTION_EMOJIS[reaction].length > 0);
+    }
   });
 });

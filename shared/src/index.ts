@@ -305,6 +305,14 @@ export const CHAT_REACTION_LABELS: Record<ChatReactionType, string> = {
   wow: 'Wow',
 };
 
+export const CHAT_REACTION_EMOJIS: Record<ChatReactionType, string> = {
+  like: '👍',
+  love: '❤️',
+  clap: '👏',
+  laugh: '😂',
+  wow: '😮',
+};
+
 export function isChatReactionType(value: unknown): value is ChatReactionType {
   return typeof value === 'string' && (CHAT_REACTION_TYPES as readonly string[]).includes(value);
 }

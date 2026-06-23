@@ -121,7 +121,7 @@
 ### 6A. Built-In Chat
 - [ ] Real-time WebSocket chat panel (host + guests)
 - [ ] Chat message animations (slide in from right)
-- [ ] Emoji reactions
+- [x] Emoji reactions
 - [x] Pin messages
 - [x] Private messages between host and individual guests
 

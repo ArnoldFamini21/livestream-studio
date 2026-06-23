@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { ChatMessage, ChatReactionType } from '@studio/shared';
-import { CHAT_REACTION_LABELS } from '@studio/shared';
+import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -129,15 +129,17 @@ export function ChatPanel({
               <p style={styles.msgContent}>{msg.content}</p>
               {onReact && (
                 <div style={styles.reactionRow}>
-                  {(Object.keys(CHAT_REACTION_LABELS) as ChatReactionType[]).map((reaction) => (
+                  {CHAT_REACTION_TYPES.map((reaction) => (
                     <button
                       key={reaction}
                       type="button"
                       style={styles.reactionBtn}
                       onClick={() => onReact(msg.id, reaction)}
                       title={`${CHAT_REACTION_LABELS[reaction]} reaction`}
+                      aria-label={`${CHAT_REACTION_LABELS[reaction]} reaction${msg.reactions?.[reaction] ? `, ${msg.reactions[reaction]} total` : ''}`}
                     >
-                      {CHAT_REACTION_LABELS[reaction]}{msg.reactions?.[reaction] ? ` ${msg.reactions[reaction]}` : ''}
+                      <span aria-hidden="true" style={styles.reactionEmoji}>{CHAT_REACTION_EMOJIS[reaction]}</span>
+                      {msg.reactions?.[reaction] ? <span style={styles.reactionCount}>{msg.reactions[reaction]}</span> : null}
                     </button>
                   ))}
                 </div>
@@ -370,15 +372,37 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 5,
   },
   reactionBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    minWidth: 32,
     minHeight: 24,
     border: '1px solid var(--border)',
     background: 'rgba(255, 255, 255, 0.04)',
-    color: 'var(--text-muted)',
+    color: 'var(--text-secondary)',
     borderRadius: 6,
     padding: '0 7px',
     fontSize: 10,
     fontWeight: 700,
     cursor: 'pointer',
+  },
+  reactionEmoji: {
+    fontSize: 14,
+    lineHeight: 1,
+  },
+  reactionCount: {
+    minWidth: 14,
+    height: 14,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '0 3px',
+    borderRadius: 999,
+    background: 'rgba(255, 255, 255, 0.08)',
+    color: 'var(--text-primary)',
+    fontSize: 9,
+    lineHeight: 1,
   },
   inputArea: {
     borderTop: '1px solid var(--border)',
