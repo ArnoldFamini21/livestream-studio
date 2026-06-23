@@ -443,7 +443,7 @@ export function SceneManager({
 }
 
 function ScenePreviewThumbnail({ scene }: { scene: Scene }) {
-  const tiles = getScenePreviewTiles(scene.layout);
+  const tiles = getScenePreviewTiles(scene.layout, { pipCorner: scene.pipCorner });
   const overlays = getScenePreviewOverlays(scene);
   const cameraRadius = scene.cameraShape === 'circle'
     ? 999

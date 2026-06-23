@@ -280,11 +280,22 @@ function getPersistableStageBackground(background: StageBackground): StageBackgr
 }
 
 function getPersistableScenes(scenes: Scene[]): Scene[] {
-  return scenes.map((scene) => ({
-    ...scene,
-    background: getPersistableStageBackground(scene.background),
-    logoUrl: isPersistableLogoUrl(scene.logoUrl) ? scene.logoUrl : null,
-  }));
+  return scenes.map((scene) => {
+    const persistableScene: Scene = {
+      ...scene,
+      background: getPersistableStageBackground(scene.background),
+      logoUrl: isPersistableLogoUrl(scene.logoUrl) ? scene.logoUrl : null,
+    };
+
+    if ('focusedVideoItemId' in scene) {
+      persistableScene.focusedVideoItemId = typeof scene.focusedVideoItemId === 'string' ? scene.focusedVideoItemId : null;
+    }
+    if (Array.isArray(scene.stageItemOrder)) {
+      persistableScene.stageItemOrder = scene.stageItemOrder.filter((id): id is string => typeof id === 'string');
+    }
+
+    return persistableScene;
+  });
 }
 
 function getMaxNumericSuffix(items: Array<{ id: string }> | undefined, prefix: string): number {
@@ -2002,6 +2013,9 @@ export function StudioRoom() {
       nameTagStyle,
       logoPlacement,
       logoSize,
+      pipCorner,
+      focusedVideoItemId,
+      stageItemOrder: normalizeStageItemOrder(stageItemOrder, availableStageItemIds),
       visibleOverlayIds: [
         ...lowerThirds.filter(o => o.visible).map(o => o.id),
         ...banners.filter(b => b.visible).map(b => b.id),
@@ -2054,6 +2068,9 @@ export function StudioRoom() {
       nameTagStyle: config.nameTagStyle,
       logoPlacement: 'top-right',
       logoSize: 'medium',
+      pipCorner: 'BR',
+      focusedVideoItemId: null,
+      stageItemOrder: [],
       visibleOverlayIds,
     };
 
@@ -2066,7 +2083,9 @@ export function StudioRoom() {
     setNameTagStyle(config.nameTagStyle);
     setLogoPlacement('top-right');
     setLogoSize('medium');
+    setPipCorner('BR');
     setFocusedVideoItemId(null);
+    setStageItemOrder([]);
     setLowerThirds(prev => prev.map(o => ({ ...o, visible: false })));
     if (nextBanner) {
       setBanners(prev => [...prev.map(b => ({ ...b, visible: false })), nextBanner]);
@@ -2090,7 +2109,6 @@ export function StudioRoom() {
   const onApplyScene = (sceneId: string) => {
     const scene = scenes.find(s => s.id === sceneId);
     if (!scene) return;
-    if (sceneId === activeSceneId) return;
     setLayout(scene.layout);
     setStageBackground(scene.background);
     setBrandColor(scene.brandColor || '#a78bfa');
@@ -2099,7 +2117,15 @@ export function StudioRoom() {
     setNameTagStyle(scene.nameTagStyle || 'classic');
     setLogoPlacement(scene.logoPlacement || 'top-right');
     setLogoSize(scene.logoSize || 'medium');
-    setFocusedVideoItemId(null);
+    if (scene.pipCorner) setPipCorner(scene.pipCorner);
+    if (Array.isArray(scene.stageItemOrder)) {
+      setStageItemOrder(normalizeStageItemOrder(scene.stageItemOrder, availableStageItemIds));
+    }
+    setFocusedVideoItemId(
+      scene.focusedVideoItemId && availableStageItemIds.includes(scene.focusedVideoItemId)
+        ? scene.focusedVideoItemId
+        : null
+    );
     // Restore overlay visibility from saved scene
     const visibleIds = new Set(scene.visibleOverlayIds);
     setLowerThirds(prev => prev.map(o => ({ ...o, visible: visibleIds.has(o.id) })));

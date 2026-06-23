@@ -17,7 +17,10 @@ export interface ScenePreviewOverlays {
   logo: boolean;
 }
 
-export function getScenePreviewTiles(layout: LayoutMode): ScenePreviewTile[] {
+export function getScenePreviewTiles(
+  layout: LayoutMode,
+  options: { pipCorner?: Scene['pipCorner'] } = {}
+): ScenePreviewTile[] {
   switch (layout) {
     case 'single':
       return [{ left: '18%', top: '16%', width: '64%', height: '58%', primary: true }];
@@ -36,7 +39,7 @@ export function getScenePreviewTiles(layout: LayoutMode): ScenePreviewTile[] {
     case 'pip':
       return [
         { left: '7%', top: '8%', width: '86%', height: '72%', primary: true },
-        { left: '63%', top: '54%', width: '27%', height: '22%', floating: true },
+        { ...getScenePreviewPipTilePosition(options.pipCorner), width: '27%', height: '22%', floating: true },
       ];
     case 'featured':
       return [
@@ -53,6 +56,20 @@ export function getScenePreviewTiles(layout: LayoutMode): ScenePreviewTile[] {
       ];
     default:
       return assertNever(layout);
+  }
+}
+
+export function getScenePreviewPipTilePosition(corner: Scene['pipCorner'] = 'BR'): Pick<ScenePreviewTile, 'left' | 'top'> {
+  switch (corner) {
+    case 'TL':
+      return { left: '10%', top: '14%' };
+    case 'TR':
+      return { left: '63%', top: '14%' };
+    case 'BL':
+      return { left: '10%', top: '54%' };
+    case 'BR':
+    default:
+      return { left: '63%', top: '54%' };
   }
 }
 
