@@ -147,30 +147,51 @@ export function CommentHighlightOverlay({ comment }: CommentHighlightOverlayProp
 
   return (
     <div
+      aria-live="polite"
       style={{
         ...overlayContainer,
         opacity: visible ? 1 : 0,
-        transform: visible ? 'translateY(0)' : 'translateY(16px)',
+        transform: visible ? 'translateY(0) scale(1)' : 'translateY(18px) scale(0.98)',
       }}
     >
       {/* Inject keyframes */}
       <style>{overlayKeyframes}</style>
 
-      <div style={overlayCard}>
-        {/* Avatar */}
+      <div
+        style={{
+          ...overlayCard,
+          animation: visible
+            ? 'commentPopIn 560ms cubic-bezier(0.16, 1, 0.3, 1) both, commentGlow 3s ease-in-out 700ms infinite'
+            : 'commentPopOut 260ms ease-in both',
+        }}
+      >
         <div
           style={{
-            ...overlayAvatar,
-            background: color,
+            ...overlayAccent,
+            animation: visible ? 'commentAccentSweep 1100ms ease-out 120ms both' : undefined,
           }}
-        >
-          <span style={overlayAvatarLetter}>{initial}</span>
+        />
+
+        <div style={overlayMetaRow}>
+          <span style={overlayPill}>Featured comment</span>
         </div>
 
-        {/* Text content */}
-        <div style={overlayTextWrap}>
-          <span style={overlaySenderName}>{current.senderName}</span>
-          <p style={overlayContent}>{current.content}</p>
+        <div style={overlayBody}>
+          {/* Avatar */}
+          <div
+            style={{
+              ...overlayAvatar,
+              background: color,
+            }}
+          >
+            <span style={overlayAvatarLetter}>{initial}</span>
+          </div>
+
+          {/* Text content */}
+          <div style={overlayTextWrap}>
+            <span style={overlaySenderName}>{current.senderName}</span>
+            <p style={overlayContent}>{current.content}</p>
+          </div>
         </div>
       </div>
     </div>
@@ -343,9 +364,48 @@ export function CommentHighlightManager({
 // ---------------------------------------------------------------------------
 
 const overlayKeyframes = `
+@keyframes commentPopIn {
+  0% { opacity: 0; transform: translateY(34px) scale(0.94); filter: blur(6px); }
+  55% { opacity: 1; transform: translateY(-4px) scale(1.01); filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes commentPopOut {
+  0% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+  100% { opacity: 0; transform: translateY(18px) scale(0.97); filter: blur(4px); }
+}
+
+@keyframes commentAccentSweep {
+  0% { transform: translateX(-102%); opacity: 0; }
+  22% { opacity: 1; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+
 @keyframes commentGlow {
-  0%, 100% { box-shadow: 0 8px 32px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.08); }
-  50% { box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.12); }
+  0%, 100% { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16), 0 0 28px rgba(34,211,238,0.12); }
+  50% { box-shadow: 0 20px 48px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,255,255,0.2), 0 0 34px rgba(167,139,250,0.16); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes commentPopIn {
+    from { opacity: 0; transform: translateY(8px); filter: none; }
+    to { opacity: 1; transform: translateY(0); filter: none; }
+  }
+
+  @keyframes commentPopOut {
+    from { opacity: 1; transform: translateY(0); filter: none; }
+    to { opacity: 0; transform: translateY(8px); filter: none; }
+  }
+
+  @keyframes commentAccentSweep {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  @keyframes commentGlow {
+    from { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16); }
+    to { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16); }
+  }
 }
 `;
 
@@ -355,45 +415,91 @@ const overlayKeyframes = `
 
 const overlayContainer: React.CSSProperties = {
   position: 'absolute',
-  bottom: 100,
+  bottom: 96,
   left: 0,
   right: 0,
   display: 'flex',
   justifyContent: 'center',
   zIndex: 11,
   pointerEvents: 'none',
-  transition: 'opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
+  padding: '0 24px',
+  transition: 'opacity 0.32s cubic-bezier(0.16, 1, 0.3, 1), transform 0.32s cubic-bezier(0.16, 1, 0.3, 1)',
 };
 
 const overlayCard: React.CSSProperties = {
+  position: 'relative',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 10,
+  padding: '13px 18px 16px',
+  background: 'linear-gradient(135deg, rgba(14, 18, 30, 0.9), rgba(17, 24, 39, 0.8))',
+  backdropFilter: 'blur(18px) saturate(130%)',
+  WebkitBackdropFilter: 'blur(18px) saturate(130%)',
+  borderRadius: 8,
+  border: '1px solid rgba(255, 255, 255, 0.18)',
+  boxShadow: '0 18px 42px rgba(0, 0, 0, 0.34), 0 0 0 1px rgba(255, 255, 255, 0.16)',
+  maxWidth: 560,
+  width: 'min(92vw, 560px)',
+  minHeight: 96,
+  overflow: 'hidden',
+  transformOrigin: 'bottom center',
+};
+
+const overlayAccent: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  height: 4,
+  background: 'linear-gradient(90deg, #22d3ee 0%, #a78bfa 48%, #f472b6 100%)',
+};
+
+const overlayMetaRow: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 10,
+  minHeight: 18,
+};
+
+const overlayPill: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  alignSelf: 'flex-start',
+  minHeight: 18,
+  padding: '2px 8px',
+  borderRadius: 999,
+  background: 'rgba(34, 211, 238, 0.16)',
+  border: '1px solid rgba(125, 211, 252, 0.28)',
+  color: '#cffafe',
+  fontSize: 10,
+  fontWeight: 800,
+  lineHeight: 1,
+  letterSpacing: 0,
+  textTransform: 'uppercase',
+};
+
+const overlayBody: React.CSSProperties = {
   display: 'flex',
   alignItems: 'flex-start',
   gap: 12,
-  padding: '14px 18px',
-  background: 'rgba(15, 15, 20, 0.7)',
-  backdropFilter: 'blur(20px)',
-  WebkitBackdropFilter: 'blur(20px)',
-  borderRadius: 14,
-  border: '1px solid rgba(255, 255, 255, 0.1)',
-  boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.08)',
-  animation: 'commentGlow 3s ease-in-out infinite',
-  maxWidth: 500,
-  width: '90%',
+  minWidth: 0,
 };
 
 const overlayAvatar: React.CSSProperties = {
-  width: 36,
-  height: 36,
-  borderRadius: '50%',
+  width: 44,
+  height: 44,
+  borderRadius: 8,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   flexShrink: 0,
+  boxShadow: 'inset 0 0 0 1px rgba(255, 255, 255, 0.22)',
 };
 
 const overlayAvatarLetter: React.CSSProperties = {
-  fontSize: 15,
-  fontWeight: 700,
+  fontSize: 17,
+  fontWeight: 800,
   color: 'white',
   lineHeight: 1,
   textTransform: 'uppercase',
@@ -402,26 +508,33 @@ const overlayAvatarLetter: React.CSSProperties = {
 const overlayTextWrap: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 3,
+  gap: 5,
   minWidth: 0,
   flex: 1,
 };
 
 const overlaySenderName: React.CSSProperties = {
   fontSize: 13,
-  fontWeight: 700,
+  fontWeight: 800,
   color: 'rgba(255, 255, 255, 0.95)',
-  lineHeight: 1,
+  lineHeight: 1.1,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };
 
 const overlayContent: React.CSSProperties = {
-  fontSize: 14,
-  fontWeight: 400,
-  color: 'rgba(255, 255, 255, 0.8)',
-  lineHeight: 1.45,
+  display: '-webkit-box',
+  WebkitLineClamp: 3,
+  WebkitBoxOrient: 'vertical',
+  fontSize: 18,
+  fontWeight: 700,
+  color: 'rgba(255, 255, 255, 0.92)',
+  lineHeight: 1.25,
   margin: 0,
   wordWrap: 'break-word',
   overflowWrap: 'break-word',
+  overflow: 'hidden',
 };
 
 // ---------------------------------------------------------------------------
