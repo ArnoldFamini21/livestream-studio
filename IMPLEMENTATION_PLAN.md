@@ -161,7 +161,7 @@
 - [ ] Individual ISO recordings per participant (video + audio)
 - [ ] Combined mix-down recording
 - [ ] Separate screen share recording
-- [ ] Audio-only export (podcast mode)
+- [x] Audio-only export (podcast ZIP with isolated audio tracks, WAV stems when supported, captions, and markers)
 - [ ] Transcript generation (speech-to-text via Whisper API)
 
 ### 8B. Recording Management

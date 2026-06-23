@@ -312,10 +312,34 @@ function makeUniqueAudioStemZipPath(fileName: string, index: number, seenPaths: 
   return candidate;
 }
 
+function makeUniquePodcastAudioZipPath(fileName: string, index: number, seenPaths: Set<string>): string {
+  const fallback = `audio_track_${index + 1}.webm`;
+  const cleaned = sanitizeFileName(fileName, fallback);
+  const match = cleaned.match(/^(.*?)(\.[^.]+)?$/);
+  const stem = match?.[1] || fallback;
+  const extension = match?.[2] || '';
+  let candidate = `audio-tracks/${String(index + 1).padStart(2, '0')}_${cleaned}`;
+  let suffix = 2;
+
+  while (seenPaths.has(candidate)) {
+    candidate = `audio-tracks/${String(index + 1).padStart(2, '0')}_${stem}_${suffix}${extension}`;
+    suffix += 1;
+  }
+
+  seenPaths.add(candidate);
+  return candidate;
+}
+
 function makeBundleFileName(roomName: string, createdAt: string): string {
   const roomPrefix = sanitizeFileName(roomName, 'studio');
   const timestamp = createdAt.slice(0, 19).replace(/[:T]/g, '-');
   return `${roomPrefix}_recording_bundle_${timestamp}.zip`;
+}
+
+function makePodcastBundleFileName(roomName: string, createdAt: string): string {
+  const roomPrefix = sanitizeFileName(roomName, 'studio');
+  const timestamp = createdAt.slice(0, 19).replace(/[:T]/g, '-');
+  return `${roomPrefix}_podcast_audio_${timestamp}.zip`;
 }
 
 function getRecordingSessionSearchText(session: LocalRecordingSession): string {
@@ -341,6 +365,10 @@ function sessionMatchesRecordingFilter(session: LocalRecordingSession, filter: R
   if (filter === 'all') return true;
   if (filter === 'markers') return Boolean(session.markers?.length);
   return session.files.some((file) => file.kind === filter);
+}
+
+function sessionHasPodcastAudio(session: LocalRecordingSession): boolean {
+  return session.files.some((file) => file.kind === 'audio' || file.type.startsWith('audio/'));
 }
 
 export function filterRecordingLibrarySessions(
@@ -414,6 +442,10 @@ function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
 
 function isAudioStemCandidate(file: RecordingBundleFile): boolean {
   return file.kind === 'audio' || file.type.startsWith('audio/');
+}
+
+function isPodcastAudioFile(file: RecordedFile): boolean {
+  return file.kind === 'audio' || getRecordingFileType(file).startsWith('audio/');
 }
 
 async function createWavAudioStem(
@@ -1161,6 +1193,24 @@ function buildEditorReadme(source: RecordingBundleSource): string {
   ].join('\n');
 }
 
+function buildPodcastReadme(source: RecordingBundleSource): string {
+  return [
+    'LiveStream Studio Podcast Audio Export',
+    '',
+    `Room: ${source.roomName}`,
+    `Created: ${source.createdAt}`,
+    `Duration: ${formatDuration(source.durationSeconds)}`,
+    '',
+    'Files:',
+    '- audio-tracks/: original isolated audio-only recording tracks',
+    '- audio-stems/: PCM WAV stems generated from audio tracks when supported',
+    '- markers/: recording markers when present',
+    '- captions/: live caption sidecars when present',
+    '',
+    'Use this ZIP for podcast editing workflows where video and screen tracks are not needed. Import the audio tracks or WAV stems into your editor at 0:00, then use markers and caption sidecars for show notes and clip points.',
+  ].join('\n');
+}
+
 function createRecordingManifest(
   source: RecordingBundleSource,
   files: RecordingBundleFile[],
@@ -1212,6 +1262,71 @@ function createRecordingManifest(
     editor: {
       timelineVersion: 1,
       files: editorFiles,
+    },
+    ...(finalCaptionSegments.length > 0
+      ? {
+          captions: {
+            language: source.captionLanguage || null,
+            languageLabel: getCaptionLanguageLabel(source.captionLanguage),
+            segmentCount: finalCaptionSegments.length,
+            files: captionFiles,
+          },
+        }
+      : {}),
+    ...(markers.length > 0
+      ? {
+          markers: {
+            markerCount: markers.length,
+            files: markerFiles,
+          },
+        }
+      : {}),
+  };
+}
+
+function createPodcastManifest(
+  source: RecordingBundleSource,
+  files: RecordingBundleFile[],
+  exportedAt: string,
+  captionFiles: RecordingCaptionFile[],
+  markerFiles: RecordingMarkerFile[],
+  audioStemFiles: RecordingAudioStemFile[],
+  skippedAudioStemCount: number,
+  audioStemCandidateCount: number
+) {
+  const totalBytes = files.reduce((total, file) => total + file.size, 0);
+  const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
+  const markers = getSortedRecordingMarkers(source.markers);
+  return {
+    app: 'livestream-studio',
+    exportType: 'podcast-audio-bundle',
+    version: 1,
+    exportedAt,
+    session: {
+      id: source.sessionId,
+      roomName: source.roomName,
+      createdAt: source.createdAt,
+      durationSeconds: source.durationSeconds,
+      audioTrackCount: files.length,
+      totalBytes,
+    },
+    audioTracks: files.map((file, index) => ({
+      trackIndex: index + 1,
+      label: file.label,
+      fileName: file.fileName,
+      zipPath: file.zipPath,
+      size: file.size,
+      type: file.type,
+      kind: 'audio',
+    })),
+    audioStems: {
+      format: 'wav',
+      encoding: 'pcm_s16le',
+      bitDepth: 16,
+      generatedCount: audioStemFiles.length,
+      skippedCount: skippedAudioStemCount,
+      candidateCount: audioStemCandidateCount,
+      files: audioStemFiles,
     },
     ...(finalCaptionSegments.length > 0
       ? {
@@ -1449,6 +1564,102 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
   ]);
 }
 
+export async function createPodcastAudioBundle(source: RecordingBundleSource): Promise<Blob> {
+  const audioFiles = source.files.filter(isPodcastAudioFile);
+  if (audioFiles.length === 0) {
+    throw new Error('Podcast export requires at least one audio track.');
+  }
+
+  const exportedAt = new Date().toISOString();
+  const seenPaths = new Set<string>();
+  const audioEntries = audioFiles.map((file, index) => ({
+    path: makeUniquePodcastAudioZipPath(file.fileName, index, seenPaths),
+    blob: file.blob,
+    file,
+  }));
+  const manifestFiles: RecordingBundleFile[] = audioEntries.map((entry) => ({
+    label: entry.file.label,
+    fileName: entry.file.fileName,
+    zipPath: entry.path,
+    size: entry.file.blob.size,
+    type: getRecordingFileType(entry.file),
+    kind: 'audio',
+  }));
+  const audioStemResult = await buildWavAudioStems(audioEntries, manifestFiles, seenPaths);
+  const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
+  const captionEntries = finalCaptionSegments.length > 0
+    ? [
+        {
+          path: 'captions/live_captions.txt',
+          blob: new Blob([buildPlainCaptionTranscript(source, finalCaptionSegments)], { type: 'text/plain;charset=utf-8' }),
+          label: 'Live captions transcript',
+          format: 'txt' as const,
+        },
+        {
+          path: 'captions/live_captions.vtt',
+          blob: new Blob([buildCaptionWebVtt(source, finalCaptionSegments)], { type: 'text/vtt;charset=utf-8' }),
+          label: 'Live captions WebVTT',
+          format: 'vtt' as const,
+        },
+      ]
+    : [];
+  const captionFiles: RecordingCaptionFile[] = captionEntries.map((entry) => ({
+    label: entry.label,
+    format: entry.format,
+    zipPath: entry.path,
+    size: entry.blob.size,
+    type: entry.blob.type,
+  }));
+  const sortedMarkers = getSortedRecordingMarkers(source.markers);
+  const markerEntries = sortedMarkers.length > 0
+    ? [
+        {
+          path: 'markers/recording_markers.json',
+          blob: new Blob([buildRecordingMarkersJson(source, sortedMarkers)], { type: 'application/json' }),
+          label: 'Recording markers JSON',
+          format: 'json' as const,
+        },
+        {
+          path: 'markers/recording_markers.csv',
+          blob: new Blob([buildRecordingMarkersCsv(sortedMarkers)], { type: 'text/csv;charset=utf-8' }),
+          label: 'Recording markers CSV',
+          format: 'csv' as const,
+        },
+      ]
+    : [];
+  const markerFiles: RecordingMarkerFile[] = markerEntries.map((entry) => ({
+    label: entry.label,
+    format: entry.format,
+    zipPath: entry.path,
+    size: entry.blob.size,
+    type: entry.blob.type,
+  }));
+  const readmeEntry = {
+    path: 'README.txt',
+    blob: new Blob([buildPodcastReadme(source)], { type: 'text/plain;charset=utf-8' }),
+  };
+  const manifest = createPodcastManifest(
+    source,
+    manifestFiles,
+    exportedAt,
+    captionFiles,
+    markerFiles,
+    audioStemResult.files,
+    audioStemResult.skippedCount,
+    audioStemResult.candidateCount
+  );
+  const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
+
+  return createZipBundle([
+    { path: 'manifest.json', blob: manifestBlob },
+    ...audioEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    ...audioStemResult.entries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    readmeEntry,
+    ...captionEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    ...markerEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+  ]);
+}
+
 export function RecordingPanel({
   isRecording,
   formattedTime,
@@ -1472,6 +1683,7 @@ export function RecordingPanel({
   const [preview, setPreview] = useState<{ url: string; type: string; label: string } | null>(null);
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
   const [isBundling, setIsBundling] = useState(false);
+  const [isPodcastBundling, setIsPodcastBundling] = useState(false);
   const [bundleError, setBundleError] = useState<string | null>(null);
   const [markerLabel, setMarkerLabel] = useState('');
   const markerImportInputRef = useRef<HTMLInputElement>(null);
@@ -1503,6 +1715,10 @@ export function RecordingPanel({
   const finalCaptionCount = getFinalCaptionSegments(captionSegments).length;
   const sortedRecordingMarkers = useMemo(() => getSortedRecordingMarkers(recordingMarkers), [recordingMarkers]);
   const markerCount = sortedRecordingMarkers.length;
+  const hasPodcastAudioTracks = useMemo(
+    () => recordedFiles.some(isPodcastAudioFile),
+    [recordedFiles]
+  );
   const filteredSessions = useMemo(
     () => filterRecordingLibrarySessions(sessions, libraryQuery, libraryFilter),
     [libraryFilter, libraryQuery, sessions]
@@ -1637,6 +1853,33 @@ export function RecordingPanel({
     }
   }, [activeSessionId, captionLanguage, captionSegments, formattedTime, recordedFiles, roomName, sessions, sortedRecordingMarkers]);
 
+  const handleDownloadPodcastBundle = useCallback(async () => {
+    if (recordedFiles.length === 0) return;
+    const activeSession = activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null;
+    const source: RecordingBundleSource = {
+      roomName: activeSession?.roomName || roomName,
+      sessionId: activeSession?.id || activeSessionId,
+      createdAt: activeSession?.createdAt || new Date().toISOString(),
+      durationSeconds: activeSession?.durationSeconds ?? parseDurationSeconds(formattedTime),
+      files: recordedFiles,
+      captionSegments,
+      captionLanguage,
+      markers: sortedRecordingMarkers,
+    };
+
+    setIsPodcastBundling(true);
+    setBundleError(null);
+    try {
+      const bundle = await createPodcastAudioBundle(source);
+      downloadBlob(bundle, makePodcastBundleFileName(source.roomName, source.createdAt));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create podcast audio export';
+      setBundleError(message);
+    } finally {
+      setIsPodcastBundling(false);
+    }
+  }, [activeSessionId, captionLanguage, captionSegments, formattedTime, recordedFiles, roomName, sessions, sortedRecordingMarkers]);
+
   const handleDownloadSingle = useCallback((file: RecordedFile) => {
     downloadBlob(file.blob, file.fileName);
   }, []);
@@ -1735,6 +1978,35 @@ export function RecordingPanel({
       downloadBlob(bundle, makeBundleFileName(session.roomName, session.createdAt));
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create recording bundle';
+      setBundleError(message);
+    } finally {
+      setLibraryBusyId(null);
+    }
+  }, [activeSessionId, captionLanguage, captionSegments, loadFiles, sortedRecordingMarkers]);
+
+  const handleDownloadSessionPodcastBundle = useCallback(async (session: LocalRecordingSession) => {
+    setLibraryBusyId(session.id);
+    setBundleError(null);
+    try {
+      const files = await loadFiles(session.id);
+      const source: RecordingBundleSource = {
+        roomName: session.roomName,
+        sessionId: session.id,
+        createdAt: session.createdAt,
+        durationSeconds: session.durationSeconds,
+        files: files.map((file) => ({
+          label: file.label,
+          blob: file.blob,
+          fileName: file.fileName,
+          kind: file.kind,
+        })),
+        markers: session.id === activeSessionId ? sortedRecordingMarkers : session.markers,
+        ...(session.id === activeSessionId ? { captionSegments, captionLanguage } : {}),
+      };
+      const bundle = await createPodcastAudioBundle(source);
+      downloadBlob(bundle, makePodcastBundleFileName(session.roomName, session.createdAt));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create podcast audio export';
       setBundleError(message);
     } finally {
       setLibraryBusyId(null);
@@ -2044,6 +2316,9 @@ export function RecordingPanel({
               <div style={styles.captionSidecarNote}>
                 ZIP includes editor timeline JSON/CSV, Final Cut Pro XML, Premiere Pro XML, DaVinci Resolve XML, and WAV audio stems when supported.
               </div>
+              <div style={styles.captionSidecarNote}>
+                Podcast ZIP includes audio-only tracks, WAV stems when supported, captions, and markers for show editing.
+              </div>
               {finalCaptionCount > 0 && (
                 <div style={styles.captionSidecarNote}>
                   ZIP includes captions as TXT and WebVTT sidecars.
@@ -2070,6 +2345,25 @@ export function RecordingPanel({
                   <path d="M7 3h10" />
                 </svg>
                 {isBundling ? 'Bundling...' : 'Download ZIP'}
+              </button>
+
+              <button
+                className="hover-lift"
+                style={{
+                  ...styles.podcastBtn,
+                  opacity: !hasPodcastAudioTracks ? 0.45 : isPodcastBundling ? 0.6 : 1,
+                  ...(!hasPodcastAudioTracks ? styles.startBtnDisabled : {}),
+                }}
+                onClick={handleDownloadPodcastBundle}
+                disabled={!hasPodcastAudioTracks || isPodcastBundling}
+                title={hasPodcastAudioTracks ? 'Download podcast audio ZIP' : 'No audio tracks recorded'}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 18V5l12-2v13" />
+                  <circle cx="6" cy="18" r="3" />
+                  <circle cx="18" cy="16" r="3" />
+                </svg>
+                {isPodcastBundling ? 'Exporting...' : 'Podcast ZIP'}
               </button>
 
               <button
@@ -2181,6 +2475,7 @@ export function RecordingPanel({
           {filteredSessions.map((session) => {
             const isActive = activeSessionId === session.id;
             const isBusy = libraryBusyId === session.id;
+            const hasSessionPodcastAudio = sessionHasPodcastAudio(session);
             return (
               <div key={session.id} style={{ ...styles.sessionCard, ...(isActive ? styles.sessionCardActive : {}) }}>
                 <div style={styles.sessionTop}>
@@ -2198,6 +2493,17 @@ export function RecordingPanel({
                     disabled={isBusy}
                   >
                     {isBusy ? 'Working...' : 'ZIP'}
+                  </button>
+                  <button
+                    style={{
+                      ...styles.sessionBtn,
+                      ...(!hasSessionPodcastAudio ? styles.sessionBtnDisabled : {}),
+                    }}
+                    onClick={() => handleDownloadSessionPodcastBundle(session)}
+                    disabled={isBusy || !hasSessionPodcastAudio}
+                    title={hasSessionPodcastAudio ? 'Download podcast audio ZIP' : 'No audio tracks in this session'}
+                  >
+                    {isBusy ? 'Working...' : 'Podcast'}
                   </button>
                   <button
                     style={styles.sessionBtn}
@@ -2820,6 +3126,22 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
   },
+  podcastBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
+    padding: '10px 16px',
+    fontSize: 13,
+    fontWeight: 600,
+    borderRadius: 8,
+    border: 'none',
+    background: '#8b5cf6',
+    color: 'white',
+    cursor: 'pointer',
+    transition: 'opacity 0.2s ease',
+  },
   driveBtn: {
     display: 'flex',
     alignItems: 'center',
@@ -2957,6 +3279,10 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     fontWeight: 700,
     cursor: 'pointer',
+  },
+  sessionBtnDisabled: {
+    opacity: 0.45,
+    cursor: 'not-allowed',
   },
   deleteBtn: {
     color: '#ef4444',
