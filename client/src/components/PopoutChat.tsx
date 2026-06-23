@@ -9,7 +9,7 @@ import {
   type PopoutChatState,
 } from '../utils/popoutChat.ts';
 
-type ChatMode = 'public' | 'starred' | 'backstage';
+type ChatMode = 'public' | 'starred' | 'backstage' | 'direct';
 type ConnectionStatus = 'waiting' | 'connected' | 'unavailable';
 
 const MAX_MESSAGE_LENGTH = 2000;
@@ -27,14 +27,17 @@ export function PopoutChat() {
   const supportsBroadcastChannel = typeof window !== 'undefined' && 'BroadcastChannel' in window;
 
   const messages = state?.messages || [];
-  const publicMessages = messages.filter((message) => !message.isBackstage);
+  const publicMessages = messages.filter((message) => !message.isBackstage && !message.recipientId);
   const starredMessages = publicMessages.filter((message) => message.starred);
   const backstageMessages = messages.filter((message) => message.isBackstage);
+  const directMessages = messages.filter((message) => Boolean(message.recipientId));
   const visibleMessages = mode === 'backstage'
     ? backstageMessages
-    : mode === 'starred'
-      ? starredMessages
-      : publicMessages;
+    : mode === 'direct'
+      ? directMessages
+      : mode === 'starred'
+        ? starredMessages
+        : publicMessages;
 
   const postCommand = useCallback((command: PopoutChatCommand) => {
     channelRef.current?.postMessage(command);
@@ -79,6 +82,7 @@ export function PopoutChat() {
   const handleSend = () => {
     const content = input.trim();
     if (!content || content.length > MAX_MESSAGE_LENGTH) return;
+    if (mode === 'direct') return;
     postCommand({
       type: 'send-message',
       payload: {
@@ -129,6 +133,7 @@ export function PopoutChat() {
       <div style={styles.tabs} role="tablist" aria-label="Chat mode">
         <ModeButton label="Public" count={publicMessages.length} active={mode === 'public'} onClick={() => setMode('public')} />
         <ModeButton label="Starred" count={starredMessages.length} active={mode === 'starred'} onClick={() => setMode('starred')} />
+        <ModeButton label="Direct" count={directMessages.length} active={mode === 'direct'} onClick={() => setMode('direct')} />
         <ModeButton label="Backstage" count={backstageMessages.length} active={mode === 'backstage'} onClick={() => setMode('backstage')} />
       </div>
 
@@ -139,6 +144,8 @@ export function PopoutChat() {
               {status === 'connected'
                 ? mode === 'starred'
                   ? 'No starred comments'
+                  : mode === 'direct'
+                    ? 'No direct messages'
                   : mode === 'backstage'
                     ? 'No backstage notes'
                     : 'No public messages'
@@ -148,6 +155,8 @@ export function PopoutChat() {
               {status === 'connected'
                 ? mode === 'starred'
                   ? 'Star comments from Public to keep them ready.'
+                  : mode === 'direct'
+                    ? 'Private messages from the studio appear here.'
                   : mode === 'backstage'
                     ? 'Backstage notes stay with producers.'
                     : 'Incoming public chat appears here.'
@@ -177,15 +186,15 @@ export function PopoutChat() {
           onKeyDown={(event) => {
             if (event.key === 'Enter') handleSend();
           }}
-          placeholder={mode === 'backstage' ? 'Backstage note...' : 'Public message...'}
-          disabled={status !== 'connected'}
+          placeholder={mode === 'direct' ? 'Use the studio window to send private messages...' : mode === 'backstage' ? 'Backstage note...' : 'Public message...'}
+          disabled={status !== 'connected' || mode === 'direct'}
         />
         <button
           type="button"
           className="chat-send-btn"
-          style={{ ...styles.sendButton, opacity: input.trim() && status === 'connected' ? 1 : 0.45 }}
+          style={{ ...styles.sendButton, opacity: input.trim() && status === 'connected' && mode !== 'direct' ? 1 : 0.45 }}
           onClick={handleSend}
-          disabled={!input.trim() || status !== 'connected'}
+          disabled={!input.trim() || status !== 'connected' || mode === 'direct'}
           aria-label="Send message"
         >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -241,12 +250,14 @@ function ChatMessageCard({
           {message.senderName}
         </span>
         {message.isBackstage && <span style={styles.backstageBadge}>Backstage</span>}
+        {message.recipientId && <span style={styles.privateBadge}>Private</span>}
+        {message.recipientId && <span style={styles.privateMeta}>to {message.recipientName || 'participant'}</span>}
         {message.starred && <span style={styles.starBadge}>Starred</span>}
         <time style={styles.messageTime}>{new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
       </div>
       <p style={styles.messageContent}>{message.content}</p>
       <div style={styles.actions}>
-        {!message.isBackstage && (
+        {!message.isBackstage && !message.recipientId && (
           <button
             type="button"
             style={{ ...styles.actionButton, ...(message.starred ? styles.actionButtonActive : {}) }}
@@ -298,7 +309,7 @@ const styles: Record<string, React.CSSProperties> = {
   statusGood: { color: '#86efac', borderColor: 'rgba(34, 197, 94, 0.25)', background: 'rgba(34, 197, 94, 0.1)' },
   statusBad: { color: '#fcd34d', borderColor: 'rgba(245, 158, 11, 0.25)', background: 'rgba(245, 158, 11, 0.1)' },
   iconButton: { width: 34, height: 34, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' },
-  tabs: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, padding: 10, background: 'rgba(15, 23, 42, 0.76)', borderBottom: '1px solid var(--border)' },
+  tabs: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6, padding: 10, background: 'rgba(15, 23, 42, 0.76)', borderBottom: '1px solid var(--border)' },
   tabButton: { minWidth: 0, minHeight: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 11, fontWeight: 800, cursor: 'pointer' },
   tabButtonActive: { borderColor: 'rgba(167, 139, 250, 0.55)', background: 'rgba(167, 139, 250, 0.13)', color: '#ddd6fe' },
   tabCount: { minWidth: 18, height: 18, borderRadius: 999, background: 'rgba(255,255,255,0.08)', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10 },
@@ -312,6 +323,8 @@ const styles: Record<string, React.CSSProperties> = {
   messageSender: { minWidth: 0, maxWidth: '100%', fontSize: 12, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   messageTime: { marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)' },
   backstageBadge: { fontSize: 9, fontWeight: 800, color: '#93c5fd', background: 'rgba(59, 130, 246, 0.12)', borderRadius: 999, padding: '2px 6px', textTransform: 'uppercase', letterSpacing: 0 },
+  privateBadge: { fontSize: 9, fontWeight: 800, color: '#86efac', background: 'rgba(34, 197, 94, 0.13)', borderRadius: 999, padding: '2px 6px', textTransform: 'uppercase', letterSpacing: 0 },
+  privateMeta: { fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   starBadge: { fontSize: 9, fontWeight: 800, color: '#fbbf24', background: 'rgba(245, 158, 11, 0.14)', borderRadius: 999, padding: '2px 6px', textTransform: 'uppercase', letterSpacing: 0 },
   messageContent: { margin: 0, fontSize: 13, lineHeight: 1.45, color: 'var(--text-secondary)', wordBreak: 'break-word', whiteSpace: 'pre-wrap' },
   actions: { display: 'flex', flexWrap: 'wrap', gap: 6 },

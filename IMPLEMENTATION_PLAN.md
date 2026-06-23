@@ -123,7 +123,7 @@
 - [ ] Chat message animations (slide in from right)
 - [ ] Emoji reactions
 - [ ] Pin messages
-- [ ] Private messages between host and individual guests
+- [x] Private messages between host and individual guests
 
 ### 6B. Live Chat Integration
 - [ ] YouTube Live Chat API integration (read incoming messages)

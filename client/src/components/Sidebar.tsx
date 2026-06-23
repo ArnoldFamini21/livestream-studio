@@ -102,7 +102,7 @@ interface SidebarProps {
   scenePackMessage?: string | null;
   // Chat props
   chatPanelMessages: ChatMessage[];
-  onSendChat: (content: string, isBackstage?: boolean) => void;
+  onSendChat: (content: string, isBackstage?: boolean, recipientId?: string) => void;
   onReactChat: (messageId: string, reaction: ChatReactionType) => void;
   onToggleChatStar: (messageId: string, starred: boolean) => void;
   chatSenderName: string;
@@ -337,6 +337,8 @@ export function Sidebar(props: SidebarProps) {
               onToggleStar={props.onToggleChatStar}
               senderName={props.chatSenderName}
               onOpenPopoutChat={props.onOpenPopoutChat}
+              participants={props.allParticipants}
+              myParticipantId={props.myParticipantId}
             />
           )}
 
@@ -947,25 +949,48 @@ function ChatContent({
   onToggleStar,
   senderName,
   onOpenPopoutChat,
+  participants,
+  myParticipantId,
 }: {
   messages: ChatMessage[];
-  onSend: (c: string, isBackstage?: boolean) => void;
+  onSend: (c: string, isBackstage?: boolean, recipientId?: string) => void;
   onReact: (messageId: string, reaction: ChatReactionType) => void;
   onToggleStar: (messageId: string, starred: boolean) => void;
   senderName: string;
   onOpenPopoutChat?: () => void;
+  participants: Map<string, Participant>;
+  myParticipantId: string;
 }) {
   const [input, setInput] = useState('');
-  const [mode, setMode] = useState<'public' | 'starred' | 'backstage'>('public');
+  const [mode, setMode] = useState<'public' | 'starred' | 'backstage' | 'direct'>('public');
+  const [directRecipientId, setDirectRecipientId] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
-  const publicMessages = messages.filter((msg) => !msg.isBackstage);
+  const publicMessages = messages.filter((msg) => !msg.isBackstage && !msg.recipientId);
   const starredMessages = publicMessages.filter((msg) => msg.starred);
   const backstageMessages = messages.filter((msg) => msg.isBackstage);
-  const visibleMessages = mode === 'backstage' ? backstageMessages : mode === 'starred' ? starredMessages : publicMessages;
+  const directMessages = messages.filter((msg) => Boolean(msg.recipientId));
+  const visibleMessages = mode === 'backstage'
+    ? backstageMessages
+    : mode === 'direct'
+      ? directMessages
+      : mode === 'starred'
+        ? starredMessages
+        : publicMessages;
   const exportScope: ChatTranscriptScope = mode;
-  const exportLabel = mode === 'backstage' ? 'Export Backstage' : mode === 'starred' ? 'Export Starred' : 'Export Public';
+  const exportLabel = mode === 'backstage'
+    ? 'Export Backstage'
+    : mode === 'direct'
+      ? 'Export Direct'
+      : mode === 'starred'
+        ? 'Export Starred'
+        : 'Export Public';
+  const directRecipients = Array.from(participants.values())
+    .filter((participant) => participant.id !== myParticipantId)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const selectedRecipient = directRecipients.find((participant) => participant.id === directRecipientId);
+  const canSend = input.trim().length > 0 && (mode !== 'direct' || Boolean(selectedRecipient));
 
   const handleScroll = () => {
     const el = containerRef.current;
@@ -980,7 +1005,8 @@ function ChatContent({
   const handleSend = () => {
     const t = input.trim();
     if (!t) return;
-    onSend(t, mode === 'backstage');
+    if (mode === 'direct' && !selectedRecipient) return;
+    onSend(t, mode === 'backstage', mode === 'direct' ? selectedRecipient?.id : undefined);
     setInput('');
   };
 
@@ -1043,6 +1069,16 @@ function ChatContent({
           <button
             type="button"
             role="tab"
+            aria-selected={mode === 'direct'}
+            style={{ ...st.chatTab, ...(mode === 'direct' ? st.chatTabActiveDirect : {}) }}
+            onClick={() => setMode('direct')}
+          >
+            Direct
+            {directMessages.length > 0 && <span style={st.chatTabCount}>{directMessages.length}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={mode === 'backstage'}
             style={{ ...st.chatTab, ...(mode === 'backstage' ? st.chatTabActiveBackstage : {}) }}
             onClick={() => setMode('backstage')}
@@ -1055,8 +1091,8 @@ function ChatContent({
       <div ref={containerRef} style={st.chatMessages} onScroll={handleScroll}>
         {visibleMessages.length === 0 && (
           <div style={st.chatEmpty}>
-            <p style={st.chatEmptyText}>{mode === 'backstage' ? 'No backstage notes yet' : mode === 'starred' ? 'No starred comments yet' : 'No public messages yet'}</p>
-            <p style={st.chatEmptyHint}>{mode === 'backstage' ? 'Coordinate with producers, co-hosts, and backstage guests.' : mode === 'starred' ? 'Star comments to keep them ready for the broadcast.' : 'Messages here are visible to everyone.'}</p>
+            <p style={st.chatEmptyText}>{mode === 'backstage' ? 'No backstage notes yet' : mode === 'direct' ? 'No direct messages yet' : mode === 'starred' ? 'No starred comments yet' : 'No public messages yet'}</p>
+            <p style={st.chatEmptyHint}>{mode === 'backstage' ? 'Coordinate with producers, co-hosts, and backstage guests.' : mode === 'direct' ? 'Send a private note to one participant.' : mode === 'starred' ? 'Star comments to keep them ready for the broadcast.' : 'Messages here are visible to everyone.'}</p>
           </div>
         )}
         {visibleMessages.map((msg) => (
@@ -1064,12 +1100,14 @@ function ChatContent({
             <div style={st.chatMsgHead}>
               <span style={{ ...st.chatMsgName, color: msg.senderName === senderName ? 'var(--accent-hover)' : 'var(--text-primary)' }}>{msg.senderName}</span>
               {msg.isBackstage && <span style={st.chatBackstageBadge}>Backstage</span>}
+              {msg.recipientId && <span style={st.chatPrivateBadge}>Private</span>}
+              {msg.recipientId && <span style={st.chatPrivateMeta}>to {msg.recipientName || 'participant'}</span>}
               {msg.starred && <span style={st.chatStarBadge}>Starred</span>}
               <span style={st.chatMsgTime}>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
             <p style={st.chatMsgContent}>{msg.content}</p>
             <div style={st.chatMsgActions}>
-              {!msg.isBackstage && (
+              {!msg.isBackstage && !msg.recipientId && (
                 <button
                   type="button"
                   style={{ ...st.chatMiniBtn, ...(msg.starred ? st.chatMiniBtnActive : {}) }}
@@ -1095,15 +1133,32 @@ function ChatContent({
         ))}
         <div ref={bottomRef} />
       </div>
+      {mode === 'direct' && (
+        <div style={st.chatDirectControls}>
+          <select
+            style={st.chatDirectSelect}
+            value={directRecipientId}
+            onChange={(event) => setDirectRecipientId(event.target.value)}
+            aria-label="Private message recipient"
+          >
+            <option value="">Select recipient</option>
+            {directRecipients.map((participant) => (
+              <option key={participant.id} value={participant.id}>
+                {participant.name} ({participant.role})
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div style={st.chatInputBar}>
         <input
           style={st.chatInput}
-          placeholder={mode === 'backstage' ? 'Send a backstage note...' : 'Type a public message...'}
+          placeholder={mode === 'backstage' ? 'Send a backstage note...' : mode === 'direct' && selectedRecipient ? `Message ${selectedRecipient.name} privately...` : mode === 'direct' ? 'Choose a recipient first...' : 'Type a public message...'}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
         />
-        <button className="chat-send-btn" style={{ ...st.chatSendBtn, opacity: input.trim() ? 1 : 0.4 }} onClick={handleSend} disabled={!input.trim()} aria-label="Send message">
+        <button className="chat-send-btn" style={{ ...st.chatSendBtn, opacity: canSend ? 1 : 0.4 }} onClick={handleSend} disabled={!canSend} aria-label="Send message">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
         </button>
       </div>
@@ -1323,7 +1378,7 @@ const st: Record<string, React.CSSProperties> = {
   overlayPackGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 },
   overlayPackBtn: { minHeight: 34, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer' },
   // Chat
-  chatTabs: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
+  chatTabs: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 4, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
   chatHeaderActions: { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },
   chatPopoutBtn: { minHeight: 28, padding: '0 10px', borderRadius: 7, border: '1px solid rgba(167, 139, 250, 0.28)', background: 'rgba(167, 139, 250, 0.1)', color: '#ddd6fe', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' },
   chatExportBtn: { minHeight: 28, padding: '0 10px', borderRadius: 7, border: '1px solid rgba(96, 165, 250, 0.28)', background: 'rgba(96, 165, 250, 0.1)', color: '#bfdbfe', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' },
@@ -1331,6 +1386,7 @@ const st: Record<string, React.CSSProperties> = {
   chatTab: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, height: 28, padding: '0 8px', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
   chatTabActive: { background: 'rgba(96, 165, 250, 0.14)', color: '#93c5fd' },
   chatTabActiveStarred: { background: 'rgba(245, 158, 11, 0.16)', color: '#fbbf24' },
+  chatTabActiveDirect: { background: 'rgba(34, 197, 94, 0.14)', color: '#86efac' },
   chatTabActiveBackstage: { background: 'rgba(245, 158, 11, 0.16)', color: '#fbbf24' },
   chatTabCount: { minWidth: 16, height: 16, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px', borderRadius: 8, background: 'rgba(255, 255, 255, 0.08)', color: 'inherit', fontSize: 9, lineHeight: 1 },
   chatMessages: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 },
@@ -1342,12 +1398,16 @@ const st: Record<string, React.CSSProperties> = {
   chatMsgHead: { display: 'flex', alignItems: 'baseline', gap: 8 },
   chatMsgName: { fontSize: 12, fontWeight: 600 },
   chatBackstageBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.14)', color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  chatPrivateBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(34, 197, 94, 0.13)', color: '#86efac', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  chatPrivateMeta: { fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   chatStarBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.14)', color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatMsgTime: { fontSize: 10, color: 'var(--text-muted)' },
   chatMsgContent: { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.4, wordBreak: 'break-word', margin: 0 },
   chatMsgActions: { display: 'flex', flexWrap: 'wrap', gap: 5 },
   chatMiniBtn: { minHeight: 24, border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.04)', color: 'var(--text-muted)', borderRadius: 6, padding: '0 7px', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
   chatMiniBtnActive: { borderColor: 'rgba(245, 158, 11, 0.36)', background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24' },
+  chatDirectControls: { padding: '10px 12px 0', borderTop: '1px solid var(--border)' },
+  chatDirectSelect: { width: '100%', minHeight: 34, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' },
   chatInputBar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderTop: '1px solid var(--border)' },
   chatInput: { flex: 1, padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', outline: 'none' },
   chatSendBtn: { width: 34, height: 34, borderRadius: 8, background: 'var(--accent-solid)', color: 'white', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, transition: 'opacity var(--transition-fast)' },

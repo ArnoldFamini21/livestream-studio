@@ -279,6 +279,8 @@ export interface ChatMessage {
   clientId?: string;
   senderId: string;
   senderName: string;
+  recipientId?: string;
+  recipientName?: string;
   content: string;
   timestamp: string;
   isBackstage: boolean;

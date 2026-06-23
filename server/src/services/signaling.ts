@@ -1232,6 +1232,9 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
 }
 
 function canSeeChatMessage(message: ChatMessage, participant: Participant, participantId: string): boolean {
+  if (message.recipientId) {
+    return participantId === message.senderId || participantId === message.recipientId;
+  }
   if (!message.isBackstage) return true;
   return (
     participant.role === 'host' ||
@@ -1322,6 +1325,22 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   const sanitizedContent = payload.content.replace(/[\x00-\x1F\x7F]/g, '').trim();
   if (sanitizedContent.length === 0) return;
 
+  const requestedRecipientId = typeof payload.recipientId === 'string' ? payload.recipientId.trim() : '';
+  const recipientEntry = requestedRecipientId ? roomState.participants.get(requestedRecipientId) : undefined;
+  if (requestedRecipientId) {
+    if (!recipientEntry || requestedRecipientId === mapping.participantId) {
+      sendError(ws, 'Invalid private message recipient', 'VALIDATION_ERROR');
+      return;
+    }
+
+    const senderIsOperator = senderEntry.participant.role === 'host' || senderEntry.participant.role === 'co-host';
+    const recipientIsOperator = recipientEntry.participant.role === 'host' || recipientEntry.participant.role === 'co-host';
+    if (!senderIsOperator && !recipientIsOperator) {
+      sendError(ws, 'Private messages must include a host or co-host', 'UNAUTHORIZED');
+      return;
+    }
+  }
+
   const sanitizedPayload: ChatMessage = {
     id: nanoid(10),
     clientId: typeof payload.id === 'string' ? payload.id : undefined,
@@ -1329,7 +1348,13 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
     senderId: mapping.participantId,
     senderName: senderEntry.participant.name,
     timestamp: new Date().toISOString(),
-    isBackstage: isBackstageMessage,
+    isBackstage: requestedRecipientId ? false : isBackstageMessage,
+    ...(recipientEntry
+      ? {
+          recipientId: recipientEntry.participant.id,
+          recipientName: recipientEntry.participant.name,
+        }
+      : {}),
   };
 
   storeChatMessage(roomState, sanitizedPayload);
@@ -1412,6 +1437,10 @@ function handleChatStarUpdate(
 
   const message = roomState.chatMessages.get(payload.messageId);
   if (!message || !canSeeChatMessage(message, performer.participant, mapping.participantId)) return;
+  if (message.recipientId) {
+    sendError(ws, 'Private messages cannot be starred for broadcast', 'VALIDATION_ERROR');
+    return;
+  }
   if (message.isBackstage) {
     sendError(ws, 'Backstage messages cannot be starred for broadcast', 'VALIDATION_ERROR');
     return;

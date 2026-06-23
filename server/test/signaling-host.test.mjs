@@ -908,6 +908,136 @@ describe('chat engagement', () => {
     }
   });
 
+  it('scopes direct private chat to the sender and recipient', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Direct chat privacy test', 'Arnold', {
+      creatorIp: `direct-chat-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      const hostState = await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      const guestState = await guestJoined;
+
+      const observer = await connectClient(harness.url);
+      const observerJoined = waitForMessage(observer, 'room-joined');
+      joinRoom(observer, {
+        roomId: room.id,
+        name: 'Observer',
+        role: 'guest',
+      });
+      const observerState = await observerJoined;
+
+      const hostDirectMessage = waitForMessage(host, 'chat-message', (message) => message.payload.content === 'Private cue');
+      const guestDirectMessage = waitForMessage(guest, 'chat-message', (message) => message.payload.content === 'Private cue');
+      const observerNoDirectMessage = expectNoMessage(observer, 'chat-message', (message) => message.payload.content === 'Private cue');
+      sendSignal(host, {
+        type: 'chat-message',
+        payload: {
+          id: 'host-direct-message',
+          senderId: 'client-claimed-host',
+          senderName: 'Client claimed host',
+          recipientId: guestState.payload.participant.id,
+          recipientName: 'Client claimed guest',
+          content: 'Private cue',
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+
+      const [hostDirect, guestDirect] = await Promise.all([hostDirectMessage, guestDirectMessage, observerNoDirectMessage]);
+      assert.equal(hostDirect.payload.senderName, 'Arnold');
+      assert.equal(hostDirect.payload.recipientId, guestState.payload.participant.id);
+      assert.equal(hostDirect.payload.recipientName, 'Guest');
+      assert.equal(hostDirect.payload.clientId, 'host-direct-message');
+      assert.equal(hostDirect.payload.isBackstage, false);
+      assert.equal(guestDirect.payload.id, hostDirect.payload.id);
+
+      const starPrivateError = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'chat-star-update',
+        payload: {
+          messageId: hostDirect.payload.id,
+          starred: true,
+        },
+      });
+      const privateStarError = await starPrivateError;
+      assert.match(privateStarError.payload.message, /Private messages cannot be starred/i);
+
+      const hostReplyMessage = waitForMessage(host, 'chat-message', (message) => message.payload.content === 'Private reply');
+      const guestReplyMessage = waitForMessage(guest, 'chat-message', (message) => message.payload.content === 'Private reply');
+      const observerNoReplyMessage = expectNoMessage(observer, 'chat-message', (message) => message.payload.content === 'Private reply');
+      sendSignal(guest, {
+        type: 'chat-message',
+        payload: {
+          id: 'guest-direct-reply',
+          senderId: 'client-claimed-guest',
+          senderName: 'Client claimed guest',
+          recipientId: hostState.payload.participant.id,
+          content: 'Private reply',
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+      const [hostReply, guestReply] = await Promise.all([hostReplyMessage, guestReplyMessage, observerNoReplyMessage]);
+      assert.equal(hostReply.payload.senderName, 'Guest');
+      assert.equal(hostReply.payload.recipientId, hostState.payload.participant.id);
+      assert.equal(hostReply.payload.recipientName, 'Arnold');
+      assert.equal(guestReply.payload.id, hostReply.payload.id);
+
+      const guestToGuestDenied = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'chat-message',
+        payload: {
+          id: 'guest-to-guest-direct',
+          senderId: guestState.payload.participant.id,
+          senderName: 'Guest',
+          recipientId: observerState.payload.participant.id,
+          content: 'Guest to guest whisper',
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+      const denied = await guestToGuestDenied;
+      assert.match(denied.payload.message, /host or co-host/i);
+
+      const lateObserver = await connectClient(harness.url);
+      const lateObserverJoined = waitForMessage(lateObserver, 'room-joined');
+      joinRoom(lateObserver, {
+        roomId: room.id,
+        name: 'Late Observer',
+        role: 'guest',
+      });
+      const late = await lateObserverJoined;
+      assert.equal(
+        late.payload.chatMessages.some((message) => (
+          message.id === hostDirect.payload.id || message.id === hostReply.payload.id
+        )),
+        false
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
   it('keeps backstage chat scoped to producers and backstage participants', async () => {
     const harness = await createSignalingHarness();
     const { room, hostToken } = createRoom('Backstage chat privacy test', 'Arnold', {
