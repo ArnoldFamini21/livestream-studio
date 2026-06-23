@@ -5,6 +5,7 @@ import {
   PRODUCTION_SCENE_TEMPLATE_CARDS,
 } from '../utils/productionSceneTemplates.ts';
 import type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
+import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
 
 export type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
 
@@ -16,6 +17,7 @@ interface SceneManagerProps {
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
+  onReorderScene: (sceneId: string, direction: SceneOrderDirection) => void;
 }
 
 const MAX_SCENES = 12;
@@ -79,6 +81,7 @@ export function SceneManager({
   onApplyScene,
   onDeleteScene,
   onRenameScene,
+  onReorderScene,
 }: SceneManagerProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
@@ -243,10 +246,12 @@ export function SceneManager({
         </div>
       ) : (
         <div style={styles.grid}>
-          {scenes.map((scene) => {
+          {scenes.map((scene, index) => {
             const isActive = scene.id === activeSceneId;
             const isMenuOpen = menuOpenId === scene.id;
             const isRenaming = renamingId === scene.id;
+            const canMoveEarlier = index > 0;
+            const canMoveLater = index < scenes.length - 1;
 
             return (
               <div
@@ -293,6 +298,47 @@ export function SceneManager({
                     <span style={styles.sceneName} title={scene.name}>
                       {scene.name}
                     </span>
+                  )}
+
+                  {!isRenaming && scenes.length > 1 && (
+                    <div style={styles.sceneOrderControls} aria-label={`Reorder ${scene.name}`}>
+                      <button
+                        type="button"
+                        style={{
+                          ...styles.sceneOrderBtn,
+                          ...(!canMoveEarlier ? styles.sceneOrderBtnDisabled : {}),
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (canMoveEarlier) onReorderScene(scene.id, 'earlier');
+                        }}
+                        disabled={!canMoveEarlier}
+                        aria-label={`Move ${scene.name} earlier`}
+                        title="Move earlier"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m18 15-6-6-6 6" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        style={{
+                          ...styles.sceneOrderBtn,
+                          ...(!canMoveLater ? styles.sceneOrderBtnDisabled : {}),
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (canMoveLater) onReorderScene(scene.id, 'later');
+                        }}
+                        disabled={!canMoveLater}
+                        aria-label={`Move ${scene.name} later`}
+                        title="Move later"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m6 9 6 6 6-6" />
+                        </svg>
+                      </button>
+                    </div>
                   )}
 
                   {/* Menu trigger */}
@@ -593,6 +639,30 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     outline: 'none',
     minWidth: 0,
+  },
+  sceneOrderControls: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
+  },
+  sceneOrderBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 22,
+    height: 22,
+    background: 'rgba(255, 255, 255, 0.04)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    borderRadius: 4,
+    padding: 0,
+    flexShrink: 0,
+  },
+  sceneOrderBtnDisabled: {
+    opacity: 0.36,
+    cursor: 'not-allowed',
   },
   menuBtn: {
     display: 'flex',

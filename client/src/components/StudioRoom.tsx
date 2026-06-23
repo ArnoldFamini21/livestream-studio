@@ -62,6 +62,7 @@ import {
   normalizeStageItemOrder,
   type StageItemOrderDirection,
 } from '../utils/stageItemOrder.ts';
+import { moveSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
 import {
   AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS,
   addLowerThird,
@@ -2108,6 +2109,9 @@ export function StudioRoom() {
   const onRenameScene = (sceneId: string, newName: string) => {
     setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, name: newName } : s));
   };
+  const onReorderScene = (sceneId: string, direction: SceneOrderDirection) => {
+    setScenes(prev => moveSceneInOrder(prev, sceneId, direction));
+  };
 
   // Tickers
   const onAddTicker = (ticker: Omit<TickerData, 'id' | 'visible'> & { visible?: boolean }) => {
@@ -3207,6 +3211,7 @@ export function StudioRoom() {
             onApplyScene={onApplyScene}
             onDeleteScene={onDeleteScene}
             onRenameScene={onRenameScene}
+            onReorderScene={onReorderScene}
             tickers={tickers}
             onAddTicker={onAddTicker}
             onToggleTicker={onToggleTicker}
