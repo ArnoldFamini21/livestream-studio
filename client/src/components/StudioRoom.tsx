@@ -57,6 +57,10 @@ import {
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
 import {
+  buildRecordingReadinessSummary,
+  type RecordingParticipantReadiness,
+} from '../utils/recordingReadiness.ts';
+import {
   applyStageItemOrder,
   moveStageItemInOrder,
   normalizeStageItemOrder,
@@ -561,6 +565,7 @@ export function StudioRoom() {
   const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]?.enabled);
   const effectiveVideoEnabled = videoEnabled && Boolean(localStream?.getVideoTracks()[0]?.enabled);
   const isHostOrCoHost = myParticipant?.role === 'host' || myParticipant?.role === 'co-host';
+  const captionsAllowed = Boolean(isHostOrCoHost && myParticipant?.status !== 'green-room');
   const sessionHealth = useSessionHealth({
     localStream,
     connected,
@@ -571,7 +576,65 @@ export function StudioRoom() {
     isRecording: isRecording || isLocalRecording || Boolean(sessionRecordingStartedAt),
     isLive,
   });
-  const captionsAllowed = Boolean(isHostOrCoHost && myParticipant?.status !== 'green-room');
+  const recordingReadiness = useMemo(() => {
+    const liveTracks = (tracks: MediaStreamTrack[] | undefined) => (
+      (tracks || []).filter((track) => track.readyState === 'live')
+    );
+    const readinessParticipants: RecordingParticipantReadiness[] = [];
+
+    if (myParticipant) {
+      const localAudioTracks = liveTracks(localStream?.getAudioTracks());
+      const localVideoTracks = liveTracks(localStream?.getVideoTracks());
+      readinessParticipants.push({
+        id: myParticipant.id,
+        name: myParticipant.name,
+        status: myParticipant.status,
+        isLocal: true,
+        hasStream: Boolean(localStream),
+        hasAudio: localAudioTracks.length > 0,
+        hasVideo: localVideoTracks.length > 0,
+        screenSharing: isScreenSharing,
+      });
+    }
+
+    for (const [id, participant] of participants) {
+      const remoteStream = remoteStreams.get(id) || null;
+      const remoteAudioTracks = liveTracks(remoteStream?.getAudioTracks());
+      const remoteVideoTracks = liveTracks(remoteStream?.getVideoTracks());
+      readinessParticipants.push({
+        id,
+        name: participant.name,
+        status: participant.status,
+        hasStream: Boolean(remoteStream),
+        hasAudio: remoteAudioTracks.length > 0,
+        hasVideo: remoteVideoTracks.length > 0,
+        screenSharing: participant.screenSharing,
+      });
+    }
+
+    return buildRecordingReadinessSummary({
+      participants: readinessParticipants,
+      screen: {
+        active: isScreenSharing,
+        hasVideo: liveTracks(screenStream?.getVideoTracks()).length > 0,
+        hasAudio: liveTracks(screenStream?.getAudioTracks()).length > 0,
+      },
+      mediaRecorderSupported: typeof MediaRecorder !== 'undefined',
+      persistentStorageSupported: typeof navigator !== 'undefined' && Boolean(navigator.storage?.getDirectory),
+      captionsEnabled: captionsAllowed && captionsEnabled,
+      markerCount: recordingMarkers.length,
+    });
+  }, [
+    captionsAllowed,
+    captionsEnabled,
+    isScreenSharing,
+    localStream,
+    myParticipant,
+    participants,
+    recordingMarkers.length,
+    remoteStreams,
+    screenStream,
+  ]);
   const {
     supported: captionsSupported,
     listening: captionsListening,
@@ -1603,14 +1666,14 @@ export function StudioRoom() {
 
   // Local recording (separate on-stage tracks)
   const onStartLocalRecording = () => {
-    if (!myParticipant) return;
+    if (!myParticipant || !recordingReadiness.canStart) return;
     const sources: LocalRecordingSource[] = [];
     const liveTracks = (tracks: MediaStreamTrack[]) => tracks.filter((track) => track.readyState === 'live');
     const localAudioTracks = liveTracks(localStream?.getAudioTracks() || []);
     const localVideoTracks = liveTracks(localStream?.getVideoTracks() || []);
     const localId = getRecordingSourceId(myParticipant.id);
 
-    if (localAudioTracks.length > 0) {
+    if (myParticipant.status === 'on-stage' && localAudioTracks.length > 0) {
       sources.push({
         id: `${localId}-audio`,
         label: `${myParticipant.name} audio`,
@@ -1620,7 +1683,7 @@ export function StudioRoom() {
       });
     }
 
-    if (localVideoTracks.length > 0) {
+    if (myParticipant.status === 'on-stage' && localVideoTracks.length > 0) {
       sources.push({
         id: `${localId}-camera`,
         label: `${myParticipant.name} camera`,
@@ -3571,6 +3634,7 @@ export function StudioRoom() {
               formattedTime={localRecFormattedTime}
               recordingTrackLabels={localRecordingLabels}
               recordingMarkers={recordingMarkers}
+              recordingReadiness={recordingReadiness}
               onStartRecording={onStartLocalRecording}
               onStopRecording={stopLocalRecording}
               onAddRecordingMarker={onAddRecordingMarker}

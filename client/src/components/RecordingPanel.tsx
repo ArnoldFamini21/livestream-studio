@@ -3,11 +3,13 @@ import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { LocalRecordingFileResult, RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
 import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary';
+import type { RecordingReadinessStatus, RecordingReadinessSummary } from '../utils/recordingReadiness';
 
 interface RecordingPanelProps {
   isRecording: boolean;
   formattedTime: string;
   recordingTrackLabels?: string[];
+  recordingReadiness?: RecordingReadinessSummary;
   recordingMarkers?: RecordingMarker[];
   onStartRecording: () => void;
   onStopRecording: () => Promise<RecordingResult>;
@@ -167,6 +169,38 @@ function formatDuration(seconds: number | null): string {
   const s = seconds % 60;
   if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function getRecordingReadinessColor(status: RecordingReadinessStatus): string {
+  switch (status) {
+    case 'good': return '#86efac';
+    case 'warning': return '#fcd34d';
+    case 'bad': return '#fca5a5';
+  }
+}
+
+function getRecordingReadinessBackground(status: RecordingReadinessStatus): string {
+  switch (status) {
+    case 'good': return 'rgba(34, 197, 94, 0.1)';
+    case 'warning': return 'rgba(245, 158, 11, 0.1)';
+    case 'bad': return 'rgba(239, 68, 68, 0.1)';
+  }
+}
+
+function getRecordingReadinessBorder(status: RecordingReadinessStatus): string {
+  switch (status) {
+    case 'good': return 'rgba(34, 197, 94, 0.24)';
+    case 'warning': return 'rgba(245, 158, 11, 0.25)';
+    case 'bad': return 'rgba(239, 68, 68, 0.26)';
+  }
+}
+
+function getRecordingReadinessLabel(status: RecordingReadinessStatus): string {
+  switch (status) {
+    case 'good': return 'Ready';
+    case 'warning': return 'Review';
+    case 'bad': return 'Blocked';
+  }
 }
 
 function isPreviewable(file: RecordedFile): boolean {
@@ -1419,6 +1453,7 @@ export function RecordingPanel({
   isRecording,
   formattedTime,
   recordingTrackLabels = [],
+  recordingReadiness,
   recordingMarkers = [],
   onStartRecording,
   onStopRecording,
@@ -1464,6 +1499,7 @@ export function RecordingPanel({
   const visibleTrackLabels = recordingTrackLabels.length > 0
     ? recordingTrackLabels
     : ['Audio', 'Video', 'Screen'];
+  const canStartRecording = recordingReadiness?.canStart ?? true;
   const finalCaptionCount = getFinalCaptionSegments(captionSegments).length;
   const sortedRecordingMarkers = useMemo(() => getSortedRecordingMarkers(recordingMarkers), [recordingMarkers]);
   const markerCount = sortedRecordingMarkers.length;
@@ -1834,6 +1870,56 @@ export function RecordingPanel({
           </div>
         )}
 
+        {!isRecording && recordingReadiness && (
+          <div style={styles.readinessCard}>
+            <div style={styles.readinessHeader}>
+              <div>
+                <span style={styles.readinessTitle}>Recording Readiness</span>
+                <p style={styles.readinessSubtitle}>
+                  {recordingReadiness.expectedTracks.length} isolated track{recordingReadiness.expectedTracks.length === 1 ? '' : 's'} detected
+                </p>
+              </div>
+              <span style={{
+                ...styles.readinessBadge,
+                color: getRecordingReadinessColor(recordingReadiness.status),
+                borderColor: getRecordingReadinessBorder(recordingReadiness.status),
+                background: getRecordingReadinessBackground(recordingReadiness.status),
+              }}>
+                {recordingReadiness.label}
+              </span>
+            </div>
+            {recordingReadiness.blockingIssue && (
+              <p style={styles.readinessBlocking}>{recordingReadiness.blockingIssue}</p>
+            )}
+            {recordingReadiness.expectedTracks.length > 0 && (
+              <div style={styles.readinessTracks}>
+                {recordingReadiness.expectedTracks.slice(0, 8).map((track) => (
+                  <span key={track.id} style={styles.readinessTrackBadge}>{track.label}</span>
+                ))}
+                {recordingReadiness.expectedTracks.length > 8 && (
+                  <span style={styles.readinessTrackBadge}>+{recordingReadiness.expectedTracks.length - 8}</span>
+                )}
+              </div>
+            )}
+            <div style={styles.readinessItems}>
+              {recordingReadiness.items.map((item) => (
+                <div key={item.id} style={styles.readinessItem}>
+                  <span style={{ ...styles.readinessDot, background: getRecordingReadinessColor(item.status) }} />
+                  <div style={styles.readinessItemBody}>
+                    <div style={styles.readinessItemTop}>
+                      <span style={styles.readinessItemLabel}>{item.label}</span>
+                      <span style={{ ...styles.readinessItemStatus, color: getRecordingReadinessColor(item.status) }}>
+                        {getRecordingReadinessLabel(item.status)}
+                      </span>
+                    </div>
+                    <p style={styles.readinessItemDetail}>{item.detail}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Idle State - No recordings, not recording */}
         {!isRecording && recordedFiles.length === 0 && (
           <div style={styles.idleCard}>
@@ -1844,8 +1930,12 @@ export function RecordingPanel({
             <p style={styles.idleText}>Record isolated on-stage audio, camera, and screen tracks locally for maximum quality.</p>
             <button
               className="hover-scale"
-              style={styles.startBtn}
+              style={{
+                ...styles.startBtn,
+                ...(!canStartRecording ? styles.startBtnDisabled : {}),
+              }}
               onClick={onStartRecording}
+              disabled={!canStartRecording}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10" />
@@ -2349,6 +2439,115 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     padding: 0,
   },
+  readinessCard: {
+    background: 'rgba(255,255,255,0.035)',
+    borderRadius: 10,
+    padding: 10,
+    border: '1px solid var(--border)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 9,
+  },
+  readinessHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  readinessTitle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: 'var(--text-primary)',
+  },
+  readinessSubtitle: {
+    margin: '2px 0 0',
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    lineHeight: 1.35,
+  },
+  readinessBadge: {
+    flexShrink: 0,
+    fontSize: 9,
+    fontWeight: 800,
+    textTransform: 'uppercase',
+    borderRadius: 999,
+    border: '1px solid',
+    padding: '3px 7px',
+    letterSpacing: 0,
+  },
+  readinessBlocking: {
+    margin: 0,
+    color: '#fca5a5',
+    fontSize: 11,
+    lineHeight: 1.4,
+  },
+  readinessTracks: {
+    display: 'flex',
+    gap: 5,
+    flexWrap: 'wrap',
+  },
+  readinessTrackBadge: {
+    maxWidth: '100%',
+    fontSize: 10,
+    fontWeight: 700,
+    padding: '3px 7px',
+    borderRadius: 999,
+    background: 'rgba(99, 102, 241, 0.14)',
+    color: '#c4b5fd',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  readinessItems: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 7,
+  },
+  readinessItem: {
+    display: 'grid',
+    gridTemplateColumns: '8px 1fr',
+    gap: 8,
+    alignItems: 'start',
+  },
+  readinessDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    marginTop: 4,
+  },
+  readinessItemBody: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 1,
+  },
+  readinessItemTop: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  readinessItemLabel: {
+    minWidth: 0,
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  readinessItemStatus: {
+    flexShrink: 0,
+    fontSize: 9,
+    fontWeight: 800,
+    textTransform: 'uppercase',
+  },
+  readinessItemDetail: {
+    margin: 0,
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    lineHeight: 1.35,
+  },
   stopBtn: {
     width: '100%',
     padding: '10px 16px',
@@ -2394,6 +2593,10 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#ef4444',
     color: 'white',
     cursor: 'pointer',
+  },
+  startBtnDisabled: {
+    opacity: 0.45,
+    cursor: 'not-allowed',
   },
 
   // Recorded Files
