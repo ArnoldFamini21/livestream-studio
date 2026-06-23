@@ -7,6 +7,7 @@ interface LowerThirdData {
   title: string;
   style: 'minimal' | 'bold' | 'gradient' | 'glass';
   visible: boolean;
+  durationSeconds?: number;
 }
 
 interface LowerThirdManagerProps {
@@ -16,6 +17,13 @@ interface LowerThirdManagerProps {
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
 }
+
+const LOWER_THIRD_DURATION_OPTIONS = [
+  { label: 'Manual', value: 0 },
+  { label: '10s', value: 10 },
+  { label: '20s', value: 20 },
+  { label: '60s', value: 60 },
+] as const;
 
 function getParticipantLowerThirdTitle(role: ParticipantRole): string {
   switch (role) {
@@ -32,11 +40,17 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
   const [name, setName] = useState('');
   const [title, setTitle] = useState('');
   const [style, setStyle] = useState<LowerThirdData['style']>('minimal');
+  const [durationSeconds, setDurationSeconds] = useState(0);
   const onStageParticipants = participants.filter((participant) => participant.status === 'on-stage');
 
   const handleAdd = () => {
     if (!name.trim()) return;
-    onAdd({ name: name.trim(), title: title.trim(), style });
+    onAdd({
+      name: name.trim(),
+      title: title.trim(),
+      style,
+      durationSeconds: durationSeconds || undefined,
+    });
     setName('');
     setTitle('');
   };
@@ -61,6 +75,7 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
                   name: participant.name,
                   title: getParticipantLowerThirdTitle(participant.role),
                   style: 'bold',
+                  durationSeconds: 10,
                   visible: true,
                 })}
                 aria-label={`Show lower third for ${participant.name}`}
@@ -81,6 +96,7 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
             <div style={styles.itemInfo}>
               <span style={styles.itemName}>{lt.name}</span>
               {lt.title && <span style={styles.itemTitle}>{lt.title}</span>}
+              {lt.durationSeconds && <span style={styles.itemMeta}>{lt.durationSeconds}s auto-hide</span>}
             </div>
             <div style={styles.itemActions}>
               <button
@@ -131,6 +147,24 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
               {s}
             </button>
           ))}
+        </div>
+        <div style={styles.durationGroup}>
+          <span style={styles.durationLabel}>Duration</span>
+          <div style={styles.durationRow}>
+            {LOWER_THIRD_DURATION_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                style={{
+                  ...styles.durationBtn,
+                  ...(durationSeconds === option.value ? styles.durationBtnActive : {}),
+                }}
+                onClick={() => setDurationSeconds(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
         <button
           className="btn-primary"
@@ -371,6 +405,18 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  itemMeta: {
+    width: 'fit-content',
+    marginTop: 3,
+    padding: '1px 5px',
+    borderRadius: 4,
+    background: 'rgba(167, 139, 250, 0.12)',
+    color: '#c4b5fd',
+    fontSize: 9,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
   itemActions: {
     display: 'flex',
     alignItems: 'center',
@@ -434,6 +480,39 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--accent-subtle)',
     color: 'var(--accent-hover)',
     borderColor: 'var(--accent)',
+  },
+  durationGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 5,
+  },
+  durationLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+  },
+  durationRow: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    gap: 4,
+  },
+  durationBtn: {
+    minWidth: 0,
+    height: 26,
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  durationBtnActive: {
+    background: 'rgba(167, 139, 250, 0.14)',
+    borderColor: 'var(--accent)',
+    color: '#c4b5fd',
   },
   addBtn: {
     fontSize: 12,
