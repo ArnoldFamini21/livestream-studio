@@ -62,7 +62,7 @@ import {
   normalizeStageItemOrder,
   type StageItemOrderDirection,
 } from '../utils/stageItemOrder.ts';
-import { moveSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
+import { duplicateSceneInOrder, moveSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
 import {
   AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS,
   addLowerThird,
@@ -2109,6 +2109,15 @@ export function StudioRoom() {
   const onRenameScene = (sceneId: string, newName: string) => {
     setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, name: newName } : s));
   };
+  const onDuplicateScene = (sceneId: string) => {
+    if (scenes.length >= MAX_STUDIO_SCENES) return;
+    const duplicateId = `scene-copy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setScenes(prev => (
+      prev.length >= MAX_STUDIO_SCENES
+        ? prev
+        : duplicateSceneInOrder(prev, sceneId, duplicateId)
+    ));
+  };
   const onReorderScene = (sceneId: string, direction: SceneOrderDirection) => {
     setScenes(prev => moveSceneInOrder(prev, sceneId, direction));
   };
@@ -3211,6 +3220,7 @@ export function StudioRoom() {
             onApplyScene={onApplyScene}
             onDeleteScene={onDeleteScene}
             onRenameScene={onRenameScene}
+            onDuplicateScene={onDuplicateScene}
             onReorderScene={onReorderScene}
             tickers={tickers}
             onAddTicker={onAddTicker}
