@@ -1,12 +1,13 @@
 import type { ChatMessage, ChatReactionType } from '@studio/shared';
 import { CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
 
-export type ChatTranscriptScope = 'public' | 'starred' | 'backstage';
+export type ChatTranscriptScope = 'public' | 'starred' | 'backstage' | 'direct';
 
 const SCOPE_LABELS: Record<ChatTranscriptScope, string> = {
   public: 'Public',
   starred: 'Starred',
   backstage: 'Backstage',
+  direct: 'Direct',
 };
 
 function csvCell(value: string | number | boolean | null | undefined): string {
@@ -38,8 +39,9 @@ export function getChatTranscriptMessages(
   return messages
     .filter((message) => {
       if (scope === 'backstage') return message.isBackstage;
-      if (scope === 'starred') return !message.isBackstage && Boolean(message.starred);
-      return !message.isBackstage;
+      if (scope === 'direct') return Boolean(message.recipientId);
+      if (scope === 'starred') return !message.isBackstage && !message.recipientId && Boolean(message.starred);
+      return !message.isBackstage && !message.recipientId;
     })
     .sort((a, b) => {
       const aTime = Date.parse(a.timestamp);
@@ -55,11 +57,12 @@ export function buildChatTranscriptCsv(
   messages: ChatMessage[],
   scope: ChatTranscriptScope
 ): string {
-  const header = ['Timestamp', 'Sender', 'Channel', 'Starred', 'Reactions', 'Message'];
+  const header = ['Timestamp', 'Sender', 'Recipient', 'Channel', 'Starred', 'Reactions', 'Message'];
   const rows = getChatTranscriptMessages(messages, scope).map((message) => [
     formatTimestamp(message.timestamp),
     message.senderName,
-    SCOPE_LABELS[message.isBackstage ? 'backstage' : 'public'],
+    message.recipientName || '',
+    SCOPE_LABELS[message.recipientId ? 'direct' : message.isBackstage ? 'backstage' : 'public'],
     message.starred ? 'Yes' : 'No',
     formatReactions(message.reactions),
     message.content,

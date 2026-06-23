@@ -4,10 +4,11 @@ import { CHAT_REACTION_LABELS } from '@studio/shared';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
-  onSend: (content: string) => void;
+  onSend: (content: string, recipientId?: string) => void;
   onReact?: (messageId: string, reaction: ChatReactionType) => void;
   onClose: () => void;
   senderName: string;
+  directRecipients?: Array<{ id: string; name: string; role?: string }>;
   title?: string;
   placeholder?: string;
   emptyText?: string;
@@ -23,15 +24,18 @@ export function ChatPanel({
   onReact,
   onClose,
   senderName,
+  directRecipients = [],
   title = 'Chat',
   placeholder = 'Type a message...',
   emptyText = 'No messages yet',
   emptyHint = 'Start the conversation!',
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
+  const [recipientId, setRecipientId] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const selectedRecipient = directRecipients.find((recipient) => recipient.id === recipientId);
 
   const handleScroll = () => {
     const container = messagesContainerRef.current;
@@ -52,7 +56,7 @@ export function ChatPanel({
   const handleSend = () => {
     const text = input.trim();
     if (!text || text.length > MAX_MESSAGE_LENGTH) return;
-    onSend(text);
+    onSend(text, selectedRecipient?.id);
     setInput('');
   };
 
@@ -103,6 +107,8 @@ export function ChatPanel({
                 <span style={styles.msgTime}>
                   {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
+                {msg.recipientId && <span style={styles.privateBadge}>Private</span>}
+                {msg.recipientId && <span style={styles.privateMeta}>to {msg.recipientName || 'participant'}</span>}
                 {msg.starred && <span style={styles.starBadge}>Starred</span>}
               </div>
               <p style={styles.msgContent}>{msg.content}</p>
@@ -129,6 +135,21 @@ export function ChatPanel({
 
       {/* Input */}
       <div style={styles.inputArea}>
+        {directRecipients.length > 0 && (
+          <select
+            style={styles.recipientSelect}
+            value={recipientId}
+            onChange={(event) => setRecipientId(event.target.value)}
+            aria-label="Chat recipient"
+          >
+            <option value="">Everyone</option>
+            {directRecipients.map((recipient) => (
+              <option key={recipient.id} value={recipient.id}>
+                {recipient.name}{recipient.role ? ` (${recipient.role})` : ''}
+              </option>
+            ))}
+          </select>
+        )}
         {input.length >= CHAR_COUNT_THRESHOLD && (
           <div style={{
             ...styles.charCount,
@@ -140,7 +161,7 @@ export function ChatPanel({
         <div style={styles.inputBar}>
           <input
             style={styles.input}
-            placeholder={placeholder}
+            placeholder={selectedRecipient ? `Message ${selectedRecipient.name} privately...` : placeholder}
             value={input}
             maxLength={MAX_MESSAGE_LENGTH}
             onChange={(e) => setInput(e.target.value)}
@@ -263,6 +284,23 @@ const styles: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase' as const,
     letterSpacing: '0.04em',
   },
+  privateBadge: {
+    fontSize: 9,
+    fontWeight: 700,
+    padding: '1px 5px',
+    borderRadius: 4,
+    background: 'rgba(34, 197, 94, 0.13)',
+    color: '#86efac',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  privateMeta: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
   msgContent: {
     fontSize: 13,
     color: 'var(--text-secondary)',
@@ -288,6 +326,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   inputArea: {
     borderTop: '1px solid var(--border)',
+  },
+  recipientSelect: {
+    width: 'calc(100% - 24px)',
+    margin: '10px 12px 0',
+    minHeight: 34,
+    padding: '7px 10px',
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    outline: 'none',
   },
   charCount: {
     fontSize: 11,

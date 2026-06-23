@@ -42,6 +42,16 @@ const messages: ChatMessage[] = [
     starredBy: 'host-1',
     starredAt: '2026-06-11T10:05:00.000Z',
   },
+  {
+    id: 'msg-5',
+    senderId: 'host-1',
+    senderName: 'Host',
+    recipientId: 'guest-1',
+    recipientName: 'Ari',
+    content: 'Private product demo cue',
+    timestamp: '2026-06-11T10:06:00.000Z',
+    isBackstage: false,
+  },
 ];
 
 describe('comment highlight selection', () => {
@@ -63,9 +73,13 @@ describe('comment highlight selection', () => {
     );
   });
 
-  it('excludes backstage notes from highlight candidates', () => {
+  it('excludes backstage and direct notes from highlight candidates', () => {
     assert.deepEqual(
       getHighlightableChatMessages(messages, 'pricing', 'all').map((message) => message.id),
+      []
+    );
+    assert.deepEqual(
+      getHighlightableChatMessages(messages, 'private cue', 'all').map((message) => message.id),
       []
     );
   });

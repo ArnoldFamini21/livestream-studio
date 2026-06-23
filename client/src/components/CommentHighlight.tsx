@@ -70,7 +70,7 @@ export function getHighlightableChatMessages(
   filter: CommentHighlightFilter,
   limit = 30
 ): ChatMessage[] {
-  const publicMessages = chatMessages.filter((message) => !message.isBackstage);
+  const publicMessages = chatMessages.filter((message) => !message.isBackstage && !message.recipientId);
   const candidates = filter === 'ready'
     ? publicMessages.filter((message) => message.starred)
     : filter === 'recent'

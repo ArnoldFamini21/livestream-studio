@@ -1789,21 +1789,29 @@ export function StudioRoom() {
   }, []);
 
   // Chat
-  const onSendChat = (content: string, isBackstage = false) => {
+  const onSendChat = (content: string, isBackstage = false, recipientId?: string) => {
     if (!myParticipant) return;
+    const recipient = recipientId
+      ? participants.get(recipientId) || (myParticipant.id === recipientId ? myParticipant : undefined)
+      : undefined;
     const msg: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       senderId: myParticipant.id,
       senderName: myParticipant.name,
       content,
       timestamp: new Date().toISOString(),
-      isBackstage,
+      isBackstage: recipient ? false : isBackstage,
+      ...(recipient
+        ? {
+            recipientId: recipient.id,
+            recipientName: recipient.name,
+          }
+        : {}),
     };
 
-    // Public messages are broadcast to everyone except the sender, so keep them
-    // optimistic. Backstage messages are echoed back by the server only to the
-    // production team, which avoids client-generated duplicate IDs.
-    if (!isBackstage) {
+    // Keep public messages optimistic. Backstage and direct messages are echoed
+    // back by the server to their scoped audience, which avoids local-only leaks.
+    if (!isBackstage && !recipient) {
       setChatMessages((prev) => {
         const next = [...prev, msg];
         return next.length > 500 ? next.slice(-500) : next;
@@ -3485,10 +3493,20 @@ export function StudioRoom() {
         {!isHostOrCoHost && showGuestChat && (
           <ChatPanel
             messages={chatMessages.filter((msg) => !msg.isBackstage)}
-            onSend={onSendChat}
+            onSend={(content, recipientId) => onSendChat(content, false, recipientId)}
             onReact={onReactChat}
             onClose={() => setShowGuestChat(false)}
             senderName={userName}
+            directRecipients={Array.from(allParticipantsMap.values())
+              .filter((participant) => (
+                participant.id !== myParticipant?.id &&
+                (participant.role === 'host' || participant.role === 'co-host')
+              ))
+              .map((participant) => ({
+                id: participant.id,
+                name: participant.name,
+                role: participant.role,
+              }))}
           />
         )}
 

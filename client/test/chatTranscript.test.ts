@@ -34,6 +34,16 @@ const messages: ChatMessage[] = [
     timestamp: '2026-06-11T10:01:00.000Z',
     isBackstage: false,
   },
+  {
+    id: 'direct-note',
+    senderId: 'host-1',
+    senderName: 'Host',
+    recipientId: 'guest-1',
+    recipientName: 'Ari',
+    content: 'You are next',
+    timestamp: '2026-06-11T10:03:00.000Z',
+    isBackstage: false,
+  },
 ];
 
 describe('chat transcript export', () => {
@@ -49,6 +59,7 @@ describe('chat transcript export', () => {
     assert.match(csv, /"Hello, ""team""\nGreat demo"/);
     assert.match(csv, /"Like: 2; Clap: 1"/);
     assert.doesNotMatch(csv, /Guest mic is hot/);
+    assert.doesNotMatch(csv, /You are next/);
   });
 
   it('exports only starred public comments for producer follow-up', () => {
@@ -63,6 +74,20 @@ describe('chat transcript export', () => {
 
     assert.match(csv, /"Backstage"/);
     assert.match(csv, /"Guest mic is hot"/);
+    assert.doesNotMatch(csv, /pricing slide/);
+  });
+
+  it('exports direct messages only when that scope is requested', () => {
+    assert.deepEqual(
+      getChatTranscriptMessages(messages, 'direct').map((message) => message.id),
+      ['direct-note']
+    );
+
+    const csv = buildChatTranscriptCsv(messages, 'direct');
+
+    assert.match(csv, /"Direct"/);
+    assert.match(csv, /"Ari"/);
+    assert.match(csv, /"You are next"/);
     assert.doesNotMatch(csv, /pricing slide/);
   });
 
