@@ -17,6 +17,7 @@ import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalR
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
+import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
 import {
   clearUrlHostToken,
@@ -416,6 +417,7 @@ export function StudioRoom() {
   const [showCaptionsPanel, setShowCaptionsPanel] = useState(false);
   const [showHealthPanel, setShowHealthPanel] = useState(false);
   const [showGuestChat, setShowGuestChat] = useState(false);
+  const broadcastAudioBus = useBroadcastAudioBus();
   const [showInvitePanel, setShowInvitePanel] = useState(false);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>('people');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -767,6 +769,8 @@ export function StudioRoom() {
     localParticipantId: myParticipant?.id || null,
     remoteStreams: broadcastRemoteStreams,
     screenStream,
+    auxiliaryAudioStream: broadcastAudioBus.stream,
+    ensureAuxiliaryAudioStream: broadcastAudioBus.ensureStream,
     participantVolumes,
     participantAudioLevels: stageAudioLevels,
     audioDuckingEnabled,
@@ -3807,14 +3811,20 @@ export function StudioRoom() {
       {/* Sound Board Modal */}
       {showSoundBoard && (
         <Suspense fallback={<LazyPanelFallback />}>
-          <SoundBoard onClose={() => setShowSoundBoard(false)} />
+          <SoundBoard
+            onClose={() => setShowSoundBoard(false)}
+            broadcastAudio={broadcastAudioBus}
+          />
         </Suspense>
       )}
 
       {/* Background Music Modal */}
       {showBackgroundMusic && (
         <Suspense fallback={<LazyPanelFallback />}>
-          <BackgroundMusic onClose={() => setShowBackgroundMusic(false)} />
+          <BackgroundMusic
+            onClose={() => setShowBackgroundMusic(false)}
+            broadcastAudio={broadcastAudioBus}
+          />
         </Suspense>
       )}
 

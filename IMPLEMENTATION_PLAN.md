@@ -149,10 +149,10 @@
 - [x] Audio ducking (lower others when someone speaks)
 
 ### 7B. Audio Mixing
-- [ ] Background music player (upload MP3/WAV, play during stream)
-- [ ] Sound effects board (applause, drum roll, airhorn, custom)
+- [x] Background music player (upload MP3/WAV, play during stream)
+- [x] Sound effects board (applause, drum roll, airhorn, custom)
 - [ ] Separate mix for stream vs. participants (monitor mix)
-- [ ] Fade in/out controls for music
+- [x] Fade in/out controls for music
 
 ---
 
