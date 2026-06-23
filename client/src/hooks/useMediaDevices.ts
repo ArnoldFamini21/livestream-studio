@@ -1,4 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import {
+  createAudioTrackConstraints,
+  normalizeAudioProcessingPreferences,
+} from '../utils/audioProcessing.ts';
+import {
+  readPreferredAudioProcessing,
+  writePreferredAudioProcessing,
+  type AudioProcessingPreferences,
+} from '../utils/mediaPreferences.ts';
 
 export interface MediaDeviceInfo {
   deviceId: string;
@@ -11,9 +20,7 @@ interface SinkIdElement {
   setSinkId?: (sinkId: string) => Promise<void>;
 }
 
-interface StartMediaOptions {
-  echoCancellation?: boolean;
-  noiseSuppression?: boolean;
+interface StartMediaOptions extends Partial<AudioProcessingPreferences> {
   audioEnabled?: boolean;
   videoEnabled?: boolean;
 }
@@ -27,6 +34,7 @@ export function useMediaDevices() {
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [audioProcessing, setAudioProcessing] = useState<AudioProcessingPreferences>(() => readPreferredAudioProcessing());
 
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>(() => localStorage.getItem('preferredAudioDeviceId') || '');
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>(() => localStorage.getItem('preferredVideoDeviceId') || '');
@@ -35,7 +43,7 @@ export function useMediaDevices() {
   const streamRef = useRef<MediaStream | null>(null);
   const switchingRef = useRef(false);
   const audioOutputIdRef = useRef<string>(selectedAudioOutputDeviceId);
-  const audioProcessingOptionsRef = useRef({ echoCancellation: true, noiseSuppression: true });
+  const audioProcessingOptionsRef = useRef<AudioProcessingPreferences>(readPreferredAudioProcessing());
 
   const publishStreamUpdate = useCallback(() => {
     if (!streamRef.current) {
@@ -104,10 +112,10 @@ export function useMediaDevices() {
     }
 
     try {
-      audioProcessingOptionsRef.current = {
-        echoCancellation: options.echoCancellation ?? true,
-        noiseSuppression: options.noiseSuppression ?? true,
-      };
+      const nextAudioProcessing = normalizeAudioProcessingPreferences(options);
+      audioProcessingOptionsRef.current = nextAudioProcessing;
+      setAudioProcessing(nextAudioProcessing);
+      writePreferredAudioProcessing(nextAudioProcessing);
       // Stop any existing tracks first
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
@@ -122,12 +130,7 @@ export function useMediaDevices() {
         frameRate: { ideal: 30 },
         ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
       });
-      const createAudioConstraints = (deviceId?: string | null): MediaTrackConstraints => ({
-        echoCancellation: options.echoCancellation ?? true,
-        noiseSuppression: options.noiseSuppression ?? true,
-        autoGainControl: true,
-        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-      });
+      const createAudioConstraints = (deviceId?: string | null) => createAudioTrackConstraints(deviceId, nextAudioProcessing);
 
       const preferredDeviceIds = [targetAudioId, targetVideoId].some(Boolean);
       const avAttempts: MediaStreamConstraints[] = [
@@ -261,24 +264,19 @@ export function useMediaDevices() {
   // Switch audio input device
   const switchAudioDevice = useCallback(async (
     deviceId: string,
-    options: { echoCancellation?: boolean; noiseSuppression?: boolean } = { echoCancellation: true, noiseSuppression: true }
+    options: Partial<AudioProcessingPreferences> = audioProcessingOptionsRef.current
   ) => {
     if (!streamRef.current) return null;
     if (switchingRef.current) return null;
     switchingRef.current = true;
-    audioProcessingOptionsRef.current = {
-      echoCancellation: options.echoCancellation ?? true,
-      noiseSuppression: options.noiseSuppression ?? true,
-    };
+    const nextAudioProcessing = normalizeAudioProcessingPreferences(options);
+    audioProcessingOptionsRef.current = nextAudioProcessing;
+    setAudioProcessing(nextAudioProcessing);
+    writePreferredAudioProcessing(nextAudioProcessing);
 
     try {
       const newAudioStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: { exact: deviceId },
-          echoCancellation: options.echoCancellation ?? true,
-          noiseSuppression: options.noiseSuppression ?? true,
-          autoGainControl: true,
-        },
+        audio: createAudioTrackConstraints(deviceId, nextAudioProcessing),
       });
 
       const newAudioTrack = newAudioStream.getAudioTracks()[0];
@@ -299,8 +297,9 @@ export function useMediaDevices() {
 
       streamRef.current.addTrack(newAudioTrack);
       publishStreamUpdate();
-      setSelectedAudioDeviceId(deviceId);
-      localStorage.setItem('preferredAudioDeviceId', deviceId);
+      const activeDeviceId = newAudioTrack.getSettings().deviceId || deviceId;
+      setSelectedAudioDeviceId(activeDeviceId);
+      if (activeDeviceId) localStorage.setItem('preferredAudioDeviceId', activeDeviceId);
       setError(null);
 
       // Return the new track so WebRTC can replace it on peer connections
@@ -313,6 +312,19 @@ export function useMediaDevices() {
       switchingRef.current = false;
     }
   }, [publishStreamUpdate]);
+
+  const updateAudioProcessing = useCallback(async (preferences: AudioProcessingPreferences) => {
+    const nextAudioProcessing = normalizeAudioProcessingPreferences(preferences);
+    audioProcessingOptionsRef.current = nextAudioProcessing;
+    setAudioProcessing(nextAudioProcessing);
+    writePreferredAudioProcessing(nextAudioProcessing);
+
+    const activeAudioTrack = streamRef.current?.getAudioTracks()[0];
+    if (!streamRef.current || !activeAudioTrack || switchingRef.current) return null;
+
+    const activeDeviceId = selectedAudioDeviceId || activeAudioTrack.getSettings().deviceId || localStorage.getItem('preferredAudioDeviceId') || '';
+    return switchAudioDevice(activeDeviceId, nextAudioProcessing);
+  }, [selectedAudioDeviceId, switchAudioDevice]);
 
   // Switch video input device
   const switchVideoDevice = useCallback(async (deviceId: string) => {
@@ -422,12 +434,7 @@ export function useMediaDevices() {
             const audioProcessing = audioProcessingOptionsRef.current;
             try {
               const newStream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                  deviceId: { exact: fallbackAudio.deviceId },
-                  echoCancellation: audioProcessing.echoCancellation,
-                  noiseSuppression: audioProcessing.noiseSuppression,
-                  autoGainControl: true,
-                },
+                audio: createAudioTrackConstraints(fallbackAudio.deviceId, audioProcessing),
               });
               const newTrack = newStream.getAudioTracks()[0];
               streamRef.current.removeTrack(audioTrack);
@@ -545,6 +552,7 @@ export function useMediaDevices() {
     audioDevices,
     videoDevices,
     audioOutputDevices,
+    audioProcessing,
     // Selected devices
     selectedAudioDeviceId,
     selectedVideoDeviceId,
@@ -559,6 +567,7 @@ export function useMediaDevices() {
     toggleVideo,
     switchAudioDevice,
     switchVideoDevice,
+    updateAudioProcessing,
     enumerateDevices,
     applyAudioOutput,
     onAudioOutputDeviceChange,
