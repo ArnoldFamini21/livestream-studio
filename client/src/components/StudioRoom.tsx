@@ -47,6 +47,7 @@ import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import type { RecordingMarker } from './RecordingPanel.tsx';
 import { readPreferredAudioProcessing } from '../utils/mediaPreferences.ts';
+import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
   getProductionSceneTemplateConfig,
   type ProductionSceneTemplate,
@@ -265,14 +266,6 @@ function getHealthColor(status: HealthStatus): string {
     case 'warning': return 'var(--warning)';
     case 'bad': return 'var(--danger)';
   }
-}
-
-function formatDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 function getDestinationStatusMessage(status: RtmpRelayDestinationStatus, message?: string): string | undefined {
@@ -2865,12 +2858,14 @@ export function StudioRoom() {
   const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
   const highlightedPoll = useMemo(() => polls.find((poll) => poll.highlighted) || null, [polls]);
   const showCompositorDebug = import.meta.env.DEV && isLive;
-  const sessionRecordingActive = Boolean(sessionRecordingStartedAt || isRecording || isLocalRecording);
-  const sessionRecordingTime = isRecording
-    ? formattedTime
-    : sessionRecordingStartedAt
-      ? formatDuration(sessionRecordingElapsed)
-      : localRecFormattedTime;
+  const recordingStatus = getStudioRecordingStatus({
+    mixRecording: isRecording,
+    mixFormattedTime: formattedTime,
+    localRecording: isLocalRecording,
+    localFormattedTime: localRecFormattedTime,
+    sessionStartedAt: sessionRecordingStartedAt,
+    sessionElapsedSeconds: sessionRecordingElapsed,
+  });
 
   // Connection error
   if (connectionError) {
@@ -3119,10 +3114,10 @@ export function StudioRoom() {
               {waitingCount} waiting
             </span>
           )}
-          {sessionRecordingActive && (
+          {recordingStatus.active && (
             <span style={styles.recBadge}>
               <span style={styles.recDot} />
-              REC {sessionRecordingTime}
+              REC {recordingStatus.formattedTime}
             </span>
           )}
           {isLive && (
@@ -3673,8 +3668,8 @@ export function StudioRoom() {
         onOpenDeviceSettings={() => setShowDeviceSettings(true)}
         roomId={roomId || ''}
         isHost={isHostOrCoHost}
-        isRecording={isRecording}
-        formattedTime={formattedTime}
+        isRecording={recordingStatus.active}
+        formattedTime={recordingStatus.formattedTime}
         onToggleRecording={canControlRecording ? onToggleRecording : undefined}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={onToggleScreenShare}
@@ -3707,8 +3702,8 @@ export function StudioRoom() {
             localStream={localStream}
             onStageAction={onStageAction}
             isLive={isLive}
-            isRecording={isRecording}
-            formattedTime={formattedTime}
+            isRecording={recordingStatus.active}
+            formattedTime={recordingStatus.formattedTime}
             currentLayout={layout}
             onLayoutChange={setLayout}
             onClose={() => setShowProducerPanel(false)}
