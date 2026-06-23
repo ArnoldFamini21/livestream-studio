@@ -106,6 +106,7 @@ interface SidebarProps {
   onReactChat: (messageId: string, reaction: ChatReactionType) => void;
   onToggleChatStar: (messageId: string, starred: boolean) => void;
   chatSenderName: string;
+  onOpenPopoutChat?: () => void;
   // People props
   allParticipants: Map<string, Participant>;
   myParticipantId: string;
@@ -331,6 +332,7 @@ export function Sidebar(props: SidebarProps) {
               onReact={props.onReactChat}
               onToggleStar={props.onToggleChatStar}
               senderName={props.chatSenderName}
+              onOpenPopoutChat={props.onOpenPopoutChat}
             />
           )}
 
@@ -922,12 +924,14 @@ function ChatContent({
   onReact,
   onToggleStar,
   senderName,
+  onOpenPopoutChat,
 }: {
   messages: ChatMessage[];
   onSend: (c: string, isBackstage?: boolean) => void;
   onReact: (messageId: string, reaction: ChatReactionType) => void;
   onToggleStar: (messageId: string, starred: boolean) => void;
   senderName: string;
+  onOpenPopoutChat?: () => void;
 }) {
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<'public' | 'starred' | 'backstage'>('public');
@@ -972,14 +976,26 @@ function ChatContent({
       <div style={st.panelHeader}>
         <div style={st.panelTitleRow}>
           <h3 style={st.panelTitle}>Chat</h3>
-          <button
-            type="button"
-            style={{ ...st.chatExportBtn, ...(visibleMessages.length === 0 ? st.chatExportBtnDisabled : {}) }}
-            onClick={handleExport}
-            disabled={visibleMessages.length === 0}
-          >
-            {exportLabel}
-          </button>
+          <div style={st.chatHeaderActions}>
+            {onOpenPopoutChat && (
+              <button
+                type="button"
+                style={st.chatPopoutBtn}
+                onClick={onOpenPopoutChat}
+                title="Open pop-out chat"
+              >
+                Pop out
+              </button>
+            )}
+            <button
+              type="button"
+              style={{ ...st.chatExportBtn, ...(visibleMessages.length === 0 ? st.chatExportBtnDisabled : {}) }}
+              onClick={handleExport}
+              disabled={visibleMessages.length === 0}
+            >
+              {exportLabel}
+            </button>
+          </div>
         </div>
         <div style={st.chatTabs} role="tablist" aria-label="Chat channel">
           <button
@@ -1286,6 +1302,8 @@ const st: Record<string, React.CSSProperties> = {
   overlayPackBtn: { minHeight: 34, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer' },
   // Chat
   chatTabs: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
+  chatHeaderActions: { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },
+  chatPopoutBtn: { minHeight: 28, padding: '0 10px', borderRadius: 7, border: '1px solid rgba(167, 139, 250, 0.28)', background: 'rgba(167, 139, 250, 0.1)', color: '#ddd6fe', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' },
   chatExportBtn: { minHeight: 28, padding: '0 10px', borderRadius: 7, border: '1px solid rgba(96, 165, 250, 0.28)', background: 'rgba(96, 165, 250, 0.1)', color: '#bfdbfe', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' },
   chatExportBtnDisabled: { opacity: 0.45, cursor: 'not-allowed' },
   chatTab: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, height: 28, padding: '0 8px', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer' },

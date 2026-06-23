@@ -64,6 +64,13 @@ import {
 } from '../utils/stageItemOrder.ts';
 import { duplicateSceneInOrder, moveSceneInOrder, replaceSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
 import {
+  buildPopoutChatUrl,
+  createPopoutChatSessionId,
+  getPopoutChatChannelName,
+  isPopoutChatCommand,
+  type PopoutChatState,
+} from '../utils/popoutChat.ts';
+import {
   AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS,
   addLowerThird,
   normalizeLowerThirdDurationSeconds,
@@ -82,6 +89,7 @@ import {
   parseScenePackJson,
   type ScenePackOverlayKind,
 } from '../utils/scenePacks.ts';
+import { useToast } from './Toast.tsx';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -368,6 +376,7 @@ function getLogoSizeStyle(size: LogoSize): React.CSSProperties {
 export function StudioRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
+  const { addToast } = useToast();
   const savedHostStudio = useMemo(() => (roomId ? getSavedHostStudio(roomId) : null), [roomId]);
   const urlHostToken = roomId ? getUrlHostToken() : '';
   const hostSession = useMemo(() => (roomId ? getHostSession(roomId, urlHostToken) : null), [roomId, urlHostToken]);
@@ -375,6 +384,7 @@ export function StudioRoom() {
   const storedUserRole = getStoredParticipantRole();
   const userName = hostSession?.hostName || legacyHostSession?.hostName || getStoredUserName() || savedHostStudio?.hostName || 'Anonymous';
   const roomHostToken = hostSession?.hostToken || '';
+  const popoutChatSessionId = useMemo(() => (roomId ? createPopoutChatSessionId() : ''), [roomId]);
   const missingHostAccess = Boolean(roomId && !hostSession && !legacyHostSession && storedUserRole === 'host');
   const userRole: 'host' | 'co-host' | 'guest' = hostSession || legacyHostSession
     ? 'host'
@@ -593,6 +603,8 @@ export function StudioRoom() {
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
+  const popoutChatChannelRef = useRef<BroadcastChannel | null>(null);
+  const popoutChatStateRef = useRef<PopoutChatState | null>(null);
   const bannerAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const lowerThirdAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const sceneTransitionTimerRef = useRef<number | null>(null);
@@ -1740,6 +1752,95 @@ export function StudioRoom() {
   const onToggleChatStar = (messageId: string, starred: boolean) => {
     send({ type: 'chat-star-update', payload: { messageId, starred } });
   };
+
+  const popoutSendChatRef = useRef(onSendChat);
+  const popoutReactChatRef = useRef(onReactChat);
+  const popoutToggleChatStarRef = useRef(onToggleChatStar);
+
+  useEffect(() => {
+    popoutSendChatRef.current = onSendChat;
+    popoutReactChatRef.current = onReactChat;
+    popoutToggleChatStarRef.current = onToggleChatStar;
+  });
+
+  const postPopoutChatState = useCallback(() => {
+    const channel = popoutChatChannelRef.current;
+    const state = popoutChatStateRef.current;
+    if (!channel || !state) return;
+    channel.postMessage(state);
+  }, []);
+
+  useEffect(() => {
+    popoutChatStateRef.current = roomId
+      ? {
+          type: 'state',
+          roomId,
+          roomName: room?.name || 'Studio Chat',
+          senderName: userName,
+          connected,
+          messages: chatMessages,
+          updatedAt: new Date().toISOString(),
+        }
+      : null;
+    postPopoutChatState();
+  }, [chatMessages, connected, postPopoutChatState, room?.name, roomId, userName]);
+
+  useEffect(() => {
+    if (!roomId || !popoutChatSessionId || !isHostOrCoHost || typeof BroadcastChannel === 'undefined') return;
+
+    const channel = new BroadcastChannel(getPopoutChatChannelName(roomId, popoutChatSessionId));
+    popoutChatChannelRef.current = channel;
+
+    channel.onmessage = (event) => {
+      if (!isPopoutChatCommand(event.data)) return;
+      const message = event.data;
+      if (message.type === 'ready' || message.type === 'request-state') {
+        postPopoutChatState();
+        return;
+      }
+      if (message.type === 'send-message') {
+        const content = message.payload.content.trim();
+        if (content.length > 0 && content.length <= 2000) {
+          popoutSendChatRef.current(content, message.payload.isBackstage);
+        }
+        return;
+      }
+      if (message.type === 'react') {
+        popoutReactChatRef.current(message.payload.messageId, message.payload.reaction);
+        return;
+      }
+      if (message.type === 'toggle-star') {
+        popoutToggleChatStarRef.current(message.payload.messageId, message.payload.starred);
+      }
+    };
+
+    postPopoutChatState();
+
+    return () => {
+      if (popoutChatChannelRef.current === channel) popoutChatChannelRef.current = null;
+      channel.close();
+    };
+  }, [isHostOrCoHost, popoutChatSessionId, postPopoutChatState, roomId]);
+
+  const onOpenPopoutChat = useCallback(() => {
+    if (!roomId || !popoutChatSessionId) return;
+    if (typeof BroadcastChannel === 'undefined') {
+      addToast('Pop-out chat is not supported in this browser.', 'warning');
+      return;
+    }
+
+    const url = buildPopoutChatUrl(window.location.origin, roomId, popoutChatSessionId);
+    const popup = window.open(
+      url,
+      `studio-popout-chat-${roomId}`,
+      'popup,width=420,height=720,menubar=no,toolbar=no,location=no,status=no'
+    );
+    if (!popup) {
+      addToast('Pop-out chat was blocked by the browser.', 'warning');
+      return;
+    }
+    popup.focus();
+  }, [addToast, popoutChatSessionId, roomId]);
 
   // Lower thirds
   const onAddLowerThird = (lt: LowerThirdDraft) => {
@@ -3378,6 +3479,7 @@ export function StudioRoom() {
             onReactChat={onReactChat}
             onToggleChatStar={onToggleChatStar}
             chatSenderName={userName}
+            onOpenPopoutChat={onOpenPopoutChat}
             allParticipants={allParticipantsMap}
             myParticipantId={myParticipant?.id || ''}
             myRole={myParticipant?.role || 'guest'}
