@@ -142,6 +142,7 @@ const MAX_POLL_QUESTION_LENGTH = 240;
 const MAX_POLL_OPTION_LENGTH = 80;
 const MAX_POLL_OPTIONS = 6;
 const MAX_ACTIVE_POLLS_PER_ROOM = 20;
+const QA_QUESTION_COMMAND = /^(?:!|\/)(?:ask|q)\s+(.+)$/i;
 const POLL_VOTE_COMMAND = /^(?:!|\/)vote\s+([1-6a-f])$/i;
 const POLL_VOTE_OPTION_LETTERS = ['a', 'b', 'c', 'd', 'e', 'f'];
 const MAX_PARTICIPANT_NAME_LENGTH = 50;
@@ -1380,8 +1381,64 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   sendChatToVisibleParticipants(mapping.roomId, roomState, sanitizedPayload, 'chat-message');
 
   if (!sanitizedPayload.isBackstage && !sanitizedPayload.recipientId) {
+    handleQAQuestionCommand(ws, mapping, roomState, senderEntry.participant, sanitizedContent);
     handlePollVoteCommand(ws, mapping, roomState, sanitizedContent);
   }
+}
+
+function parseQAQuestionCommand(content: string): string | null {
+  const match = content.trim().match(QA_QUESTION_COMMAND);
+  if (!match) return null;
+  return match[1].trim();
+}
+
+function submitQAQuestion(
+  ws: WebSocket,
+  mapping: { roomId: string; participantId: string },
+  roomState: RoomState,
+  author: Participant,
+  rawContent: string,
+  requestedQuestionId?: string
+): QAQuestion | null {
+  const content = rawContent.replace(/[\x00-\x1F\x7F]/g, '').trim();
+  if (!content) return null;
+  if (content.length > MAX_QA_QUESTION_LENGTH) {
+    sendError(ws, `Question too long (max ${MAX_QA_QUESTION_LENGTH} characters)`, 'QUESTION_TOO_LONG');
+    return null;
+  }
+
+  const requestedId = requestedQuestionId && /^[\w-]{1,80}$/.test(requestedQuestionId)
+    ? requestedQuestionId
+    : nanoid(10);
+  const id = roomState.qaQuestions.has(requestedId) ? nanoid(10) : requestedId;
+
+  const question: QAQuestion = {
+    id,
+    authorId: mapping.participantId,
+    authorName: author.name,
+    content,
+    timestamp: new Date().toISOString(),
+    upvotes: 0,
+    status: 'pending',
+    highlighted: false,
+  };
+
+  roomState.qaQuestions.set(question.id, question);
+  roomState.qaVotes.set(question.id, new Set());
+  broadcastQAQuestion(mapping.roomId, question);
+  return question;
+}
+
+function handleQAQuestionCommand(
+  ws: WebSocket,
+  mapping: { roomId: string; participantId: string },
+  roomState: RoomState,
+  author: Participant,
+  content: string
+) {
+  const question = parseQAQuestionCommand(content);
+  if (!question) return;
+  submitQAQuestion(ws, mapping, roomState, author, question);
 }
 
 function parsePollVoteCommand(content: string): number | null {
@@ -1651,33 +1708,14 @@ function handleQAQuestionSubmitted(
     return;
   }
 
-  const content = payload.content.replace(/[\x00-\x1F\x7F]/g, '').trim();
-  if (!content) return;
-  if (content.length > MAX_QA_QUESTION_LENGTH) {
-    sendError(ws, `Question too long (max ${MAX_QA_QUESTION_LENGTH} characters)`, 'QUESTION_TOO_LONG');
-    return;
-  }
-
-  const requestedId = typeof payload.id === 'string' && /^[\w-]{1,80}$/.test(payload.id)
-    ? payload.id
-    : nanoid(10);
-  const id = roomState.qaQuestions.has(requestedId) ? nanoid(10) : requestedId;
-
-  const question: QAQuestion = {
-    id,
-    authorId: mapping.participantId,
-    authorName: senderEntry.participant.name,
-    content,
-    timestamp: new Date().toISOString(),
-    upvotes: 0,
-    status: 'pending',
-    highlighted: false,
-  };
-
-  roomState.qaQuestions.set(question.id, question);
-  roomState.qaVotes.set(question.id, new Set());
-
-  broadcastQAQuestion(mapping.roomId, question);
+  submitQAQuestion(
+    ws,
+    mapping,
+    roomState,
+    senderEntry.participant,
+    payload.content,
+    typeof payload.id === 'string' ? payload.id : undefined
+  );
 }
 
 function handleQAQuestionUpdate(

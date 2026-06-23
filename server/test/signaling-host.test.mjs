@@ -1380,6 +1380,112 @@ describe('live poll engagement', () => {
   });
 });
 
+describe('Q&A engagement', () => {
+  it('queues public chat ask commands for host review and on-screen selection', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Q&A chat commands test', 'Arnold', {
+      creatorIp: `qa-chat-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const observer = await connectClient(harness.url);
+      const observerJoined = waitForMessage(observer, 'room-joined');
+      joinRoom(observer, {
+        roomId: room.id,
+        name: 'Observer',
+        role: 'guest',
+      });
+      await observerJoined;
+
+      const hostQuestion = waitForMessage(host, 'qa-question-updated', (message) => (
+        message.payload.content === 'Can you show the replay link later?' &&
+        message.payload.status === 'pending'
+      ));
+      const guestQuestion = waitForMessage(guest, 'qa-question-updated', (message) => (
+        message.payload.content === 'Can you show the replay link later?' &&
+        message.payload.status === 'pending'
+      ));
+      const observerNoPendingQuestion = expectNoMessage(observer, 'qa-question-updated', (message) => (
+        message.payload.content === 'Can you show the replay link later?' &&
+        message.payload.status === 'pending'
+      ));
+
+      sendSignal(guest, {
+        type: 'chat-message',
+        payload: {
+          id: 'guest-ask-command',
+          senderId: 'client-claimed-guest',
+          senderName: 'Client claimed guest',
+          content: '!ask Can you show the replay link later?',
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+
+      const [hostPending, guestPending] = await Promise.all([
+        hostQuestion,
+        guestQuestion,
+        observerNoPendingQuestion,
+      ]);
+      assert.equal(hostPending.payload.authorName, 'Guest');
+      assert.equal(guestPending.payload.id, hostPending.payload.id);
+      assert.equal(roomState.qaQuestions.get(hostPending.payload.id)?.status, 'pending');
+
+      const observerApproved = waitForMessage(observer, 'qa-question-updated', (message) => (
+        message.payload.id === hostPending.payload.id &&
+        message.payload.status === 'approved'
+      ));
+      sendSignal(host, {
+        type: 'qa-question-update',
+        payload: {
+          questionId: hostPending.payload.id,
+          updates: { status: 'approved' },
+        },
+      });
+      const approved = await observerApproved;
+      assert.equal(approved.payload.status, 'approved');
+
+      const guestHighlighted = waitForMessage(guest, 'qa-question-updated', (message) => (
+        message.payload.id === hostPending.payload.id &&
+        message.payload.highlighted === true
+      ));
+      sendSignal(host, {
+        type: 'qa-question-update',
+        payload: {
+          questionId: hostPending.payload.id,
+          updates: { highlighted: true },
+        },
+      });
+      const highlighted = await guestHighlighted;
+      assert.equal(highlighted.payload.highlighted, true);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('guest moderation bans', () => {
   it('prevents a banned guest session from rejoining the same room', async () => {
     const harness = await createSignalingHarness();
