@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import type { Participant, ParticipantRole } from '@studio/shared';
-import { normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
+import type { Participant } from '@studio/shared';
+import { getParticipantLowerThirdTitle, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 
 interface LowerThirdData {
   id: string;
@@ -10,6 +10,8 @@ interface LowerThirdData {
   visible: boolean;
   durationSeconds?: number;
   accentColor?: string;
+  source?: 'auto-speaker' | 'participant';
+  participantId?: string;
 }
 
 interface LowerThirdManagerProps {
@@ -18,6 +20,8 @@ interface LowerThirdManagerProps {
   onAdd: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
+  autoSpeakerEnabled?: boolean;
+  onAutoSpeakerEnabledChange?: (enabled: boolean) => void;
 }
 
 const LOWER_THIRD_DURATION_OPTIONS = [
@@ -36,18 +40,15 @@ const LOWER_THIRD_ACCENT_COLORS = [
   '#2563eb',
 ] as const;
 
-function getParticipantLowerThirdTitle(role: ParticipantRole): string {
-  switch (role) {
-    case 'host':
-      return 'Host';
-    case 'co-host':
-      return 'Co-host';
-    case 'guest':
-      return 'Guest';
-  }
-}
-
-export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onToggle, onRemove }: LowerThirdManagerProps) {
+export function LowerThirdManager({
+  lowerThirds,
+  participants = [],
+  onAdd,
+  onToggle,
+  onRemove,
+  autoSpeakerEnabled = false,
+  onAutoSpeakerEnabledChange,
+}: LowerThirdManagerProps) {
   const [name, setName] = useState('');
   const [title, setTitle] = useState('');
   const [style, setStyle] = useState<LowerThirdData['style']>('minimal');
@@ -72,6 +73,26 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
     <div style={styles.container}>
       <h4 style={styles.sectionTitle}>Lower Thirds</h4>
 
+      {onAutoSpeakerEnabledChange && (
+        <div style={styles.autoSpeakerBlock}>
+          <div style={styles.autoSpeakerText}>
+            <span style={styles.autoSpeakerTitle}>Auto Speaker</span>
+            <span style={styles.autoSpeakerState}>{autoSpeakerEnabled ? 'On' : 'Off'}</span>
+          </div>
+          <button
+            type="button"
+            aria-pressed={autoSpeakerEnabled}
+            style={{
+              ...styles.autoSpeakerToggle,
+              ...(autoSpeakerEnabled ? styles.autoSpeakerToggleActive : {}),
+            }}
+            onClick={() => onAutoSpeakerEnabledChange(!autoSpeakerEnabled)}
+          >
+            {autoSpeakerEnabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      )}
+
       {onStageParticipants.length > 0 && (
         <div style={styles.quickBlock}>
           <div style={styles.quickHeader}>
@@ -90,6 +111,8 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
                   style: 'bold',
                   durationSeconds: 10,
                   visible: true,
+                  source: 'participant',
+                  participantId: participant.id,
                 })}
                 aria-label={`Show lower third for ${participant.name}`}
                 title={`Show lower third for ${participant.name}`}
@@ -117,7 +140,10 @@ export function LowerThirdManager({ lowerThirds, participants = [], onAdd, onTog
                 <span style={styles.itemName}>{lt.name}</span>
               </div>
               {lt.title && <span style={styles.itemTitle}>{lt.title}</span>}
-              {lt.durationSeconds && <span style={styles.itemMeta}>{lt.durationSeconds}s auto-hide</span>}
+              <div style={styles.itemMetaRow}>
+                {lt.source === 'auto-speaker' && <span style={styles.itemMeta}>auto speaker</span>}
+                {lt.durationSeconds && <span style={styles.itemMeta}>{lt.durationSeconds}s auto-hide</span>}
+              </div>
             </div>
             <div style={styles.itemActions}>
               <button
@@ -354,6 +380,57 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '0 16px',
     marginBottom: 8,
   },
+  autoSpeakerBlock: {
+    margin: '0 12px 12px',
+    minHeight: 36,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    padding: '7px 9px',
+    borderRadius: 7,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'rgba(167, 139, 250, 0.24)',
+    background: 'rgba(167, 139, 250, 0.08)',
+  },
+  autoSpeakerText: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 1,
+  },
+  autoSpeakerTitle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: 'var(--text-primary)',
+  },
+  autoSpeakerState: {
+    fontSize: 9,
+    fontWeight: 800,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  autoSpeakerToggle: {
+    minWidth: 42,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: '0.04em',
+    cursor: 'pointer',
+  },
+  autoSpeakerToggleActive: {
+    borderColor: 'var(--success)',
+    background: 'rgba(34, 197, 94, 0.14)',
+    color: '#86efac',
+  },
   list: {
     display: 'flex',
     flexDirection: 'column',
@@ -472,7 +549,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   itemMeta: {
     width: 'fit-content',
-    marginTop: 3,
     padding: '1px 5px',
     borderRadius: 4,
     background: 'rgba(167, 139, 250, 0.12)',
@@ -481,6 +557,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
+  },
+  itemMetaRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 3,
   },
   itemActions: {
     display: 'flex',

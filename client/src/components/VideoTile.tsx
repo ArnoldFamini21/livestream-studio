@@ -4,6 +4,7 @@ import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.
 import type { CameraShape, NameTagStyle } from '@studio/shared';
 
 interface VideoTileProps {
+  participantId?: string;
   stream: MediaStream | null;
   name: string;
   isLocal?: boolean;
@@ -14,6 +15,7 @@ interface VideoTileProps {
   brandColor?: string;
   cameraShape?: CameraShape;
   nameTagStyle?: NameTagStyle;
+  onAudioLevelChange?: (participantId: string, level: number) => void;
 }
 
 function clampVolume(volume: number): number {
@@ -125,6 +127,7 @@ function nameToGradient(name: string): string {
 }
 
 export function VideoTile({ 
+  participantId,
   stream, 
   name, 
   isLocal, 
@@ -134,7 +137,8 @@ export function VideoTile({
   volume = 1,
   brandColor = '#a78bfa',
   cameraShape = 'rectangle',
-  nameTagStyle = 'classic'
+  nameTagStyle = 'classic',
+  onAudioLevelChange,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playbackVolume = clampVolume(volume);
@@ -142,6 +146,15 @@ export function VideoTile({
   const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, hasAudiblePlayback);
 
   const [isVertical, setIsVertical] = useState(false);
+
+  useEffect(() => {
+    if (!participantId || !onAudioLevelChange) return;
+    onAudioLevelChange(participantId, speakingLevel);
+  }, [onAudioLevelChange, participantId, speakingLevel]);
+
+  useEffect(() => () => {
+    if (participantId && onAudioLevelChange) onAudioLevelChange(participantId, 0);
+  }, [onAudioLevelChange, participantId]);
 
   useEffect(() => {
     if (videoRef.current) {
