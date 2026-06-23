@@ -299,6 +299,7 @@ export function Sidebar(props: SidebarProps) {
               <div style={st.divider} />
               <LowerThirdManager
                 lowerThirds={props.lowerThirds}
+                participants={Array.from(props.allParticipants.values())}
                 onAdd={props.onAddLowerThird}
                 onToggle={props.onToggleLowerThird}
                 onRemove={props.onRemoveLowerThird}
