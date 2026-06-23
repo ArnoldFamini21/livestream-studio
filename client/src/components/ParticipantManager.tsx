@@ -5,6 +5,8 @@ interface ParticipantManagerProps {
   myParticipantId: string;
   myRole: 'host' | 'co-host' | 'guest';
   onStageAction: (action: StageActionPayload['action'], targetId: string) => void;
+  focusedParticipantId?: string | null;
+  onSpotlightParticipant?: (participantId: string | null) => void;
   onClose: () => void;
 }
 
@@ -13,6 +15,8 @@ export function ParticipantManager({
   myParticipantId,
   myRole,
   onStageAction,
+  focusedParticipantId = null,
+  onSpotlightParticipant,
   onClose,
 }: ParticipantManagerProps) {
   const isHostOrCoHost = myRole === 'host' || myRole === 'co-host';
@@ -75,6 +79,13 @@ export function ParticipantManager({
               )}
               {!p.audioEnabled && (
                 <ActionBtn label="Ask Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />
+              )}
+              {onSpotlightParticipant && (
+                <ActionBtn
+                  label={focusedParticipantId === p.id ? 'Clear' : 'Spotlight'}
+                  color={focusedParticipantId === p.id ? 'var(--text-muted)' : 'var(--accent)'}
+                  onClick={() => onSpotlightParticipant(focusedParticipantId === p.id ? null : p.id)}
+                />
               )}
               <ActionBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
               <ActionBtn label="Hold" color="#fbbf24" onClick={() => onStageAction('move-to-green-room', p.id)} />

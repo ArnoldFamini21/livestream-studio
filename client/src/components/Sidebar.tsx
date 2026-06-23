@@ -112,6 +112,8 @@ interface SidebarProps {
   myParticipantId: string;
   myRole: 'host' | 'co-host' | 'guest';
   onStageAction: (action: StageActionPayload['action'], targetId: string) => void;
+  focusedParticipantId: string | null;
+  onSpotlightParticipant: (participantId: string | null) => void;
   // Streams for live previews in People tab
   remoteStreams: Map<string, MediaStream>;
   localStream: MediaStream | null;
@@ -318,6 +320,8 @@ export function Sidebar(props: SidebarProps) {
               myParticipantId={props.myParticipantId}
               myRole={props.myRole}
               onStageAction={props.onStageAction}
+              focusedParticipantId={props.focusedParticipantId}
+              onSpotlightParticipant={props.onSpotlightParticipant}
               remoteStreams={props.remoteStreams}
               localStream={props.localStream}
               participantVolumes={props.participantVolumes}
@@ -686,6 +690,8 @@ function PeopleContent({
   myParticipantId,
   myRole,
   onStageAction,
+  focusedParticipantId,
+  onSpotlightParticipant,
   remoteStreams,
   localStream,
   participantVolumes,
@@ -694,6 +700,8 @@ function PeopleContent({
   participants: Map<string, Participant>; myParticipantId: string;
   myRole: 'host' | 'co-host' | 'guest';
   onStageAction: (action: StageActionPayload['action'], targetId: string) => void;
+  focusedParticipantId: string | null;
+  onSpotlightParticipant: (participantId: string | null) => void;
   remoteStreams: Map<string, MediaStream>;
   localStream: MediaStream | null;
   participantVolumes: Record<string, number>;
@@ -712,6 +720,7 @@ function PeopleContent({
     return remoteStreams.get(id) || null;
   };
   const canAdjustOwnVolume = isHostOrCoHost && myP?.status === 'on-stage';
+  const isMeSpotlighted = Boolean(myP && focusedParticipantId === myP.id);
 
   return (
     <div style={st.panelFull}>
@@ -730,21 +739,32 @@ function PeopleContent({
                   </div>
                 </div>
               </div>
-              <div style={st.mediaIndicators}>
-                <div style={{ ...st.mediaIcon, color: myP.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                  {myP.audioEnabled ? (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
-                  ) : (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
-                  )}
+              <div style={st.personRight}>
+                <div style={st.mediaIndicators}>
+                  <div style={{ ...st.mediaIcon, color: myP.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                    {myP.audioEnabled ? (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
+                    )}
+                  </div>
+                  <div style={{ ...st.mediaIcon, color: myP.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                    {myP.videoEnabled ? (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
+                    )}
+                  </div>
                 </div>
-                <div style={{ ...st.mediaIcon, color: myP.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                  {myP.videoEnabled ? (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
-                  ) : (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
-                  )}
-                </div>
+                {canAdjustOwnVolume && (
+                  <div style={st.personActions}>
+                    <SmallBtn
+                      label={isMeSpotlighted ? 'Clear' : 'Spotlight'}
+                      color={isMeSpotlighted ? 'var(--text-muted)' : 'var(--accent)'}
+                      onClick={() => onSpotlightParticipant(isMeSpotlighted ? null : myP.id)}
+                    />
+                  </div>
+                )}
               </div>
             </div>
             {canAdjustOwnVolume && (
@@ -761,6 +781,7 @@ function PeopleContent({
           <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
         )}
         <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} participantVolumes={participantVolumes} onParticipantVolumeChange={onParticipantVolumeChange} showVolumeControls actions={(p) => (<>
+          <SmallBtn label={focusedParticipantId === p.id ? 'Clear' : 'Spotlight'} color={focusedParticipantId === p.id ? 'var(--text-muted)' : 'var(--accent)'} onClick={() => onSpotlightParticipant(focusedParticipantId === p.id ? null : p.id)} />
           {p.audioEnabled && <SmallBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />}
           {!p.audioEnabled && <SmallBtn label="Ask Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />}
           <SmallBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
