@@ -77,6 +77,7 @@ export function ParticipantManager({
                 <ActionBtn label="Ask Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />
               )}
               <ActionBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
+              <ActionBtn label="Hold" color="#fbbf24" onClick={() => onStageAction('move-to-green-room', p.id)} />
               {p.role === 'guest' && (
                 <ActionBtn label="Co-host" color="var(--accent)" onClick={() => onStageAction('promote-co-host', p.id)} />
               )}
@@ -98,6 +99,7 @@ export function ParticipantManager({
             actions={(p) => (
               <>
                 <ActionBtn label="To Stage" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} />
+                <ActionBtn label="Hold" color="#fbbf24" onClick={() => onStageAction('move-to-green-room', p.id)} />
                 <ActionBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} />
               </>
             )}

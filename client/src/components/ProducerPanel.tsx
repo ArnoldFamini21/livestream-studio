@@ -239,6 +239,22 @@ function ParticipantRow({
               Off
             </button>
           )}
+          {participant.status !== 'green-room' && (
+            <button
+              className="participant-action-btn"
+              style={{ ...rowStyles.actionBtn, color: '#fbbf24', borderColor: 'rgba(245, 158, 11, 0.22)', '--btn-hover-bg': 'rgba(245, 158, 11, 0.1)' } as React.CSSProperties}
+              onClick={() => onStageAction('move-to-green-room', participant.id)}
+              title="Move to green room"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 11h18" />
+                <path d="M5 11V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4" />
+                <path d="M7 11v8" />
+                <path d="M17 11v8" />
+              </svg>
+              Hold
+            </button>
+          )}
           {participant.status === 'on-stage' && participant.audioEnabled && (
             <button
               className="participant-action-btn"
