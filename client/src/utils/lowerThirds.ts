@@ -2,6 +2,12 @@ import type { LowerThirdData } from '../components/LowerThird.tsx';
 
 export type LowerThirdDraft = Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean };
 
+export function normalizeLowerThirdDurationSeconds(value: unknown): number | null {
+  const durationSeconds = Number(value);
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return null;
+  return Math.min(3600, Math.max(1, Math.round(durationSeconds)));
+}
+
 export function addLowerThird(
   current: LowerThirdData[],
   draft: LowerThirdDraft,

@@ -62,7 +62,12 @@ import {
   normalizeStageItemOrder,
   type StageItemOrderDirection,
 } from '../utils/stageItemOrder.ts';
-import { addLowerThird, toggleLowerThirdVisibility, type LowerThirdDraft } from '../utils/lowerThirds.ts';
+import {
+  addLowerThird,
+  normalizeLowerThirdDurationSeconds,
+  toggleLowerThirdVisibility,
+  type LowerThirdDraft,
+} from '../utils/lowerThirds.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -539,6 +544,7 @@ export function StudioRoom() {
   const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
   const bannerAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
+  const lowerThirdAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
   const videoEnabledRef = useRef(videoEnabled);
@@ -795,7 +801,39 @@ export function StudioRoom() {
   useEffect(() => () => {
     bannerAutoDismissTimersRef.current.forEach(({ timer }) => clearTimeout(timer));
     bannerAutoDismissTimersRef.current.clear();
+    lowerThirdAutoDismissTimersRef.current.forEach(({ timer }) => clearTimeout(timer));
+    lowerThirdAutoDismissTimersRef.current.clear();
   }, []);
+
+  useEffect(() => {
+    const autoDismissTimers = lowerThirdAutoDismissTimersRef.current;
+    const activeTimedLowerThirdIds = new Set<string>();
+
+    lowerThirds.forEach((lowerThird) => {
+      const normalizedDuration = normalizeLowerThirdDurationSeconds(lowerThird.durationSeconds);
+      if (!lowerThird.visible || normalizedDuration === null) return;
+
+      activeTimedLowerThirdIds.add(lowerThird.id);
+      const existing = autoDismissTimers.get(lowerThird.id);
+      if (existing?.durationSeconds === normalizedDuration) return;
+
+      if (existing) clearTimeout(existing.timer);
+      const timer = setTimeout(() => {
+        autoDismissTimers.delete(lowerThird.id);
+        setLowerThirds((prev) => prev.map((item) => (
+          item.id === lowerThird.id && item.visible ? { ...item, visible: false } : item
+        )));
+      }, normalizedDuration * 1000);
+
+      autoDismissTimers.set(lowerThird.id, { timer, durationSeconds: normalizedDuration });
+    });
+
+    autoDismissTimers.forEach(({ timer }, lowerThirdId) => {
+      if (activeTimedLowerThirdIds.has(lowerThirdId)) return;
+      clearTimeout(timer);
+      autoDismissTimers.delete(lowerThirdId);
+    });
+  }, [lowerThirds]);
 
   useEffect(() => {
     const autoDismissTimers = bannerAutoDismissTimersRef.current;
