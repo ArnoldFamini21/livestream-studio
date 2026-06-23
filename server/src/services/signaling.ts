@@ -1305,6 +1305,16 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
     sendError(ws, 'Wait until you are admitted before sending studio chat messages', 'PARTICIPANT_NOT_ADMITTED');
     return;
   }
+  const isBackstageMessage = payload.isBackstage === true;
+  const canSendBackstageMessage = (
+    senderEntry.participant.role === 'host' ||
+    senderEntry.participant.role === 'co-host' ||
+    senderEntry.participant.status === 'backstage'
+  );
+  if (isBackstageMessage && !canSendBackstageMessage) {
+    sendError(ws, 'Only hosts, co-hosts, and backstage participants can send backstage chat messages', 'UNAUTHORIZED');
+    return;
+  }
 
   const sanitizedContent = payload.content.replace(/[\x00-\x1F\x7F]/g, '').trim();
   if (sanitizedContent.length === 0) return;
@@ -1316,7 +1326,7 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
     senderId: mapping.participantId,
     senderName: senderEntry.participant.name,
     timestamp: new Date().toISOString(),
-    isBackstage: payload.isBackstage === true,
+    isBackstage: isBackstageMessage,
   };
 
   storeChatMessage(roomState, sanitizedPayload);

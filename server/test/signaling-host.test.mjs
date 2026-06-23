@@ -65,6 +65,37 @@ function waitForMessage(ws, type, predicate = () => true) {
   });
 }
 
+function expectNoMessage(ws, type, predicate = () => true, timeoutMs = 500) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, timeoutMs);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+      ws.off('error', onError);
+    }
+
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+
+    function onMessage(data) {
+      const message = JSON.parse(data.toString());
+      if (message.type !== type) return;
+      if (!predicate(message)) return;
+      cleanup();
+      reject(new Error(`Unexpected ${type}`));
+    }
+
+    ws.on('message', onMessage);
+    ws.on('error', onError);
+  });
+}
+
 function joinRoom(ws, payload) {
   ws.send(JSON.stringify({ type: 'join-room', payload }));
 }
@@ -744,6 +775,150 @@ describe('chat engagement', () => {
       assert.ok(savedMessage);
       assert.equal(savedMessage.starred, true);
       assert.equal(savedMessage.reactions.like, 1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('keeps backstage chat scoped to producers and backstage participants', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Backstage chat privacy test', 'Arnold', {
+      creatorIp: `backstage-chat-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const stageGuest = await connectClient(harness.url);
+      const stageGuestJoined = waitForMessage(stageGuest, 'room-joined');
+      joinRoom(stageGuest, {
+        roomId: room.id,
+        name: 'On Stage Guest',
+        role: 'guest',
+      });
+      const stageGuestState = await stageGuestJoined;
+
+      const backstageGuest = await connectClient(harness.url);
+      const backstageGuestJoined = waitForMessage(backstageGuest, 'room-joined');
+      joinRoom(backstageGuest, {
+        roomId: room.id,
+        name: 'Backstage Guest',
+        role: 'guest',
+      });
+      const backstageGuestState = await backstageGuestJoined;
+
+      const publicGuest = await connectClient(harness.url);
+      const publicGuestJoined = waitForMessage(publicGuest, 'room-joined');
+      joinRoom(publicGuest, {
+        roomId: room.id,
+        name: 'Public Guest',
+        role: 'guest',
+      });
+      await publicGuestJoined;
+
+      const backstageUpdated = waitForMessage(backstageGuest, 'participant-updated', (message) => (
+        message.payload.id === backstageGuestState.payload.participant.id &&
+        message.payload.status === 'backstage'
+      ));
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: {
+          action: 'move-to-backstage',
+          targetParticipantId: backstageGuestState.payload.participant.id,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      await backstageUpdated;
+
+      const unauthorizedBackstage = waitForMessage(stageGuest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(stageGuest, {
+        type: 'chat-message',
+        payload: {
+          id: 'stage-guest-backstage-message',
+          senderId: stageGuestState.payload.participant.id,
+          senderName: 'On Stage Guest',
+          content: 'Can I whisper backstage?',
+          timestamp: new Date().toISOString(),
+          isBackstage: true,
+        },
+      });
+      const unauthorized = await unauthorizedBackstage;
+      assert.match(unauthorized.payload.message, /backstage chat/i);
+
+      const hostBackstageMessage = waitForMessage(host, 'chat-message', (message) => message.payload.content === 'Backstage only');
+      const backstageGuestMessage = waitForMessage(backstageGuest, 'chat-message', (message) => message.payload.content === 'Backstage only');
+      const publicGuestNoBackstageMessage = expectNoMessage(publicGuest, 'chat-message', (message) => message.payload.content === 'Backstage only');
+      sendSignal(host, {
+        type: 'chat-message',
+        payload: {
+          id: 'host-backstage-message',
+          senderId: 'client-claimed-host',
+          senderName: 'Client claimed host',
+          content: 'Backstage only',
+          timestamp: new Date().toISOString(),
+          isBackstage: true,
+        },
+      });
+
+      const [hostPrivate, backstagePrivate] = await Promise.all([hostBackstageMessage, backstageGuestMessage]);
+      assert.equal(hostPrivate.payload.isBackstage, true);
+      assert.equal(hostPrivate.payload.senderName, 'Arnold');
+      assert.equal(backstagePrivate.payload.id, hostPrivate.payload.id);
+      await publicGuestNoBackstageMessage;
+
+      const hostReaction = waitForMessage(host, 'chat-message-updated', (message) => (
+        message.payload.id === hostPrivate.payload.id &&
+        message.payload.reactions?.love === 1
+      ));
+      const backstageReaction = waitForMessage(backstageGuest, 'chat-message-updated', (message) => (
+        message.payload.id === hostPrivate.payload.id &&
+        message.payload.reactions?.love === 1
+      ));
+      sendSignal(backstageGuest, {
+        type: 'chat-reaction',
+        payload: {
+          messageId: hostPrivate.payload.id,
+          reaction: 'love',
+        },
+      });
+      const [hostReacted, backstageReacted] = await Promise.all([hostReaction, backstageReaction]);
+      assert.equal(hostReacted.payload.reactions.love, 1);
+      assert.equal(backstageReacted.payload.reactions.love, 1);
+
+      const starBackstageError = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'chat-star-update',
+        payload: {
+          messageId: hostPrivate.payload.id,
+          starred: true,
+        },
+      });
+      const starError = await starBackstageError;
+      assert.match(starError.payload.message, /Backstage messages cannot be starred/i);
+
+      const latePublicGuest = await connectClient(harness.url);
+      const latePublicGuestJoined = waitForMessage(latePublicGuest, 'room-joined');
+      joinRoom(latePublicGuest, {
+        roomId: room.id,
+        name: 'Late Public Guest',
+        role: 'guest',
+      });
+      const latePublic = await latePublicGuestJoined;
+      assert.equal(
+        latePublic.payload.chatMessages.some((message) => message.id === hostPrivate.payload.id),
+        false
+      );
     } finally {
       await harness.close();
     }

@@ -113,7 +113,7 @@
 ### 5D. Backstage
 - [ ] Private audio/video channel for host + selected guests
 - [ ] Backstage participants invisible to stream/recording
-- [ ] Backstage text chat
+- [x] Backstage text chat
 
 ---
 
