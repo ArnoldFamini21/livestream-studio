@@ -17,6 +17,7 @@ import {
   upsertSavedHostStudio,
 } from '../utils/hostSession.ts';
 import { getJson, isAbortError } from '../utils/apiClient.ts';
+import { getInviteStudioName } from '../utils/inviteLinks.ts';
 
 const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing in this browser. Open this studio from Your Studios, use your private host link, or create a new studio.';
 
@@ -54,6 +55,7 @@ export function JoinRoom() {
   const isHostEntryRequested = searchParams.get('role') === 'host';
   const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
   const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
+  const inviteStudioName = getInviteStudioName(searchParams);
   const isHostSession = Boolean(hostSession);
   const isLegacyHostSession = Boolean(legacyHostSession);
   const hostEntryMode = isHostSession || isLegacyHostSession || isHostEntryRequested;
@@ -338,7 +340,7 @@ export function JoinRoom() {
       <div style={styles.page}>
         <div style={styles.loadingWrap}>
           <div style={styles.spinner} />
-          <p style={styles.loadingText}>Looking for studio...</p>
+          <p style={styles.loadingText}>Looking for {inviteStudioName || 'studio'}...</p>
         </div>
       </div>
     );
@@ -355,7 +357,11 @@ export function JoinRoom() {
             </svg>
           </div>
           <h2 style={styles.cardTitle}>Studio not found</h2>
-          <p style={styles.text}>This session doesn't exist or has already ended.</p>
+          <p style={styles.text}>
+            {inviteStudioName
+              ? `${inviteStudioName} does not exist or has already ended.`
+              : "This session doesn't exist or has already ended."}
+          </p>
           <button className="btn-primary" style={styles.joinButton} onClick={() => navigate('/')}>
             Go to homepage
           </button>

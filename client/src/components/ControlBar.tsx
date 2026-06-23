@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 
 interface ControlBarProps {
   audioEnabled: boolean;
@@ -8,6 +9,7 @@ interface ControlBarProps {
   onLeave: () => void;
   onOpenDeviceSettings: () => void;
   roomId: string;
+  roomName?: string;
   isHost: boolean;
   isRecording?: boolean;
   formattedTime?: string;
@@ -41,6 +43,7 @@ export function ControlBar({
   onLeave,
   onOpenDeviceSettings,
   roomId,
+  roomName,
   isHost,
   isRecording = false,
   formattedTime = '0:00',
@@ -69,7 +72,7 @@ export function ControlBar({
   const [showMore, setShowMore] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const moreRef = useRef<HTMLDivElement>(null);
-  const inviteLink = `${window.location.origin}/join/${roomId}`;
+  const inviteLink = buildGuestInviteUrl(window.location.origin, roomId, roomName);
 
   useEffect(() => {
     return () => {
