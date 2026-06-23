@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ChatMessage } from '@studio/shared';
-import { getHighlightableChatMessages } from '../src/components/CommentHighlight.tsx';
+import {
+  createHighlightedCommentFromChatMessage,
+  getHighlightableChatMessages,
+} from '../src/components/CommentHighlight.tsx';
 
 const messages: ChatMessage[] = [
   {
@@ -55,6 +58,19 @@ const messages: ChatMessage[] = [
 ];
 
 describe('comment highlight selection', () => {
+  it('creates broadcast-safe overlay comments from public chat messages only', () => {
+    assert.deepEqual(
+      createHighlightedCommentFromChatMessage(messages[0]),
+      {
+        id: 'msg-1',
+        senderName: 'Ari',
+        content: 'Great launch segment',
+      }
+    );
+    assert.equal(createHighlightedCommentFromChatMessage(messages[1]), null);
+    assert.equal(createHighlightedCommentFromChatMessage(messages[4]), null);
+  });
+
   it('returns starred public comments first for the ready filter', () => {
     assert.deepEqual(
       getHighlightableChatMessages(messages, '', 'ready').map((message) => message.id),

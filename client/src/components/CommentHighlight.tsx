@@ -65,6 +65,15 @@ function getCommentSearchText(message: ChatMessage): string {
   ].join(' ').toLowerCase();
 }
 
+export function createHighlightedCommentFromChatMessage(message: ChatMessage): HighlightedComment | null {
+  if (message.isBackstage || message.recipientId) return null;
+  return {
+    id: message.id,
+    senderName: message.senderName,
+    content: message.content,
+  };
+}
+
 export function getHighlightableChatMessages(
   chatMessages: ChatMessage[],
   query: string,
@@ -196,11 +205,8 @@ export function CommentHighlightManager({
   };
 
   const handleHighlightChat = (msg: ChatMessage) => {
-    onHighlightComment({
-      id: msg.id,
-      senderName: msg.senderName,
-      content: msg.content,
-    });
+    const comment = createHighlightedCommentFromChatMessage(msg);
+    if (comment) onHighlightComment(comment);
   };
 
   const visibleMessages = getHighlightableChatMessages(chatMessages, query, filter);

@@ -129,7 +129,7 @@
 - [ ] YouTube Live Chat API integration (read incoming messages)
 - [ ] Facebook Live Comments API integration
 - [ ] Unified chat view merging all platforms
-- [ ] Highlight/feature a chat message on screen (overlay)
+- [x] Highlight/feature a chat message on screen (overlay)
 - [ ] Animated comment pop-up on stream (StreamYard-style)
 
 ### 6C. Audience Engagement
