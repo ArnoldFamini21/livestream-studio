@@ -134,7 +134,7 @@
 
 ### 6C. Audience Engagement
 - [x] Live polls (host creates, audience votes via chat commands)
-- [ ] Q&A queue (audience submits, host picks to display)
+- [x] Q&A queue (audience submits, host picks to display)
 - [ ] On-screen audience comment flashing with animations
 - [x] Reaction overlays (hearts, claps, fire floating up)
 
