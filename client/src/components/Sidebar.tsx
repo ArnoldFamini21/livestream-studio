@@ -15,6 +15,15 @@ import {
   buildChatTranscriptFilename,
   type ChatTranscriptScope,
 } from '../utils/chatTranscript.ts';
+import {
+  BRAND_KIT_STORAGE_KEY,
+  MAX_SAVED_BRAND_KITS,
+  createSavedBrandKit,
+  parseSavedBrandKits,
+  serializeSavedBrandKits,
+  type BrandKitVisuals,
+  type SavedBrandKit,
+} from '../utils/brandKits.ts';
 import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
 
 // ---------------------------------------------------------------------------
@@ -186,11 +195,28 @@ function downloadTextFile(text: string, fileName: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+function loadSavedBrandKits(): SavedBrandKit[] {
+  try {
+    return parseSavedBrandKits(localStorage.getItem(BRAND_KIT_STORAGE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+type BrandKitPreset = Omit<BrandKitVisuals, 'logoUrl' | 'logoPlacement'> & {
+  name: string;
+  logoUrl?: string | null;
+  logoPlacement?: LogoPlacement;
+};
+
 // ---------------------------------------------------------------------------
 // Main Sidebar component
 // ---------------------------------------------------------------------------
 export function Sidebar(props: SidebarProps) {
   const [internalActiveTab, setInternalActiveTab] = useState<SidebarTab | null>('people');
+  const [savedBrandKits, setSavedBrandKits] = useState<SavedBrandKit[]>(loadSavedBrandKits);
+  const [brandKitName, setBrandKitName] = useState('');
+  const [brandKitMessage, setBrandKitMessage] = useState<string | null>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const activeTab = props.activeTab !== undefined ? props.activeTab : internalActiveTab;
   const setActiveTab = props.onActiveTabChange || setInternalActiveTab;
@@ -210,26 +236,59 @@ export function Sidebar(props: SidebarProps) {
     { name: 'Amber', color: '#f59e0b' },
   ];
 
-  const brandKits: Array<{
-    name: string;
-    color: string;
-    background: StageBackground;
-    cameraShape: CameraShape;
-    nameTagStyle: NameTagStyle;
-    logoSize: LogoSize;
-  }> = [
-    { name: 'Broadcast', color: '#ef4444', background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium' },
-    { name: 'Webinar', color: '#2563eb', background: { type: 'gradient', value: 'linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%)' }, cameraShape: 'rounded', nameTagStyle: 'classic', logoSize: 'small' },
-    { name: 'Podcast', color: '#db2777', background: { type: 'gradient', value: 'linear-gradient(135deg, #18181b 0%, #831843 100%)' }, cameraShape: 'circle', nameTagStyle: 'minimal', logoSize: 'medium' },
-    { name: 'Executive', color: '#059669', background: { type: 'color', value: '#111827' }, cameraShape: 'rectangle', nameTagStyle: 'classic', logoSize: 'large' },
+  const brandKits: BrandKitPreset[] = [
+    { name: 'Broadcast', brandColor: '#ef4444', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium' },
+    { name: 'Webinar', brandColor: '#2563eb', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%)' }, cameraShape: 'rounded', nameTagStyle: 'classic', logoSize: 'small' },
+    { name: 'Podcast', brandColor: '#db2777', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #18181b 0%, #831843 100%)' }, cameraShape: 'circle', nameTagStyle: 'minimal', logoSize: 'medium' },
+    { name: 'Executive', brandColor: '#059669', stageBackground: { type: 'color', value: '#111827' }, cameraShape: 'rectangle', nameTagStyle: 'classic', logoSize: 'large' },
   ];
 
-  const applyBrandKit = (kit: (typeof brandKits)[number]) => {
-    props.onBrandColorChange(kit.color);
-    props.onStageBackgroundChange(kit.background);
+  useEffect(() => {
+    try {
+      localStorage.setItem(BRAND_KIT_STORAGE_KEY, serializeSavedBrandKits(savedBrandKits));
+    } catch {
+      // Browser storage can be unavailable in private modes; the current session still works.
+    }
+  }, [savedBrandKits]);
+
+  const applyBrandKit = (kit: BrandKitPreset | SavedBrandKit) => {
+    props.onBrandColorChange(kit.brandColor);
+    props.onStageBackgroundChange(kit.stageBackground);
     props.onCameraShapeChange(kit.cameraShape);
     props.onNameTagStyleChange(kit.nameTagStyle);
     props.onLogoSizeChange(kit.logoSize);
+    if (kit.logoPlacement !== undefined) props.onLogoPlacementChange(kit.logoPlacement);
+    if (kit.logoUrl !== undefined) props.onLogoUrlChange(kit.logoUrl);
+    setBrandKitMessage(null);
+  };
+
+  const saveCurrentBrandKit = () => {
+    if (savedBrandKits.length >= MAX_SAVED_BRAND_KITS) {
+      setBrandKitMessage(`Maximum of ${MAX_SAVED_BRAND_KITS} saved kits reached.`);
+      return;
+    }
+    const nextKit = createSavedBrandKit(
+      brandKitName || `Brand Kit ${savedBrandKits.length + 1}`,
+      {
+        brandColor: props.brandColor,
+        stageBackground: props.stageBackground,
+        logoUrl: props.logoUrl,
+        logoPlacement: props.logoPlacement,
+        logoSize: props.logoSize,
+        cameraShape: props.cameraShape,
+        nameTagStyle: props.nameTagStyle,
+      },
+      savedBrandKits.map((kit) => kit.name)
+    );
+    setSavedBrandKits((current) => [nextKit, ...current].slice(0, MAX_SAVED_BRAND_KITS));
+    setBrandKitName('');
+    setBrandKitMessage(`Saved ${nextKit.name}.`);
+  };
+
+  const deleteSavedBrandKit = (kitId: string) => {
+    const kit = savedBrandKits.find((item) => item.id === kitId);
+    setSavedBrandKits((current) => current.filter((item) => item.id !== kitId));
+    if (kit) setBrandKitMessage(`Deleted ${kit.name}.`);
   };
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -357,11 +416,76 @@ export function Sidebar(props: SidebarProps) {
                   <div style={st.brandKitGrid}>
                     {brandKits.map((kit) => (
                       <button key={kit.name} type="button" style={st.brandKitBtn} onClick={() => applyBrandKit(kit)}>
-                        <span style={{ ...st.brandKitSwatch, background: kit.background.type === 'none' ? kit.color : kit.background.value }} />
+                        <span style={{ ...st.brandKitSwatch, background: kit.stageBackground.type === 'none' ? kit.brandColor : kit.stageBackground.value }} />
                         <span style={st.brandKitName}>{kit.name}</span>
                       </button>
                     ))}
                   </div>
+                </div>
+                <div style={st.brandGroup}>
+                  <div style={st.brandLabelRow}>
+                    <span style={st.brandLabel}>Saved Kits</span>
+                    <span style={st.brandKitCount}>{savedBrandKits.length}/{MAX_SAVED_BRAND_KITS}</span>
+                  </div>
+                  <div style={st.brandSaveRow}>
+                    <input
+                      type="text"
+                      style={st.brandKitInput}
+                      placeholder="Kit name"
+                      value={brandKitName}
+                      onChange={(e) => setBrandKitName(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveCurrentBrandKit();
+                      }}
+                      maxLength={32}
+                    />
+                    <button
+                      type="button"
+                      style={{
+                        ...st.brandSaveBtn,
+                        ...(savedBrandKits.length >= MAX_SAVED_BRAND_KITS ? st.brandSaveBtnDisabled : {}),
+                      }}
+                      onClick={saveCurrentBrandKit}
+                      disabled={savedBrandKits.length >= MAX_SAVED_BRAND_KITS}
+                    >
+                      Save
+                    </button>
+                  </div>
+                  {brandKitMessage && <span style={st.brandKitMessage}>{brandKitMessage}</span>}
+                  {savedBrandKits.length > 0 && (
+                    <div style={st.savedBrandKitList}>
+                      {savedBrandKits.map((kit) => (
+                        <div key={kit.id} style={st.savedBrandKitCard}>
+                          <button
+                            type="button"
+                            style={st.savedBrandKitApply}
+                            onClick={() => applyBrandKit(kit)}
+                            title={`Apply ${kit.name}`}
+                          >
+                            <span style={{ ...st.savedBrandKitSwatch, background: kit.stageBackground.type === 'none' ? kit.brandColor : kit.stageBackground.value }}>
+                              {kit.logoUrl && <span style={st.savedBrandKitLogoDot} />}
+                            </span>
+                            <span style={st.savedBrandKitText}>
+                              <span style={st.savedBrandKitName}>{kit.name}</span>
+                              <span style={st.savedBrandKitMeta}>{kit.cameraShape} / {kit.nameTagStyle}</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            style={st.savedBrandKitDelete}
+                            title={`Delete ${kit.name}`}
+                            onClick={() => deleteSavedBrandKit(kit.id)}
+                            aria-label={`Delete ${kit.name}`}
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                              <line x1="18" y1="6" x2="6" y2="18" />
+                              <line x1="6" y1="6" x2="18" y2="18" />
+                            </svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div style={st.brandGroup}>
                   <span style={st.brandLabel}>Logo</span>
@@ -1067,10 +1191,26 @@ const st: Record<string, React.CSSProperties> = {
   divider: { height: 1, background: 'var(--border)', margin: '4px 16px 8px' },
   brandGroup: { marginBottom: 16 },
   brandLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 8 },
+  brandLabelRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 },
+  brandKitCount: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600 },
   brandKitGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
   brandKitBtn: { display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch', border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', borderRadius: 8, padding: 8, cursor: 'pointer', minWidth: 0 },
   brandKitSwatch: { display: 'block', height: 28, borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' },
   brandKitName: { fontSize: 11, fontWeight: 700, textAlign: 'left' },
+  brandSaveRow: { display: 'grid', gridTemplateColumns: '1fr auto', gap: 6, marginBottom: 8 },
+  brandKitInput: { minWidth: 0, width: '100%', padding: '7px 9px', fontSize: 12, background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 8, outline: 'none' },
+  brandSaveBtn: { padding: '7px 10px', fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--accent)', border: 'none', borderRadius: 8, cursor: 'pointer' },
+  brandSaveBtnDisabled: { opacity: 0.45, cursor: 'not-allowed' },
+  brandKitMessage: { display: 'block', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 8 },
+  savedBrandKitList: { display: 'flex', flexDirection: 'column', gap: 6 },
+  savedBrandKitCard: { display: 'grid', gridTemplateColumns: '1fr 28px', alignItems: 'stretch', gap: 4 },
+  savedBrandKitApply: { minWidth: 0, display: 'grid', gridTemplateColumns: '42px 1fr', alignItems: 'center', gap: 8, padding: 6, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', borderRadius: 8, cursor: 'pointer', textAlign: 'left' },
+  savedBrandKitSwatch: { position: 'relative', display: 'block', height: 28, borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' },
+  savedBrandKitLogoDot: { position: 'absolute', right: 4, bottom: 4, width: 8, height: 8, borderRadius: 2, background: 'rgba(255,255,255,0.9)', boxShadow: '0 0 0 1px rgba(0,0,0,0.25)' },
+  savedBrandKitText: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
+  savedBrandKitName: { minWidth: 0, fontSize: 11, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  savedBrandKitMeta: { minWidth: 0, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'capitalize' },
+  savedBrandKitDelete: { display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, minWidth: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 },
   uploadBtn: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, fontSize: 12, fontWeight: 500, background: 'none', color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 10, cursor: 'pointer', transition: 'all var(--transition-fast)' },
   logoPreview: { position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', height: 60, borderRadius: 8, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', overflow: 'hidden' },
   logoImg: { maxHeight: 48, maxWidth: '100%', objectFit: 'contain' },
