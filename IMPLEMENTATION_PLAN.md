@@ -166,8 +166,8 @@
 
 ### 8B. Recording Management
 - [ ] Recording dashboard: list all past recordings
-- [ ] Playback preview in browser
-- [ ] Download individual tracks or combined
+- [x] Playback preview in browser for saved recording tracks
+- [x] Download individual tracks and session ZIP bundles
 - [ ] Cloud storage with expiry / permanent options
 - [ ] Share recording link
 
