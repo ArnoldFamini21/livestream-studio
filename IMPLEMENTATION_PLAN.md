@@ -151,7 +151,7 @@
 ### 7B. Audio Mixing
 - [x] Background music player (upload MP3/WAV, play during stream)
 - [x] Sound effects board (applause, drum roll, airhorn, custom)
-- [ ] Separate mix for stream vs. participants (monitor mix)
+- [x] Separate stream/monitor routing for producer audio
 - [x] Fade in/out controls for music
 
 ---

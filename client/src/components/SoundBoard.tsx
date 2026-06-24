@@ -336,6 +336,8 @@ interface CustomSound {
 
 export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
   const [volume, setVolume] = useState(0.7);
+  const [sendToStream, setSendToStream] = useState(true);
+  const [monitorEnabled, setMonitorEnabled] = useState(true);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [customSounds, setCustomSounds] = useState<CustomSound[]>([]);
   const [showUpload, setShowUpload] = useState(false);
@@ -369,6 +371,20 @@ export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
+  const connectMasterGain = useCallback((gain: GainNode) => {
+    if (!broadcastAudio) return;
+    cleanupMasterGainRef.current?.();
+    cleanupMasterGainRef.current = broadcastAudio.connectNode(gain, {
+      stream: sendToStream,
+      monitor: monitorEnabled,
+    });
+  }, [broadcastAudio, monitorEnabled, sendToStream]);
+
+  useEffect(() => {
+    if (!broadcastAudio || !masterGainRef.current || ownsAudioContextRef.current) return;
+    connectMasterGain(masterGainRef.current);
+  }, [broadcastAudio, connectMasterGain]);
+
   const getAudioContext = useCallback(() => {
     if (broadcastAudio) {
       const ctx = broadcastAudio.getContext();
@@ -383,7 +399,7 @@ export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
         ownsAudioContextRef.current = false;
         masterGainRef.current = ctx.createGain();
         masterGainRef.current.gain.value = volume;
-        cleanupMasterGainRef.current = broadcastAudio.connectNode(masterGainRef.current, { monitor: true });
+        connectMasterGain(masterGainRef.current);
       }
 
       masterGainRef.current.gain.value = volume;
@@ -409,7 +425,7 @@ export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
     }
     masterGainRef.current!.gain.value = volume;
     return { ctx: audioCtxRef.current, masterGain: masterGainRef.current! };
-  }, [broadcastAudio, volume]);
+  }, [broadcastAudio, connectMasterGain, volume]);
 
   const handlePlay = useCallback((effect: SoundEffect) => {
     const { ctx, masterGain } = getAudioContext();
@@ -507,6 +523,36 @@ export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
           />
           <span style={styles.volumeLabel}>{Math.round(volume * 100)}%</span>
         </div>
+
+        {broadcastAudio && (
+          <div style={styles.routingSection}>
+            <span style={styles.sectionLabel}>Mix Routing</span>
+            <div style={styles.routingGrid}>
+              <label style={styles.routingOption}>
+                <span style={styles.routingLabel}>Stream</span>
+                <span style={styles.routingState}>{sendToStream ? 'On' : 'Off'}</span>
+                <input
+                  type="checkbox"
+                  checked={sendToStream}
+                  onChange={(e) => setSendToStream(e.target.checked)}
+                  style={styles.routingCheckbox}
+                  aria-label="Send sound board to stream"
+                />
+              </label>
+              <label style={styles.routingOption}>
+                <span style={styles.routingLabel}>Monitor</span>
+                <span style={styles.routingState}>{monitorEnabled ? 'On' : 'Off'}</span>
+                <input
+                  type="checkbox"
+                  checked={monitorEnabled}
+                  onChange={(e) => setMonitorEnabled(e.target.checked)}
+                  style={styles.routingCheckbox}
+                  aria-label="Monitor sound board locally"
+                />
+              </label>
+            </div>
+          </div>
+        )}
 
         {/* Effects grid */}
         <div style={styles.grid}>
@@ -699,6 +745,46 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
     minWidth: 32,
     textAlign: 'right',
+  },
+  routingSection: {
+    padding: '10px 16px',
+    borderBottom: '1px solid var(--border)',
+  },
+  routingGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 8,
+    marginTop: 8,
+  },
+  routingOption: {
+    minHeight: 38,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto auto',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 9px',
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    cursor: 'pointer',
+  },
+  routingLabel: {
+    minWidth: 0,
+    fontSize: 12,
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+  },
+  routingState: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+  },
+  routingCheckbox: {
+    width: 16,
+    height: 16,
+    accentColor: 'var(--accent)',
+    cursor: 'pointer',
   },
   grid: {
     display: 'grid',

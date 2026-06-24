@@ -18,6 +18,8 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(70);
+  const [sendToStream, setSendToStream] = useState(true);
+  const [monitorEnabled, setMonitorEnabled] = useState(true);
   const [loop, setLoop] = useState(false);
   const [fadeEnabled, setFadeEnabled] = useState(false);
   const [fadeDuration, setFadeDuration] = useState(2);
@@ -49,6 +51,15 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
     routingGainRef.current?.gain.value ?? audioRef.current?.volume ?? targetVolumeRef.current
   ), []);
 
+  const connectBroadcastRouting = useCallback((gain: GainNode) => {
+    if (!broadcastAudio) return;
+    cleanupAudioRoutingRef.current?.();
+    cleanupAudioRoutingRef.current = broadcastAudio.connectNode(gain, {
+      stream: sendToStream,
+      monitor: monitorEnabled,
+    });
+  }, [broadcastAudio, monitorEnabled, sendToStream]);
+
   const ensureBroadcastRouting = useCallback(() => {
     if (!broadcastAudio || !audioRef.current) return;
     const audioContext = broadcastAudio.getContext();
@@ -61,11 +72,16 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
     const gain = audioContext.createGain();
     gain.gain.value = targetVolumeRef.current;
     source.connect(gain);
-    cleanupAudioRoutingRef.current = broadcastAudio.connectNode(gain, { monitor: true });
+    connectBroadcastRouting(gain);
     mediaElementSourceRef.current = source;
     routingGainRef.current = gain;
     audioRef.current.volume = 1;
-  }, [broadcastAudio]);
+  }, [broadcastAudio, connectBroadcastRouting]);
+
+  useEffect(() => {
+    if (!routingGainRef.current) return;
+    connectBroadcastRouting(routingGainRef.current);
+  }, [connectBroadcastRouting]);
 
   // Escape key to close
   useEffect(() => {
@@ -536,6 +552,36 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
           <span style={styles.volumeLabel}>{volume}%</span>
         </div>
 
+        {broadcastAudio && (
+          <div style={styles.routingSection}>
+            <span style={styles.sectionLabel}>Mix Routing</span>
+            <div style={styles.routingGrid}>
+              <label style={styles.routingOption}>
+                <span style={styles.routingLabel}>Stream</span>
+                <span style={styles.routingState}>{sendToStream ? 'On' : 'Off'}</span>
+                <input
+                  type="checkbox"
+                  checked={sendToStream}
+                  onChange={(e) => setSendToStream(e.target.checked)}
+                  style={styles.routingCheckbox}
+                  aria-label="Send background music to stream"
+                />
+              </label>
+              <label style={styles.routingOption}>
+                <span style={styles.routingLabel}>Monitor</span>
+                <span style={styles.routingState}>{monitorEnabled ? 'On' : 'Off'}</span>
+                <input
+                  type="checkbox"
+                  checked={monitorEnabled}
+                  onChange={(e) => setMonitorEnabled(e.target.checked)}
+                  style={styles.routingCheckbox}
+                  aria-label="Monitor background music locally"
+                />
+              </label>
+            </div>
+          </div>
+        )}
+
         {/* Fade Controls */}
         <div style={styles.fadeSection}>
           <div style={styles.fadeSectionHeader}>
@@ -931,6 +977,46 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
     minWidth: 32,
     textAlign: 'right' as const,
+  },
+  routingSection: {
+    padding: '10px 16px',
+    borderBottom: '1px solid var(--border)',
+  },
+  routingGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 8,
+    marginTop: 8,
+  },
+  routingOption: {
+    minHeight: 38,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto auto',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 9px',
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    cursor: 'pointer',
+  },
+  routingLabel: {
+    minWidth: 0,
+    fontSize: 12,
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+  },
+  routingState: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+  },
+  routingCheckbox: {
+    width: 16,
+    height: 16,
+    accentColor: 'var(--accent)',
+    cursor: 'pointer',
   },
 
   // Fade
