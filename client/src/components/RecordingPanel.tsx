@@ -2,7 +2,11 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { LocalRecordingFileResult, RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
-import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary';
+import {
+  useRecordingLibrary,
+  type LocalRecordingFileRecord,
+  type LocalRecordingSession,
+} from '../hooks/useRecordingLibrary';
 import type { RecordingReadinessStatus, RecordingReadinessSummary } from '../utils/recordingReadiness';
 
 interface RecordingPanelProps {
@@ -203,9 +207,22 @@ function getRecordingReadinessLabel(status: RecordingReadinessStatus): string {
   }
 }
 
-function isPreviewable(file: RecordedFile): boolean {
-  const type = file.blob.type;
+interface PreviewableRecordingFile {
+  fileName: string;
+  type?: string;
+  blob?: Blob;
+}
+
+export function isPreviewableRecordingFile(file: PreviewableRecordingFile): boolean {
+  const type = file.type || file.blob?.type || '';
   return type.startsWith('video/') || type.startsWith('audio/') || /\.(webm|mp4|mov|ogg|mp3|wav)$/i.test(file.fileName);
+}
+
+function isPreviewable(file: RecordedFile): boolean {
+  return isPreviewableRecordingFile({
+    fileName: file.fileName,
+    type: getRecordingFileType(file),
+  });
 }
 
 function getBlobExtension(blob: Blob): string {
@@ -369,6 +386,15 @@ function sessionMatchesRecordingFilter(session: LocalRecordingSession, filter: R
 
 function sessionHasPodcastAudio(session: LocalRecordingSession): boolean {
   return session.files.some((file) => file.kind === 'audio' || file.type.startsWith('audio/'));
+}
+
+function mapRecordingLibraryFiles(files: LocalRecordingFileRecord[]): RecordedFile[] {
+  return files.map((file) => ({
+    label: file.label,
+    blob: file.blob,
+    fileName: file.fileName,
+    kind: file.kind,
+  }));
 }
 
 export function filterRecordingLibrarySessions(
@@ -1682,6 +1708,9 @@ export function RecordingPanel({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ url: string; type: string; label: string } | null>(null);
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
+  const [libraryTrackFiles, setLibraryTrackFiles] = useState<Record<string, RecordedFile[]>>({});
+  const [libraryTrackError, setLibraryTrackError] = useState<{ sessionId: string; message: string } | null>(null);
   const [isBundling, setIsBundling] = useState(false);
   const [isPodcastBundling, setIsPodcastBundling] = useState(false);
   const [bundleError, setBundleError] = useState<string | null>(null);
@@ -1764,6 +1793,7 @@ export function RecordingPanel({
           markers: sortedRecordingMarkers,
         });
         setActiveSessionId(session.id);
+        setLibraryTrackFiles((current) => ({ ...current, [session.id]: files }));
       }
     } catch (err) {
       console.error('Error stopping recording:', err);
@@ -1925,22 +1955,47 @@ export function RecordingPanel({
       if (current) URL.revokeObjectURL(current.url);
       return {
         url: URL.createObjectURL(file.blob),
-        type: file.blob.type || 'video/webm',
+        type: getRecordingFileType(file),
         label: file.label,
       };
     });
   }, []);
 
+  const handleToggleSessionTracks = useCallback(async (session: LocalRecordingSession) => {
+    setLibraryTrackError(null);
+    if (expandedSessionId === session.id) {
+      setExpandedSessionId(null);
+      return;
+    }
+
+    setExpandedSessionId(session.id);
+    if (libraryTrackFiles[session.id]) return;
+
+    setLibraryBusyId(session.id);
+    try {
+      const files = await loadFiles(session.id);
+      setLibraryTrackFiles((current) => ({
+        ...current,
+        [session.id]: mapRecordingLibraryFiles(files),
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load recording tracks';
+      setLibraryTrackError({ sessionId: session.id, message });
+    } finally {
+      setLibraryBusyId(null);
+    }
+  }, [expandedSessionId, libraryTrackFiles, loadFiles]);
+
   const handleLoadSession = useCallback(async (session: LocalRecordingSession) => {
     setLibraryBusyId(session.id);
     try {
       const files = await loadFiles(session.id);
-      setRecordedFiles(files.map((file) => ({
-        label: file.label,
-        blob: file.blob,
-        fileName: file.fileName,
-        kind: file.kind,
-      })));
+      const mappedFiles = mapRecordingLibraryFiles(files);
+      setRecordedFiles(mappedFiles);
+      setLibraryTrackFiles((current) => ({
+        ...current,
+        [session.id]: mappedFiles,
+      }));
       setActiveSessionId(session.id);
       setPreview(null);
       if (onReplaceRecordingMarkers) {
@@ -2023,12 +2078,23 @@ export function RecordingPanel({
         setPreview(null);
         onClearRecordingMarkers?.();
       }
+      if (expandedSessionId === sessionId) {
+        setExpandedSessionId(null);
+      }
+      setLibraryTrackFiles((current) => {
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      if (libraryTrackError?.sessionId === sessionId) {
+        setLibraryTrackError(null);
+      }
     } catch (err) {
       console.error('Failed to delete recording session:', err);
     } finally {
       setLibraryBusyId(null);
     }
-  }, [activeSessionId, deleteSession, onClearRecordingMarkers]);
+  }, [activeSessionId, deleteSession, expandedSessionId, libraryTrackError, onClearRecordingMarkers]);
 
   return (
     <div style={styles.panel}>
@@ -2476,6 +2542,9 @@ export function RecordingPanel({
             const isActive = activeSessionId === session.id;
             const isBusy = libraryBusyId === session.id;
             const hasSessionPodcastAudio = sessionHasPodcastAudio(session);
+            const isTrackExpanded = expandedSessionId === session.id;
+            const sessionTracks = libraryTrackFiles[session.id];
+            const trackError = libraryTrackError?.sessionId === session.id ? libraryTrackError.message : null;
             return (
               <div key={session.id} style={{ ...styles.sessionCard, ...(isActive ? styles.sessionCardActive : {}) }}>
                 <div style={styles.sessionTop}>
@@ -2507,6 +2576,14 @@ export function RecordingPanel({
                   </button>
                   <button
                     style={styles.sessionBtn}
+                    onClick={() => handleToggleSessionTracks(session)}
+                    disabled={isBusy && !sessionTracks}
+                    title="Preview or download saved tracks"
+                  >
+                    {isTrackExpanded && !sessionTracks && isBusy ? 'Loading...' : isTrackExpanded ? 'Hide' : 'Tracks'}
+                  </button>
+                  <button
+                    style={styles.sessionBtn}
                     onClick={() => handleLoadSession(session)}
                     disabled={isBusy}
                   >
@@ -2520,6 +2597,62 @@ export function RecordingPanel({
                     Delete
                   </button>
                 </div>
+                {isTrackExpanded && (
+                  <div style={styles.sessionTrackList}>
+                    {trackError && <div style={styles.libraryTrackError}>{trackError}</div>}
+                    {!trackError && !sessionTracks && (
+                      <div style={styles.libraryTrackEmpty}>Loading saved tracks...</div>
+                    )}
+                    {sessionTracks?.map((file) => {
+                      const previewable = isPreviewable(file);
+                      const fileType = getRecordingFileType(file);
+                      const kindLabel = file.kind
+                        ? `${file.kind.slice(0, 1).toUpperCase()}${file.kind.slice(1)}`
+                        : fileType.split('/')[0] || 'Track';
+                      return (
+                        <div key={`${file.fileName}-${file.label}`} style={styles.sessionTrackRow}>
+                          <div style={styles.sessionTrackInfo}>
+                            <div style={styles.sessionTrackTopLine}>
+                              <span style={styles.sessionTrackLabel}>{file.label}</span>
+                              <span style={styles.sessionTrackMeta}>
+                                {kindLabel} | {formatFileSize(file.blob.size)}
+                              </span>
+                            </div>
+                            <div style={styles.sessionTrackName}>{file.fileName}</div>
+                          </div>
+                          <div style={styles.sessionTrackActions}>
+                            <button
+                              type="button"
+                              style={{
+                                ...styles.sessionTrackBtn,
+                                ...(!previewable ? styles.sessionTrackBtnDisabled : {}),
+                              }}
+                              onClick={() => handlePreviewFile(file)}
+                              disabled={!previewable}
+                              title={previewable ? `Preview ${file.label}` : 'Preview unavailable for this track'}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polygon points="5 3 19 12 5 21 5 3" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              style={styles.sessionTrackBtn}
+                              onClick={() => handleDownloadSingle(file)}
+                              title={`Download ${file.label}`}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                                <polyline points="7 10 12 15 17 10" />
+                                <line x1="12" y1="15" x2="12" y2="3" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -3266,11 +3399,12 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.35,
   },
   sessionActions: {
-    display: 'flex',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
     gap: 6,
   },
   sessionBtn: {
-    flex: 1,
+    minWidth: 0,
     height: 28,
     borderRadius: 7,
     border: '1px solid var(--border)',
@@ -3283,6 +3417,97 @@ const styles: Record<string, React.CSSProperties> = {
   sessionBtnDisabled: {
     opacity: 0.45,
     cursor: 'not-allowed',
+  },
+  sessionTrackList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    paddingTop: 2,
+  },
+  sessionTrackRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    gap: 8,
+    alignItems: 'center',
+    padding: '8px 9px',
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.07)',
+    background: 'rgba(255, 255, 255, 0.035)',
+  },
+  sessionTrackInfo: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+  },
+  sessionTrackTopLine: {
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  sessionTrackLabel: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+  },
+  sessionTrackMeta: {
+    flexShrink: 0,
+    fontSize: 9,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+  },
+  sessionTrackName: {
+    fontSize: 9,
+    color: 'var(--text-muted)',
+    fontFamily: 'monospace',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  sessionTrackActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+  },
+  sessionTrackBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    background: 'var(--bg-surface)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-secondary)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+  },
+  sessionTrackBtnDisabled: {
+    opacity: 0.4,
+    cursor: 'not-allowed',
+  },
+  libraryTrackEmpty: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    padding: '7px 8px',
+    borderRadius: 8,
+    background: 'rgba(255,255,255,0.03)',
+  },
+  libraryTrackError: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#fca5a5',
+    padding: '7px 8px',
+    borderRadius: 8,
+    background: 'rgba(239, 68, 68, 0.1)',
+    border: '1px solid rgba(239, 68, 68, 0.18)',
   },
   deleteBtn: {
     color: '#ef4444',

@@ -5,6 +5,7 @@ import {
   buildRecordingLibraryCatalogCsv,
   buildRecordingLibraryCatalogFilename,
   filterRecordingLibrarySessions,
+  isPreviewableRecordingFile,
 } from '../src/components/RecordingPanel.tsx';
 
 const sessions: LocalRecordingSession[] = [
@@ -159,5 +160,20 @@ describe('recording library filters', () => {
       buildRecordingLibraryCatalogFilename(new Date('2026-06-11T05:30:00.000Z')),
       'studio_recording_library_2026-06-11_05-30.csv'
     );
+  });
+
+  it('detects saved recording tracks that can be previewed in the browser', () => {
+    assert.equal(isPreviewableRecordingFile({
+      fileName: 'track.bin',
+      type: 'audio/webm',
+    }), true);
+    assert.equal(isPreviewableRecordingFile({
+      fileName: 'camera.webm',
+      type: 'application/octet-stream',
+    }), true);
+    assert.equal(isPreviewableRecordingFile({
+      fileName: 'recording-notes.txt',
+      type: 'text/plain',
+    }), false);
   });
 });
