@@ -31,6 +31,7 @@ import {
   type SavedBrandKit,
 } from '../utils/brandKits.ts';
 import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
+import type { SceneTransitionPresetId } from '../utils/sceneTransitions.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -96,6 +97,8 @@ interface SidebarProps {
   // Scene props
   scenes: Scene[];
   activeSceneId: string | null;
+  sceneTransitionPreset: SceneTransitionPresetId;
+  onSceneTransitionPresetChange: (presetId: SceneTransitionPresetId) => void;
   onSaveScene: (name: string) => void | Promise<void>;
   onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
   onApplyScene: (sceneId: string) => void;
@@ -626,6 +629,8 @@ export function Sidebar(props: SidebarProps) {
                 <SceneManager
                   scenes={props.scenes}
                   activeSceneId={props.activeSceneId}
+                  sceneTransitionPreset={props.sceneTransitionPreset}
+                  onSceneTransitionPresetChange={props.onSceneTransitionPresetChange}
                   onSaveScene={props.onSaveScene}
                   onCreateTemplateScene={props.onCreateTemplateScene}
                   onApplyScene={props.onApplyScene}

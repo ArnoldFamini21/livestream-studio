@@ -101,6 +101,12 @@ import {
   parseScenePackJson,
   type ScenePackOverlayKind,
 } from '../utils/scenePacks.ts';
+import {
+  DEFAULT_SCENE_TRANSITION_PRESET_ID,
+  getSceneTransitionOverlayStyle,
+  normalizeSceneTransitionPresetId,
+  type SceneTransitionPresetId,
+} from '../utils/sceneTransitions.ts';
 import { useToast } from './Toast.tsx';
 
 const STUDIO_STATE_VERSION = 1;
@@ -189,6 +195,7 @@ interface PersistedStudioState {
   mediaAssets: StudioMediaAsset[];
   scenes: Scene[];
   activeSceneId: string | null;
+  sceneTransitionPreset?: SceneTransitionPresetId;
   lowerThirds: LowerThirdData[];
   autoSpeakerLowerThirds?: boolean;
   audioDuckingEnabled?: boolean;
@@ -212,6 +219,7 @@ interface PendingCoHostInviteRequest {
 interface SceneTransitionState {
   sceneId: string;
   sceneName: string;
+  presetId: SceneTransitionPresetId;
   visible: boolean;
 }
 
@@ -479,6 +487,7 @@ export function StudioRoom() {
   // Scenes
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  const [sceneTransitionPreset, setSceneTransitionPreset] = useState<SceneTransitionPresetId>(DEFAULT_SCENE_TRANSITION_PRESET_ID);
   const [sceneTransition, setSceneTransition] = useState<SceneTransitionState | null>(null);
   const [scenePackMessage, setScenePackMessage] = useState<string | null>(null);
 
@@ -805,7 +814,8 @@ export function StudioRoom() {
       sceneTransitionFrameRef.current = null;
     }
 
-    setSceneTransition({ sceneId: scene.id, sceneName: scene.name, visible: true });
+    const presetId = sceneTransitionPreset;
+    setSceneTransition({ sceneId: scene.id, sceneName: scene.name, presetId, visible: true });
     sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
       sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
         setSceneTransition((current) => (
@@ -818,7 +828,7 @@ export function StudioRoom() {
       setSceneTransition((current) => (current?.sceneId === scene.id ? null : current));
       sceneTransitionTimerRef.current = null;
     }, SCENE_TRANSITION_DURATION_MS);
-  }, []);
+  }, [sceneTransitionPreset]);
 
   useEffect(() => {
     setParticipantVolumes((current) => {
@@ -898,6 +908,7 @@ export function StudioRoom() {
             setScenes(parsed.scenes);
             setActiveSceneId(parsed.activeSceneId && parsed.scenes.some((scene) => scene.id === parsed.activeSceneId) ? parsed.activeSceneId : null);
           }
+          setSceneTransitionPreset(normalizeSceneTransitionPresetId(parsed.sceneTransitionPreset));
           if (Array.isArray(parsed.lowerThirds)) setLowerThirds(parsed.lowerThirds);
           if (typeof parsed.autoSpeakerLowerThirds === 'boolean') setAutoSpeakerLowerThirds(parsed.autoSpeakerLowerThirds);
           if (typeof parsed.audioDuckingEnabled === 'boolean') setAudioDuckingEnabled(parsed.audioDuckingEnabled);
@@ -946,6 +957,7 @@ export function StudioRoom() {
         mediaAssets: mediaAssets.filter((asset) => asset.source === 'url'),
         scenes: getPersistableScenes(scenes),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
+        sceneTransitionPreset,
         lowerThirds: lowerThirds.filter((lowerThird) => lowerThird.source !== 'auto-speaker'),
         autoSpeakerLowerThirds,
         audioDuckingEnabled,
@@ -962,7 +974,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
+  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -3477,7 +3489,12 @@ export function StudioRoom() {
                   aria-label={`Scene transition: ${sceneTransition.sceneName}`}
                   style={{
                     ...styles.sceneTransitionOverlay,
-                    opacity: sceneTransition.visible ? 1 : 0,
+                    ...getSceneTransitionOverlayStyle({
+                      presetId: sceneTransition.presetId,
+                      visible: sceneTransition.visible,
+                      durationMs: SCENE_TRANSITION_DURATION_MS,
+                      brandColor,
+                    }),
                   }}
                 >
                   <span style={styles.sceneTransitionLabel}>{sceneTransition.sceneName}</span>
@@ -3613,6 +3630,8 @@ export function StudioRoom() {
             onStopMedia={onStopMedia}
             scenes={scenes}
             activeSceneId={activeSceneId}
+            sceneTransitionPreset={sceneTransitionPreset}
+            onSceneTransitionPresetChange={setSceneTransitionPreset}
             onSaveScene={onSaveScene}
             onCreateTemplateScene={onCreateTemplateScene}
             onApplyScene={onApplyScene}
