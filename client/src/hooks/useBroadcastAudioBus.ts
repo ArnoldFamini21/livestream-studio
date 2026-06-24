@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  normalizeBroadcastAudioRouting,
+  type BroadcastAudioRouting,
+} from '../utils/broadcastAudioRouting.ts';
 
 export interface BroadcastAudioBus {
   stream: MediaStream | null;
   ensureStream: () => MediaStream | null;
   getContext: () => AudioContext;
-  connectNode: (node: AudioNode, options?: { monitor?: boolean }) => () => void;
+  connectNode: (node: AudioNode, routing?: Partial<BroadcastAudioRouting>) => () => void;
 }
 
 function getAudioContextConstructor(): typeof AudioContext {
@@ -37,7 +41,7 @@ export function useBroadcastAudioBus(): BroadcastAudioBus {
     return destinationRef.current?.stream ?? null;
   }, [getContext]);
 
-  const connectNode = useCallback((node: AudioNode, options: { monitor?: boolean } = {}) => {
+  const connectNode = useCallback((node: AudioNode, routing: Partial<BroadcastAudioRouting> = {}) => {
     const audioContext = getContext();
     if (node.context !== audioContext) {
       throw new Error('Broadcast audio nodes must use the broadcast audio context.');
@@ -48,17 +52,19 @@ export function useBroadcastAudioBus(): BroadcastAudioBus {
       throw new Error('Broadcast audio destination is unavailable.');
     }
 
-    const monitor = options.monitor ?? true;
-    node.connect(destination);
-    if (monitor) node.connect(audioContext.destination);
+    const normalized = normalizeBroadcastAudioRouting(routing);
+    if (normalized.stream) node.connect(destination);
+    if (normalized.monitor) node.connect(audioContext.destination);
 
     return () => {
-      try {
-        node.disconnect(destination);
-      } catch {
-        // Already disconnected.
+      if (normalized.stream) {
+        try {
+          node.disconnect(destination);
+        } catch {
+          // Already disconnected.
+        }
       }
-      if (monitor) {
+      if (normalized.monitor) {
         try {
           node.disconnect(audioContext.destination);
         } catch {
