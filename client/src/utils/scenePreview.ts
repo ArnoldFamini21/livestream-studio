@@ -16,6 +16,7 @@ export interface ScenePreviewOverlays {
   banner: boolean;
   ticker: boolean;
   timer: boolean;
+  widget: boolean;
   logo: boolean;
 }
 
@@ -81,6 +82,7 @@ export function getScenePreviewOverlays(scene: Pick<Scene, 'visibleOverlayIds' |
     banner: scene.visibleOverlayIds.some((id) => id.startsWith('banner-')),
     ticker: scene.visibleOverlayIds.some((id) => id.startsWith('ticker-')),
     timer: scene.visibleOverlayIds.some((id) => id.startsWith('timer-')),
+    widget: scene.visibleOverlayIds.some((id) => id.startsWith('widget-')),
     logo: Boolean(scene.logoUrl),
   };
 }

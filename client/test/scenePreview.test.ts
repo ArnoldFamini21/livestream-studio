@@ -52,13 +52,14 @@ describe('scene preview thumbnails', () => {
     assert.deepEqual(
       getScenePreviewOverlays({
         logoUrl: 'https://example.test/logo.png',
-        visibleOverlayIds: ['lt-host', 'banner-2', 'ticker-3', 'timer-4', 'unknown-5'],
+        visibleOverlayIds: ['lt-host', 'banner-2', 'ticker-3', 'timer-4', 'widget-5', 'unknown-6'],
       }),
       {
         lowerThird: true,
         banner: true,
         ticker: true,
         timer: true,
+        widget: true,
         logo: true,
       }
     );

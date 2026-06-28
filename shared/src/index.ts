@@ -418,7 +418,7 @@ export interface Overlay {
   visible: boolean;
 }
 
-export type OverlayType = 'lower-third' | 'logo' | 'banner' | 'background' | 'ticker';
+export type OverlayType = 'lower-third' | 'logo' | 'banner' | 'background' | 'ticker' | 'widget';
 
 export interface OverlayContent {
   title?: string;

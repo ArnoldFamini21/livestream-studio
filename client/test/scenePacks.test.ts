@@ -5,6 +5,7 @@ import type { BannerData } from '../src/components/BannerOverlay.tsx';
 import type { LowerThirdData } from '../src/components/LowerThird.tsx';
 import type { TimerData } from '../src/components/TimerOverlay.tsx';
 import type { TickerData } from '../src/components/TickerOverlay.tsx';
+import type { WidgetOverlayData } from '../src/components/WidgetOverlay.tsx';
 import {
   buildScenePack,
   buildScenePackFilename,
@@ -29,7 +30,7 @@ function makeScene(overrides: Partial<Scene> = {}): Scene {
     pipCorner: 'TR',
     focusedVideoItemId: 'local',
     stageItemOrder: ['local', 'guest'],
-    visibleOverlayIds: ['lt-1', 'lt-auto', 'banner-1', 'timer-1', 'ticker-1', 'missing-overlay'],
+    visibleOverlayIds: ['lt-1', 'lt-auto', 'banner-1', 'timer-1', 'ticker-1', 'widget-1', 'missing-overlay'],
     ...overrides,
   };
 }
@@ -70,6 +71,29 @@ const tickers: TickerData[] = [
   },
 ];
 
+const widgets: WidgetOverlayData[] = [
+  {
+    id: 'widget-1',
+    name: 'Fundraising Goal',
+    url: 'https://widgets.example.test/goal',
+    position: 'top-right',
+    widthPercent: 42,
+    heightPercent: 26,
+    opacity: 0.55,
+    visible: true,
+  },
+  {
+    id: 'widget-unused',
+    name: 'Unused Widget',
+    url: 'https://widgets.example.test/unused',
+    position: 'center',
+    widthPercent: 42,
+    heightPercent: 26,
+    opacity: 1,
+    visible: false,
+  },
+];
+
 describe('scene packs', () => {
   it('exports scenes with only referenced, portable overlays', () => {
     const pack = buildScenePack({
@@ -78,6 +102,7 @@ describe('scene packs', () => {
       banners,
       timers,
       tickers,
+      widgets,
       exportedAt: '2026-06-24T00:00:00.000Z',
     });
 
@@ -86,11 +111,14 @@ describe('scene packs', () => {
     assert.deepEqual(pack.overlays.banners.map((item) => item.id), ['banner-1']);
     assert.deepEqual(pack.overlays.timers.map((item) => item.id), ['timer-1']);
     assert.deepEqual(pack.overlays.tickers.map((item) => item.id), ['ticker-1']);
-    assert.deepEqual(pack.scenes[0].visibleOverlayIds, ['lt-1', 'banner-1', 'timer-1', 'ticker-1']);
+    assert.deepEqual(pack.overlays.widgets.map((item) => item.id), ['widget-1']);
+    assert.deepEqual(pack.scenes[0].visibleOverlayIds, ['lt-1', 'banner-1', 'timer-1', 'ticker-1', 'widget-1']);
     assert.equal(pack.overlays.lowerThirds[0].visible, false);
     assert.equal(pack.overlays.lowerThirds[0].animationDirection, 'right');
     assert.equal(pack.overlays.lowerThirds[0].fontFamily, 'display');
     assert.equal(pack.overlays.timers[0].isRunning, false);
+    assert.equal(pack.overlays.widgets[0].visible, false);
+    assert.equal(pack.overlays.widgets[0].opacity, 0.55);
   });
 
   it('imports scenes by remapping scene and overlay ids while keeping overlays hidden', () => {
@@ -100,6 +128,7 @@ describe('scene packs', () => {
       banners,
       timers,
       tickers,
+      widgets,
     });
 
     const imported = importScenePack(pack, {
@@ -118,6 +147,7 @@ describe('scene packs', () => {
       'banner-imported-0',
       'timer-imported-0',
       'ticker-imported-0',
+      'widget-imported-0',
     ]);
     assert.equal(imported.lowerThirds[0].visible, false);
     assert.equal(imported.lowerThirds[0].animation, 'bounce');
@@ -127,6 +157,8 @@ describe('scene packs', () => {
     assert.equal(imported.timers[0].visible, false);
     assert.equal(imported.timers[0].isRunning, false);
     assert.equal(imported.tickers[0].visible, false);
+    assert.equal(imported.widgets[0].visible, false);
+    assert.equal(imported.widgets[0].url, 'https://widgets.example.test/goal');
   });
 
   it('respects the remaining scene slots and reports skipped scenes', () => {
@@ -140,6 +172,7 @@ describe('scene packs', () => {
       banners: [],
       timers: [],
       tickers: [],
+      widgets: [],
     });
     const existingScenes = Array.from({ length: 11 }, (_, index) => makeScene({
       id: `existing-${index}`,
@@ -221,6 +254,7 @@ describe('scene packs', () => {
       banners,
       timers,
       tickers,
+      widgets,
       exportedAt: '2026-06-24T00:00:00.000Z',
     });
     const parsed = parseScenePackJson(JSON.stringify(pack));
@@ -228,6 +262,7 @@ describe('scene packs', () => {
     assert.deepEqual(parsed.scenes, pack.scenes);
     assert.equal(parsed.overlays.lowerThirds[0].animationDirection, 'right');
     assert.equal(parsed.overlays.lowerThirds[0].fontFamily, 'display');
+    assert.equal(parsed.overlays.widgets[0].position, 'top-right');
     assert.equal(buildScenePackFilename('Arnold Live Show!', new Date('2026-06-24T12:00:00.000Z')), 'scene-pack-arnold-live-show-2026-06-24.json');
   });
 });

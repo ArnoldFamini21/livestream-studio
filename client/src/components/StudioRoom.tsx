@@ -41,6 +41,7 @@ import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverla
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
+import { WidgetOverlayDisplay, type WidgetOverlayData } from './WidgetOverlay.tsx';
 import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience } from './WebinarQA.tsx';
 import { SessionHealthPanel } from './SessionHealthPanel.tsx';
 import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
@@ -253,6 +254,7 @@ interface PersistedStudioState {
   banners: BannerData[];
   timers: TimerData[];
   tickers: TickerData[];
+  widgets: WidgetOverlayData[];
 }
 
 interface StageVideoItem {
@@ -657,6 +659,7 @@ export function StudioRoom() {
 
   // Tickers
   const [tickers, setTickers] = useState<TickerData[]>([]);
+  const [widgets, setWidgets] = useState<WidgetOverlayData[]>([]);
 
   // Webinar Q&A
   const [qaQuestions, setQAQuestions] = useState<QAQuestion[]>([]);
@@ -856,7 +859,7 @@ export function StudioRoom() {
   const stageRef = useRef<HTMLDivElement>(null);
   const myParticipantRef = useRef<Participant | null>(null);
   const mediaAssetsRef = useRef<StudioMediaAsset[]>(mediaAssets);
-  const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, qa: 0, poll: 0, media: 0 });
+  const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, widget: 0, qa: 0, poll: 0, media: 0 });
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
@@ -907,6 +910,7 @@ export function StudioRoom() {
     lowerThirds,
     timers,
     tickers,
+    widgets,
     activeMedia,
     highlightedComment,
     highlightedQA: qaQuestions.find((question) => question.highlighted) || null,
@@ -1213,12 +1217,14 @@ export function StudioRoom() {
           if (Array.isArray(parsed.banners)) setBanners(parsed.banners);
           if (Array.isArray(parsed.timers)) setTimers(parsed.timers.map((timer) => ({ ...timer, isRunning: false })));
           if (Array.isArray(parsed.tickers)) setTickers(parsed.tickers);
+          if (Array.isArray(parsed.widgets)) setWidgets(parsed.widgets);
           idCounters.current = {
             ...idCounters.current,
             lt: getMaxNumericSuffix(parsed.lowerThirds, 'lt'),
             banner: getMaxNumericSuffix(parsed.banners, 'banner'),
             timer: getMaxNumericSuffix(parsed.timers, 'timer'),
             ticker: getMaxNumericSuffix(parsed.tickers, 'ticker'),
+            widget: getMaxNumericSuffix(parsed.widgets, 'widget'),
             media: getMaxNumericSuffix(parsed.mediaAssets, 'media'),
           };
         }
@@ -1268,6 +1274,7 @@ export function StudioRoom() {
         banners,
         timers: timers.map((timer) => ({ ...timer, isRunning: false })),
         tickers,
+        widgets,
       };
 
       try {
@@ -1278,7 +1285,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoPosition, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
+  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoPosition, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers, widgets]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -2589,6 +2596,7 @@ export function StudioRoom() {
         ...banners.filter(b => b.visible).map(b => b.id),
         ...timers.filter(t => t.visible).map(t => t.id),
         ...tickers.filter(t => t.visible).map(t => t.id),
+        ...widgets.filter(widget => widget.visible).map(widget => widget.id),
       ],
     };
   };
@@ -2674,6 +2682,7 @@ export function StudioRoom() {
     } else {
       setTickers(prev => prev.map(t => ({ ...t, visible: false })));
     }
+    setWidgets(prev => prev.map(widget => ({ ...widget, visible: false })));
     setActiveSceneId(newScene.id);
     triggerSceneTransition(newScene);
   };
@@ -2706,6 +2715,7 @@ export function StudioRoom() {
     setBanners(prev => prev.map(b => ({ ...b, visible: visibleIds.has(b.id) })));
     setTimers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id), isRunning: visibleIds.has(t.id) ? t.isRunning : false })));
     setTickers(prev => prev.map(t => ({ ...t, visible: visibleIds.has(t.id) })));
+    setWidgets(prev => prev.map(widget => ({ ...widget, visible: visibleIds.has(widget.id) })));
     setActiveSceneId(sceneId);
     triggerSceneTransition(scene);
   };
@@ -2750,6 +2760,7 @@ export function StudioRoom() {
       banners,
       timers,
       tickers,
+      widgets,
     });
 
     downloadJsonFile(
@@ -2786,6 +2797,8 @@ export function StudioRoom() {
               return `timer-${++idCounters.current.timer}`;
             case 'ticker':
               return `ticker-${++idCounters.current.ticker}`;
+            case 'widget':
+              return `widget-${++idCounters.current.widget}`;
             default:
               return assertNever(kind);
           }
@@ -2801,6 +2814,7 @@ export function StudioRoom() {
       setBanners(prev => [...prev, ...imported.banners]);
       setTimers(prev => [...prev, ...imported.timers]);
       setTickers(prev => [...prev, ...imported.tickers]);
+      setWidgets(prev => [...prev, ...imported.widgets]);
       setScenes(prev => [...prev, ...imported.scenes].slice(0, MAX_STUDIO_SCENES));
       setScenePackMessage(
         `Imported ${imported.importedScenes} scene${imported.importedScenes === 1 ? '' : 's'}${imported.skippedScenes ? `, skipped ${imported.skippedScenes}` : ''}.`
@@ -2822,6 +2836,17 @@ export function StudioRoom() {
   };
   const onUpdateTicker = (id: string, updates: Partial<TickerData>) => {
     setTickers(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
+  };
+
+  // Widget overlays
+  const onAddWidget = (widget: Omit<WidgetOverlayData, 'id' | 'visible'> & { visible?: boolean }) => {
+    setWidgets(prev => [...prev, { ...widget, id: `widget-${++idCounters.current.widget}`, visible: widget.visible ?? false }]);
+  };
+  const onToggleWidget = (id: string) => {
+    setWidgets(prev => prev.map(widget => ({ ...widget, visible: widget.id === id ? !widget.visible : widget.visible })));
+  };
+  const onRemoveWidget = (id: string) => {
+    setWidgets(prev => prev.filter(widget => widget.id !== id));
   };
 
   // Comment highlighting
@@ -3318,6 +3343,7 @@ export function StudioRoom() {
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
   const visibleTimers = useMemo(() => timers.filter(t => t.visible), [timers]);
   const visibleTickers = useMemo(() => tickers.filter(t => t.visible), [tickers]);
+  const visibleWidgets = useMemo(() => widgets.filter(widget => widget.visible), [widgets]);
   const visibleLowerThird = useMemo(() => lowerThirds.find((lt) => lt.visible) || null, [lowerThirds]);
   const [displayedLowerThird, setDisplayedLowerThird] = useState<LowerThirdData | null>(null);
   const displayedLowerThirdRef = useRef<LowerThirdData | null>(null);
@@ -3907,6 +3933,11 @@ export function StudioRoom() {
                   <TickerOverlayDisplay key={t.id} data={t} />
                 ))}
 
+                {/* Widget Overlays */}
+                {visibleWidgets.map((widget) => (
+                  <WidgetOverlayDisplay key={widget.id} data={widget} />
+                ))}
+
                 {/* Comment Highlight Overlay */}
                 <CommentHighlightOverlay comment={highlightedComment} onExpired={onDismissComment} />
 
@@ -4152,6 +4183,10 @@ export function StudioRoom() {
             onToggleTicker={onToggleTicker}
             onRemoveTicker={onRemoveTicker}
             onUpdateTicker={onUpdateTicker}
+            widgets={widgets}
+            onAddWidget={onAddWidget}
+            onToggleWidget={onToggleWidget}
+            onRemoveWidget={onRemoveWidget}
             chatMessages={chatMessages}
             highlightedComment={highlightedComment}
             onHighlightComment={onHighlightComment}
