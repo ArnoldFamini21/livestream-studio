@@ -18,6 +18,13 @@ import {
 } from '../utils/rtmpRelayOutput.ts';
 import { formatRelayLatency } from '../utils/rtmpRelayLatency.ts';
 import { buildLivePreflightChecklist, type LivePreflightStatus } from '../utils/livePreflight.ts';
+import {
+  MAX_STREAM_SCREEN_COUNTDOWN_SECONDS,
+  normalizeStreamScreenConfig,
+  type StreamScreenConfig,
+  type StreamScreenDraft,
+  type StreamScreenKind,
+} from '../utils/streamScreens.ts';
 
 interface StreamDestinationsProps {
   destinations: StreamDestination[];
@@ -34,6 +41,11 @@ interface StreamDestinationsProps {
   relayReadiness?: RtmpRelayReadiness;
   sessionHealth?: SessionHealthSummary;
   sceneCount?: number;
+  streamScreenConfig: StreamScreenConfig;
+  activeStreamScreenKind: StreamScreenKind | null;
+  onStreamScreenConfigChange: (config: StreamScreenConfig) => void;
+  onApplyStreamScreen: (kind: StreamScreenKind) => void;
+  onClearStreamScreen: () => void;
   onRetryRelayReadiness?: () => void | Promise<unknown>;
   onGoLive: () => void | Promise<void>;
   onStopLive: () => void | Promise<void>;
@@ -72,6 +84,11 @@ export function StreamDestinations({
   relayReadiness,
   sessionHealth,
   sceneCount = 0,
+  streamScreenConfig,
+  activeStreamScreenKind,
+  onStreamScreenConfigChange,
+  onApplyStreamScreen,
+  onClearStreamScreen,
   onRetryRelayReadiness,
   onGoLive,
   onStopLive,
@@ -170,6 +187,101 @@ export function StreamDestinations({
   const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue && !livePreflight.blockingIssue;
   const relayQuality = relayStats ? getRelayQuality(relayStats, relayTargetKbps, selectedOutputPreset.label) : null;
   const bitrateBars = relayStats ? buildBitrateBars(relayStats.bitrateHistory, relayTargetKbps, BITRATE_BAR_COUNT) : [];
+  const normalizedStreamScreens = normalizeStreamScreenConfig(streamScreenConfig);
+  const updateStreamScreen = (kind: StreamScreenKind, patch: Partial<StreamScreenDraft>) => {
+    onStreamScreenConfigChange(normalizeStreamScreenConfig({
+      ...normalizedStreamScreens,
+      [kind]: {
+        ...normalizedStreamScreens[kind],
+        ...patch,
+      },
+    }));
+  };
+  const renderStreamScreenCard = (kind: StreamScreenKind, label: string) => {
+    const screen = normalizedStreamScreens[kind];
+    const active = activeStreamScreenKind === kind;
+
+    return (
+      <div key={kind} style={{ ...styles.screenCard, ...(active ? styles.screenCardActive : {}) }}>
+        <div style={styles.screenCardHeader}>
+          <span style={styles.screenCardTitle}>{label}</span>
+          {active && <span style={styles.screenActiveBadge}>Active</span>}
+        </div>
+        <input
+          style={styles.screenInput}
+          value={screen.headline}
+          onChange={(event) => updateStreamScreen(kind, { headline: event.target.value })}
+          aria-label={`${label} headline`}
+        />
+        <textarea
+          style={styles.screenTextarea}
+          value={screen.message}
+          onChange={(event) => updateStreamScreen(kind, { message: event.target.value })}
+          aria-label={`${label} message`}
+          rows={2}
+        />
+        <div style={styles.screenOptionRow}>
+          <button
+            type="button"
+            style={{
+              ...styles.screenModeBtn,
+              ...(screen.backgroundMode === 'brand' ? styles.screenModeBtnActive : {}),
+            }}
+            onClick={() => updateStreamScreen(kind, { backgroundMode: 'brand' })}
+          >
+            Brand
+          </button>
+          <button
+            type="button"
+            style={{
+              ...styles.screenModeBtn,
+              ...(screen.backgroundMode === 'stage' ? styles.screenModeBtnActive : {}),
+            }}
+            onClick={() => updateStreamScreen(kind, { backgroundMode: 'stage' })}
+          >
+            Stage
+          </button>
+          <label style={styles.screenCheckbox}>
+            <input
+              type="checkbox"
+              checked={screen.showLogo}
+              onChange={(event) => updateStreamScreen(kind, { showLogo: event.target.checked })}
+            />
+            Logo
+          </label>
+        </div>
+        {kind === 'starting' && (
+          <label style={styles.screenCountdownLabel}>
+            <span>Countdown</span>
+            <input
+              type="number"
+              min={0}
+              max={MAX_STREAM_SCREEN_COUNTDOWN_SECONDS}
+              step={15}
+              style={styles.screenCountdownInput}
+              value={screen.countdownSeconds ?? 0}
+              onChange={(event) => updateStreamScreen(kind, { countdownSeconds: Number(event.target.value) })}
+            />
+          </label>
+        )}
+        <div style={styles.screenActionRow}>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ ...styles.screenShowBtn, ...(active ? styles.screenShowBtnActive : {}) }}
+            onClick={() => onApplyStreamScreen(kind)}
+          >
+            {active ? 'Refresh Screen' : 'Show Screen'}
+          </button>
+          {active && (
+            <button type="button" className="btn-ghost" style={styles.screenClearBtn} onClick={onClearStreamScreen}>
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div style={styles.panel}>
@@ -322,6 +434,22 @@ export function StreamDestinations({
               </div>
             ))}
           </div>
+        </div>
+
+        <div style={styles.screenSection}>
+          <div style={styles.screenHeader}>
+            <div>
+              <span style={styles.screenTitle}>Stream Screens</span>
+              <p style={styles.screenSubtitle}>{activeStreamScreenKind ? `${activeStreamScreenKind} screen on stage` : 'No screen on stage'}</p>
+            </div>
+            {activeStreamScreenKind && (
+              <button type="button" className="btn-ghost" style={styles.screenHeaderClearBtn} onClick={onClearStreamScreen}>
+                Clear
+              </button>
+            )}
+          </div>
+          {renderStreamScreenCard('starting', 'Starting')}
+          {renderStreamScreenCard('ending', 'Ending')}
         </div>
 
         {isLive && relayStats && (
@@ -861,6 +989,28 @@ const styles: Record<string, React.CSSProperties> = {
   relayReadyDetail: { margin: '2px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
   relayReadyBadge: { flexShrink: 0, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', borderRadius: 999, border: '1px solid', padding: '3px 7px', letterSpacing: 0 },
   retryRelayBtn: { alignSelf: 'flex-start', fontSize: 11, padding: '6px 10px' },
+  screenSection: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 },
+  screenHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
+  screenTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
+  screenSubtitle: { margin: '2px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35, textTransform: 'capitalize' },
+  screenHeaderClearBtn: { fontSize: 10, padding: '5px 8px', borderRadius: 6 },
+  screenCard: { border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, background: 'rgba(0,0,0,0.12)', padding: 9, display: 'flex', flexDirection: 'column', gap: 7 },
+  screenCardActive: { borderColor: 'rgba(96, 165, 250, 0.34)', background: 'rgba(96, 165, 250, 0.08)' },
+  screenCardHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  screenCardTitle: { fontSize: 11, fontWeight: 800, color: 'var(--text-secondary)' },
+  screenActiveBadge: { flexShrink: 0, fontSize: 9, fontWeight: 800, textTransform: 'uppercase', color: '#93c5fd', border: '1px solid rgba(96, 165, 250, 0.28)', borderRadius: 999, padding: '2px 6px', background: 'rgba(96, 165, 250, 0.1)' },
+  screenInput: { width: '100%', minWidth: 0, padding: '7px 9px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' },
+  screenTextarea: { width: '100%', minWidth: 0, minHeight: 52, padding: '7px 9px', fontSize: 12, lineHeight: 1.35, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', resize: 'vertical' },
+  screenOptionRow: { display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, alignItems: 'center' },
+  screenModeBtn: { minWidth: 0, height: 30, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 11, fontWeight: 800, cursor: 'pointer' },
+  screenModeBtnActive: { borderColor: '#60a5fa', background: 'rgba(96, 165, 250, 0.12)', color: '#bfdbfe' },
+  screenCheckbox: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, height: 30, padding: '0 6px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' },
+  screenCountdownLabel: { display: 'grid', gridTemplateColumns: '1fr 82px', gap: 8, alignItems: 'center', fontSize: 11, fontWeight: 700, color: 'var(--text-muted)' },
+  screenCountdownInput: { width: '100%', padding: '6px 7px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none' },
+  screenActionRow: { display: 'flex', alignItems: 'center', gap: 7 },
+  screenShowBtn: { flex: 1, minWidth: 0, justifyContent: 'center', fontSize: 11, padding: '7px 9px', borderRadius: 7 },
+  screenShowBtnActive: { borderColor: '#60a5fa', color: '#bfdbfe', background: 'rgba(96, 165, 250, 0.12)' },
+  screenClearBtn: { fontSize: 11, padding: '7px 9px', borderRadius: 7 },
   healthCard: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 },
   healthTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 },
   healthLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },

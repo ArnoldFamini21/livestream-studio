@@ -8,6 +8,7 @@ import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
 import { normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
+import type { ActiveStreamScreen } from '../utils/streamScreens.ts';
 import type { LiveCaptionSegment } from './useLiveCaptions.ts';
 
 interface CompositorProps {
@@ -29,6 +30,7 @@ interface CompositorProps {
   logoPlacement?: LogoPlacement;
   logoSize?: LogoSize;
   logoOpacity?: number;
+  streamScreen?: ActiveStreamScreen | null;
 }
 
 const AVATAR_COLORS = [
@@ -943,6 +945,107 @@ function drawBroadcastReactions(
   ctx.restore();
 }
 
+function getStreamScreenCountdownLabel(screen: ActiveStreamScreen, now: number): string {
+  if (screen.kind !== 'starting' || screen.countdownSeconds === undefined) {
+    return screen.kind === 'starting' ? 'Starting Soon' : 'Stream Ending';
+  }
+  const elapsedSeconds = Math.floor((now - screen.activatedAtMs) / 1000);
+  const remaining = Math.max(0, screen.countdownSeconds - elapsedSeconds);
+  if (remaining <= 0) return 'Starting Soon';
+  return `Starting in ${formatTimerTime(remaining)}`;
+}
+
+function drawStreamScreen(
+  ctx: CanvasRenderingContext2D,
+  screen: ActiveStreamScreen,
+  logoImage: HTMLImageElement | null,
+  now: number
+) {
+  const width = 1920;
+  const height = 1080;
+  const brandColor = screen.brandColor || '#a78bfa';
+
+  ctx.save();
+
+  const vignette = ctx.createRadialGradient(960, 460, 220, 960, 540, 980);
+  vignette.addColorStop(0, 'rgba(255, 255, 255, 0.02)');
+  vignette.addColorStop(0.58, 'rgba(2, 6, 23, 0.14)');
+  vignette.addColorStop(1, 'rgba(2, 6, 23, 0.58)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = 'rgba(2, 6, 23, 0.24)';
+  ctx.fillRect(0, 0, width, height);
+
+  const contentWidth = 1320;
+  const centerX = width / 2;
+  let cursorY = 256;
+
+  if (screen.logoUrl && logoImage?.complete && logoImage.naturalWidth > 0) {
+    const maxLogoWidth = 340;
+    const maxLogoHeight = 116;
+    const logoScale = Math.min(1, maxLogoWidth / logoImage.naturalWidth, maxLogoHeight / logoImage.naturalHeight);
+    const logoWidth = logoImage.naturalWidth * logoScale;
+    const logoHeight = logoImage.naturalHeight * logoScale;
+    ctx.globalAlpha = 0.96;
+    ctx.drawImage(logoImage, centerX - logoWidth / 2, cursorY - logoHeight / 2, logoWidth, logoHeight);
+    ctx.globalAlpha = 1;
+    cursorY += logoHeight / 2 + 82;
+  }
+
+  const label = getStreamScreenCountdownLabel(screen, now).toUpperCase();
+  ctx.font = '900 27px Inter, Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const labelWidth = Math.min(520, Math.max(250, Math.ceil(ctx.measureText(label).width + 64)));
+  const labelHeight = 56;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.28)';
+  ctx.shadowBlur = 26;
+  ctx.shadowOffsetY = 10;
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+  drawRoundedRect(ctx, centerX - labelWidth / 2, cursorY - labelHeight / 2, labelWidth, labelHeight, 18);
+  ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = `${brandColor}bb`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(centerX - labelWidth / 2, cursorY - labelHeight / 2, labelWidth, labelHeight, 18);
+  ctx.stroke();
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillText(label, centerX, cursorY + 1);
+
+  cursorY += 132;
+  ctx.font = '900 88px Inter, Arial, sans-serif';
+  ctx.fillStyle = 'white';
+  ctx.textBaseline = 'top';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.34)';
+  ctx.shadowBlur = 32;
+  ctx.shadowOffsetY = 14;
+  const headlineLines = wrapCanvasText(ctx, screen.headline, contentWidth, 2);
+  headlineLines.forEach((line, index) => {
+    ctx.fillText(line, centerX, cursorY + index * 100);
+  });
+
+  cursorY += Math.max(1, headlineLines.length) * 100 + 30;
+  ctx.shadowColor = 'transparent';
+  ctx.font = '600 38px Inter, Arial, sans-serif';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.82)';
+  const messageLines = wrapCanvasText(ctx, screen.message, 980, 2);
+  messageLines.forEach((line, index) => {
+    ctx.fillText(line, centerX, cursorY + index * 52);
+  });
+
+  const accentWidth = 420;
+  const accentY = 884;
+  const accent = ctx.createLinearGradient(centerX - accentWidth / 2, accentY, centerX + accentWidth / 2, accentY);
+  accent.addColorStop(0, 'rgba(255, 255, 255, 0)');
+  accent.addColorStop(0.5, brandColor);
+  accent.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  ctx.fillStyle = accent;
+  drawRoundedRect(ctx, centerX - accentWidth / 2, accentY, accentWidth, 8, 4);
+
+  ctx.restore();
+}
+
 export function useCompositor({
   containerRef,
   isLive,
@@ -962,6 +1065,7 @@ export function useCompositor({
   logoPlacement = 'top-right',
   logoSize = 'medium',
   logoOpacity = DEFAULT_LOGO_OPACITY,
+  streamScreen,
 }: CompositorProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const compositeStreamRef = useRef<MediaStream | null>(null);
@@ -1051,6 +1155,13 @@ export function useCompositor({
     if (!ctx) return;
 
     // 1. Clear & stage background
+    if (streamScreen) {
+      drawStageBackground(ctx, streamScreen.background, backgroundImageRef.current);
+      drawStreamScreen(ctx, streamScreen, logoImageRef.current, Date.now());
+      rAF.current = requestAnimationFrame(drawLoop);
+      return;
+    }
+
     drawStageBackground(ctx, stageBackground, backgroundImageRef.current);
 
     const containerBounds = containerRef.current.getBoundingClientRect();
@@ -1201,7 +1312,7 @@ export function useCompositor({
 
     // Loop
     rAF.current = requestAnimationFrame(drawLoop);
-  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoSize, logoOpacity]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoSize, logoOpacity, streamScreen]);
 
   useEffect(() => {
     if (isLive) {

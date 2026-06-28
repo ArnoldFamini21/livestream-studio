@@ -190,7 +190,7 @@
 - [x] Custom studio themes (light, dark, colorful)
 - [x] Brand kit: upload logo, set colors, auto-apply everywhere
 - [x] Custom waiting room page with branding
-- [ ] Custom stream starting/ending screens
+- [x] Custom stream starting/ending screens
 
 ---
 
