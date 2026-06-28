@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { buildStudioCalendarInvite } from '@studio/shared';
+import { buildGuestInviteDetails, buildGuestInviteEmailHref } from '../utils/inviteLinks.ts';
 
 interface InvitePanelProps {
   roomName: string;
@@ -95,6 +96,7 @@ export function InvitePanel({
   const [isCreatingCoHostInvite, setIsCreatingCoHostInvite] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [guestEmail, setGuestEmail] = useState('');
 
   const scheduledLabel = useMemo(() => {
     if (!scheduledFor) return null;
@@ -105,22 +107,27 @@ export function InvitePanel({
   }, [scheduledFor]);
 
   const inviteDetails = useMemo(() => {
-    const lines = [
-      `${roomName}`,
-      hostName ? `Host: ${hostName}` : null,
-      `Status: ${isLive ? 'Live now' : 'Studio waiting room'}`,
-      scheduledLabel ? `Time: ${scheduledLabel}` : null,
-      `Join: ${inviteUrl}`,
-      passwordProtected ? 'Password protected. Ask the host for the password.' : null,
-    ].filter(Boolean);
-    return lines.join('\n');
+    return buildGuestInviteDetails({
+      roomName,
+      hostName,
+      status: isLive ? 'Live now' : 'Studio waiting room',
+      scheduledLabel,
+      inviteUrl,
+      passwordProtected,
+    });
   }, [hostName, inviteUrl, isLive, passwordProtected, roomName, scheduledLabel]);
 
   const mailtoHref = useMemo(() => {
-    const subject = encodeURIComponent(`Join ${roomName}`);
-    const body = encodeURIComponent(inviteDetails);
-    return `mailto:?subject=${subject}&body=${body}`;
-  }, [inviteDetails, roomName]);
+    return buildGuestInviteEmailHref({
+      roomName,
+      hostName,
+      status: isLive ? 'Live now' : 'Studio waiting room',
+      scheduledLabel,
+      inviteUrl,
+      passwordProtected,
+      recipientEmail: guestEmail,
+    });
+  }, [guestEmail, hostName, inviteUrl, isLive, passwordProtected, roomName, scheduledLabel]);
 
   const calendarInvite = useMemo(() => buildStudioCalendarInvite({
     roomName,
@@ -353,6 +360,29 @@ export function InvitePanel({
           </div>
         </div>
 
+        <div style={styles.emailBox}>
+          <label style={styles.linkLabel} htmlFor="studio-invite-email">Email Guest</label>
+          <div style={styles.emailRow}>
+            <input
+              id="studio-invite-email"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              style={styles.emailInput}
+              value={guestEmail}
+              placeholder="guest@example.com"
+              onChange={(event) => setGuestEmail(event.target.value)}
+            />
+            <a style={styles.emailButton} href={mailtoHref}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="m22 7-10 6L2 7" />
+              </svg>
+              Compose
+            </a>
+          </div>
+        </div>
+
         <div style={styles.qrCard}>
           <div style={styles.qrPreview}>
             {qrDataUrl ? (
@@ -458,13 +488,6 @@ export function InvitePanel({
             </svg>
             {copied === 'details' ? 'Copied Details' : 'Copy Details'}
           </button>
-          <a style={styles.actionBtn} href={mailtoHref}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="4" width="20" height="16" rx="2" />
-              <path d="m22 7-10 6L2 7" />
-            </svg>
-            Email
-          </a>
           {calendarInvite && (
             <button type="button" style={styles.actionBtn} onClick={handleDownloadCalendar}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -620,6 +643,49 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 7,
     marginTop: 14,
     marginBottom: 12,
+  },
+  emailBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 7,
+    padding: 10,
+    marginBottom: 12,
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.07)',
+    background: 'rgba(255, 255, 255, 0.035)',
+  },
+  emailRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    gap: 8,
+  },
+  emailInput: {
+    minWidth: 0,
+    height: 38,
+    padding: '0 12px',
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    background: 'rgba(15, 23, 42, 0.95)',
+    color: 'var(--text-secondary)',
+    fontSize: 13,
+    outline: 'none',
+  },
+  emailButton: {
+    minHeight: 38,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    minWidth: 104,
+    padding: '0 12px',
+    borderRadius: 8,
+    border: '1px solid rgba(96, 165, 250, 0.22)',
+    background: 'rgba(96, 165, 250, 0.1)',
+    color: '#bfdbfe',
+    fontSize: 12,
+    fontWeight: 800,
+    textDecoration: 'none',
+    cursor: 'pointer',
   },
   coHostBox: {
     display: 'flex',
