@@ -1,4 +1,6 @@
-import type { LayoutMode, LogoPlacement, Scene } from '@studio/shared';
+import type { CSSProperties } from 'react';
+import type { LayoutMode, LogoPlacement, LogoPosition, Scene } from '@studio/shared';
+import { getCustomLogoPositionStyle, normalizeLogoPosition } from './logoPosition.ts';
 
 export interface ScenePreviewTile {
   left: string;
@@ -83,7 +85,10 @@ export function getScenePreviewOverlays(scene: Pick<Scene, 'visibleOverlayIds' |
   };
 }
 
-export function getScenePreviewLogoPosition(placement: LogoPlacement | undefined): { top?: string; right?: string; bottom?: string; left?: string } {
+export function getScenePreviewLogoPosition(placement: LogoPlacement | undefined, position?: LogoPosition | null): CSSProperties {
+  const normalizedPosition = normalizeLogoPosition(position);
+  if (normalizedPosition) return getCustomLogoPositionStyle(normalizedPosition);
+
   switch (placement) {
     case 'top-left':
       return { top: '8%', left: '8%' };

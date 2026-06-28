@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { ActiveMedia, LogoPlacement, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding } from '@studio/shared';
 import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
@@ -38,6 +38,7 @@ import {
   type StudioThemeId,
 } from '../utils/studioThemes.ts';
 import { normalizeLogoOpacity } from '../utils/logoWatermark.ts';
+import { getLogoPositionFromPlacement, normalizeLogoPosition } from '../utils/logoPosition.ts';
 import {
   MAX_WAITING_ROOM_HEADLINE_LENGTH,
   MAX_WAITING_ROOM_MESSAGE_LENGTH,
@@ -94,6 +95,8 @@ interface SidebarProps {
   onWaitingRoomBrandingChange: (config: WaitingRoomBranding) => void;
   logoPlacement: LogoPlacement;
   onLogoPlacementChange: (placement: LogoPlacement) => void;
+  logoPosition: LogoPosition | null;
+  onLogoPositionChange: (position: LogoPosition | null) => void;
   logoSize: LogoSize;
   onLogoSizeChange: (size: LogoSize) => void;
   logoOpacity: number;
@@ -237,10 +240,11 @@ function loadSavedBrandKits(): SavedBrandKit[] {
   }
 }
 
-type BrandKitPreset = Omit<BrandKitVisuals, 'logoUrl' | 'logoPlacement'> & {
+type BrandKitPreset = Omit<BrandKitVisuals, 'logoUrl' | 'logoPlacement' | 'logoPosition'> & {
   name: string;
   logoUrl?: string | null;
   logoPlacement?: LogoPlacement;
+  logoPosition?: LogoPosition | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -294,6 +298,7 @@ export function Sidebar(props: SidebarProps) {
     props.onLogoSizeChange(kit.logoSize);
     props.onLogoOpacityChange(kit.logoOpacity);
     if (kit.logoPlacement !== undefined) props.onLogoPlacementChange(kit.logoPlacement);
+    props.onLogoPositionChange(normalizeLogoPosition(kit.logoPosition));
     if (kit.logoUrl !== undefined) props.onLogoUrlChange(kit.logoUrl);
     setBrandKitMessage(null);
   };
@@ -311,6 +316,7 @@ export function Sidebar(props: SidebarProps) {
         stageBackground: props.stageBackground,
         logoUrl: props.logoUrl,
         logoPlacement: props.logoPlacement,
+        logoPosition: props.logoPosition,
         logoSize: props.logoSize,
         logoOpacity: props.logoOpacity,
         cameraShape: props.cameraShape,
@@ -650,13 +656,32 @@ export function Sidebar(props: SidebarProps) {
                       <button
                         key={placement}
                         type="button"
-                        style={{ ...st.positionBtn, ...(props.logoPlacement === placement ? st.positionBtnActive : {}) }}
-                        onClick={() => props.onLogoPlacementChange(placement)}
+                        style={{ ...st.positionBtn, ...(!props.logoPosition && props.logoPlacement === placement ? st.positionBtnActive : {}) }}
+                        onClick={() => {
+                          props.onLogoPositionChange(null);
+                          props.onLogoPlacementChange(placement);
+                        }}
                         title={placement.replace('-', ' ')}
                       >
                         <span style={{ ...st.positionDot, ...getPositionDotStyle(placement) }} />
                       </button>
                     ))}
+                  </div>
+                  <div style={st.positionModeRow}>
+                    <button
+                      type="button"
+                      style={{ ...st.positionModeBtn, ...(props.logoPosition ? st.positionModeBtnActive : {}) }}
+                      onClick={() => props.onLogoPositionChange(props.logoPosition || getLogoPositionFromPlacement(props.logoPlacement))}
+                    >
+                      Custom
+                    </button>
+                    <button
+                      type="button"
+                      style={{ ...st.positionModeBtn, ...(!props.logoPosition ? st.positionModeBtnActive : {}) }}
+                      onClick={() => props.onLogoPositionChange(null)}
+                    >
+                      Corner
+                    </button>
                   </div>
                 </div>
                 <div style={st.brandGroup}>
@@ -1585,6 +1610,9 @@ const st: Record<string, React.CSSProperties> = {
   positionBtn: { height: 40, position: 'relative', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg-tertiary)', cursor: 'pointer' },
   positionBtnActive: { border: '1px solid var(--accent)', boxShadow: 'inset 0 0 0 1px var(--accent)' },
   positionDot: { position: 'absolute', width: 10, height: 10, borderRadius: 3, background: 'var(--accent)' },
+  positionModeRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginTop: 6, padding: 3, background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)' },
+  positionModeBtn: { height: 28, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
+  positionModeBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
   segmented: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, padding: 3, background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)' },
   segmentedTwo: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 4, padding: 3, background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 8 },
   segmentedBtn: { height: 28, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer', textTransform: 'capitalize' },

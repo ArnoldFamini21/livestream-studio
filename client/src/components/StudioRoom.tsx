@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -49,6 +49,7 @@ import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, 
 import type { RecordingMarker } from './RecordingPanel.tsx';
 import { buildBrandThemeVariables } from '../utils/brandTheme.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
+import { getCustomLogoPositionStyle, getLogoPositionFromPointer, normalizeLogoPosition } from '../utils/logoPosition.ts';
 import { readPreferredAudioProcessing, type AudioProcessingPreferences } from '../utils/mediaPreferences.ts';
 import {
   VIRTUAL_BACKGROUND_STORAGE_KEY,
@@ -234,6 +235,7 @@ interface PersistedStudioState {
   waitingRoomBranding?: WaitingRoomBranding;
   streamScreens?: StreamScreenConfig;
   logoPlacement: LogoPlacement;
+  logoPosition: LogoPosition | null;
   logoSize: LogoSize;
   logoOpacity: number;
   cameraShape: CameraShape;
@@ -416,6 +418,7 @@ function getPersistableScenes(scenes: Scene[]): Scene[] {
       ...scene,
       background: getPersistableStageBackground(scene.background),
       logoUrl: isPersistableLogoUrl(scene.logoUrl) ? scene.logoUrl : null,
+      logoPosition: normalizeLogoPosition(scene.logoPosition),
       logoOpacity: normalizeLogoOpacity(scene.logoOpacity),
     };
 
@@ -575,6 +578,7 @@ export function StudioRoom() {
   const [waitingRoomBranding, setWaitingRoomBranding] = useState<WaitingRoomBranding>(DEFAULT_WAITING_ROOM_BRANDING);
   const [remoteStudioBranding, setRemoteStudioBranding] = useState<StudioBrandingPayload | null>(null);
   const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>('top-right');
+  const [logoPosition, setLogoPosition] = useState<LogoPosition | null>(null);
   const [logoSize, setLogoSize] = useState<LogoSize>('medium');
   const [logoOpacity, setLogoOpacity] = useState(DEFAULT_LOGO_OPACITY);
   const [cameraShape, setCameraShape] = useState<CameraShape>('rectangle');
@@ -911,10 +915,40 @@ export function StudioRoom() {
     brandColor,
     logoUrl,
     logoPlacement,
+    logoPosition,
     logoSize,
     logoOpacity,
     streamScreen: activeStreamScreen,
   });
+
+  const handleLogoPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!canUseOperatorControls || !stageRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const updateLogoPosition = (clientX: number, clientY: number) => {
+      const nextPosition = stageRef.current
+        ? getLogoPositionFromPointer(clientX, clientY, stageRef.current.getBoundingClientRect())
+        : null;
+      if (nextPosition) setLogoPosition(nextPosition);
+    };
+
+    updateLogoPosition(event.clientX, event.clientY);
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      moveEvent.preventDefault();
+      updateLogoPosition(moveEvent.clientX, moveEvent.clientY);
+    };
+    const cleanupPointerListeners = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', cleanupPointerListeners);
+      window.removeEventListener('pointercancel', cleanupPointerListeners);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', cleanupPointerListeners, { once: true });
+    window.addEventListener('pointercancel', cleanupPointerListeners, { once: true });
+  }, [canUseOperatorControls]);
 
   const handleRelayDestinationStatus = useCallback((destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => {
     setDestinations((prev) => prev.map((destination) => (
@@ -1157,6 +1191,7 @@ export function StudioRoom() {
           if (parsed.waitingRoomBranding) setWaitingRoomBranding(normalizeWaitingRoomBranding(parsed.waitingRoomBranding));
           if (parsed.streamScreens) setStreamScreenConfig(normalizeStreamScreenConfig(parsed.streamScreens));
           if (parsed.logoPlacement) setLogoPlacement(parsed.logoPlacement);
+          setLogoPosition(normalizeLogoPosition(parsed.logoPosition));
           if (parsed.logoSize) setLogoSize(parsed.logoSize);
           setLogoOpacity(normalizeLogoOpacity(parsed.logoOpacity));
           if (parsed.cameraShape) setCameraShape(parsed.cameraShape);
@@ -1213,6 +1248,7 @@ export function StudioRoom() {
         waitingRoomBranding: normalizeWaitingRoomBranding(waitingRoomBranding),
         streamScreens: normalizeStreamScreenConfig(streamScreenConfig),
         logoPlacement,
+        logoPosition: normalizeLogoPosition(logoPosition),
         logoSize,
         logoOpacity,
         cameraShape,
@@ -1240,7 +1276,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
+  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoPosition, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -2540,6 +2576,7 @@ export function StudioRoom() {
       cameraShape,
       nameTagStyle,
       logoPlacement,
+      logoPosition: normalizeLogoPosition(logoPosition),
       logoSize,
       logoOpacity,
       pipCorner,
@@ -2596,6 +2633,7 @@ export function StudioRoom() {
       cameraShape: config.cameraShape,
       nameTagStyle: config.nameTagStyle,
       logoPlacement: 'top-right',
+      logoPosition: null,
       logoSize: 'medium',
       logoOpacity: DEFAULT_LOGO_OPACITY,
       pipCorner: 'BR',
@@ -2612,6 +2650,7 @@ export function StudioRoom() {
     setCameraShape(config.cameraShape);
     setNameTagStyle(config.nameTagStyle);
     setLogoPlacement('top-right');
+    setLogoPosition(null);
     setLogoSize('medium');
     setLogoOpacity(DEFAULT_LOGO_OPACITY);
     setPipCorner('BR');
@@ -2647,6 +2686,7 @@ export function StudioRoom() {
     setCameraShape(scene.cameraShape || 'rectangle');
     setNameTagStyle(scene.nameTagStyle || 'classic');
     setLogoPlacement(scene.logoPlacement || 'top-right');
+    setLogoPosition(normalizeLogoPosition(scene.logoPosition));
     setLogoSize(scene.logoSize || 'medium');
     setLogoOpacity(normalizeLogoOpacity(scene.logoOpacity));
     if (scene.pipCorner) setPipCorner(scene.pipCorner);
@@ -3874,7 +3914,15 @@ export function StudioRoom() {
 
               {/* Logo watermark */}
               {logoUrl && (
-                <div style={{ ...styles.logoWatermark, ...getLogoPlacementStyle(logoPlacement), opacity: logoOpacity }}>
+                <div
+                  onPointerDown={handleLogoPointerDown}
+                  style={{
+                    ...styles.logoWatermark,
+                    ...(logoPosition ? getCustomLogoPositionStyle(logoPosition) : getLogoPlacementStyle(logoPlacement)),
+                    opacity: logoOpacity,
+                    ...(canUseOperatorControls ? styles.logoWatermarkDraggable : {}),
+                  }}
+                >
                   <img src={logoUrl} alt="Logo" style={{ ...styles.logoWatermarkImg, ...getLogoSizeStyle(logoSize) }} />
                 </div>
               )}
@@ -4050,6 +4098,8 @@ export function StudioRoom() {
             onWaitingRoomBrandingChange={(next) => setWaitingRoomBranding(normalizeWaitingRoomBranding(next))}
             logoPlacement={logoPlacement}
             onLogoPlacementChange={setLogoPlacement}
+            logoPosition={logoPosition}
+            onLogoPositionChange={setLogoPosition}
             logoSize={logoSize}
             onLogoSizeChange={setLogoSize}
             logoOpacity={logoOpacity}
@@ -5023,7 +5073,13 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 6,
     pointerEvents: 'none',
   },
+  logoWatermarkDraggable: {
+    pointerEvents: 'auto',
+    cursor: 'grab',
+    touchAction: 'none',
+  },
   logoWatermarkImg: {
     objectFit: 'contain',
+    userSelect: 'none',
   },
 };

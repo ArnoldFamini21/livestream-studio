@@ -53,7 +53,7 @@
 - [x] Timed display (auto-hide after N seconds)
 
 ### 3B. Logos & Branding
-- [ ] Upload custom logo — position anywhere on canvas (drag-and-drop)
+- [x] Upload custom logo — position anywhere on canvas (drag-and-drop)
 - [x] Watermark mode (semi-transparent, corner-locked)
 - [ ] Custom background images/videos for scenes
 - [x] Brand color theme that skins the entire studio

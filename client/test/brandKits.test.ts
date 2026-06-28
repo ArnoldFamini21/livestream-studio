@@ -17,6 +17,7 @@ const visuals = {
   stageBackground: { type: 'gradient' as const, value: 'linear-gradient(135deg, #0f172a, #1d4ed8)' },
   logoUrl: 'data:image/png;base64,logo',
   logoPlacement: 'bottom-right' as const,
+  logoPosition: { x: 0.37, y: 0.18 },
   logoSize: 'large' as const,
   logoOpacity: 0.45,
   cameraShape: 'rounded' as const,
@@ -74,6 +75,7 @@ describe('brand kits', () => {
     assert.equal(parseSavedBrandKits(JSON.stringify(many)).length, MAX_SAVED_BRAND_KITS);
     assert.equal(parseSavedBrandKits(JSON.stringify([{ ...kit, studioTheme: 'bad' }]))[0]?.studioTheme, 'dark');
     assert.equal(parseSavedBrandKits(JSON.stringify([{ ...kit, logoOpacity: 0.05 }]))[0]?.logoOpacity, 0.2);
+    assert.deepEqual(parseSavedBrandKits(JSON.stringify([{ ...kit, logoPosition: { x: 2, y: -1 } }]))[0]?.logoPosition, { x: 1, y: 0 });
   });
 
   it('serializes only valid saved brand kits', () => {
