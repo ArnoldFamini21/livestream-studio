@@ -13,7 +13,7 @@ import {
   type SavedHostStudio,
 } from '../utils/hostSession.ts';
 import { getApiErrorMessage, postJson } from '../utils/apiClient.ts';
-import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
+import { buildGuestInviteEmailHref, buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
@@ -135,23 +135,6 @@ function getScheduleState(room: SavedScheduledStudio): string {
   const scheduledAt = Date.parse(room.scheduledFor);
   if (!Number.isFinite(scheduledAt)) return 'Ready';
   return scheduledAt > Date.now() ? 'Upcoming' : 'Ready';
-}
-
-function buildGuestInviteDetails(room: SavedScheduledStudio, inviteUrl: string): string {
-  return [
-    room.name,
-    room.hostName ? `Host: ${room.hostName}` : null,
-    `Status: ${getScheduleState(room)}`,
-    room.scheduledFor ? `Time: ${formatScheduledDate(room.scheduledFor)}` : null,
-    `Join: ${inviteUrl}`,
-    room.passwordProtected ? 'Password protected. Ask the host for the password.' : null,
-  ].filter(Boolean).join('\n');
-}
-
-function buildGuestInviteEmailHref(room: SavedScheduledStudio, inviteUrl: string): string {
-  const subject = encodeURIComponent(`Join ${room.name}`);
-  const body = encodeURIComponent(buildGuestInviteDetails(room, inviteUrl));
-  return `mailto:?subject=${subject}&body=${body}`;
 }
 
 export function HomePage() {
@@ -366,12 +349,26 @@ export function HomePage() {
   };
 
   const emailGuestInvite = (room: SavedScheduledStudio) => {
-    window.location.href = buildGuestInviteEmailHref(room, buildInviteLink(room));
+    window.location.href = buildGuestInviteEmailHref({
+      roomName: room.name,
+      hostName: room.hostName,
+      status: getScheduleState(room),
+      scheduledLabel: room.scheduledFor ? formatScheduledDate(room.scheduledFor) : null,
+      inviteUrl: buildInviteLink(room),
+      passwordProtected: room.passwordProtected,
+    });
   };
 
   const emailScheduledGuestInvite = () => {
     if (!scheduledRoom || !inviteLink) return;
-    window.location.href = buildGuestInviteEmailHref(scheduledRoom, inviteLink);
+    window.location.href = buildGuestInviteEmailHref({
+      roomName: scheduledRoom.name,
+      hostName: scheduledRoom.hostName,
+      status: getScheduleState(scheduledRoom),
+      scheduledLabel: scheduledRoom.scheduledFor ? formatScheduledDate(scheduledRoom.scheduledFor) : null,
+      inviteUrl: inviteLink,
+      passwordProtected: scheduledRoom.passwordProtected,
+    });
   };
 
   const openScheduledAsHost = (room: SavedScheduledStudio) => {

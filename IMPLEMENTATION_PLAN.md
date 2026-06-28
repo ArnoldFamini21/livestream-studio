@@ -93,7 +93,7 @@
 ### 5A. Invite System
 - [x] Shareable join links with room name embedded
 - [x] Optional password-protected rooms
-- [ ] Email invite with magic link
+- [x] Email invite with magic link
 - [x] QR code for mobile guests
 
 ### 5B. Green Room / Waiting Room
