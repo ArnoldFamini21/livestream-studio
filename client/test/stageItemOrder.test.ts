@@ -4,6 +4,7 @@ import {
   applyStageItemOrder,
   moveStageItemInOrder,
   normalizeStageItemOrder,
+  reorderStageItemBefore,
 } from '../src/utils/stageItemOrder.ts';
 
 const items = [
@@ -45,6 +46,34 @@ describe('stage item ordering', () => {
     assert.deepEqual(
       moveStageItemInOrder(['host', 'guest-1', 'guest-2'], availableIds, 'guest-2', 'first'),
       ['guest-2', 'host', 'guest-1', 'screen']
+    );
+  });
+
+  it('reorders a dragged stage item before a drop target', () => {
+    const availableIds = items.map((item) => item.id);
+    assert.deepEqual(
+      reorderStageItemBefore(['host', 'guest-1', 'guest-2'], availableIds, 'guest-2', 'host'),
+      ['guest-2', 'host', 'guest-1', 'screen']
+    );
+    assert.deepEqual(
+      reorderStageItemBefore(['host', 'guest-1', 'guest-2'], availableIds, 'host', 'guest-2'),
+      ['guest-1', 'host', 'guest-2', 'screen']
+    );
+  });
+
+  it('keeps normalized order for no-op or invalid drag drops', () => {
+    const availableIds = items.map((item) => item.id);
+    assert.deepEqual(
+      reorderStageItemBefore(['host', 'guest-1'], availableIds, 'host', 'host'),
+      ['host', 'guest-1', 'guest-2', 'screen']
+    );
+    assert.deepEqual(
+      reorderStageItemBefore(['host', 'guest-1'], availableIds, 'missing', 'host'),
+      ['host', 'guest-1', 'guest-2', 'screen']
+    );
+    assert.deepEqual(
+      reorderStageItemBefore(['host', 'guest-1'], availableIds, 'host', 'missing'),
+      ['host', 'guest-1', 'guest-2', 'screen']
     );
   });
 });

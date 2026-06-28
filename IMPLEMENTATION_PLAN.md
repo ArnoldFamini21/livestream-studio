@@ -31,7 +31,7 @@
 - [ ] OffscreenCanvas rendering pipeline compositing all video feeds
 - [ ] Layout presets: Grid, Spotlight, Side-by-Side, Picture-in-Picture, Solo
 - [ ] Smooth CSS transitions when switching layouts (300ms ease)
-- [ ] Drag-and-drop participant reordering within the grid
+- [x] Drag-and-drop participant reordering within the grid
 - [ ] Click-to-spotlight: click a participant to make them the main feed
 
 ### 2B. Scene System (OBS-style)
