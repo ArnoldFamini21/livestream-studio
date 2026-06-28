@@ -1551,3 +1551,117 @@ describe('guest moderation bans', () => {
     }
   });
 });
+
+describe('studio branding sync', () => {
+  it('relays branded waiting room config from the host and replays it to late guests', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Branding sync test', 'Arnold', {
+      creatorIp: `branding-sync-${Date.now()}`,
+    });
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      const hostSession = await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const guestBranding = waitForMessage(guest, 'studio-branding-updated', (message) => (
+        message.payload.waitingRoom.headline === 'VIP Lobby'
+      ));
+      sendSignal(host, {
+        type: 'studio-branding-updated',
+        payload: {
+          brandColor: '#0F0',
+          logoUrl: 'javascript:alert(1)',
+          stageBackground: { type: 'gradient', value: 'linear-gradient(#111827, #2563eb)' },
+          waitingRoom: {
+            headline: 'VIP Lobby',
+            message: 'Camera check in progress.',
+            backgroundMode: 'studio',
+            showLogo: false,
+          },
+          updatedAt: 'client-supplied',
+          updatedBy: 'client-supplied',
+        },
+      });
+
+      const update = await guestBranding;
+      assert.equal(update.payload.brandColor, '#00ff00');
+      assert.equal(update.payload.logoUrl, null);
+      assert.deepEqual(update.payload.stageBackground, { type: 'gradient', value: 'linear-gradient(#111827, #2563eb)' });
+      assert.equal(update.payload.waitingRoom.message, 'Camera check in progress.');
+      assert.equal(update.payload.waitingRoom.backgroundMode, 'studio');
+      assert.equal(update.payload.waitingRoom.showLogo, false);
+      assert.equal(update.payload.updatedBy, hostSession.payload.participant.id);
+      assert.notEqual(update.payload.updatedAt, 'client-supplied');
+
+      const lateGuest = await connectClient(harness.url);
+      const lateGuestJoined = waitForMessage(lateGuest, 'room-joined');
+      joinRoom(lateGuest, {
+        roomId: room.id,
+        name: 'Late Guest',
+        role: 'guest',
+      });
+
+      const lateSession = await lateGuestJoined;
+      assert.equal(lateSession.payload.studioBranding.waitingRoom.headline, 'VIP Lobby');
+      assert.equal(lateSession.payload.studioBranding.updatedBy, hostSession.payload.participant.id);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects guest attempts to update studio branding', async () => {
+    const harness = await createSignalingHarness();
+    const { room } = createRoom('Guest branding test', 'Arnold', {
+      creatorIp: `guest-branding-${Date.now()}`,
+    });
+
+    try {
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const errorMessage = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'studio-branding-updated',
+        payload: {
+          brandColor: '#ef4444',
+          logoUrl: null,
+          stageBackground: { type: 'none', value: '' },
+          waitingRoom: {
+            headline: 'Changed',
+            message: 'Changed',
+            backgroundMode: 'brand',
+            showLogo: true,
+          },
+        },
+      });
+
+      const error = await errorMessage;
+      assert.match(error.payload.message, /Only hosts and co-hosts/);
+      assert.equal(getRooms().get(room.id)?.studioBranding, undefined);
+    } finally {
+      await harness.close();
+    }
+  });
+});

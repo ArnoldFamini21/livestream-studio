@@ -170,6 +170,7 @@ export type SignalMessage =
   | { type: 'poll-updated'; payload: LivePoll }
   | { type: 'stage-action'; payload: StageActionPayload }
   | { type: 'participant-notification'; payload: ParticipantNotificationPayload }
+  | { type: 'studio-branding-updated'; payload: StudioBrandingPayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
   | { type: 'live-stream-token-request'; payload: LiveStreamTokenRequestPayload }
@@ -204,6 +205,7 @@ export interface RoomJoinedPayload {
   polls?: LivePoll[];
   recordingState?: RecordingStatePayload;
   liveStreamState?: LiveStreamStatePayload;
+  studioBranding?: StudioBrandingPayload;
 }
 
 export interface SDPPayload {
@@ -239,6 +241,24 @@ export interface ParticipantNotificationPayload {
   tone: 'info' | 'success' | 'warning';
   issuedAt: string;
   issuedBy: string;
+}
+
+export type WaitingRoomBackgroundMode = 'brand' | 'studio';
+
+export interface WaitingRoomBranding {
+  headline: string;
+  message: string;
+  backgroundMode: WaitingRoomBackgroundMode;
+  showLogo: boolean;
+}
+
+export interface StudioBrandingPayload {
+  brandColor: string;
+  logoUrl: string | null;
+  stageBackground: StageBackground;
+  waitingRoom: WaitingRoomBranding;
+  updatedAt?: string;
+  updatedBy?: string;
 }
 
 export interface RecordingStatePayload {

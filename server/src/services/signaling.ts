@@ -12,9 +12,11 @@ import type {
   QAQuestion,
   LivePoll,
   StageActionPayload,
+  StageBackground,
   RecordingStatePayload,
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
+  StudioBrandingPayload,
 } from '@studio/shared';
 import {
   ROOM_NOT_OPEN_ERROR_CODE,
@@ -36,6 +38,7 @@ interface RoomState {
   qaVotes: Map<string, Set<string>>;
   polls: Map<string, LivePoll>;
   pollVotes: Map<string, Map<string, string>>;
+  studioBranding?: StudioBrandingPayload;
   coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   recordingStartedAt?: string;
   liveStreamStartedAt?: string;
@@ -75,6 +78,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'poll-vote',
   'poll-update',
   'stage-action',
+  'studio-branding-updated',
   'recording-state-changed',
   'live-stream-state-changed',
   'live-stream-token-request',
@@ -94,6 +98,13 @@ const STAGE_ACTIONS = new Set<StageActionPayload['action']>([
   'remove',
   'ban',
 ]);
+
+const MAX_BRANDING_TEXT_LENGTH = 220;
+const MAX_BRANDING_URL_LENGTH = 600_000;
+const DEFAULT_BRANDING_COLOR = '#a78bfa';
+const DEFAULT_WAITING_ROOM_HEADLINE = "You're in the green room";
+const DEFAULT_WAITING_ROOM_MESSAGE = 'The host can see that you arrived and will bring you on stage when ready.';
+const STAGE_BACKGROUND_TYPES = new Set<StageBackground['type']>(['none', 'color', 'gradient', 'image']);
 
 const MAX_ROOMS = 1000;
 const MAX_ROOMS_PER_IP = 5;
@@ -443,6 +454,67 @@ function isValidRequestId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function normalizeBrandingText(value: unknown, fallback: string, maxLength = MAX_BRANDING_TEXT_LENGTH): string {
+  if (typeof value !== 'string') return fallback;
+  return value.trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, maxLength) || fallback;
+}
+
+function normalizeBrandingColor(value: unknown): string {
+  if (typeof value !== 'string') return DEFAULT_BRANDING_COLOR;
+  const color = value.trim().toLowerCase();
+  if (/^#[\da-f]{6}$/.test(color)) return color;
+  if (/^#[\da-f]{3}$/.test(color)) {
+    return `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`;
+  }
+  return DEFAULT_BRANDING_COLOR;
+}
+
+function normalizeBrandingUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const url = value.trim();
+  if (!url || url.length > MAX_BRANDING_URL_LENGTH || url.startsWith('blob:')) return null;
+  if (/^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(url)) return url;
+  if (/^https?:\/\//i.test(url)) return url;
+  return null;
+}
+
+function normalizeStageBackground(value: unknown): StageBackground {
+  if (!isRecord(value) || !STAGE_BACKGROUND_TYPES.has(value.type as StageBackground['type'])) {
+    return { type: 'none', value: '' };
+  }
+  const type = value.type as StageBackground['type'];
+  const backgroundValue = typeof value.value === 'string'
+    ? value.value.trim().slice(0, MAX_BRANDING_URL_LENGTH)
+    : '';
+  if (type === 'image') {
+    const imageUrl = normalizeBrandingUrl(backgroundValue);
+    return imageUrl ? { type: 'image', value: imageUrl } : { type: 'none', value: '' };
+  }
+  if (type === 'none') return { type: 'none', value: '' };
+  return { type, value: backgroundValue };
+}
+
+function normalizeStudioBrandingPayload(payload: StudioBrandingPayload, updatedBy: string): StudioBrandingPayload {
+  const waitingRoom: Record<string, unknown> = isRecord(payload.waitingRoom) ? payload.waitingRoom : {};
+  return {
+    brandColor: normalizeBrandingColor(payload.brandColor),
+    logoUrl: normalizeBrandingUrl(payload.logoUrl),
+    stageBackground: normalizeStageBackground(payload.stageBackground),
+    waitingRoom: {
+      headline: normalizeBrandingText(waitingRoom.headline, DEFAULT_WAITING_ROOM_HEADLINE, 80),
+      message: normalizeBrandingText(waitingRoom.message, DEFAULT_WAITING_ROOM_MESSAGE),
+      backgroundMode: waitingRoom.backgroundMode === 'studio' ? 'studio' : 'brand',
+      showLogo: typeof waitingRoom.showLogo === 'boolean' ? waitingRoom.showLogo : true,
+    },
+    updatedAt: new Date().toISOString(),
+    updatedBy,
+  };
+}
+
 // Fix #10: Validate incoming messages before processing
 function validateMessage(data: unknown): data is SignalMessage {
   if (typeof data !== 'object' || data === null) return false;
@@ -563,6 +635,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'stage-action':
       handleStageAction(ws, message.payload);
+      break;
+    case 'studio-branding-updated':
+      handleStudioBrandingUpdate(ws, message.payload);
       break;
     case 'recording-state-changed':
       handleRecordingStateChange(ws, message.payload);
@@ -743,6 +818,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
           }
         : undefined,
       liveStreamState,
+      studioBranding: roomState.studioBranding,
     },
   });
 
@@ -926,6 +1002,32 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
   });
 
   console.log(`Stage action: ${payload.action} on ${target.participant.name} by ${performer.participant.name}`);
+}
+
+function handleStudioBrandingUpdate(ws: WebSocket, payload: StudioBrandingPayload) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can update studio branding', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before updating studio branding', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  const branding = normalizeStudioBrandingPayload(payload, mapping.participantId);
+  roomState.studioBranding = branding;
+  broadcastToRoom(mapping.roomId, {
+    type: 'studio-branding-updated',
+    payload: branding,
+  });
 }
 
 function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayload) {

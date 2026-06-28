@@ -189,7 +189,7 @@
 ### 9C. Studio Customization
 - [x] Custom studio themes (light, dark, colorful)
 - [x] Brand kit: upload logo, set colors, auto-apply everywhere
-- [ ] Custom waiting room page with branding
+- [x] Custom waiting room page with branding
 - [ ] Custom stream starting/ending screens
 
 ---

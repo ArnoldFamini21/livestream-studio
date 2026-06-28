@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -130,6 +130,11 @@ import {
   normalizeStudioThemeId,
   type StudioThemeId,
 } from '../utils/studioThemes.ts';
+import {
+  DEFAULT_WAITING_ROOM_BRANDING,
+  buildStudioBrandingPayload,
+  normalizeWaitingRoomBranding,
+} from '../utils/waitingRoomBranding.ts';
 import { useToast } from './Toast.tsx';
 
 const STUDIO_STATE_VERSION = 1;
@@ -211,6 +216,7 @@ interface PersistedStudioState {
   stageBackground: StageBackground;
   brandColor: string;
   logoUrl: string | null;
+  waitingRoomBranding?: WaitingRoomBranding;
   logoPlacement: LogoPlacement;
   logoSize: LogoSize;
   logoOpacity: number;
@@ -346,6 +352,41 @@ function getPersistableStageBackground(background: StageBackground): StageBackgr
     return { type: 'none', value: '' };
   }
   return background;
+}
+
+function getStageBackgroundStyle(background: StageBackground): React.CSSProperties {
+  switch (background.type) {
+    case 'color':
+      return { background: background.value };
+    case 'gradient':
+      return { background: background.value };
+    case 'image':
+      return {
+        backgroundImage: `url(${background.value})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+      };
+    case 'none':
+    default:
+      return {};
+  }
+}
+
+function getWaitingRoomBackgroundStyle(
+  mode: WaitingRoomBranding['backgroundMode'],
+  background: StageBackground,
+  brandColor: string
+): React.CSSProperties {
+  if (mode === 'studio') {
+    const stageStyle = getStageBackgroundStyle(background);
+    if (Object.keys(stageStyle).length > 0) return stageStyle;
+  }
+
+  const brandWash = /^#[\da-f]{6}$/i.test(brandColor) ? `${brandColor}66` : 'rgba(167, 139, 250, 0.4)';
+  return {
+    background: `radial-gradient(circle at 18% 18%, ${brandWash} 0, transparent 34%), linear-gradient(135deg, #0f172a 0%, #020617 100%)`,
+  };
 }
 
 function getPersistableScenes(scenes: Scene[]): Scene[] {
@@ -506,6 +547,8 @@ export function StudioRoom() {
   const [studioTheme, setStudioTheme] = useState<StudioThemeId>(DEFAULT_STUDIO_THEME_ID);
   const [brandColor, setBrandColor] = useState('#a78bfa');
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [waitingRoomBranding, setWaitingRoomBranding] = useState<WaitingRoomBranding>(DEFAULT_WAITING_ROOM_BRANDING);
+  const [remoteStudioBranding, setRemoteStudioBranding] = useState<StudioBrandingPayload | null>(null);
   const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>('top-right');
   const [logoSize, setLogoSize] = useState<LogoSize>('medium');
   const [logoOpacity, setLogoOpacity] = useState(DEFAULT_LOGO_OPACITY);
@@ -870,6 +913,26 @@ export function StudioRoom() {
     onRelayStopped: handleRelayStopped,
   });
 
+  const localStudioBrandingPayload = useMemo(() => buildStudioBrandingPayload({
+    brandColor,
+    logoUrl,
+    stageBackground,
+    waitingRoom: waitingRoomBranding,
+    updatedBy: myParticipant?.id,
+  }), [brandColor, logoUrl, myParticipant?.id, stageBackground, waitingRoomBranding]);
+
+  useEffect(() => {
+    if (!connected || !joined || !canUseOperatorControls || myParticipant?.role !== 'host') return;
+    const timeout = window.setTimeout(() => {
+      send({
+        type: 'studio-branding-updated',
+        payload: localStudioBrandingPayload,
+      });
+    }, 350);
+
+    return () => window.clearTimeout(timeout);
+  }, [canUseOperatorControls, connected, joined, localStudioBrandingPayload, myParticipant?.role, send]);
+
   const handleParticipantVolumeChange = useCallback((participantId: string, volume: number) => {
     const clamped = Math.min(1, Math.max(0, Number.isFinite(volume) ? volume : 1));
     setParticipantVolumes((current) => {
@@ -993,6 +1056,7 @@ export function StudioRoom() {
           if (parsed.stageBackground) setStageBackground(parsed.stageBackground);
           if (parsed.brandColor) setBrandColor(parsed.brandColor);
           if (parsed.logoUrl !== undefined) setLogoUrl(parsed.logoUrl);
+          if (parsed.waitingRoomBranding) setWaitingRoomBranding(normalizeWaitingRoomBranding(parsed.waitingRoomBranding));
           if (parsed.logoPlacement) setLogoPlacement(parsed.logoPlacement);
           if (parsed.logoSize) setLogoSize(parsed.logoSize);
           setLogoOpacity(normalizeLogoOpacity(parsed.logoOpacity));
@@ -1047,6 +1111,7 @@ export function StudioRoom() {
         stageBackground: getPersistableStageBackground(stageBackground),
         brandColor,
         logoUrl: isPersistableLogoUrl(logoUrl) ? logoUrl : null,
+        waitingRoomBranding: normalizeWaitingRoomBranding(waitingRoomBranding),
         logoPlacement,
         logoSize,
         logoOpacity,
@@ -1075,7 +1140,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
+  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, logoPlacement, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -1376,7 +1441,7 @@ export function StudioRoom() {
     (message: SignalMessage) => {
       switch (message.type) {
         case 'room-joined': {
-          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState } = message.payload;
+          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState, studioBranding } = message.payload;
           const live = Boolean(liveStreamState?.live || roomData.status === 'live');
           const recordingStartedAt = recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null;
           isLiveRef.current = live;
@@ -1388,6 +1453,7 @@ export function StudioRoom() {
           setChatMessages(existingChatMessages);
           setQAQuestions(existingQuestions);
           setPolls(existingPolls);
+          setRemoteStudioBranding(studioBranding || null);
           setSessionRecordingStartedAt(recordingStartedAt);
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
@@ -1510,6 +1576,9 @@ export function StudioRoom() {
           break;
         case 'participant-notification':
           setGuestNotification(message.payload);
+          break;
+        case 'studio-branding-updated':
+          setRemoteStudioBranding(message.payload);
           break;
         case 'room-ending': {
           const endsAt = Date.parse(message.payload.endsAt);
@@ -2818,22 +2887,7 @@ export function StudioRoom() {
 
   // Stage background style - memoized
   const stageBackgroundStyle = useMemo((): React.CSSProperties => {
-    switch (stageBackground.type) {
-      case 'color':
-        return { background: stageBackground.value };
-      case 'gradient':
-        return { background: stageBackground.value };
-      case 'image':
-        return {
-          backgroundImage: `url(${stageBackground.value})`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundRepeat: 'no-repeat',
-        };
-      case 'none':
-      default:
-        return {};
-    }
+    return getStageBackgroundStyle(stageBackground);
   }, [stageBackground]);
 
   // ====== Layout Engine ======
@@ -3184,10 +3238,20 @@ export function StudioRoom() {
   const isHeldOffStageGuest = offStageGuestStatus === 'green-room' || offStageGuestStatus === 'backstage';
   const holdLabel = offStageGuestStatus === 'backstage' ? 'Backstage' : 'Green room';
   const holdKicker = offStageGuestStatus === 'backstage' ? 'Backstage' : 'Waiting for host';
-  const holdTitle = offStageGuestStatus === 'backstage' ? "You're backstage" : "You're in the green room";
+  const effectiveStudioBranding = remoteStudioBranding;
+  const effectiveWaitingRoomBranding = normalizeWaitingRoomBranding(effectiveStudioBranding?.waitingRoom || waitingRoomBranding);
+  const waitingBrandColor = effectiveStudioBranding?.brandColor || brandColor;
+  const waitingStageBackground = effectiveStudioBranding?.stageBackground || stageBackground;
+  const waitingLogoUrl = effectiveWaitingRoomBranding.showLogo ? (effectiveStudioBranding?.logoUrl ?? logoUrl) : null;
+  const waitingRoomBackgroundStyle = getWaitingRoomBackgroundStyle(
+    effectiveWaitingRoomBranding.backgroundMode,
+    waitingStageBackground,
+    waitingBrandColor
+  );
+  const holdTitle = offStageGuestStatus === 'backstage' ? "You're backstage" : effectiveWaitingRoomBranding.headline;
   const holdText = offStageGuestStatus === 'backstage'
     ? 'You are off the broadcast stage. The host can bring you back live when ready.'
-    : 'The host can see that you arrived and will bring you on stage when ready.';
+    : effectiveWaitingRoomBranding.message;
 
   if (isHeldOffStageGuest) {
     return (
@@ -3195,11 +3259,11 @@ export function StudioRoom() {
         <div style={styles.header}>
           <div style={styles.headerLeft}>
             <div style={styles.logoMark}>
-              <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
-                <rect width="32" height="32" rx="7" fill="url(#g2-waiting)" />
-                <circle cx="16" cy="16" r="4" fill="white" />
-                <defs><linearGradient id="g2-waiting" x1="0" y1="0" x2="32" y2="32"><stop stopColor="#a78bfa" /><stop offset="1" stopColor="#67e8f9" /></linearGradient></defs>
-              </svg>
+              {waitingLogoUrl ? (
+                <img src={waitingLogoUrl} alt="" style={styles.waitingLogoMarkImg} />
+              ) : (
+                <span style={{ ...styles.waitingLogoFallback, background: waitingBrandColor }} />
+              )}
             </div>
             <h2 style={styles.roomTitle}>{room?.name || 'Studio'}</h2>
             <div style={styles.divider} />
@@ -3226,22 +3290,23 @@ export function StudioRoom() {
           </div>
         </div>
 
-        <div style={styles.waitingMain}>
+        <div style={{ ...styles.waitingMain, ...waitingRoomBackgroundStyle }}>
           <div style={styles.waitingShell}>
-            <div style={styles.waitingPreview}>
+            <div style={{ ...styles.waitingPreview, borderColor: `${waitingBrandColor}55` }}>
               <VideoTile
                 stream={localStream}
                 name={myParticipant?.name || userName}
                 isLocal
                 audioEnabled={effectiveAudioEnabled}
                 videoEnabled={effectiveVideoEnabled}
-                brandColor={brandColor}
+                brandColor={waitingBrandColor}
                 cameraShape={cameraShape}
                 nameTagStyle={nameTagStyle}
               />
             </div>
             <div style={styles.waitingCopy}>
-              <span style={styles.waitingKicker}>{holdKicker}</span>
+              {waitingLogoUrl && <img src={waitingLogoUrl} alt="" style={styles.waitingHeroLogo} />}
+              <span style={{ ...styles.waitingKicker, color: waitingBrandColor }}>{holdKicker}</span>
               <h1 style={styles.waitingTitle}>{holdTitle}</h1>
               <p style={styles.waitingText}>{holdText}</p>
               {guestNotification && (
@@ -3780,6 +3845,8 @@ export function StudioRoom() {
             onBrandColorChange={setBrandColor}
             logoUrl={logoUrl}
             onLogoUrlChange={setLogoUrl}
+            waitingRoomBranding={waitingRoomBranding}
+            onWaitingRoomBrandingChange={(next) => setWaitingRoomBranding(normalizeWaitingRoomBranding(next))}
             logoPlacement={logoPlacement}
             onLogoPlacementChange={setLogoPlacement}
             logoSize={logoSize}
@@ -4114,6 +4181,21 @@ const styles: Record<string, React.CSSProperties> = {
   },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
   logoMark: { display: 'flex' },
+  waitingLogoMarkImg: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    objectFit: 'contain',
+    background: 'rgba(255, 255, 255, 0.08)',
+    padding: 3,
+  },
+  waitingLogoFallback: {
+    width: 28,
+    height: 28,
+    display: 'block',
+    borderRadius: 8,
+    boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.18)',
+  },
   headerRight: { display: 'flex', alignItems: 'center', gap: 6 },
   roomTitle: { fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   divider: { width: 1, height: 16, background: 'var(--border-strong)' },
@@ -4235,6 +4317,12 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     alignItems: 'flex-start',
     gap: 10,
+  },
+  waitingHeroLogo: {
+    maxWidth: 160,
+    maxHeight: 56,
+    objectFit: 'contain',
+    marginBottom: 4,
   },
   waitingKicker: {
     fontSize: 11,
