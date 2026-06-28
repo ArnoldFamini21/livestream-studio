@@ -47,6 +47,7 @@ import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
 import type { RecordingMarker } from './RecordingPanel.tsx';
+import { buildBrandThemeVariables } from '../utils/brandTheme.ts';
 import { readPreferredAudioProcessing, type AudioProcessingPreferences } from '../utils/mediaPreferences.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
@@ -519,6 +520,28 @@ export function StudioRoom() {
       }
     };
   }, [studioTheme]);
+
+  useEffect(() => {
+    const variables = buildBrandThemeVariables(brandColor, studioTheme);
+    const previousValues = variables.map(([property]) => [
+      property,
+      document.body.style.getPropertyValue(property),
+    ] as const);
+
+    variables.forEach(([property, value]) => {
+      document.body.style.setProperty(property, value);
+    });
+
+    return () => {
+      previousValues.forEach(([property, value]) => {
+        if (value) {
+          document.body.style.setProperty(property, value);
+        } else {
+          document.body.style.removeProperty(property);
+        }
+      });
+    };
+  }, [brandColor, studioTheme]);
 
   // Cleanup blob URLs when logoUrl changes
   useEffect(() => {

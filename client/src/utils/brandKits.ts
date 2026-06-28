@@ -1,9 +1,15 @@
 import type { CameraShape, LogoPlacement, LogoSize, NameTagStyle, StageBackground } from '@studio/shared';
+import {
+  DEFAULT_STUDIO_THEME_ID,
+  normalizeStudioThemeId,
+  type StudioThemeId,
+} from './studioThemes.ts';
 
 export const BRAND_KIT_STORAGE_KEY = 'livestream-studio:saved-brand-kits';
 export const MAX_SAVED_BRAND_KITS = 8;
 
 export interface BrandKitVisuals {
+  studioTheme: StudioThemeId;
   brandColor: string;
   stageBackground: StageBackground;
   logoUrl: string | null;
@@ -70,6 +76,7 @@ function sanitizeSavedBrandKit(value: unknown): SavedBrandKit | null {
     id,
     name,
     createdAt: readString(value.createdAt, 64, new Date().toISOString()),
+    studioTheme: normalizeStudioThemeId(value.studioTheme || DEFAULT_STUDIO_THEME_ID),
     brandColor: readString(value.brandColor, 80, '#a78bfa') || '#a78bfa',
     stageBackground: sanitizeBackground(value.stageBackground),
     logoUrl: getPersistableBrandLogoUrl(readString(value.logoUrl, 100_000) || null),
@@ -122,6 +129,7 @@ export function createSavedBrandKit(
     id,
     name: buildBrandKitName(name, existingNames),
     createdAt,
+    studioTheme: normalizeStudioThemeId(visuals.studioTheme),
     brandColor: visuals.brandColor || '#a78bfa',
     stageBackground: getPersistableBrandStageBackground(visuals.stageBackground),
     logoUrl: getPersistableBrandLogoUrl(visuals.logoUrl),
