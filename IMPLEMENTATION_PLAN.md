@@ -48,7 +48,7 @@
 - [x] Animated slide-in lower thirds with name + title
 - [x] Multiple style presets (minimal, bold, gradient, glassmorphism)
 - [x] Custom colors, font presets, and animation presets
-- [ ] Animation direction controls
+- [x] Animation direction controls
 - [x] Auto-show when participant speaks (optional)
 - [x] Timed display (auto-hide after N seconds)
 

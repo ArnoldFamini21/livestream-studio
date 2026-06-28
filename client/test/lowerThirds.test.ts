@@ -4,12 +4,14 @@ import type { LowerThirdData } from '../src/components/LowerThird.tsx';
 import {
   addLowerThird,
   buildLowerThirdCanvasFont,
+  getLowerThirdAnimationDirectionLabel,
   getLowerThirdAnimationLabel,
   getLowerThirdAnimationStyle,
   getLowerThirdFontCssFamily,
   getLowerThirdFontLabel,
   selectAutoSpeakerLowerThirdCandidate,
   normalizeLowerThirdAnimation,
+  normalizeLowerThirdAnimationDirection,
   normalizeLowerThirdAccentColor,
   normalizeLowerThirdDurationSeconds,
   normalizeLowerThirdFont,
@@ -48,6 +50,7 @@ describe('lower third visibility utilities', () => {
       durationSeconds: 10,
       accentColor: '#0891b2',
       animation: 'bounce',
+      animationDirection: 'right',
       fontFamily: 'serif',
       visible: true,
     }, 'lt-3');
@@ -63,6 +66,7 @@ describe('lower third visibility utilities', () => {
     assert.equal(next[2].durationSeconds, 10);
     assert.equal(next[2].accentColor, '#0891b2');
     assert.equal(next[2].animation, 'bounce');
+    assert.equal(next[2].animationDirection, 'right');
     assert.equal(next[2].fontFamily, 'serif');
   });
 
@@ -116,6 +120,24 @@ describe('lower third visibility utilities', () => {
     assert.equal(normalizeLowerThirdAnimation(null), 'slide');
     assert.equal(getLowerThirdAnimationLabel('bounce'), 'Bounce');
     assert.equal(getLowerThirdAnimationLabel('missing'), 'Slide');
+  });
+
+  it('normalizes lower third animation directions and applies directional transforms', () => {
+    assert.equal(normalizeLowerThirdAnimationDirection('left'), 'left');
+    assert.equal(normalizeLowerThirdAnimationDirection('right'), 'right');
+    assert.equal(normalizeLowerThirdAnimationDirection('up'), 'up');
+    assert.equal(normalizeLowerThirdAnimationDirection('down'), 'down');
+    assert.equal(normalizeLowerThirdAnimationDirection('missing'), 'left');
+    assert.equal(normalizeLowerThirdAnimationDirection(null), 'left');
+    assert.equal(getLowerThirdAnimationDirectionLabel('down'), 'Down');
+    assert.equal(getLowerThirdAnimationDirectionLabel('missing'), 'Left');
+
+    const fromRight = getLowerThirdAnimationStyle('slide', false, 'right');
+    assert.match(String(fromRight.transform), /24px, 16px/);
+    const fromUp = getLowerThirdAnimationStyle('slide', false, 'up');
+    assert.match(String(fromUp.transform), /0, 24px/);
+    const bounceFromDown = getLowerThirdAnimationStyle('bounce', false, 'down');
+    assert.match(String(bounceFromDown.transform), /0, -24px/);
   });
 
   it('normalizes lower third font presets for browser and canvas output', () => {
@@ -187,7 +209,7 @@ describe('lower third visibility utilities', () => {
   it('reuses the existing auto speaker lower third entry', () => {
     const current: LowerThirdData[] = [
       ...existing,
-      { id: 'lt-auto', name: 'Host', title: 'Host', style: 'bold', source: 'auto-speaker', participantId: 'host', durationSeconds: 5, animation: 'fade', fontFamily: 'mono', visible: false },
+      { id: 'lt-auto', name: 'Host', title: 'Host', style: 'bold', source: 'auto-speaker', participantId: 'host', durationSeconds: 5, animation: 'fade', animationDirection: 'up', fontFamily: 'mono', visible: false },
     ];
     const next = upsertAutoSpeakerLowerThird(current, {
       participantId: 'producer',
@@ -200,6 +222,7 @@ describe('lower third visibility utilities', () => {
     assert.equal(next[2].name, 'Producer');
     assert.equal(next[2].participantId, 'producer');
     assert.equal(next[2].animation, 'fade');
+    assert.equal(next[2].animationDirection, 'up');
     assert.equal(next[2].fontFamily, 'mono');
     assert.equal(next[2].visible, true);
   });

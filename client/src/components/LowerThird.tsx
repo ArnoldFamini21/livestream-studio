@@ -1,19 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Participant } from '@studio/shared';
 import {
+  DEFAULT_LOWER_THIRD_ANIMATION_DIRECTION,
   DEFAULT_LOWER_THIRD_FONT,
+  getLowerThirdAnimationDirectionLabel,
   getLowerThirdFontCssFamily,
   getLowerThirdFontLabel,
   getLowerThirdAnimationLabel,
   getLowerThirdAnimationStyle,
   getParticipantLowerThirdTitle,
+  LOWER_THIRD_ANIMATION_DIRECTION_PRESETS,
   LOWER_THIRD_ANIMATION_EXIT_MS,
   LOWER_THIRD_ANIMATION_PRESETS,
   LOWER_THIRD_FONT_PRESETS,
   normalizeLowerThirdAccentColor,
   normalizeLowerThirdAnimation,
+  normalizeLowerThirdAnimationDirection,
   normalizeLowerThirdFont,
   type LowerThirdAnimation,
+  type LowerThirdAnimationDirection,
   type LowerThirdFont,
 } from '../utils/lowerThirds.ts';
 
@@ -26,6 +31,7 @@ export interface LowerThirdData {
   durationSeconds?: number;
   accentColor?: string;
   animation?: LowerThirdAnimation;
+  animationDirection?: LowerThirdAnimationDirection;
   fontFamily?: LowerThirdFont;
   source?: 'auto-speaker' | 'participant';
   participantId?: string;
@@ -72,6 +78,7 @@ export function LowerThirdManager({
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [accentColor, setAccentColor] = useState('');
   const [animation, setAnimation] = useState<LowerThirdAnimation>('slide');
+  const [animationDirection, setAnimationDirection] = useState<LowerThirdAnimationDirection>(DEFAULT_LOWER_THIRD_ANIMATION_DIRECTION);
   const [fontFamily, setFontFamily] = useState<LowerThirdFont>(DEFAULT_LOWER_THIRD_FONT);
   const onStageParticipants = participants.filter((participant) => participant.status === 'on-stage');
 
@@ -84,6 +91,7 @@ export function LowerThirdManager({
       durationSeconds: durationSeconds || undefined,
       accentColor: normalizeLowerThirdAccentColor(accentColor),
       animation,
+      animationDirection,
       fontFamily,
     });
     setName('');
@@ -132,6 +140,7 @@ export function LowerThirdManager({
                   style: 'bold',
                   durationSeconds: 10,
                   animation: 'slide',
+                  animationDirection,
                   fontFamily,
                   visible: true,
                   source: 'participant',
@@ -167,6 +176,7 @@ export function LowerThirdManager({
                 {lt.source === 'auto-speaker' && <span style={styles.itemMeta}>auto speaker</span>}
                 {lt.durationSeconds && <span style={styles.itemMeta}>{lt.durationSeconds}s auto-hide</span>}
                 <span style={styles.itemMeta}>{getLowerThirdAnimationLabel(lt.animation)}</span>
+                <span style={styles.itemMeta}>{getLowerThirdAnimationDirectionLabel(lt.animationDirection)}</span>
                 <span style={styles.itemMeta}>{getLowerThirdFontLabel(lt.fontFamily)}</span>
               </div>
             </div>
@@ -257,6 +267,24 @@ export function LowerThirdManager({
           </div>
         </div>
         <div style={styles.durationGroup}>
+          <span style={styles.durationLabel}>Direction</span>
+          <div style={styles.durationRow}>
+            {LOWER_THIRD_ANIMATION_DIRECTION_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                style={{
+                  ...styles.durationBtn,
+                  ...(animationDirection === preset.id ? styles.durationBtnActive : {}),
+                }}
+                onClick={() => setAnimationDirection(preset.id)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={styles.durationGroup}>
           <span style={styles.durationLabel}>Font</span>
           <div style={styles.durationRow}>
             {LOWER_THIRD_FONT_PRESETS.map((preset) => (
@@ -324,6 +352,7 @@ export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
   const [animatingIn, setAnimatingIn] = useState(false);
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animation = normalizeLowerThirdAnimation(data.animation);
+  const animationDirection = normalizeLowerThirdAnimationDirection(data.animationDirection);
 
   useEffect(() => {
     if (exitTimerRef.current) {
@@ -348,13 +377,13 @@ export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
     return () => {
       if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
     };
-  }, [animation, data.visible]);
+  }, [animation, animationDirection, data.visible]);
 
   if (!mounted) return null;
 
   const overlayStyles = getOverlayStyle(data.style, normalizeLowerThirdAccentColor(data.accentColor));
   const fontFamily = getLowerThirdFontCssFamily(normalizeLowerThirdFont(data.fontFamily));
-  const animationStyle = getLowerThirdAnimationStyle(animation, animatingIn);
+  const animationStyle = getLowerThirdAnimationStyle(animation, animatingIn, animationDirection);
 
   return (
     <div
