@@ -198,6 +198,22 @@ describe('scene packs', () => {
     assert.equal(parsed.scenes[1].logoPosition, null);
   });
 
+  it('keeps portable video backgrounds and strips blob video backgrounds', () => {
+    const parsed = parseScenePackJson(JSON.stringify({
+      version: 1,
+      source: 'livestream-studio',
+      exportedAt: '2026-06-24T00:00:00.000Z',
+      scenes: [
+        makeScene({ background: { type: 'video', value: 'https://cdn.example.test/loop.mp4' } }),
+        makeScene({ id: 'scene-blob-video', background: { type: 'video', value: 'blob:https://example.test/loop' } }),
+      ],
+      overlays: { lowerThirds: [], banners: [], timers: [], tickers: [] },
+    }));
+
+    assert.deepEqual(parsed.scenes[0].background, { type: 'video', value: 'https://cdn.example.test/loop.mp4' });
+    assert.deepEqual(parsed.scenes[1].background, { type: 'none', value: '' });
+  });
+
   it('round trips valid JSON packs and builds readable filenames', () => {
     const pack = buildScenePack({
       scenes: [makeScene()],

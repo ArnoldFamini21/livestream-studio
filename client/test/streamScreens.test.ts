@@ -89,5 +89,13 @@ describe('stream screens', () => {
     });
 
     assert.deepEqual(stageScreen.background, { type: 'color', value: '#111827' });
+
+    const videoStageScreen = buildActiveStreamScreen('starting', config, {
+      brandColor: '#0ea5e9',
+      logoUrl: null,
+      stageBackground: { type: 'video', value: 'https://cdn.example.test/background.mp4' },
+    });
+
+    assert.equal(videoStageScreen.background.type, 'gradient');
   });
 });

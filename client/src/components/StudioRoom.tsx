@@ -371,7 +371,7 @@ function isPersistableLogoUrl(url: string | null): url is string {
 }
 
 function getPersistableStageBackground(background: StageBackground): StageBackground {
-  if (background.type === 'image' && background.value.startsWith('blob:')) {
+  if ((background.type === 'image' || background.type === 'video') && background.value.startsWith('blob:')) {
     return { type: 'none', value: '' };
   }
   return background;
@@ -390,6 +390,8 @@ function getStageBackgroundStyle(background: StageBackground): React.CSSProperti
         backgroundPosition: 'center',
         backgroundRepeat: 'no-repeat',
       };
+    case 'video':
+      return {};
     case 'none':
     default:
       return {};
@@ -3707,6 +3709,19 @@ export function StudioRoom() {
           {/* Fixed 16:9 Canvas */}
           <div style={styles.canvasWrapper}>
             <div ref={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }}>
+              {stageBackground.type === 'video' && stageBackground.value && (
+                <video
+                  key={stageBackground.value}
+                  className="studio-stage-background-video"
+                  src={stageBackground.value}
+                  style={styles.stageBackgroundVideo}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                  crossOrigin="anonymous"
+                />
+              )}
               <div
                 style={{
                   ...styles.gridBase,
@@ -4700,6 +4715,15 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
     background: '#0f172a',
   },
+  stageBackgroundVideo: {
+    position: 'absolute',
+    inset: 0,
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    zIndex: 0,
+    pointerEvents: 'none',
+  },
   sceneTransitionOverlay: {
     position: 'absolute',
     inset: 0,
@@ -4741,6 +4765,8 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     height: '100%',
     boxSizing: 'border-box' as const,
+    position: 'relative',
+    zIndex: 1,
     transition: 'opacity 0.3s ease, gap 0.3s ease',
   },
   // Generic tile wrapper — per-tile sizing is merged from layoutResult.tileStyles[i]

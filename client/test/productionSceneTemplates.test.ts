@@ -52,4 +52,8 @@ test('background previews return renderable css values', () => {
     getBackgroundPreview({ type: 'image', value: 'https://example.test/stage.png' }),
     'url(https://example.test/stage.png) center/cover no-repeat',
   );
+  assert.equal(
+    getBackgroundPreview({ type: 'video', value: 'https://example.test/stage.mp4' }),
+    'linear-gradient(135deg, #111827 0%, #334155 100%)',
+  );
 });

@@ -432,7 +432,7 @@ export interface OverlayContent {
 // ============ Stage Background Types ============
 
 export interface StageBackground {
-  type: 'color' | 'image' | 'gradient' | 'none';
+  type: 'color' | 'image' | 'video' | 'gradient' | 'none';
   value: string;
 }
 

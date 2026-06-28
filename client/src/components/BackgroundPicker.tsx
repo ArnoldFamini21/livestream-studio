@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { StageBackground } from '@studio/shared';
 import { usePhotoLibrary } from '../hooks/usePhotoLibrary.ts';
 
@@ -29,12 +29,28 @@ const GRADIENT_PRESETS = [
   { label: 'Emerald', value: 'linear-gradient(135deg, #065f46, #047857, #10b981)' },
 ];
 
+const MAX_SESSION_VIDEO_BYTES = 50 * 1024 * 1024;
+
+function isVideoBackgroundUrl(value: string): boolean {
+  if (/^(?:https?:|blob:)/i.test(value)) return true;
+  return /^data:video\/(?:mp4|webm|ogg|quicktime);base64,/i.test(value);
+}
+
 export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoFileInputRef = useRef<HTMLInputElement>(null);
   const { photos, addPhoto, removePhoto, error, clearError } = usePhotoLibrary();
+  const [videoUrl, setVideoUrl] = useState(value.type === 'video' && !value.value.startsWith('blob:') ? value.value : '');
+  const [videoError, setVideoError] = useState<string | null>(null);
 
   const isSelected = (type: StageBackground['type'], val: string) =>
     value.type === type && value.value === val;
+
+  useEffect(() => {
+    if (value.type === 'video' && !value.value.startsWith('blob:')) {
+      setVideoUrl(value.value);
+    }
+  }, [value]);
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -42,6 +58,33 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
     if (!file) return;
     const photo = await addPhoto(file);
     if (photo) onChange({ type: 'image', value: photo.dataUrl });
+  };
+
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('video/')) {
+      setVideoError('Only video files are supported.');
+      return;
+    }
+    if (file.size > MAX_SESSION_VIDEO_BYTES) {
+      setVideoError(`Video is too large (max ${Math.round(MAX_SESSION_VIDEO_BYTES / 1024 / 1024)} MB).`);
+      return;
+    }
+
+    setVideoError(null);
+    onChange({ type: 'video', value: URL.createObjectURL(file) });
+  };
+
+  const applyVideoUrl = () => {
+    const nextUrl = videoUrl.trim();
+    if (!isVideoBackgroundUrl(nextUrl)) {
+      setVideoError('Enter an HTTPS video URL or upload a video file.');
+      return;
+    }
+    setVideoError(null);
+    onChange({ type: 'video', value: nextUrl });
   };
 
   return (
@@ -146,6 +189,66 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
             })}
           </div>
         )}
+      </div>
+
+      {/* Video Backgrounds */}
+      <div style={styles.group}>
+        <div style={styles.groupHeader}>
+          <span style={styles.groupLabel}>Video</span>
+          <button
+            type="button"
+            style={styles.uploadBtnInline}
+            onClick={() => videoFileInputRef.current?.click()}
+            title="Upload a session video background"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            Upload
+          </button>
+        </div>
+        <input
+          ref={videoFileInputRef}
+          type="file"
+          accept="video/*"
+          style={{ display: 'none' }}
+          onChange={handleVideoUpload}
+        />
+        {videoError && (
+          <button type="button" style={styles.errorBox} onClick={() => setVideoError(null)} title="Dismiss">
+            {videoError}
+          </button>
+        )}
+        <div style={styles.videoUrlRow}>
+          <input
+            type="url"
+            value={videoUrl}
+            onChange={(event) => setVideoUrl(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') applyVideoUrl();
+            }}
+            placeholder="https://cdn.example.com/loop.mp4"
+            style={styles.videoUrlInput}
+          />
+          <button type="button" style={styles.applyVideoBtn} onClick={applyVideoUrl}>
+            Apply
+          </button>
+        </div>
+        {value.type === 'video' && value.value ? (
+          <button
+            type="button"
+            style={{
+              ...styles.videoPreview,
+              outline: '2px solid var(--accent)',
+              outlineOffset: 2,
+            }}
+            onClick={() => onChange({ type: 'video', value: value.value })}
+            title="Current video background"
+          >
+            <video src={value.value} style={styles.videoPreviewMedia} autoPlay muted loop playsInline />
+            <span style={styles.videoPreviewLabel}>Video</span>
+          </button>
+        ) : null}
       </div>
 
       {/* Solid Colors */}
@@ -299,6 +402,63 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: 'var(--text-muted)',
     opacity: 0.7,
+  },
+  videoUrlRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    gap: 6,
+  },
+  videoUrlInput: {
+    minWidth: 0,
+    width: '100%',
+    padding: '7px 9px',
+    fontSize: 12,
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    outline: 'none',
+  },
+  applyVideoBtn: {
+    padding: '0 10px',
+    minHeight: 32,
+    borderRadius: 8,
+    border: '1px solid var(--border-strong)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  videoPreview: {
+    position: 'relative',
+    width: '100%',
+    aspectRatio: '16 / 9',
+    borderRadius: 8,
+    border: '1px solid var(--border-strong)',
+    overflow: 'hidden',
+    background: '#050816',
+    cursor: 'pointer',
+    padding: 0,
+  },
+  videoPreviewMedia: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    display: 'block',
+  },
+  videoPreviewLabel: {
+    position: 'absolute',
+    left: 6,
+    bottom: 5,
+    padding: '2px 5px',
+    borderRadius: 5,
+    background: 'rgba(0,0,0,0.58)',
+    color: 'white',
+    fontSize: 9,
+    fontWeight: 800,
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
   },
   errorBox: {
     fontSize: 11,
