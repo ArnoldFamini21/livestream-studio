@@ -177,7 +177,7 @@
 ### 9A. Transitions & Animations
 - [x] Scene transition effects: crossfade, wipe, slide, zoom
 - [x] Participant join/leave animations
-- [ ] Lower third entrance/exit animations (slide, fade, bounce)
+- [x] Lower third entrance/exit animations (slide, fade, bounce)
 - [ ] Stinger transitions (custom video overlay during switch)
 
 ### 9B. Virtual Backgrounds

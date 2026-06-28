@@ -33,7 +33,7 @@ function makeScene(overrides: Partial<Scene> = {}): Scene {
 }
 
 const lowerThirds: LowerThirdData[] = [
-  { id: 'lt-1', name: 'Host', title: 'Producer', style: 'bold', visible: true, durationSeconds: 10 },
+  { id: 'lt-1', name: 'Host', title: 'Producer', style: 'bold', visible: true, durationSeconds: 10, animation: 'bounce' },
   { id: 'lt-auto', name: 'Speaker', title: 'Guest', style: 'minimal', visible: true, source: 'auto-speaker' },
   { id: 'lt-unused', name: 'Unused', title: '', style: 'glass', visible: false },
 ];
@@ -115,6 +115,7 @@ describe('scene packs', () => {
       'ticker-imported-0',
     ]);
     assert.equal(imported.lowerThirds[0].visible, false);
+    assert.equal(imported.lowerThirds[0].animation, 'bounce');
     assert.equal(imported.banners[0].visible, false);
     assert.equal(imported.timers[0].visible, false);
     assert.equal(imported.timers[0].isRunning, false);
