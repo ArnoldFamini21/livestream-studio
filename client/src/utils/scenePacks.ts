@@ -4,6 +4,7 @@ import type { LowerThirdData } from '../components/LowerThird.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
 import { normalizeLowerThirdAnimation } from './lowerThirds.ts';
+import { normalizeLogoOpacity } from './logoWatermark.ts';
 import { buildDuplicatedSceneName } from './sceneOrder.ts';
 
 export const SCENE_PACK_VERSION = 1;
@@ -138,6 +139,7 @@ function sanitizeScene(input: unknown): Scene | null {
   if (isAllowed(input.nameTagStyle, NAME_TAG_STYLES)) scene.nameTagStyle = input.nameTagStyle as NameTagStyle;
   if (isAllowed(input.logoPlacement, LOGO_PLACEMENTS)) scene.logoPlacement = input.logoPlacement as LogoPlacement;
   if (isAllowed(input.logoSize, LOGO_SIZES)) scene.logoSize = input.logoSize as LogoSize;
+  scene.logoOpacity = normalizeLogoOpacity(input.logoOpacity);
   if (isAllowed(input.pipCorner, PIP_CORNERS)) scene.pipCorner = input.pipCorner;
   scene.focusedVideoItemId = typeof input.focusedVideoItemId === 'string'
     ? readString(input.focusedVideoItemId, 128) || null

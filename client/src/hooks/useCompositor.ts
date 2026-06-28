@@ -7,6 +7,7 @@ import { REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from '../componen
 import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
 import { normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
+import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import type { LiveCaptionSegment } from './useLiveCaptions.ts';
 
 interface CompositorProps {
@@ -27,6 +28,7 @@ interface CompositorProps {
   logoUrl?: string | null;
   logoPlacement?: LogoPlacement;
   logoSize?: LogoSize;
+  logoOpacity?: number;
 }
 
 const AVATAR_COLORS = [
@@ -959,6 +961,7 @@ export function useCompositor({
   logoUrl,
   logoPlacement = 'top-right',
   logoSize = 'medium',
+  logoOpacity = DEFAULT_LOGO_OPACITY,
 }: CompositorProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const compositeStreamRef = useRef<MediaStream | null>(null);
@@ -1117,7 +1120,7 @@ export function useCompositor({
       const rect = getLogoCanvasRect(logoImage, logoPlacement, logoSize, scaleX, scaleY);
       if (rect) {
         ctx.save();
-        ctx.globalAlpha = 0.85;
+        ctx.globalAlpha = normalizeLogoOpacity(logoOpacity);
         ctx.drawImage(logoImage, rect.x, rect.y, rect.width, rect.height);
         ctx.restore();
       }
@@ -1198,7 +1201,7 @@ export function useCompositor({
 
     // Loop
     rAF.current = requestAnimationFrame(drawLoop);
-  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoSize]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoSize, logoOpacity]);
 
   useEffect(() => {
     if (isLive) {

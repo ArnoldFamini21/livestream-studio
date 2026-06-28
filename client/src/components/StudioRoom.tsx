@@ -48,6 +48,7 @@ import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
 import type { RecordingMarker } from './RecordingPanel.tsx';
 import { buildBrandThemeVariables } from '../utils/brandTheme.ts';
+import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { readPreferredAudioProcessing, type AudioProcessingPreferences } from '../utils/mediaPreferences.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
@@ -206,6 +207,7 @@ interface PersistedStudioState {
   logoUrl: string | null;
   logoPlacement: LogoPlacement;
   logoSize: LogoSize;
+  logoOpacity: number;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
   pipCorner: 'TL' | 'TR' | 'BL' | 'BR';
@@ -346,6 +348,7 @@ function getPersistableScenes(scenes: Scene[]): Scene[] {
       ...scene,
       background: getPersistableStageBackground(scene.background),
       logoUrl: isPersistableLogoUrl(scene.logoUrl) ? scene.logoUrl : null,
+      logoOpacity: normalizeLogoOpacity(scene.logoOpacity),
     };
 
     if ('focusedVideoItemId' in scene) {
@@ -499,6 +502,7 @@ export function StudioRoom() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>('top-right');
   const [logoSize, setLogoSize] = useState<LogoSize>('medium');
+  const [logoOpacity, setLogoOpacity] = useState(DEFAULT_LOGO_OPACITY);
   const [cameraShape, setCameraShape] = useState<CameraShape>('rectangle');
   const [nameTagStyle, setNameTagStyle] = useState<NameTagStyle>('classic');
   const [pipCorner, setPipCorner] = useState<'TL' | 'TR' | 'BL' | 'BR'>('BR');
@@ -812,6 +816,7 @@ export function StudioRoom() {
     logoUrl,
     logoPlacement,
     logoSize,
+    logoOpacity,
   });
 
   const handleRelayDestinationStatus = useCallback((destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => {
@@ -988,6 +993,7 @@ export function StudioRoom() {
           if (parsed.logoUrl !== undefined) setLogoUrl(parsed.logoUrl);
           if (parsed.logoPlacement) setLogoPlacement(parsed.logoPlacement);
           if (parsed.logoSize) setLogoSize(parsed.logoSize);
+          setLogoOpacity(normalizeLogoOpacity(parsed.logoOpacity));
           if (parsed.cameraShape) setCameraShape(parsed.cameraShape);
           if (parsed.nameTagStyle) setNameTagStyle(parsed.nameTagStyle);
           if (parsed.pipCorner) setPipCorner(parsed.pipCorner);
@@ -1041,6 +1047,7 @@ export function StudioRoom() {
         logoUrl: isPersistableLogoUrl(logoUrl) ? logoUrl : null,
         logoPlacement,
         logoSize,
+        logoOpacity,
         cameraShape,
         nameTagStyle,
         pipCorner,
@@ -1066,7 +1073,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
+  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -2360,6 +2367,7 @@ export function StudioRoom() {
       nameTagStyle,
       logoPlacement,
       logoSize,
+      logoOpacity,
       pipCorner,
       focusedVideoItemId,
       stageItemOrder: normalizeStageItemOrder(stageItemOrder, availableStageItemIds),
@@ -2415,6 +2423,7 @@ export function StudioRoom() {
       nameTagStyle: config.nameTagStyle,
       logoPlacement: 'top-right',
       logoSize: 'medium',
+      logoOpacity: DEFAULT_LOGO_OPACITY,
       pipCorner: 'BR',
       focusedVideoItemId: null,
       stageItemOrder: [],
@@ -2430,6 +2439,7 @@ export function StudioRoom() {
     setNameTagStyle(config.nameTagStyle);
     setLogoPlacement('top-right');
     setLogoSize('medium');
+    setLogoOpacity(DEFAULT_LOGO_OPACITY);
     setPipCorner('BR');
     setFocusedVideoItemId(null);
     setStageItemOrder([]);
@@ -2464,6 +2474,7 @@ export function StudioRoom() {
     setNameTagStyle(scene.nameTagStyle || 'classic');
     setLogoPlacement(scene.logoPlacement || 'top-right');
     setLogoSize(scene.logoSize || 'medium');
+    setLogoOpacity(normalizeLogoOpacity(scene.logoOpacity));
     if (scene.pipCorner) setPipCorner(scene.pipCorner);
     if (Array.isArray(scene.stageItemOrder)) {
       setStageItemOrder(normalizeStageItemOrder(scene.stageItemOrder, availableStageItemIds));
@@ -3617,7 +3628,7 @@ export function StudioRoom() {
 
               {/* Logo watermark */}
               {logoUrl && (
-                <div style={{ ...styles.logoWatermark, ...getLogoPlacementStyle(logoPlacement) }}>
+                <div style={{ ...styles.logoWatermark, ...getLogoPlacementStyle(logoPlacement), opacity: logoOpacity }}>
                   <img src={logoUrl} alt="Logo" style={{ ...styles.logoWatermarkImg, ...getLogoSizeStyle(logoSize) }} />
                 </div>
               )}
@@ -3771,6 +3782,8 @@ export function StudioRoom() {
             onLogoPlacementChange={setLogoPlacement}
             logoSize={logoSize}
             onLogoSizeChange={setLogoSize}
+            logoOpacity={logoOpacity}
+            onLogoOpacityChange={setLogoOpacity}
             cameraShape={cameraShape}
             onCameraShapeChange={setCameraShape}
             nameTagStyle={nameTagStyle}
@@ -4625,7 +4638,6 @@ const styles: Record<string, React.CSSProperties> = {
   logoWatermark: {
     position: 'absolute',
     zIndex: 6,
-    opacity: 0.85,
     pointerEvents: 'none',
   },
   logoWatermarkImg: {

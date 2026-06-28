@@ -4,6 +4,7 @@ import {
   normalizeStudioThemeId,
   type StudioThemeId,
 } from './studioThemes.ts';
+import { normalizeLogoOpacity } from './logoWatermark.ts';
 
 export const BRAND_KIT_STORAGE_KEY = 'livestream-studio:saved-brand-kits';
 export const MAX_SAVED_BRAND_KITS = 8;
@@ -15,6 +16,7 @@ export interface BrandKitVisuals {
   logoUrl: string | null;
   logoPlacement: LogoPlacement;
   logoSize: LogoSize;
+  logoOpacity: number;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
 }
@@ -82,6 +84,7 @@ function sanitizeSavedBrandKit(value: unknown): SavedBrandKit | null {
     logoUrl: getPersistableBrandLogoUrl(readString(value.logoUrl, 100_000) || null),
     logoPlacement: isAllowed(value.logoPlacement, LOGO_PLACEMENTS) ? value.logoPlacement : 'top-right',
     logoSize: isAllowed(value.logoSize, LOGO_SIZES) ? value.logoSize : 'medium',
+    logoOpacity: normalizeLogoOpacity(value.logoOpacity),
     cameraShape: isAllowed(value.cameraShape, CAMERA_SHAPES) ? value.cameraShape : 'rectangle',
     nameTagStyle: isAllowed(value.nameTagStyle, NAME_TAG_STYLES) ? value.nameTagStyle : 'classic',
   };
@@ -135,6 +138,7 @@ export function createSavedBrandKit(
     logoUrl: getPersistableBrandLogoUrl(visuals.logoUrl),
     logoPlacement: visuals.logoPlacement,
     logoSize: visuals.logoSize,
+    logoOpacity: normalizeLogoOpacity(visuals.logoOpacity),
     cameraShape: visuals.cameraShape,
     nameTagStyle: visuals.nameTagStyle,
   };
