@@ -184,7 +184,7 @@
 - [x] Background blur (TensorFlow.js / MediaPipe)
 - [x] Virtual background images
 - [x] Custom uploaded background
-- [ ] Green screen chroma key
+- [x] Green screen chroma key
 
 ### 9C. Studio Customization
 - [x] Custom studio themes (light, dark, colorful)

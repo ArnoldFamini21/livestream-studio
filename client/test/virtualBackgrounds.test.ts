@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  DEFAULT_CHROMA_KEY_COLOR,
   DEFAULT_VIRTUAL_BACKGROUND_CONFIG,
+  MAX_CHROMA_SIMILARITY,
+  MIN_CHROMA_SIMILARITY,
   VIRTUAL_BACKGROUND_STORAGE_KEY,
   normalizeVirtualBackgroundConfig,
   parseVirtualBackgroundConfig,
@@ -49,6 +52,41 @@ describe('virtual background config', () => {
     );
   });
 
+  it('normalizes green-screen mode with bounded chroma controls', () => {
+    assert.deepEqual(normalizeVirtualBackgroundConfig({
+      mode: 'green-screen',
+      imageSrc: ' https://example.test/studio-background.webp ',
+      keyColor: '#0F0',
+      similarity: 0.333,
+    }), {
+      mode: 'green-screen',
+      imageSrc: 'https://example.test/studio-background.webp',
+      keyColor: '#00ff00',
+      similarity: 0.33,
+    });
+
+    assert.deepEqual(normalizeVirtualBackgroundConfig({
+      mode: 'green-screen',
+      imageSrc: 'javascript:alert(1)',
+      keyColor: 'green',
+      similarity: 99,
+    }), {
+      mode: 'green-screen',
+      keyColor: DEFAULT_CHROMA_KEY_COLOR,
+      similarity: MAX_CHROMA_SIMILARITY,
+    });
+
+    assert.deepEqual(normalizeVirtualBackgroundConfig({
+      mode: 'green-screen',
+      keyColor: '#123456',
+      similarity: -1,
+    }), {
+      mode: 'green-screen',
+      keyColor: '#123456',
+      similarity: MIN_CHROMA_SIMILARITY,
+    });
+  });
+
   it('parses and serializes persisted config defensively', () => {
     assert.equal(VIRTUAL_BACKGROUND_STORAGE_KEY, 'livestream-studio:virtual-background');
     assert.deepEqual(parseVirtualBackgroundConfig(null), DEFAULT_VIRTUAL_BACKGROUND_CONFIG);
@@ -60,6 +98,19 @@ describe('virtual background config', () => {
     assert.equal(
       serializeVirtualBackgroundConfig({ mode: 'image', imageSrc: 'ftp://example.test/image.png' }),
       JSON.stringify(DEFAULT_VIRTUAL_BACKGROUND_CONFIG)
+    );
+    assert.equal(
+      serializeVirtualBackgroundConfig({
+        mode: 'green-screen',
+        imageSrc: 'ftp://example.test/image.png',
+        keyColor: '#fff',
+        similarity: 0,
+      }),
+      JSON.stringify({
+        mode: 'green-screen',
+        keyColor: '#ffffff',
+        similarity: MIN_CHROMA_SIMILARITY,
+      })
     );
   });
 });
