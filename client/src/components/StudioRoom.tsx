@@ -135,6 +135,13 @@ import {
   buildStudioBrandingPayload,
   normalizeWaitingRoomBranding,
 } from '../utils/waitingRoomBranding.ts';
+import {
+  DEFAULT_STREAM_SCREEN_CONFIG,
+  buildActiveStreamScreen,
+  normalizeStreamScreenConfig,
+  type StreamScreenConfig,
+  type StreamScreenKind,
+} from '../utils/streamScreens.ts';
 import { useToast } from './Toast.tsx';
 
 const STUDIO_STATE_VERSION = 1;
@@ -217,6 +224,7 @@ interface PersistedStudioState {
   brandColor: string;
   logoUrl: string | null;
   waitingRoomBranding?: WaitingRoomBranding;
+  streamScreens?: StreamScreenConfig;
   logoPlacement: LogoPlacement;
   logoSize: LogoSize;
   logoOpacity: number;
@@ -267,6 +275,11 @@ interface SceneTransitionState {
   visible: boolean;
   durationMs: number;
   stingerClip?: SceneStingerClip | null;
+}
+
+interface ActiveStreamScreenState {
+  kind: StreamScreenKind;
+  activatedAtMs: number;
 }
 
 function getStudioStateKey(roomId: string): string {
@@ -531,6 +544,8 @@ export function StudioRoom() {
   const [broadcastOrientation, setBroadcastOrientation] = useState<BroadcastOrientation>('landscape');
   const [rtmpRelayOutputPreset, setRtmpRelayOutputPreset] = useState<RtmpRelayOutputPresetId>(DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID);
   const [isLive, setIsLive] = useState(false);
+  const [streamScreenConfig, setStreamScreenConfig] = useState<StreamScreenConfig>(DEFAULT_STREAM_SCREEN_CONFIG);
+  const [activeStreamScreenState, setActiveStreamScreenState] = useState<ActiveStreamScreenState | null>(null);
 
   // Room ending countdown — driven by server-issued absolute end time.
   const [roomEnding, setRoomEnding] = useState(false);
@@ -789,6 +804,27 @@ export function StudioRoom() {
     maxSegments: 500,
   });
   const broadcastCaption = captionsAllowed ? activeCaption : null;
+  const activeStreamScreen = useMemo(() => {
+    if (!activeStreamScreenState) return null;
+    return buildActiveStreamScreen(
+      activeStreamScreenState.kind,
+      streamScreenConfig,
+      { brandColor, logoUrl, stageBackground },
+      activeStreamScreenState.activatedAtMs
+    );
+  }, [activeStreamScreenState, brandColor, logoUrl, stageBackground, streamScreenConfig]);
+  const activeStreamScreenBackgroundStyle = useMemo(() => (
+    activeStreamScreen ? getStageBackgroundStyle(activeStreamScreen.background) : {}
+  ), [activeStreamScreen]);
+  const onStreamScreenConfigChange = useCallback((next: StreamScreenConfig) => {
+    setStreamScreenConfig(normalizeStreamScreenConfig(next));
+  }, []);
+  const onApplyStreamScreen = useCallback((kind: StreamScreenKind) => {
+    setActiveStreamScreenState({ kind, activatedAtMs: Date.now() });
+  }, []);
+  const onClearStreamScreen = useCallback(() => {
+    setActiveStreamScreenState(null);
+  }, []);
 
   useEffect(() => {
     if (!roomId || !hostSession) return;
@@ -862,6 +898,7 @@ export function StudioRoom() {
     logoPlacement,
     logoSize,
     logoOpacity,
+    streamScreen: activeStreamScreen,
   });
 
   const handleRelayDestinationStatus = useCallback((destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => {
@@ -876,6 +913,7 @@ export function StudioRoom() {
     const statusMessage = message.trim() || 'Media relay stopped unexpectedly.';
     isLiveRef.current = false;
     setIsLive(false);
+    setActiveStreamScreenState(null);
     setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(false, sessionRecordingStartedAtRef.current) } : prev);
     send({
       type: 'live-stream-state-changed',
@@ -1057,6 +1095,7 @@ export function StudioRoom() {
           if (parsed.brandColor) setBrandColor(parsed.brandColor);
           if (parsed.logoUrl !== undefined) setLogoUrl(parsed.logoUrl);
           if (parsed.waitingRoomBranding) setWaitingRoomBranding(normalizeWaitingRoomBranding(parsed.waitingRoomBranding));
+          if (parsed.streamScreens) setStreamScreenConfig(normalizeStreamScreenConfig(parsed.streamScreens));
           if (parsed.logoPlacement) setLogoPlacement(parsed.logoPlacement);
           if (parsed.logoSize) setLogoSize(parsed.logoSize);
           setLogoOpacity(normalizeLogoOpacity(parsed.logoOpacity));
@@ -1112,6 +1151,7 @@ export function StudioRoom() {
         brandColor,
         logoUrl: isPersistableLogoUrl(logoUrl) ? logoUrl : null,
         waitingRoomBranding: normalizeWaitingRoomBranding(waitingRoomBranding),
+        streamScreens: normalizeStreamScreenConfig(streamScreenConfig),
         logoPlacement,
         logoSize,
         logoOpacity,
@@ -1140,7 +1180,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, logoPlacement, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
+  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -1607,6 +1647,7 @@ export function StudioRoom() {
           setIsLive(message.payload.live);
           setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(message.payload.live, sessionRecordingStartedAtRef.current) } : prev);
           if (!message.payload.live) {
+            setActiveStreamScreenState(null);
             setDestinations((prev) => prev.map((destination) => ({ ...destination, status: 'idle', statusMessage: undefined })));
           }
           break;
@@ -2302,6 +2343,7 @@ export function StudioRoom() {
       console.error('Failed to start live stream:', err);
       stopRelay();
       setIsLive(false);
+      setActiveStreamScreenState(null);
       const message = err instanceof Error ? err.message : 'Failed to start live stream.';
       setDestinations((prev) => prev.map((d) => (
         d.enabled
@@ -2317,6 +2359,7 @@ export function StudioRoom() {
     }
     stopRelay();
     setIsLive(false);
+    setActiveStreamScreenState(null);
     send({
       type: 'live-stream-state-changed',
       payload: {
@@ -3700,6 +3743,23 @@ export function StudioRoom() {
                 </div>
               )}
 
+              {activeStreamScreen && (
+                <div style={{ ...styles.streamScreenOverlay, ...activeStreamScreenBackgroundStyle }}>
+                  <div style={styles.streamScreenScrim} />
+                  <div style={styles.streamScreenContent}>
+                    {activeStreamScreen.logoUrl && (
+                      <img src={activeStreamScreen.logoUrl} alt="" style={styles.streamScreenLogo} />
+                    )}
+                    <span style={{ ...styles.streamScreenKicker, borderColor: `${activeStreamScreen.brandColor}99` }}>
+                      {activeStreamScreen.kind === 'starting' ? 'Starting Soon' : 'Stream Ending'}
+                    </span>
+                    <h1 style={styles.streamScreenTitle}>{activeStreamScreen.headline}</h1>
+                    <p style={styles.streamScreenMessage}>{activeStreamScreen.message}</p>
+                    <span style={{ ...styles.streamScreenAccent, background: activeStreamScreen.brandColor }} />
+                  </div>
+                </div>
+              )}
+
               {sceneTransition && (
                 <div
                   data-testid="scene-transition-overlay"
@@ -3788,6 +3848,11 @@ export function StudioRoom() {
               relayReadiness={relayReadiness}
               sessionHealth={sessionHealth}
               sceneCount={scenes.length}
+              streamScreenConfig={streamScreenConfig}
+              activeStreamScreenKind={activeStreamScreenState?.kind || null}
+              onStreamScreenConfigChange={onStreamScreenConfigChange}
+              onApplyStreamScreen={onApplyStreamScreen}
+              onClearStreamScreen={onClearStreamScreen}
               onRetryRelayReadiness={checkRelayReadiness}
               onGoLive={onGoLive}
               onStopLive={onStopLive}
@@ -4660,6 +4725,85 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     padding: 0,
     zIndex: 11,
+  },
+  streamScreenOverlay: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 66,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    pointerEvents: 'none',
+    color: 'white',
+    background: '#020617',
+  },
+  streamScreenScrim: {
+    position: 'absolute',
+    inset: 0,
+    background: 'radial-gradient(circle at 50% 42%, rgba(255,255,255,0.05), rgba(2,6,23,0.58) 78%)',
+  },
+  streamScreenContent: {
+    position: 'relative',
+    zIndex: 1,
+    width: 'min(76%, 760px)',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 12,
+    textAlign: 'center',
+  },
+  streamScreenLogo: {
+    maxWidth: 180,
+    maxHeight: 58,
+    objectFit: 'contain',
+    marginBottom: 4,
+  },
+  streamScreenKicker: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 30,
+    maxWidth: '100%',
+    padding: '5px 13px',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.2)',
+    background: 'rgba(15,23,42,0.58)',
+    color: '#f8fafc',
+    fontSize: 11,
+    fontWeight: 900,
+    textTransform: 'uppercase',
+    letterSpacing: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  streamScreenTitle: {
+    margin: 0,
+    maxWidth: '100%',
+    color: '#fff',
+    fontSize: 34,
+    lineHeight: 1.08,
+    fontWeight: 900,
+    letterSpacing: 0,
+    overflowWrap: 'anywhere',
+    textShadow: '0 14px 36px rgba(0,0,0,0.38)',
+  },
+  streamScreenMessage: {
+    margin: 0,
+    maxWidth: 520,
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 15,
+    lineHeight: 1.45,
+    fontWeight: 600,
+    overflowWrap: 'anywhere',
+  },
+  streamScreenAccent: {
+    width: 180,
+    height: 5,
+    borderRadius: 999,
+    marginTop: 4,
+    boxShadow: '0 0 22px rgba(255,255,255,0.22)',
   },
   // Room ending overlay
   roomEndingOverlay: {
