@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { ActiveMedia, LogoPlacement, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding } from '@studio/shared';
 import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
@@ -38,6 +38,10 @@ import {
   type StudioThemeId,
 } from '../utils/studioThemes.ts';
 import { normalizeLogoOpacity } from '../utils/logoWatermark.ts';
+import {
+  MAX_WAITING_ROOM_HEADLINE_LENGTH,
+  MAX_WAITING_ROOM_MESSAGE_LENGTH,
+} from '../utils/waitingRoomBranding.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -86,6 +90,8 @@ interface SidebarProps {
   onBrandColorChange: (color: string) => void;
   logoUrl: string | null;
   onLogoUrlChange: (url: string | null) => void;
+  waitingRoomBranding: WaitingRoomBranding;
+  onWaitingRoomBrandingChange: (config: WaitingRoomBranding) => void;
   logoPlacement: LogoPlacement;
   onLogoPlacementChange: (placement: LogoPlacement) => void;
   logoSize: LogoSize;
@@ -579,6 +585,63 @@ export function Sidebar(props: SidebarProps) {
                       Upload Logo
                     </button>
                   )}
+                </div>
+                <div style={st.brandGroup}>
+                  <span style={st.brandLabel}>Waiting Room</span>
+                  <input
+                    type="text"
+                    style={st.textInput}
+                    value={props.waitingRoomBranding.headline}
+                    maxLength={MAX_WAITING_ROOM_HEADLINE_LENGTH}
+                    onChange={(e) => props.onWaitingRoomBrandingChange({
+                      ...props.waitingRoomBranding,
+                      headline: e.currentTarget.value,
+                    })}
+                    aria-label="Waiting room headline"
+                  />
+                  <textarea
+                    style={st.textArea}
+                    value={props.waitingRoomBranding.message}
+                    maxLength={MAX_WAITING_ROOM_MESSAGE_LENGTH}
+                    rows={3}
+                    onChange={(e) => props.onWaitingRoomBrandingChange({
+                      ...props.waitingRoomBranding,
+                      message: e.currentTarget.value,
+                    })}
+                    aria-label="Waiting room message"
+                  />
+                  <div style={st.segmentedTwo}>
+                    {[
+                      { id: 'brand', label: 'Brand' },
+                      { id: 'studio', label: 'Stage' },
+                    ].map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        style={{
+                          ...st.segmentedBtn,
+                          ...(props.waitingRoomBranding.backgroundMode === mode.id ? st.segmentedBtnActive : {}),
+                        }}
+                        onClick={() => props.onWaitingRoomBrandingChange({
+                          ...props.waitingRoomBranding,
+                          backgroundMode: mode.id as WaitingRoomBranding['backgroundMode'],
+                        })}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+                  <label style={st.checkboxRow}>
+                    <input
+                      type="checkbox"
+                      checked={props.waitingRoomBranding.showLogo}
+                      onChange={(e) => props.onWaitingRoomBrandingChange({
+                        ...props.waitingRoomBranding,
+                        showLogo: e.currentTarget.checked,
+                      })}
+                    />
+                    <span>Show logo</span>
+                  </label>
                 </div>
                 <div style={st.brandGroup}>
                   <span style={st.brandLabel}>Logo Position</span>
@@ -1523,8 +1586,12 @@ const st: Record<string, React.CSSProperties> = {
   positionBtnActive: { border: '1px solid var(--accent)', boxShadow: 'inset 0 0 0 1px var(--accent)' },
   positionDot: { position: 'absolute', width: 10, height: 10, borderRadius: 3, background: 'var(--accent)' },
   segmented: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, padding: 3, background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)' },
+  segmentedTwo: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 4, padding: 3, background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 8 },
   segmentedBtn: { height: 28, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer', textTransform: 'capitalize' },
   segmentedBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
+  textInput: { width: '100%', minWidth: 0, padding: '8px 10px', marginBottom: 8, fontSize: 12, background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 8, outline: 'none' },
+  textArea: { width: '100%', minWidth: 0, resize: 'vertical', padding: '8px 10px', marginBottom: 8, fontSize: 12, lineHeight: 1.4, background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 8, outline: 'none', fontFamily: 'inherit' },
+  checkboxRow: { display: 'flex', alignItems: 'center', gap: 7, color: 'var(--text-secondary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' },
   opacitySlider: { width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' },
   opacityPresets: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, marginTop: 8 },
   opacityPresetBtn: { minWidth: 0, padding: '6px 4px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
