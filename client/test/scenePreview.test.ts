@@ -68,5 +68,10 @@ describe('scene preview thumbnails', () => {
     assert.deepEqual(getScenePreviewLogoPosition('top-left'), { top: '8%', left: '8%' });
     assert.deepEqual(getScenePreviewLogoPosition('bottom-right'), { bottom: '14%', right: '8%' });
     assert.deepEqual(getScenePreviewLogoPosition(undefined), { top: '8%', right: '8%' });
+    assert.deepEqual(getScenePreviewLogoPosition('top-right', { x: 0.25, y: 0.5 }), {
+      left: '25%',
+      top: '50%',
+      transform: 'translate(-50%, -50%)',
+    });
   });
 });

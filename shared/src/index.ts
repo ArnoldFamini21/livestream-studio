@@ -443,6 +443,11 @@ export type NameTagStyle = 'classic' | 'minimal' | 'block';
 export type LogoPlacement = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 export type LogoSize = 'small' | 'medium' | 'large';
 
+export interface LogoPosition {
+  x: number;
+  y: number;
+}
+
 // ============ Studio Media Types ============
 
 export type StudioMediaType = 'video' | 'image' | 'pdf' | 'presentation' | 'file';
@@ -547,6 +552,7 @@ export interface Scene {
   cameraShape?: CameraShape;
   nameTagStyle?: NameTagStyle;
   logoPlacement?: LogoPlacement;
+  logoPosition?: LogoPosition | null;
   logoSize?: LogoSize;
   logoOpacity?: number;
   pipCorner?: 'TL' | 'TR' | 'BL' | 'BR';

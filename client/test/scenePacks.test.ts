@@ -23,6 +23,7 @@ function makeScene(overrides: Partial<Scene> = {}): Scene {
     cameraShape: 'rounded',
     nameTagStyle: 'classic',
     logoPlacement: 'top-right',
+    logoPosition: { x: 0.42, y: 0.16 },
     logoSize: 'medium',
     logoOpacity: 0.45,
     pipCorner: 'TR',
@@ -179,6 +180,22 @@ describe('scene packs', () => {
     }));
 
     assert.equal(parsed.scenes[0].logoOpacity, 1);
+  });
+
+  it('normalizes imported logo positions', () => {
+    const parsed = parseScenePackJson(JSON.stringify({
+      version: 1,
+      source: 'livestream-studio',
+      exportedAt: '2026-06-24T00:00:00.000Z',
+      scenes: [
+        makeScene({ logoPosition: { x: 1.5, y: -0.25 } }),
+        { ...makeScene({ id: 'scene-malformed' }), logoPosition: { x: 'bad', y: 0.5 } },
+      ],
+      overlays: { lowerThirds: [], banners: [], timers: [], tickers: [] },
+    }));
+
+    assert.deepEqual(parsed.scenes[0].logoPosition, { x: 1, y: 0 });
+    assert.equal(parsed.scenes[1].logoPosition, null);
   });
 
   it('round trips valid JSON packs and builds readable filenames', () => {

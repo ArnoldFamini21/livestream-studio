@@ -1,10 +1,11 @@
-import type { CameraShape, LogoPlacement, LogoSize, NameTagStyle, StageBackground } from '@studio/shared';
+import type { CameraShape, LogoPlacement, LogoPosition, LogoSize, NameTagStyle, StageBackground } from '@studio/shared';
 import {
   DEFAULT_STUDIO_THEME_ID,
   normalizeStudioThemeId,
   type StudioThemeId,
 } from './studioThemes.ts';
 import { normalizeLogoOpacity } from './logoWatermark.ts';
+import { normalizeLogoPosition } from './logoPosition.ts';
 
 export const BRAND_KIT_STORAGE_KEY = 'livestream-studio:saved-brand-kits';
 export const MAX_SAVED_BRAND_KITS = 8;
@@ -15,6 +16,7 @@ export interface BrandKitVisuals {
   stageBackground: StageBackground;
   logoUrl: string | null;
   logoPlacement: LogoPlacement;
+  logoPosition: LogoPosition | null;
   logoSize: LogoSize;
   logoOpacity: number;
   cameraShape: CameraShape;
@@ -83,6 +85,7 @@ function sanitizeSavedBrandKit(value: unknown): SavedBrandKit | null {
     stageBackground: sanitizeBackground(value.stageBackground),
     logoUrl: getPersistableBrandLogoUrl(readString(value.logoUrl, 100_000) || null),
     logoPlacement: isAllowed(value.logoPlacement, LOGO_PLACEMENTS) ? value.logoPlacement : 'top-right',
+    logoPosition: normalizeLogoPosition(value.logoPosition),
     logoSize: isAllowed(value.logoSize, LOGO_SIZES) ? value.logoSize : 'medium',
     logoOpacity: normalizeLogoOpacity(value.logoOpacity),
     cameraShape: isAllowed(value.cameraShape, CAMERA_SHAPES) ? value.cameraShape : 'rectangle',
@@ -137,6 +140,7 @@ export function createSavedBrandKit(
     stageBackground: getPersistableBrandStageBackground(visuals.stageBackground),
     logoUrl: getPersistableBrandLogoUrl(visuals.logoUrl),
     logoPlacement: visuals.logoPlacement,
+    logoPosition: normalizeLogoPosition(visuals.logoPosition),
     logoSize: visuals.logoSize,
     logoOpacity: normalizeLogoOpacity(visuals.logoOpacity),
     cameraShape: visuals.cameraShape,

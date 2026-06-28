@@ -706,7 +706,7 @@ function ScenePreviewThumbnail({ scene }: { scene: Scene }) {
         <span
           style={{
             ...styles.scenePreviewLogo,
-            ...getScenePreviewLogoPosition(scene.logoPlacement),
+            ...getScenePreviewLogoPosition(scene.logoPlacement, scene.logoPosition),
           }}
         />
       )}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { CHAT_REACTION_EMOJIS, type ActiveMedia, type LivePoll, type LogoPlacement, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
+import { CHAT_REACTION_EMOJIS, type ActiveMedia, type LivePoll, type LogoPlacement, type LogoPosition, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
 import type { BannerData } from '../components/BannerOverlay.tsx';
 import type { HighlightedComment } from '../components/CommentHighlight.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
@@ -8,6 +8,7 @@ import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
 import { buildLowerThirdCanvasFont, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
+import { getLogoCanvasRect } from '../utils/logoPosition.ts';
 import type { ActiveStreamScreen } from '../utils/streamScreens.ts';
 import type { LiveCaptionSegment } from './useLiveCaptions.ts';
 
@@ -28,6 +29,7 @@ interface CompositorProps {
   brandColor?: string;
   logoUrl?: string | null;
   logoPlacement?: LogoPlacement;
+  logoPosition?: LogoPosition | null;
   logoSize?: LogoSize;
   logoOpacity?: number;
   streamScreen?: ActiveStreamScreen | null;
@@ -241,44 +243,6 @@ function drawStageBackground(
   if (background.type === 'image' && backgroundImage?.complete && backgroundImage.naturalWidth > 0) {
     drawCoverImage(ctx, backgroundImage, width, height);
   }
-}
-
-function getLogoCssMaxSize(size: LogoSize): { maxWidth: number; maxHeight: number } {
-  switch (size) {
-    case 'small':
-      return { maxWidth: 84, maxHeight: 28 };
-    case 'large':
-      return { maxWidth: 180, maxHeight: 58 };
-    case 'medium':
-    default:
-      return { maxWidth: 128, maxHeight: 42 };
-  }
-}
-
-function getLogoCanvasRect(
-  image: HTMLImageElement,
-  placement: LogoPlacement,
-  size: LogoSize,
-  scaleX: number,
-  scaleY: number
-): { x: number; y: number; width: number; height: number } | null {
-  const sourceWidth = image.naturalWidth || image.width;
-  const sourceHeight = image.naturalHeight || image.height;
-  if (sourceWidth <= 0 || sourceHeight <= 0) return null;
-
-  const { maxWidth, maxHeight } = getLogoCssMaxSize(size);
-  const cssScale = Math.min(1, maxWidth / sourceWidth, maxHeight / sourceHeight);
-  const width = sourceWidth * cssScale * scaleX;
-  const height = sourceHeight * cssScale * scaleY;
-  const marginX = 12 * scaleX;
-  const marginY = 12 * scaleY;
-
-  return {
-    x: placement.endsWith('right') ? 1920 - marginX - width : marginX,
-    y: placement.startsWith('bottom') ? 1080 - marginY - height : marginY,
-    width,
-    height,
-  };
 }
 
 function drawRoundedRect(
@@ -1067,6 +1031,7 @@ export function useCompositor({
   brandColor = '#3b82f6',
   logoUrl,
   logoPlacement = 'top-right',
+  logoPosition = null,
   logoSize = 'medium',
   logoOpacity = DEFAULT_LOGO_OPACITY,
   streamScreen,
@@ -1232,7 +1197,15 @@ export function useCompositor({
     // 3. Draw logo watermark with the same placement and max-size rules as the stage.
     const logoImage = logoImageRef.current;
     if (logoImage?.complete && logoImage.naturalWidth > 0) {
-      const rect = getLogoCanvasRect(logoImage, logoPlacement, logoSize, scaleX, scaleY);
+      const rect = getLogoCanvasRect({
+        sourceWidth: logoImage.naturalWidth || logoImage.width,
+        sourceHeight: logoImage.naturalHeight || logoImage.height,
+        placement: logoPlacement,
+        position: logoPosition,
+        size: logoSize,
+        scaleX,
+        scaleY,
+      });
       if (rect) {
         ctx.save();
         ctx.globalAlpha = normalizeLogoOpacity(logoOpacity);
@@ -1316,7 +1289,7 @@ export function useCompositor({
 
     // Loop
     rAF.current = requestAnimationFrame(drawLoop);
-  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoSize, logoOpacity, streamScreen]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen]);
 
   useEffect(() => {
     if (isLive) {

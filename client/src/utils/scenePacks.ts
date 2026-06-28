@@ -5,6 +5,7 @@ import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
 import { normalizeLowerThirdAnimation, normalizeLowerThirdAnimationDirection, normalizeLowerThirdFont } from './lowerThirds.ts';
 import { normalizeLogoOpacity } from './logoWatermark.ts';
+import { normalizeLogoPosition } from './logoPosition.ts';
 import { buildDuplicatedSceneName } from './sceneOrder.ts';
 
 export const SCENE_PACK_VERSION = 1;
@@ -138,6 +139,7 @@ function sanitizeScene(input: unknown): Scene | null {
   if (isAllowed(input.cameraShape, CAMERA_SHAPES)) scene.cameraShape = input.cameraShape as CameraShape;
   if (isAllowed(input.nameTagStyle, NAME_TAG_STYLES)) scene.nameTagStyle = input.nameTagStyle as NameTagStyle;
   if (isAllowed(input.logoPlacement, LOGO_PLACEMENTS)) scene.logoPlacement = input.logoPlacement as LogoPlacement;
+  scene.logoPosition = normalizeLogoPosition(input.logoPosition);
   if (isAllowed(input.logoSize, LOGO_SIZES)) scene.logoSize = input.logoSize as LogoSize;
   scene.logoOpacity = normalizeLogoOpacity(input.logoOpacity);
   if (isAllowed(input.pipCorner, PIP_CORNERS)) scene.pipCorner = input.pipCorner;
