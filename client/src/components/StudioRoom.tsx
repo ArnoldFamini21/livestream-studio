@@ -89,6 +89,12 @@ import {
   reconcileStagePresenceItems,
   type StagePresenceTrackedItem,
 } from '../utils/stagePresenceTransitions.ts';
+import {
+  LAYOUT_SWITCH_TRANSITION_DURATION_MS,
+  getStageLayoutTransitionStyle,
+  shouldStartLayoutTransition,
+  type StageLayoutTransition,
+} from '../utils/layoutTransitions.ts';
 import { getStageTilePrimaryClickAction } from '../utils/stageTileInteractions.ts';
 import { duplicateSceneInOrder, moveSceneInOrder, replaceSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
 import {
@@ -530,6 +536,8 @@ export function StudioRoom() {
 
   // Layout
   const [layout, setLayout] = useState<LayoutMode>('grid');
+  const layoutRef = useRef<LayoutMode>('grid');
+  const [layoutTransition, setLayoutTransition] = useState<StageLayoutTransition | null>(null);
 
   // Lower thirds
   const [lowerThirds, setLowerThirds] = useState<LowerThirdData[]>([]);
@@ -852,6 +860,9 @@ export function StudioRoom() {
   const lowerThirdAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const sceneTransitionTimerRef = useRef<number | null>(null);
   const sceneTransitionFrameRef = useRef<number | null>(null);
+  const layoutTransitionSequenceRef = useRef(0);
+  const layoutTransitionTimerRef = useRef<number | null>(null);
+  const layoutTransitionFrameRef = useRef<number | null>(null);
   const lastAutoSpeakerLowerThirdRef = useRef<{ participantId: string; shownAt: number } | null>(null);
   const studioStateLoadedRef = useRef(false);
   const audioEnabledRef = useRef(audioEnabled);
@@ -1000,6 +1011,49 @@ export function StudioRoom() {
     });
   }, []);
 
+  const clearLayoutTransitionTimers = useCallback(() => {
+    if (layoutTransitionTimerRef.current !== null) {
+      window.clearTimeout(layoutTransitionTimerRef.current);
+      layoutTransitionTimerRef.current = null;
+    }
+    if (layoutTransitionFrameRef.current !== null) {
+      window.cancelAnimationFrame(layoutTransitionFrameRef.current);
+      layoutTransitionFrameRef.current = null;
+    }
+  }, []);
+
+  const startLayoutTransition = useCallback((from: LayoutMode, to: LayoutMode) => {
+    if (!shouldStartLayoutTransition(from, to)) return;
+
+    clearLayoutTransitionTimers();
+    const id = ++layoutTransitionSequenceRef.current;
+    setLayoutTransition({ id, from, to, visible: false });
+    layoutTransitionFrameRef.current = window.requestAnimationFrame(() => {
+      layoutTransitionFrameRef.current = window.requestAnimationFrame(() => {
+        setLayoutTransition((current) => (
+          current?.id === id ? { ...current, visible: true } : current
+        ));
+        layoutTransitionFrameRef.current = null;
+      });
+    });
+    layoutTransitionTimerRef.current = window.setTimeout(() => {
+      setLayoutTransition((current) => (current?.id === id ? null : current));
+      layoutTransitionTimerRef.current = null;
+    }, LAYOUT_SWITCH_TRANSITION_DURATION_MS);
+  }, [clearLayoutTransitionTimers]);
+
+  const applyLayout = useCallback((nextLayout: LayoutMode, options: { animate?: boolean } = {}) => {
+    const currentLayout = layoutRef.current;
+    if (currentLayout === nextLayout) return;
+    if (options.animate !== false) startLayoutTransition(currentLayout, nextLayout);
+    layoutRef.current = nextLayout;
+    setLayout(nextLayout);
+  }, [startLayoutTransition]);
+
+  useEffect(() => {
+    layoutRef.current = layout;
+  }, [layout]);
+
   const triggerSceneTransition = useCallback((scene: Pick<Scene, 'id' | 'name'>) => {
     if (sceneTransitionTimerRef.current !== null) {
       window.clearTimeout(sceneTransitionTimerRef.current);
@@ -1050,6 +1104,8 @@ export function StudioRoom() {
       if (liveStatusTimerRef.current) clearTimeout(liveStatusTimerRef.current);
       if (sceneTransitionTimerRef.current !== null) window.clearTimeout(sceneTransitionTimerRef.current);
       if (sceneTransitionFrameRef.current !== null) window.cancelAnimationFrame(sceneTransitionFrameRef.current);
+      if (layoutTransitionTimerRef.current !== null) window.clearTimeout(layoutTransitionTimerRef.current);
+      if (layoutTransitionFrameRef.current !== null) window.cancelAnimationFrame(layoutTransitionFrameRef.current);
       for (const request of liveTokenRequestsRef.current.values()) {
         clearTimeout(request.timer);
         request.reject(new Error('Studio closed before live stream authorization completed.'));
@@ -1093,7 +1149,7 @@ export function StudioRoom() {
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<PersistedStudioState>;
         if (parsed.version === STUDIO_STATE_VERSION) {
-          if (parsed.layout) setLayout(parsed.layout);
+          if (parsed.layout) applyLayout(parsed.layout, { animate: false });
           setStudioTheme(normalizeStudioThemeId(parsed.studioTheme));
           if (parsed.stageBackground) setStageBackground(parsed.stageBackground);
           if (parsed.brandColor) setBrandColor(parsed.brandColor);
@@ -1141,7 +1197,7 @@ export function StudioRoom() {
     return () => {
       if (loadCompleteTimer) clearTimeout(loadCompleteTimer);
     };
-  }, [handleSceneStingerClipChange, roomId]);
+  }, [applyLayout, handleSceneStingerClipChange, roomId]);
 
   // Persist room setup locally without storing stream keys or transient media state.
   useEffect(() => {
@@ -2549,7 +2605,7 @@ export function StudioRoom() {
     };
 
     setScenes(prev => prev.length >= MAX_STUDIO_SCENES ? prev : [...prev, newScene]);
-    setLayout(config.layout);
+    applyLayout(config.layout);
     setStageBackground(config.background);
     setBrandColor(config.brandColor);
     setLogoUrl(null);
@@ -2584,7 +2640,7 @@ export function StudioRoom() {
   const onApplyScene = (sceneId: string) => {
     const scene = scenes.find(s => s.id === sceneId);
     if (!scene) return;
-    setLayout(scene.layout);
+    applyLayout(scene.layout);
     setStageBackground(scene.background);
     setBrandColor(scene.brandColor || '#a78bfa');
     setLogoUrl(scene.logoUrl || null);
@@ -2937,8 +2993,8 @@ export function StudioRoom() {
 
     setStageItemOrder((current) => moveStageItemInOrder(current, availableStageItemIds, participantId, 'first'));
     setFocusedVideoItemId(participantId);
-    setLayout(availableStageItemIds.length > 1 ? 'spotlight' : 'single');
-  }, [availableStageItemIds]);
+    applyLayout(availableStageItemIds.length > 1 ? 'spotlight' : 'single');
+  }, [applyLayout, availableStageItemIds]);
 
   const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
     if (action === 'cycle-pip-corner') {
@@ -2964,13 +3020,13 @@ export function StudioRoom() {
     const count = videoItems.length;
     // Layouts requiring >= 2 participants
     if (count < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
-      setLayout(count === 1 ? 'single' : 'grid');
+      applyLayout(count === 1 ? 'single' : 'grid');
     }
     // Single layout with multiple participants should switch to grid
     if (count > 1 && layout === 'single') {
-      setLayout('grid');
+      applyLayout('grid');
     }
-  }, [videoItems.length, layout]);
+  }, [applyLayout, videoItems.length, layout]);
 
   // All participants for the manager - memoized
   const allParticipantsMap = useMemo(() => {
@@ -3611,7 +3667,14 @@ export function StudioRoom() {
           {/* Fixed 16:9 Canvas */}
           <div style={styles.canvasWrapper}>
             <div ref={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }}>
-              <div style={{ ...styles.gridBase, ...layoutResult.containerStyle, position: 'relative' }}>
+              <div
+                style={{
+                  ...styles.gridBase,
+                  ...layoutResult.containerStyle,
+                  ...getStageLayoutTransitionStyle(layoutTransition),
+                  position: 'relative',
+                }}
+              >
                 {/* Render tiles based on layout engine */}
                 {(() => {
                   // Determine which items to render based on layout
@@ -3889,7 +3952,7 @@ export function StudioRoom() {
             <div style={styles.layoutBar}>
               <LayoutSwitcher
                 currentLayout={layout}
-                onLayoutChange={setLayout}
+                onLayoutChange={applyLayout}
                 participantCount={orderedVideoItems.length}
               />
             </div>
@@ -4195,7 +4258,7 @@ export function StudioRoom() {
             isRecording={recordingStatus.active}
             formattedTime={recordingStatus.formattedTime}
             currentLayout={layout}
-            onLayoutChange={setLayout}
+            onLayoutChange={applyLayout}
             focusedParticipantId={focusedVideoItemId}
             onSpotlightParticipant={onSpotlightParticipant}
             onClose={() => setShowProducerPanel(false)}

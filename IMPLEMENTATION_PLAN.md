@@ -30,7 +30,7 @@
 ### 2A. Canvas-Based Compositor
 - [ ] OffscreenCanvas rendering pipeline compositing all video feeds
 - [ ] Layout presets: Grid, Spotlight, Side-by-Side, Picture-in-Picture, Solo
-- [ ] Smooth CSS transitions when switching layouts (300ms ease)
+- [x] Smooth CSS transitions when switching layouts (300ms ease)
 - [x] Drag-and-drop participant reordering within the grid
 - [x] Click-to-spotlight: click a participant to make them the main feed
 
