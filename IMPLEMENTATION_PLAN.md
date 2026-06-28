@@ -187,7 +187,7 @@
 - [ ] Green screen chroma key
 
 ### 9C. Studio Customization
-- [ ] Custom studio themes (light, dark, colorful)
+- [x] Custom studio themes (light, dark, colorful)
 - [ ] Brand kit: upload logo, set colors, auto-apply everywhere
 - [ ] Custom waiting room page with branding
 - [ ] Custom stream starting/ending screens

@@ -32,6 +32,10 @@ import {
 } from '../utils/brandKits.ts';
 import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
 import type { SceneStingerClip, SceneTransitionPresetId } from '../utils/sceneTransitions.ts';
+import {
+  STUDIO_THEME_PRESETS,
+  type StudioThemeId,
+} from '../utils/studioThemes.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -72,6 +76,8 @@ interface SidebarProps {
   onFlashComment: (comment: HighlightedComment) => void;
   onDismissComment: () => void;
   // Brand props
+  studioTheme: StudioThemeId;
+  onStudioThemeChange: (theme: StudioThemeId) => void;
   stageBackground: StageBackground;
   onStageBackgroundChange: (bg: StageBackground) => void;
   brandColor: string;
@@ -442,6 +448,33 @@ export function Sidebar(props: SidebarProps) {
             <div style={st.scrollContent}>
               <div style={st.section}>
                 <h4 style={st.sectionTitle}>Brand Kit</h4>
+                <div style={st.brandGroup}>
+                  <span style={st.brandLabel}>Studio Theme</span>
+                  <div style={st.themeGrid}>
+                    {STUDIO_THEME_PRESETS.map((theme) => {
+                      const active = props.studioTheme === theme.id;
+                      return (
+                        <button
+                          key={theme.id}
+                          type="button"
+                          style={{
+                            ...st.themeBtn,
+                            ...(active ? st.themeBtnActive : {}),
+                          }}
+                          onClick={() => props.onStudioThemeChange(theme.id)}
+                          aria-pressed={active}
+                        >
+                          <span style={st.themeSwatches}>
+                            {theme.swatches.map((swatch) => (
+                              <span key={swatch} style={{ ...st.themeSwatch, background: swatch }} />
+                            ))}
+                          </span>
+                          <span style={st.themeLabel}>{theme.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <div style={st.brandGroup}>
                   <span style={st.brandLabel}>Presets</span>
                   <div style={st.brandKitGrid}>
@@ -1395,11 +1428,11 @@ function getPositionDotStyle(placement: LogoPlacement): React.CSSProperties {
 // ---------------------------------------------------------------------------
 const st: Record<string, React.CSSProperties> = {
   wrapper: { display: 'flex', height: '100%', flexShrink: 0 },
-  contentPanel: { width: 280, display: 'flex', flexDirection: 'column', background: 'rgba(15, 23, 42, 0.6)', borderLeft: '1px solid rgba(255, 255, 255, 0.06)', height: '100%', overflow: 'hidden', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' },
+  contentPanel: { width: 280, display: 'flex', flexDirection: 'column', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border)', height: '100%', overflow: 'hidden', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)' },
   scrollContent: { flex: 1, overflowY: 'auto' },
-  iconStrip: { width: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, gap: 2, background: 'rgba(11, 18, 32, 0.8)', borderLeft: '1px solid rgba(255, 255, 255, 0.06)', height: '100%', flexShrink: 0 },
-  iconBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, width: 48, height: 48, borderRadius: 10, background: 'transparent', color: 'rgba(255, 255, 255, 0.4)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.15s ease' },
-  iconBtnActive: { background: 'rgba(167, 139, 250, 0.12)', color: '#c4b5fd' },
+  iconStrip: { width: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, gap: 2, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%', flexShrink: 0 },
+  iconBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, width: 48, height: 48, borderRadius: 10, background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.15s ease' },
+  iconBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
   iconLabel: { fontSize: 9, fontWeight: 500, lineHeight: 1 },
   section: { padding: 16 },
   sectionTitle: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 },
@@ -1413,6 +1446,12 @@ const st: Record<string, React.CSSProperties> = {
   brandKitBtn: { display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch', border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', borderRadius: 8, padding: 8, cursor: 'pointer', minWidth: 0 },
   brandKitSwatch: { display: 'block', height: 28, borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' },
   brandKitName: { fontSize: 11, fontWeight: 700, textAlign: 'left' },
+  themeGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 },
+  themeBtn: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch', padding: 7, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', cursor: 'pointer' },
+  themeBtnActive: { borderColor: 'var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)', boxShadow: 'inset 0 0 0 1px var(--accent)' },
+  themeSwatches: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 2, height: 24, overflow: 'hidden', borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' },
+  themeSwatch: { display: 'block', minWidth: 0 },
+  themeLabel: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, fontWeight: 800, textAlign: 'center' },
   brandSaveRow: { display: 'grid', gridTemplateColumns: '1fr auto', gap: 6, marginBottom: 8 },
   brandKitInput: { minWidth: 0, width: '100%', padding: '7px 9px', fontSize: 12, background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 8, outline: 'none' },
   brandSaveBtn: { padding: '7px 10px', fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--accent)', border: 'none', borderRadius: 8, cursor: 'pointer' },
