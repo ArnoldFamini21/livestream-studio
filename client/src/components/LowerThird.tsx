@@ -1,14 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Participant } from '@studio/shared';
 import {
+  DEFAULT_LOWER_THIRD_FONT,
+  getLowerThirdFontCssFamily,
+  getLowerThirdFontLabel,
   getLowerThirdAnimationLabel,
   getLowerThirdAnimationStyle,
   getParticipantLowerThirdTitle,
   LOWER_THIRD_ANIMATION_EXIT_MS,
   LOWER_THIRD_ANIMATION_PRESETS,
+  LOWER_THIRD_FONT_PRESETS,
   normalizeLowerThirdAccentColor,
   normalizeLowerThirdAnimation,
+  normalizeLowerThirdFont,
   type LowerThirdAnimation,
+  type LowerThirdFont,
 } from '../utils/lowerThirds.ts';
 
 export interface LowerThirdData {
@@ -20,6 +26,7 @@ export interface LowerThirdData {
   durationSeconds?: number;
   accentColor?: string;
   animation?: LowerThirdAnimation;
+  fontFamily?: LowerThirdFont;
   source?: 'auto-speaker' | 'participant';
   participantId?: string;
 }
@@ -65,6 +72,7 @@ export function LowerThirdManager({
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [accentColor, setAccentColor] = useState('');
   const [animation, setAnimation] = useState<LowerThirdAnimation>('slide');
+  const [fontFamily, setFontFamily] = useState<LowerThirdFont>(DEFAULT_LOWER_THIRD_FONT);
   const onStageParticipants = participants.filter((participant) => participant.status === 'on-stage');
 
   const handleAdd = () => {
@@ -76,6 +84,7 @@ export function LowerThirdManager({
       durationSeconds: durationSeconds || undefined,
       accentColor: normalizeLowerThirdAccentColor(accentColor),
       animation,
+      fontFamily,
     });
     setName('');
     setTitle('');
@@ -123,6 +132,7 @@ export function LowerThirdManager({
                   style: 'bold',
                   durationSeconds: 10,
                   animation: 'slide',
+                  fontFamily,
                   visible: true,
                   source: 'participant',
                   participantId: participant.id,
@@ -157,6 +167,7 @@ export function LowerThirdManager({
                 {lt.source === 'auto-speaker' && <span style={styles.itemMeta}>auto speaker</span>}
                 {lt.durationSeconds && <span style={styles.itemMeta}>{lt.durationSeconds}s auto-hide</span>}
                 <span style={styles.itemMeta}>{getLowerThirdAnimationLabel(lt.animation)}</span>
+                <span style={styles.itemMeta}>{getLowerThirdFontLabel(lt.fontFamily)}</span>
               </div>
             </div>
             <div style={styles.itemActions}>
@@ -245,6 +256,25 @@ export function LowerThirdManager({
             ))}
           </div>
         </div>
+        <div style={styles.durationGroup}>
+          <span style={styles.durationLabel}>Font</span>
+          <div style={styles.durationRow}>
+            {LOWER_THIRD_FONT_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                style={{
+                  ...styles.durationBtn,
+                  fontFamily: preset.cssFamily,
+                  ...(fontFamily === preset.id ? styles.durationBtnActive : {}),
+                }}
+                onClick={() => setFontFamily(preset.id)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div style={styles.accentGroup}>
           <span style={styles.durationLabel}>Accent</span>
           <div style={styles.accentRow}>
@@ -323,6 +353,7 @@ export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
   if (!mounted) return null;
 
   const overlayStyles = getOverlayStyle(data.style, normalizeLowerThirdAccentColor(data.accentColor));
+  const fontFamily = getLowerThirdFontCssFamily(normalizeLowerThirdFont(data.fontFamily));
   const animationStyle = getLowerThirdAnimationStyle(animation, animatingIn);
 
   return (
@@ -332,6 +363,7 @@ export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
       style={{
         ...overlayBase,
         ...overlayStyles.container,
+        fontFamily,
         ...animationStyle,
       }}
     >
@@ -352,9 +384,9 @@ function getOverlayStyle(style: LowerThirdData['style'], accentColor?: string) {
   const base = {
     container: {} as React.CSSProperties,
     nameBar: { padding: '6px 16px' } as React.CSSProperties,
-    name: { fontSize: 15, fontWeight: 700, color: 'white' } as React.CSSProperties,
+    name: { fontSize: 15, fontWeight: 700, color: 'white', fontFamily: 'inherit' } as React.CSSProperties,
     titleBar: { padding: '4px 16px' } as React.CSSProperties,
-    title: { fontSize: 12, color: 'rgba(255,255,255,0.8)' } as React.CSSProperties,
+    title: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontFamily: 'inherit' } as React.CSSProperties,
   };
 
   switch (style) {

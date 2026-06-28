@@ -4,16 +4,45 @@ import type { LowerThirdData } from '../components/LowerThird.tsx';
 
 export type LowerThirdDraft = Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean };
 export type LowerThirdAnimation = 'slide' | 'fade' | 'bounce';
+export type LowerThirdFont = 'inter' | 'serif' | 'mono' | 'display';
 
 export const AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS = 5;
 export const AUTO_SPEAKER_LOWER_THIRD_MIN_LEVEL = 12;
 export const DEFAULT_LOWER_THIRD_ANIMATION: LowerThirdAnimation = 'slide';
+export const DEFAULT_LOWER_THIRD_FONT: LowerThirdFont = 'inter';
 export const LOWER_THIRD_ANIMATION_EXIT_MS = 420;
 
 export const LOWER_THIRD_ANIMATION_PRESETS: Array<{ id: LowerThirdAnimation; label: string }> = [
   { id: 'slide', label: 'Slide' },
   { id: 'fade', label: 'Fade' },
   { id: 'bounce', label: 'Bounce' },
+];
+
+export const LOWER_THIRD_FONT_PRESETS: Array<{ id: LowerThirdFont; label: string; cssFamily: string; canvasFamily: string }> = [
+  {
+    id: 'inter',
+    label: 'Sans',
+    cssFamily: 'Inter, Arial, sans-serif',
+    canvasFamily: 'Inter, Arial, sans-serif',
+  },
+  {
+    id: 'serif',
+    label: 'Serif',
+    cssFamily: 'Georgia, "Times New Roman", serif',
+    canvasFamily: 'Georgia, "Times New Roman", serif',
+  },
+  {
+    id: 'mono',
+    label: 'Mono',
+    cssFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+    canvasFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+  },
+  {
+    id: 'display',
+    label: 'Display',
+    cssFamily: '"Arial Black", Inter, Arial, sans-serif',
+    canvasFamily: '"Arial Black", Inter, Arial, sans-serif',
+  },
 ];
 
 export interface AutoSpeakerLowerThirdCandidate {
@@ -27,6 +56,9 @@ export interface AutoSpeakerLowerThirdCandidate {
 const LOWER_THIRD_HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 const LOWER_THIRD_ANIMATION_IDS = new Set<LowerThirdAnimation>(
   LOWER_THIRD_ANIMATION_PRESETS.map((preset) => preset.id)
+);
+const LOWER_THIRD_FONT_IDS = new Set<LowerThirdFont>(
+  LOWER_THIRD_FONT_PRESETS.map((preset) => preset.id)
 );
 
 export function getParticipantLowerThirdTitle(role: ParticipantRole): string {
@@ -52,9 +84,33 @@ export function normalizeLowerThirdAnimation(value: unknown): LowerThirdAnimatio
     : DEFAULT_LOWER_THIRD_ANIMATION;
 }
 
+export function normalizeLowerThirdFont(value: unknown): LowerThirdFont {
+  return typeof value === 'string' && LOWER_THIRD_FONT_IDS.has(value as LowerThirdFont)
+    ? value as LowerThirdFont
+    : DEFAULT_LOWER_THIRD_FONT;
+}
+
 export function getLowerThirdAnimationLabel(value: unknown): string {
   const animation = normalizeLowerThirdAnimation(value);
   return LOWER_THIRD_ANIMATION_PRESETS.find((preset) => preset.id === animation)?.label || 'Slide';
+}
+
+export function getLowerThirdFontLabel(value: unknown): string {
+  const font = normalizeLowerThirdFont(value);
+  return LOWER_THIRD_FONT_PRESETS.find((preset) => preset.id === font)?.label || 'Sans';
+}
+
+export function getLowerThirdFontCssFamily(value: unknown): string {
+  const font = normalizeLowerThirdFont(value);
+  return LOWER_THIRD_FONT_PRESETS.find((preset) => preset.id === font)?.cssFamily
+    || LOWER_THIRD_FONT_PRESETS[0].cssFamily;
+}
+
+export function buildLowerThirdCanvasFont(weight: number, sizePx: number, value: unknown): string {
+  const font = normalizeLowerThirdFont(value);
+  const family = LOWER_THIRD_FONT_PRESETS.find((preset) => preset.id === font)?.canvasFamily
+    || LOWER_THIRD_FONT_PRESETS[0].canvasFamily;
+  return `${weight} ${sizePx}px ${family}`;
 }
 
 export function getLowerThirdAnimationStyle(animation: LowerThirdAnimation, visible: boolean): CSSProperties {
@@ -118,6 +174,7 @@ export function upsertAutoSpeakerLowerThird(
     durationSeconds: AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS,
     accentColor: existing?.accentColor,
     animation: existing?.animation || DEFAULT_LOWER_THIRD_ANIMATION,
+    fontFamily: existing?.fontFamily,
     source: 'auto-speaker',
     participantId: speaker.participantId,
   };

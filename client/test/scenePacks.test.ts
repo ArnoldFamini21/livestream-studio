@@ -34,7 +34,7 @@ function makeScene(overrides: Partial<Scene> = {}): Scene {
 }
 
 const lowerThirds: LowerThirdData[] = [
-  { id: 'lt-1', name: 'Host', title: 'Producer', style: 'bold', visible: true, durationSeconds: 10, animation: 'bounce' },
+  { id: 'lt-1', name: 'Host', title: 'Producer', style: 'bold', visible: true, durationSeconds: 10, animation: 'bounce', fontFamily: 'display' },
   { id: 'lt-auto', name: 'Speaker', title: 'Guest', style: 'minimal', visible: true, source: 'auto-speaker' },
   { id: 'lt-unused', name: 'Unused', title: '', style: 'glass', visible: false },
 ];
@@ -87,6 +87,7 @@ describe('scene packs', () => {
     assert.deepEqual(pack.overlays.tickers.map((item) => item.id), ['ticker-1']);
     assert.deepEqual(pack.scenes[0].visibleOverlayIds, ['lt-1', 'banner-1', 'timer-1', 'ticker-1']);
     assert.equal(pack.overlays.lowerThirds[0].visible, false);
+    assert.equal(pack.overlays.lowerThirds[0].fontFamily, 'display');
     assert.equal(pack.overlays.timers[0].isRunning, false);
   });
 
@@ -118,6 +119,7 @@ describe('scene packs', () => {
     ]);
     assert.equal(imported.lowerThirds[0].visible, false);
     assert.equal(imported.lowerThirds[0].animation, 'bounce');
+    assert.equal(imported.lowerThirds[0].fontFamily, 'display');
     assert.equal(imported.banners[0].visible, false);
     assert.equal(imported.timers[0].visible, false);
     assert.equal(imported.timers[0].isRunning, false);
@@ -189,6 +191,7 @@ describe('scene packs', () => {
     const parsed = parseScenePackJson(JSON.stringify(pack));
 
     assert.deepEqual(parsed.scenes, pack.scenes);
+    assert.equal(parsed.overlays.lowerThirds[0].fontFamily, 'display');
     assert.equal(buildScenePackFilename('Arnold Live Show!', new Date('2026-06-24T12:00:00.000Z')), 'scene-pack-arnold-live-show-2026-06-24.json');
   });
 });

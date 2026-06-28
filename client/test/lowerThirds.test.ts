@@ -3,12 +3,16 @@ import assert from 'node:assert/strict';
 import type { LowerThirdData } from '../src/components/LowerThird.tsx';
 import {
   addLowerThird,
+  buildLowerThirdCanvasFont,
   getLowerThirdAnimationLabel,
   getLowerThirdAnimationStyle,
+  getLowerThirdFontCssFamily,
+  getLowerThirdFontLabel,
   selectAutoSpeakerLowerThirdCandidate,
   normalizeLowerThirdAnimation,
   normalizeLowerThirdAccentColor,
   normalizeLowerThirdDurationSeconds,
+  normalizeLowerThirdFont,
   toggleLowerThirdVisibility,
   upsertAutoSpeakerLowerThird,
 } from '../src/utils/lowerThirds.ts';
@@ -44,6 +48,7 @@ describe('lower third visibility utilities', () => {
       durationSeconds: 10,
       accentColor: '#0891b2',
       animation: 'bounce',
+      fontFamily: 'serif',
       visible: true,
     }, 'lt-3');
 
@@ -58,6 +63,7 @@ describe('lower third visibility utilities', () => {
     assert.equal(next[2].durationSeconds, 10);
     assert.equal(next[2].accentColor, '#0891b2');
     assert.equal(next[2].animation, 'bounce');
+    assert.equal(next[2].fontFamily, 'serif');
   });
 
   it('toggles one lower third on while hiding the previous one', () => {
@@ -110,6 +116,18 @@ describe('lower third visibility utilities', () => {
     assert.equal(normalizeLowerThirdAnimation(null), 'slide');
     assert.equal(getLowerThirdAnimationLabel('bounce'), 'Bounce');
     assert.equal(getLowerThirdAnimationLabel('missing'), 'Slide');
+  });
+
+  it('normalizes lower third font presets for browser and canvas output', () => {
+    assert.equal(normalizeLowerThirdFont('serif'), 'serif');
+    assert.equal(normalizeLowerThirdFont('mono'), 'mono');
+    assert.equal(normalizeLowerThirdFont('missing'), 'inter');
+    assert.equal(normalizeLowerThirdFont(null), 'inter');
+    assert.equal(getLowerThirdFontLabel('display'), 'Display');
+    assert.equal(getLowerThirdFontLabel('missing'), 'Sans');
+    assert.match(getLowerThirdFontCssFamily('serif'), /Georgia/);
+    assert.match(buildLowerThirdCanvasFont(700, 34, 'mono'), /^700 34px/);
+    assert.match(buildLowerThirdCanvasFont(700, 34, 'mono'), /Consolas/);
   });
 
   it('builds distinct animation styles for slide, fade, and bounce presets', () => {
@@ -169,7 +187,7 @@ describe('lower third visibility utilities', () => {
   it('reuses the existing auto speaker lower third entry', () => {
     const current: LowerThirdData[] = [
       ...existing,
-      { id: 'lt-auto', name: 'Host', title: 'Host', style: 'bold', source: 'auto-speaker', participantId: 'host', durationSeconds: 5, animation: 'fade', visible: false },
+      { id: 'lt-auto', name: 'Host', title: 'Host', style: 'bold', source: 'auto-speaker', participantId: 'host', durationSeconds: 5, animation: 'fade', fontFamily: 'mono', visible: false },
     ];
     const next = upsertAutoSpeakerLowerThird(current, {
       participantId: 'producer',
@@ -182,6 +200,7 @@ describe('lower third visibility utilities', () => {
     assert.equal(next[2].name, 'Producer');
     assert.equal(next[2].participantId, 'producer');
     assert.equal(next[2].animation, 'fade');
+    assert.equal(next[2].fontFamily, 'mono');
     assert.equal(next[2].visible, true);
   });
 });
