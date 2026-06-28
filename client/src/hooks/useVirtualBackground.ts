@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 // Types only — the runtime is loaded lazily from CDN so we don't bake the
 // ~3MB MediaPipe bundle into the main app chunk.
 import type { SelfieSegmentation as SelfieSegmentationType, Results } from '@mediapipe/selfie_segmentation';
+import {
+  DEFAULT_CHROMA_KEY_COLOR,
+  DEFAULT_CHROMA_SIMILARITY,
+  normalizeChromaKeyColor,
+  normalizeChromaSimilarity,
+} from '../utils/virtualBackgrounds.ts';
 
 declare global {
   interface Window {
@@ -9,14 +15,17 @@ declare global {
   }
 }
 
-export type VirtualBackgroundMode = 'off' | 'blur' | 'image';
+export type VirtualBackgroundMode = 'off' | 'blur' | 'image' | 'green-screen';
 
 export interface VirtualBackgroundConfig {
   mode: VirtualBackgroundMode;
-  // Required when mode === 'image'. Data URL or remote URL.
+  // Required when mode === 'image'; optional replacement when mode === 'green-screen'.
   imageSrc?: string;
   // Blur radius in CSS pixels when mode === 'blur'. Default 12.
   blurPx?: number;
+  // Chroma key controls when mode === 'green-screen'.
+  keyColor?: string;
+  similarity?: number;
 }
 
 interface UseVirtualBackgroundInput {
@@ -72,10 +81,11 @@ const SEGMENTATION_WIDTH = 256;
 const SEGMENTATION_HEIGHT = 256;
 
 /**
- * Apply a virtual background (blur or image) to a webcam stream using MediaPipe
- * Selfie Segmentation. The returned outputStream contains the original audio
- * tracks plus a canvas-captured video track that downstream code (WebRTC peers,
- * local preview) can consume transparently.
+ * Apply a virtual background to a webcam stream. Blur and image replacement use
+ * MediaPipe Selfie Segmentation; green screen mode uses a local chroma key
+ * canvas path. The returned outputStream contains the original audio tracks
+ * plus a canvas-captured video track that downstream code can consume
+ * transparently.
  */
 export function useVirtualBackground({
   inputStream,
@@ -93,7 +103,7 @@ export function useVirtualBackground({
   const bgImageRef = useRef<{ src: string; img: HTMLImageElement | null } | null>(null);
 
   useEffect(() => {
-    if (config.mode !== 'image' || !config.imageSrc) {
+    if (!['image', 'green-screen'].includes(config.mode) || !config.imageSrc) {
       bgImageRef.current = null;
       return;
     }
@@ -120,7 +130,138 @@ export function useVirtualBackground({
   }, [config.mode, inputStream]);
 
   useEffect(() => {
-    if (config.mode === 'off') return;
+    if (config.mode !== 'green-screen') return;
+    if (!inputStream) {
+      setOutputStream(null);
+      setReady(false);
+      return;
+    }
+
+    const videoTrack = inputStream.getVideoTracks()[0];
+    if (!videoTrack) {
+      setOutputStream(inputStream);
+      setReady(true);
+      setError(null);
+      return;
+    }
+
+    setOutputStream(inputStream);
+    setReady(false);
+
+    let cancelled = false;
+    let raf = 0;
+    let composed: MediaStream | null = null;
+
+    const driverVideo = document.createElement('video');
+    driverVideo.muted = true;
+    driverVideo.playsInline = true;
+    driverVideo.srcObject = new MediaStream([videoTrack]);
+
+    const outputCanvas = document.createElement('canvas');
+    const outputCtx = outputCanvas.getContext('2d');
+    const sourceCanvas = document.createElement('canvas');
+    const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+    if (!outputCtx || !sourceCtx) {
+      setError('Canvas 2D context unavailable; cannot apply green screen.');
+      setOutputStream(inputStream);
+      setReady(false);
+      driverVideo.srcObject = null;
+      return;
+    }
+
+    const finalize = () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      try { driverVideo.pause(); } catch { /* ignore */ }
+      driverVideo.srcObject = null;
+      composed?.getVideoTracks().forEach((track) => track.stop());
+      composed = null;
+    };
+
+    const sizeCanvasesToTrack = () => {
+      const settings = videoTrack.getSettings();
+      const w = settings.width || driverVideo.videoWidth || 1280;
+      const h = settings.height || driverVideo.videoHeight || 720;
+      if (outputCanvas.width !== w || outputCanvas.height !== h) {
+        outputCanvas.width = w;
+        outputCanvas.height = h;
+        sourceCanvas.width = w;
+        sourceCanvas.height = h;
+      }
+    };
+
+    const drawChromaComposite = () => {
+      const cw = outputCanvas.width;
+      const ch = outputCanvas.height;
+      const { r, g, b } = parseHexColor(configRef.current.keyColor ?? DEFAULT_CHROMA_KEY_COLOR);
+      const similarity = normalizeChromaSimilarity(configRef.current.similarity ?? DEFAULT_CHROMA_SIMILARITY);
+
+      sourceCtx.clearRect(0, 0, cw, ch);
+      sourceCtx.drawImage(driverVideo, 0, 0, cw, ch);
+      const frame = sourceCtx.getImageData(0, 0, cw, ch);
+      applyChromaKey(frame.data, r, g, b, similarity);
+
+      outputCtx.save();
+      outputCtx.clearRect(0, 0, cw, ch);
+      outputCtx.putImageData(frame, 0, 0);
+      outputCtx.globalCompositeOperation = 'destination-over';
+      const cached = bgImageRef.current?.img;
+      if (cached && cached.complete && cached.naturalWidth > 0) {
+        drawCover(outputCtx, cached, cw, ch);
+      } else {
+        outputCtx.fillStyle = '#0f172a';
+        outputCtx.fillRect(0, 0, cw, ch);
+      }
+      outputCtx.restore();
+    };
+
+    const frameInterval = 1000 / TARGET_FPS;
+    let lastFrameTime = 0;
+
+    const renderLoop = (now: number) => {
+      if (cancelled) return;
+      raf = requestAnimationFrame(renderLoop);
+      if (now - lastFrameTime < frameInterval || driverVideo.readyState < 2) return;
+      lastFrameTime = now;
+      sizeCanvasesToTrack();
+      drawChromaComposite();
+    };
+
+    (async () => {
+      try {
+        await driverVideo.play();
+        if (cancelled) {
+          finalize();
+          return;
+        }
+
+        sizeCanvasesToTrack();
+        drawChromaComposite();
+        const captured = outputCanvas.captureStream(TARGET_FPS);
+        composed = new MediaStream();
+        for (const track of inputStream.getAudioTracks()) composed.addTrack(track);
+        for (const track of captured.getVideoTracks()) composed.addTrack(track);
+        setOutputStream(composed);
+        setReady(true);
+        setError(null);
+
+        raf = requestAnimationFrame(renderLoop);
+      } catch (err) {
+        console.error('Failed to initialize green screen:', err);
+        setError(err instanceof Error ? err.message : 'Green screen failed to start');
+        setReady(false);
+        setOutputStream(inputStream);
+        finalize();
+      }
+    })();
+
+    return () => {
+      finalize();
+    };
+  }, [inputStream, config.mode]);
+
+  useEffect(() => {
+    if (config.mode === 'off' || config.mode === 'green-screen') return;
     if (!inputStream) {
       setOutputStream(null);
       setReady(false);
@@ -309,4 +450,35 @@ function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, w: numb
   const dw = iw * scale;
   const dh = ih * scale;
   ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+}
+
+function parseHexColor(color: string) {
+  const normalized = normalizeChromaKeyColor(color);
+  return {
+    r: Number.parseInt(normalized.slice(1, 3), 16),
+    g: Number.parseInt(normalized.slice(3, 5), 16),
+    b: Number.parseInt(normalized.slice(5, 7), 16),
+  };
+}
+
+function applyChromaKey(
+  data: Uint8ClampedArray,
+  keyR: number,
+  keyG: number,
+  keyB: number,
+  similarity: number
+) {
+  const softness = 0.08;
+  for (let i = 0; i < data.length; i += 4) {
+    const dr = (data[i] - keyR) / 255;
+    const dg = (data[i + 1] - keyG) / 255;
+    const db = (data[i + 2] - keyB) / 255;
+    const distance = Math.sqrt(dr * dr + dg * dg + db * db);
+
+    if (distance <= similarity) {
+      data[i + 3] = 0;
+    } else if (distance <= similarity + softness) {
+      data[i + 3] = Math.round(data[i + 3] * ((distance - similarity) / softness));
+    }
+  }
 }

@@ -1,6 +1,12 @@
 import { useRef } from 'react';
 import { usePhotoLibrary } from '../hooks/usePhotoLibrary.ts';
 import type { VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
+import {
+  DEFAULT_CHROMA_KEY_COLOR,
+  DEFAULT_CHROMA_SIMILARITY,
+  MAX_CHROMA_SIMILARITY,
+  MIN_CHROMA_SIMILARITY,
+} from '../utils/virtualBackgrounds.ts';
 
 interface VirtualBackgroundPickerProps {
   value: VirtualBackgroundConfig;
@@ -13,16 +19,33 @@ interface VirtualBackgroundPickerProps {
 export function VirtualBackgroundPicker({ value, onChange, warmingUp, error }: VirtualBackgroundPickerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { photos, addPhoto, removePhoto, error: libraryError } = usePhotoLibrary();
+  const keyColor = value.keyColor ?? DEFAULT_CHROMA_KEY_COLOR;
+  const similarity = value.similarity ?? DEFAULT_CHROMA_SIMILARITY;
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     const photo = await addPhoto(file);
-    if (photo) onChange({ mode: 'image', imageSrc: photo.dataUrl });
+    if (!photo) return;
+    if (value.mode === 'green-screen') {
+      onChange({ mode: 'green-screen', imageSrc: photo.dataUrl, keyColor, similarity });
+    } else {
+      onChange({ mode: 'image', imageSrc: photo.dataUrl });
+    }
   };
 
-  const isImageSelected = (src: string) => value.mode === 'image' && value.imageSrc === src;
+  const isImageSelected = (src: string) => (
+    (value.mode === 'image' || value.mode === 'green-screen') && value.imageSrc === src
+  );
+
+  const selectPhoto = (src: string) => {
+    if (value.mode === 'green-screen') {
+      onChange({ mode: 'green-screen', imageSrc: src, keyColor, similarity });
+    } else {
+      onChange({ mode: 'image', imageSrc: src });
+    }
+  };
 
   return (
     <div style={styles.container}>
@@ -63,6 +86,20 @@ export function VirtualBackgroundPicker({ value, onChange, warmingUp, error }: V
           </span>
           <span>Blur</span>
         </button>
+        <button
+          type="button"
+          style={modeButtonStyle(value.mode === 'green-screen')}
+          onClick={() => onChange({ mode: 'green-screen', imageSrc: value.imageSrc, keyColor, similarity })}
+        >
+          <span style={styles.modeIconWrap}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M4 6h16v12H4z" />
+              <path d="M8 10h8" opacity="0.55" />
+              <path d="M8 14h5" opacity="0.55" />
+            </svg>
+          </span>
+          <span>Green</span>
+        </button>
       </div>
 
       {value.mode === 'blur' && (
@@ -75,6 +112,30 @@ export function VirtualBackgroundPicker({ value, onChange, warmingUp, error }: V
             step={1}
             value={value.blurPx ?? 12}
             onChange={(e) => onChange({ mode: 'blur', blurPx: Number(e.target.value) })}
+            style={styles.range}
+          />
+        </div>
+      )}
+
+      {value.mode === 'green-screen' && (
+        <div style={styles.chromaControls}>
+          <label style={styles.chromaLabel} htmlFor="virtual-bg-key-color">Key color</label>
+          <input
+            id="virtual-bg-key-color"
+            type="color"
+            value={keyColor}
+            onChange={(e) => onChange({ mode: 'green-screen', imageSrc: value.imageSrc, keyColor: e.target.value, similarity })}
+            style={styles.colorInput}
+          />
+          <label style={styles.chromaLabel} htmlFor="virtual-bg-similarity">Tolerance</label>
+          <input
+            id="virtual-bg-similarity"
+            type="range"
+            min={MIN_CHROMA_SIMILARITY}
+            max={MAX_CHROMA_SIMILARITY}
+            step={0.01}
+            value={similarity}
+            onChange={(e) => onChange({ mode: 'green-screen', imageSrc: value.imageSrc, keyColor, similarity: Number(e.target.value) })}
             style={styles.range}
           />
         </div>
@@ -122,12 +183,13 @@ export function VirtualBackgroundPicker({ value, onChange, warmingUp, error }: V
             return (
               <div key={photo.id} style={styles.photoCell}>
                 <button
+                  type="button"
                   style={{
                     ...styles.thumb,
                     backgroundImage: `url(${photo.dataUrl})`,
                     outline: selected ? '2px solid var(--accent)' : '2px solid transparent',
                   }}
-                  onClick={() => onChange({ mode: 'image', imageSrc: photo.dataUrl })}
+                  onClick={() => selectPhoto(photo.dataUrl)}
                   title={photo.name}
                   aria-label={`Use ${photo.name} as virtual background`}
                 />
@@ -137,7 +199,13 @@ export function VirtualBackgroundPicker({ value, onChange, warmingUp, error }: V
                   onClick={(e) => {
                     e.stopPropagation();
                     void removePhoto(photo.id);
-                    if (selected) onChange({ mode: 'off' });
+                    if (selected) {
+                      if (value.mode === 'green-screen') {
+                        onChange({ mode: 'green-screen', keyColor, similarity });
+                      } else {
+                        onChange({ mode: 'off' });
+                      }
+                    }
                   }}
                   title="Remove from library"
                   aria-label={`Remove ${photo.name}`}
@@ -196,7 +264,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   modeRow: {
     display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
     gap: 6,
   },
   modeButton: {
@@ -226,6 +294,25 @@ const styles: Record<string, React.CSSProperties> = {
   },
   range: {
     flex: 1,
+  },
+  chromaControls: {
+    display: 'grid',
+    gridTemplateColumns: '72px 44px 72px minmax(0, 1fr)',
+    alignItems: 'center',
+    gap: 8,
+  },
+  chromaLabel: {
+    fontSize: 11,
+    color: 'var(--text-muted)',
+  },
+  colorInput: {
+    width: 34,
+    height: 28,
+    padding: 0,
+    background: 'transparent',
+    border: '1px solid var(--border-strong)',
+    borderRadius: 6,
+    cursor: 'pointer',
   },
   libraryHeader: {
     display: 'flex',
