@@ -32,7 +32,7 @@
 - [ ] Layout presets: Grid, Spotlight, Side-by-Side, Picture-in-Picture, Solo
 - [ ] Smooth CSS transitions when switching layouts (300ms ease)
 - [x] Drag-and-drop participant reordering within the grid
-- [ ] Click-to-spotlight: click a participant to make them the main feed
+- [x] Click-to-spotlight: click a participant to make them the main feed
 
 ### 2B. Scene System (OBS-style)
 - [ ] Scene manager: create/name/reorder scenes

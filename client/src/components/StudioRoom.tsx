@@ -89,6 +89,7 @@ import {
   reconcileStagePresenceItems,
   type StagePresenceTrackedItem,
 } from '../utils/stagePresenceTransitions.ts';
+import { getStageTilePrimaryClickAction } from '../utils/stageTileInteractions.ts';
 import { duplicateSceneInOrder, moveSceneInOrder, replaceSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
 import {
   buildPopoutChatUrl,
@@ -2939,6 +2940,25 @@ export function StudioRoom() {
     setLayout(availableStageItemIds.length > 1 ? 'spotlight' : 'single');
   }, [availableStageItemIds]);
 
+  const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
+    if (action === 'cycle-pip-corner') {
+      setPipCorner((prev) => {
+        const order: Array<'TL' | 'TR' | 'BR' | 'BL'> = ['TL', 'TR', 'BR', 'BL'];
+        return order[(order.indexOf(prev) + 1) % 4];
+      });
+      return;
+    }
+
+    if (action === 'spotlight') {
+      onSpotlightParticipant(itemId);
+      return;
+    }
+
+    if (action === 'clear-spotlight') {
+      onSpotlightParticipant(null);
+    }
+  }, [onSpotlightParticipant]);
+
   // Auto-switch layout when participant count changes
   useEffect(() => {
     const count = videoItems.length;
@@ -3615,6 +3635,12 @@ export function StudioRoom() {
                     const canDragStageTile = canFocusTile && availableStageItemIds.includes(item.id);
                     const isDraggedStageTile = draggedStageItemId === item.id;
                     const isStageDropTarget = Boolean(draggedStageItemId && stageDropTargetId === item.id && draggedStageItemId !== item.id);
+                    const primaryClickAction = getStageTilePrimaryClickAction({
+                      canFocusTile,
+                      isFocusedTile,
+                      isPipSmallTile,
+                      isLeavingTile,
+                    });
                     return (
                       <div
                         key={item.id}
@@ -3636,16 +3662,11 @@ export function StudioRoom() {
                         onDragLeave={canDragStageTile ? () => {
                           setStageDropTargetId((current) => current === item.id ? null : current);
                         } : undefined}
-                        onClick={isPipSmallTile && !isLeavingTile ? () => {
-                          setPipCorner((prev) => {
-                            const order: Array<'TL' | 'TR' | 'BR' | 'BL'> = ['TL', 'TR', 'BR', 'BL'];
-                            return order[(order.indexOf(prev) + 1) % 4];
-                          });
-                        } : undefined}
+                        onClick={primaryClickAction !== 'none' ? () => onStageTilePrimaryClick(item.id, primaryClickAction) : undefined}
                         title={canDragStageTile
-                          ? (isPipSmallTile ? 'Drag to reorder; click to move PiP position' : 'Drag to reorder stage')
+                          ? (isPipSmallTile ? 'Drag to reorder; click to move PiP position' : 'Click to spotlight; drag to reorder')
                           : isPipSmallTile && !isLeavingTile ? 'Click to move PiP position' : undefined}
-                        aria-label={canDragStageTile ? `${item.name} stage tile. Drag to reorder.` : undefined}
+                        aria-label={canDragStageTile ? `${item.name} stage tile. Click to spotlight or drag to reorder.` : undefined}
                       >
                         {canFocusTile && (
                           <div style={styles.tileControls}>
