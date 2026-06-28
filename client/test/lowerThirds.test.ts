@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import type { LowerThirdData } from '../src/components/LowerThird.tsx';
 import {
   addLowerThird,
+  getLowerThirdAnimationLabel,
+  getLowerThirdAnimationStyle,
   selectAutoSpeakerLowerThirdCandidate,
+  normalizeLowerThirdAnimation,
   normalizeLowerThirdAccentColor,
   normalizeLowerThirdDurationSeconds,
   toggleLowerThirdVisibility,
@@ -40,6 +43,7 @@ describe('lower third visibility utilities', () => {
       style: 'bold',
       durationSeconds: 10,
       accentColor: '#0891b2',
+      animation: 'bounce',
       visible: true,
     }, 'lt-3');
 
@@ -53,6 +57,7 @@ describe('lower third visibility utilities', () => {
     );
     assert.equal(next[2].durationSeconds, 10);
     assert.equal(next[2].accentColor, '#0891b2');
+    assert.equal(next[2].animation, 'bounce');
   });
 
   it('toggles one lower third on while hiding the previous one', () => {
@@ -98,6 +103,29 @@ describe('lower third visibility utilities', () => {
     assert.equal(normalizeLowerThirdAccentColor(null), undefined);
   });
 
+  it('normalizes lower third animation presets and returns readable labels', () => {
+    assert.equal(normalizeLowerThirdAnimation('fade'), 'fade');
+    assert.equal(normalizeLowerThirdAnimation('bounce'), 'bounce');
+    assert.equal(normalizeLowerThirdAnimation('missing'), 'slide');
+    assert.equal(normalizeLowerThirdAnimation(null), 'slide');
+    assert.equal(getLowerThirdAnimationLabel('bounce'), 'Bounce');
+    assert.equal(getLowerThirdAnimationLabel('missing'), 'Slide');
+  });
+
+  it('builds distinct animation styles for slide, fade, and bounce presets', () => {
+    const slideHidden = getLowerThirdAnimationStyle('slide', false);
+    assert.equal(slideHidden.opacity, 0);
+    assert.match(String(slideHidden.transform), /-24px/);
+
+    const fadeVisible = getLowerThirdAnimationStyle('fade', true);
+    assert.equal(fadeVisible.opacity, 1);
+    assert.equal(fadeVisible.transform, 'translate3d(0, 0, 0)');
+
+    const bounceVisible = getLowerThirdAnimationStyle('bounce', true);
+    assert.match(String(bounceVisible.transition), /1\.56/);
+    assert.equal(bounceVisible.transform, 'translate3d(0, 0, 0) scale(1)');
+  });
+
   it('selects the loudest eligible participant for auto speaker lower thirds', () => {
     const speaker = selectAutoSpeakerLowerThirdCandidate([
       { participantId: 'muted', name: 'Muted', title: 'Guest', audioLevel: 90, eligible: false },
@@ -141,7 +169,7 @@ describe('lower third visibility utilities', () => {
   it('reuses the existing auto speaker lower third entry', () => {
     const current: LowerThirdData[] = [
       ...existing,
-      { id: 'lt-auto', name: 'Host', title: 'Host', style: 'bold', source: 'auto-speaker', participantId: 'host', durationSeconds: 5, visible: false },
+      { id: 'lt-auto', name: 'Host', title: 'Host', style: 'bold', source: 'auto-speaker', participantId: 'host', durationSeconds: 5, animation: 'fade', visible: false },
     ];
     const next = upsertAutoSpeakerLowerThird(current, {
       participantId: 'producer',
@@ -153,6 +181,7 @@ describe('lower third visibility utilities', () => {
     assert.equal(next[2].id, 'lt-auto');
     assert.equal(next[2].name, 'Producer');
     assert.equal(next[2].participantId, 'producer');
+    assert.equal(next[2].animation, 'fade');
     assert.equal(next[2].visible, true);
   });
 });

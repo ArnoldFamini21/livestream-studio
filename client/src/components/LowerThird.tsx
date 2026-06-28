@@ -1,6 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Participant } from '@studio/shared';
-import { getParticipantLowerThirdTitle, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
+import {
+  getLowerThirdAnimationLabel,
+  getLowerThirdAnimationStyle,
+  getParticipantLowerThirdTitle,
+  LOWER_THIRD_ANIMATION_EXIT_MS,
+  LOWER_THIRD_ANIMATION_PRESETS,
+  normalizeLowerThirdAccentColor,
+  normalizeLowerThirdAnimation,
+  type LowerThirdAnimation,
+} from '../utils/lowerThirds.ts';
 
 export interface LowerThirdData {
   id: string;
@@ -10,6 +19,7 @@ export interface LowerThirdData {
   visible: boolean;
   durationSeconds?: number;
   accentColor?: string;
+  animation?: LowerThirdAnimation;
   source?: 'auto-speaker' | 'participant';
   participantId?: string;
 }
@@ -54,6 +64,7 @@ export function LowerThirdManager({
   const [style, setStyle] = useState<LowerThirdData['style']>('minimal');
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [accentColor, setAccentColor] = useState('');
+  const [animation, setAnimation] = useState<LowerThirdAnimation>('slide');
   const onStageParticipants = participants.filter((participant) => participant.status === 'on-stage');
 
   const handleAdd = () => {
@@ -64,6 +75,7 @@ export function LowerThirdManager({
       style,
       durationSeconds: durationSeconds || undefined,
       accentColor: normalizeLowerThirdAccentColor(accentColor),
+      animation,
     });
     setName('');
     setTitle('');
@@ -110,6 +122,7 @@ export function LowerThirdManager({
                   title: getParticipantLowerThirdTitle(participant.role),
                   style: 'bold',
                   durationSeconds: 10,
+                  animation: 'slide',
                   visible: true,
                   source: 'participant',
                   participantId: participant.id,
@@ -143,6 +156,7 @@ export function LowerThirdManager({
               <div style={styles.itemMetaRow}>
                 {lt.source === 'auto-speaker' && <span style={styles.itemMeta}>auto speaker</span>}
                 {lt.durationSeconds && <span style={styles.itemMeta}>{lt.durationSeconds}s auto-hide</span>}
+                <span style={styles.itemMeta}>{getLowerThirdAnimationLabel(lt.animation)}</span>
               </div>
             </div>
             <div style={styles.itemActions}>
@@ -213,6 +227,24 @@ export function LowerThirdManager({
             ))}
           </div>
         </div>
+        <div style={styles.durationGroup}>
+          <span style={styles.durationLabel}>Animation</span>
+          <div style={styles.durationRow}>
+            {LOWER_THIRD_ANIMATION_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                style={{
+                  ...styles.durationBtn,
+                  ...(animation === preset.id ? styles.durationBtnActive : {}),
+                }}
+                onClick={() => setAnimation(preset.id)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div style={styles.accentGroup}>
           <span style={styles.durationLabel}>Accent</span>
           <div style={styles.accentRow}>
@@ -258,9 +290,10 @@ export function LowerThirdManager({
 
 // The actual on-screen overlay component
 export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
-  const [mounted, setMounted] = useState(data.visible);
-  const [animatingIn, setAnimatingIn] = useState(data.visible);
+  const [mounted, setMounted] = useState(true);
+  const [animatingIn, setAnimatingIn] = useState(false);
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animation = normalizeLowerThirdAnimation(data.animation);
 
   useEffect(() => {
     if (exitTimerRef.current) {
@@ -271,21 +304,26 @@ export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
     if (data.visible) {
       setMounted(true);
       // Allow the DOM to render before triggering the enter animation
-      requestAnimationFrame(() => setAnimatingIn(true));
+      const frame = requestAnimationFrame(() => setAnimatingIn(true));
+      return () => {
+        cancelAnimationFrame(frame);
+        if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+      };
     } else {
       // Start exit animation, then unmount
       setAnimatingIn(false);
-      exitTimerRef.current = setTimeout(() => setMounted(false), 400);
+      exitTimerRef.current = setTimeout(() => setMounted(false), LOWER_THIRD_ANIMATION_EXIT_MS);
     }
 
     return () => {
       if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
     };
-  }, [data.visible]);
+  }, [animation, data.visible]);
 
   if (!mounted) return null;
 
   const overlayStyles = getOverlayStyle(data.style, normalizeLowerThirdAccentColor(data.accentColor));
+  const animationStyle = getLowerThirdAnimationStyle(animation, animatingIn);
 
   return (
     <div
@@ -294,9 +332,7 @@ export function LowerThirdOverlay({ data }: { data: LowerThirdData }) {
       style={{
         ...overlayBase,
         ...overlayStyles.container,
-        opacity: animatingIn ? 1 : 0,
-        transform: animatingIn ? 'translateY(0)' : 'translateY(16px)',
-        transition: 'opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
+        ...animationStyle,
       }}
     >
       <div style={overlayStyles.nameBar}>

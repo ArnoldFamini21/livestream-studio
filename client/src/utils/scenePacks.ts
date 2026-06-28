@@ -3,6 +3,7 @@ import type { BannerData } from '../components/BannerOverlay.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
+import { normalizeLowerThirdAnimation } from './lowerThirds.ts';
 import { buildDuplicatedSceneName } from './sceneOrder.ts';
 
 export const SCENE_PACK_VERSION = 1;
@@ -163,6 +164,7 @@ function sanitizeLowerThird(input: unknown): LowerThirdData | null {
   if (durationSeconds) lowerThird.durationSeconds = durationSeconds;
   const accentColor = readOptionalString(input.accentColor, 40);
   if (accentColor) lowerThird.accentColor = accentColor;
+  lowerThird.animation = normalizeLowerThirdAnimation(input.animation);
   if (input.source === 'participant') lowerThird.source = 'participant';
   const participantId = readOptionalString(input.participantId, 128);
   if (participantId) lowerThird.participantId = participantId;

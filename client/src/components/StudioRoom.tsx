@@ -90,6 +90,7 @@ import {
 } from '../utils/popoutChat.ts';
 import {
   AUTO_SPEAKER_LOWER_THIRD_DURATION_SECONDS,
+  LOWER_THIRD_ANIMATION_EXIT_MS,
   addLowerThird,
   normalizeLowerThirdDurationSeconds,
   getParticipantLowerThirdTitle,
@@ -2981,6 +2982,9 @@ export function StudioRoom() {
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
   const visibleTimers = useMemo(() => timers.filter(t => t.visible), [timers]);
   const visibleTickers = useMemo(() => tickers.filter(t => t.visible), [tickers]);
+  const visibleLowerThird = useMemo(() => lowerThirds.find((lt) => lt.visible) || null, [lowerThirds]);
+  const [displayedLowerThird, setDisplayedLowerThird] = useState<LowerThirdData | null>(null);
+  const displayedLowerThirdRef = useRef<LowerThirdData | null>(null);
   const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
   const highlightedPoll = useMemo(() => polls.find((poll) => poll.highlighted) || null, [polls]);
   const showCompositorDebug = import.meta.env.DEV && isLive;
@@ -2992,6 +2996,27 @@ export function StudioRoom() {
     sessionStartedAt: sessionRecordingStartedAt,
     sessionElapsedSeconds: sessionRecordingElapsed,
   });
+
+  useEffect(() => {
+    displayedLowerThirdRef.current = displayedLowerThird;
+  }, [displayedLowerThird]);
+
+  useEffect(() => {
+    if (visibleLowerThird) {
+      setDisplayedLowerThird(visibleLowerThird);
+      return;
+    }
+
+    const outgoing = displayedLowerThirdRef.current;
+    if (!outgoing) return;
+
+    setDisplayedLowerThird({ ...outgoing, visible: false });
+    const timer = window.setTimeout(() => {
+      setDisplayedLowerThird((current) => current && !current.visible ? null : current);
+    }, LOWER_THIRD_ANIMATION_EXIT_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [visibleLowerThird]);
 
   // Connection error
   if (connectionError) {
@@ -3058,7 +3083,6 @@ export function StudioRoom() {
     );
   }
 
-  const visibleLowerThird = lowerThirds.find((lt) => lt.visible);
   const canManagePolls = Boolean(isHostOrCoHost && myParticipant?.status !== 'green-room');
   const canVotePolls = Boolean(!isHostOrCoHost && myParticipant?.status !== 'green-room');
   const captionBottomOffset = Math.max(
@@ -3480,7 +3504,7 @@ export function StudioRoom() {
                 )}
 
                 {/* Lower Third Overlay */}
-                {visibleLowerThird && <LowerThirdOverlay data={visibleLowerThird} />}
+                {displayedLowerThird && <LowerThirdOverlay key={displayedLowerThird.id} data={displayedLowerThird} />}
 
                 {/* Banner Overlays */}
                 {visibleBanners.map((b) => (
