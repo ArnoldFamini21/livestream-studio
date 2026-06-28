@@ -78,3 +78,24 @@ export function moveStageItemInOrder(
   [moved[index], moved[index + 1]] = [moved[index + 1], moved[index]];
   return moved;
 }
+
+export function reorderStageItemBefore(
+  order: string[],
+  availableIds: string[],
+  draggedItemId: string,
+  targetItemId: string
+): string[] {
+  const normalized = normalizeStageItemOrder(order, availableIds);
+  if (draggedItemId === targetItemId) return normalized;
+
+  const draggedIndex = normalized.indexOf(draggedItemId);
+  const targetIndex = normalized.indexOf(targetItemId);
+  if (draggedIndex === -1 || targetIndex === -1) return normalized;
+
+  const next = normalized.filter((id) => id !== draggedItemId);
+  const insertionIndex = next.indexOf(targetItemId);
+  if (insertionIndex === -1) return normalized;
+
+  next.splice(insertionIndex, 0, draggedItemId);
+  return next;
+}

@@ -80,6 +80,7 @@ import {
   applyStageItemOrder,
   moveStageItemInOrder,
   normalizeStageItemOrder,
+  reorderStageItemBefore,
   type StageItemOrderDirection,
 } from '../utils/stageItemOrder.ts';
 import {
@@ -572,6 +573,8 @@ export function StudioRoom() {
   const [pipCorner, setPipCorner] = useState<'TL' | 'TR' | 'BL' | 'BR'>('BR');
   const [focusedVideoItemId, setFocusedVideoItemId] = useState<string | null>(null);
   const [stageItemOrder, setStageItemOrder] = useState<string[]>([]);
+  const [draggedStageItemId, setDraggedStageItemId] = useState<string | null>(null);
+  const [stageDropTargetId, setStageDropTargetId] = useState<string | null>(null);
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [audioDuckingEnabled, setAudioDuckingEnabled] = useState(false);
   const [stageAudioLevels, setStageAudioLevels] = useState<Record<string, number>>({});
@@ -2893,6 +2896,37 @@ export function StudioRoom() {
     setStageItemOrder((current) => moveStageItemInOrder(current, availableStageItemIds, itemId, direction));
   }, [availableStageItemIds]);
 
+  const onStageTileDragStart = useCallback((event: React.DragEvent<HTMLDivElement>, itemId: string) => {
+    if (!isHostOrCoHost || !availableStageItemIds.includes(itemId)) return;
+    setDraggedStageItemId(itemId);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', itemId);
+  }, [availableStageItemIds, isHostOrCoHost]);
+
+  const onStageTileDragOver = useCallback((event: React.DragEvent<HTMLDivElement>, targetItemId: string) => {
+    if (!draggedStageItemId || draggedStageItemId === targetItemId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setStageDropTargetId(targetItemId);
+  }, [draggedStageItemId]);
+
+  const clearStageDragState = useCallback(() => {
+    setDraggedStageItemId(null);
+    setStageDropTargetId(null);
+  }, []);
+
+  const onStageTileDrop = useCallback((event: React.DragEvent<HTMLDivElement>, targetItemId: string) => {
+    const draggedItemId = event.dataTransfer.getData('text/plain') || draggedStageItemId;
+    if (!draggedItemId || draggedItemId === targetItemId) {
+      clearStageDragState();
+      return;
+    }
+
+    event.preventDefault();
+    setStageItemOrder((current) => reorderStageItemBefore(current, availableStageItemIds, draggedItemId, targetItemId));
+    clearStageDragState();
+  }, [availableStageItemIds, clearStageDragState, draggedStageItemId]);
+
   const onSpotlightParticipant = useCallback((participantId: string | null) => {
     if (!participantId) {
       setFocusedVideoItemId(null);
@@ -3578,22 +3612,40 @@ export function StudioRoom() {
                     const orderedIndex = orderedVideoItems.findIndex((orderedItem) => orderedItem.id === item.id);
                     const canMoveEarlier = canFocusTile && orderedIndex > 0;
                     const canMoveLater = canFocusTile && orderedIndex >= 0 && orderedIndex < orderedVideoItems.length - 1;
+                    const canDragStageTile = canFocusTile && availableStageItemIds.includes(item.id);
+                    const isDraggedStageTile = draggedStageItemId === item.id;
+                    const isStageDropTarget = Boolean(draggedStageItemId && stageDropTargetId === item.id && draggedStageItemId !== item.id);
                     return (
                       <div
                         key={item.id}
+                        data-stage-item-id={item.id}
+                        draggable={canDragStageTile}
                         style={{
                           ...styles.tileWrapper,
                           ...(isFocusedTile ? styles.tileWrapperFocused : {}),
+                          ...(canDragStageTile ? styles.tileWrapperDraggable : {}),
+                          ...(isDraggedStageTile ? styles.tileWrapperDragging : {}),
+                          ...(isStageDropTarget ? styles.tileWrapperDropTarget : {}),
                           ...(layoutResult.tileStyles[i] || {}),
                           ...getStagePresenceWrapperStyle(presence.phase),
                         }}
+                        onDragStart={canDragStageTile ? (event) => onStageTileDragStart(event, item.id) : undefined}
+                        onDragOver={canDragStageTile ? (event) => onStageTileDragOver(event, item.id) : undefined}
+                        onDrop={canDragStageTile ? (event) => onStageTileDrop(event, item.id) : undefined}
+                        onDragEnd={canDragStageTile ? clearStageDragState : undefined}
+                        onDragLeave={canDragStageTile ? () => {
+                          setStageDropTargetId((current) => current === item.id ? null : current);
+                        } : undefined}
                         onClick={isPipSmallTile && !isLeavingTile ? () => {
                           setPipCorner((prev) => {
                             const order: Array<'TL' | 'TR' | 'BR' | 'BL'> = ['TL', 'TR', 'BR', 'BL'];
                             return order[(order.indexOf(prev) + 1) % 4];
                           });
                         } : undefined}
-                        title={isPipSmallTile && !isLeavingTile ? 'Click to move PiP position' : undefined}
+                        title={canDragStageTile
+                          ? (isPipSmallTile ? 'Drag to reorder; click to move PiP position' : 'Drag to reorder stage')
+                          : isPipSmallTile && !isLeavingTile ? 'Click to move PiP position' : undefined}
+                        aria-label={canDragStageTile ? `${item.name} stage tile. Drag to reorder.` : undefined}
                       >
                         {canFocusTile && (
                           <div style={styles.tileControls}>
@@ -4570,6 +4622,19 @@ const styles: Record<string, React.CSSProperties> = {
   tileWrapperFocused: {
     outline: '2px solid var(--accent)',
     outlineOffset: -2,
+  },
+  tileWrapperDraggable: {
+    cursor: 'grab',
+  },
+  tileWrapperDragging: {
+    opacity: 0.58,
+    transform: 'scale(0.985)',
+    cursor: 'grabbing',
+  },
+  tileWrapperDropTarget: {
+    outline: '3px solid #67e8f9',
+    outlineOffset: -3,
+    boxShadow: '0 0 0 4px rgba(103, 232, 249, 0.18), 0 14px 34px rgba(0, 0, 0, 0.34)',
   },
   tileControls: {
     position: 'absolute',
