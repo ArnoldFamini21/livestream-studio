@@ -178,7 +178,7 @@
 - [x] Scene transition effects: crossfade, wipe, slide, zoom
 - [x] Participant join/leave animations
 - [x] Lower third entrance/exit animations (slide, fade, bounce)
-- [ ] Stinger transitions (custom video overlay during switch)
+- [x] Stinger transitions (custom video overlay during switch)
 
 ### 9B. Virtual Backgrounds
 - [ ] Background blur (TensorFlow.js / MediaPipe)

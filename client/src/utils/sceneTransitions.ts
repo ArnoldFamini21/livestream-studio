@@ -1,19 +1,28 @@
 import type { CSSProperties } from 'react';
 
-export type SceneTransitionPresetId = 'fade' | 'wipe' | 'slide' | 'zoom';
+export type SceneTransitionPresetId = 'fade' | 'wipe' | 'slide' | 'zoom' | 'stinger';
 
 export interface SceneTransitionPreset {
   id: SceneTransitionPresetId;
   label: string;
 }
 
+export interface SceneStingerClip {
+  name: string;
+  url: string;
+  source: 'upload' | 'url';
+  mimeType?: string;
+}
+
 export const DEFAULT_SCENE_TRANSITION_PRESET_ID: SceneTransitionPresetId = 'fade';
+export const MAX_SCENE_STINGER_FILE_BYTES = 40 * 1024 * 1024;
 
 export const SCENE_TRANSITION_PRESETS: SceneTransitionPreset[] = [
   { id: 'fade', label: 'Crossfade' },
   { id: 'wipe', label: 'Wipe' },
   { id: 'slide', label: 'Slide' },
   { id: 'zoom', label: 'Zoom' },
+  { id: 'stinger', label: 'Stinger' },
 ];
 
 const SCENE_TRANSITION_PRESET_IDS = new Set<SceneTransitionPresetId>(
@@ -28,6 +37,47 @@ export function normalizeSceneTransitionPresetId(value: unknown): SceneTransitio
 
 export function getSceneTransitionPresetLabel(presetId: SceneTransitionPresetId): string {
   return SCENE_TRANSITION_PRESETS.find((preset) => preset.id === presetId)?.label || 'Crossfade';
+}
+
+function readBoundedString(value: unknown, maxLength: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+export function validateSceneStingerFile(file: Pick<File, 'name' | 'size' | 'type'>): string | null {
+  if (file.size > MAX_SCENE_STINGER_FILE_BYTES) return 'Stinger video must be 40 MB or smaller.';
+  const name = file.name.toLowerCase();
+  const mimeType = file.type.toLowerCase();
+  const looksLikeVideo = mimeType.startsWith('video/') || /\.(webm|mp4|mov|m4v)$/i.test(name);
+  return looksLikeVideo ? null : 'Choose a video file for the stinger transition.';
+}
+
+export function normalizeSceneStingerClip(value: unknown): SceneStingerClip | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const name = readBoundedString(input.name, 120);
+  const url = readBoundedString(input.url, 4096);
+  const source = input.source === 'upload' || input.source === 'url' ? input.source : null;
+  const mimeType = readBoundedString(input.mimeType, 120);
+
+  if (!name || !url || !source) return null;
+  return {
+    name,
+    url,
+    source,
+    ...(mimeType ? { mimeType } : {}),
+  };
+}
+
+export function isPersistableSceneStingerClip(clip: SceneStingerClip | null): clip is SceneStingerClip {
+  if (!clip || clip.source !== 'url') return false;
+  if (clip.url.startsWith('blob:')) return false;
+
+  try {
+    const parsed = new URL(clip.url);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 export function getSceneTransitionOverlayStyle(input: {
@@ -64,6 +114,13 @@ export function getSceneTransitionOverlayStyle(input: {
         background: 'rgba(2, 6, 23, 0.42)',
         transition: `opacity ${durationMs}ms ${easing}, transform ${durationMs}ms ${easing}`,
         willChange: 'opacity, transform',
+      };
+    case 'stinger':
+      return {
+        opacity: input.visible ? 1 : 0,
+        background: 'rgba(2, 6, 23, 0.72)',
+        transition: `opacity ${Math.min(durationMs, 260)}ms ${easing}`,
+        willChange: 'opacity',
       };
     case 'fade':
     default:
