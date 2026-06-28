@@ -37,6 +37,7 @@ import {
   getStudioThemeLabel,
   type StudioThemeId,
 } from '../utils/studioThemes.ts';
+import { normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -89,6 +90,8 @@ interface SidebarProps {
   onLogoPlacementChange: (placement: LogoPlacement) => void;
   logoSize: LogoSize;
   onLogoSizeChange: (size: LogoSize) => void;
+  logoOpacity: number;
+  onLogoOpacityChange: (opacity: number) => void;
   cameraShape: CameraShape;
   onCameraShapeChange: (shape: CameraShape) => void;
   nameTagStyle: NameTagStyle;
@@ -262,10 +265,10 @@ export function Sidebar(props: SidebarProps) {
   ];
 
   const brandKits: BrandKitPreset[] = [
-    { name: 'Broadcast', studioTheme: 'dark', brandColor: '#ef4444', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium' },
-    { name: 'Webinar', studioTheme: 'light', brandColor: '#2563eb', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)' }, cameraShape: 'rounded', nameTagStyle: 'classic', logoSize: 'small' },
-    { name: 'Podcast', studioTheme: 'colorful', brandColor: '#db2777', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #18181b 0%, #831843 100%)' }, cameraShape: 'circle', nameTagStyle: 'minimal', logoSize: 'medium' },
-    { name: 'Executive', studioTheme: 'dark', brandColor: '#059669', stageBackground: { type: 'color', value: '#111827' }, cameraShape: 'rectangle', nameTagStyle: 'classic', logoSize: 'large' },
+    { name: 'Broadcast', studioTheme: 'dark', brandColor: '#ef4444', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium', logoOpacity: 0.85 },
+    { name: 'Webinar', studioTheme: 'light', brandColor: '#2563eb', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)' }, cameraShape: 'rounded', nameTagStyle: 'classic', logoSize: 'small', logoOpacity: 0.75 },
+    { name: 'Podcast', studioTheme: 'colorful', brandColor: '#db2777', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #18181b 0%, #831843 100%)' }, cameraShape: 'circle', nameTagStyle: 'minimal', logoSize: 'medium', logoOpacity: 0.65 },
+    { name: 'Executive', studioTheme: 'dark', brandColor: '#059669', stageBackground: { type: 'color', value: '#111827' }, cameraShape: 'rectangle', nameTagStyle: 'classic', logoSize: 'large', logoOpacity: 0.55 },
   ];
 
   useEffect(() => {
@@ -283,6 +286,7 @@ export function Sidebar(props: SidebarProps) {
     props.onCameraShapeChange(kit.cameraShape);
     props.onNameTagStyleChange(kit.nameTagStyle);
     props.onLogoSizeChange(kit.logoSize);
+    props.onLogoOpacityChange(kit.logoOpacity);
     if (kit.logoPlacement !== undefined) props.onLogoPlacementChange(kit.logoPlacement);
     if (kit.logoUrl !== undefined) props.onLogoUrlChange(kit.logoUrl);
     setBrandKitMessage(null);
@@ -302,6 +306,7 @@ export function Sidebar(props: SidebarProps) {
         logoUrl: props.logoUrl,
         logoPlacement: props.logoPlacement,
         logoSize: props.logoSize,
+        logoOpacity: props.logoOpacity,
         cameraShape: props.cameraShape,
         nameTagStyle: props.nameTagStyle,
       },
@@ -602,6 +607,41 @@ export function Sidebar(props: SidebarProps) {
                         onClick={() => props.onLogoSizeChange(size)}
                       >
                         {size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div style={st.brandGroup}>
+                  <div style={st.brandLabelRow}>
+                    <span style={st.brandLabel}>Watermark Opacity</span>
+                    <span style={st.colorHex}>{Math.round(props.logoOpacity * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={20}
+                    max={100}
+                    step={5}
+                    value={Math.round(props.logoOpacity * 100)}
+                    onChange={(e) => props.onLogoOpacityChange(normalizeLogoOpacity(Number(e.currentTarget.value) / 100))}
+                    style={st.opacitySlider}
+                    aria-label="Logo watermark opacity"
+                  />
+                  <div style={st.opacityPresets}>
+                    {[
+                      { label: 'Subtle', value: 0.45 },
+                      { label: 'Standard', value: 0.85 },
+                      { label: 'Solid', value: 1 },
+                    ].map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        style={{
+                          ...st.opacityPresetBtn,
+                          ...(Math.abs(props.logoOpacity - preset.value) < 0.01 ? st.opacityPresetBtnActive : {}),
+                        }}
+                        onClick={() => props.onLogoOpacityChange(preset.value)}
+                      >
+                        {preset.label}
                       </button>
                     ))}
                   </div>
@@ -1485,6 +1525,10 @@ const st: Record<string, React.CSSProperties> = {
   segmented: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, padding: 3, background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)' },
   segmentedBtn: { height: 28, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer', textTransform: 'capitalize' },
   segmentedBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
+  opacitySlider: { width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' },
+  opacityPresets: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, marginTop: 8 },
+  opacityPresetBtn: { minWidth: 0, padding: '6px 4px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
+  opacityPresetBtnActive: { borderColor: 'var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
   shapeGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
   shapeBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s ease' },
   shapeVisual: { width: 32, background: 'var(--border-strong)' },

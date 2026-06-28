@@ -53,7 +53,7 @@
 
 ### 3B. Logos & Branding
 - [ ] Upload custom logo — position anywhere on canvas (drag-and-drop)
-- [ ] Watermark mode (semi-transparent, corner-locked)
+- [x] Watermark mode (semi-transparent, corner-locked)
 - [ ] Custom background images/videos for scenes
 - [x] Brand color theme that skins the entire studio
 

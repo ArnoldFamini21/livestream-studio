@@ -24,6 +24,7 @@ function makeScene(overrides: Partial<Scene> = {}): Scene {
     nameTagStyle: 'classic',
     logoPlacement: 'top-right',
     logoSize: 'medium',
+    logoOpacity: 0.45,
     pipCorner: 'TR',
     focusedVideoItemId: 'local',
     stageItemOrder: ['local', 'guest'],
@@ -108,6 +109,7 @@ describe('scene packs', () => {
     assert.equal(imported.importedScenes, 1);
     assert.equal(imported.scenes[0].id, 'scene-imported-0');
     assert.equal(imported.scenes[0].name, 'Main Copy');
+    assert.equal(imported.scenes[0].logoOpacity, 0.45);
     assert.deepEqual(imported.scenes[0].visibleOverlayIds, [
       'lowerThird-imported-0',
       'banner-imported-0',
@@ -161,6 +163,18 @@ describe('scene packs', () => {
       () => parseScenePackJson(JSON.stringify({ version: 1, source: 'livestream-studio', scenes: [], overlays: { lowerThirds: [], banners: [], timers: [], tickers: [] } })),
       /does not contain any scenes/
     );
+  });
+
+  it('normalizes imported logo watermark opacity', () => {
+    const parsed = parseScenePackJson(JSON.stringify({
+      version: 1,
+      source: 'livestream-studio',
+      exportedAt: '2026-06-24T00:00:00.000Z',
+      scenes: [makeScene({ logoOpacity: 4 })],
+      overlays: { lowerThirds: [], banners: [], timers: [], tickers: [] },
+    }));
+
+    assert.equal(parsed.scenes[0].logoOpacity, 1);
   });
 
   it('round trips valid JSON packs and builds readable filenames', () => {

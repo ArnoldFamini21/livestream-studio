@@ -528,6 +528,7 @@ export interface Scene {
   nameTagStyle?: NameTagStyle;
   logoPlacement?: LogoPlacement;
   logoSize?: LogoSize;
+  logoOpacity?: number;
   pipCorner?: 'TL' | 'TR' | 'BL' | 'BR';
   focusedVideoItemId?: string | null;
   stageItemOrder?: string[];

@@ -18,6 +18,7 @@ const visuals = {
   logoUrl: 'data:image/png;base64,logo',
   logoPlacement: 'bottom-right' as const,
   logoSize: 'large' as const,
+  logoOpacity: 0.45,
   cameraShape: 'rounded' as const,
   nameTagStyle: 'block' as const,
 };
@@ -72,6 +73,7 @@ describe('brand kits', () => {
     assert.equal(parseSavedBrandKits(JSON.stringify([{ bad: true }, kit])).length, 1);
     assert.equal(parseSavedBrandKits(JSON.stringify(many)).length, MAX_SAVED_BRAND_KITS);
     assert.equal(parseSavedBrandKits(JSON.stringify([{ ...kit, studioTheme: 'bad' }]))[0]?.studioTheme, 'dark');
+    assert.equal(parseSavedBrandKits(JSON.stringify([{ ...kit, logoOpacity: 0.05 }]))[0]?.logoOpacity, 0.2);
   });
 
   it('serializes only valid saved brand kits', () => {
