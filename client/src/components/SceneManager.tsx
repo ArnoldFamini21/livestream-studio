@@ -13,6 +13,8 @@ import type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.
 import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
 import {
   SCENE_TRANSITION_PRESETS,
+  validateSceneStingerFile,
+  type SceneStingerClip,
   type SceneTransitionPresetId,
 } from '../utils/sceneTransitions.ts';
 
@@ -22,7 +24,9 @@ interface SceneManagerProps {
   scenes: Scene[];
   activeSceneId: string | null;
   sceneTransitionPreset: SceneTransitionPresetId;
+  sceneStingerClip: SceneStingerClip | null;
   onSceneTransitionPresetChange: (presetId: SceneTransitionPresetId) => void;
+  onSceneStingerClipChange: (clip: SceneStingerClip | null) => void;
   onSaveScene: (name: string) => void | Promise<void>;
   onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
   onApplyScene: (sceneId: string) => void;
@@ -93,7 +97,9 @@ export function SceneManager({
   scenes,
   activeSceneId,
   sceneTransitionPreset,
+  sceneStingerClip,
   onSceneTransitionPresetChange,
+  onSceneStingerClipChange,
   onSaveScene,
   onCreateTemplateScene,
   onApplyScene,
@@ -111,7 +117,10 @@ export function SceneManager({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [stingerUrl, setStingerUrl] = useState('');
+  const [stingerMessage, setStingerMessage] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const stingerInputRef = useRef<HTMLInputElement>(null);
 
   const atLimit = scenes.length >= MAX_SCENES;
 
@@ -174,6 +183,62 @@ export function SceneManager({
     const file = e.currentTarget.files?.[0];
     if (file) void onImportScenePack(file);
     e.currentTarget.value = '';
+  };
+
+  const getStingerNameFromUrl = (url: string): string => {
+    try {
+      const parsed = new URL(url);
+      const pathname = parsed.pathname.split('/').filter(Boolean).pop();
+      return pathname ? decodeURIComponent(pathname).slice(0, 80) : parsed.hostname;
+    } catch {
+      return 'Stinger clip';
+    }
+  };
+
+  const handleStingerUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.currentTarget.files?.[0];
+    e.currentTarget.value = '';
+    if (!file) return;
+
+    const issue = validateSceneStingerFile(file);
+    if (issue) {
+      setStingerMessage(issue);
+      return;
+    }
+
+    onSceneStingerClipChange({
+      name: file.name,
+      url: URL.createObjectURL(file),
+      source: 'upload',
+      mimeType: file.type || undefined,
+    });
+    onSceneTransitionPresetChange('stinger');
+    setStingerMessage('Stinger video ready for this session.');
+  };
+
+  const handleStingerUrl = () => {
+    const trimmed = stingerUrl.trim();
+    if (!trimmed) return;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        setStingerMessage('Use an http or https video URL.');
+        return;
+      }
+    } catch {
+      setStingerMessage('Enter a valid video URL.');
+      return;
+    }
+
+    onSceneStingerClipChange({
+      name: getStingerNameFromUrl(trimmed),
+      url: trimmed,
+      source: 'url',
+      mimeType: 'video/url',
+    });
+    onSceneTransitionPresetChange('stinger');
+    setStingerUrl('');
+    setStingerMessage('Stinger URL saved for this studio.');
   };
 
   return (
@@ -310,6 +375,65 @@ export function SceneManager({
             );
           })}
         </div>
+        {sceneTransitionPreset === 'stinger' && (
+          <div style={styles.stingerControls}>
+            <input
+              ref={stingerInputRef}
+              type="file"
+              accept="video/*,.webm,.mp4,.mov,.m4v"
+              style={{ display: 'none' }}
+              onChange={handleStingerUpload}
+            />
+            <button
+              type="button"
+              style={styles.stingerUploadBtn}
+              onClick={() => stingerInputRef.current?.click()}
+            >
+              Select Video
+            </button>
+            <div style={styles.stingerUrlRow}>
+              <input
+                type="url"
+                value={stingerUrl}
+                placeholder="https://.../stinger.mp4"
+                style={styles.stingerUrlInput}
+                onChange={(event) => setStingerUrl(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') handleStingerUrl();
+                }}
+              />
+              <button
+                type="button"
+                style={{
+                  ...styles.stingerUrlBtn,
+                  ...(!stingerUrl.trim() ? styles.stingerUrlBtnDisabled : {}),
+                }}
+                onClick={handleStingerUrl}
+                disabled={!stingerUrl.trim()}
+              >
+                Save
+              </button>
+            </div>
+            {sceneStingerClip && (
+              <div style={styles.stingerClipRow}>
+                <span style={styles.stingerClipName} title={sceneStingerClip.name}>{sceneStingerClip.name}</span>
+                <span style={styles.stingerClipSource}>{sceneStingerClip.source === 'url' ? 'saved' : 'session'}</span>
+                <button
+                  type="button"
+                  style={styles.stingerRemoveBtn}
+                  onClick={() => {
+                    onSceneStingerClipChange(null);
+                    setStingerMessage('Stinger clip removed.');
+                  }}
+                  aria-label="Remove stinger clip"
+                >
+                  Remove
+                </button>
+              </div>
+            )}
+            {stingerMessage && <span style={styles.stingerMessage}>{stingerMessage}</span>}
+          </div>
+        )}
       </div>
 
       <div style={styles.templateSection}>
@@ -749,6 +873,97 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(124, 58, 237, 0.18)',
     borderColor: 'rgba(167, 139, 250, 0.52)',
     color: '#ddd6fe',
+  },
+  stingerControls: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    paddingTop: 2,
+  },
+  stingerUploadBtn: {
+    height: 28,
+    padding: '0 8px',
+    borderRadius: 7,
+    border: '1px solid rgba(103, 232, 249, 0.36)',
+    background: 'rgba(103, 232, 249, 0.1)',
+    color: '#a5f3fc',
+    fontSize: 10,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  stingerUrlRow: {
+    display: 'grid',
+    gridTemplateColumns: '1fr auto',
+    gap: 5,
+  },
+  stingerUrlInput: {
+    minWidth: 0,
+    height: 28,
+    padding: '0 8px',
+    borderRadius: 7,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
+    fontSize: 10,
+    outline: 'none',
+  },
+  stingerUrlBtn: {
+    height: 28,
+    padding: '0 9px',
+    borderRadius: 7,
+    border: '1px solid rgba(167, 139, 250, 0.42)',
+    background: 'rgba(124, 58, 237, 0.2)',
+    color: '#ddd6fe',
+    fontSize: 10,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  stingerUrlBtnDisabled: {
+    opacity: 0.45,
+    cursor: 'not-allowed',
+  },
+  stingerClipRow: {
+    display: 'grid',
+    gridTemplateColumns: '1fr auto auto',
+    alignItems: 'center',
+    gap: 5,
+    minHeight: 26,
+    padding: '4px 5px 4px 8px',
+    borderRadius: 7,
+    border: '1px solid var(--border)',
+    background: 'rgba(15, 23, 42, 0.42)',
+  },
+  stingerClipName: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+  },
+  stingerClipSource: {
+    fontSize: 8,
+    fontWeight: 900,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  stingerRemoveBtn: {
+    height: 20,
+    padding: '0 6px',
+    borderRadius: 6,
+    border: '1px solid rgba(239, 68, 68, 0.32)',
+    background: 'rgba(239, 68, 68, 0.1)',
+    color: '#fca5a5',
+    fontSize: 9,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  stingerMessage: {
+    fontSize: 9,
+    lineHeight: 1.35,
+    color: 'var(--text-muted)',
   },
   limitNote: {
     fontSize: 10,

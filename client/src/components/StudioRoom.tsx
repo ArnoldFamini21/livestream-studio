@@ -111,7 +111,10 @@ import {
 import {
   DEFAULT_SCENE_TRANSITION_PRESET_ID,
   getSceneTransitionOverlayStyle,
+  isPersistableSceneStingerClip,
+  normalizeSceneStingerClip,
   normalizeSceneTransitionPresetId,
+  type SceneStingerClip,
   type SceneTransitionPresetId,
 } from '../utils/sceneTransitions.ts';
 import { useToast } from './Toast.tsx';
@@ -121,6 +124,7 @@ const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.
 const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_STUDIO_SCENES = 12;
 const SCENE_TRANSITION_DURATION_MS = 520;
+const STINGER_TRANSITION_DURATION_MS = 1200;
 const GUEST_JOIN_SESSION_STORAGE_KEY = 'livestream-studio:guest-join-session-id';
 const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing or expired. Reopen this studio from the saved host entry on the home screen.';
 
@@ -203,6 +207,7 @@ interface PersistedStudioState {
   scenes: Scene[];
   activeSceneId: string | null;
   sceneTransitionPreset?: SceneTransitionPresetId;
+  sceneStingerClip?: SceneStingerClip | null;
   lowerThirds: LowerThirdData[];
   autoSpeakerLowerThirds?: boolean;
   audioDuckingEnabled?: boolean;
@@ -239,6 +244,8 @@ interface SceneTransitionState {
   sceneName: string;
   presetId: SceneTransitionPresetId;
   visible: boolean;
+  durationMs: number;
+  stingerClip?: SceneStingerClip | null;
 }
 
 function getStudioStateKey(roomId: string): string {
@@ -506,8 +513,16 @@ export function StudioRoom() {
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
   const [sceneTransitionPreset, setSceneTransitionPreset] = useState<SceneTransitionPresetId>(DEFAULT_SCENE_TRANSITION_PRESET_ID);
+  const [sceneStingerClip, setSceneStingerClip] = useState<SceneStingerClip | null>(null);
   const [sceneTransition, setSceneTransition] = useState<SceneTransitionState | null>(null);
   const [scenePackMessage, setScenePackMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const clip = sceneStingerClip;
+    return () => {
+      if (clip?.source === 'upload' && clip.url.startsWith('blob:')) URL.revokeObjectURL(clip.url);
+    };
+  }, [sceneStingerClip]);
 
   // Comment highlighting
   const [highlightedComment, setHighlightedComment] = useState<HighlightedComment | null>(null);
@@ -822,6 +837,15 @@ export function StudioRoom() {
     });
   }, []);
 
+  const handleSceneStingerClipChange = useCallback((clip: SceneStingerClip | null) => {
+    setSceneStingerClip((current) => {
+      if (current?.source === 'upload' && current.url.startsWith('blob:') && current.url !== clip?.url) {
+        URL.revokeObjectURL(current.url);
+      }
+      return clip;
+    });
+  }, []);
+
   const triggerSceneTransition = useCallback((scene: Pick<Scene, 'id' | 'name'>) => {
     if (sceneTransitionTimerRef.current !== null) {
       window.clearTimeout(sceneTransitionTimerRef.current);
@@ -833,20 +857,24 @@ export function StudioRoom() {
     }
 
     const presetId = sceneTransitionPreset;
-    setSceneTransition({ sceneId: scene.id, sceneName: scene.name, presetId, visible: true });
-    sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
+    const durationMs = presetId === 'stinger' ? STINGER_TRANSITION_DURATION_MS : SCENE_TRANSITION_DURATION_MS;
+    const stingerClip = presetId === 'stinger' ? sceneStingerClip : null;
+    setSceneTransition({ sceneId: scene.id, sceneName: scene.name, presetId, visible: true, durationMs, stingerClip });
+    if (presetId !== 'stinger') {
       sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
-        setSceneTransition((current) => (
-          current?.sceneId === scene.id ? { ...current, visible: false } : current
-        ));
-        sceneTransitionFrameRef.current = null;
+        sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
+          setSceneTransition((current) => (
+            current?.sceneId === scene.id ? { ...current, visible: false } : current
+          ));
+          sceneTransitionFrameRef.current = null;
+        });
       });
-    });
+    }
     sceneTransitionTimerRef.current = window.setTimeout(() => {
       setSceneTransition((current) => (current?.sceneId === scene.id ? null : current));
       sceneTransitionTimerRef.current = null;
-    }, SCENE_TRANSITION_DURATION_MS);
-  }, [sceneTransitionPreset]);
+    }, durationMs);
+  }, [sceneStingerClip, sceneTransitionPreset]);
 
   useEffect(() => {
     setParticipantVolumes((current) => {
@@ -927,6 +955,7 @@ export function StudioRoom() {
             setActiveSceneId(parsed.activeSceneId && parsed.scenes.some((scene) => scene.id === parsed.activeSceneId) ? parsed.activeSceneId : null);
           }
           setSceneTransitionPreset(normalizeSceneTransitionPresetId(parsed.sceneTransitionPreset));
+          handleSceneStingerClipChange(normalizeSceneStingerClip(parsed.sceneStingerClip));
           if (Array.isArray(parsed.lowerThirds)) setLowerThirds(parsed.lowerThirds);
           if (typeof parsed.autoSpeakerLowerThirds === 'boolean') setAutoSpeakerLowerThirds(parsed.autoSpeakerLowerThirds);
           if (typeof parsed.audioDuckingEnabled === 'boolean') setAudioDuckingEnabled(parsed.audioDuckingEnabled);
@@ -954,7 +983,7 @@ export function StudioRoom() {
     return () => {
       if (loadCompleteTimer) clearTimeout(loadCompleteTimer);
     };
-  }, [roomId]);
+  }, [handleSceneStingerClipChange, roomId]);
 
   // Persist room setup locally without storing stream keys or transient media state.
   useEffect(() => {
@@ -976,6 +1005,7 @@ export function StudioRoom() {
         scenes: getPersistableScenes(scenes),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
         sceneTransitionPreset,
+        sceneStingerClip: isPersistableSceneStingerClip(sceneStingerClip) ? sceneStingerClip : null,
         lowerThirds: lowerThirds.filter((lowerThird) => lowerThird.source !== 'auto-speaker'),
         autoSpeakerLowerThirds,
         audioDuckingEnabled,
@@ -992,7 +1022,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
+  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -3559,12 +3589,23 @@ export function StudioRoom() {
                     ...getSceneTransitionOverlayStyle({
                       presetId: sceneTransition.presetId,
                       visible: sceneTransition.visible,
-                      durationMs: SCENE_TRANSITION_DURATION_MS,
+                      durationMs: sceneTransition.durationMs,
                       brandColor,
                     }),
                   }}
                 >
-                  <span style={styles.sceneTransitionLabel}>{sceneTransition.sceneName}</span>
+                  {sceneTransition.presetId === 'stinger' && sceneTransition.stingerClip ? (
+                    <video
+                      key={`${sceneTransition.sceneId}-${sceneTransition.stingerClip.url}`}
+                      src={sceneTransition.stingerClip.url}
+                      style={styles.sceneTransitionVideo}
+                      autoPlay
+                      muted
+                      playsInline
+                    />
+                  ) : (
+                    <span style={styles.sceneTransitionLabel}>{sceneTransition.sceneName}</span>
+                  )}
                 </div>
               )}
 
@@ -3698,7 +3739,9 @@ export function StudioRoom() {
             scenes={scenes}
             activeSceneId={activeSceneId}
             sceneTransitionPreset={sceneTransitionPreset}
+            sceneStingerClip={sceneStingerClip}
             onSceneTransitionPresetChange={setSceneTransitionPreset}
+            onSceneStingerClipChange={handleSceneStingerClipChange}
             onSaveScene={onSaveScene}
             onCreateTemplateScene={onCreateTemplateScene}
             onApplyScene={onApplyScene}
@@ -4286,6 +4329,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     lineHeight: 1.2,
     letterSpacing: 0,
+  },
+  sceneTransitionVideo: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    display: 'block',
   },
   // Base grid container — actual layout props are merged from layoutResult.containerStyle
   gridBase: {
