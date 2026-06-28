@@ -74,6 +74,12 @@ import {
   normalizeStageItemOrder,
   type StageItemOrderDirection,
 } from '../utils/stageItemOrder.ts';
+import {
+  getStagePresenceTransitionDelayMs,
+  getStagePresenceWrapperStyle,
+  reconcileStagePresenceItems,
+  type StagePresenceTrackedItem,
+} from '../utils/stagePresenceTransitions.ts';
 import { duplicateSceneInOrder, moveSceneInOrder, replaceSceneInOrder, type SceneOrderDirection } from '../utils/sceneOrder.ts';
 import {
   buildPopoutChatUrl,
@@ -202,6 +208,17 @@ interface PersistedStudioState {
   banners: BannerData[];
   timers: TimerData[];
   tickers: TickerData[];
+}
+
+interface StageVideoItem {
+  id: string;
+  name: string;
+  stream: MediaStream | null;
+  isLocal: boolean;
+  audioEnabled: boolean;
+  videoEnabled: boolean;
+  volume: number;
+  isScreenShare?: boolean;
 }
 
 interface PendingLiveTokenRequest {
@@ -2601,7 +2618,7 @@ export function StudioRoom() {
   // When someone is screen sharing, the screen share replaces their camera track
   // on the WebRTC connection. Locally, we show the screen share as a separate tile.
   const videoItems = useMemo(() => {
-    const items: Array<{ id: string; name: string; stream: MediaStream | null; isLocal: boolean; audioEnabled: boolean; videoEnabled: boolean; volume: number; isScreenShare?: boolean }> = [];
+    const items: StageVideoItem[] = [];
     if (myParticipant && myParticipant.status === 'on-stage') {
       items.push({ id: myParticipant.id, name: myParticipant.name, stream: localStream, isLocal: true, audioEnabled: effectiveAudioEnabled, videoEnabled: effectiveVideoEnabled, volume: participantVolumes[myParticipant.id] ?? 1 });
       // Add local screen share as a separate tile
@@ -2642,6 +2659,29 @@ export function StudioRoom() {
   const orderedVideoItems = useMemo(() => (
     applyStageItemOrder(videoItems, stageItemOrder, focusedVideoItemId)
   ), [videoItems, stageItemOrder, focusedVideoItemId]);
+
+  const [stagePresenceItems, setStagePresenceItems] = useState<Array<StagePresenceTrackedItem<StageVideoItem>>>([]);
+  const orderedVideoItemsRef = useRef<StageVideoItem[]>([]);
+
+  useEffect(() => {
+    orderedVideoItemsRef.current = orderedVideoItems;
+    setStagePresenceItems((current) => reconcileStagePresenceItems(orderedVideoItems, current, Date.now()));
+  }, [orderedVideoItems]);
+
+  useEffect(() => {
+    const delayMs = getStagePresenceTransitionDelayMs(stagePresenceItems, Date.now());
+    if (!delayMs) return;
+
+    const timer = window.setTimeout(() => {
+      setStagePresenceItems((current) => reconcileStagePresenceItems(orderedVideoItemsRef.current, current, Date.now()));
+    }, delayMs);
+
+    return () => window.clearTimeout(timer);
+  }, [stagePresenceItems]);
+
+  const renderedVideoItems = useMemo(() => (
+    stagePresenceItems.map((presence) => presence.item)
+  ), [stagePresenceItems]);
 
   useEffect(() => {
     if (focusedVideoItemId && !videoItems.some((item) => item.id === focusedVideoItemId)) {
@@ -2765,7 +2805,7 @@ export function StudioRoom() {
   }, []);
 
   // Screen share layout: screen tile gets prominent placement.
-  const getScreenShareLayout = useCallback((items: typeof videoItems): LayoutResult => {
+  const getScreenShareLayout = useCallback((items: StageVideoItem[]): LayoutResult => {
     const screenIdx = items.findIndex(v => v.isScreenShare);
     const speakerCount = items.length - 1;
 
@@ -2865,12 +2905,12 @@ export function StudioRoom() {
 
   // Final computed layout
   const layoutResult = useMemo((): LayoutResult => {
-    const count = orderedVideoItems.length;
-    const hasScreenShare = orderedVideoItems.some(v => v.isScreenShare);
+    const count = renderedVideoItems.length;
+    const hasScreenShare = renderedVideoItems.some(v => v.isScreenShare);
 
     // Screen share layout takes priority across all layout modes
     if (hasScreenShare) {
-      return getScreenShareLayout(orderedVideoItems);
+      return getScreenShareLayout(renderedVideoItems);
     }
 
     switch (layout) {
@@ -2935,7 +2975,7 @@ export function StudioRoom() {
       default:
         return assertNever(layout);
     }
-  }, [layout, orderedVideoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
+  }, [layout, renderedVideoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
@@ -3303,17 +3343,19 @@ export function StudioRoom() {
                 {(() => {
                   // Determine which items to render based on layout
                   const itemsToRender = layout === 'side-by-side'
-                    ? orderedVideoItems.slice(0, 2)
+                    ? stagePresenceItems.slice(0, 2)
                     : layout === 'single'
-                      ? orderedVideoItems.slice(0, 1)
+                      ? stagePresenceItems.slice(0, 1)
                       : layout === 'pip'
-                        ? orderedVideoItems.slice(0, 2)
-                        : orderedVideoItems;
+                        ? stagePresenceItems.slice(0, 2)
+                        : stagePresenceItems;
 
-                  return itemsToRender.map((item, i) => {
+                  return itemsToRender.map((presence, i) => {
+                    const item = presence.item;
+                    const isLeavingTile = presence.phase === 'leaving';
                     const isPipSmallTile = layout === 'pip' && i === 1;
-                    const isFocusedTile = focusedVideoItemId === item.id;
-                    const canFocusTile = isHostOrCoHost && orderedVideoItems.length > 1;
+                    const isFocusedTile = !isLeavingTile && focusedVideoItemId === item.id;
+                    const canFocusTile = !isLeavingTile && isHostOrCoHost && orderedVideoItems.length > 1;
                     const orderedIndex = orderedVideoItems.findIndex((orderedItem) => orderedItem.id === item.id);
                     const canMoveEarlier = canFocusTile && orderedIndex > 0;
                     const canMoveLater = canFocusTile && orderedIndex >= 0 && orderedIndex < orderedVideoItems.length - 1;
@@ -3324,14 +3366,15 @@ export function StudioRoom() {
                           ...styles.tileWrapper,
                           ...(isFocusedTile ? styles.tileWrapperFocused : {}),
                           ...(layoutResult.tileStyles[i] || {}),
+                          ...getStagePresenceWrapperStyle(presence.phase),
                         }}
-                        onClick={isPipSmallTile ? () => {
+                        onClick={isPipSmallTile && !isLeavingTile ? () => {
                           setPipCorner((prev) => {
                             const order: Array<'TL' | 'TR' | 'BR' | 'BL'> = ['TL', 'TR', 'BR', 'BL'];
                             return order[(order.indexOf(prev) + 1) % 4];
                           });
                         } : undefined}
-                        title={isPipSmallTile ? 'Click to move PiP position' : undefined}
+                        title={isPipSmallTile && !isLeavingTile ? 'Click to move PiP position' : undefined}
                       >
                         {canFocusTile && (
                           <div style={styles.tileControls}>
@@ -3399,7 +3442,7 @@ export function StudioRoom() {
                           brandColor={brandColor}
                           cameraShape={cameraShape}
                           nameTagStyle={nameTagStyle}
-                          onAudioLevelChange={handleStageAudioLevelChange}
+                          onAudioLevelChange={isLeavingTile ? undefined : handleStageAudioLevelChange}
                         />
                       </div>
                     );

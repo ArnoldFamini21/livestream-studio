@@ -176,7 +176,7 @@
 ## Phase 9: Polish & Production Features (Priority: Lower)
 ### 9A. Transitions & Animations
 - [x] Scene transition effects: crossfade, wipe, slide, zoom
-- [ ] Participant join/leave animations
+- [x] Participant join/leave animations
 - [ ] Lower third entrance/exit animations (slide, fade, bounce)
 - [ ] Stinger transitions (custom video overlay during switch)
 
