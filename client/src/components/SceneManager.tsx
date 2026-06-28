@@ -11,12 +11,18 @@ import {
 } from '../utils/scenePreview.ts';
 import type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
 import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
+import {
+  SCENE_TRANSITION_PRESETS,
+  type SceneTransitionPresetId,
+} from '../utils/sceneTransitions.ts';
 
 export type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
 
 interface SceneManagerProps {
   scenes: Scene[];
   activeSceneId: string | null;
+  sceneTransitionPreset: SceneTransitionPresetId;
+  onSceneTransitionPresetChange: (presetId: SceneTransitionPresetId) => void;
   onSaveScene: (name: string) => void | Promise<void>;
   onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
   onApplyScene: (sceneId: string) => void;
@@ -86,6 +92,8 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
 export function SceneManager({
   scenes,
   activeSceneId,
+  sceneTransitionPreset,
+  onSceneTransitionPresetChange,
   onSaveScene,
   onCreateTemplateScene,
   onApplyScene,
@@ -277,6 +285,32 @@ export function SceneManager({
       </div>
 
       {scenePackMessage && <span style={styles.packMessage}>{scenePackMessage}</span>}
+
+      <div style={styles.transitionSection}>
+        <div style={styles.transitionHeader}>
+          <span style={styles.transitionTitle}>Transition</span>
+          <span style={styles.transitionHint}>Scene switch</span>
+        </div>
+        <div style={styles.transitionGrid} role="group" aria-label="Scene transition effect">
+          {SCENE_TRANSITION_PRESETS.map((preset) => {
+            const active = sceneTransitionPreset === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                style={{
+                  ...styles.transitionBtn,
+                  ...(active ? styles.transitionBtnActive : {}),
+                }}
+                onClick={() => onSceneTransitionPresetChange(preset.id)}
+                aria-pressed={active}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <div style={styles.templateSection}>
         <div style={styles.templateHeader}>
@@ -669,6 +703,52 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.4,
     color: 'var(--text-muted)',
     textAlign: 'center',
+  },
+  transitionSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 7,
+    padding: 8,
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'rgba(255, 255, 255, 0.035)',
+  },
+  transitionHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  transitionTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+  },
+  transitionHint: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+  },
+  transitionGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 5,
+  },
+  transitionBtn: {
+    minWidth: 0,
+    height: 28,
+    padding: '0 6px',
+    borderRadius: 7,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  transitionBtnActive: {
+    background: 'rgba(124, 58, 237, 0.18)',
+    borderColor: 'rgba(167, 139, 250, 0.52)',
+    color: '#ddd6fe',
   },
   limitNote: {
     fontSize: 10,
