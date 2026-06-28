@@ -97,6 +97,8 @@ export function getBackgroundPreview(bg: StageBackground): string {
       return bg.value;
     case 'image':
       return `url(${bg.value}) center/cover no-repeat`;
+    case 'video':
+      return 'linear-gradient(135deg, #111827 0%, #334155 100%)';
     case 'none':
     default:
       return '#09090b';

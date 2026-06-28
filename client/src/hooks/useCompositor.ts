@@ -188,34 +188,55 @@ function createCanvasGradient(
   return gradient;
 }
 
+function drawCoverSource(
+  ctx: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  sourceNaturalWidth: number,
+  sourceNaturalHeight: number,
+  width: number,
+  height: number
+) {
+  const imageRatio = sourceNaturalWidth / sourceNaturalHeight;
+  const canvasRatio = width / height;
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceWidth = sourceNaturalWidth;
+  let sourceHeight = sourceNaturalHeight;
+
+  if (imageRatio > canvasRatio) {
+    sourceWidth = sourceNaturalHeight * canvasRatio;
+    sourceX = (sourceNaturalWidth - sourceWidth) / 2;
+  } else {
+    sourceHeight = sourceNaturalWidth / canvasRatio;
+    sourceY = (sourceNaturalHeight - sourceHeight) / 2;
+  }
+
+  ctx.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
+}
+
 function drawCoverImage(
   ctx: CanvasRenderingContext2D,
   image: HTMLImageElement,
   width: number,
   height: number
 ) {
-  const imageRatio = image.width / image.height;
-  const canvasRatio = width / height;
-  let sourceX = 0;
-  let sourceY = 0;
-  let sourceWidth = image.width;
-  let sourceHeight = image.height;
+  drawCoverSource(ctx, image, image.width, image.height, width, height);
+}
 
-  if (imageRatio > canvasRatio) {
-    sourceWidth = image.height * canvasRatio;
-    sourceX = (image.width - sourceWidth) / 2;
-  } else {
-    sourceHeight = image.width / canvasRatio;
-    sourceY = (image.height - sourceHeight) / 2;
-  }
-
-  ctx.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
+function drawCoverVideo(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  width: number,
+  height: number
+) {
+  drawCoverSource(ctx, video, video.videoWidth, video.videoHeight, width, height);
 }
 
 function drawStageBackground(
   ctx: CanvasRenderingContext2D,
   background: StageBackground | undefined,
-  backgroundImage: HTMLImageElement | null
+  backgroundImage: HTMLImageElement | null,
+  backgroundVideo: HTMLVideoElement | null = null
 ) {
   const width = 1920;
   const height = 1080;
@@ -242,6 +263,11 @@ function drawStageBackground(
 
   if (background.type === 'image' && backgroundImage?.complete && backgroundImage.naturalWidth > 0) {
     drawCoverImage(ctx, backgroundImage, width, height);
+    return;
+  }
+
+  if (background.type === 'video' && backgroundVideo && backgroundVideo.readyState >= 2 && backgroundVideo.videoWidth > 0 && backgroundVideo.videoHeight > 0) {
+    drawCoverVideo(ctx, backgroundVideo, width, height);
   }
 }
 
@@ -1122,6 +1148,7 @@ export function useCompositor({
     if (!canvasRef.current || !containerRef.current) return;
     const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
+    const backgroundVideo = containerRef.current.querySelector('.studio-stage-background-video') as HTMLVideoElement | null;
 
     // 1. Clear & stage background
     if (streamScreen) {
@@ -1131,7 +1158,7 @@ export function useCompositor({
       return;
     }
 
-    drawStageBackground(ctx, stageBackground, backgroundImageRef.current);
+    drawStageBackground(ctx, stageBackground, backgroundImageRef.current, backgroundVideo);
 
     const containerBounds = containerRef.current.getBoundingClientRect();
     if (containerBounds.width === 0 || containerBounds.height === 0) {
@@ -1145,6 +1172,7 @@ export function useCompositor({
     // 2. Draw Videos mapped precisely from DOM coordinates
     const videos = containerRef.current.querySelectorAll('video');
     videos.forEach((video) => {
+      if (video.classList.contains('studio-stage-background-video')) return;
       if (video.closest('.studio-active-media')) return;
 
       const rect = video.getBoundingClientRect();

@@ -49,7 +49,7 @@ export interface ScenePackImportResult extends ScenePackOverlays {
 }
 
 const LAYOUTS = ['grid', 'spotlight', 'side-by-side', 'pip', 'single', 'featured'] as const;
-const BACKGROUND_TYPES = ['color', 'image', 'gradient', 'none'] as const;
+const BACKGROUND_TYPES = ['color', 'image', 'video', 'gradient', 'none'] as const;
 const CAMERA_SHAPES = ['rectangle', 'rounded', 'square', 'circle'] as const;
 const NAME_TAG_STYLES = ['classic', 'minimal', 'block'] as const;
 const LOGO_PLACEMENTS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const;
@@ -105,7 +105,7 @@ function sanitizeBackground(input: unknown): StageBackground {
     return { type: 'none', value: '' };
   }
   const value = readString(input.value, 100_000);
-  if (input.type === 'image' && value.startsWith('blob:')) {
+  if ((input.type === 'image' || input.type === 'video') && value.startsWith('blob:')) {
     return { type: 'none', value: '' };
   }
   return { type: input.type, value };

@@ -125,7 +125,7 @@ export function buildActiveStreamScreen(
     kind,
     headline: draft.headline,
     message: draft.message,
-    background: draft.backgroundMode === 'stage' && stageBackground.type !== 'none'
+    background: draft.backgroundMode === 'stage' && stageBackground.type !== 'none' && stageBackground.type !== 'video'
       ? stageBackground
       : buildBrandBackground(visuals.brandColor),
     brandColor: normalizeBrandColor(visuals.brandColor),

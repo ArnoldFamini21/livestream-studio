@@ -49,6 +49,14 @@ describe('brand kits', () => {
       getPersistableBrandStageBackground({ type: 'image', value: 'blob:https://example.test/logo' }),
       { type: 'none', value: '' }
     );
+    assert.deepEqual(
+      getPersistableBrandStageBackground({ type: 'video', value: 'blob:https://example.test/loop' }),
+      { type: 'none', value: '' }
+    );
+    assert.deepEqual(
+      getPersistableBrandStageBackground({ type: 'video', value: 'https://cdn.example.test/loop.mp4' }),
+      { type: 'video', value: 'https://cdn.example.test/loop.mp4' }
+    );
     assert.equal(getPersistableBrandLogoUrl('blob:https://example.test/logo'), null);
 
     const kit = createSavedBrandKit('Blob Kit', {

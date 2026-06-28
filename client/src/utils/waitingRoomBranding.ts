@@ -40,7 +40,7 @@ export function getPersistableWaitingRoomLogoUrl(url: string | null): string | n
 }
 
 export function getPersistableWaitingRoomStageBackground(background: StageBackground): StageBackground {
-  if (background.type === 'image' && (
+  if ((background.type === 'image' || background.type === 'video') && (
     background.value.startsWith('blob:') ||
     background.value.length > MAX_WAITING_ROOM_BACKGROUND_VALUE_LENGTH
   )) {

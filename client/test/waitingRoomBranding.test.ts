@@ -38,6 +38,14 @@ describe('waiting room branding', () => {
       { type: 'none', value: '' }
     );
     assert.deepEqual(
+      getPersistableWaitingRoomStageBackground({ type: 'video', value: 'blob:https://example.test/background-video' }),
+      { type: 'none', value: '' }
+    );
+    assert.deepEqual(
+      getPersistableWaitingRoomStageBackground({ type: 'video', value: 'https://cdn.example.test/background.mp4' }),
+      { type: 'video', value: 'https://cdn.example.test/background.mp4' }
+    );
+    assert.deepEqual(
       getPersistableWaitingRoomStageBackground({ type: 'gradient', value: 'linear-gradient(#111827, #2563eb)' }),
       { type: 'gradient', value: 'linear-gradient(#111827, #2563eb)' }
     );

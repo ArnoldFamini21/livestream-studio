@@ -29,7 +29,7 @@ export interface SavedBrandKit extends BrandKitVisuals {
   createdAt: string;
 }
 
-const BACKGROUND_TYPES = ['color', 'image', 'gradient', 'none'] as const;
+const BACKGROUND_TYPES = ['color', 'image', 'video', 'gradient', 'none'] as const;
 const LOGO_PLACEMENTS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const;
 const LOGO_SIZES = ['small', 'medium', 'large'] as const;
 const CAMERA_SHAPES = ['rectangle', 'rounded', 'square', 'circle'] as const;
@@ -49,7 +49,7 @@ function readString(value: unknown, maxLength: number, fallback = ''): string {
 }
 
 export function getPersistableBrandStageBackground(background: StageBackground): StageBackground {
-  if (background.type === 'image' && background.value.startsWith('blob:')) {
+  if ((background.type === 'image' || background.type === 'video') && background.value.startsWith('blob:')) {
     return { type: 'none', value: '' };
   }
   return background;
