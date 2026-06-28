@@ -59,10 +59,10 @@
 - [x] Brand color theme that skins the entire studio
 
 ### 3C. Text Banners & Tickers
-- [ ] Static text banners (breaking news style)
-- [ ] Scrolling ticker tape
-- [ ] Countdown/count-up timer overlay
-- [ ] Custom HTML overlay support (iframes for widgets)
+- [x] Static text banners (breaking news style)
+- [x] Scrolling ticker tape
+- [x] Countdown/count-up timer overlay
+- [x] Custom HTML overlay support (iframes for widgets)
 
 ---
 

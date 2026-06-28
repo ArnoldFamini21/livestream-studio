@@ -6,6 +6,7 @@ import type { LowerThirdData } from '../components/LowerThird.tsx';
 import { REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from '../components/ReactionOverlay.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
+import type { WidgetOverlayData } from '../components/WidgetOverlay.tsx';
 import { buildLowerThirdCanvasFont, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { getLogoCanvasRect } from '../utils/logoPosition.ts';
@@ -19,6 +20,7 @@ interface CompositorProps {
   lowerThirds: LowerThirdData[];
   timers: TimerData[];
   tickers: TickerData[];
+  widgets?: WidgetOverlayData[];
   activeMedia?: ActiveMedia | null;
   highlightedComment?: HighlightedComment | null;
   highlightedQA?: QAQuestion | null;
@@ -230,6 +232,64 @@ function drawCoverVideo(
   height: number
 ) {
   drawCoverSource(ctx, video, video.videoWidth, video.videoHeight, width, height);
+}
+
+function getWidgetHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return 'Widget';
+  }
+}
+
+function getWidgetCanvasRect(widget: WidgetOverlayData): { x: number; y: number; width: number; height: number } {
+  const width = Math.round(1920 * Math.min(0.95, Math.max(0.2, widget.widthPercent / 100)));
+  const height = Math.round(1080 * Math.min(0.85, Math.max(0.12, widget.heightPercent / 100)));
+  const marginX = 48;
+  const marginY = 48;
+
+  switch (widget.position) {
+    case 'top-left':
+      return { x: marginX, y: marginY, width, height };
+    case 'top-right':
+      return { x: 1920 - marginX - width, y: marginY, width, height };
+    case 'bottom-left':
+      return { x: marginX, y: 1080 - marginY - height - 52, width, height };
+    case 'bottom-right':
+      return { x: 1920 - marginX - width, y: 1080 - marginY - height - 52, width, height };
+    case 'center':
+    default:
+      return { x: (1920 - width) / 2, y: (1080 - height) / 2, width, height };
+  }
+}
+
+function drawBroadcastWidgetOverlay(ctx: CanvasRenderingContext2D, widget: WidgetOverlayData, brandColor: string) {
+  const rect = getWidgetCanvasRect(widget);
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, Math.max(0.2, widget.opacity));
+  ctx.fillStyle = 'rgba(2, 6, 23, 0.72)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.26)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(rect.x, rect.y, rect.width, rect.height, 22);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = brandColor;
+  ctx.fillRect(rect.x, rect.y, rect.width, 8);
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+  ctx.font = '700 30px Inter, sans-serif';
+  ctx.fillText(truncateCanvasText(ctx, widget.name || 'Widget', rect.width - 64), rect.x + 32, rect.y + 58);
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.68)';
+  ctx.font = '600 20px Inter, sans-serif';
+  ctx.fillText(truncateCanvasText(ctx, getWidgetHost(widget.url), rect.width - 64), rect.x + 32, rect.y + 92);
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+  ctx.setLineDash([14, 14]);
+  ctx.strokeRect(rect.x + 32, rect.y + 122, rect.width - 64, Math.max(48, rect.height - 154));
+  ctx.restore();
 }
 
 function drawStageBackground(
@@ -1047,6 +1107,7 @@ export function useCompositor({
   lowerThirds,
   timers,
   tickers,
+  widgets = [],
   activeMedia,
   highlightedComment,
   highlightedQA,
@@ -1285,6 +1346,10 @@ export function useCompositor({
       ctx.fillText(ticker.text, 40, ty + 40);
     }
 
+    widgets.filter((widget) => widget.visible).forEach((widget) => {
+      drawBroadcastWidgetOverlay(ctx, widget, brandColor);
+    });
+
     timers.filter((timer) => timer.visible).forEach((timer) => {
       drawBroadcastTimer(ctx, timer, brandColor, {
         hasBanner: activeBanners.length > 0,
@@ -1317,7 +1382,7 @@ export function useCompositor({
 
     // Loop
     rAF.current = requestAnimationFrame(drawLoop);
-  }, [containerRef, banners, lowerThirds, timers, tickers, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen]);
 
   useEffect(() => {
     if (isLive) {

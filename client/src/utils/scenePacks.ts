@@ -3,6 +3,14 @@ import type { BannerData } from '../components/BannerOverlay.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
+import {
+  getWidgetOverlayDisplayUrl,
+  normalizeWidgetOverlayOpacity,
+  normalizeWidgetOverlayPercent,
+  normalizeWidgetOverlayPosition,
+  normalizeWidgetOverlayUrl,
+  type WidgetOverlayData,
+} from '../components/WidgetOverlay.tsx';
 import { normalizeLowerThirdAnimation, normalizeLowerThirdAnimationDirection, normalizeLowerThirdFont } from './lowerThirds.ts';
 import { normalizeLogoOpacity } from './logoWatermark.ts';
 import { normalizeLogoPosition } from './logoPosition.ts';
@@ -13,13 +21,14 @@ export const SCENE_PACK_SOURCE = 'livestream-studio';
 export const MAX_SCENE_PACK_SCENES = 12;
 export const MAX_SCENE_PACK_BYTES = 512_000;
 
-export type ScenePackOverlayKind = 'lowerThird' | 'banner' | 'timer' | 'ticker';
+export type ScenePackOverlayKind = 'lowerThird' | 'banner' | 'timer' | 'ticker' | 'widget';
 
 export interface ScenePackOverlays {
   lowerThirds: LowerThirdData[];
   banners: BannerData[];
   timers: TimerData[];
   tickers: TickerData[];
+  widgets: WidgetOverlayData[];
 }
 
 export interface ScenePack {
@@ -231,6 +240,24 @@ function sanitizeTicker(input: unknown): TickerData | null {
   };
 }
 
+function sanitizeWidget(input: unknown): WidgetOverlayData | null {
+  if (!isRecord(input)) return null;
+  const id = readString(input.id, 128);
+  const url = typeof input.url === 'string' ? normalizeWidgetOverlayUrl(input.url) : null;
+  if (!id || !url) return null;
+
+  return {
+    id,
+    name: readString(input.name, 64, getWidgetOverlayDisplayUrl(url)) || getWidgetOverlayDisplayUrl(url),
+    url,
+    position: normalizeWidgetOverlayPosition(input.position),
+    widthPercent: normalizeWidgetOverlayPercent(input.widthPercent, 42, 20, 95),
+    heightPercent: normalizeWidgetOverlayPercent(input.heightPercent, 26, 12, 85),
+    opacity: normalizeWidgetOverlayOpacity(input.opacity),
+    visible: Boolean(input.visible),
+  };
+}
+
 function sanitizeArray<T>(value: unknown, sanitizer: (input: unknown) => T | null, maxItems = 100): T[] | null {
   if (!Array.isArray(value)) return null;
   const sanitized: T[] = [];
@@ -252,6 +279,7 @@ function getIncludedOverlayIds(overlays: ScenePackOverlays): Set<string> {
     ...overlays.banners.map((item) => item.id),
     ...overlays.timers.map((item) => item.id),
     ...overlays.tickers.map((item) => item.id),
+    ...overlays.widgets.map((item) => item.id),
   ]);
 }
 
@@ -265,6 +293,7 @@ function defaultOverlayIdFactory(kind: ScenePackOverlayKind, _oldId: string, ind
     banner: 'banner',
     timer: 'timer',
     ticker: 'ticker',
+    widget: 'widget',
   };
   return `${prefixByKind[kind]}-import-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -302,6 +331,9 @@ export function buildScenePack(input: BuildScenePackInput): ScenePack {
     tickers: input.tickers
       .filter((ticker) => referencedIds.has(ticker.id))
       .map((ticker) => ({ ...ticker, visible: false })),
+    widgets: input.widgets
+      .filter((widget) => referencedIds.has(widget.id))
+      .map((widget) => ({ ...widget, visible: false })),
   };
   const includedOverlayIds = getIncludedOverlayIds(overlays);
 
@@ -339,7 +371,10 @@ export function parseScenePackJson(json: string): ScenePack {
   const banners = sanitizeArray(overlaysInput.banners, sanitizeBanner);
   const timers = sanitizeArray(overlaysInput.timers, sanitizeTimer);
   const tickers = sanitizeArray(overlaysInput.tickers, sanitizeTicker);
-  if (!lowerThirds || !banners || !timers || !tickers) {
+  const widgets = overlaysInput.widgets === undefined
+    ? []
+    : sanitizeArray(overlaysInput.widgets, sanitizeWidget);
+  if (!lowerThirds || !banners || !timers || !tickers || !widgets) {
     throw new Error('Scene pack overlays are malformed.');
   }
 
@@ -347,7 +382,7 @@ export function parseScenePackJson(json: string): ScenePack {
     throw new Error('Scene pack does not contain any scenes.');
   }
 
-  const overlays: ScenePackOverlays = { lowerThirds, banners, timers, tickers };
+  const overlays: ScenePackOverlays = { lowerThirds, banners, timers, tickers, widgets };
   const includedOverlayIds = getIncludedOverlayIds(overlays);
 
   return {
@@ -404,6 +439,14 @@ export function importScenePack(pack: ScenePack, options: ImportScenePackOptions
     overlayIdFactory,
     (ticker, id) => ({ ...ticker, id, visible: false })
   );
+  const widgets = remapOverlayIds(
+    pack.overlays.widgets ?? [],
+    referencedIds,
+    'widget',
+    idMap,
+    overlayIdFactory,
+    (widget, id) => ({ ...widget, id, visible: false })
+  );
 
   const usedNames = options.existingScenes.map((scene) => scene.name);
   const scenes = selectedScenes.map((scene, index) => {
@@ -427,6 +470,7 @@ export function importScenePack(pack: ScenePack, options: ImportScenePackOptions
     banners,
     timers,
     tickers,
+    widgets,
     importedScenes: scenes.length,
     skippedScenes,
   };

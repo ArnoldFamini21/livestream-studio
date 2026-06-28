@@ -702,6 +702,7 @@ function ScenePreviewThumbnail({ scene }: { scene: Scene }) {
       {overlays.timer && <span style={styles.scenePreviewTimer} />}
       {overlays.lowerThird && <span style={{ ...styles.scenePreviewLowerThird, borderColor: scene.brandColor }} />}
       {overlays.ticker && <span style={styles.scenePreviewTicker} />}
+      {overlays.widget && <span style={styles.scenePreviewWidget} />}
       {overlays.logo && (
         <span
           style={{
@@ -1145,6 +1146,17 @@ const styles: Record<string, React.CSSProperties> = {
     height: 8,
     background: 'rgba(2, 6, 23, 0.82)',
     borderTop: '1px solid rgba(255, 255, 255, 0.12)',
+  },
+  scenePreviewWidget: {
+    position: 'absolute',
+    left: '31%',
+    top: '34%',
+    width: '38%',
+    height: '24%',
+    borderRadius: 6,
+    border: '1px dashed rgba(255, 255, 255, 0.52)',
+    background: 'rgba(2, 6, 23, 0.42)',
+    boxShadow: '0 8px 16px rgba(0, 0, 0, 0.22)',
   },
   scenePreviewLogo: {
     position: 'absolute',

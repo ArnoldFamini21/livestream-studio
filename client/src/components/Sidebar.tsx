@@ -7,6 +7,7 @@ import { TimerManager, type TimerData } from './TimerOverlay.tsx';
 import { BackgroundPicker } from './BackgroundPicker.tsx';
 import { SceneManager, type ProductionSceneTemplate } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
+import { WidgetOverlayManager, type WidgetOverlayData } from './WidgetOverlay.tsx';
 import {
   CommentHighlightManager,
   FLASH_COMMENT_DURATION_MS,
@@ -76,6 +77,10 @@ interface SidebarProps {
   onToggleTicker: (id: string) => void;
   onRemoveTicker: (id: string) => void;
   onUpdateTicker: (id: string, updates: Partial<TickerData>) => void;
+  widgets: WidgetOverlayData[];
+  onAddWidget: (widget: Omit<WidgetOverlayData, 'id' | 'visible'> & { visible?: boolean }) => void;
+  onToggleWidget: (id: string) => void;
+  onRemoveWidget: (id: string) => void;
   // Comment highlight
   chatMessages: ChatMessage[];
   highlightedComment: HighlightedComment | null;
@@ -411,6 +416,7 @@ export function Sidebar(props: SidebarProps) {
                 banners={props.banners}
                 timers={props.timers}
                 tickers={props.tickers}
+                widgets={props.widgets}
                 onAddLowerThird={props.onAddLowerThird}
                 onToggleLowerThird={props.onToggleLowerThird}
                 onAddBanner={props.onAddBanner}
@@ -419,6 +425,7 @@ export function Sidebar(props: SidebarProps) {
                 onToggleTimer={props.onToggleTimer}
                 onAddTicker={props.onAddTicker}
                 onToggleTicker={props.onToggleTicker}
+                onToggleWidget={props.onToggleWidget}
               />
               <div style={st.divider} />
               <LowerThirdManager
@@ -452,6 +459,13 @@ export function Sidebar(props: SidebarProps) {
                 onToggle={props.onToggleTicker}
                 onRemove={props.onRemoveTicker}
                 onUpdate={props.onUpdateTicker}
+              />
+              <div style={st.divider} />
+              <WidgetOverlayManager
+                widgets={props.widgets}
+                onAdd={props.onAddWidget}
+                onToggle={props.onToggleWidget}
+                onRemove={props.onRemoveWidget}
               />
               <div style={st.divider} />
               <CommentHighlightManager
@@ -1460,6 +1474,7 @@ function OverlayQuickActions({
   banners,
   timers,
   tickers,
+  widgets,
   onAddLowerThird,
   onToggleLowerThird,
   onAddBanner,
@@ -1468,6 +1483,7 @@ function OverlayQuickActions({
   onToggleTimer,
   onAddTicker,
   onToggleTicker,
+  onToggleWidget,
 }: {
   hostName: string;
   brandColor: string;
@@ -1475,6 +1491,7 @@ function OverlayQuickActions({
   banners: BannerData[];
   timers: TimerData[];
   tickers: TickerData[];
+  widgets: WidgetOverlayData[];
   onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleLowerThird: (id: string) => void;
   onAddBanner: (banner: Omit<BannerData, 'id' | 'visible'> & { visible?: boolean }) => void;
@@ -1483,18 +1500,21 @@ function OverlayQuickActions({
   onToggleTimer: (id: string) => void;
   onAddTicker: (ticker: Omit<TickerData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleTicker: (id: string) => void;
+  onToggleWidget: (id: string) => void;
 }) {
   const visibleCount =
     lowerThirds.filter((item) => item.visible).length +
     banners.filter((item) => item.visible).length +
     timers.filter((item) => item.visible).length +
-    tickers.filter((item) => item.visible).length;
+    tickers.filter((item) => item.visible).length +
+    widgets.filter((item) => item.visible).length;
 
   const clearLiveOverlays = () => {
     lowerThirds.filter((item) => item.visible).forEach((item) => onToggleLowerThird(item.id));
     banners.filter((item) => item.visible).forEach((item) => onToggleBanner(item.id));
     timers.filter((item) => item.visible).forEach((item) => onToggleTimer(item.id));
     tickers.filter((item) => item.visible).forEach((item) => onToggleTicker(item.id));
+    widgets.filter((item) => item.visible).forEach((item) => onToggleWidget(item.id));
   };
 
   const addLiveShowPack = () => {
