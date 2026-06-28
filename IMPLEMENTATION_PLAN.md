@@ -181,9 +181,9 @@
 - [x] Stinger transitions (custom video overlay during switch)
 
 ### 9B. Virtual Backgrounds
-- [ ] Background blur (TensorFlow.js / MediaPipe)
-- [ ] Virtual background images
-- [ ] Custom uploaded background
+- [x] Background blur (TensorFlow.js / MediaPipe)
+- [x] Virtual background images
+- [x] Custom uploaded background
 - [ ] Green screen chroma key
 
 ### 9C. Studio Customization

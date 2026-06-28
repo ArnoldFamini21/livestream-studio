@@ -50,6 +50,12 @@ import type { RecordingMarker } from './RecordingPanel.tsx';
 import { buildBrandThemeVariables } from '../utils/brandTheme.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { readPreferredAudioProcessing, type AudioProcessingPreferences } from '../utils/mediaPreferences.ts';
+import {
+  VIRTUAL_BACKGROUND_STORAGE_KEY,
+  normalizeVirtualBackgroundConfig,
+  parseVirtualBackgroundConfig,
+  serializeVirtualBackgroundConfig,
+} from '../utils/virtualBackgrounds.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
@@ -603,21 +609,17 @@ export function StudioRoom() {
   // Virtual webcam background (Zoom-style). Off by default; persists across sessions.
   const [vbConfig, setVbConfig] = useState<VirtualBackgroundConfig>(() => {
     try {
-      const raw = localStorage.getItem('livestream-studio:virtual-background');
-      if (raw) {
-        const parsed = JSON.parse(raw) as VirtualBackgroundConfig;
-        if (parsed && (parsed.mode === 'off' || parsed.mode === 'blur' || parsed.mode === 'image')) {
-          return parsed;
-        }
-      }
+      return parseVirtualBackgroundConfig(localStorage.getItem(VIRTUAL_BACKGROUND_STORAGE_KEY));
     } catch {
-      // ignore invalid persisted value
+      return { mode: 'off' };
     }
-    return { mode: 'off' };
   });
+  const onVirtualBackgroundChange = useCallback((next: VirtualBackgroundConfig) => {
+    setVbConfig(normalizeVirtualBackgroundConfig(next));
+  }, []);
   useEffect(() => {
     try {
-      localStorage.setItem('livestream-studio:virtual-background', JSON.stringify(vbConfig));
+      localStorage.setItem(VIRTUAL_BACKGROUND_STORAGE_KEY, serializeVirtualBackgroundConfig(vbConfig));
     } catch {
       // ignore quota errors
     }
@@ -3319,7 +3321,7 @@ export function StudioRoom() {
             onAudioProcessingChange={onAudioProcessingChange}
             onClose={() => setShowDeviceSettings(false)}
             virtualBackground={vbConfig}
-            onVirtualBackgroundChange={setVbConfig}
+            onVirtualBackgroundChange={onVirtualBackgroundChange}
             virtualBackgroundReady={vbReady}
             virtualBackgroundError={vbError}
           />
@@ -4040,7 +4042,7 @@ export function StudioRoom() {
           onAudioProcessingChange={onAudioProcessingChange}
           onClose={() => setShowDeviceSettings(false)}
           virtualBackground={vbConfig}
-          onVirtualBackgroundChange={setVbConfig}
+          onVirtualBackgroundChange={onVirtualBackgroundChange}
           virtualBackgroundReady={vbReady}
           virtualBackgroundError={vbError}
         />
