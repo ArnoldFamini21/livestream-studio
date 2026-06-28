@@ -6,7 +6,7 @@ import type { LowerThirdData } from '../components/LowerThird.tsx';
 import { REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from '../components/ReactionOverlay.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
-import { normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
+import { buildLowerThirdCanvasFont, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import type { ActiveStreamScreen } from '../utils/streamScreens.ts';
 import type { LiveCaptionSegment } from './useLiveCaptions.ts';
@@ -563,9 +563,11 @@ function drawLowerThird(
   const accentColor = normalizedAccentColor || brandColor;
 
   ctx.save();
-  ctx.font = lowerThird.style === 'bold' ? '700 34px Inter, Arial, sans-serif' : '700 32px Inter, Arial, sans-serif';
+  ctx.font = lowerThird.style === 'bold'
+    ? buildLowerThirdCanvasFont(700, 34, lowerThird.fontFamily)
+    : buildLowerThirdCanvasFont(700, 32, lowerThird.fontFamily);
   const nameWidth = ctx.measureText(lowerThird.name).width;
-  ctx.font = '500 24px Inter, Arial, sans-serif';
+  ctx.font = buildLowerThirdCanvasFont(500, 24, lowerThird.fontFamily);
   const titleWidth = lowerThird.title ? ctx.measureText(lowerThird.title).width : 0;
   const width = Math.min(maxWidth, Math.max(minWidth, Math.ceil(Math.max(nameWidth, titleWidth) + paddingX * 2)));
 
@@ -605,13 +607,15 @@ function drawLowerThird(
 
   ctx.shadowColor = 'transparent';
   ctx.fillStyle = 'white';
-  ctx.font = lowerThird.style === 'bold' ? '700 34px Inter, Arial, sans-serif' : '700 32px Inter, Arial, sans-serif';
+  ctx.font = lowerThird.style === 'bold'
+    ? buildLowerThirdCanvasFont(700, 34, lowerThird.fontFamily)
+    : buildLowerThirdCanvasFont(700, 32, lowerThird.fontFamily);
   ctx.textBaseline = 'middle';
   ctx.fillText(truncateCanvasText(ctx, lowerThird.name, width - paddingX * 2), x + paddingX, y + nameHeight / 2);
 
   if (lowerThird.title) {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.84)';
-    ctx.font = '500 24px Inter, Arial, sans-serif';
+    ctx.font = buildLowerThirdCanvasFont(500, 24, lowerThird.fontFamily);
     ctx.fillText(
       truncateCanvasText(ctx, lowerThird.title, width - paddingX * 2),
       x + paddingX,

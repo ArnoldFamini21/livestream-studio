@@ -45,11 +45,12 @@
 
 ## Phase 3: Overlay System (Priority: High)
 ### 3A. Lower Thirds
-- [ ] Animated slide-in lower thirds with name + title
-- [ ] Multiple style presets (minimal, bold, gradient, glassmorphism)
-- [ ] Custom colors, fonts, animation direction
-- [ ] Auto-show when participant speaks (optional)
-- [ ] Timed display (auto-hide after N seconds)
+- [x] Animated slide-in lower thirds with name + title
+- [x] Multiple style presets (minimal, bold, gradient, glassmorphism)
+- [x] Custom colors, font presets, and animation presets
+- [ ] Animation direction controls
+- [x] Auto-show when participant speaks (optional)
+- [x] Timed display (auto-hide after N seconds)
 
 ### 3B. Logos & Branding
 - [ ] Upload custom logo — position anywhere on canvas (drag-and-drop)
