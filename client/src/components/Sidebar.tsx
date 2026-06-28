@@ -34,6 +34,7 @@ import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
 import type { SceneStingerClip, SceneTransitionPresetId } from '../utils/sceneTransitions.ts';
 import {
   STUDIO_THEME_PRESETS,
+  getStudioThemeLabel,
   type StudioThemeId,
 } from '../utils/studioThemes.ts';
 
@@ -261,10 +262,10 @@ export function Sidebar(props: SidebarProps) {
   ];
 
   const brandKits: BrandKitPreset[] = [
-    { name: 'Broadcast', brandColor: '#ef4444', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium' },
-    { name: 'Webinar', brandColor: '#2563eb', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%)' }, cameraShape: 'rounded', nameTagStyle: 'classic', logoSize: 'small' },
-    { name: 'Podcast', brandColor: '#db2777', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #18181b 0%, #831843 100%)' }, cameraShape: 'circle', nameTagStyle: 'minimal', logoSize: 'medium' },
-    { name: 'Executive', brandColor: '#059669', stageBackground: { type: 'color', value: '#111827' }, cameraShape: 'rectangle', nameTagStyle: 'classic', logoSize: 'large' },
+    { name: 'Broadcast', studioTheme: 'dark', brandColor: '#ef4444', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium' },
+    { name: 'Webinar', studioTheme: 'light', brandColor: '#2563eb', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)' }, cameraShape: 'rounded', nameTagStyle: 'classic', logoSize: 'small' },
+    { name: 'Podcast', studioTheme: 'colorful', brandColor: '#db2777', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #18181b 0%, #831843 100%)' }, cameraShape: 'circle', nameTagStyle: 'minimal', logoSize: 'medium' },
+    { name: 'Executive', studioTheme: 'dark', brandColor: '#059669', stageBackground: { type: 'color', value: '#111827' }, cameraShape: 'rectangle', nameTagStyle: 'classic', logoSize: 'large' },
   ];
 
   useEffect(() => {
@@ -276,6 +277,7 @@ export function Sidebar(props: SidebarProps) {
   }, [savedBrandKits]);
 
   const applyBrandKit = (kit: BrandKitPreset | SavedBrandKit) => {
+    props.onStudioThemeChange(kit.studioTheme);
     props.onBrandColorChange(kit.brandColor);
     props.onStageBackgroundChange(kit.stageBackground);
     props.onCameraShapeChange(kit.cameraShape);
@@ -294,6 +296,7 @@ export function Sidebar(props: SidebarProps) {
     const nextKit = createSavedBrandKit(
       brandKitName || `Brand Kit ${savedBrandKits.length + 1}`,
       {
+        studioTheme: props.studioTheme,
         brandColor: props.brandColor,
         stageBackground: props.stageBackground,
         logoUrl: props.logoUrl,
@@ -531,7 +534,7 @@ export function Sidebar(props: SidebarProps) {
                             </span>
                             <span style={st.savedBrandKitText}>
                               <span style={st.savedBrandKitName}>{kit.name}</span>
-                              <span style={st.savedBrandKitMeta}>{kit.cameraShape} / {kit.nameTagStyle}</span>
+                              <span style={st.savedBrandKitMeta}>{getStudioThemeLabel(kit.studioTheme)} / {kit.cameraShape} / {kit.nameTagStyle}</span>
                             </span>
                           </button>
                           <button

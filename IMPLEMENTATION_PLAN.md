@@ -55,7 +55,7 @@
 - [ ] Upload custom logo — position anywhere on canvas (drag-and-drop)
 - [ ] Watermark mode (semi-transparent, corner-locked)
 - [ ] Custom background images/videos for scenes
-- [ ] Brand color theme that skins the entire studio
+- [x] Brand color theme that skins the entire studio
 
 ### 3C. Text Banners & Tickers
 - [ ] Static text banners (breaking news style)
@@ -188,7 +188,7 @@
 
 ### 9C. Studio Customization
 - [x] Custom studio themes (light, dark, colorful)
-- [ ] Brand kit: upload logo, set colors, auto-apply everywhere
+- [x] Brand kit: upload logo, set colors, auto-apply everywhere
 - [ ] Custom waiting room page with branding
 - [ ] Custom stream starting/ending screens
 

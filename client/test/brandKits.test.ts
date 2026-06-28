@@ -12,6 +12,7 @@ import {
 } from '../src/utils/brandKits.ts';
 
 const visuals = {
+  studioTheme: 'colorful' as const,
   brandColor: '#2563eb',
   stageBackground: { type: 'gradient' as const, value: 'linear-gradient(135deg, #0f172a, #1d4ed8)' },
   logoUrl: 'data:image/png;base64,logo',
@@ -70,6 +71,7 @@ describe('brand kits', () => {
     assert.deepEqual(parseSavedBrandKits('not json'), []);
     assert.equal(parseSavedBrandKits(JSON.stringify([{ bad: true }, kit])).length, 1);
     assert.equal(parseSavedBrandKits(JSON.stringify(many)).length, MAX_SAVED_BRAND_KITS);
+    assert.equal(parseSavedBrandKits(JSON.stringify([{ ...kit, studioTheme: 'bad' }]))[0]?.studioTheme, 'dark');
   });
 
   it('serializes only valid saved brand kits', () => {
