@@ -117,6 +117,11 @@ import {
   type SceneStingerClip,
   type SceneTransitionPresetId,
 } from '../utils/sceneTransitions.ts';
+import {
+  DEFAULT_STUDIO_THEME_ID,
+  normalizeStudioThemeId,
+  type StudioThemeId,
+} from '../utils/studioThemes.ts';
 import { useToast } from './Toast.tsx';
 
 const STUDIO_STATE_VERSION = 1;
@@ -194,6 +199,7 @@ function getGuestJoinSessionId(): string | undefined {
 interface PersistedStudioState {
   version: typeof STUDIO_STATE_VERSION;
   layout: LayoutMode;
+  studioTheme?: StudioThemeId;
   stageBackground: StageBackground;
   brandColor: string;
   logoUrl: string | null;
@@ -487,6 +493,7 @@ export function StudioRoom() {
   const [mediaAssets, setMediaAssets] = useState<StudioMediaAsset[]>([]);
 
   const [stageBackground, setStageBackground] = useState<StageBackground>({ type: 'none', value: '' });
+  const [studioTheme, setStudioTheme] = useState<StudioThemeId>(DEFAULT_STUDIO_THEME_ID);
   const [brandColor, setBrandColor] = useState('#a78bfa');
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>('top-right');
@@ -500,6 +507,18 @@ export function StudioRoom() {
   const [audioDuckingEnabled, setAudioDuckingEnabled] = useState(false);
   const [stageAudioLevels, setStageAudioLevels] = useState<Record<string, number>>({});
   const [recordingMarkers, setRecordingMarkers] = useState<RecordingMarker[]>([]);
+
+  useEffect(() => {
+    const previousTheme = document.body.dataset.studioTheme;
+    document.body.dataset.studioTheme = studioTheme;
+    return () => {
+      if (previousTheme) {
+        document.body.dataset.studioTheme = previousTheme;
+      } else {
+        delete document.body.dataset.studioTheme;
+      }
+    };
+  }, [studioTheme]);
 
   // Cleanup blob URLs when logoUrl changes
   useEffect(() => {
@@ -940,6 +959,7 @@ export function StudioRoom() {
         const parsed = JSON.parse(raw) as Partial<PersistedStudioState>;
         if (parsed.version === STUDIO_STATE_VERSION) {
           if (parsed.layout) setLayout(parsed.layout);
+          setStudioTheme(normalizeStudioThemeId(parsed.studioTheme));
           if (parsed.stageBackground) setStageBackground(parsed.stageBackground);
           if (parsed.brandColor) setBrandColor(parsed.brandColor);
           if (parsed.logoUrl !== undefined) setLogoUrl(parsed.logoUrl);
@@ -992,6 +1012,7 @@ export function StudioRoom() {
       const state: PersistedStudioState = {
         version: STUDIO_STATE_VERSION,
         layout,
+        studioTheme,
         stageBackground: getPersistableStageBackground(stageBackground),
         brandColor,
         logoUrl: isPersistableLogoUrl(logoUrl) ? logoUrl : null,
@@ -1022,7 +1043,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
+  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, logoPlacement, logoSize, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -3717,6 +3738,8 @@ export function StudioRoom() {
             onUpdateTimer={onUpdateTimer}
             stageBackground={stageBackground}
             onStageBackgroundChange={setStageBackground}
+            studioTheme={studioTheme}
+            onStudioThemeChange={setStudioTheme}
             brandColor={brandColor}
             onBrandColorChange={setBrandColor}
             logoUrl={logoUrl}
