@@ -17,6 +17,7 @@ import {
   type SceneStingerClip,
   type SceneTransitionPresetId,
 } from '../utils/sceneTransitions.ts';
+import { STUDIO_LAYOUT_LABELS } from '../utils/layoutPresets.ts';
 
 export type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
 
@@ -41,15 +42,6 @@ interface SceneManagerProps {
 }
 
 const MAX_SCENES = 12;
-
-const LAYOUT_LABELS: Record<LayoutMode, string> = {
-  grid: 'Grid',
-  spotlight: 'Spotlight',
-  'side-by-side': 'Side by Side',
-  pip: 'PiP',
-  single: 'Single',
-  featured: 'Featured',
-};
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
   grid: (
@@ -511,7 +503,7 @@ export function SceneManager({
                   <ScenePreviewThumbnail scene={scene} />
                   {/* Layout badge */}
                   <span style={styles.layoutBadge}>
-                    {LAYOUT_LABELS[scene.layout]}
+                    {STUDIO_LAYOUT_LABELS[scene.layout]}
                   </span>
                 </div>
 
