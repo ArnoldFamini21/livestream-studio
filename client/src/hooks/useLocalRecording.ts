@@ -4,6 +4,7 @@ export interface RecordingResult {
   audio: Blob;
   video: Blob;
   screen?: Blob;
+  program?: Blob;
   files: LocalRecordingFileResult[];
 }
 
@@ -17,8 +18,9 @@ export interface LocalRecordingSource {
   id: string;
   label: string;
   stream: MediaStream;
-  kind: 'audio' | 'video' | 'screen';
+  kind: 'audio' | 'video' | 'screen' | 'program';
   bitsPerSecond?: number;
+  cleanup?: () => void;
 }
 
 interface TrackRecorder {
@@ -30,6 +32,7 @@ interface TrackRecorder {
   activeWritable?: any; // FileSystemWritableFileStream
   fileHandle?: any; // FileSystemFileHandle
   getWritePromise: () => Promise<void> | null;
+  cleanup?: () => void;
 }
 
 export function useLocalRecording() {
@@ -73,7 +76,7 @@ export function useLocalRecording() {
 
   const getMimeTypeForSource = (source: LocalRecordingSource): string => {
     if (source.kind === 'audio') return getAudioMimeType();
-    if (source.kind === 'screen') return getScreenMimeType();
+    if (source.kind === 'screen' || source.kind === 'program') return getScreenMimeType();
     const hasVideo = source.stream.getVideoTracks().some((track) => track.readyState === 'live');
     return hasVideo ? getVideoMimeType() : getAudioMimeType();
   };
@@ -81,6 +84,7 @@ export function useLocalRecording() {
   const getBitsPerSecondForSource = (source: LocalRecordingSource): number => {
     if (source.bitsPerSecond) return source.bitsPerSecond;
     if (source.kind === 'audio') return 256_000;
+    if (source.kind === 'program') return 10_000_000;
     if (source.kind === 'screen') return 8_000_000;
     const hasVideo = source.stream.getVideoTracks().some((track) => track.readyState === 'live');
     return hasVideo ? 8_000_000 : 256_000;
@@ -149,6 +153,7 @@ export function useLocalRecording() {
       fileHandle,
       activeWritable,
       getWritePromise: () => currentWritePromise,
+      cleanup: source.cleanup,
     };
   };
 
@@ -216,13 +221,29 @@ export function useLocalRecording() {
       const recorders: TrackRecorder[] = [];
       for (const source of sources) {
         const trackRecorder = await createTrackRecorder(source, dirHandle);
-        if (trackRecorder) recorders.push(trackRecorder);
+        if (trackRecorder) {
+          recorders.push(trackRecorder);
+        } else {
+          source.cleanup?.();
+        }
       }
       if (recorders.length === 0) return;
 
       // Start all recorders with 1-second chunks
-      for (const trackRecorder of recorders) {
-        trackRecorder.recorder.start(1000);
+      try {
+        for (const trackRecorder of recorders) {
+          trackRecorder.recorder.start(1000);
+        }
+      } catch (err) {
+        for (const trackRecorder of recorders) {
+          try {
+            if (trackRecorder.recorder.state !== 'inactive') trackRecorder.recorder.stop();
+          } catch {
+            // ignore failed cleanup after a start failure
+          }
+          trackRecorder.cleanup?.();
+        }
+        throw err;
       }
       recordersRef.current = recorders;
       setRecordingLabels(recorders.map((recorder) => recorder.label));
@@ -249,7 +270,13 @@ export function useLocalRecording() {
         return;
       }
 
-      const { recorder, chunks, activeWritable, fileHandle, getWritePromise } = trackRecorder;
+      const { recorder, chunks, activeWritable, fileHandle, getWritePromise, cleanup } = trackRecorder;
+      let cleanedUp = false;
+      const cleanupSource = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        cleanup?.();
+      };
 
       const finishUp = async () => {
         if (activeWritable) {
@@ -259,6 +286,7 @@ export function useLocalRecording() {
             await activeWritable.close();
             const file = await fileHandle.getFile();
             console.log(`${label} OPFS recording stopped. Size: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
+            cleanupSource();
             resolve(file); // returning File object maps to disk, doesn't load into RAM
             return;
           } catch (err) {
@@ -269,6 +297,7 @@ export function useLocalRecording() {
         
         const blob = new Blob(chunks, { type: recorder.mimeType });
         console.log(`${label} RAM recording stopped. Size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
+        cleanupSource();
         resolve(blob);
       };
 
@@ -318,6 +347,7 @@ export function useLocalRecording() {
         const audioBlob = files.find((file) => file.kind === 'audio')?.blob || new Blob();
         const videoBlob = files.find((file) => file.kind === 'video')?.blob || new Blob();
         const screenBlob = files.find((file) => file.kind === 'screen')?.blob;
+        const programBlob = files.find((file) => file.kind === 'program')?.blob;
         const result: RecordingResult = {
           audio: audioBlob,
           video: videoBlob,
@@ -326,6 +356,9 @@ export function useLocalRecording() {
 
         if (screenBlob && screenBlob.size > 0) {
           result.screen = screenBlob;
+        }
+        if (programBlob && programBlob.size > 0) {
+          result.program = programBlob;
         }
 
         console.log('Local recording stopped completely.');
@@ -357,6 +390,7 @@ export function useLocalRecording() {
               // Fire-and-forget close during quick unmount
               trackRecorder.activeWritable.close().catch(() => {});
             }
+            trackRecorder.cleanup?.();
           } catch {
             // ignore
           }

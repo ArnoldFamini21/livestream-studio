@@ -88,6 +88,24 @@ const sessions: LocalRecordingSession[] = [
       },
     ],
   },
+  {
+    id: 'recording-4',
+    roomName: 'Town Hall',
+    createdAt: '2026-06-04T10:00:00.000Z',
+    durationSeconds: 1200,
+    trackCount: 1,
+    totalBytes: 2048,
+    files: [
+      {
+        id: 'recording-4-track-1',
+        label: 'Program mix',
+        fileName: 'town_hall_program_mix.webm',
+        size: 2048,
+        type: 'video/webm',
+        kind: 'program',
+      },
+    ],
+  },
 ];
 
 describe('recording library filters', () => {
@@ -113,11 +131,15 @@ describe('recording library filters', () => {
     );
     assert.deepEqual(
       filterRecordingLibrarySessions(sessions, '', 'video').map((session) => session.id),
-      ['recording-1']
+      ['recording-1', 'recording-4']
     );
     assert.deepEqual(
       filterRecordingLibrarySessions(sessions, '', 'screen').map((session) => session.id),
       ['recording-1', 'recording-3']
+    );
+    assert.deepEqual(
+      filterRecordingLibrarySessions(sessions, '', 'program').map((session) => session.id),
+      ['recording-4']
     );
   });
 

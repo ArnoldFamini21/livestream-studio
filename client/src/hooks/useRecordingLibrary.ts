@@ -51,7 +51,7 @@ interface SaveRecordingSessionInput {
   markers?: LocalRecordingMarker[];
 }
 
-type LocalRecordingTrackKind = 'audio' | 'video' | 'screen';
+type LocalRecordingTrackKind = 'audio' | 'video' | 'screen' | 'program';
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {

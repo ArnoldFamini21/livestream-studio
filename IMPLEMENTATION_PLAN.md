@@ -160,7 +160,7 @@
 ## Phase 8: Advanced Recording Features (Priority: Medium)
 ### 8A. Multi-Track Export
 - [ ] Individual ISO recordings per participant (video + audio)
-- [ ] Combined mix-down recording
+- [x] Combined mix-down recording
 - [ ] Separate screen share recording
 - [x] Audio-only export (podcast ZIP with isolated audio tracks, WAV stems when supported, captions, and markers)
 - [ ] Transcript generation (speech-to-text via Whisper API)
