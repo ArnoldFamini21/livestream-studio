@@ -21,6 +21,7 @@ interface DeviceSelectorProps {
   audioProcessing?: AudioProcessingPreferences;
   onAudioProcessingChange?: (next: AudioProcessingPreferences) => void;
   videoQuality?: VideoQualityPresetId;
+  recommendedVideoQuality?: VideoQualityPresetId;
   onVideoQualityChange?: (next: VideoQualityPresetId) => void;
   onClose: () => void;
   // Virtual background controls. Optional so callers can opt out.
@@ -43,6 +44,7 @@ export function DeviceSelector({
   audioProcessing,
   onAudioProcessingChange,
   videoQuality,
+  recommendedVideoQuality,
   onVideoQualityChange,
   onClose,
   virtualBackground,
@@ -139,6 +141,7 @@ export function DeviceSelector({
               <div style={styles.qualityGrid} role="group" aria-label="Camera quality">
                 {VIDEO_QUALITY_PRESETS.map((preset) => {
                   const active = preset.id === videoQuality;
+                  const recommended = preset.id === recommendedVideoQuality;
                   return (
                     <button
                       key={preset.id}
@@ -150,7 +153,10 @@ export function DeviceSelector({
                       onClick={() => onVideoQualityChange(preset.id)}
                       aria-pressed={active}
                     >
-                      <span style={styles.qualityLabel}>{preset.label}</span>
+                      <span style={styles.qualityLabelRow}>
+                        <span style={styles.qualityLabel}>{preset.label}</span>
+                        {recommended && <span style={styles.qualityBadge}>Suggested</span>}
+                      </span>
                       <span style={styles.qualityDescription}>{preset.description}</span>
                     </button>
                   );
@@ -390,6 +396,26 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     fontWeight: 900,
     lineHeight: 1.1,
+  },
+  qualityLabelRow: {
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    flexWrap: 'wrap',
+  },
+  qualityBadge: {
+    maxWidth: '100%',
+    padding: '1px 4px',
+    borderRadius: 5,
+    background: 'rgba(103, 232, 249, 0.12)',
+    color: '#a5f3fc',
+    border: '1px solid rgba(103, 232, 249, 0.28)',
+    fontSize: 8,
+    fontWeight: 900,
+    lineHeight: 1.1,
+    textTransform: 'uppercase',
   },
   qualityDescription: {
     fontSize: 9,

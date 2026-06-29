@@ -5,6 +5,7 @@ import {
 } from '../utils/audioProcessing.ts';
 import {
   createVideoTrackConstraints,
+  getRecommendedVideoQualityPresetId,
   readPreferredAudioProcessing,
   readPreferredVideoQuality,
   writePreferredAudioProcessing,
@@ -41,6 +42,7 @@ export function useMediaDevices() {
   const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
   const [audioProcessing, setAudioProcessing] = useState<AudioProcessingPreferences>(() => readPreferredAudioProcessing());
   const [videoQuality, setVideoQuality] = useState<VideoQualityPresetId>(() => readPreferredVideoQuality());
+  const [recommendedVideoQuality] = useState<VideoQualityPresetId>(() => getRecommendedVideoQualityPresetId());
 
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>(() => localStorage.getItem('preferredAudioDeviceId') || '');
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>(() => localStorage.getItem('preferredVideoDeviceId') || '');
@@ -571,6 +573,7 @@ export function useMediaDevices() {
     audioOutputDevices,
     audioProcessing,
     videoQuality,
+    recommendedVideoQuality,
     // Selected devices
     selectedAudioDeviceId,
     selectedVideoDeviceId,
