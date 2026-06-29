@@ -163,7 +163,7 @@
 - [x] Combined mix-down recording
 - [x] Separate screen share recording
 - [x] Audio-only export (podcast ZIP with isolated audio tracks, WAV stems when supported, captions, and markers)
-- [ ] Transcript generation (speech-to-text via Whisper API)
+- [x] Transcript generation (speech-to-text via Whisper API)
 
 ### 8B. Recording Management
 - [x] Recording dashboard: list all past recordings

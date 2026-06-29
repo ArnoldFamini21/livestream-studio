@@ -8,6 +8,11 @@ import {
   type LocalRecordingSession,
 } from '../hooks/useRecordingLibrary';
 import type { RecordingReadinessStatus, RecordingReadinessSummary } from '../utils/recordingReadiness';
+import {
+  requestRecordingTranscription,
+  selectRecordingTranscriptionCandidate,
+  type RecordingTranscriptionResult,
+} from '../utils/recordingTranscription.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -59,6 +64,7 @@ interface RecordingBundleSource {
   captionSegments?: LiveCaptionSegment[];
   captionLanguage?: string;
   markers?: RecordingMarker[];
+  generatedTranscript?: RecordingTranscriptionResult | null;
 }
 
 interface RecordingCaptionFile {
@@ -686,6 +692,23 @@ function buildCaptionWebVtt(source: RecordingBundleSource, segments: LiveCaption
   return lines.join('\n');
 }
 
+export function buildGeneratedRecordingTranscriptText(
+  source: RecordingBundleSource,
+  transcript: RecordingTranscriptionResult
+): string {
+  return [
+    'LiveStream Studio Generated Transcript',
+    `Room: ${source.roomName}`,
+    `Source: ${transcript.sourceLabel} (${transcript.sourceFileName})`,
+    `Model: ${transcript.model}`,
+    `Language: ${transcript.language || getCaptionLanguageLabel(source.captionLanguage)}`,
+    `Generated: ${transcript.createdAt}`,
+    '',
+    transcript.text.trim(),
+    '',
+  ].join('\n');
+}
+
 function getSortedRecordingMarkers(markers: RecordingMarker[] | undefined): RecordingMarker[] {
   return (markers || [])
     .filter((marker) => Number.isFinite(marker.seconds) && marker.seconds >= 0 && marker.label.trim())
@@ -1273,7 +1296,7 @@ function buildEditorReadme(source: RecordingBundleSource): string {
     '- editor/premiere_pro_sequence.xml: Adobe Premiere Pro XML sequence starter',
     '- editor/davinci_resolve_timeline.xml: DaVinci Resolve XML timeline starter',
     '- markers/: recording markers when present',
-    '- captions/: live caption sidecars when present',
+    '- captions/: live caption and generated transcript sidecars when present',
     '',
     'Import the FCPXML into Final Cut Pro, the Premiere XML into Adobe Premiere Pro, the Resolve XML with File > Import > Timeline in DaVinci Resolve, or place each track at 0:00 in another editor and use the timeline CSV/JSON plus marker files as the sync map.',
   ].join('\n');
@@ -1291,7 +1314,7 @@ function buildPodcastReadme(source: RecordingBundleSource): string {
     '- audio-tracks/: original isolated audio-only recording tracks',
     '- audio-stems/: PCM WAV stems generated from audio tracks when supported',
     '- markers/: recording markers when present',
-    '- captions/: live caption sidecars when present',
+    '- captions/: live caption and generated transcript sidecars when present',
     '',
     'Use this ZIP for podcast editing workflows where video and screen tracks are not needed. Import the audio tracks or WAV stems into your editor at 0:00, then use markers and caption sidecars for show notes and clip points.',
   ].join('\n');
@@ -1310,6 +1333,7 @@ function createRecordingManifest(
 ) {
   const totalBytes = files.reduce((total, file) => total + file.size, 0);
   const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
+  const generatedTranscript = source.generatedTranscript?.text.trim() ? source.generatedTranscript : null;
   const markers = getSortedRecordingMarkers(source.markers);
   return {
     app: 'livestream-studio',
@@ -1349,12 +1373,23 @@ function createRecordingManifest(
       timelineVersion: 1,
       files: editorFiles,
     },
-    ...(finalCaptionSegments.length > 0
+    ...(captionFiles.length > 0
       ? {
           captions: {
             language: source.captionLanguage || null,
             languageLabel: getCaptionLanguageLabel(source.captionLanguage),
             segmentCount: finalCaptionSegments.length,
+            ...(generatedTranscript
+              ? {
+                  generatedTranscript: {
+                    model: generatedTranscript.model,
+                    sourceFileName: generatedTranscript.sourceFileName,
+                    sourceLabel: generatedTranscript.sourceLabel,
+                    createdAt: generatedTranscript.createdAt,
+                    language: generatedTranscript.language || null,
+                  },
+                }
+              : {}),
             files: captionFiles,
           },
         }
@@ -1382,6 +1417,7 @@ function createPodcastManifest(
 ) {
   const totalBytes = files.reduce((total, file) => total + file.size, 0);
   const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
+  const generatedTranscript = source.generatedTranscript?.text.trim() ? source.generatedTranscript : null;
   const markers = getSortedRecordingMarkers(source.markers);
   return {
     app: 'livestream-studio',
@@ -1414,12 +1450,23 @@ function createPodcastManifest(
       candidateCount: audioStemCandidateCount,
       files: audioStemFiles,
     },
-    ...(finalCaptionSegments.length > 0
+    ...(captionFiles.length > 0
       ? {
           captions: {
             language: source.captionLanguage || null,
             languageLabel: getCaptionLanguageLabel(source.captionLanguage),
             segmentCount: finalCaptionSegments.length,
+            ...(generatedTranscript
+              ? {
+                  generatedTranscript: {
+                    model: generatedTranscript.model,
+                    sourceFileName: generatedTranscript.sourceFileName,
+                    sourceLabel: generatedTranscript.sourceLabel,
+                    createdAt: generatedTranscript.createdAt,
+                    language: generatedTranscript.language || null,
+                  },
+                }
+              : {}),
             files: captionFiles,
           },
         }
@@ -1516,6 +1563,37 @@ async function createZipBundle(entries: ZipEntry[]): Promise<Blob> {
   return new Blob([...localParts, ...centralParts, endHeader.buffer], { type: 'application/zip' });
 }
 
+function buildRecordingCaptionEntries(source: RecordingBundleSource) {
+  const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
+  const entries = finalCaptionSegments.length > 0
+    ? [
+        {
+          path: 'captions/live_captions.txt',
+          blob: new Blob([buildPlainCaptionTranscript(source, finalCaptionSegments)], { type: 'text/plain;charset=utf-8' }),
+          label: 'Live captions transcript',
+          format: 'txt' as const,
+        },
+        {
+          path: 'captions/live_captions.vtt',
+          blob: new Blob([buildCaptionWebVtt(source, finalCaptionSegments)], { type: 'text/vtt;charset=utf-8' }),
+          label: 'Live captions WebVTT',
+          format: 'vtt' as const,
+        },
+      ]
+    : [];
+
+  if (source.generatedTranscript?.text.trim()) {
+    entries.push({
+      path: 'captions/generated_transcript.txt',
+      blob: new Blob([buildGeneratedRecordingTranscriptText(source, source.generatedTranscript)], { type: 'text/plain;charset=utf-8' }),
+      label: 'Generated transcript',
+      format: 'txt' as const,
+    });
+  }
+
+  return entries;
+}
+
 export async function createRecordingBundle(source: RecordingBundleSource): Promise<Blob> {
   const exportedAt = new Date().toISOString();
   const seenPaths = new Set<string>();
@@ -1533,23 +1611,7 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     kind: entry.file.kind,
   }));
   const audioStemResult = await buildWavAudioStems(trackEntries, manifestFiles, seenPaths);
-  const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
-  const captionEntries = finalCaptionSegments.length > 0
-    ? [
-        {
-          path: 'captions/live_captions.txt',
-          blob: new Blob([buildPlainCaptionTranscript(source, finalCaptionSegments)], { type: 'text/plain;charset=utf-8' }),
-          label: 'Live captions transcript',
-          format: 'txt' as const,
-        },
-        {
-          path: 'captions/live_captions.vtt',
-          blob: new Blob([buildCaptionWebVtt(source, finalCaptionSegments)], { type: 'text/vtt;charset=utf-8' }),
-          label: 'Live captions WebVTT',
-          format: 'vtt' as const,
-        },
-      ]
-    : [];
+  const captionEntries = buildRecordingCaptionEntries(source);
   const captionFiles: RecordingCaptionFile[] = captionEntries.map((entry) => ({
     label: entry.label,
     format: entry.format,
@@ -1672,23 +1734,7 @@ export async function createPodcastAudioBundle(source: RecordingBundleSource): P
     kind: 'audio',
   }));
   const audioStemResult = await buildWavAudioStems(audioEntries, manifestFiles, seenPaths);
-  const finalCaptionSegments = getFinalCaptionSegments(source.captionSegments);
-  const captionEntries = finalCaptionSegments.length > 0
-    ? [
-        {
-          path: 'captions/live_captions.txt',
-          blob: new Blob([buildPlainCaptionTranscript(source, finalCaptionSegments)], { type: 'text/plain;charset=utf-8' }),
-          label: 'Live captions transcript',
-          format: 'txt' as const,
-        },
-        {
-          path: 'captions/live_captions.vtt',
-          blob: new Blob([buildCaptionWebVtt(source, finalCaptionSegments)], { type: 'text/vtt;charset=utf-8' }),
-          label: 'Live captions WebVTT',
-          format: 'vtt' as const,
-        },
-      ]
-    : [];
+  const captionEntries = buildRecordingCaptionEntries(source);
   const captionFiles: RecordingCaptionFile[] = captionEntries.map((entry) => ({
     label: entry.label,
     format: entry.format,
@@ -1784,6 +1830,9 @@ export function RecordingPanel({
   const [driveUploadMessage, setDriveUploadMessage] = useState<string | null>(null);
   const [driveUploadError, setDriveUploadError] = useState<string | null>(null);
   const [driveLinkCopied, setDriveLinkCopied] = useState(false);
+  const [generatedTranscript, setGeneratedTranscript] = useState<RecordingTranscriptionResult | null>(null);
+  const [isGeneratingTranscript, setIsGeneratingTranscript] = useState(false);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
 
   const {
     authorize,
@@ -1813,6 +1862,10 @@ export function RecordingPanel({
     () => recordedFiles.some(isPodcastAudioFile),
     [recordedFiles]
   );
+  const transcriptionCandidate = useMemo(
+    () => selectRecordingTranscriptionCandidate(recordedFiles),
+    [recordedFiles]
+  );
   const filteredSessions = useMemo(
     () => filterRecordingLibrarySessions(sessions, libraryQuery, libraryFilter),
     [libraryFilter, libraryQuery, sessions]
@@ -1837,6 +1890,8 @@ export function RecordingPanel({
       setDriveUploadMessage(null);
       setDriveUploadError(null);
       setDriveLinkCopied(false);
+      setGeneratedTranscript(null);
+      setTranscriptionError(null);
       const resultFiles = result.files.length > 0
         ? result.files
         : [
@@ -1938,6 +1993,7 @@ export function RecordingPanel({
       captionSegments,
       captionLanguage,
       markers: sortedRecordingMarkers,
+      generatedTranscript,
     };
 
     setIsBundling(true);
@@ -1951,7 +2007,7 @@ export function RecordingPanel({
     } finally {
       setIsBundling(false);
     }
-  }, [activeSessionId, captionLanguage, captionSegments, formattedTime, recordedFiles, roomName, sessions, sortedRecordingMarkers]);
+  }, [activeSessionId, captionLanguage, captionSegments, formattedTime, generatedTranscript, recordedFiles, roomName, sessions, sortedRecordingMarkers]);
 
   const handleDownloadPodcastBundle = useCallback(async () => {
     if (recordedFiles.length === 0) return;
@@ -1965,6 +2021,7 @@ export function RecordingPanel({
       captionSegments,
       captionLanguage,
       markers: sortedRecordingMarkers,
+      generatedTranscript,
     };
 
     setIsPodcastBundling(true);
@@ -1978,7 +2035,44 @@ export function RecordingPanel({
     } finally {
       setIsPodcastBundling(false);
     }
-  }, [activeSessionId, captionLanguage, captionSegments, formattedTime, recordedFiles, roomName, sessions, sortedRecordingMarkers]);
+  }, [activeSessionId, captionLanguage, captionSegments, formattedTime, generatedTranscript, recordedFiles, roomName, sessions, sortedRecordingMarkers]);
+
+  const handleGenerateTranscript = useCallback(async () => {
+    if (!transcriptionCandidate) {
+      setTranscriptionError('Record an audio track before generating a transcript.');
+      return;
+    }
+
+    setIsGeneratingTranscript(true);
+    setTranscriptionError(null);
+    try {
+      const transcript = await requestRecordingTranscription(transcriptionCandidate, captionLanguage);
+      setGeneratedTranscript(transcript);
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : 'Transcript generation failed.');
+    } finally {
+      setIsGeneratingTranscript(false);
+    }
+  }, [captionLanguage, transcriptionCandidate]);
+
+  const handleDownloadGeneratedTranscript = useCallback(() => {
+    if (!generatedTranscript) return;
+    const activeSession = activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null;
+    const source: RecordingBundleSource = {
+      roomName: activeSession?.roomName || roomName,
+      sessionId: activeSession?.id || activeSessionId,
+      createdAt: activeSession?.createdAt || new Date().toISOString(),
+      durationSeconds: activeSession?.durationSeconds ?? parseDurationSeconds(formattedTime),
+      files: recordedFiles,
+      captionLanguage,
+      generatedTranscript,
+    };
+    downloadTextFile(
+      buildGeneratedRecordingTranscriptText(source, generatedTranscript),
+      `${sanitizeFileName(source.roomName, 'studio')}_generated_transcript.txt`,
+      'text/plain;charset=utf-8'
+    );
+  }, [activeSessionId, captionLanguage, formattedTime, generatedTranscript, recordedFiles, roomName, sessions]);
 
   const handleDownloadSingle = useCallback((file: RecordedFile) => {
     downloadBlob(file.blob, file.fileName);
@@ -2051,6 +2145,8 @@ export function RecordingPanel({
     setDriveUploadMessage(null);
     setDriveUploadError(null);
     setDriveLinkCopied(false);
+    setGeneratedTranscript(null);
+    setTranscriptionError(null);
     onClearRecordingMarkers?.();
   }, [onClearRecordingMarkers]);
 
@@ -2102,6 +2198,8 @@ export function RecordingPanel({
       }));
       setActiveSessionId(session.id);
       setPreview(null);
+      setGeneratedTranscript(null);
+      setTranscriptionError(null);
       if (onReplaceRecordingMarkers) {
         onReplaceRecordingMarkers(session.markers || []);
       } else {
@@ -2131,7 +2229,7 @@ export function RecordingPanel({
           kind: file.kind,
         })),
         markers: session.id === activeSessionId ? sortedRecordingMarkers : session.markers,
-        ...(session.id === activeSessionId ? { captionSegments, captionLanguage } : {}),
+        ...(session.id === activeSessionId ? { captionSegments, captionLanguage, generatedTranscript } : {}),
       };
       const bundle = await createRecordingBundle(source);
       downloadBlob(bundle, makeBundleFileName(session.roomName, session.createdAt));
@@ -2141,7 +2239,7 @@ export function RecordingPanel({
     } finally {
       setLibraryBusyId(null);
     }
-  }, [activeSessionId, captionLanguage, captionSegments, loadFiles, sortedRecordingMarkers]);
+  }, [activeSessionId, captionLanguage, captionSegments, generatedTranscript, loadFiles, sortedRecordingMarkers]);
 
   const handleDownloadSessionPodcastBundle = useCallback(async (session: LocalRecordingSession) => {
     setLibraryBusyId(session.id);
@@ -2160,7 +2258,7 @@ export function RecordingPanel({
           kind: file.kind,
         })),
         markers: session.id === activeSessionId ? sortedRecordingMarkers : session.markers,
-        ...(session.id === activeSessionId ? { captionSegments, captionLanguage } : {}),
+        ...(session.id === activeSessionId ? { captionSegments, captionLanguage, generatedTranscript } : {}),
       };
       const bundle = await createPodcastAudioBundle(source);
       downloadBlob(bundle, makePodcastBundleFileName(session.roomName, session.createdAt));
@@ -2170,7 +2268,7 @@ export function RecordingPanel({
     } finally {
       setLibraryBusyId(null);
     }
-  }, [activeSessionId, captionLanguage, captionSegments, loadFiles, sortedRecordingMarkers]);
+  }, [activeSessionId, captionLanguage, captionSegments, generatedTranscript, loadFiles, sortedRecordingMarkers]);
 
   const handleDeleteSession = useCallback(async (sessionId: string) => {
     setLibraryBusyId(sessionId);
@@ -2180,6 +2278,8 @@ export function RecordingPanel({
         setRecordedFiles([]);
         setActiveSessionId(null);
         setPreview(null);
+        setGeneratedTranscript(null);
+        setTranscriptionError(null);
         onClearRecordingMarkers?.();
       }
       if (expandedSessionId === sessionId) {
@@ -2494,9 +2594,42 @@ export function RecordingPanel({
                   ZIP includes captions as TXT and WebVTT sidecars.
                 </div>
               )}
+              {generatedTranscript && (
+                <div style={styles.captionSidecarNote}>
+                  ZIP includes the generated transcript as a TXT sidecar.
+                </div>
+              )}
               {markerCount > 0 && (
                 <div style={styles.captionSidecarNote}>
                   ZIP includes recording markers as JSON and CSV sidecars.
+                </div>
+              )}
+              <button
+                className="hover-lift"
+                style={{
+                  ...styles.transcriptBtn,
+                  opacity: !transcriptionCandidate ? 0.45 : isGeneratingTranscript ? 0.6 : 1,
+                  ...(!transcriptionCandidate ? styles.startBtnDisabled : {}),
+                }}
+                onClick={handleGenerateTranscript}
+                disabled={!transcriptionCandidate || isGeneratingTranscript}
+              >
+                {isGeneratingTranscript ? 'Generating Transcript...' : generatedTranscript ? 'Regenerate Transcript' : 'Generate Transcript'}
+              </button>
+              {transcriptionError && <div style={styles.errorBadge}>{transcriptionError}</div>}
+              {generatedTranscript && (
+                <div style={styles.transcriptBox}>
+                  <div style={styles.transcriptHeader}>
+                    <span style={styles.transcriptTitle}>{generatedTranscript.sourceLabel}</span>
+                    <button
+                      type="button"
+                      style={styles.transcriptDownloadBtn}
+                      onClick={handleDownloadGeneratedTranscript}
+                    >
+                      TXT
+                    </button>
+                  </div>
+                  <p style={styles.transcriptPreview}>{generatedTranscript.text}</p>
                 </div>
               )}
               <button
@@ -3434,6 +3567,66 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'white',
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
+  },
+  transcriptBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
+    padding: '10px 16px',
+    fontSize: 13,
+    fontWeight: 600,
+    borderRadius: 8,
+    border: 'none',
+    background: '#0f766e',
+    color: 'white',
+    cursor: 'pointer',
+    transition: 'opacity 0.2s ease',
+  },
+  transcriptBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    padding: 9,
+    borderRadius: 8,
+    border: '1px solid rgba(20, 184, 166, 0.28)',
+    background: 'rgba(20, 184, 166, 0.08)',
+  },
+  transcriptHeader: {
+    minWidth: 0,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    gap: 8,
+    alignItems: 'center',
+  },
+  transcriptTitle: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+    color: '#ccfbf1',
+    fontSize: 11,
+    fontWeight: 800,
+  },
+  transcriptDownloadBtn: {
+    height: 26,
+    padding: '0 9px',
+    borderRadius: 7,
+    border: '1px solid rgba(45, 212, 191, 0.42)',
+    background: 'rgba(15, 118, 110, 0.28)',
+    color: '#ccfbf1',
+    fontSize: 10,
+    fontWeight: 900,
+    cursor: 'pointer',
+  },
+  transcriptPreview: {
+    margin: 0,
+    maxHeight: 72,
+    overflow: 'hidden',
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    lineHeight: 1.4,
   },
   driveBtn: {
     display: 'flex',

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  buildGeneratedRecordingTranscriptText,
   buildDaVinciResolveXml,
   buildFinalCutProXml,
   buildPremiereProXml,
@@ -216,6 +217,45 @@ describe('recording bundle editor export', () => {
     assert.match(text, /markers\/recording_markers\.csv/);
     assert.doesNotMatch(text, /tracks\/01_host\.webm/);
     assert.doesNotMatch(text, /video-track/);
+  });
+
+  it('adds generated transcripts to recording and podcast bundles', async () => {
+    const generatedTranscript = {
+      text: 'Welcome to the generated transcript.',
+      model: 'whisper-1',
+      createdAt: '2026-06-11T10:02:00.000Z',
+      sourceFileName: 'host-audio.webm',
+      sourceLabel: 'Host Mic',
+      language: 'en',
+      durationSeconds: 10,
+    };
+    const bundleSource = {
+      ...source,
+      files: [
+        {
+          label: 'Host Mic',
+          fileName: 'host-audio.webm',
+          blob: new Blob(['audio-track'], { type: 'audio/webm' }),
+          kind: 'audio',
+        },
+      ],
+      generatedTranscript,
+    };
+
+    const textExport = buildGeneratedRecordingTranscriptText(bundleSource as any, generatedTranscript);
+    assert.match(textExport, /LiveStream Studio Generated Transcript/);
+    assert.match(textExport, /Welcome to the generated transcript/);
+
+    const recordingBundle = await createRecordingBundle(bundleSource as any);
+    const recordingText = new TextDecoder().decode(await recordingBundle.arrayBuffer());
+    assert.match(recordingText, /captions\/generated_transcript\.txt/);
+    assert.match(recordingText, /Generated transcript/);
+    assert.match(recordingText, /"generatedTranscript"/);
+
+    const podcastBundle = await createPodcastAudioBundle(bundleSource as any);
+    const podcastText = new TextDecoder().decode(await podcastBundle.arrayBuffer());
+    assert.match(podcastText, /captions\/generated_transcript\.txt/);
+    assert.match(podcastText, /Welcome to the generated transcript/);
   });
 
   it('rejects podcast audio bundles when no audio tracks exist', async () => {
