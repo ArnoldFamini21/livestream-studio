@@ -4,9 +4,13 @@ import {
   normalizeAudioProcessingPreferences,
 } from '../utils/audioProcessing.ts';
 import {
+  createVideoTrackConstraints,
   readPreferredAudioProcessing,
+  readPreferredVideoQuality,
   writePreferredAudioProcessing,
+  writePreferredVideoQuality,
   type AudioProcessingPreferences,
+  type VideoQualityPresetId,
 } from '../utils/mediaPreferences.ts';
 
 export interface MediaDeviceInfo {
@@ -23,6 +27,7 @@ interface SinkIdElement {
 interface StartMediaOptions extends Partial<AudioProcessingPreferences> {
   audioEnabled?: boolean;
   videoEnabled?: boolean;
+  videoQuality?: VideoQualityPresetId;
 }
 
 export function useMediaDevices() {
@@ -35,6 +40,7 @@ export function useMediaDevices() {
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
   const [audioProcessing, setAudioProcessing] = useState<AudioProcessingPreferences>(() => readPreferredAudioProcessing());
+  const [videoQuality, setVideoQuality] = useState<VideoQualityPresetId>(() => readPreferredVideoQuality());
 
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>(() => localStorage.getItem('preferredAudioDeviceId') || '');
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>(() => localStorage.getItem('preferredVideoDeviceId') || '');
@@ -44,6 +50,7 @@ export function useMediaDevices() {
   const switchingRef = useRef(false);
   const audioOutputIdRef = useRef<string>(selectedAudioOutputDeviceId);
   const audioProcessingOptionsRef = useRef<AudioProcessingPreferences>(readPreferredAudioProcessing());
+  const videoQualityRef = useRef<VideoQualityPresetId>(readPreferredVideoQuality());
 
   const publishStreamUpdate = useCallback(() => {
     if (!streamRef.current) {
@@ -113,9 +120,13 @@ export function useMediaDevices() {
 
     try {
       const nextAudioProcessing = normalizeAudioProcessingPreferences(options);
+      const nextVideoQuality = options.videoQuality || videoQualityRef.current;
       audioProcessingOptionsRef.current = nextAudioProcessing;
+      videoQualityRef.current = nextVideoQuality;
       setAudioProcessing(nextAudioProcessing);
+      setVideoQuality(nextVideoQuality);
       writePreferredAudioProcessing(nextAudioProcessing);
+      writePreferredVideoQuality(nextVideoQuality);
       // Stop any existing tracks first
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
@@ -124,12 +135,9 @@ export function useMediaDevices() {
       const targetVideoId = videoDeviceId || localStorage.getItem('preferredVideoDeviceId');
       const targetAudioId = audioDeviceId || localStorage.getItem('preferredAudioDeviceId');
 
-      const createVideoConstraints = (deviceId?: string | null): MediaTrackConstraints => ({
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        frameRate: { ideal: 30 },
-        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-      });
+      const createVideoConstraints = (deviceId?: string | null): MediaTrackConstraints => (
+        createVideoTrackConstraints(deviceId, nextVideoQuality)
+      );
       const createAudioConstraints = (deviceId?: string | null) => createAudioTrackConstraints(deviceId, nextAudioProcessing);
 
       const preferredDeviceIds = [targetAudioId, targetVideoId].some(Boolean);
@@ -327,19 +335,20 @@ export function useMediaDevices() {
   }, [selectedAudioDeviceId, switchAudioDevice]);
 
   // Switch video input device
-  const switchVideoDevice = useCallback(async (deviceId: string) => {
+  const switchVideoDevice = useCallback(async (
+    deviceId: string,
+    quality: VideoQualityPresetId = videoQualityRef.current
+  ) => {
     if (!streamRef.current) return null;
     if (switchingRef.current) return null;
     switchingRef.current = true;
+    videoQualityRef.current = quality;
+    setVideoQuality(quality);
+    writePreferredVideoQuality(quality);
 
     try {
       const newVideoStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          deviceId: { exact: deviceId },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30 },
-        },
+        video: createVideoTrackConstraints(deviceId, quality),
       });
 
       const newVideoTrack = newVideoStream.getVideoTracks()[0];
@@ -372,6 +381,19 @@ export function useMediaDevices() {
       switchingRef.current = false;
     }
   }, [publishStreamUpdate]);
+
+  const updateVideoQuality = useCallback(async (quality: VideoQualityPresetId) => {
+    videoQualityRef.current = quality;
+    setVideoQuality(quality);
+    writePreferredVideoQuality(quality);
+
+    const activeVideoTrack = streamRef.current?.getVideoTracks()[0];
+    if (!streamRef.current || !activeVideoTrack || switchingRef.current) return null;
+
+    const activeDeviceId = selectedVideoDeviceId || activeVideoTrack.getSettings().deviceId || localStorage.getItem('preferredVideoDeviceId') || '';
+    if (!activeDeviceId) return null;
+    return switchVideoDevice(activeDeviceId, quality);
+  }, [selectedVideoDeviceId, switchVideoDevice]);
 
   const stopMedia = useCallback(() => {
     if (streamRef.current) {
@@ -466,12 +488,7 @@ export function useMediaDevices() {
             console.log('Video device disconnected, switching to fallback:', fallbackVideo.label);
             try {
               const newStream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                  deviceId: { exact: fallbackVideo.deviceId },
-                  width: { ideal: 1920 },
-                  height: { ideal: 1080 },
-                  frameRate: { ideal: 30 },
-                },
+                video: createVideoTrackConstraints(fallbackVideo.deviceId, videoQualityRef.current),
               });
               const newTrack = newStream.getVideoTracks()[0];
               streamRef.current.removeTrack(videoTrack);
@@ -553,6 +570,7 @@ export function useMediaDevices() {
     videoDevices,
     audioOutputDevices,
     audioProcessing,
+    videoQuality,
     // Selected devices
     selectedAudioDeviceId,
     selectedVideoDeviceId,
@@ -568,6 +586,7 @@ export function useMediaDevices() {
     switchAudioDevice,
     switchVideoDevice,
     updateAudioProcessing,
+    updateVideoQuality,
     enumerateDevices,
     applyAudioOutput,
     onAudioOutputDeviceChange,
