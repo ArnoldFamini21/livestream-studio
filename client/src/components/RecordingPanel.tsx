@@ -124,6 +124,16 @@ const RECORDING_LIBRARY_FILTERS: Array<{ value: RecordingLibraryFilter; label: s
   { value: 'markers', label: 'Marked' },
 ];
 
+export interface RecordingLibraryDashboardSummary {
+  totalSessions: number;
+  visibleSessions: number;
+  totalTracks: number;
+  totalBytes: number;
+  totalDurationSeconds: number;
+  markerCount: number;
+  latestSession: Pick<LocalRecordingSession, 'id' | 'roomName' | 'createdAt'> | null;
+}
+
 const ZIP_UINT32_MAX = 0xffffffff;
 const ZIP_UINT16_MAX = 0xffff;
 const ZIP_ENCODER = new TextEncoder();
@@ -429,6 +439,35 @@ export function filterRecordingLibrarySessions(
     const searchText = getRecordingSessionSearchText(session);
     return terms.every((term) => searchText.includes(term));
   });
+}
+
+export function buildRecordingLibraryDashboardSummary(
+  sessions: LocalRecordingSession[],
+  visibleSessions: LocalRecordingSession[] = sessions
+): RecordingLibraryDashboardSummary {
+  const latestSession = sessions.reduce<LocalRecordingSession | null>((latest, session) => {
+    if (!latest) return session;
+    return Date.parse(session.createdAt) > Date.parse(latest.createdAt) ? session : latest;
+  }, null);
+
+  return {
+    totalSessions: sessions.length,
+    visibleSessions: visibleSessions.length,
+    totalTracks: sessions.reduce((total, session) => total + session.trackCount, 0),
+    totalBytes: sessions.reduce((total, session) => total + session.totalBytes, 0),
+    totalDurationSeconds: Math.round(sessions.reduce((total, session) => {
+      if (!Number.isFinite(session.durationSeconds)) return total;
+      return total + Math.max(0, Number(session.durationSeconds));
+    }, 0)),
+    markerCount: sessions.reduce((total, session) => total + (session.markers?.length || 0), 0),
+    latestSession: latestSession
+      ? {
+          id: latestSession.id,
+          roomName: latestSession.roomName,
+          createdAt: latestSession.createdAt,
+        }
+      : null,
+  };
 }
 
 export function encodePcm16Wav(channels: Float32Array[], sampleRate: number): Blob {
@@ -1778,9 +1817,9 @@ export function RecordingPanel({
     () => filterRecordingLibrarySessions(sessions, libraryQuery, libraryFilter),
     [libraryFilter, libraryQuery, sessions]
   );
-  const libraryTotalBytes = useMemo(
-    () => sessions.reduce((total, session) => total + session.totalBytes, 0),
-    [sessions]
+  const libraryDashboard = useMemo(
+    () => buildRecordingLibraryDashboardSummary(sessions, filteredSessions),
+    [filteredSessions, sessions]
   );
 
   useEffect(() => {
@@ -2560,7 +2599,7 @@ export function RecordingPanel({
             <span style={styles.filesTitle}>Recording Library</span>
             <div style={styles.libraryHeaderActions}>
               <span style={styles.filesCount}>
-                {filteredSessions.length}/{sessions.length} saved | {formatFileSize(libraryTotalBytes)}
+                {libraryDashboard.visibleSessions}/{libraryDashboard.totalSessions} saved | {formatFileSize(libraryDashboard.totalBytes)}
               </span>
               {sessions.length > 0 && (
                 <button
@@ -2577,6 +2616,38 @@ export function RecordingPanel({
               )}
             </div>
           </div>
+
+          {sessions.length > 0 && (
+            <div style={styles.libraryDashboard} aria-label="Recording dashboard">
+              <div style={styles.libraryStat}>
+                <span style={styles.libraryStatLabel}>Sessions</span>
+                <span style={styles.libraryStatValue}>{libraryDashboard.visibleSessions}/{libraryDashboard.totalSessions}</span>
+              </div>
+              <div style={styles.libraryStat}>
+                <span style={styles.libraryStatLabel}>Tracks</span>
+                <span style={styles.libraryStatValue}>{libraryDashboard.totalTracks}</span>
+              </div>
+              <div style={styles.libraryStat}>
+                <span style={styles.libraryStatLabel}>Duration</span>
+                <span style={styles.libraryStatValue}>{formatDuration(libraryDashboard.totalDurationSeconds)}</span>
+              </div>
+              <div style={styles.libraryStat}>
+                <span style={styles.libraryStatLabel}>Storage</span>
+                <span style={styles.libraryStatValue}>{formatFileSize(libraryDashboard.totalBytes)}</span>
+              </div>
+              <div style={styles.libraryDashboardFooter}>
+                <span style={styles.libraryLatestLabel}>Latest</span>
+                <span style={styles.libraryLatestValue}>
+                  {libraryDashboard.latestSession
+                    ? `${libraryDashboard.latestSession.roomName} | ${formatDateTime(libraryDashboard.latestSession.createdAt)}`
+                    : 'No recordings yet'}
+                </span>
+                <span style={styles.libraryLatestLabel}>
+                  {libraryDashboard.markerCount} mark{libraryDashboard.markerCount === 1 ? '' : 's'}
+                </span>
+              </div>
+            </div>
+          )}
 
           {sessions.length > 0 && (
             <div style={styles.libraryControls}>
@@ -3430,6 +3501,61 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
+  },
+  libraryDashboard: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+    gap: 6,
+    padding: 8,
+    borderRadius: 8,
+    border: '1px solid rgba(148, 163, 184, 0.18)',
+    background: 'rgba(15, 23, 42, 0.32)',
+  },
+  libraryStat: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  },
+  libraryStatLabel: {
+    fontSize: 9,
+    fontWeight: 800,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+  },
+  libraryStatValue: {
+    minWidth: 0,
+    fontSize: 12,
+    fontWeight: 800,
+    color: 'var(--text-primary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  libraryDashboardFooter: {
+    gridColumn: '1 / -1',
+    minWidth: 0,
+    display: 'grid',
+    gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+    gap: 6,
+    alignItems: 'center',
+    paddingTop: 6,
+    borderTop: '1px solid rgba(148, 163, 184, 0.14)',
+  },
+  libraryLatestLabel: {
+    fontSize: 9,
+    fontWeight: 800,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+  },
+  libraryLatestValue: {
+    minWidth: 0,
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
   },
   libraryEmpty: {
     fontSize: 11,
