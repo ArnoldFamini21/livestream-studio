@@ -12,6 +12,10 @@ services:
         value: https://studio.arnoldfamini.com
       - key: LIVE_STREAM_TOKEN_SECRET
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_TRANSCRIPTION_MODEL
+        value: whisper-1
 
   - type: web
     name: livestream-studio-media-server

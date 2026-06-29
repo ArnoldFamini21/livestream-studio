@@ -4,6 +4,7 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { setupSignalingServer } from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
+import { transcriptionRouter } from './routes/transcriptions.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -97,6 +98,7 @@ const RATE_LIMIT_MAP_MAX = 50_000;
 const RATE_LIMIT_WINDOW = 60_000; // 1 minute
 const RATE_LIMIT_MAX = 30; // 30 requests per minute per IP (general)
 const ROOM_CREATE_LIMIT_MAX = 10; // 10 room-create attempts per minute per IP
+const TRANSCRIPTION_LIMIT_MAX = 5; // 5 audio transcription attempts per minute per IP
 
 interface RateEntry {
   count: number;
@@ -147,6 +149,7 @@ function makeRateLimiter(maxPerWindow: number) {
 
 const generalLimiter = makeRateLimiter(RATE_LIMIT_MAX);
 const roomCreateLimiter = makeRateLimiter(ROOM_CREATE_LIMIT_MAX);
+const transcriptionLimiter = makeRateLimiter(TRANSCRIPTION_LIMIT_MAX);
 
 app.use(generalLimiter.middleware);
 
@@ -154,6 +157,7 @@ app.use(generalLimiter.middleware);
 const rateLimitSweepTimer = setInterval(() => {
   generalLimiter.sweep();
   roomCreateLimiter.sweep();
+  transcriptionLimiter.sweep();
 }, 5 * 60_000);
 
 // REST API routes — room creation gets its own tighter cap.
@@ -165,12 +169,26 @@ app.use('/api/rooms', (req, res, next) => {
   next();
 }, roomRouter);
 
+app.use(
+  '/api/transcriptions',
+  transcriptionLimiter.middleware,
+  express.raw({
+    type: ['audio/*', 'video/mp4', 'video/webm', 'application/octet-stream'],
+    limit: '25mb',
+  }),
+  transcriptionRouter
+);
+
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // Error-handling middleware (must be last in the middleware chain)
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if ((err as { type?: string }).type === 'entity.too.large') {
+    res.status(413).json({ error: 'Audio track is too large for transcription. Use a track under 25 MB.' });
+    return;
+  }
   console.error('Unhandled error:', err.message);
   res.status(500).json({ error: 'Internal server error' });
 });
