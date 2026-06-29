@@ -51,7 +51,7 @@ import type { RecordingMarker } from './RecordingPanel.tsx';
 import { buildBrandThemeVariables } from '../utils/brandTheme.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { getCustomLogoPositionStyle, getLogoPositionFromPointer, normalizeLogoPosition } from '../utils/logoPosition.ts';
-import { readPreferredAudioProcessing, type AudioProcessingPreferences } from '../utils/mediaPreferences.ts';
+import { readPreferredAudioProcessing, readPreferredVideoQuality, type AudioProcessingPreferences, type VideoQualityPresetId } from '../utils/mediaPreferences.ts';
 import {
   VIRTUAL_BACKGROUND_STORAGE_KEY,
   normalizeVirtualBackgroundConfig,
@@ -978,7 +978,9 @@ export function StudioRoom() {
     selectedAudioDeviceId, selectedVideoDeviceId,
     selectedAudioOutputDeviceId,
     audioProcessing,
+    videoQuality,
     updateAudioProcessing,
+    updateVideoQuality,
     onAudioOutputDeviceChange,
   } = useMediaDevices();
 
@@ -1792,9 +1794,11 @@ export function StudioRoom() {
       if (active) setMediaAttemptComplete(true);
     }, 3000);
     const audioProcessing = readPreferredAudioProcessing();
+    const videoQuality = readPreferredVideoQuality();
     startMedia(undefined, undefined, {
       audioEnabled: sessionStorage.getItem('preferredAudioEnabled') !== 'false',
       videoEnabled: sessionStorage.getItem('preferredVideoEnabled') !== 'false',
+      videoQuality,
       ...audioProcessing,
     }).finally(() => {
       if (!active) return;
@@ -2252,6 +2256,10 @@ export function StudioRoom() {
   const onVideoDeviceChange = async (id: string) => {
     try { const t = await switchVideoDevice(id); if (t) await replaceTrack(t); }
     catch (err) { console.error('Failed to switch video device:', err); }
+  };
+  const onVideoQualityChange = async (next: VideoQualityPresetId) => {
+    try { const t = await updateVideoQuality(next); if (t) await replaceTrack(t); }
+    catch (err) { console.error('Failed to update video quality:', err); }
   };
   // Screen sharing — replace the camera video track on all peer connections
   // so remote participants actually receive the screen feed.
@@ -3943,6 +3951,8 @@ export function StudioRoom() {
             onAudioOutputDeviceChange={onAudioOutputDeviceChange}
             audioProcessing={audioProcessing}
             onAudioProcessingChange={onAudioProcessingChange}
+            videoQuality={videoQuality}
+            onVideoQualityChange={onVideoQualityChange}
             onClose={() => setShowDeviceSettings(false)}
             virtualBackground={vbConfig}
             onVirtualBackgroundChange={onVirtualBackgroundChange}
@@ -4746,6 +4756,8 @@ export function StudioRoom() {
           onAudioOutputDeviceChange={onAudioOutputDeviceChange}
           audioProcessing={audioProcessing}
           onAudioProcessingChange={onAudioProcessingChange}
+          videoQuality={videoQuality}
+          onVideoQualityChange={onVideoQualityChange}
           onClose={() => setShowDeviceSettings(false)}
           virtualBackground={vbConfig}
           onVirtualBackgroundChange={onVirtualBackgroundChange}

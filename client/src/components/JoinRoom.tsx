@@ -3,7 +3,14 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { getScheduledGuestOpenAtMs, isScheduledGuestAccessBlocked } from '@studio/shared';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
-import { readPreferredAudioProcessing, writePreferredAudioProcessing } from '../utils/mediaPreferences.ts';
+import {
+  readPreferredAudioProcessing,
+  readPreferredVideoQuality,
+  VIDEO_QUALITY_PRESETS,
+  writePreferredAudioProcessing,
+  writePreferredVideoQuality,
+  type VideoQualityPresetId,
+} from '../utils/mediaPreferences.ts';
 import { createSpeakerTestToneBlob } from '../utils/speakerTestTone.ts';
 import {
   clearUrlHostToken,
@@ -101,8 +108,10 @@ export function JoinRoom() {
     selectedAudioDeviceId,
     selectedVideoDeviceId,
     selectedAudioOutputDeviceId,
+    videoQuality,
     switchAudioDevice,
     switchVideoDevice,
+    updateVideoQuality,
     applyAudioOutput,
     onAudioOutputDeviceChange,
   } = useMediaDevices();
@@ -131,6 +140,7 @@ export function JoinRoom() {
     startMedia(undefined, undefined, {
       echoCancellation,
       noiseSuppression,
+      videoQuality: readPreferredVideoQuality(),
       audioEnabled: audioEnabledRef.current,
       videoEnabled: videoEnabledRef.current,
     });
@@ -274,6 +284,7 @@ export function JoinRoom() {
     sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
     sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
     writePreferredAudioProcessing({ echoCancellation, noiseSuppression });
+    writePreferredVideoQuality(videoQuality);
     if (roomId && needsRoomPassword) {
       sessionStorage.setItem(`roomPassword:${roomId}`, roomPassword);
     } else if (roomId) {
@@ -292,9 +303,17 @@ export function JoinRoom() {
 
   const onVideoDeviceChange = async (deviceId: string) => {
     try {
-      await switchVideoDevice(deviceId);
+      await switchVideoDevice(deviceId, videoQuality);
     } catch (err) {
       // Device switch failed
+    }
+  };
+
+  const onVideoQualityChange = async (next: VideoQualityPresetId) => {
+    try {
+      await updateVideoQuality(next);
+    } catch (err) {
+      // Quality switch failed
     }
   };
 
@@ -543,6 +562,31 @@ export function JoinRoom() {
                   <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
                 ))}
               </select>
+            </div>
+          )}
+          {videoDevices.length > 0 && (
+            <div style={styles.deviceField}>
+              <label style={styles.deviceLabel}>Camera Quality</label>
+              <div style={styles.qualityGrid} role="group" aria-label="Camera quality">
+                {VIDEO_QUALITY_PRESETS.map((preset) => {
+                  const active = preset.id === videoQuality;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      style={{
+                        ...styles.qualityButton,
+                        ...(active ? styles.qualityButtonActive : {}),
+                      }}
+                      onClick={() => onVideoQualityChange(preset.id)}
+                      aria-pressed={active}
+                    >
+                      <span style={styles.qualityButtonLabel}>{preset.label}</span>
+                      <span style={styles.qualityButtonText}>{preset.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
           {audioOutputDevices.length > 0 && (
@@ -878,6 +922,42 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-tertiary)',
     color: 'var(--text-primary)',
     cursor: 'pointer',
+  },
+  qualityGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gap: 6,
+  },
+  qualityButton: {
+    minWidth: 0,
+    minHeight: 58,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    padding: '7px 5px',
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--border-strong)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    textAlign: 'center' as const,
+  },
+  qualityButtonActive: {
+    background: 'rgba(124, 58, 237, 0.22)',
+    borderColor: 'rgba(167, 139, 250, 0.62)',
+    color: '#ede9fe',
+  },
+  qualityButtonLabel: {
+    fontSize: 12,
+    fontWeight: 900,
+    lineHeight: 1.1,
+  },
+  qualityButtonText: {
+    fontSize: 8,
+    lineHeight: 1.2,
+    color: 'var(--text-muted)',
   },
   speakerControlRow: {
     display: 'flex',

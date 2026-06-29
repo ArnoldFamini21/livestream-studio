@@ -1,7 +1,11 @@
 import { useEffect, useRef } from 'react';
 import type { MediaDeviceInfo } from '../hooks/useMediaDevices.ts';
 import type { VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
-import type { AudioProcessingPreferences } from '../utils/mediaPreferences.ts';
+import {
+  VIDEO_QUALITY_PRESETS,
+  type AudioProcessingPreferences,
+  type VideoQualityPresetId,
+} from '../utils/mediaPreferences.ts';
 import { VirtualBackgroundPicker } from './VirtualBackgroundPicker.tsx';
 
 interface DeviceSelectorProps {
@@ -16,6 +20,8 @@ interface DeviceSelectorProps {
   onAudioOutputDeviceChange: (deviceId: string) => void;
   audioProcessing?: AudioProcessingPreferences;
   onAudioProcessingChange?: (next: AudioProcessingPreferences) => void;
+  videoQuality?: VideoQualityPresetId;
+  onVideoQualityChange?: (next: VideoQualityPresetId) => void;
   onClose: () => void;
   // Virtual background controls. Optional so callers can opt out.
   virtualBackground?: VirtualBackgroundConfig;
@@ -36,6 +42,8 @@ export function DeviceSelector({
   onAudioOutputDeviceChange,
   audioProcessing,
   onAudioProcessingChange,
+  videoQuality,
+  onVideoQualityChange,
   onClose,
   virtualBackground,
   onVirtualBackgroundChange,
@@ -119,6 +127,37 @@ export function DeviceSelector({
             onChange={onVideoDeviceChange}
             emptyText="No cameras detected"
           />
+
+          {videoQuality && onVideoQualityChange && (
+            <div style={styles.qualitySection}>
+              <div style={styles.processingHeader}>
+                <span style={styles.processingTitle}>Camera Quality</span>
+                <span style={styles.qualitySummary}>
+                  {VIDEO_QUALITY_PRESETS.find((preset) => preset.id === videoQuality)?.label}
+                </span>
+              </div>
+              <div style={styles.qualityGrid} role="group" aria-label="Camera quality">
+                {VIDEO_QUALITY_PRESETS.map((preset) => {
+                  const active = preset.id === videoQuality;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      style={{
+                        ...styles.qualityOption,
+                        ...(active ? styles.qualityOptionActive : {}),
+                      }}
+                      onClick={() => onVideoQualityChange(preset.id)}
+                      aria-pressed={active}
+                    >
+                      <span style={styles.qualityLabel}>{preset.label}</span>
+                      <span style={styles.qualityDescription}>{preset.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Speaker */}
           {audioOutputDevices.length > 0 && (
@@ -308,6 +347,54 @@ const styles: Record<string, React.CSSProperties> = {
   processingGrid: {
     display: 'grid',
     gap: 8,
+  },
+  qualitySection: {
+    borderTop: '1px solid var(--border)',
+    paddingTop: 14,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+  },
+  qualitySummary: {
+    fontSize: 11,
+    fontWeight: 800,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+  },
+  qualityGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gap: 6,
+  },
+  qualityOption: {
+    minWidth: 0,
+    minHeight: 66,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    gap: 4,
+    padding: '8px 7px',
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    textAlign: 'center',
+  },
+  qualityOptionActive: {
+    background: 'rgba(124, 58, 237, 0.18)',
+    borderColor: 'rgba(167, 139, 250, 0.56)',
+    color: '#ede9fe',
+  },
+  qualityLabel: {
+    fontSize: 13,
+    fontWeight: 900,
+    lineHeight: 1.1,
+  },
+  qualityDescription: {
+    fontSize: 9,
+    lineHeight: 1.25,
+    color: 'var(--text-muted)',
   },
   processingOption: {
     minHeight: 42,
