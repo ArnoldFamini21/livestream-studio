@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import type { Participant, ParticipantStatus, LayoutMode, StageActionPayload } from '@studio/shared';
+import { getStudioLayoutLabel, STUDIO_LAYOUT_PRESET_ORDER } from '../utils/layoutPresets.ts';
 
 interface ProducerPanelProps {
   participants: Map<string, Participant>;
@@ -23,71 +24,47 @@ interface ProducerPanelProps {
 
 // ============ Layout icon data ============
 
-const layoutOptions: { mode: LayoutMode; label: string; icon: React.ReactNode }[] = [
-  {
-    mode: 'grid',
-    label: 'Grid',
-    icon: (
+const layoutIcons: Record<LayoutMode, React.ReactNode> = {
+  grid: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="10" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="1" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="10" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
       </svg>
-    ),
-  },
-  {
-    mode: 'spotlight',
-    label: 'Spotlight',
-    icon: (
+  ),
+  spotlight: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="16" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="1" y="14" width="4.5" height="3" rx="1" stroke="currentColor" strokeWidth="1.2" />
         <rect x="6.75" y="14" width="4.5" height="3" rx="1" stroke="currentColor" strokeWidth="1.2" />
         <rect x="12.5" y="14" width="4.5" height="3" rx="1" stroke="currentColor" strokeWidth="1.2" />
       </svg>
-    ),
-  },
-  {
-    mode: 'side-by-side',
-    label: 'Side by Side',
-    icon: (
+  ),
+  'side-by-side': (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="2" width="7.5" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="9.5" y="2" width="7.5" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
       </svg>
-    ),
-  },
-  {
-    mode: 'pip',
-    label: 'PiP',
-    icon: (
+  ),
+  pip: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="16" height="16" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="10" y="10" width="6" height="5" rx="1" fill="currentColor" opacity="0.5" stroke="currentColor" strokeWidth="1" />
       </svg>
-    ),
-  },
-  {
-    mode: 'single',
-    label: 'Single',
-    icon: (
+  ),
+  single: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" />
       </svg>
-    ),
-  },
-  {
-    mode: 'featured',
-    label: 'Featured',
-    icon: (
+  ),
+  featured: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="2" width="11" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
         <rect x="13.5" y="2" width="3.5" height="14" rx="1" stroke="currentColor" strokeWidth="1.2" />
       </svg>
-    ),
-  },
-];
+  ),
+};
 
 // ============ Helpers ============
 
@@ -498,7 +475,8 @@ export function ProducerPanel({
           <div style={styles.layoutSection}>
             <span style={styles.sectionTitle}>Layout</span>
             <div style={styles.layoutGrid}>
-              {layoutOptions.map(({ mode, label, icon }) => {
+              {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
+                const label = getStudioLayoutLabel(mode);
                 const isActive = currentLayout === mode;
                 return (
                   <button
@@ -510,7 +488,7 @@ export function ProducerPanel({
                       ...(isActive ? styles.layoutBtnActive : {}),
                     }}
                   >
-                    {icon}
+                    {layoutIcons[mode]}
                     <span style={styles.layoutLabel}>{label}</span>
                   </button>
                 );
