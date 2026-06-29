@@ -22,7 +22,7 @@
 ### 1C. Screen Recording
 - [x] getDisplayMedia() for screen/window/tab sharing
 - [x] Record screen share as a separate track
-- [ ] Picture-in-picture: camera overlay on screen share
+- [x] Picture-in-picture: camera overlay on screen share
 
 ---
 
