@@ -141,9 +141,10 @@ describe('recording readiness summary', () => {
     });
 
     assert.deepEqual(
-      summary.expectedTracks.slice(-2).map((track) => [track.label, track.kind]),
+      summary.expectedTracks.slice(-3).map((track) => [track.label, track.kind]),
       [
         ['Host screen', 'screen'],
+        ['Host screen PiP', 'screen'],
         ['Host screen audio', 'audio'],
       ]
     );

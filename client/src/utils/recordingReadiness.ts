@@ -99,6 +99,13 @@ function buildExpectedTracks(options: RecordingReadinessOptions): RecordingReadi
       label: `${prefix} screen`,
       kind: 'screen',
     });
+    if (local?.status === 'on-stage' && local.hasVideo) {
+      tracks.push({
+        id: 'local-screen-pip',
+        label: `${prefix} screen PiP`,
+        kind: 'screen',
+      });
+    }
   }
   if (options.screen.active && options.screen.hasAudio) {
     const local = options.participants.find((participant) => participant.isLocal);

@@ -76,6 +76,12 @@ import {
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
 import {
+  getContainedVideoRect,
+  getCoverSourceRect,
+  getScreenPictureInPictureCanvasSize,
+  getScreenPictureInPictureInsetRect,
+} from '../utils/screenPictureInPicture.ts';
+import {
   canControlStudioRecording,
   canUseAdmittedOperatorControls,
   isStudioOperator,
@@ -325,6 +331,17 @@ interface CreateProgramRecordingSourceOptions {
   audioDuckingEnabled: boolean;
 }
 
+interface CreateScreenPictureInPictureRecordingSourceOptions {
+  id: string;
+  label: string;
+  screenStream: MediaStream | null;
+  cameraStream: MediaStream | null;
+}
+
+type CanvasWithCaptureStream = HTMLCanvasElement & {
+  captureStream?: (frameRate?: number) => MediaStream;
+};
+
 function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
   const globalWithWebkit = globalThis as typeof globalThis & {
     webkitAudioContext?: BrowserAudioContextConstructor;
@@ -338,6 +355,138 @@ function createRecordingAudioContext(AudioContextConstructor: BrowserAudioContex
   } catch {
     return new AudioContextConstructor();
   }
+}
+
+function createRecordingVideoElement(stream: MediaStream): HTMLVideoElement {
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = stream;
+  void video.play().catch(() => undefined);
+  return video;
+}
+
+function traceRoundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + safeRadius, y);
+  ctx.lineTo(x + width - safeRadius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  ctx.lineTo(x + width, y + height - safeRadius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  ctx.lineTo(x + safeRadius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  ctx.lineTo(x, y + safeRadius);
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
+  ctx.closePath();
+}
+
+function createScreenPictureInPictureRecordingSource(
+  options: CreateScreenPictureInPictureRecordingSourceOptions
+): LocalRecordingSource | null {
+  const screenVideoTrack = options.screenStream?.getVideoTracks().find((track) => track.readyState === 'live');
+  const cameraVideoTrack = options.cameraStream?.getVideoTracks().find((track) => track.readyState === 'live');
+  if (!screenVideoTrack || !cameraVideoTrack) return null;
+
+  const canvas = document.createElement('canvas') as CanvasWithCaptureStream;
+  if (typeof canvas.captureStream !== 'function') return null;
+
+  const canvasSize = getScreenPictureInPictureCanvasSize(screenVideoTrack.getSettings());
+  canvas.width = canvasSize.width;
+  canvas.height = canvasSize.height;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const screenVideo = createRecordingVideoElement(new MediaStream([screenVideoTrack]));
+  const cameraVideo = createRecordingVideoElement(new MediaStream([cameraVideoTrack]));
+  const insetRect = getScreenPictureInPictureInsetRect(canvasSize);
+  const generatedStream = canvas.captureStream(30);
+  const generatedVideoTracks = generatedStream.getVideoTracks();
+  if (generatedVideoTracks.length === 0) {
+    screenVideo.pause();
+    cameraVideo.pause();
+    screenVideo.srcObject = null;
+    cameraVideo.srcObject = null;
+    return null;
+  }
+
+  let frame = 0;
+  let cleanedUp = false;
+  const draw = () => {
+    ctx.fillStyle = '#050816';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (screenVideo.readyState >= 2 && screenVideo.videoWidth > 0 && screenVideo.videoHeight > 0) {
+      const screenRect = getContainedVideoRect(
+        { width: screenVideo.videoWidth, height: screenVideo.videoHeight },
+        canvasSize
+      );
+      ctx.drawImage(screenVideo, screenRect.x, screenRect.y, screenRect.width, screenRect.height);
+    }
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+    ctx.shadowBlur = Math.round(canvas.width * 0.012);
+    ctx.shadowOffsetY = Math.round(canvas.height * 0.008);
+    traceRoundedRect(ctx, insetRect.x, insetRect.y, insetRect.width, insetRect.height, Math.round(insetRect.width * 0.045));
+    ctx.fillStyle = '#0f172a';
+    ctx.fill();
+    ctx.restore();
+
+    if (cameraVideo.readyState >= 2 && cameraVideo.videoWidth > 0 && cameraVideo.videoHeight > 0) {
+      const sourceRect = getCoverSourceRect(
+        { width: cameraVideo.videoWidth, height: cameraVideo.videoHeight },
+        { width: insetRect.width, height: insetRect.height }
+      );
+      ctx.save();
+      traceRoundedRect(ctx, insetRect.x, insetRect.y, insetRect.width, insetRect.height, Math.round(insetRect.width * 0.045));
+      ctx.clip();
+      ctx.drawImage(
+        cameraVideo,
+        sourceRect.x,
+        sourceRect.y,
+        sourceRect.width,
+        sourceRect.height,
+        insetRect.x,
+        insetRect.y,
+        insetRect.width,
+        insetRect.height
+      );
+      ctx.restore();
+    }
+
+    ctx.save();
+    traceRoundedRect(ctx, insetRect.x, insetRect.y, insetRect.width, insetRect.height, Math.round(insetRect.width * 0.045));
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.72)';
+    ctx.lineWidth = Math.max(2, Math.round(canvas.width * 0.002));
+    ctx.stroke();
+    ctx.restore();
+
+    if (!cleanedUp) frame = window.requestAnimationFrame(draw);
+  };
+  draw();
+
+  return {
+    id: options.id,
+    label: options.label,
+    kind: 'screen',
+    stream: new MediaStream([
+      ...generatedVideoTracks,
+      ...getLiveAudioTracks(options.screenStream),
+    ]),
+    bitsPerSecond: 8_500_000,
+    cleanup: () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      if (frame) window.cancelAnimationFrame(frame);
+      generatedVideoTracks.forEach((track) => track.stop());
+      screenVideo.pause();
+      cameraVideo.pause();
+      screenVideo.srcObject = null;
+      cameraVideo.srcObject = null;
+    },
+  };
 }
 
 function createProgramRecordingSource(options: CreateProgramRecordingSourceOptions): LocalRecordingSource | null {
@@ -2283,6 +2432,13 @@ export function StudioRoom() {
           stream: new MediaStream(screenVideoTracks),
           bitsPerSecond: 8_000_000,
         });
+        const screenPipSource = createScreenPictureInPictureRecordingSource({
+          id: `${localId}-screen-pip`,
+          label: `${myParticipant.name} screen PiP`,
+          screenStream,
+          cameraStream: localStream,
+        });
+        if (screenPipSource) sources.push(screenPipSource);
       }
       if (screenAudioTracks.length > 0) {
         sources.push({
