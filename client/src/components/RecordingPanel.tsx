@@ -151,6 +151,23 @@ function downloadTextFile(text: string, fileName: string, type: string) {
   downloadBlob(new Blob([text], { type }), fileName);
 }
 
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
+}
+
 function parseDurationSeconds(value: string): number | null {
   const parts = value.split(':').map((part) => Number(part));
   if (parts.some((part) => !Number.isFinite(part))) return null;
@@ -1724,11 +1741,16 @@ export function RecordingPanel({
   const [markerImportError, setMarkerImportError] = useState<string | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryFilter, setLibraryFilter] = useState<RecordingLibraryFilter>('all');
+  const [driveShareLink, setDriveShareLink] = useState<string | null>(null);
+  const [driveUploadMessage, setDriveUploadMessage] = useState<string | null>(null);
+  const [driveUploadError, setDriveUploadError] = useState<string | null>(null);
+  const [driveLinkCopied, setDriveLinkCopied] = useState(false);
 
   const {
     authorize,
     uploadFile,
     createFolder,
+    createShareLink,
     uploadProgress,
     isUploading,
     isAuthorized,
@@ -1772,6 +1794,10 @@ export function RecordingPanel({
     try {
       const result = await onStopRecording();
       const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      setDriveShareLink(null);
+      setDriveUploadMessage(null);
+      setDriveUploadError(null);
+      setDriveLinkCopied(false);
       const resultFiles = result.files.length > 0
         ? result.files
         : [
@@ -1920,10 +1946,15 @@ export function RecordingPanel({
   }, []);
 
   const handleUploadToDrive = useCallback(async () => {
+    setDriveShareLink(null);
+    setDriveUploadMessage(null);
+    setDriveUploadError(null);
+    setDriveLinkCopied(false);
     let authorized = isAuthorized;
     if (!authorized) {
       authorized = await authorize();
       if (!authorized) {
+        setDriveUploadError('Google Drive authorization failed.');
         console.error('Google Drive authorization failed');
         return;
       }
@@ -1935,6 +1966,7 @@ export function RecordingPanel({
     const folderId = await createFolder(folderName);
 
     if (!folderId) {
+      setDriveUploadError('Failed to create Google Drive folder.');
       console.error('Failed to create Google Drive folder');
       return;
     }
@@ -1944,14 +1976,42 @@ export function RecordingPanel({
       uploadFile(file.blob, file.fileName, folderId)
     );
 
-    await Promise.all(uploadPromises);
+    const uploadResults = await Promise.all(uploadPromises);
+    if (uploadResults.some((id) => !id)) {
+      setDriveUploadError('Some recording tracks failed to upload.');
+      return;
+    }
+
+    const shareResult = await createShareLink(folderId);
+    if (!shareResult) {
+      setDriveUploadError('Uploaded to Google Drive, but sharing could not be enabled.');
+      return;
+    }
+
+    setDriveShareLink(shareResult.webViewLink);
+    setDriveUploadMessage('Uploaded to Google Drive. Share link is ready.');
     console.log('All files uploaded to Google Drive');
-  }, [isAuthorized, authorize, createFolder, uploadFile, recordedFiles, roomName]);
+  }, [isAuthorized, authorize, createFolder, createShareLink, uploadFile, recordedFiles, roomName]);
+
+  const handleCopyDriveShareLink = useCallback(async () => {
+    if (!driveShareLink) return;
+    try {
+      await copyTextToClipboard(driveShareLink);
+      setDriveLinkCopied(true);
+      window.setTimeout(() => setDriveLinkCopied(false), 2200);
+    } catch (err) {
+      setDriveUploadError(err instanceof Error ? err.message : 'Could not copy Drive share link.');
+    }
+  }, [driveShareLink]);
 
   const handleNewRecording = useCallback(() => {
     setRecordedFiles([]);
     setActiveSessionId(null);
     setPreview(null);
+    setDriveShareLink(null);
+    setDriveUploadMessage(null);
+    setDriveUploadError(null);
+    setDriveLinkCopied(false);
     onClearRecordingMarkers?.();
   }, [onClearRecordingMarkers]);
 
@@ -2466,6 +2526,21 @@ export function RecordingPanel({
                 </svg>
                 {isUploading ? 'Uploading...' : 'Upload to Google Drive'}
               </button>
+
+              {driveUploadMessage && <div style={styles.driveStatusBadge}>{driveUploadMessage}</div>}
+              {driveUploadError && <div style={styles.errorBadge}>{driveUploadError}</div>}
+              {driveShareLink && (
+                <div style={styles.driveShareBox}>
+                  <span style={styles.driveShareText}>{driveShareLink}</span>
+                  <button
+                    type="button"
+                    style={styles.driveShareCopyBtn}
+                    onClick={handleCopyDriveShareLink}
+                  >
+                    {driveLinkCopied ? 'Copied' : 'Copy Link'}
+                  </button>
+                </div>
+              )}
             </div>
 
             {bundleError && <div style={styles.errorBadge}>{bundleError}</div>}
@@ -3209,6 +3284,15 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#22c55e',
     marginTop: 2,
   },
+  driveStatusBadge: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#86efac',
+    padding: '7px 9px',
+    borderRadius: 7,
+    border: '1px solid rgba(34, 197, 94, 0.28)',
+    background: 'rgba(34, 197, 94, 0.1)',
+  },
   errorBadge: {
     fontSize: 10,
     fontWeight: 600,
@@ -3295,6 +3379,36 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'white',
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
+  },
+  driveShareBox: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: 8,
+    borderRadius: 8,
+    border: '1px solid rgba(66, 133, 244, 0.32)',
+    background: 'rgba(66, 133, 244, 0.09)',
+  },
+  driveShareText: {
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+    fontSize: 11,
+    color: '#bfdbfe',
+  },
+  driveShareCopyBtn: {
+    flexShrink: 0,
+    height: 28,
+    padding: '0 10px',
+    borderRadius: 7,
+    border: '1px solid rgba(147, 197, 253, 0.5)',
+    background: 'rgba(59, 130, 246, 0.18)',
+    color: '#dbeafe',
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
   },
   newRecordingBtn: {
     width: '100%',

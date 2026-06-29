@@ -170,7 +170,7 @@
 - [x] Playback preview in browser for saved recording tracks
 - [x] Download individual tracks and session ZIP bundles
 - [ ] Cloud storage with expiry / permanent options
-- [ ] Share recording link
+- [x] Share recording link
 
 ---
 

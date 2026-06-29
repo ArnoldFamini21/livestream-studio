@@ -3,6 +3,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID';
 const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
 const DRIVE_FILES_URL = 'https://www.googleapis.com/drive/v3/files';
+const DRIVE_PERMISSIONS_URL = 'https://www.googleapis.com/drive/v3/files';
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 
 interface UploadProgress {
@@ -12,6 +13,14 @@ interface UploadProgress {
 interface TokenClient {
   requestAccessToken: (overrides?: { prompt?: string }) => void;
 }
+
+export interface DriveShareLinkResult {
+  folderId: string;
+  webViewLink: string;
+  permissionId?: string;
+}
+
+type FetchLike = typeof fetch;
 
 declare global {
   interface Window {
@@ -32,6 +41,66 @@ declare global {
 // Google OAuth access tokens default to ~1 hour. Treat them as stale a bit early
 // so we proactively re-auth before a long upload runs out of token mid-flight.
 const TOKEN_SAFETY_MARGIN_MS = 5 * 60 * 1000;
+
+function isDriveFileId(value: string): boolean {
+  return /^[a-zA-Z0-9_-]{8,200}$/.test(value);
+}
+
+export function buildDriveFolderUrl(folderId: string): string {
+  return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`;
+}
+
+export async function createDriveFolderShareLinkRequest(
+  accessToken: string,
+  folderId: string,
+  fetchImpl: FetchLike = fetch
+): Promise<DriveShareLinkResult | null> {
+  if (!accessToken || !isDriveFileId(folderId)) return null;
+
+  const permissionResponse = await fetchImpl(
+    `${DRIVE_PERMISSIONS_URL}/${encodeURIComponent(folderId)}/permissions?supportsAllDrives=true`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'anyone',
+        role: 'reader',
+      }),
+    }
+  );
+
+  if (!permissionResponse.ok && permissionResponse.status !== 409) {
+    return null;
+  }
+
+  const permissionData = permissionResponse.ok ? await permissionResponse.json().catch(() => null) : null;
+  const fileResponse = await fetchImpl(
+    `${DRIVE_FILES_URL}/${encodeURIComponent(folderId)}?fields=webViewLink`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+  if (!fileResponse.ok) {
+    return {
+      folderId,
+      webViewLink: buildDriveFolderUrl(folderId),
+      ...(typeof permissionData?.id === 'string' ? { permissionId: permissionData.id } : {}),
+    };
+  }
+
+  const fileData = await fileResponse.json().catch(() => null);
+  return {
+    folderId,
+    webViewLink: typeof fileData?.webViewLink === 'string' ? fileData.webViewLink : buildDriveFolderUrl(folderId),
+    ...(typeof permissionData?.id === 'string' ? { permissionId: permissionData.id } : {}),
+  };
+}
 
 export function useGoogleDriveUpload() {
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -298,6 +367,26 @@ export function useGoogleDriveUpload() {
     [ensureFreshToken]
   );
 
+  const createShareLink = useCallback(async (folderId: string): Promise<DriveShareLinkResult | null> => {
+    const ok = await ensureFreshToken();
+    if (!ok || !accessTokenRef.current) {
+      console.error('Not authorized');
+      return null;
+    }
+
+    try {
+      const result = await createDriveFolderShareLinkRequest(accessTokenRef.current, folderId);
+      if (!result) {
+        console.error('Failed to create Google Drive share link');
+        return null;
+      }
+      return result;
+    } catch (err) {
+      console.error('Error creating Google Drive share link:', err);
+      return null;
+    }
+  }, [ensureFreshToken]);
+
   // Track overall uploading state based on progress
   useEffect(() => {
     const values = Object.values(uploadProgress);
@@ -313,6 +402,7 @@ export function useGoogleDriveUpload() {
     authorize,
     uploadFile,
     createFolder,
+    createShareLink,
     uploadProgress,
     isUploading,
     isAuthorized,
