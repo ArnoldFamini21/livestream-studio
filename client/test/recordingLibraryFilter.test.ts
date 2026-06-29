@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LocalRecordingSession } from '../src/hooks/useRecordingLibrary.ts';
 import {
+  buildRecordingLibraryDashboardSummary,
   buildRecordingLibraryCatalogCsv,
   buildRecordingLibraryCatalogFilename,
   filterRecordingLibrarySessions,
@@ -170,6 +171,40 @@ describe('recording library filters', () => {
       filterRecordingLibrarySessions(sessions, '', 'markers').map((session) => session.id),
       ['recording-1']
     );
+  });
+
+  it('summarizes the saved recording dashboard totals', () => {
+    const filtered = filterRecordingLibrarySessions(sessions, '', 'screen');
+    const summary = buildRecordingLibraryDashboardSummary(sessions, filtered);
+
+    assert.deepEqual(summary, {
+      totalSessions: 5,
+      visibleSessions: 2,
+      totalTracks: 7,
+      totalBytes: 5888,
+      totalDurationSeconds: 7800,
+      markerCount: 1,
+      latestSession: {
+        id: 'recording-5',
+        roomName: 'Founder Interview',
+        createdAt: '2026-06-05T14:00:00.000Z',
+      },
+    });
+  });
+
+  it('ignores unknown recording durations in dashboard totals', () => {
+    const summary = buildRecordingLibraryDashboardSummary([
+      ...sessions,
+      {
+        ...sessions[0],
+        id: 'recording-unknown-duration',
+        createdAt: '2026-06-06T14:00:00.000Z',
+        durationSeconds: null,
+      },
+    ]);
+
+    assert.equal(summary.totalDurationSeconds, 7800);
+    assert.equal(summary.latestSession?.id, 'recording-unknown-duration');
   });
 
   it('exports a recording library catalog row for each saved track', () => {

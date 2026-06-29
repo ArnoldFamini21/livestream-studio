@@ -166,7 +166,7 @@
 - [ ] Transcript generation (speech-to-text via Whisper API)
 
 ### 8B. Recording Management
-- [ ] Recording dashboard: list all past recordings
+- [x] Recording dashboard: list all past recordings
 - [x] Playback preview in browser for saved recording tracks
 - [x] Download individual tracks and session ZIP bundles
 - [ ] Cloud storage with expiry / permanent options
