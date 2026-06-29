@@ -42,8 +42,10 @@ describe('recording readiness summary', () => {
     assert.deepEqual(
       summary.expectedTracks.map((track) => [track.label, track.kind]),
       [
+        ['Host ISO', 'iso'],
         ['Host audio', 'audio'],
         ['Host camera', 'video'],
+        ['Guest ISO', 'iso'],
         ['Guest audio', 'audio'],
         ['Guest camera', 'video'],
       ]
@@ -107,7 +109,7 @@ describe('recording readiness summary', () => {
     assert.equal(summary.status, 'good');
     assert.deepEqual(
       summary.expectedTracks.map((track) => track.label),
-      ['Host audio', 'Host camera']
+      ['Host ISO', 'Host audio', 'Host camera']
     );
   });
 

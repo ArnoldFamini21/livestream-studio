@@ -18,7 +18,7 @@ export interface LocalRecordingSource {
   id: string;
   label: string;
   stream: MediaStream;
-  kind: 'audio' | 'video' | 'screen' | 'program';
+  kind: 'audio' | 'video' | 'screen' | 'program' | 'iso';
   bitsPerSecond?: number;
   cleanup?: () => void;
 }
@@ -76,7 +76,7 @@ export function useLocalRecording() {
 
   const getMimeTypeForSource = (source: LocalRecordingSource): string => {
     if (source.kind === 'audio') return getAudioMimeType();
-    if (source.kind === 'screen' || source.kind === 'program') return getScreenMimeType();
+    if (source.kind === 'screen' || source.kind === 'program' || source.kind === 'iso') return getScreenMimeType();
     const hasVideo = source.stream.getVideoTracks().some((track) => track.readyState === 'live');
     return hasVideo ? getVideoMimeType() : getAudioMimeType();
   };
@@ -85,6 +85,7 @@ export function useLocalRecording() {
     if (source.bitsPerSecond) return source.bitsPerSecond;
     if (source.kind === 'audio') return 256_000;
     if (source.kind === 'program') return 10_000_000;
+    if (source.kind === 'iso') return 8_500_000;
     if (source.kind === 'screen') return 8_000_000;
     const hasVideo = source.stream.getVideoTracks().some((track) => track.readyState === 'live');
     return hasVideo ? 8_000_000 : 256_000;
