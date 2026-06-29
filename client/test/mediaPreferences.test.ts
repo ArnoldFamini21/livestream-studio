@@ -4,6 +4,8 @@ import {
   createVideoTrackConstraints,
   DEFAULT_AUDIO_PROCESSING_PREFERENCES,
   DEFAULT_VIDEO_QUALITY_PRESET_ID,
+  getRecommendedVideoQuality,
+  getRecommendedVideoQualityPresetId,
   getVideoQualityPreset,
   normalizeVideoQualityPresetId,
   readPreferredAudioProcessing,
@@ -78,6 +80,7 @@ describe('video quality preferences', () => {
   it('round trips the selected video quality through session storage', () => {
     writePreferredVideoQuality('4k');
     assert.equal(readPreferredVideoQuality(), '4k');
+    assert.equal(readPreferredVideoQuality({ hardwareConcurrency: 2, deviceMemoryGb: 2 }), '4k');
 
     writePreferredVideoQuality('720p');
     assert.equal(readPreferredVideoQuality(), '720p');
@@ -87,6 +90,44 @@ describe('video quality preferences', () => {
     sessionStorage.setItem('preferredVideoQuality', '8k');
     assert.equal(readPreferredVideoQuality(), DEFAULT_VIDEO_QUALITY_PRESET_ID);
     assert.equal(normalizeVideoQualityPresetId(null), DEFAULT_VIDEO_QUALITY_PRESET_ID);
+  });
+
+  it('recommends 720p for constrained hardware profiles', () => {
+    assert.deepEqual(getRecommendedVideoQuality({
+      hardwareConcurrency: 2,
+      deviceMemoryGb: 8,
+      screenWidth: 1920,
+      screenHeight: 1080,
+    }), {
+      presetId: '720p',
+      reason: 'low-resource',
+    });
+    assert.equal(getRecommendedVideoQualityPresetId({ hardwareConcurrency: 8, deviceMemoryGb: 2 }), '720p');
+  });
+
+  it('recommends 4K only for high-capability desktop-class profiles', () => {
+    assert.deepEqual(getRecommendedVideoQuality({
+      hardwareConcurrency: 10,
+      deviceMemoryGb: 16,
+      screenWidth: 3840,
+      screenHeight: 2160,
+    }), {
+      presetId: '4k',
+      reason: 'high-capability',
+    });
+  });
+
+  it('keeps 1080p as the balanced recommendation for mid-range or unknown profiles', () => {
+    assert.deepEqual(getRecommendedVideoQuality({
+      hardwareConcurrency: 4,
+      deviceMemoryGb: 4,
+      screenWidth: 1920,
+      screenHeight: 1080,
+    }), {
+      presetId: '1080p',
+      reason: 'balanced',
+    });
+    assert.equal(getRecommendedVideoQualityPresetId({}), '1080p');
   });
 
   it('builds video constraints from the selected quality preset and optional camera', () => {

@@ -14,6 +14,18 @@ export interface VideoQualityPreset {
   frameRate: number;
 }
 
+export interface VideoQualityCapabilityProfile {
+  hardwareConcurrency?: number;
+  deviceMemoryGb?: number;
+  screenWidth?: number;
+  screenHeight?: number;
+}
+
+export interface VideoQualityRecommendation {
+  presetId: VideoQualityPresetId;
+  reason: 'low-resource' | 'balanced' | 'high-capability';
+}
+
 const PREFERRED_ECHO_CANCELLATION_KEY = 'preferredEchoCancellation';
 const PREFERRED_NOISE_SUPPRESSION_KEY = 'preferredNoiseSuppression';
 const PREFERRED_VIDEO_QUALITY_KEY = 'preferredVideoQuality';
@@ -87,6 +99,24 @@ function writeSessionString(key: string, value: string) {
   }
 }
 
+function getFinitePositiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+export function getCurrentVideoQualityCapabilityProfile(): VideoQualityCapabilityProfile {
+  const nav = typeof navigator === 'undefined'
+    ? undefined
+    : navigator as Navigator & { deviceMemory?: number };
+  const currentScreen = typeof screen === 'undefined' ? undefined : screen;
+
+  return {
+    hardwareConcurrency: getFinitePositiveNumber(nav?.hardwareConcurrency),
+    deviceMemoryGb: getFinitePositiveNumber(nav?.deviceMemory),
+    screenWidth: getFinitePositiveNumber(currentScreen?.width),
+    screenHeight: getFinitePositiveNumber(currentScreen?.height),
+  };
+}
+
 export function readPreferredAudioProcessing(): AudioProcessingPreferences {
   return {
     echoCancellation: readSessionBoolean(
@@ -116,8 +146,45 @@ export function getVideoQualityPreset(id: unknown = DEFAULT_VIDEO_QUALITY_PRESET
   return VIDEO_QUALITY_PRESETS.find((preset) => preset.id === normalizedId) || VIDEO_QUALITY_PRESETS[1];
 }
 
-export function readPreferredVideoQuality(): VideoQualityPresetId {
-  return normalizeVideoQualityPresetId(readSessionString(PREFERRED_VIDEO_QUALITY_KEY));
+export function getRecommendedVideoQuality(
+  profile: VideoQualityCapabilityProfile = getCurrentVideoQualityCapabilityProfile()
+): VideoQualityRecommendation {
+  const hardwareConcurrency = getFinitePositiveNumber(profile.hardwareConcurrency);
+  const deviceMemoryGb = getFinitePositiveNumber(profile.deviceMemoryGb);
+  const screenWidth = getFinitePositiveNumber(profile.screenWidth);
+  const screenHeight = getFinitePositiveNumber(profile.screenHeight);
+  const longScreenEdge = Math.max(screenWidth || 0, screenHeight || 0);
+  const shortScreenEdge = Math.min(screenWidth || 0, screenHeight || 0);
+
+  const lowCpu = hardwareConcurrency !== undefined && hardwareConcurrency <= 2;
+  const lowMemory = deviceMemoryGb !== undefined && deviceMemoryGb <= 2;
+  if (lowCpu || lowMemory) {
+    return { presetId: '720p', reason: 'low-resource' };
+  }
+
+  const strongCpu = hardwareConcurrency !== undefined && hardwareConcurrency >= 8;
+  const strongMemory = deviceMemoryGb !== undefined && deviceMemoryGb >= 8;
+  const highResolutionDisplay = longScreenEdge >= 2560 && shortScreenEdge >= 1440;
+  if (strongCpu && strongMemory && highResolutionDisplay) {
+    return { presetId: '4k', reason: 'high-capability' };
+  }
+
+  return { presetId: '1080p', reason: 'balanced' };
+}
+
+export function getRecommendedVideoQualityPresetId(
+  profile?: VideoQualityCapabilityProfile
+): VideoQualityPresetId {
+  return getRecommendedVideoQuality(profile).presetId;
+}
+
+export function readPreferredVideoQuality(
+  profile?: VideoQualityCapabilityProfile
+): VideoQualityPresetId {
+  const stored = readSessionString(PREFERRED_VIDEO_QUALITY_KEY);
+  return VIDEO_QUALITY_PRESETS.some((preset) => preset.id === stored)
+    ? stored as VideoQualityPresetId
+    : getRecommendedVideoQualityPresetId(profile);
 }
 
 export function writePreferredVideoQuality(presetId: VideoQualityPresetId) {

@@ -979,6 +979,7 @@ export function StudioRoom() {
     selectedAudioOutputDeviceId,
     audioProcessing,
     videoQuality,
+    recommendedVideoQuality,
     updateAudioProcessing,
     updateVideoQuality,
     onAudioOutputDeviceChange,
@@ -3952,6 +3953,7 @@ export function StudioRoom() {
             audioProcessing={audioProcessing}
             onAudioProcessingChange={onAudioProcessingChange}
             videoQuality={videoQuality}
+            recommendedVideoQuality={recommendedVideoQuality}
             onVideoQualityChange={onVideoQualityChange}
             onClose={() => setShowDeviceSettings(false)}
             virtualBackground={vbConfig}
@@ -4757,6 +4759,7 @@ export function StudioRoom() {
           audioProcessing={audioProcessing}
           onAudioProcessingChange={onAudioProcessingChange}
           videoQuality={videoQuality}
+          recommendedVideoQuality={recommendedVideoQuality}
           onVideoQualityChange={onVideoQualityChange}
           onClose={() => setShowDeviceSettings(false)}
           virtualBackground={vbConfig}

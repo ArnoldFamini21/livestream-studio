@@ -109,6 +109,7 @@ export function JoinRoom() {
     selectedVideoDeviceId,
     selectedAudioOutputDeviceId,
     videoQuality,
+    recommendedVideoQuality,
     switchAudioDevice,
     switchVideoDevice,
     updateVideoQuality,
@@ -570,6 +571,7 @@ export function JoinRoom() {
               <div style={styles.qualityGrid} role="group" aria-label="Camera quality">
                 {VIDEO_QUALITY_PRESETS.map((preset) => {
                   const active = preset.id === videoQuality;
+                  const recommended = preset.id === recommendedVideoQuality;
                   return (
                     <button
                       key={preset.id}
@@ -581,7 +583,10 @@ export function JoinRoom() {
                       onClick={() => onVideoQualityChange(preset.id)}
                       aria-pressed={active}
                     >
-                      <span style={styles.qualityButtonLabel}>{preset.label}</span>
+                      <span style={styles.qualityButtonLabelRow}>
+                        <span style={styles.qualityButtonLabel}>{preset.label}</span>
+                        {recommended && <span style={styles.qualityButtonBadge}>Suggested</span>}
+                      </span>
                       <span style={styles.qualityButtonText}>{preset.description}</span>
                     </button>
                   );
@@ -953,6 +958,26 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     fontWeight: 900,
     lineHeight: 1.1,
+  },
+  qualityButtonLabelRow: {
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    flexWrap: 'wrap',
+  },
+  qualityButtonBadge: {
+    maxWidth: '100%',
+    padding: '1px 4px',
+    borderRadius: 5,
+    background: 'rgba(103, 232, 249, 0.12)',
+    border: '1px solid rgba(103, 232, 249, 0.28)',
+    color: '#a5f3fc',
+    fontSize: 7,
+    fontWeight: 900,
+    lineHeight: 1.1,
+    textTransform: 'uppercase' as const,
   },
   qualityButtonText: {
     fontSize: 8,

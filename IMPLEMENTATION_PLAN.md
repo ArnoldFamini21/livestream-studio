@@ -14,7 +14,7 @@
 
 ### 1B. 4K Recording Optimization
 - [x] Manual capture quality presets: 720p/1080p/4K
-- [ ] Adaptive hardware capability detection and automatic quality recommendation
+- [x] Adaptive hardware capability detection and automatic quality recommendation
 - [ ] Use hardware-accelerated encoding where available (WebCodecs API)
 - [ ] Chunked upload with resume support for large 4K files
 - [ ] Server-side S3-compatible storage integration
