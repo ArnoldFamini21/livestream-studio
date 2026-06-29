@@ -73,6 +73,8 @@ import {
   buildRecordingReadinessSummary,
   type RecordingParticipantReadiness,
 } from '../utils/recordingReadiness.ts';
+import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
+import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
 import {
   canControlStudioRecording,
   canUseAdmittedOperatorControls,
@@ -300,6 +302,152 @@ function getStudioStateKey(roomId: string): string {
 
 function getRecordingSourceId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'track';
+}
+
+type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
+
+interface ProgramRecordingAudioSource {
+  id?: string;
+  stream: MediaStream;
+  volume: number;
+}
+
+interface CreateProgramRecordingSourceOptions {
+  compositeStream: MediaStream | null;
+  localStream: MediaStream | null;
+  localParticipant: Participant | null;
+  participants: Map<string, Participant>;
+  remoteStreams: Map<string, MediaStream>;
+  screenStream: MediaStream | null;
+  auxiliaryAudioStream: MediaStream | null;
+  participantVolumes: Record<string, number>;
+  participantAudioLevels: Record<string, number>;
+  audioDuckingEnabled: boolean;
+}
+
+function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
+  const globalWithWebkit = globalThis as typeof globalThis & {
+    webkitAudioContext?: BrowserAudioContextConstructor;
+  };
+  return globalWithWebkit.AudioContext || globalWithWebkit.webkitAudioContext || null;
+}
+
+function createRecordingAudioContext(AudioContextConstructor: BrowserAudioContextConstructor): AudioContext {
+  try {
+    return new AudioContextConstructor({ sampleRate: 48_000 });
+  } catch {
+    return new AudioContextConstructor();
+  }
+}
+
+function createProgramRecordingSource(options: CreateProgramRecordingSourceOptions): LocalRecordingSource | null {
+  const videoTrack = options.compositeStream?.getVideoTracks().find((track) => track.readyState === 'live');
+  if (!videoTrack) return null;
+
+  const AudioContextConstructor = getAudioContextConstructor();
+  if (!AudioContextConstructor) return null;
+
+  const audioContext = createRecordingAudioContext(AudioContextConstructor);
+  const destination = audioContext.createMediaStreamDestination();
+  const audioSources: ProgramRecordingAudioSource[] = [];
+  const participantIds: string[] = [];
+
+  if (options.localParticipant?.status === 'on-stage') {
+    participantIds.push(options.localParticipant.id);
+  }
+  for (const [id, participant] of options.participants) {
+    if (participant.status === 'on-stage') participantIds.push(id);
+  }
+
+  const programVolumes = getDuckedParticipantVolumes({
+    enabled: options.audioDuckingEnabled,
+    participantVolumes: options.participantVolumes,
+    participantAudioLevels: options.participantAudioLevels,
+    participantIds,
+  });
+
+  const localAudioTracks = options.localParticipant?.status === 'on-stage'
+    ? getLiveAudioTracks(options.localStream)
+    : [];
+  if (localAudioTracks.length > 0 && options.localParticipant) {
+    audioSources.push({
+      id: options.localParticipant.id,
+      stream: new MediaStream(localAudioTracks),
+      volume: programVolumes[options.localParticipant.id] ?? 1,
+    });
+  }
+
+  for (const [id, participant] of options.participants) {
+    if (participant.status !== 'on-stage') continue;
+    const audioTracks = getLiveAudioTracks(options.remoteStreams.get(id));
+    if (audioTracks.length > 0) {
+      audioSources.push({
+        id,
+        stream: new MediaStream(audioTracks),
+        volume: programVolumes[id] ?? 1,
+      });
+    }
+  }
+
+  const screenAudioTracks = getLiveAudioTracks(options.screenStream);
+  if (screenAudioTracks.length > 0) {
+    audioSources.push({ stream: new MediaStream(screenAudioTracks), volume: 1 });
+  }
+
+  const auxiliaryAudioTracks = getLiveAudioTracks(options.auxiliaryAudioStream);
+  if (auxiliaryAudioTracks.length > 0) {
+    audioSources.push({ stream: new MediaStream(auxiliaryAudioTracks), volume: 1 });
+  }
+
+  const sourceNodes: MediaStreamAudioSourceNode[] = [];
+  const gainNodes: GainNode[] = [];
+  let silentOscillator: OscillatorNode | null = null;
+
+  for (const source of audioSources) {
+    const sourceNode = audioContext.createMediaStreamSource(source.stream);
+    const gainNode = audioContext.createGain();
+    gainNode.gain.value = Math.min(1, Math.max(0, source.volume));
+    sourceNode.connect(gainNode);
+    gainNode.connect(destination);
+    sourceNodes.push(sourceNode);
+    gainNodes.push(gainNode);
+  }
+
+  if (audioSources.length === 0) {
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    gainNode.gain.value = 0;
+    oscillator.connect(gainNode);
+    gainNode.connect(destination);
+    oscillator.start();
+    silentOscillator = oscillator;
+    gainNodes.push(gainNode);
+  }
+
+  const audioTracks = destination.stream.getAudioTracks();
+  const stream = new MediaStream([videoTrack, ...audioTracks]);
+  let cleanedUp = false;
+
+  return {
+    id: 'program-mix',
+    label: 'Program mix',
+    kind: 'program',
+    stream,
+    bitsPerSecond: 10_000_000,
+    cleanup: () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      try {
+        silentOscillator?.stop();
+      } catch {
+        // Already stopped.
+      }
+      sourceNodes.forEach((node) => node.disconnect());
+      gainNodes.forEach((node) => node.disconnect());
+      audioTracks.forEach((track) => track.stop());
+      void audioContext.close();
+    },
+  };
 }
 
 function normalizeRecordingMarkerLabel(value: string): string {
@@ -2036,6 +2184,20 @@ export function StudioRoom() {
     if (!myParticipant || !canControlRecording || !recordingReadiness.canStart) return;
     const sources: LocalRecordingSource[] = [];
     const liveTracks = (tracks: MediaStreamTrack[]) => tracks.filter((track) => track.readyState === 'live');
+    const programSource = createProgramRecordingSource({
+      compositeStream: compositeStreamRef.current,
+      localStream,
+      localParticipant: myParticipant,
+      participants,
+      remoteStreams,
+      screenStream,
+      auxiliaryAudioStream: broadcastAudioBus.ensureStream() ?? broadcastAudioBus.stream,
+      participantVolumes,
+      participantAudioLevels: stageAudioLevels,
+      audioDuckingEnabled,
+    });
+    if (programSource) sources.push(programSource);
+
     const localAudioTracks = liveTracks(localStream?.getAudioTracks() || []);
     const localVideoTracks = liveTracks(localStream?.getVideoTracks() || []);
     const localId = getRecordingSourceId(myParticipant.id);
