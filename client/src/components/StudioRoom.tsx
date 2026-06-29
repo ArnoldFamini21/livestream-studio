@@ -2202,6 +2202,16 @@ export function StudioRoom() {
     const localVideoTracks = liveTracks(localStream?.getVideoTracks() || []);
     const localId = getRecordingSourceId(myParticipant.id);
 
+    if (myParticipant.status === 'on-stage' && localAudioTracks.length > 0 && localVideoTracks.length > 0) {
+      sources.push({
+        id: `${localId}-iso`,
+        label: `${myParticipant.name} ISO`,
+        kind: 'iso',
+        stream: new MediaStream([...localVideoTracks, ...localAudioTracks]),
+        bitsPerSecond: 8_500_000,
+      });
+    }
+
     if (myParticipant.status === 'on-stage' && localAudioTracks.length > 0) {
       sources.push({
         id: `${localId}-audio`,
@@ -2229,6 +2239,17 @@ export function StudioRoom() {
       const remoteId = getRecordingSourceId(id);
       const remoteAudioTracks = liveTracks(remoteStream.getAudioTracks());
       const remoteVideoTracks = liveTracks(remoteStream.getVideoTracks());
+      const isRemoteScreen = participant.screenSharing;
+
+      if (!isRemoteScreen && remoteAudioTracks.length > 0 && remoteVideoTracks.length > 0) {
+        sources.push({
+          id: `${remoteId}-iso`,
+          label: `${participant.name} ISO`,
+          kind: 'iso',
+          stream: new MediaStream([...remoteVideoTracks, ...remoteAudioTracks]),
+          bitsPerSecond: 8_500_000,
+        });
+      }
 
       if (remoteAudioTracks.length > 0) {
         sources.push({
@@ -2241,7 +2262,6 @@ export function StudioRoom() {
       }
 
       if (remoteVideoTracks.length > 0) {
-        const isRemoteScreen = participant.screenSharing;
         sources.push({
           id: `${remoteId}-${isRemoteScreen ? 'screen' : 'camera'}`,
           label: `${participant.name} ${isRemoteScreen ? 'screen' : 'camera'}`,

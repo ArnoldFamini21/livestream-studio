@@ -29,7 +29,7 @@ export interface RecordingReadinessOptions {
 export interface RecordingReadinessTrack {
   id: string;
   label: string;
-  kind: 'audio' | 'video' | 'screen';
+  kind: 'audio' | 'video' | 'screen' | 'iso';
 }
 
 export interface RecordingReadinessItem {
@@ -68,6 +68,13 @@ function buildExpectedTracks(options: RecordingReadinessOptions): RecordingReadi
   for (const participant of options.participants) {
     if (participant.status !== 'on-stage' || !participant.hasStream) continue;
     const prefix = participant.name || 'Participant';
+    if (!participant.screenSharing && participant.hasAudio && participant.hasVideo) {
+      tracks.push({
+        id: `${participant.id}-iso`,
+        label: `${prefix} ISO`,
+        kind: 'iso',
+      });
+    }
     if (participant.hasAudio) {
       tracks.push({
         id: `${participant.id}-audio`,

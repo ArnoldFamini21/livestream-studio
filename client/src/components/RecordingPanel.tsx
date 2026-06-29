@@ -112,7 +112,7 @@ interface AudioStemBuildResult {
   candidateCount: number;
 }
 
-export type RecordingLibraryFilter = 'all' | 'audio' | 'video' | 'screen' | 'program' | 'markers';
+export type RecordingLibraryFilter = 'all' | 'audio' | 'video' | 'screen' | 'program' | 'iso' | 'markers';
 
 const RECORDING_LIBRARY_FILTERS: Array<{ value: RecordingLibraryFilter; label: string }> = [
   { value: 'all', label: 'All' },
@@ -120,6 +120,7 @@ const RECORDING_LIBRARY_FILTERS: Array<{ value: RecordingLibraryFilter; label: s
   { value: 'video', label: 'Video' },
   { value: 'screen', label: 'Screen' },
   { value: 'program', label: 'Program' },
+  { value: 'iso', label: 'ISO' },
   { value: 'markers', label: 'Marked' },
 ];
 
@@ -243,7 +244,7 @@ function makeRecordingFileName(roomName: string, label: string, timestamp: strin
 function getRecordingFileType(file: RecordedFile): string {
   if (file.blob.type) return file.blob.type;
   if (file.kind === 'audio') return 'audio/webm';
-  if (file.kind === 'video' || file.kind === 'screen' || file.kind === 'program') return 'video/webm';
+  if (file.kind === 'video' || file.kind === 'screen' || file.kind === 'program' || file.kind === 'iso') return 'video/webm';
   return 'application/octet-stream';
 }
 
@@ -382,7 +383,7 @@ function getRecordingSessionSearchText(session: LocalRecordingSession): string {
 function sessionMatchesRecordingFilter(session: LocalRecordingSession, filter: RecordingLibraryFilter): boolean {
   if (filter === 'all') return true;
   if (filter === 'markers') return Boolean(session.markers?.length);
-  if (filter === 'video') return session.files.some((file) => file.kind === 'video' || file.kind === 'program');
+  if (filter === 'video') return session.files.some((file) => file.kind === 'video' || file.kind === 'program' || file.kind === 'iso');
   return session.files.some((file) => file.kind === filter);
 }
 
@@ -859,7 +860,7 @@ export function parseRecordingMarkersCsv(text: string, importedAt = new Date().t
 }
 
 function inferEditorTrackKind(file: RecordingBundleFile): 'audio' | 'video' | 'screen' {
-  if (file.kind === 'program') return 'video';
+  if (file.kind === 'program' || file.kind === 'iso') return 'video';
   const label = file.label.toLowerCase();
   const fileName = file.fileName.toLowerCase();
   if (label.includes('screen') || fileName.includes('screen')) return 'screen';

@@ -20,8 +20,8 @@
 - [ ] Export pipeline: MP4 (H.264/H.265), separate WAV/MP3 audio stems
 
 ### 1C. Screen Recording
-- [ ] getDisplayMedia() for screen/window/tab sharing
-- [ ] Record screen share as a separate track
+- [x] getDisplayMedia() for screen/window/tab sharing
+- [x] Record screen share as a separate track
 - [ ] Picture-in-picture: camera overlay on screen share
 
 ---
@@ -159,9 +159,9 @@
 
 ## Phase 8: Advanced Recording Features (Priority: Medium)
 ### 8A. Multi-Track Export
-- [ ] Individual ISO recordings per participant (video + audio)
+- [x] Individual ISO recordings per participant (video + audio)
 - [x] Combined mix-down recording
-- [ ] Separate screen share recording
+- [x] Separate screen share recording
 - [x] Audio-only export (podcast ZIP with isolated audio tracks, WAV stems when supported, captions, and markers)
 - [ ] Transcript generation (speech-to-text via Whisper API)
 

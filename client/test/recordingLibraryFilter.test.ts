@@ -106,6 +106,24 @@ const sessions: LocalRecordingSession[] = [
       },
     ],
   },
+  {
+    id: 'recording-5',
+    roomName: 'Founder Interview',
+    createdAt: '2026-06-05T14:00:00.000Z',
+    durationSeconds: 1500,
+    trackCount: 1,
+    totalBytes: 1536,
+    files: [
+      {
+        id: 'recording-5-track-1',
+        label: 'Host ISO',
+        fileName: 'founder_interview_host_iso.webm',
+        size: 1536,
+        type: 'video/webm',
+        kind: 'iso',
+      },
+    ],
+  },
 ];
 
 describe('recording library filters', () => {
@@ -131,7 +149,7 @@ describe('recording library filters', () => {
     );
     assert.deepEqual(
       filterRecordingLibrarySessions(sessions, '', 'video').map((session) => session.id),
-      ['recording-1', 'recording-4']
+      ['recording-1', 'recording-4', 'recording-5']
     );
     assert.deepEqual(
       filterRecordingLibrarySessions(sessions, '', 'screen').map((session) => session.id),
@@ -140,6 +158,10 @@ describe('recording library filters', () => {
     assert.deepEqual(
       filterRecordingLibrarySessions(sessions, '', 'program').map((session) => session.id),
       ['recording-4']
+    );
+    assert.deepEqual(
+      filterRecordingLibrarySessions(sessions, '', 'iso').map((session) => session.id),
+      ['recording-5']
     );
   });
 
