@@ -21,6 +21,7 @@ const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
 const HOST_ACCESS_RECOVERY_TIMEOUT_MS = 15_000;
 const SERVER_WAKE_NOTICE_DELAY_MS = 6_000;
+const MISSING_CREATED_HOST_TOKEN_MESSAGE = 'Studio was created, but host access was not returned. Please try again in a moment.';
 const MISSING_SCHEDULED_HOST_TOKEN_MESSAGE = 'Studio was scheduled, but host access was not returned. Please schedule it again in a moment.';
 const SAVED_HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing for this studio. Create a new studio to get a fresh private host link.';
 const INVITE_QR_OPTIONS = {
@@ -173,6 +174,11 @@ async function recoverHostAccess(room: CreatedRoomWithDetails): Promise<CreatedR
   }
 }
 
+async function resolveCreatedRoomHostAccess(room: CreatedRoomWithDetails): Promise<CreatedRoomWithDetails> {
+  if (getValidHostToken(room.hostToken) || isLegacyHostlessCreateResponse(room)) return room;
+  return recoverHostAccess(room);
+}
+
 function toSavedScheduledRoom(
   room: CreatedRoomResponse & { id: string; name: string },
   hostName: string,
@@ -234,10 +240,14 @@ export function HomePage() {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
       }
-      const room = await recoverHostAccess(createdRoom);
+      const room = await resolveCreatedRoomHostAccess(createdRoom);
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
+        if (!isLegacyHostlessCreateResponse(room)) {
+          setError(MISSING_CREATED_HOST_TOKEN_MESSAGE);
+          return;
+        }
         persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
         navigate(buildHostEntryPath(room.id));
         return;
@@ -278,7 +288,7 @@ export function HomePage() {
         setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
         return;
       }
-      const room = await recoverHostAccess(createdRoom);
+      const room = await resolveCreatedRoomHostAccess(createdRoom);
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
