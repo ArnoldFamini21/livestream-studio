@@ -85,7 +85,14 @@ describe('host session links', () => {
       id: 'legacy-room',
       name: 'Legacy room',
       hostToken: undefined,
-    }), true);
+    }), false);
+    assert.equal(isLegacyHostlessCreateResponse({
+      id: 'modern-room',
+      name: 'Modern room',
+      status: 'waiting',
+      hostName: 'Arnold',
+      hostToken: undefined,
+    }), false);
     assert.equal(isLegacyHostlessCreateResponse({
       hostToken: URL_TOKEN,
       id: 'token-room',
