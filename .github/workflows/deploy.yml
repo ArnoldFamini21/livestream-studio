@@ -42,21 +42,28 @@ jobs:
           VITE_INVITE_BASE_URL: https://studio.arnoldfamini.com
 
       - name: Trigger Render deploys
+        id: render-deploys
         env:
           RENDER_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_SERVER_DEPLOY_HOOK_URL }}
           RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL }}
         run: |
+          hooks_configured=true
+
           if [ -n "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
             curl --fail --silent --show-error --request POST "$RENDER_SERVER_DEPLOY_HOOK_URL"
           else
+            hooks_configured=false
             echo "::notice::RENDER_SERVER_DEPLOY_HOOK_URL is not configured; skipping signaling server deploy trigger."
           fi
 
           if [ -n "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
             curl --fail --silent --show-error --request POST "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL"
           else
+            hooks_configured=false
             echo "::notice::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is not configured; skipping media-server deploy trigger."
           fi
+
+          echo "hooks_configured=$hooks_configured" >> "$GITHUB_OUTPUT"
 
       - name: Deploy to deploy branch
         uses: peaceiris/actions-gh-pages@v4
@@ -65,3 +72,11 @@ jobs:
           publish_dir: ./client/dist
           publish_branch: deploy
           keep_files: false
+
+      - name: Verify production services
+        if: steps.render-deploys.outputs.hooks_configured == 'true'
+        run: npm run production:check
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+          PRODUCTION_CHECK_WAIT_MS: 900000
+          PRODUCTION_CHECK_INTERVAL_MS: 15000

@@ -40,6 +40,8 @@ RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL=<deploy hook URL for livestream-studio-media
 
 When these secrets are missing, GitHub Actions still deploys the static client but logs notices that the Render deploy triggers were skipped.
 
+When both deploy hook secrets are present, the workflow waits for production verification after the Hostinger deploy. It runs `npm run production:check` with the pushed commit SHA and polls for up to 15 minutes until both Render services report the new commit in `/health`.
+
 ## Production Smoke Check
 
 After Render deploys finish, run:
@@ -52,6 +54,15 @@ For a specific commit:
 
 ```sh
 EXPECTED_COMMIT=$(git rev-parse HEAD) npm run production:check
+```
+
+To wait for a deploy to finish:
+
+```sh
+EXPECTED_COMMIT=$(git rev-parse HEAD) \
+PRODUCTION_CHECK_WAIT_MS=900000 \
+PRODUCTION_CHECK_INTERVAL_MS=15000 \
+npm run production:check
 ```
 
 The check verifies:
