@@ -1,5 +1,6 @@
-import { Router } from 'express';
-import { createRoom, getRooms, RoomQuotaError } from '../services/signaling.js';
+import { Router, type Response } from 'express';
+import type { Room } from '@studio/shared';
+import { createRoom, getRooms, recoverHostAccess, RoomQuotaError } from '../services/signaling.js';
 
 export const roomRouter = Router();
 
@@ -24,6 +25,21 @@ function sanitizeOptionalPassword(value: unknown): string | undefined {
 
 function getClientIp(req: { ip?: string; socket: { remoteAddress?: string } }): string {
   return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+function sendCreatorRoom(res: Response, room: Room, hostToken: string, statusCode = 200): void {
+  res.status(statusCode).json({
+    id: room.id,
+    name: room.name,
+    status: room.status,
+    createdAt: room.createdAt,
+    hostName: room.hostName,
+    scheduledFor: room.scheduledFor,
+    settings: room.settings,
+    // hostToken is shown to the creator and stored client-side only.
+    // Anyone who later joins as 'host' must present this token to the WS signaling server.
+    hostToken,
+  });
 }
 
 // Create a new room
@@ -52,17 +68,7 @@ roomRouter.post('/', (req, res) => {
     }
 
     const { room, hostToken } = createRoom(name, hostName, { creatorIp: getClientIp(req), password });
-    res.status(201).json({
-      id: room.id,
-      name: room.name,
-      status: room.status,
-      createdAt: room.createdAt,
-      hostName: room.hostName,
-      settings: room.settings,
-      // hostToken is shown to the creator ONCE and stored client-side.
-      // Anyone who later joins as 'host' must present this token to the WS signaling server.
-      hostToken,
-    });
+    sendCreatorRoom(res, room, hostToken, 201);
   } catch (err) {
     if (err instanceof RoomQuotaError) {
       res.status(err.statusCode).json({ error: err.message });
@@ -116,16 +122,7 @@ roomRouter.post('/schedule', (req, res) => {
       creatorIp: getClientIp(req),
       password,
     });
-    res.status(201).json({
-      id: room.id,
-      name: room.name,
-      status: room.status,
-      createdAt: room.createdAt,
-      hostName: room.hostName,
-      scheduledFor: room.scheduledFor,
-      settings: room.settings,
-      hostToken,
-    });
+    sendCreatorRoom(res, room, hostToken, 201);
   } catch (err) {
     if (err instanceof RoomQuotaError) {
       res.status(err.statusCode).json({ error: err.message });
@@ -133,6 +130,28 @@ roomRouter.post('/schedule', (req, res) => {
     }
     res.status(500).json({ error: 'Failed to schedule room' });
   }
+});
+
+// Recover host access if the room creation response was interrupted or stripped.
+roomRouter.post('/:id/host-access', (req, res) => {
+  const result = recoverHostAccess(req.params.id, getClientIp(req));
+
+  if (result.status === 'ok') {
+    sendCreatorRoom(res, result.room, result.hostToken);
+    return;
+  }
+
+  if (result.status === 'not_found') {
+    res.status(404).json({ error: 'Room not found' });
+    return;
+  }
+
+  if (result.status === 'forbidden') {
+    res.status(403).json({ error: 'Host access can only be recovered from the creator network.' });
+    return;
+  }
+
+  res.status(410).json({ error: 'Host access recovery expired. Create a new studio to get a fresh private host link.' });
 });
 
 // Get room info (requires knowing the room ID)
