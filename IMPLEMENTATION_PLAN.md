@@ -227,7 +227,7 @@
 - [x] Configurable STUN/TURN ICE config endpoint for WebRTC connectivity
 - [ ] Global TURN servers for reliable connectivity (production provider credentials)
 - [x] Prometheus-compatible `/metrics` endpoints for signaling and RTMP relay health
-- [ ] Grafana dashboards and alerting for stream health metrics
+- [x] Grafana dashboards and alerting for stream health metrics
 
 ---
 
