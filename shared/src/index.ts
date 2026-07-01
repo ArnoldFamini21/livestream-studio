@@ -662,11 +662,14 @@ export interface RecordingUploadChunkResponse {
   bytesReceived: number;
 }
 
+export type RecordingExportVideoCodec = 'h264' | 'h265';
+
 export interface RecordingExportVideoSettings {
   width?: number;
   height?: number;
   frameRate?: number;
   videoBitsPerSecond?: number;
+  codec?: RecordingExportVideoCodec;
 }
 
 export interface RecordingExportAudioSettings {

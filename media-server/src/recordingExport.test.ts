@@ -73,6 +73,24 @@ describe('recording export FFmpeg command builders', () => {
     assert.equal(command.args.at(-1), '/tmp/exports/Launch_Demo.mp4');
   });
 
+  it('builds H.265/AAC MP4 args with Apple-compatible HEVC tagging', () => {
+    const command = createRecordingMp4Args({
+      tracks: [programTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'HEVC Demo',
+      video: { width: 1920, height: 1080, frameRate: 30, videoBitsPerSecond: 10_000_000, codec: 'h265' },
+    });
+
+    assert.equal(command.outputPath, '/tmp/exports/HEVC_Demo.mp4');
+    assert.equal(command.args.includes('libx265'), true);
+    assert.equal(command.args.includes('libx264'), false);
+    assert.equal(command.args.includes('-tag:v'), true);
+    assert.equal(command.args.includes('hvc1'), true);
+    assert.equal(command.args.includes('-x265-params'), true);
+    assert.equal(command.args.includes('log-level=error'), true);
+    assert.equal(command.args.includes('+faststart'), true);
+  });
+
   it('mixes isolated audio tracks when the selected video track has no usable audio', () => {
     const cameraTrack: RecordingExportTrack = {
       id: 'host-camera',
@@ -142,6 +160,17 @@ describe('recording export FFmpeg command builders', () => {
     assert.equal(command.args.includes('scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1'), true);
   });
 
+  it('uses H.265 for isolated participant MP4 exports when requested', () => {
+    const command = createRecordingIsolatedVideoArgs(hostVideoTrack, '/tmp/exports', 'Launch Demo', {
+      codec: 'h265',
+    });
+
+    assert.equal(command.args.includes('libx265'), true);
+    assert.equal(command.args.includes('libx264'), false);
+    assert.equal(command.args.includes('hvc1'), true);
+    assert.equal(command.args.includes('aac'), true);
+  });
+
   it('builds the full export command set with MP4 plus WAV/MP3 stems', () => {
     const commands = createRecordingExportCommands({
       tracks: [programTrack, hostVideoTrack, hostAudioTrack],
@@ -182,5 +211,12 @@ describe('recording export FFmpeg command builders', () => {
     assert.equal(normalized.height % 2, 0);
     assert.equal(normalized.frameRate, 60);
     assert.equal(normalized.videoBitsPerSecond, 50_000_000);
+    assert.equal(normalized.codec, 'h264');
+  });
+
+  it('normalizes optional export video codecs', () => {
+    assert.equal(normalizeRecordingExportVideoOptions({ codec: 'h265' }).codec, 'h265');
+    assert.equal(normalizeRecordingExportVideoOptions({ codec: 'h264' }).codec, 'h264');
+    assert.equal(normalizeRecordingExportVideoOptions({ codec: 'vp9' as never }).codec, 'h264');
   });
 });

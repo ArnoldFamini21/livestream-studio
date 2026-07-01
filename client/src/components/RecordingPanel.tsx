@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import type { RecordingExportArtifactStatus, RecordingExportJobResponse } from '@studio/shared';
+import type { RecordingExportArtifactStatus, RecordingExportJobResponse, RecordingExportVideoCodec } from '@studio/shared';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { LocalRecordingFileResult, RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
@@ -62,6 +62,7 @@ export interface RecordedFile {
 export interface RecordingServerUploadInput {
   sessionId: string;
   files: RecordedFile[];
+  exportVideoCodec?: RecordingExportVideoCodec;
 }
 
 export interface RecordingServerExportArtifactInput {
@@ -2241,6 +2242,7 @@ export function RecordingPanel({
   const [mediaExportJob, setMediaExportJob] = useState<RecordingExportJobResponse | null>(null);
   const [mediaExportDownloadError, setMediaExportDownloadError] = useState<string | null>(null);
   const [mediaExportDownloadingId, setMediaExportDownloadingId] = useState<string | null>(null);
+  const [recordingExportVideoCodec, setRecordingExportVideoCodec] = useState<RecordingExportVideoCodec>('h264');
   const [driveLinkCopied, setDriveLinkCopied] = useState(false);
   const [driveRetentionPolicyId, setDriveRetentionPolicyId] = useState<RecordingCloudRetentionPolicyId>(
     DEFAULT_RECORDING_CLOUD_RETENTION_POLICY_ID
@@ -2356,7 +2358,11 @@ export function RecordingPanel({
         if (onUploadRecording) {
           setMediaUploadMessage('Uploading WebM tracks to media server...');
           try {
-            const upload = await onUploadRecording({ sessionId: session.id, files });
+            const upload = await onUploadRecording({
+              sessionId: session.id,
+              files,
+              exportVideoCodec: recordingExportVideoCodec,
+            });
             const skipped = upload.skippedTracks > 0 ? `, ${upload.skippedTracks} skipped` : '';
             const readyArtifacts = upload.exportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || [];
             const artifactSummary = readyArtifacts.length > 0
@@ -2386,7 +2392,7 @@ export function RecordingPanel({
     } finally {
       setIsStopping(false);
     }
-  }, [formattedTime, onStopRecording, onUploadRecording, roomName, saveSession, sortedRecordingMarkers]);
+  }, [formattedTime, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers]);
 
   const readyMediaExportArtifacts = useMemo(() => (
     mediaExportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || []
@@ -2920,6 +2926,34 @@ export function RecordingPanel({
             </button>
             {markerImportMessage && <span style={styles.markerImportOk}>{markerImportMessage}</span>}
             {markerImportError && <span style={styles.markerImportError}>{markerImportError}</span>}
+          </div>
+        )}
+
+        {onUploadRecording && (
+          <div style={styles.exportCodecCard}>
+            <div style={styles.exportCodecHeader}>
+              <span style={styles.exportCodecTitle}>Media export MP4</span>
+              <span style={styles.exportCodecValue}>{recordingExportVideoCodec === 'h265' ? 'H.265' : 'H.264'}</span>
+            </div>
+            <div style={styles.exportCodecToggle} role="group" aria-label="Media server MP4 codec">
+              {(['h264', 'h265'] as const).map((codec) => {
+                const active = recordingExportVideoCodec === codec;
+                return (
+                  <button
+                    key={codec}
+                    type="button"
+                    style={{
+                      ...styles.exportCodecButton,
+                      ...(active ? styles.exportCodecButtonActive : {}),
+                    }}
+                    onClick={() => setRecordingExportVideoCodec(codec)}
+                    disabled={isRecording || isStopping}
+                  >
+                    {codec === 'h265' ? 'H.265' : 'H.264'}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -4091,6 +4125,52 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: 'pointer',
     whiteSpace: 'nowrap' as const,
+  },
+  exportCodecCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: 10,
+    borderRadius: 8,
+    border: '1px solid rgba(125, 211, 252, 0.2)',
+    background: 'rgba(8, 47, 73, 0.16)',
+  },
+  exportCodecHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  exportCodecTitle: {
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    fontWeight: 800,
+    textTransform: 'uppercase' as const,
+  },
+  exportCodecValue: {
+    color: '#bae6fd',
+    fontSize: 11,
+    fontWeight: 900,
+  },
+  exportCodecToggle: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 6,
+  },
+  exportCodecButton: {
+    minHeight: 30,
+    borderRadius: 7,
+    border: '1px solid var(--border)',
+    background: 'rgba(255, 255, 255, 0.04)',
+    color: 'var(--text-muted)',
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  exportCodecButtonActive: {
+    borderColor: 'rgba(125, 211, 252, 0.45)',
+    background: 'rgba(14, 116, 144, 0.22)',
+    color: '#bae6fd',
   },
   filesHeader: {
     display: 'flex',
