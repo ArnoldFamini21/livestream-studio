@@ -9,6 +9,7 @@
 - [ ] Record as WebM (VP9/Opus) locally, then upload chunks to server via WebSocket/HTTP
 - [ ] Separate isolated audio tracks (WAV) + video tracks per participant
 - [ ] Server-side stitching with FFmpeg into final MP4 (H.264 + AAC)
+- [x] Media-server FFmpeg export command builders for MP4 stitching plus WAV/MP3 stems
 - [x] Per-track capture metadata in local recording bundles for ISO/audio/program alignment
 - [x] Recording indicator (red dot + timer) in the header and producer controls
 - [x] Host/co-host record start/stop controls with guests blocked from recording surfaces
