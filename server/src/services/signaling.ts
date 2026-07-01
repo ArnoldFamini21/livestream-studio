@@ -163,6 +163,12 @@ const MAX_ROOM_PASSWORD_LENGTH = 100;
 const LIVE_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
 const CO_HOST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_CO_HOST_INVITE_TOKENS_PER_ROOM = 20;
+const HOST_ACCESS_RECOVERY_WINDOW_MS = parseBoundedDurationMs(
+  process.env.HOST_ACCESS_RECOVERY_WINDOW_MS,
+  10 * 60 * 1000,
+  60 * 1000,
+  60 * 60 * 1000
+);
 
 function parseBoundedDurationMs(
   value: string | undefined,
@@ -199,11 +205,33 @@ export interface CreatedRoom {
   hostToken: string;
 }
 
+export type HostAccessRecoveryResult =
+  | { status: 'ok'; room: Room; hostToken: string }
+  | { status: 'not_found' | 'forbidden' | 'expired' | 'already_joined' };
+
 export class RoomQuotaError extends Error {
   constructor(message: string, public statusCode: number) {
     super(message);
     this.name = 'RoomQuotaError';
   }
+}
+
+export function recoverHostAccess(roomId: string, creatorIp: string, nowMs = Date.now()): HostAccessRecoveryResult {
+  const roomState = rooms.get(roomId);
+  if (!roomState) return { status: 'not_found' };
+  if (roomState.creatorIp !== creatorIp) return { status: 'forbidden' };
+  if (roomState.hasBeenJoined || roomState.participants.size > 0) return { status: 'already_joined' };
+
+  const createdAtMs = Date.parse(roomState.room.createdAt);
+  if (!Number.isFinite(createdAtMs) || nowMs - createdAtMs > HOST_ACCESS_RECOVERY_WINDOW_MS) {
+    return { status: 'expired' };
+  }
+
+  return {
+    status: 'ok',
+    room: roomState.room,
+    hostToken: roomState.hostToken,
+  };
 }
 
 function deleteRoom(roomId: string) {

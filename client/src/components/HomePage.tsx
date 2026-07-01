@@ -19,8 +19,8 @@ import { buildGuestInviteEmailHref, buildGuestInviteUrl } from '../utils/inviteL
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
+const HOST_ACCESS_RECOVERY_TIMEOUT_MS = 15_000;
 const SERVER_WAKE_NOTICE_DELAY_MS = 6_000;
-const MISSING_HOST_TOKEN_MESSAGE = 'Studio was created, but host access was not returned. Please try again in a moment.';
 const MISSING_SCHEDULED_HOST_TOKEN_MESSAGE = 'Studio was scheduled, but host access was not returned. Please schedule it again in a moment.';
 const SAVED_HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing for this studio. Create a new studio to get a fresh private host link.';
 const INVITE_QR_OPTIONS = {
@@ -54,6 +54,15 @@ interface CreatedRoomResponse {
   settings?: {
     passwordProtected?: boolean;
   };
+}
+
+type CreatedRoomWithDetails = CreatedRoomResponse & {
+  id: string;
+  name: string;
+};
+
+function hasCreatedRoomDetails(room: CreatedRoomResponse): room is CreatedRoomWithDetails {
+  return typeof room.id === 'string' && typeof room.name === 'string';
 }
 
 function toDateTimeLocalValue(date: Date): string {
@@ -141,6 +150,46 @@ function getScheduleState(room: SavedScheduledStudio): string {
   return scheduledAt > Date.now() ? 'Upcoming' : 'Ready';
 }
 
+async function recoverHostAccess(room: CreatedRoomWithDetails): Promise<CreatedRoomWithDetails> {
+  if (typeof room.id !== 'string' || getValidHostToken(room.hostToken)) return room;
+
+  try {
+    const recoveredRoom = await postJson<CreatedRoomResponse>(
+      `/api/rooms/${encodeURIComponent(room.id)}/host-access`,
+      {},
+      { timeoutMs: HOST_ACCESS_RECOVERY_TIMEOUT_MS }
+    );
+    return {
+      ...room,
+      ...recoveredRoom,
+      id: room.id,
+      name: typeof recoveredRoom.name === 'string' ? recoveredRoom.name : room.name,
+      settings: recoveredRoom.settings || room.settings,
+      hostName: recoveredRoom.hostName || room.hostName,
+    };
+  } catch (err) {
+    console.warn('Host access recovery failed:', err);
+    return room;
+  }
+}
+
+function toSavedScheduledRoom(
+  room: CreatedRoomResponse & { id: string; name: string },
+  hostName: string,
+  hostToken: string
+): ScheduledRoomModal {
+  return {
+    id: room.id,
+    name: room.name,
+    hostName,
+    hostToken,
+    createdAt: room.createdAt || new Date().toISOString(),
+    scheduledFor: room.scheduledFor || undefined,
+    passwordProtected: Boolean(room.settings?.passwordProtected),
+    status: room.status,
+  };
+}
+
 export function HomePage() {
   const [roomName, setRoomName] = useState('');
   const [hostName, setHostName] = useState('');
@@ -174,39 +223,28 @@ export function HomePage() {
     }, SERVER_WAKE_NOTICE_DELAY_MS);
 
     try {
-      const room = await postJson<CreatedRoomResponse>('/api/rooms', {
+      const createdRoom = await postJson<CreatedRoomResponse>('/api/rooms', {
         name: roomName,
         hostName,
         password: roomPassword.trim() || undefined,
       }, {
         timeoutMs: CREATE_STUDIO_TIMEOUT_MS,
       });
-      if (typeof room.id !== 'string' || typeof room.name !== 'string') {
+      if (!hasCreatedRoomDetails(createdRoom)) {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
       }
+      const room = await recoverHostAccess(createdRoom);
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
-        if (isLegacyHostlessCreateResponse(room)) {
-          persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
-          navigate(buildHostEntryPath(room.id));
-          return;
-        }
-        setError(MISSING_HOST_TOKEN_MESSAGE);
+        persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
+        navigate(buildHostEntryPath(room.id));
         return;
       }
       // Scoped per room so old tokens don't leak across rooms.
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
-      setSavedScheduledRooms(upsertSavedScheduledStudio({
-        id: room.id,
-        name: room.name,
-        hostName: savedHostName,
-        hostToken,
-        createdAt: room.createdAt || new Date().toISOString(),
-        passwordProtected: Boolean(room.settings?.passwordProtected),
-        status: room.status,
-      }));
+      setSavedScheduledRooms(upsertSavedScheduledStudio(toSavedScheduledRoom(room, savedHostName, hostToken)));
       navigate(buildHostEntryPath(room.id, hostToken));
     } catch (err) {
       console.error('Failed to create room:', err);
@@ -228,7 +266,7 @@ export function HomePage() {
     }, SERVER_WAKE_NOTICE_DELAY_MS);
 
     try {
-      const room = await postJson<CreatedRoomResponse>('/api/rooms/schedule', {
+      const createdRoom = await postJson<CreatedRoomResponse>('/api/rooms/schedule', {
         name: roomName,
         hostName,
         scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
@@ -236,27 +274,24 @@ export function HomePage() {
       }, {
         timeoutMs: CREATE_STUDIO_TIMEOUT_MS,
       });
-      const savedHostName = room.hostName || hostName;
-      if (typeof room.id !== 'string' || typeof room.name !== 'string') {
+      if (!hasCreatedRoomDetails(createdRoom)) {
         setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
         return;
       }
+      const room = await recoverHostAccess(createdRoom);
+      const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
+        if (isLegacyHostlessCreateResponse(room)) {
+          persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
+          navigate(buildHostEntryPath(room.id));
+          return;
+        }
         setError(MISSING_SCHEDULED_HOST_TOKEN_MESSAGE);
         return;
       }
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
-      const savedRoom: ScheduledRoomModal = {
-        id: room.id,
-        name: room.name,
-        hostName: savedHostName,
-        hostToken,
-        createdAt: room.createdAt || new Date().toISOString(),
-        scheduledFor: room.scheduledFor || undefined,
-        passwordProtected: Boolean(room.settings?.passwordProtected),
-        status: room.status,
-      };
+      const savedRoom = toSavedScheduledRoom(room, savedHostName, hostToken);
       setSavedScheduledRooms(upsertSavedScheduledStudio(savedRoom));
       setScheduledRoom(savedRoom);
       setCopied(false);
