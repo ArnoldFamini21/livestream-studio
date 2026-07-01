@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: livestream-studio
+  labels:
+    app.kubernetes.io/name: livestream-studio
+    app.kubernetes.io/part-of: livestream-studio
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    nginx.ingress.kubernetes.io/proxy-body-size: 64m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.studio.example.com
+        - media.studio.example.com
+      secretName: livestream-studio-tls
+  rules:
+    - host: api.studio.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: livestream-studio-server
+                port:
+                  name: http
+    - host: media.studio.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: livestream-studio-media-server
+                port:
+                  name: http
