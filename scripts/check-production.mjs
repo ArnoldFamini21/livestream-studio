@@ -7,6 +7,8 @@ const clientUrl = trimUrl(process.env.PRODUCTION_CLIENT_URL || DEFAULT_CLIENT_UR
 const apiUrl = trimUrl(process.env.PRODUCTION_API_URL || DEFAULT_API_URL);
 const mediaHttpUrl = trimUrl(process.env.PRODUCTION_MEDIA_HTTP_URL || DEFAULT_MEDIA_HTTP_URL);
 const expectedCommit = normalizeSha(process.env.EXPECTED_COMMIT || process.env.GITHUB_SHA || '');
+const waitMs = parseNonNegativeInt(process.env.PRODUCTION_CHECK_WAIT_MS, 0);
+const intervalMs = parsePositiveInt(process.env.PRODUCTION_CHECK_INTERVAL_MS, 15_000);
 
 function trimUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
@@ -15,6 +17,20 @@ function trimUrl(value) {
 function normalizeSha(value) {
   const trimmed = String(value || '').trim();
   return /^[a-f0-9]{7,40}$/i.test(trimmed) ? trimmed.toLowerCase() : '';
+}
+
+function parseNonNegativeInt(value, fallback) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchText(url) {
@@ -71,11 +87,16 @@ async function checkHealth(label, url, expectedService) {
 }
 
 async function main() {
+  const result = await runWithOptionalWait();
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function runOnce() {
   const clientAsset = await checkClient();
   const signaling = await checkHealth('Signaling server', apiUrl, 'signaling-server');
   const media = await checkHealth('Media server', mediaHttpUrl, 'media-server');
 
-  console.log(JSON.stringify({
+  return {
     status: 'ok',
     client: { url: clientUrl, asset: clientAsset },
     signaling: {
@@ -90,7 +111,28 @@ async function main() {
       commit: media.commit || null,
       environment: media.environment || null,
     },
-  }, null, 2));
+  };
+}
+
+async function runWithOptionalWait() {
+  const deadline = Date.now() + waitMs;
+  let attempt = 0;
+  let lastError = null;
+
+  while (true) {
+    attempt++;
+    try {
+      const result = await runOnce();
+      return waitMs > 0 ? { ...result, attempts: attempt } : result;
+    } catch (err) {
+      lastError = err;
+      if (waitMs <= 0 || Date.now() + intervalMs > deadline) break;
+      console.error(`Production check attempt ${attempt} failed: ${err instanceof Error ? err.message : String(err)}`);
+      await sleep(intervalMs);
+    }
+  }
+
+  throw lastError || new Error('Production check failed');
 }
 
 main().catch((err) => {
