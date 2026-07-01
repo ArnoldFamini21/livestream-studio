@@ -18,7 +18,7 @@
 - [x] Browser encoding readiness checks for 720p/1080p/4K capture presets
 - [x] Recording preflight warns or blocks based on browser encoding readiness
 - [ ] Use hardware-accelerated encoding where available (WebCodecs API)
-- [ ] Chunked upload with resume support for large 4K files
+- [x] Chunked upload with resume support for large 4K files
 - [ ] Server-side S3-compatible storage integration
 - [ ] Export pipeline: MP4 (H.264/H.265), separate WAV/MP3 audio stems
 
