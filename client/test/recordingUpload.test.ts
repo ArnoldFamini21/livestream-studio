@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import {
   buildRecordingUploadTracks,
+  pollRecordingExportJob,
   uploadRecordingToMediaServer,
 } from '../src/utils/recordingUpload.ts';
 
@@ -124,6 +125,21 @@ describe('recording media-server upload helper', () => {
           ],
         }, 202);
       }
+      if (String(url).endsWith('/exports/export-1')) {
+        return jsonResponse({
+          exportId: 'export-1',
+          uploadId: 'upload-1',
+          roomId: 'room-1',
+          sessionId: 'session-1',
+          status: 'ready',
+          createdAt: '2026-07-01T00:00:01.000Z',
+          updatedAt: '2026-07-01T00:00:02.000Z',
+          artifacts: [
+            { id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'ready', bytes: 1_000 },
+            { id: 'stem-1-wav', label: 'Host WAV stem', format: 'wav', status: 'ready', bytes: 500 },
+          ],
+        });
+      }
       throw new Error(`Unexpected fetch ${url}`);
     };
 
@@ -134,6 +150,8 @@ describe('recording media-server upload helper', () => {
       sessionId: 'session-1',
       mediaHttpUrl: 'https://media.example.com',
       chunkSizeBytes: 4,
+      exportPollIntervalMs: 0,
+      exportPollTimeoutMs: 1_000,
       files: [
         {
           label: 'Program',
@@ -149,15 +167,61 @@ describe('recording media-server upload helper', () => {
     assert.equal(summary.bytesReceived, 300_000);
     assert.equal(summary.uploadedTracks, 1);
     assert.equal(summary.exportJob?.exportId, 'export-1');
+    assert.equal(summary.exportJob?.status, 'ready');
+    assert.deepEqual(summary.exportJob?.artifacts.map((artifact) => artifact.format), ['mp4', 'wav']);
     assert.deepEqual(progress, [262_144, 300_000]);
-    assert.equal(calls.length, 5);
+    assert.equal(calls.length, 6);
     assert.equal(calls[0].url, 'https://media.example.com/recordings/uploads');
     assert.match(calls[1].url, /sequence=0&offset=0/);
     assert.match(calls[2].url, /sequence=1&offset=262144&final=1/);
     assert.equal(calls[4].url, 'https://media.example.com/recordings/uploads/upload-1/exports');
+    assert.equal(calls[5].url, 'https://media.example.com/recordings/uploads/upload-1/exports/export-1');
     assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
     assert.equal((calls[1].init?.body as Blob).size, 262_144);
     assert.equal((calls[2].init?.body as Blob).size, 37_856);
+  });
+
+  it('polls export jobs until the media server reports ready or error', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = async (url) => {
+      calls.push(String(url));
+      if (calls.length === 1) {
+        return jsonResponse({
+          exportId: 'export-2',
+          uploadId: 'upload-2',
+          roomId: 'room-1',
+          status: 'running',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-01T00:00:01.000Z',
+          artifacts: [{ id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'running' }],
+        });
+      }
+      return jsonResponse({
+        exportId: 'export-2',
+        uploadId: 'upload-2',
+        roomId: 'room-1',
+        status: 'ready',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:02.000Z',
+        artifacts: [{ id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'ready', bytes: 1234 }],
+      });
+    };
+
+    const job = await pollRecordingExportJob({
+      token: 'token-123',
+      uploadId: 'upload-2',
+      exportId: 'export-2',
+      mediaHttpUrl: 'https://media.example.com',
+      intervalMs: 0,
+      timeoutMs: 1_000,
+    });
+
+    assert.equal(job.status, 'ready');
+    assert.equal(job.artifacts[0].bytes, 1234);
+    assert.deepEqual(calls, [
+      'https://media.example.com/recordings/uploads/upload-2/exports/export-2',
+      'https://media.example.com/recordings/uploads/upload-2/exports/export-2',
+    ]);
   });
 
   it('keeps the completed upload summary when export startup fails', async () => {

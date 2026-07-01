@@ -2080,8 +2080,12 @@ export function RecordingPanel({
           try {
             const upload = await onUploadRecording({ sessionId: session.id, files });
             const skipped = upload.skippedTracks > 0 ? `, ${upload.skippedTracks} skipped` : '';
+            const readyArtifacts = upload.exportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || [];
+            const artifactSummary = readyArtifacts.length > 0
+              ? ` ${readyArtifacts.map((artifact) => artifact.format.toUpperCase()).join(', ')} ready.`
+              : '';
             const exportStatus = upload.exportJob
-              ? ` Export job ${upload.exportJob.status}.`
+              ? ` Export ${upload.exportJob.status}.${artifactSummary}`
               : upload.exportError
                 ? ` Export not started: ${upload.exportError}.`
                 : '';
