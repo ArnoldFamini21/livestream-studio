@@ -3,6 +3,24 @@ name: Build and Deploy to Hostinger
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_client:
+        description: Build and publish the Hostinger client
+        type: boolean
+        default: true
+      deploy_signaling:
+        description: Trigger the Render deploy hook for livestream-studio-server
+        type: boolean
+        default: false
+      deploy_media:
+        description: Trigger the Render deploy hook for livestream-studio-media-server
+        type: boolean
+        default: false
+      verify_services:
+        description: Verify Render health, commit metadata, and host access after this run
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,10 +39,13 @@ jobs:
         id: changed-paths
         shell: bash
         run: |
+          event_name="${{ github.event_name }}"
           before="${{ github.event.before }}"
           after="${{ github.sha }}"
 
-          if [[ -z "$before" || "$before" =~ ^0+$ ]]; then
+          if [ "$event_name" = "workflow_dispatch" ]; then
+            : > changed-files.txt
+          elif [[ -z "$before" || "$before" =~ ^0+$ ]]; then
             git diff-tree --no-commit-id --name-only -r "$after" > changed-files.txt
           else
             if ! git cat-file -e "$before^{commit}" 2>/dev/null; then
@@ -78,29 +99,31 @@ jobs:
           RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL }}
           SIGNALING_CHANGED: ${{ steps.changed-paths.outputs.signaling_changed }}
           MEDIA_CHANGED: ${{ steps.changed-paths.outputs.media_changed }}
+          FORCE_SIGNALING_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_signaling }}
+          FORCE_MEDIA_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_media }}
         run: |
           hooks_configured=true
           services_changed=false
 
-          if [ "$SIGNALING_CHANGED" = "true" ]; then
+          if [ "$SIGNALING_CHANGED" = "true" ] || [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
             services_changed=true
             if [ -n "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
               curl --fail --silent --show-error --request POST "$RENDER_SERVER_DEPLOY_HOOK_URL"
             else
               hooks_configured=false
-              echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this push changes signaling-server files."
+              echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this run deploys the signaling server."
             fi
           else
             echo "::notice::No signaling-server changes detected; skipping signaling server deploy trigger."
           fi
 
-          if [ "$MEDIA_CHANGED" = "true" ]; then
+          if [ "$MEDIA_CHANGED" = "true" ] || [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
             services_changed=true
             if [ -n "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
               curl --fail --silent --show-error --request POST "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL"
             else
               hooks_configured=false
-              echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this push changes media-server files."
+              echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this run deploys the media server."
             fi
           else
             echo "::notice::No media-server changes detected; skipping media-server deploy trigger."
@@ -114,6 +137,7 @@ jobs:
           fi
 
       - name: Deploy to deploy branch
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy_client }}
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -122,6 +146,7 @@ jobs:
           keep_files: false
 
       - name: Verify static client cache
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy_client }}
         run: npm run production:check
         env:
           PRODUCTION_CHECK_SCOPE: client
@@ -130,7 +155,7 @@ jobs:
           PRODUCTION_CHECK_INTERVAL_MS: 15000
 
       - name: Verify production services
-        if: steps.render-deploys.outputs.services_changed == 'true' && steps.render-deploys.outputs.hooks_configured == 'true'
+        if: ${{ (steps.render-deploys.outputs.services_changed == 'true' && steps.render-deploys.outputs.hooks_configured == 'true') || (github.event_name == 'workflow_dispatch' && inputs.verify_services) }}
         run: npm run production:check
         env:
           PRODUCTION_CHECK_SCOPE: services

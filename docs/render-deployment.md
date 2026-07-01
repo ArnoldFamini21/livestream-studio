@@ -115,6 +115,26 @@ Every deploy verifies the static client cache headers after publishing to Hostin
 
 The Render service verification also creates a disposable studio and requires the signaling API to return a valid private `hostToken`. This catches the production failure where the home page reports that a studio was created but host access was not returned.
 
+### Manual Render Redeploy
+
+If Hostinger is current but Render is stale, run the **Build and Deploy to Hostinger** workflow manually from GitHub Actions. Use these inputs:
+
+- `deploy_client`: publish the Hostinger client again. Leave this on for a normal full deploy; turn it off for service-only recovery.
+- `deploy_signaling`: trigger the `livestream-studio-server` Render deploy hook.
+- `deploy_media`: trigger the `livestream-studio-media-server` Render deploy hook.
+- `verify_services`: wait for Render `/health`, commit metadata, and create-studio host access verification.
+
+For the current production drift pattern, run a manual dispatch with:
+
+```txt
+deploy_client=false
+deploy_signaling=true
+deploy_media=true
+verify_services=true
+```
+
+That run requires both Render deploy hook secrets. It will fail if the media-server has not been created/synced in Render, if the signaling service still serves the old `{ "status": "ok" }` health payload, or if create-studio responses still omit private host access.
+
 ## Production Smoke Check
 
 After Render deploys finish, run:
