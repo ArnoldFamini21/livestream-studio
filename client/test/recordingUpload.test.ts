@@ -138,6 +138,7 @@ describe('recording media-server upload helper', () => {
           artifacts: [
             { id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'ready', bytes: 1_000 },
             { id: 'stem-1-wav', label: 'Host WAV stem', format: 'wav', status: 'ready', bytes: 500 },
+            { id: 'export-manifest', label: 'Export manifest', format: 'json', status: 'ready', bytes: 300 },
           ],
         });
       }
@@ -169,7 +170,7 @@ describe('recording media-server upload helper', () => {
     assert.equal(summary.uploadedTracks, 1);
     assert.equal(summary.exportJob?.exportId, 'export-1');
     assert.equal(summary.exportJob?.status, 'ready');
-    assert.deepEqual(summary.exportJob?.artifacts.map((artifact) => artifact.format), ['mp4', 'wav']);
+    assert.deepEqual(summary.exportJob?.artifacts.map((artifact) => artifact.format), ['mp4', 'wav', 'json']);
     assert.deepEqual(progress, [262_144, 300_000]);
     assert.equal(calls.length, 6);
     assert.equal(calls[0].url, 'https://media.example.com/recordings/uploads');
@@ -256,6 +257,29 @@ describe('recording media-server upload helper', () => {
       'https://media.example.com/recordings/uploads/upload-1/exports/export-1/artifacts/final-mp4'
     );
     assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
+  });
+
+  it('downloads JSON export manifests with a JSON filename', async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ exportType: 'recording-export-manifest' }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'content-disposition': 'attachment; filename="Launch Demo manifest.json"',
+      },
+    });
+
+    const download = await downloadRecordingExportArtifact({
+      token: 'token-123',
+      uploadId: 'upload-1',
+      exportId: 'export-1',
+      artifactId: 'export-manifest',
+      artifactLabel: 'Export manifest',
+      format: 'json',
+      mediaHttpUrl: 'https://media.example.com',
+    });
+
+    assert.equal(download.fileName, 'Launch_Demo_manifest.json');
+    assert.equal(download.contentType, 'application/json');
   });
 
   it('surfaces export artifact download errors from the media server', async () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -18,8 +18,8 @@ async function createCompletedUpload() {
     roomId: 'room-123',
     sessionId: 'session-123',
     tracks: [
-      { id: 'program', label: 'Program mix', kind: 'program', mimeType: 'video/webm', expectedBytes: 7 },
-      { id: 'host-audio', label: 'Host audio', kind: 'audio', mimeType: 'audio/webm', expectedBytes: 5 },
+      { id: 'program', label: 'Program mix', kind: 'program', mimeType: 'video/webm', expectedBytes: 7, durationMs: 65_000 },
+      { id: 'host-audio', label: 'Host audio', kind: 'audio', mimeType: 'audio/webm', expectedBytes: 5, durationMs: 65_000 },
     ],
   });
   await uploads.appendChunk({
@@ -63,9 +63,9 @@ describe('recording export jobs', () => {
     assert.equal(queued.roomId, 'room-123');
     assert.equal(queued.sessionId, 'session-123');
     assert.equal(queued.status, 'queued');
-    assert.equal(queued.artifacts.length, 5);
+    assert.equal(queued.artifacts.length, 6);
     assert.equal(queued.artifacts.some((artifact) => 'outputPath' in artifact), false);
-    assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'wav', 'mp3', 'wav', 'mp3']);
+    assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'wav', 'mp3', 'wav', 'mp3', 'json']);
 
     await exports.startJob(queued.exportId);
     const ready = exports.getJob(queued.exportId, session.uploadId);
@@ -80,6 +80,20 @@ describe('recording export jobs', () => {
     const artifact = exports.getArtifact(queued.exportId, 'final-mp4', session.uploadId);
     assert.equal(artifact.format, 'mp4');
     assert.match(artifact.path, /Launch_Demo\.mp4$/);
+
+    const manifest = exports.getArtifact(queued.exportId, 'export-manifest', session.uploadId);
+    assert.equal(manifest.format, 'json');
+    assert.match(manifest.path, /Launch_Demo_manifest\.json$/);
+    const manifestJson = JSON.parse(await readFile(manifest.path, 'utf8')) as {
+      exportType: string;
+      export: { exportId: string };
+      tracks: Array<{ durationMs?: number }>;
+      artifacts: Array<{ format: string }>;
+    };
+    assert.equal(manifestJson.exportType, 'recording-export-manifest');
+    assert.equal(manifestJson.export.exportId, queued.exportId);
+    assert.equal(manifestJson.tracks[0].durationMs, 65_000);
+    assert.deepEqual(manifestJson.artifacts.map((item) => item.format), ['mp4', 'wav', 'mp3', 'wav', 'mp3']);
   });
 
   it('can create a final-MP4-only export job', async () => {
@@ -93,7 +107,7 @@ describe('recording export jobs', () => {
       includeAudioStems: false,
     });
 
-    assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4']);
+    assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'json']);
   });
 
   it('rejects export jobs before all declared upload tracks are complete and non-empty', async () => {

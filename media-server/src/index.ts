@@ -408,6 +408,7 @@ function isFinalChunk(value: string | null): boolean {
 function getArtifactContentType(format: string): string {
   if (format === 'wav') return 'audio/wav';
   if (format === 'mp3') return 'audio/mpeg';
+  if (format === 'json') return 'application/json';
   return 'video/mp4';
 }
 
