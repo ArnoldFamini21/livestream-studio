@@ -135,6 +135,24 @@ describe('live preflight checklist', () => {
     assert.equal(checklist.items.find((item) => item.id === 'encoding')?.status, 'warning');
   });
 
+  it('warns without blocking for advanced output presets', () => {
+    const checklist = buildLivePreflightChecklist({
+      destinations: [destination],
+      relayReadiness: { status: 'ready', message: 'Media relay is ready.' },
+      sessionHealth: healthySession,
+      sceneCount: 1,
+      outputSummary: 'Landscape 1080p60',
+      outputStatus: 'warning',
+      outputDetail: '1920x1080 / 60 FPS / 10.2 Mbps. Test before a long session.',
+    });
+
+    const output = checklist.items.find((item) => item.id === 'output');
+    assert.equal(checklist.status, 'warning');
+    assert.equal(checklist.blockingIssue, null);
+    assert.equal(output?.status, 'warning');
+    assert.equal(output?.blocksStart, false);
+  });
+
   it('blocks live when browser encoding is unsupported', () => {
     const checklist = buildLivePreflightChecklist({
       destinations: [destination],

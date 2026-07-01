@@ -6,6 +6,7 @@ import {
   buildRtmpOutputUrl,
   createFfmpegArgs,
   hasRemainingRelayWork,
+  normalizeVideoConfig,
   redactDestinationUrl,
   validateDestinations,
   validateRtmpUrl,
@@ -105,5 +106,74 @@ describe('RTMP relay utilities', () => {
     });
 
     assert.equal(args.includes('scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2'), true);
+  });
+
+  it('builds FFmpeg args for 1080p60 relay output', () => {
+    const args = createFfmpegArgs(destination, {
+      video: {
+        width: 1920,
+        height: 1080,
+        frameRate: 60,
+        videoBitsPerSecond: 10_000_000,
+      },
+      audio: {
+        sampleRate: 48_000,
+        channelCount: 2,
+        audioBitsPerSecond: 160_000,
+      },
+    });
+
+    assert.equal(args.includes('scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2'), true);
+    assert.equal(args.includes('60'), true);
+    assert.equal(args.includes('120'), true);
+    assert.equal(args.includes('10000k'), true);
+  });
+
+  it('builds FFmpeg args for 4K landscape and portrait relay output', () => {
+    const landscape = createFfmpegArgs(destination, {
+      video: {
+        width: 3840,
+        height: 2160,
+        frameRate: 30,
+        videoBitsPerSecond: 18_000_000,
+      },
+      audio: {
+        sampleRate: 48_000,
+        channelCount: 2,
+        audioBitsPerSecond: 160_000,
+      },
+    });
+    const portrait = createFfmpegArgs(destination, {
+      video: {
+        width: 2160,
+        height: 3840,
+        frameRate: 30,
+        videoBitsPerSecond: 18_000_000,
+      },
+      audio: {
+        sampleRate: 48_000,
+        channelCount: 2,
+        audioBitsPerSecond: 160_000,
+      },
+    });
+
+    assert.equal(landscape.includes('scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2'), true);
+    assert.equal(portrait.includes('scale=2160:3840:force_original_aspect_ratio=decrease,pad=2160:3840:(ow-iw)/2:(oh-ih)/2'), true);
+    assert.equal(landscape.includes('18000k'), true);
+  });
+
+  it('bounds oversized relay video configs to 4K-class output', () => {
+    const normalized = normalizeVideoConfig({
+      width: 3840,
+      height: 3840,
+      frameRate: 120,
+      videoBitsPerSecond: 50_000_000,
+    });
+
+    assert.ok(normalized.width * normalized.height <= 3840 * 2160);
+    assert.equal(normalized.width % 2, 0);
+    assert.equal(normalized.height % 2, 0);
+    assert.equal(normalized.frameRate, 60);
+    assert.equal(normalized.videoBitsPerSecond, 24_000_000);
   });
 });

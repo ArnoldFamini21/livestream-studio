@@ -29,6 +29,8 @@ export interface LivePreflightOptions {
   sessionHealth?: LivePreflightSessionHealth;
   sceneCount: number;
   outputSummary: string;
+  outputStatus?: LivePreflightStatus;
+  outputDetail?: string;
 }
 
 export interface LivePreflightItem {
@@ -172,8 +174,8 @@ export function buildLivePreflightChecklist(options: LivePreflightOptions): Live
     {
       id: 'output',
       label: 'Output format',
-      status: 'good',
-      detail: options.outputSummary,
+      status: options.outputStatus || 'good',
+      detail: options.outputDetail || options.outputSummary,
       blocksStart: false,
     },
     {

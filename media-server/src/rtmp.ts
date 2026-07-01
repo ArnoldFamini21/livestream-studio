@@ -7,6 +7,10 @@ import type {
 export const MAX_RTMP_DESTINATIONS = 3;
 const MAX_RTMP_URL_LENGTH = 2048;
 const MAX_STREAM_KEY_LENGTH = 512;
+const MAX_RELAY_DIMENSION = 3840;
+const MAX_RELAY_PIXELS = 3840 * 2160;
+const MAX_RELAY_FRAME_RATE = 60;
+const MAX_RELAY_VIDEO_BITRATE = 24_000_000;
 
 export interface FfmpegRelayOptions {
   video: RtmpRelayVideoConfig;
@@ -98,12 +102,26 @@ function clampNumber(value: number, fallback: number, min: number, max: number):
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
+function roundToEven(value: number): number {
+  return Math.max(2, Math.round(value / 2) * 2);
+}
+
 export function normalizeVideoConfig(config: RtmpRelayVideoConfig): RtmpRelayVideoConfig {
+  let width = roundToEven(clampNumber(config.width, 1920, 180, MAX_RELAY_DIMENSION));
+  let height = roundToEven(clampNumber(config.height, 1080, 180, MAX_RELAY_DIMENSION));
+
+  const pixels = width * height;
+  if (pixels > MAX_RELAY_PIXELS) {
+    const scale = Math.sqrt(MAX_RELAY_PIXELS / pixels);
+    width = roundToEven(width * scale);
+    height = roundToEven(height * scale);
+  }
+
   return {
-    width: clampNumber(config.width, 1920, 180, 1920),
-    height: clampNumber(config.height, 1080, 180, 1920),
-    frameRate: clampNumber(config.frameRate, 30, 15, 30),
-    videoBitsPerSecond: clampNumber(config.videoBitsPerSecond, 4_500_000, 500_000, 8_000_000),
+    width,
+    height,
+    frameRate: clampNumber(config.frameRate, 30, 15, MAX_RELAY_FRAME_RATE),
+    videoBitsPerSecond: clampNumber(config.videoBitsPerSecond, 4_500_000, 500_000, MAX_RELAY_VIDEO_BITRATE),
   };
 }
 
