@@ -89,6 +89,19 @@ export const PRODUCTION_SCENE_TEMPLATE_CARDS: ProductionSceneTemplateCard[] = [
   },
 ];
 
+export const PRODUCTION_SCENE_PACK_TEMPLATE_IDS: readonly ProductionSceneTemplate[] = [
+  'starting-soon',
+  'live-q-and-a',
+  'screen-share',
+  'brb',
+  'ending',
+];
+
+export function getProductionScenePackTemplateIds(availableSlots: number): ProductionSceneTemplate[] {
+  const safeSlots = Math.max(0, Math.floor(Number.isFinite(availableSlots) ? availableSlots : 0));
+  return PRODUCTION_SCENE_PACK_TEMPLATE_IDS.slice(0, safeSlots);
+}
+
 export function getBackgroundPreview(bg: StageBackground): string {
   switch (bg.type) {
     case 'color':

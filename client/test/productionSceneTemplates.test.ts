@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
   getBackgroundPreview,
+  getProductionScenePackTemplateIds,
   getProductionSceneTemplateConfig,
+  PRODUCTION_SCENE_PACK_TEMPLATE_IDS,
   PRODUCTION_SCENE_TEMPLATE_CARDS,
 } from '../src/utils/productionSceneTemplates.ts';
 
@@ -43,6 +45,28 @@ test('new producer templates cover audience questions and screen share workflows
   assert.equal(screenShare.layout, 'pip');
   assert.equal(screenShare.banner?.text, 'Screen Share');
   assert.match(screenShare.ticker?.text ?? '', /shared screen/i);
+});
+
+test('production scene pack orders a complete show flow and respects available slots', () => {
+  assert.deepEqual(PRODUCTION_SCENE_PACK_TEMPLATE_IDS, [
+    'starting-soon',
+    'live-q-and-a',
+    'screen-share',
+    'brb',
+    'ending',
+  ]);
+  assert.deepEqual(getProductionScenePackTemplateIds(3), ['starting-soon', 'live-q-and-a', 'screen-share']);
+  assert.deepEqual(getProductionScenePackTemplateIds(0), []);
+  assert.deepEqual(getProductionScenePackTemplateIds(-1), []);
+});
+
+test('production scene pack references valid template configs', () => {
+  for (const templateId of PRODUCTION_SCENE_PACK_TEMPLATE_IDS) {
+    const config = getProductionSceneTemplateConfig(templateId);
+    assert.ok(config.name);
+    assert.ok(config.banner?.visible);
+    assert.ok(config.ticker?.visible);
+  }
 });
 
 test('background previews return renderable css values', () => {

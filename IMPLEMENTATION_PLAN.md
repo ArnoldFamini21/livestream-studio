@@ -42,6 +42,7 @@
 - [ ] Each scene has its own layout + overlay configuration
 - [ ] One-click scene switching with crossfade transition
 - [ ] "Starting Soon", "BRB", "Ending" built-in scene templates
+- [x] One-click production scene pack for a full show flow
 - [ ] Scene preview thumbnails in the sidebar
 
 ---

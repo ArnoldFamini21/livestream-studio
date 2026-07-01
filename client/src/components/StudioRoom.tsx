@@ -69,8 +69,10 @@ import {
 } from '../utils/liveStreamStatus.ts';
 import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
 import {
+  getProductionScenePackTemplateIds,
   getProductionSceneTemplateConfig,
   type ProductionSceneTemplate,
+  type ProductionSceneTemplateConfig,
 } from '../utils/productionSceneTemplates.ts';
 import { getStreamDestinationIssue } from '../utils/streamDestinations.ts';
 import {
@@ -186,6 +188,14 @@ const Teleprompter = lazy(() => import('./Teleprompter.tsx').then((module) => ({
 const BackgroundMusic = lazy(() => import('./BackgroundMusic.tsx').then((module) => ({ default: module.BackgroundMusic })));
 const RecordingPanel = lazy(() => import('./RecordingPanel.tsx').then((module) => ({ default: module.RecordingPanel })));
 const ProducerPanel = lazy(() => import('./ProducerPanel.tsx').then((module) => ({ default: module.ProducerPanel })));
+
+interface ProductionSceneDraft {
+  scene: Scene;
+  config: ProductionSceneTemplateConfig;
+  banner: BannerData | null;
+  ticker: TickerData | null;
+  timer: TimerData | null;
+}
 
 function upsertChatMessage(messages: ChatMessage[], incoming: ChatMessage): ChatMessage[] {
   const index = messages.findIndex((message) => (
@@ -3049,28 +3059,27 @@ export function StudioRoom() {
     setActiveSceneId(newScene.id);
   };
 
-  const onCreateTemplateScene = (template: ProductionSceneTemplate) => {
-    if (scenes.length >= MAX_STUDIO_SCENES) return;
+  const buildProductionSceneDraft = (template: ProductionSceneTemplate): ProductionSceneDraft => {
     const config = getProductionSceneTemplateConfig(template);
     const visibleOverlayIds: string[] = [];
-    let nextBanner: BannerData | null = null;
-    let nextTicker: TickerData | null = null;
-    let nextTimer: TimerData | null = null;
+    let banner: BannerData | null = null;
+    let ticker: TickerData | null = null;
+    let timer: TimerData | null = null;
 
     if (config.banner) {
-      nextBanner = { ...config.banner, id: `banner-${++idCounters.current.banner}` };
-      visibleOverlayIds.push(nextBanner.id);
+      banner = { ...config.banner, id: `banner-${++idCounters.current.banner}` };
+      visibleOverlayIds.push(banner.id);
     }
     if (config.ticker) {
-      nextTicker = { ...config.ticker, id: `ticker-${++idCounters.current.ticker}` };
-      visibleOverlayIds.push(nextTicker.id);
+      ticker = { ...config.ticker, id: `ticker-${++idCounters.current.ticker}` };
+      visibleOverlayIds.push(ticker.id);
     }
     if (config.timer) {
-      nextTimer = { ...config.timer, id: `timer-${++idCounters.current.timer}` };
-      visibleOverlayIds.push(nextTimer.id);
+      timer = { ...config.timer, id: `timer-${++idCounters.current.timer}` };
+      visibleOverlayIds.push(timer.id);
     }
 
-    const newScene: Scene = {
+    const scene: Scene = {
       id: `scene-template-${template}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: config.name,
       layout: config.layout,
@@ -3089,13 +3098,33 @@ export function StudioRoom() {
       visibleOverlayIds,
     };
 
-    setScenes(prev => prev.length >= MAX_STUDIO_SCENES ? prev : [...prev, newScene]);
-    applyLayout(config.layout);
-    setStageBackground(config.background);
-    setBrandColor(config.brandColor);
+    return { scene, config, banner, ticker, timer };
+  };
+
+  const applyProductionSceneDrafts = (drafts: ProductionSceneDraft[], activeDraft: ProductionSceneDraft) => {
+    const activeVisibleIds = new Set(activeDraft.scene.visibleOverlayIds);
+    const nextBanners = drafts.flatMap((draft) => (
+      draft.banner ? [{ ...draft.banner, visible: activeVisibleIds.has(draft.banner.id) }] : []
+    ));
+    const nextTimers = drafts.flatMap((draft) => (
+      draft.timer
+        ? [{
+          ...draft.timer,
+          visible: activeVisibleIds.has(draft.timer.id),
+          isRunning: activeVisibleIds.has(draft.timer.id) ? draft.timer.isRunning : false,
+        }]
+        : []
+    ));
+    const nextTickers = drafts.flatMap((draft) => (
+      draft.ticker ? [{ ...draft.ticker, visible: activeVisibleIds.has(draft.ticker.id) }] : []
+    ));
+
+    applyLayout(activeDraft.config.layout);
+    setStageBackground(activeDraft.config.background);
+    setBrandColor(activeDraft.config.brandColor);
     setLogoUrl(null);
-    setCameraShape(config.cameraShape);
-    setNameTagStyle(config.nameTagStyle);
+    setCameraShape(activeDraft.config.cameraShape);
+    setNameTagStyle(activeDraft.config.nameTagStyle);
     setLogoPlacement('top-right');
     setLogoPosition(null);
     setLogoSize('medium');
@@ -3104,24 +3133,38 @@ export function StudioRoom() {
     setFocusedVideoItemId(null);
     setStageItemOrder([]);
     setLowerThirds(prev => prev.map(o => ({ ...o, visible: false })));
-    if (nextBanner) {
-      setBanners(prev => [...prev.map(b => ({ ...b, visible: false })), nextBanner]);
-    } else {
-      setBanners(prev => prev.map(b => ({ ...b, visible: false })));
-    }
-    if (nextTimer) {
-      setTimers(prev => [...prev.map(t => ({ ...t, visible: false, isRunning: false })), nextTimer]);
-    } else {
-      setTimers(prev => prev.map(t => ({ ...t, visible: false, isRunning: false })));
-    }
-    if (nextTicker) {
-      setTickers(prev => [...prev.map(t => ({ ...t, visible: false })), nextTicker]);
-    } else {
-      setTickers(prev => prev.map(t => ({ ...t, visible: false })));
-    }
+    setBanners(prev => [...prev.map(b => ({ ...b, visible: false })), ...nextBanners]);
+    setTimers(prev => [...prev.map(t => ({ ...t, visible: false, isRunning: false })), ...nextTimers]);
+    setTickers(prev => [...prev.map(t => ({ ...t, visible: false })), ...nextTickers]);
     setWidgets(prev => prev.map(widget => ({ ...widget, visible: false })));
-    setActiveSceneId(newScene.id);
-    triggerSceneTransition(newScene);
+    setActiveSceneId(activeDraft.scene.id);
+    triggerSceneTransition(activeDraft.scene);
+  };
+
+  const onCreateTemplateScene = (template: ProductionSceneTemplate) => {
+    if (scenes.length >= MAX_STUDIO_SCENES) return;
+    const draft = buildProductionSceneDraft(template);
+
+    setScenes(prev => prev.length >= MAX_STUDIO_SCENES ? prev : [...prev, draft.scene]);
+    applyProductionSceneDrafts([draft], draft);
+    setScenePackMessage(null);
+  };
+
+  const onCreateProductionScenePack = () => {
+    const templateIds = getProductionScenePackTemplateIds(MAX_STUDIO_SCENES - scenes.length);
+    if (templateIds.length === 0) {
+      setScenePackMessage('Maximum scenes reached.');
+      return;
+    }
+
+    const drafts = templateIds.map((template) => buildProductionSceneDraft(template));
+    const activeDraft = drafts[0];
+    setScenes(prev => {
+      const slots = Math.max(0, MAX_STUDIO_SCENES - prev.length);
+      return slots === 0 ? prev : [...prev, ...drafts.slice(0, slots).map((draft) => draft.scene)];
+    });
+    applyProductionSceneDrafts(drafts, activeDraft);
+    setScenePackMessage(`Added ${drafts.length} production scene${drafts.length === 1 ? '' : 's'}.`);
   };
 
   const onApplyScene = (sceneId: string) => {
@@ -4671,6 +4714,7 @@ export function StudioRoom() {
             onSceneStingerClipChange={handleSceneStingerClipChange}
             onSaveScene={onSaveScene}
             onCreateTemplateScene={onCreateTemplateScene}
+            onCreateProductionScenePack={onCreateProductionScenePack}
             onApplyScene={onApplyScene}
             onDeleteScene={onDeleteScene}
             onRenameScene={onRenameScene}

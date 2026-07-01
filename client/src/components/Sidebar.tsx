@@ -127,6 +127,7 @@ interface SidebarProps {
   onSceneStingerClipChange: (clip: SceneStingerClip | null) => void;
   onSaveScene: (name: string) => void | Promise<void>;
   onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
+  onCreateProductionScenePack: () => void;
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
@@ -815,6 +816,7 @@ export function Sidebar(props: SidebarProps) {
                   onSceneStingerClipChange={props.onSceneStingerClipChange}
                   onSaveScene={props.onSaveScene}
                   onCreateTemplateScene={props.onCreateTemplateScene}
+                  onCreateProductionScenePack={props.onCreateProductionScenePack}
                   onApplyScene={props.onApplyScene}
                   onDeleteScene={props.onDeleteScene}
                   onRenameScene={props.onRenameScene}
