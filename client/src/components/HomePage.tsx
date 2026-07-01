@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { buildStudioCalendarInvite } from '@studio/shared';
@@ -6,6 +6,7 @@ import {
   buildHostEntryPath,
   buildHostEntryUrl,
   getValidHostToken,
+  HOST_STUDIOS_STORAGE_KEY,
   persistLegacyHostSession,
   persistHostSession,
   readSavedHostStudios,
@@ -32,6 +33,12 @@ import {
   formatWorkspaceDuration,
   formatWorkspaceFileSize,
 } from '../utils/workspaceDashboard.ts';
+import {
+  buildWorkspaceBackup,
+  mergeWorkspaceBackup,
+  parseWorkspaceBackupJson,
+  serializeWorkspaceBackup,
+} from '../utils/workspaceBackup.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
@@ -83,6 +90,15 @@ function readSavedBrandKitLibrary(): SavedBrandKit[] {
 function writeSavedBrandKitLibrary(kits: SavedBrandKit[]) {
   try {
     localStorage.setItem(BRAND_KIT_STORAGE_KEY, serializeSavedBrandKits(kits));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeSavedHostStudioLibrary(studios: SavedHostStudio[]) {
+  try {
+    localStorage.setItem(HOST_STUDIOS_STORAGE_KEY, JSON.stringify(studios));
     return true;
   } catch {
     return false;
@@ -195,8 +211,10 @@ export function HomePage() {
   const [savedScheduledRooms, setSavedScheduledRooms] = useState<SavedScheduledStudio[]>(() => readSavedScheduledStudios());
   const [savedBrandKits, setSavedBrandKits] = useState<SavedBrandKit[]>(() => readSavedBrandKitLibrary());
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [dashboardNotice, setDashboardNotice] = useState<string | null>(null);
   const navigate = useNavigate();
   const recordingLibrary = useRecordingLibrary();
+  const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -306,11 +324,6 @@ export function HomePage() {
   const workspaceDashboard = useMemo(
     () => buildWorkspaceDashboardSummary(savedScheduledRooms, recordingLibrary.sessions, savedBrandKits),
     [savedScheduledRooms, recordingLibrary.sessions, savedBrandKits]
-  );
-  const hasWorkspaceAssets = (
-    workspaceDashboard.totalStudios > 0 ||
-    workspaceDashboard.totalRecordings > 0 ||
-    workspaceDashboard.totalBrandKits > 0
   );
   const recentRecordings = recordingLibrary.sessions.slice(0, 3);
   const recentBrandKits = savedBrandKits.slice(0, 4);
@@ -437,8 +450,10 @@ export function HomePage() {
   const deleteRecordingSession = async (session: LocalRecordingSession) => {
     if (!window.confirm(`Delete recording "${session.roomName}" from this browser?`)) return;
     setDashboardError(null);
+    setDashboardNotice(null);
     try {
       await recordingLibrary.deleteSession(session.id);
+      setDashboardNotice('Recording deleted.');
     } catch {
       setDashboardError('Could not delete that recording.');
     }
@@ -446,13 +461,58 @@ export function HomePage() {
 
   const deleteBrandKit = (kit: SavedBrandKit) => {
     if (!window.confirm(`Delete brand kit "${kit.name}" from this browser?`)) return;
+    setDashboardNotice(null);
     const next = savedBrandKits.filter((item) => item.id !== kit.id);
     if (!writeSavedBrandKitLibrary(next)) {
       setDashboardError('Could not update saved brand kits in this browser.');
       return;
     }
     setDashboardError(null);
+    setDashboardNotice('Brand kit deleted.');
     setSavedBrandKits(next);
+  };
+
+  const exportWorkspaceBackup = () => {
+    if (savedScheduledRooms.length > 0 && !window.confirm('Workspace backups include private host links for saved studios. Keep the exported file private.')) {
+      return;
+    }
+    const backup = buildWorkspaceBackup({
+      studios: savedScheduledRooms,
+      brandKits: savedBrandKits,
+      recordings: recordingLibrary.sessions,
+    });
+    downloadTextFile(
+      serializeWorkspaceBackup(backup),
+      `livestream_studio_workspace_${new Date().toISOString().slice(0, 10)}.json`,
+      'application/json;charset=utf-8'
+    );
+    setDashboardError(null);
+    setDashboardNotice('Workspace backup exported.');
+  };
+
+  const openWorkspaceBackupImport = () => {
+    workspaceImportInputRef.current?.click();
+  };
+
+  const importWorkspaceBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setDashboardError(null);
+    setDashboardNotice(null);
+    try {
+      const backup = parseWorkspaceBackupJson(await file.text());
+      const result = mergeWorkspaceBackup(readSavedHostStudios(), savedBrandKits, backup);
+      if (!writeSavedHostStudioLibrary(result.studios) || !writeSavedBrandKitLibrary(result.brandKits)) {
+        throw new Error('Could not save imported workspace in this browser.');
+      }
+      setSavedScheduledRooms(readSavedScheduledStudios());
+      setSavedBrandKits(result.brandKits);
+      setDashboardNotice(`Imported ${result.importedStudios} studios and ${result.importedBrandKits} brand kits.`);
+    } catch (err) {
+      setDashboardError(err instanceof Error ? err.message : 'Could not import that workspace backup.');
+    }
   };
 
   const goToStudioAsHost = () => {
@@ -625,16 +685,36 @@ export function HomePage() {
             </div>
           </div>
 
-          {hasWorkspaceAssets && (
-            <section style={styles.workspacePanel} aria-label="Workspace dashboard">
+          <section style={styles.workspacePanel} aria-label="Workspace dashboard">
               <div style={styles.workspaceHeader}>
                 <div style={styles.workspaceHeaderCopy}>
                   <h2 style={styles.workspaceTitle}>Workspace</h2>
                   <p style={styles.workspaceSubtitle}>Saved studios, recordings, and brand assets</p>
                 </div>
-                <span style={styles.workspaceBadge}>
-                  {workspaceDashboard.totalStudios + workspaceDashboard.totalRecordings + workspaceDashboard.totalBrandKits}
-                </span>
+                <div style={styles.workspaceHeaderActions}>
+                  <button
+                    style={styles.workspaceHeaderAction}
+                    onClick={exportWorkspaceBackup}
+                  >
+                    Export
+                  </button>
+                  <button
+                    style={styles.workspaceHeaderAction}
+                    onClick={openWorkspaceBackupImport}
+                  >
+                    Import
+                  </button>
+                  <span style={styles.workspaceBadge}>
+                    {workspaceDashboard.totalStudios + workspaceDashboard.totalRecordings + workspaceDashboard.totalBrandKits}
+                  </span>
+                </div>
+                <input
+                  ref={workspaceImportInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  style={styles.workspaceImportInput}
+                  onChange={(event) => void importWorkspaceBackup(event)}
+                />
               </div>
 
               <div style={styles.workspaceStats}>
@@ -684,6 +764,9 @@ export function HomePage() {
 
               {(dashboardError || recordingLibrary.error) && (
                 <p style={styles.workspaceError}>{dashboardError || recordingLibrary.error}</p>
+              )}
+              {dashboardNotice && !dashboardError && !recordingLibrary.error && (
+                <p style={styles.workspaceNotice}>{dashboardNotice}</p>
               )}
 
               {(recordingLibrary.isLoading || recentRecordings.length > 0) && (
@@ -745,7 +828,6 @@ export function HomePage() {
                 </div>
               )}
             </section>
-          )}
 
           {savedScheduledRooms.length > 0 && (
             <section style={styles.schedulePanel}>
@@ -1173,6 +1255,28 @@ const styles: Record<string, React.CSSProperties> = {
   workspaceHeaderCopy: {
     minWidth: 0,
   },
+  workspaceHeaderActions: {
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 7,
+    flexWrap: 'wrap',
+  },
+  workspaceHeaderAction: {
+    minHeight: 28,
+    borderRadius: 8,
+    border: '1px solid rgba(103, 232, 249, 0.2)',
+    background: 'rgba(103, 232, 249, 0.08)',
+    color: '#a5f3fc',
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
+    padding: '0 10px',
+  },
+  workspaceImportInput: {
+    display: 'none',
+  },
   workspaceTitle: {
     fontSize: 16,
     fontWeight: 700,
@@ -1271,6 +1375,12 @@ const styles: Record<string, React.CSSProperties> = {
   workspaceError: {
     fontSize: 12,
     color: '#f87171',
+    marginBottom: 10,
+    lineHeight: 1.4,
+  },
+  workspaceNotice: {
+    fontSize: 12,
+    color: '#67e8f9',
     marginBottom: 10,
     lineHeight: 1.4,
   },
