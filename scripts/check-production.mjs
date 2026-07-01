@@ -117,10 +117,11 @@ function getMaxAgeSeconds(cacheControl) {
   return match ? Number.parseInt(match[1], 10) : null;
 }
 
-export function evaluateClientCacheHeaders({ htmlCacheControl = '', assetCacheControl = '' } = {}) {
+export function evaluateClientCacheHeaders({ htmlCacheControl = '', assetCacheControl = '', assetExpires = '' } = {}) {
   const errors = [];
   const html = String(htmlCacheControl || '').toLowerCase();
   const asset = String(assetCacheControl || '').toLowerCase();
+  const expires = String(assetExpires || '').trim().toLowerCase();
   const assetMaxAge = getMaxAgeSeconds(asset);
 
   if (!html.includes('no-cache') && !html.includes('no-store')) {
@@ -135,12 +136,16 @@ export function evaluateClientCacheHeaders({ htmlCacheControl = '', assetCacheCo
   if (!asset.includes('immutable')) {
     errors.push('Built client assets must send immutable Cache-Control');
   }
+  if (expires === '0') {
+    errors.push('Built client assets must not inherit Expires: 0');
+  }
 
   return {
     ok: errors.length === 0,
     errors,
     htmlCacheControl,
     assetCacheControl,
+    assetExpires,
     assetMaxAge,
   };
 }
@@ -152,6 +157,7 @@ async function requireClientCacheHeaders(htmlResponse, assetUrl) {
   const validation = evaluateClientCacheHeaders({
     htmlCacheControl: htmlResponse.headers.get('cache-control') || '',
     assetCacheControl: assetResponse.headers.get('cache-control') || '',
+    assetExpires: assetResponse.headers.get('expires') || '',
   });
 
   if (!validation.ok) {
@@ -197,6 +203,7 @@ async function runOnce() {
         ? {
             htmlCacheControl: client.cache.htmlCacheControl || null,
             assetCacheControl: client.cache.assetCacheControl || null,
+            assetExpires: client.cache.assetExpires || null,
             assetMaxAge: client.cache.assetMaxAge,
           }
         : null,

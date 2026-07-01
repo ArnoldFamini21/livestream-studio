@@ -19,6 +19,7 @@ test('accepts CDN-ready client cache headers', () => {
   const result = evaluateClientCacheHeaders({
     htmlCacheControl: 'no-cache, no-store, must-revalidate',
     assetCacheControl: 'public, max-age=31536000, immutable',
+    assetExpires: 'Thu, 01 Jul 2027 21:17:52 GMT',
   });
 
   assert.equal(result.ok, true);
@@ -30,10 +31,12 @@ test('rejects weak client cache headers', () => {
   const result = evaluateClientCacheHeaders({
     htmlCacheControl: '',
     assetCacheControl: 'public, max-age=604800',
+    assetExpires: '0',
   });
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join('\n'), /Client HTML/);
   assert.match(result.errors.join('\n'), /at least one year/);
   assert.match(result.errors.join('\n'), /immutable/);
+  assert.match(result.errors.join('\n'), /Expires: 0/);
 });

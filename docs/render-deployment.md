@@ -70,7 +70,7 @@ The export job still streams downloads from the media server, but job status and
 The Hostinger client deploy includes `client/public/.htaccess`, which is copied into `client/dist` by Vite. It sets:
 
 - HTML/SPA responses: `Cache-Control: no-cache, no-store, must-revalidate` so browsers discover new deploys promptly
-- hashed build assets under `assets/`: `Cache-Control: public, max-age=31536000, immutable` so JS/CSS chunks can be cached at CDN/browser edge for one year
+- hashed build assets under `assets/`: `Cache-Control: public, max-age=31536000, immutable` without `Expires: 0` so JS/CSS chunks can be cached at CDN/browser edge for one year
 - SPA rewrites back to `index.html` for deep studio and join links
 
 After a static deploy, verify the cache contract with:
