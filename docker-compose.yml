@@ -86,9 +86,46 @@ services:
       retries: 10
       start_period: 20s
 
+  prometheus:
+    image: prom/prometheus:latest
+    profiles:
+      - monitoring
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - studio-prometheus-data:/prometheus
+    depends_on:
+      - server
+      - media-server
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    profiles:
+      - monitoring
+    ports:
+      - "${GRAFANA_PORT:-3003}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - studio-grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   studio-root-node-modules:
   studio-client-node-modules:
   studio-server-node-modules:
   studio-media-node-modules:
   studio-shared-node-modules:
+  studio-prometheus-data:
+  studio-grafana-data:

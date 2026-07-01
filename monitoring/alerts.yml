@@ -1,0 +1,47 @@
+groups:
+  - name: livestream-studio-health
+    rules:
+      - alert: SignalingServerDown
+        expr: up{job="livestream-studio-signaling"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: LiveStream Studio signaling server is down
+          description: Prometheus cannot scrape the signaling server metrics endpoint.
+
+      - alert: MediaServerDown
+        expr: up{job="livestream-studio-media-server"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: LiveStream Studio media server is down
+          description: Prometheus cannot scrape the RTMP media relay metrics endpoint.
+
+      - alert: RelayRestarting
+        expr: livestream_studio_media_restarting_relays_total > 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: RTMP relay reconnect is in progress
+          description: One or more destinations are waiting on an RTMP reconnect timer.
+
+      - alert: RelayExitedWhileLive
+        expr: livestream_studio_media_ffmpeg_relays_exited_total > 0 and livestream_studio_signaling_live_streams_total > 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: FFmpeg relay exited during a live session
+          description: A tracked FFmpeg relay exited while at least one studio is marked live.
+
+      - alert: GuestsWaitingInGreenRoom
+        expr: livestream_studio_signaling_waiting_guests_total > 0
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: Guests are waiting in the green room
+          description: One or more guests have been waiting in the green room for more than five minutes.

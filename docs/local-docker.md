@@ -19,10 +19,21 @@ The client is configured to call the two local Render-equivalent services, so th
 
 ```sh
 npm run docker:dev     # build and start the full stack
+npm run docker:monitoring # start the stack with Prometheus and Grafana
 npm run docker:logs    # follow service logs
 npm run docker:down    # stop and remove containers
 npm run docker:config  # render the final Compose config
 ```
+
+## Monitoring Profile
+
+```sh
+npm run docker:monitoring
+```
+
+Prometheus is available at `http://localhost:9090` and Grafana is available at `http://localhost:3003`. The default local Grafana login is `admin` / `admin`; change `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env` before sharing the environment.
+
+The provisioned dashboard tracks active rooms, participant stages, live streams, RTMP relay sessions, FFmpeg relay state, reconnect activity, and service reachability.
 
 ## RTMP Relay Notes
 
