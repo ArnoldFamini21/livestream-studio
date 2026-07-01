@@ -235,6 +235,9 @@ export type SignalMessage =
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
   | { type: 'live-stream-token-request'; payload: LiveStreamTokenRequestPayload }
   | { type: 'live-stream-token-issued'; payload: LiveStreamTokenIssuedPayload }
+  | { type: 'external-chat-connect'; payload: ExternalChatConnectPayload }
+  | { type: 'external-chat-disconnect'; payload: ExternalChatDisconnectPayload }
+  | { type: 'external-chat-status'; payload: ExternalChatStatusPayload }
   | { type: 'co-host-invite-token-request'; payload: CoHostInviteTokenRequestPayload }
   | { type: 'co-host-invite-token-issued'; payload: CoHostInviteTokenIssuedPayload }
   | { type: 'participant-updated'; payload: Participant }
@@ -348,6 +351,38 @@ export interface LiveStreamTokenIssuedPayload {
   expiresAt: string;
 }
 
+export type ExternalChatPlatform = 'youtube' | 'facebook';
+export type ExternalChatConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
+
+export interface ExternalChatSource {
+  platform: ExternalChatPlatform;
+  externalId: string;
+  authorChannelId?: string;
+  authorUrl?: string;
+  avatarUrl?: string;
+  publishedAt?: string;
+  isModerator?: boolean;
+  isOwner?: boolean;
+  isSponsor?: boolean;
+}
+
+export interface ExternalChatConnectPayload {
+  platform: ExternalChatPlatform;
+  liveChatId: string;
+}
+
+export interface ExternalChatDisconnectPayload {
+  platform: ExternalChatPlatform;
+}
+
+export interface ExternalChatStatusPayload {
+  platform: ExternalChatPlatform;
+  status: ExternalChatConnectionStatus;
+  message?: string;
+  liveChatId?: string;
+  nextPollAt?: string;
+}
+
 export interface CoHostInviteTokenRequestPayload {
   requestId: string;
 }
@@ -375,6 +410,7 @@ export interface ChatMessage {
   pinnedBy?: string;
   pinnedAt?: string;
   reactions?: Partial<Record<ChatReactionType, number>>;
+  source?: ExternalChatSource;
 }
 
 export interface ChatTypingPayload {

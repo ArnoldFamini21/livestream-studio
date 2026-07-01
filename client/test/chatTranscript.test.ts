@@ -34,6 +34,10 @@ const messages: ChatMessage[] = [
     content: 'Hello, "team"\nGreat demo',
     timestamp: '2026-06-11T10:01:00.000Z',
     isBackstage: false,
+    source: {
+      platform: 'youtube',
+      externalId: 'yt-message-1',
+    },
   },
   {
     id: 'direct-note',
@@ -58,7 +62,9 @@ describe('chat transcript export', () => {
 
     assert.match(csv, /"Ari"/);
     assert.match(csv, /"Hello, ""team""\nGreat demo"/);
-    assert.match(csv, /"Pinned","Starred"/);
+    assert.match(csv, /"Source","External ID","Pinned","Starred"/);
+    assert.match(csv, /"youtube","yt-message-1"/);
+    assert.match(csv, /"studio",""/);
     assert.match(csv, /"Like: 2; Clap: 1"/);
     assert.doesNotMatch(csv, /Guest mic is hot/);
     assert.doesNotMatch(csv, /You are next/);

@@ -19,6 +19,8 @@ import type {
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
   StudioBrandingPayload,
+  ExternalChatPlatform,
+  ExternalChatStatusPayload,
 } from '@studio/shared';
 import {
   ROOM_NOT_OPEN_ERROR_CODE,
@@ -27,6 +29,12 @@ import {
   isChatReactionType,
   isScheduledGuestAccessBlocked,
 } from '@studio/shared';
+import {
+  fetchYouTubeLiveChatMessages,
+  normalizeYouTubeApiKey,
+  normalizeYouTubeLiveChatId,
+  type YouTubeLiveChatMessage,
+} from './youtubeLiveChat.js';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
 
@@ -41,6 +49,7 @@ interface RoomState {
   qaVotes: Map<string, Set<string>>;
   polls: Map<string, LivePoll>;
   pollVotes: Map<string, Map<string, string>>;
+  externalChatConnections: Map<ExternalChatPlatform, ExternalChatConnectionState>;
   studioBranding?: StudioBrandingPayload;
   coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   recordingStartedAt?: string;
@@ -56,6 +65,17 @@ interface RoomState {
   // True once any participant successfully joined; used for shorter idle expiry.
   hasBeenJoined: boolean;
   emptyRoomTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface ExternalChatConnectionState {
+  platform: ExternalChatPlatform;
+  liveChatId: string;
+  status: ExternalChatStatusPayload;
+  nextPageToken?: string;
+  seenMessageIds: Set<string>;
+  timer?: ReturnType<typeof setTimeout>;
+  polling: boolean;
+  stopped: boolean;
 }
 
 // Extend WebSocket to track heartbeat state
@@ -87,6 +107,8 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'recording-state-changed',
   'live-stream-state-changed',
   'live-stream-token-request',
+  'external-chat-connect',
+  'external-chat-disconnect',
   'co-host-invite-token-request',
   'end-room',
 ]);
@@ -266,6 +288,7 @@ function deleteRoom(roomId: string) {
     clearTimeout(endingTimer);
     endingTimers.delete(roomId);
   }
+  stopAllExternalChatConnections(roomId, state, false);
   const ipSet = roomsByCreatorIp.get(state.creatorIp);
   if (ipSet) {
     ipSet.delete(roomId);
@@ -422,6 +445,7 @@ export function createRoom(
     qaVotes: new Map(),
     polls: new Map(),
     pollVotes: new Map(),
+    externalChatConnections: new Map(),
     coHostInviteTokens: new Map(),
     hostToken,
     ...passwordVerifier,
@@ -709,6 +733,12 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'live-stream-token-request':
       handleLiveStreamTokenRequest(ws, message.payload);
       break;
+    case 'external-chat-connect':
+      handleExternalChatConnect(ws, message.payload);
+      break;
+    case 'external-chat-disconnect':
+      handleExternalChatDisconnect(ws, message.payload);
+      break;
     case 'co-host-invite-token-request':
       handleCoHostInviteTokenRequest(ws, message.payload);
       break;
@@ -889,6 +919,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       },
     },
   });
+  sendExternalChatStatuses(ws, roomState);
 
   // Notify existing participants about the new one
   broadcastToRoom(roomId, {
@@ -1502,6 +1533,258 @@ function sendChatTypingToVisibleParticipants(roomState: RoomState, payload: Chat
     if (!canSeeChatMessage(visibilityProbe, participant, participantId)) continue;
     send(ws, { type: 'chat-typing', payload });
   }
+}
+
+function normalizeExternalChatPlatform(value: unknown): ExternalChatPlatform | null {
+  return value === 'youtube' || value === 'facebook' ? value : null;
+}
+
+function getYouTubeLiveChatApiKey(): string {
+  return normalizeYouTubeApiKey(
+    process.env.YOUTUBE_API_KEY ||
+    process.env.YOUTUBE_LIVE_CHAT_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ''
+  );
+}
+
+function getExternalChatOperator(
+  ws: WebSocket,
+  unauthorizedMessage: string
+): { roomId: string; roomState: RoomState; participantId: string; participant: Participant } | null {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return null;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return null;
+
+  const participant = roomState.participants.get(mapping.participantId)?.participant;
+  if (!participant) return null;
+
+  if (participant.role !== 'host' && participant.role !== 'co-host') {
+    sendError(ws, unauthorizedMessage, 'UNAUTHORIZED');
+    return null;
+  }
+  if (participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before managing external chat', 'PARTICIPANT_NOT_ADMITTED');
+    return null;
+  }
+
+  return {
+    roomId: mapping.roomId,
+    roomState,
+    participantId: mapping.participantId,
+    participant,
+  };
+}
+
+function setExternalChatStatus(
+  roomId: string,
+  roomState: RoomState,
+  connection: ExternalChatConnectionState,
+  update: Omit<ExternalChatStatusPayload, 'platform'>
+) {
+  connection.status = {
+    platform: connection.platform,
+    liveChatId: connection.liveChatId,
+    ...update,
+  };
+  broadcastToRoom(roomId, {
+    type: 'external-chat-status',
+    payload: connection.status,
+  });
+}
+
+function sendExternalChatStatuses(ws: WebSocket, roomState: RoomState) {
+  for (const connection of roomState.externalChatConnections.values()) {
+    send(ws, {
+      type: 'external-chat-status',
+      payload: connection.status,
+    });
+  }
+}
+
+function stopExternalChatConnection(
+  roomId: string,
+  roomState: RoomState,
+  platform: ExternalChatPlatform,
+  broadcastStatus = true
+) {
+  const connection = roomState.externalChatConnections.get(platform);
+  if (!connection) return;
+  connection.stopped = true;
+  if (connection.timer) {
+    clearTimeout(connection.timer);
+    connection.timer = undefined;
+  }
+  roomState.externalChatConnections.delete(platform);
+  if (broadcastStatus) {
+    broadcastToRoom(roomId, {
+      type: 'external-chat-status',
+      payload: {
+        platform,
+        status: 'idle',
+        message: `${platform === 'youtube' ? 'YouTube' : 'External'} chat disconnected.`,
+      },
+    });
+  }
+}
+
+function stopAllExternalChatConnections(roomId: string, roomState: RoomState, broadcastStatus = true) {
+  for (const platform of Array.from(roomState.externalChatConnections.keys())) {
+    stopExternalChatConnection(roomId, roomState, platform, broadcastStatus);
+  }
+}
+
+function toExternalChatMessage(message: YouTubeLiveChatMessage): ChatMessage {
+  return {
+    id: `youtube-${nanoid(10)}`,
+    senderId: `external:youtube:${message.source.externalId}`,
+    senderName: message.authorName,
+    content: message.content,
+    timestamp: message.publishedAt,
+    isBackstage: false,
+    source: message.source,
+  };
+}
+
+async function pollYouTubeLiveChat(
+  roomId: string,
+  roomState: RoomState,
+  connection: ExternalChatConnectionState,
+  apiKey: string
+) {
+  if (connection.polling || connection.stopped) return;
+  connection.polling = true;
+
+  try {
+    const result = await fetchYouTubeLiveChatMessages({
+      apiKey,
+      liveChatId: connection.liveChatId,
+      pageToken: connection.nextPageToken,
+    });
+    if (connection.stopped || roomState.externalChatConnections.get('youtube') !== connection) return;
+
+    connection.nextPageToken = result.nextPageToken || connection.nextPageToken;
+    let imported = 0;
+
+    for (const externalMessage of result.messages) {
+      if (connection.seenMessageIds.has(externalMessage.id)) continue;
+      connection.seenMessageIds.add(externalMessage.id);
+      const chatMessage = toExternalChatMessage(externalMessage);
+      storeChatMessage(roomState, chatMessage);
+      sendChatToVisibleParticipants(roomId, roomState, chatMessage, 'chat-message');
+      imported++;
+    }
+
+    const nextPollAt = new Date(Date.now() + result.pollingIntervalMillis).toISOString();
+    setExternalChatStatus(roomId, roomState, connection, {
+      status: 'connected',
+      message: imported > 0
+        ? `Imported ${imported} YouTube chat message${imported === 1 ? '' : 's'}.`
+        : 'YouTube chat connected.',
+      nextPollAt,
+    });
+
+    connection.timer = setTimeout(() => {
+      pollYouTubeLiveChat(roomId, roomState, connection, apiKey).catch((err) => {
+        console.warn(`YouTube live chat poll failed for room ${roomId}:`, err);
+      });
+    }, result.pollingIntervalMillis);
+    connection.timer.unref?.();
+  } catch (err) {
+    if (connection.stopped || roomState.externalChatConnections.get('youtube') !== connection) return;
+    const message = err instanceof Error ? err.message : 'YouTube chat polling failed.';
+    setExternalChatStatus(roomId, roomState, connection, {
+      status: 'error',
+      message,
+      nextPollAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    connection.timer = setTimeout(() => {
+      pollYouTubeLiveChat(roomId, roomState, connection, apiKey).catch((retryErr) => {
+        console.warn(`YouTube live chat retry failed for room ${roomId}:`, retryErr);
+      });
+    }, 30_000);
+    connection.timer.unref?.();
+  } finally {
+    connection.polling = false;
+  }
+}
+
+function handleExternalChatConnect(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'external-chat-connect' }>['payload']
+) {
+  const operator = getExternalChatOperator(ws, 'Only hosts and co-hosts can connect external chat');
+  if (!operator) return;
+
+  const platform = normalizeExternalChatPlatform(payload.platform);
+  if (!platform) {
+    sendError(ws, 'External chat platform is not supported', 'VALIDATION_ERROR');
+    return;
+  }
+  if (platform !== 'youtube') {
+    sendError(ws, 'Facebook comments are not available yet', 'EXTERNAL_CHAT_UNSUPPORTED');
+    return;
+  }
+
+  const liveChatId = normalizeYouTubeLiveChatId(payload.liveChatId);
+  if (!liveChatId) {
+    sendError(ws, 'A valid YouTube live chat id is required', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const apiKey = getYouTubeLiveChatApiKey();
+  if (!apiKey) {
+    send(ws, {
+      type: 'external-chat-status',
+      payload: {
+        platform: 'youtube',
+        status: 'error',
+        liveChatId,
+        message: 'YouTube Live Chat requires YOUTUBE_API_KEY on the signaling server.',
+      },
+    });
+    return;
+  }
+
+  stopExternalChatConnection(operator.roomId, operator.roomState, 'youtube', false);
+  const connection: ExternalChatConnectionState = {
+    platform: 'youtube',
+    liveChatId,
+    status: {
+      platform: 'youtube',
+      status: 'connecting',
+      liveChatId,
+      message: 'Connecting to YouTube Live Chat...',
+    },
+    seenMessageIds: new Set(),
+    polling: false,
+    stopped: false,
+  };
+  operator.roomState.externalChatConnections.set('youtube', connection);
+  setExternalChatStatus(operator.roomId, operator.roomState, connection, {
+    status: 'connecting',
+    message: 'Connecting to YouTube Live Chat...',
+  });
+  pollYouTubeLiveChat(operator.roomId, operator.roomState, connection, apiKey).catch((err) => {
+    console.warn(`YouTube live chat connect failed for room ${operator.roomId}:`, err);
+  });
+}
+
+function handleExternalChatDisconnect(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'external-chat-disconnect' }>['payload']
+) {
+  const operator = getExternalChatOperator(ws, 'Only hosts and co-hosts can disconnect external chat');
+  if (!operator) return;
+
+  const platform = normalizeExternalChatPlatform(payload.platform);
+  if (!platform) {
+    sendError(ws, 'External chat platform is not supported', 'VALIDATION_ERROR');
+    return;
+  }
+  stopExternalChatConnection(operator.roomId, operator.roomState, platform, true);
 }
 
 function handleChatTyping(ws: WebSocket, payload: ChatTypingPayload) {

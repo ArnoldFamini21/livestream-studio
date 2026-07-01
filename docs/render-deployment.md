@@ -29,6 +29,14 @@ LIVE_STREAM_TOKEN_SECRET=<same random secret on both Render services>
 
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.
 
+For server-side YouTube Live Chat ingestion in the studio Chat panel, set this on `livestream-studio-server`:
+
+```sh
+YOUTUBE_API_KEY=<Google API key with YouTube Data API v3 access>
+```
+
+Hosts and co-hosts paste a YouTube live chat ID in the Chat panel. The signaling server polls YouTube's `liveChat/messages` endpoint, respects the returned polling interval, and relays imported comments into the existing public chat feed so they can be starred, pinned, shown, or flashed on stream.
+
 For production-grade WebRTC connectivity, configure a provider-backed TURN service on `livestream-studio-server`. The built-in OpenRelay fallback is useful for local demos, but it is not treated as production ready by the health metadata.
 
 Use either a complete JSON config:

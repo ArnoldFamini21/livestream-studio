@@ -141,7 +141,7 @@
 - [x] Private messages between host and individual guests
 
 ### 6B. Live Chat Integration
-- [ ] YouTube Live Chat API integration (read incoming messages)
+- [x] YouTube Live Chat API integration (read incoming messages)
 - [ ] Facebook Live Comments API integration
 - [ ] Unified chat view merging all platforms
 - [x] Highlight/feature a chat message on screen (overlay)
