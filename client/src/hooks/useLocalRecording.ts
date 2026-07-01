@@ -1,4 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import {
+  createRecordingCaptureMetadata,
+  finalizeRecordingCaptureMetadata,
+  type RecordingCaptureMetadata,
+} from '../utils/recordingCaptureMetadata.ts';
 
 export interface RecordingResult {
   audio: Blob;
@@ -12,6 +17,7 @@ export interface LocalRecordingFileResult {
   label: string;
   blob: Blob;
   kind: LocalRecordingSource['kind'];
+  capture?: RecordingCaptureMetadata;
 }
 
 export interface LocalRecordingSource {
@@ -29,6 +35,7 @@ interface TrackRecorder {
   kind: LocalRecordingSource['kind'];
   recorder: MediaRecorder;
   chunks: Blob[];
+  capture: RecordingCaptureMetadata;
   activeWritable?: any; // FileSystemWritableFileStream
   fileHandle?: any; // FileSystemFileHandle
   getWritePromise: () => Promise<void> | null;
@@ -119,6 +126,15 @@ export function useLocalRecording() {
       mimeType,
       bitsPerSecond,
     });
+    const capture = createRecordingCaptureMetadata({
+      sourceId: source.id,
+      sourceKind: source.kind,
+      sourceLabel: source.label,
+      stream,
+      mimeType,
+      requestedBitsPerSecond: bitsPerSecond,
+      startedAt: new Date().toISOString(),
+    });
 
     let currentWritePromise: Promise<void> | null = null;
 
@@ -151,6 +167,7 @@ export function useLocalRecording() {
       kind: source.kind,
       recorder,
       chunks,
+      capture,
       fileHandle,
       activeWritable,
       getWritePromise: () => currentWritePromise,
@@ -232,7 +249,9 @@ export function useLocalRecording() {
 
       // Start all recorders with 1-second chunks
       try {
+        const startedAt = new Date().toISOString();
         for (const trackRecorder of recorders) {
+          trackRecorder.capture = { ...trackRecorder.capture, startedAt };
           trackRecorder.recorder.start(1000);
         }
       } catch (err) {
@@ -280,6 +299,7 @@ export function useLocalRecording() {
       };
 
       const finishUp = async () => {
+        trackRecorder.capture = finalizeRecordingCaptureMetadata(trackRecorder.capture, new Date().toISOString());
         if (activeWritable) {
           try {
             const p = getWritePromise();
@@ -343,7 +363,9 @@ export function useLocalRecording() {
 
         const files = activeRecorders.flatMap((recorder, index): LocalRecordingFileResult[] => {
           const blob = blobs[index];
-          return blob && blob.size > 0 ? [{ label: recorder.label, kind: recorder.kind, blob }] : [];
+          return blob && blob.size > 0
+            ? [{ label: recorder.label, kind: recorder.kind, blob, capture: recorder.capture }]
+            : [];
         });
         const audioBlob = files.find((file) => file.kind === 'audio')?.blob || new Blob();
         const videoBlob = files.find((file) => file.kind === 'video')?.blob || new Blob();

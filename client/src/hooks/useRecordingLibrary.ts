@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import {
+  normalizeRecordingCaptureMetadata,
+  type RecordingCaptureMetadata,
+} from '../utils/recordingCaptureMetadata.ts';
 
 const DB_NAME = 'livestream-studio-recording-library';
 const DB_VERSION = 1;
@@ -10,6 +14,7 @@ export interface LocalRecordingFileInput {
   blob: Blob;
   fileName: string;
   kind?: LocalRecordingTrackKind;
+  capture?: RecordingCaptureMetadata;
 }
 
 export interface LocalRecordingFileMetadata {
@@ -19,6 +24,7 @@ export interface LocalRecordingFileMetadata {
   size: number;
   type: string;
   kind?: LocalRecordingTrackKind;
+  capture?: RecordingCaptureMetadata;
 }
 
 export interface LocalRecordingFileRecord extends LocalRecordingFileMetadata {
@@ -176,6 +182,7 @@ async function saveRecordingSession(input: SaveRecordingSessionInput): Promise<L
       size: file.blob.size,
       type: file.blob.type || 'application/octet-stream',
       kind: file.kind,
+      capture: normalizeRecordingCaptureMetadata(file.capture),
     }));
     const session: LocalRecordingSession = {
       id: sessionId,
