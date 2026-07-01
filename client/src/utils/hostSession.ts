@@ -23,8 +23,17 @@ export interface HostSession {
   roomId: string;
   hostName: string;
   hostToken: string;
-  source: 'url' | 'session' | 'saved';
+  source: 'url' | 'session' | 'saved' | 'legacy';
 }
+
+export interface LegacyHostlessCreateResponseLike {
+  hostToken?: unknown;
+  hostId?: unknown;
+  coHostIds?: unknown;
+}
+
+const LEGACY_HOST_SESSION_VERSION = 'v2';
+const LEGACY_HOST_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 
 function getSessionItem(key: string): string {
   try {
@@ -76,6 +85,13 @@ export function getValidHostToken(value: unknown): string {
   return isValidHostToken(normalized) ? normalized : '';
 }
 
+export function isLegacyHostlessCreateResponse(room: LegacyHostlessCreateResponseLike): boolean {
+  return !getValidHostToken(room.hostToken) && (
+    typeof room.hostId === 'string' ||
+    Array.isArray(room.coHostIds)
+  );
+}
+
 function sortHostStudios(rooms: SavedHostStudio[]): SavedHostStudio[] {
   return rooms.sort((a, b) => {
     const aTime = Date.parse(a.scheduledFor || a.createdAt || '');
@@ -116,6 +132,17 @@ function hostTokenKey(roomId: string): string {
 
 function legacyHostKey(roomId: string): string {
   return `${LEGACY_HOST_SESSION_PREFIX}${roomId}`;
+}
+
+function createLegacyHostMarker(nowMs = Date.now()): string {
+  return `${LEGACY_HOST_SESSION_VERSION}:${Math.floor(nowMs)}`;
+}
+
+function isFreshLegacyHostMarker(value: string, nowMs = Date.now()): boolean {
+  const [version, issuedAt] = value.split(':');
+  if (version !== LEGACY_HOST_SESSION_VERSION || !issuedAt) return false;
+  const issuedAtMs = Number(issuedAt);
+  return Number.isFinite(issuedAtMs) && issuedAtMs > 0 && nowMs - issuedAtMs <= LEGACY_HOST_SESSION_TTL_MS;
 }
 
 export function buildHostEntryPath(roomId: string, hostToken?: string): string {
@@ -207,7 +234,7 @@ export function getHostSession(roomId: string, urlHostToken = ''): HostSession |
   const sessionHostToken = getSessionItem(hostTokenKey(roomId));
   const hasValidSessionToken = isValidHostToken(sessionHostToken);
   const hostToken = hasValidSessionToken ? sessionHostToken : savedHostStudio?.hostToken || '';
-  if (!isValidHostToken(hostToken)) return null;
+  if (!isValidHostToken(hostToken)) return getLegacyHostSession(roomId);
 
   return {
     roomId,
@@ -225,4 +252,22 @@ export function persistHostSession(input: { roomId: string; hostName: string; ho
   setSessionItem(USER_NAME_KEY, input.hostName || 'Host');
   setSessionItem(hostTokenKey(input.roomId), input.hostToken);
   removeSessionItem(legacyHostKey(input.roomId));
+}
+
+export function getLegacyHostSession(roomId: string): HostSession | null {
+  const marker = getSessionItem(legacyHostKey(roomId));
+  if (getSessionItem(USER_ROLE_KEY) !== 'host' || !isFreshLegacyHostMarker(marker)) return null;
+  return {
+    roomId,
+    hostName: getStoredUserName() || 'Host',
+    hostToken: '',
+    source: 'legacy',
+  };
+}
+
+export function persistLegacyHostSession(input: { roomId: string; hostName: string }) {
+  setSessionItem(USER_ROLE_KEY, 'host');
+  setSessionItem(USER_NAME_KEY, input.hostName || 'Host');
+  removeSessionItem(hostTokenKey(input.roomId));
+  setSessionItem(legacyHostKey(input.roomId), createLegacyHostMarker());
 }

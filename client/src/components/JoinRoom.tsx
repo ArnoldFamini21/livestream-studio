@@ -18,6 +18,7 @@ import {
   getSavedHostStudio,
   getStoredUserName,
   getUrlHostToken,
+  persistLegacyHostSession,
   persistHostSession,
   upsertSavedHostStudio,
 } from '../utils/hostSession.ts';
@@ -229,6 +230,10 @@ export function JoinRoom() {
 
   useEffect(() => {
     if (!roomId || !hostSession) return;
+    if (hostSession.source === 'legacy') {
+      persistLegacyHostSession({ roomId, hostName: hostSession.hostName });
+      return;
+    }
     persistHostSession({ roomId, hostName: hostSession.hostName, hostToken: hostSession.hostToken });
     if (hostSession.source === 'url') {
       clearUrlHostToken();
@@ -236,7 +241,7 @@ export function JoinRoom() {
   }, [roomId, hostSession?.hostName, hostSession?.hostToken, hostSession?.source]);
 
   useEffect(() => {
-    if (!roomId || !hostSession || !roomInfo) return;
+    if (!roomId || !hostSession || !roomInfo || !hostSession.hostToken) return;
     upsertSavedHostStudio({
       id: roomId,
       name: roomInfo.name,
@@ -273,7 +278,13 @@ export function JoinRoom() {
     stopMedia();
     
     if (isHostSession) {
-      if (roomId) persistHostSession({ roomId, hostName: guestName.trim(), hostToken });
+      if (roomId) {
+        if (hostSession?.source === 'legacy') {
+          persistLegacyHostSession({ roomId, hostName: guestName.trim() });
+        } else {
+          persistHostSession({ roomId, hostName: guestName.trim(), hostToken });
+        }
+      }
     } else if (isCoHostInvite && roomId) {
       sessionStorage.setItem('userRole', 'co-host');
       sessionStorage.setItem(`coHostInviteToken:${roomId}`, coHostInviteToken);
