@@ -144,6 +144,28 @@ export interface Participant {
 export type ParticipantRole = 'host' | 'co-host' | 'guest';
 export type ParticipantStatus = 'green-room' | 'on-stage' | 'backstage';
 
+type MediaAccessParticipant = Pick<Participant, 'role' | 'status'> | null | undefined;
+
+export function canExchangeStudioMedia(
+  sender: MediaAccessParticipant,
+  target: MediaAccessParticipant
+): boolean {
+  if (!sender || !target) return false;
+  if (sender.status === 'green-room' || target.status === 'green-room') return false;
+
+  const senderIsOperator = sender.role === 'host' || sender.role === 'co-host';
+  const targetIsOperator = target.role === 'host' || target.role === 'co-host';
+  const senderBackstage = sender.status === 'backstage';
+  const targetBackstage = target.status === 'backstage';
+
+  if (sender.status === 'on-stage' && target.status === 'on-stage') return true;
+  if (senderBackstage && targetBackstage) return true;
+  if (senderBackstage && targetIsOperator) return true;
+  if (targetBackstage && senderIsOperator) return true;
+
+  return false;
+}
+
 // ============ Signaling Types ============
 
 export type SignalMessage =

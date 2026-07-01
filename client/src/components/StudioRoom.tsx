@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
-import { ROOM_NOT_OPEN_ERROR_CODE } from '@studio/shared';
+import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
@@ -678,10 +678,6 @@ function getRoomActivityStatus(live: boolean, recordingStartedAt: string | null)
   if (live) return 'live';
   if (recordingStartedAt) return 'recording';
   return 'waiting';
-}
-
-function canExchangeStudioMedia(a: Participant | null | undefined, b: Participant | null | undefined): boolean {
-  return a?.status === 'on-stage' && b?.status === 'on-stage';
 }
 
 function isPersistableLogoUrl(url: string | null): url is string {
@@ -1813,7 +1809,7 @@ export function StudioRoom() {
       }
     }
 
-    if (myParticipant.status !== 'on-stage') {
+    if (myParticipant.status === 'green-room') {
       cleanupRef.current();
     }
   }, [myParticipant?.id, myParticipant?.status, participants]);
@@ -3440,6 +3436,41 @@ export function StudioRoom() {
     return items;
   }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream, participantVolumes]);
 
+  const backstagePrivateItems = useMemo(() => {
+    if (!myParticipant || myParticipant.status === 'green-room') return [];
+
+    const items: StageVideoItem[] = [];
+    if (myParticipant.status === 'backstage') {
+      items.push({
+        id: myParticipant.id,
+        name: myParticipant.name,
+        stream: localStream,
+        isLocal: true,
+        audioEnabled: effectiveAudioEnabled,
+        videoEnabled: effectiveVideoEnabled,
+        volume: participantVolumes[myParticipant.id] ?? 1,
+      });
+    }
+
+    for (const [id, participant] of participants) {
+      if (!canExchangeStudioMedia(myParticipant, participant)) continue;
+      if (participant.status !== 'backstage' && !isStudioOperator(participant)) continue;
+
+      items.push({
+        id,
+        name: participant.status === 'backstage' ? participant.name : `${participant.name} (${participant.role})`,
+        stream: remoteStreams.get(id) || null,
+        isLocal: false,
+        audioEnabled: participant.screenSharing ? false : participant.audioEnabled,
+        videoEnabled: participant.videoEnabled || participant.screenSharing,
+        volume: participantVolumes[id] ?? 1,
+        isScreenShare: participant.screenSharing || false,
+      });
+    }
+
+    return items;
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, participantVolumes]);
+
   const availableStageItemIds = useMemo(() => videoItems.map((item) => item.id), [videoItems]);
 
   useEffect(() => {
@@ -4015,46 +4046,57 @@ export function StudioRoom() {
         </div>
 
         <div style={{ ...styles.waitingMain, ...waitingRoomBackgroundStyle }}>
-          <div style={styles.waitingShell}>
-            <div style={{ ...styles.waitingPreview, borderColor: `${waitingBrandColor}55` }}>
-              <VideoTile
-                stream={localStream}
-                name={myParticipant?.name || userName}
-                isLocal
-                audioEnabled={effectiveAudioEnabled}
-                videoEnabled={effectiveVideoEnabled}
+          <div style={styles.waitingStack}>
+            <div style={styles.waitingShell}>
+              <div style={{ ...styles.waitingPreview, borderColor: `${waitingBrandColor}55` }}>
+                <VideoTile
+                  stream={localStream}
+                  name={myParticipant?.name || userName}
+                  isLocal
+                  audioEnabled={effectiveAudioEnabled}
+                  videoEnabled={effectiveVideoEnabled}
+                  brandColor={waitingBrandColor}
+                  cameraShape={cameraShape}
+                  nameTagStyle={nameTagStyle}
+                />
+              </div>
+              <div style={styles.waitingCopy}>
+                {waitingLogoUrl && <img src={waitingLogoUrl} alt="" style={styles.waitingHeroLogo} />}
+                <span style={{ ...styles.waitingKicker, color: waitingBrandColor }}>{holdKicker}</span>
+                <h1 style={styles.waitingTitle}>{holdTitle}</h1>
+                <p style={styles.waitingText}>{holdText}</p>
+                {guestNotification && (
+                  <div style={{
+                    ...styles.waitingNotice,
+                    ...(guestNotification.tone === 'warning' ? styles.waitingNoticeWarning : {}),
+                    ...(guestNotification.tone === 'success' ? styles.waitingNoticeSuccess : {}),
+                  }}>
+                    <span style={styles.waitingNoticeIcon}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 2 11 13" />
+                        <path d="m22 2-7 20-4-9-9-4 20-7z" />
+                      </svg>
+                    </span>
+                    <span style={styles.waitingNoticeCopy}>
+                      <strong style={styles.waitingNoticeTitle}>{guestNotification.title}</strong>
+                      <span style={styles.waitingNoticeText}>{guestNotification.message}</span>
+                    </span>
+                  </div>
+                )}
+                {offStageGuestStatus === 'green-room' && waitingCount > 0 && (
+                  <span style={styles.waitingQueue}>{waitingCount} waiting</span>
+                )}
+              </div>
+            </div>
+
+            {offStageGuestStatus === 'backstage' && backstagePrivateItems.length > 1 && (
+              <BackstagePrivateRoom
+                items={backstagePrivateItems}
                 brandColor={waitingBrandColor}
                 cameraShape={cameraShape}
                 nameTagStyle={nameTagStyle}
               />
-            </div>
-            <div style={styles.waitingCopy}>
-              {waitingLogoUrl && <img src={waitingLogoUrl} alt="" style={styles.waitingHeroLogo} />}
-              <span style={{ ...styles.waitingKicker, color: waitingBrandColor }}>{holdKicker}</span>
-              <h1 style={styles.waitingTitle}>{holdTitle}</h1>
-              <p style={styles.waitingText}>{holdText}</p>
-              {guestNotification && (
-                <div style={{
-                  ...styles.waitingNotice,
-                  ...(guestNotification.tone === 'warning' ? styles.waitingNoticeWarning : {}),
-                  ...(guestNotification.tone === 'success' ? styles.waitingNoticeSuccess : {}),
-                }}>
-                  <span style={styles.waitingNoticeIcon}>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M22 2 11 13" />
-                      <path d="m22 2-7 20-4-9-9-4 20-7z" />
-                    </svg>
-                  </span>
-                  <span style={styles.waitingNoticeCopy}>
-                    <strong style={styles.waitingNoticeTitle}>{guestNotification.title}</strong>
-                    <span style={styles.waitingNoticeText}>{guestNotification.message}</span>
-                  </span>
-                </div>
-              )}
-              {offStageGuestStatus === 'green-room' && waitingCount > 0 && (
-                <span style={styles.waitingQueue}>{waitingCount} waiting</span>
-              )}
-            </div>
+            )}
           </div>
         </div>
 
@@ -4585,6 +4627,16 @@ export function StudioRoom() {
             </div>
           </div>
 
+          {isHostOrCoHost && backstagePrivateItems.length > 0 && (
+            <BackstagePrivateRoom
+              items={backstagePrivateItems}
+              brandColor={brandColor}
+              cameraShape={cameraShape}
+              nameTagStyle={nameTagStyle}
+              compact
+            />
+          )}
+
           {/* Floating layout switcher (like StreamYard) — below canvas */}
           {isHostOrCoHost && (
             <div style={styles.layoutBar}>
@@ -4992,6 +5044,64 @@ export function StudioRoom() {
   );
 }
 
+function BackstagePrivateRoom({
+  items,
+  brandColor,
+  cameraShape,
+  nameTagStyle,
+  compact = false,
+}: {
+  items: StageVideoItem[];
+  brandColor: string;
+  cameraShape: CameraShape;
+  nameTagStyle: NameTagStyle;
+  compact?: boolean;
+}) {
+  return (
+    <section
+      data-testid="backstage-private-room"
+      style={{
+        ...styles.backstageRoom,
+        ...(compact ? styles.backstageRoomCompact : {}),
+      }}
+      aria-label="Backstage private room"
+    >
+      <div style={styles.backstageRoomHeader}>
+        <span style={styles.backstageRoomTitle}>
+          <span style={styles.backstageRoomDot} />
+          Backstage
+        </span>
+        <span style={styles.backstageRoomMeta}>{items.length} private</span>
+      </div>
+      <div style={styles.backstageRoomGrid}>
+        {items.map((item) => (
+          <div
+            key={item.id}
+            style={{
+              ...styles.backstageRoomTile,
+              ...(compact ? styles.backstageRoomTileCompact : {}),
+            }}
+          >
+            <VideoTile
+              participantId={item.id}
+              stream={item.stream}
+              name={item.name}
+              isLocal={item.isLocal}
+              isScreenShare={item.isScreenShare}
+              audioEnabled={item.audioEnabled}
+              videoEnabled={item.videoEnabled}
+              volume={item.volume}
+              brandColor={brandColor}
+              cameraShape={cameraShape}
+              nameTagStyle={nameTagStyle}
+            />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 const styles: Record<string, React.CSSProperties> = {
   container: {
     display: 'flex',
@@ -5149,6 +5259,12 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 24,
     background: 'rgba(0, 0, 0, 0.15)',
   },
+  waitingStack: {
+    width: 'min(960px, 100%)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 16,
+  },
   waitingShell: {
     width: 'min(960px, 100%)',
     display: 'grid',
@@ -5298,6 +5414,67 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     position: 'relative',
     background: 'rgba(0, 0, 0, 0.15)',
+  },
+  backstageRoom: {
+    width: 'min(760px, 100%)',
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: 10,
+    borderRadius: 10,
+    border: '1px solid rgba(245, 158, 11, 0.28)',
+    background: 'rgba(15, 23, 42, 0.78)',
+    boxShadow: '0 14px 34px rgba(0, 0, 0, 0.24)',
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
+  },
+  backstageRoomCompact: {
+    width: 'min(720px, 100%)',
+    padding: 8,
+  },
+  backstageRoomHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  backstageRoomTitle: {
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 7,
+    color: '#fde68a',
+    fontSize: 12,
+    fontWeight: 800,
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  backstageRoomDot: {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    background: '#f59e0b',
+    boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.14)',
+  },
+  backstageRoomMeta: {
+    color: 'var(--text-muted)',
+    fontSize: 11,
+    fontWeight: 700,
+  },
+  backstageRoomGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(128px, 1fr))',
+    gap: 8,
+  },
+  backstageRoomTile: {
+    minWidth: 0,
+    height: 132,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  backstageRoomTileCompact: {
+    height: 92,
   },
   canvasWrapper: {
     flex: 1,

@@ -21,6 +21,7 @@ import type {
 import {
   ROOM_NOT_OPEN_ERROR_CODE,
   SCHEDULED_GUEST_ACCESS_MESSAGE,
+  canExchangeStudioMedia,
   isChatReactionType,
   isScheduledGuestAccessBlocked,
 } from '@studio/shared';
@@ -1256,9 +1257,9 @@ function canRelayMediaSignal(roomState: RoomState, fromId: string, toId: string)
   const target = roomState.participants.get(toId)?.participant;
   if (!sender || !target) return false;
 
-  // Green-room/backstage participants are visible in the roster, but only
-  // on-stage participants exchange WebRTC media for broadcast and recording.
-  return sender.status === 'on-stage' && target.status === 'on-stage';
+  // Green-room participants stay isolated. Backstage media is private to
+  // operators and backstage guests; non-operator stage guests cannot receive it.
+  return canExchangeStudioMedia(sender, target);
 }
 
 function relayToParticipant(ws: WebSocket, message: RelaySignalMessage) {
