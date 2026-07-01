@@ -85,6 +85,7 @@ import {
 } from '../utils/recordingReadiness.ts';
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
+import { getScenePipCornerForApply, getSceneStageItemOrderForApply } from '../utils/sceneApplication.ts';
 import {
   getContainedVideoRect,
   getCoverSourceRect,
@@ -3180,10 +3181,8 @@ export function StudioRoom() {
     setLogoPosition(normalizeLogoPosition(scene.logoPosition));
     setLogoSize(scene.logoSize || 'medium');
     setLogoOpacity(normalizeLogoOpacity(scene.logoOpacity));
-    if (scene.pipCorner) setPipCorner(scene.pipCorner);
-    if (Array.isArray(scene.stageItemOrder)) {
-      setStageItemOrder(normalizeStageItemOrder(scene.stageItemOrder, availableStageItemIds));
-    }
+    setPipCorner(getScenePipCornerForApply(scene));
+    setStageItemOrder(getSceneStageItemOrderForApply(scene, availableStageItemIds));
     setFocusedVideoItemId(
       scene.focusedVideoItemId && availableStageItemIds.includes(scene.focusedVideoItemId)
         ? scene.focusedVideoItemId
