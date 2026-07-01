@@ -105,6 +105,24 @@ describe('host session links', () => {
       },
     }), true);
     assert.equal(isLegacyHostlessCreateResponse({
+      id: 'qixnW1NkMZ',
+      name: 'Codex diagnostics',
+      hostId: '',
+      coHostIds: [],
+      createdAt: '2026-07-01T15:06:00.000Z',
+      status: 'waiting',
+      hostName: 'Arnold',
+      hostToken: undefined,
+      settings: {
+        maxParticipants: 7,
+        resolution: '1080p',
+        frameRate: 30,
+        enableRecording: true,
+        enableStreaming: false,
+        greenRoomEnabled: true,
+      },
+    }), true);
+    assert.equal(isLegacyHostlessCreateResponse({
       id: 'modern-token-stripped-room',
       name: 'Modern token stripped room',
       hostToken: undefined,
