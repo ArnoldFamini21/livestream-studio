@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws';
 import { setupSignalingServer } from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
+import { buildIceConfigFromEnv } from './services/ice-config.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -181,6 +182,11 @@ app.use(
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/ice-config', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(buildIceConfigFromEnv());
 });
 
 // Error-handling middleware (must be last in the middleware chain)
