@@ -29,6 +29,27 @@ LIVE_STREAM_TOKEN_SECRET=<same random secret on both Render services>
 
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.
 
+For production-grade WebRTC connectivity, configure a provider-backed TURN service on `livestream-studio-server`. The built-in OpenRelay fallback is useful for local demos, but it is not treated as production ready by the health metadata.
+
+Use either a complete JSON config:
+
+```sh
+ICE_SERVERS_JSON='{"iceTransportPolicy":"all","iceServers":[{"urls":["stun:<provider-stun-host>:19302"]},{"urls":["turn:<provider-turn-host>:3478","turns:<provider-turn-host>:443"],"username":"<turn-user>","credential":"<turn-secret>","credentialType":"password"}]}'
+```
+
+Or split env vars:
+
+```sh
+STUN_URLS=stun:<provider-stun-host>:19302
+TURN_URLS=turn:<provider-turn-host>:3478,turns:<provider-turn-host>:443
+TURN_USERNAME=<turn-user>
+TURN_CREDENTIAL=<turn-secret>
+TURN_CREDENTIAL_TYPE=password
+ICE_TRANSPORT_POLICY=all
+```
+
+`/health` and `/api/ice-config` expose non-secret ICE readiness metadata. `ice.turnReady: true` means the signaling server is using configured TURN credentials rather than the fallback.
+
 The media server can also copy recording export artifacts to S3-compatible object storage. Set these on `livestream-studio-media-server` when durable recording handoff is needed:
 
 ```sh
@@ -86,5 +107,13 @@ The check verifies:
 - `https://livestream-studio-server.onrender.com/health` reports `service: "signaling-server"`
 - `https://livestream-studio-media-server.onrender.com/health` reports `service: "media-server"`
 - both services report the expected deployment commit when `EXPECTED_COMMIT` is set
+
+To fail the check unless production TURN credentials are configured:
+
+```sh
+PRODUCTION_REQUIRE_TURN=true npm run production:check
+```
+
+In GitHub Actions, set the repository variable `PRODUCTION_REQUIRE_TURN=true` after the Render TURN credentials are present. The workflow passes that value into the production smoke check.
 
 If the media-server returns Render `no-server`, the Render service has not been created or synced yet. If the signaling server returns only `{ "status": "ok" }`, Render is still running an older server build.

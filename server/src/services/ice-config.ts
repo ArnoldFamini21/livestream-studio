@@ -10,6 +10,24 @@ export interface StudioIceConfig {
   iceTransportPolicy: 'all' | 'relay';
 }
 
+export type StudioIceConfigSource = 'ice_servers_json' | 'split_env' | 'default';
+
+export interface StudioIceConfigStatus {
+  source: StudioIceConfigSource;
+  serverCount: number;
+  stunServerCount: number;
+  turnServerCount: number;
+  hasTurn: boolean;
+  hasConfiguredTurn: boolean;
+  usingFallbackTurn: boolean;
+  turnReady: boolean;
+  iceTransportPolicy: 'all' | 'relay';
+}
+
+export interface StudioIceConfigWithStatus extends StudioIceConfig {
+  status: StudioIceConfigStatus;
+}
+
 const DEFAULT_ICE_SERVERS: StudioIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -86,6 +104,49 @@ function normalizePolicy(value: unknown): 'all' | 'relay' {
   return value === 'relay' ? 'relay' : 'all';
 }
 
+function getServerUrls(server: StudioIceServer): string[] {
+  return Array.isArray(server.urls) ? server.urls : [server.urls];
+}
+
+function hasUrlScheme(server: StudioIceServer, schemes: string[]): boolean {
+  return getServerUrls(server).some((url) => {
+    const normalized = url.trim().toLowerCase();
+    return schemes.some((scheme) => normalized.startsWith(`${scheme}:`));
+  });
+}
+
+function hasTurnCredentials(server: StudioIceServer): boolean {
+  return Boolean(server.username && server.credential);
+}
+
+function buildIceConfigStatus(
+  config: StudioIceConfig,
+  source: StudioIceConfigSource
+): StudioIceConfigStatus {
+  const stunServerCount = config.iceServers.filter((server) => hasUrlScheme(server, ['stun', 'stuns'])).length;
+  const turnServers = config.iceServers.filter((server) => hasUrlScheme(server, ['turn', 'turns']));
+  const hasConfiguredTurn = source !== 'default' && turnServers.some(hasTurnCredentials);
+
+  return {
+    source,
+    serverCount: config.iceServers.length,
+    stunServerCount,
+    turnServerCount: turnServers.length,
+    hasTurn: turnServers.length > 0,
+    hasConfiguredTurn,
+    usingFallbackTurn: source === 'default' && turnServers.length > 0,
+    turnReady: hasConfiguredTurn,
+    iceTransportPolicy: config.iceTransportPolicy,
+  };
+}
+
+function withStatus(config: StudioIceConfig, source: StudioIceConfigSource): StudioIceConfigWithStatus {
+  return {
+    ...config,
+    status: buildIceConfigStatus(config, source),
+  };
+}
+
 function parseJsonConfig(value: string | undefined): StudioIceConfig | null {
   if (!value?.trim()) return null;
   try {
@@ -103,9 +164,9 @@ function parseJsonConfig(value: string | undefined): StudioIceConfig | null {
   }
 }
 
-export function buildIceConfigFromEnv(env: NodeJS.ProcessEnv = process.env): StudioIceConfig {
+export function buildIceConfigWithStatusFromEnv(env: NodeJS.ProcessEnv = process.env): StudioIceConfigWithStatus {
   const jsonConfig = parseJsonConfig(env.ICE_SERVERS_JSON);
-  if (jsonConfig) return jsonConfig;
+  if (jsonConfig) return withStatus(jsonConfig, 'ice_servers_json');
 
   const stunUrls = normalizeUrlList(env.STUN_URLS);
   const turnUrls = normalizeUrlList(env.TURN_URLS);
@@ -127,8 +188,18 @@ export function buildIceConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Stu
     });
   }
 
-  return {
+  const config = {
     iceServers: configuredServers.length > 0 ? configuredServers : DEFAULT_ICE_SERVERS,
     iceTransportPolicy: normalizePolicy(env.ICE_TRANSPORT_POLICY),
   };
+  return withStatus(config, configuredServers.length > 0 ? 'split_env' : 'default');
+}
+
+export function buildIceConfigStatusFromEnv(env: NodeJS.ProcessEnv = process.env): StudioIceConfigStatus {
+  return buildIceConfigWithStatusFromEnv(env).status;
+}
+
+export function buildIceConfigFromEnv(env: NodeJS.ProcessEnv = process.env): StudioIceConfig {
+  const { status: _status, ...config } = buildIceConfigWithStatusFromEnv(env);
+  return config;
 }

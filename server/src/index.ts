@@ -6,13 +6,16 @@ import { buildServiceHealthPayload } from '@studio/shared';
 import { setupSignalingServer } from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
-import { buildIceConfigFromEnv } from './services/ice-config.js';
+import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
-const healthPayload = () => buildServiceHealthPayload('signaling-server', process.env);
+const healthPayload = () => ({
+  ...buildServiceHealthPayload('signaling-server', process.env),
+  ice: buildIceConfigStatusFromEnv(process.env),
+});
 
 // Allowed origins for CORS (HTTP) and WebSocket origin checking.
 // CLIENT_URL and CLIENT_URLS accept one URL or a comma-separated list.
@@ -197,7 +200,7 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/ice-config', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json(buildIceConfigFromEnv());
+  res.json(buildIceConfigWithStatusFromEnv());
 });
 
 // Error-handling middleware (must be last in the middleware chain)
