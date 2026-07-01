@@ -226,7 +226,8 @@
 - [ ] CDN for static assets
 - [x] Configurable STUN/TURN ICE config endpoint for WebRTC connectivity
 - [ ] Global TURN servers for reliable connectivity (production provider credentials)
-- [ ] Monitoring: Prometheus + Grafana for stream health metrics
+- [x] Prometheus-compatible `/metrics` endpoints for signaling and RTMP relay health
+- [ ] Grafana dashboards and alerting for stream health metrics
 
 ---
 

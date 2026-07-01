@@ -10,6 +10,7 @@ import type {
   LiveStreamTokenClaims,
 } from '@studio/shared';
 import { getLiveStreamTokenSecret, verifyLiveStreamToken } from './auth.js';
+import { buildMediaRelayPrometheusMetrics } from './metrics.js';
 import { buildAllowedOrigins, isAllowedOrigin } from './origins.js';
 import { parseControlMessage } from './protocol.js';
 import {
@@ -48,6 +49,7 @@ interface RelaySession {
 }
 
 const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
+const sessions = new Map<WebSocket, RelaySession>();
 
 function sendJson(ws: WebSocket, message: RtmpRelayServerMessage) {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -270,6 +272,15 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.url === '/metrics') {
+    res.writeHead(200, {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+    });
+    res.end(buildMediaRelayPrometheusMetrics(sessions));
+    return;
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
 });
@@ -301,6 +312,7 @@ wss.on('connection', (ws) => {
     restartTimers: new Map(),
     restartAttempts: new Map(),
   };
+  sessions.set(ws, session);
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) {
@@ -333,6 +345,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     stopSession(ws, session, 'client disconnected');
+    sessions.delete(ws);
   });
 
   ws.on('error', (err) => {
