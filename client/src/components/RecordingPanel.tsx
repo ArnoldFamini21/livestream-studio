@@ -19,6 +19,7 @@ import {
   selectRecordingTranscriptionCandidate,
   type RecordingTranscriptionResult,
 } from '../utils/recordingTranscription.ts';
+import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
 import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
 
 interface RecordingPanelProps {
@@ -51,6 +52,7 @@ export interface RecordedFile {
   blob: Blob;
   fileName: string;
   kind?: LocalRecordingFileResult['kind'];
+  capture?: RecordingCaptureMetadata;
 }
 
 interface RecordingBundleFile {
@@ -60,6 +62,7 @@ interface RecordingBundleFile {
   size: number;
   type: string;
   kind?: LocalRecordingFileResult['kind'];
+  capture?: RecordingCaptureMetadata;
 }
 
 export interface RecordingBundleSource {
@@ -495,6 +498,7 @@ function mapRecordingLibraryFiles(files: LocalRecordingFileRecord[]): RecordedFi
     blob: file.blob,
     fileName: file.fileName,
     kind: file.kind,
+    capture: file.capture,
   }));
 }
 
@@ -1066,6 +1070,7 @@ function createEditorTimeline(
           fileName: file.fileName,
           type: file.type,
           size: file.size,
+          capture: file.capture || null,
         },
         audioStem: audioStem ? {
           zipPath: audioStem.zipPath,
@@ -1438,6 +1443,7 @@ function createRecordingManifest(
       size: file.size,
       type: file.type,
       kind: file.kind || inferEditorTrackKind(file),
+      ...(file.capture ? { capture: file.capture } : {}),
     })),
     ...(audioStemCandidateCount > 0
       ? {
@@ -1522,6 +1528,7 @@ function createPodcastManifest(
       size: file.size,
       type: file.type,
       kind: 'audio',
+      ...(file.capture ? { capture: file.capture } : {}),
     })),
     audioStems: {
       format: 'wav',
@@ -1691,6 +1698,7 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     size: entry.file.blob.size,
     type: getRecordingFileType(entry.file),
     kind: entry.file.kind,
+    capture: entry.file.capture,
   }));
   const audioStemResult = await buildWavAudioStems(trackEntries, manifestFiles, seenPaths);
   const captionEntries = buildRecordingCaptionEntries(source);
@@ -1814,6 +1822,7 @@ export async function createPodcastAudioBundle(source: RecordingBundleSource): P
     size: entry.file.blob.size,
     type: getRecordingFileType(entry.file),
     kind: 'audio',
+    capture: entry.file.capture,
   }));
   const audioStemResult = await buildWavAudioStems(audioEntries, manifestFiles, seenPaths);
   const captionEntries = buildRecordingCaptionEntries(source);
@@ -2040,6 +2049,7 @@ export function RecordingPanel({
           blob: file.blob,
           fileName: makeRecordingFileName(roomName, file.label, timestamp, index, file.blob),
           kind: file.kind,
+          capture: file.capture,
         }));
 
       setRecordedFiles(files);
@@ -2413,6 +2423,7 @@ export function RecordingPanel({
           blob: file.blob,
           fileName: file.fileName,
           kind: file.kind,
+          capture: file.capture,
         })),
         markers: session.id === activeSessionId ? sortedRecordingMarkers : session.markers,
         ...(session.id === activeSessionId ? { captionSegments, captionLanguage, generatedTranscript } : {}),
@@ -2442,6 +2453,7 @@ export function RecordingPanel({
           blob: file.blob,
           fileName: file.fileName,
           kind: file.kind,
+          capture: file.capture,
         })),
         markers: session.id === activeSessionId ? sortedRecordingMarkers : session.markers,
         ...(session.id === activeSessionId ? { captionSegments, captionLanguage, generatedTranscript } : {}),

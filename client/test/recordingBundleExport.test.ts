@@ -181,6 +181,57 @@ describe('recording bundle editor export', () => {
     assert.match(text, /<asset id="asset1" name="Host ISO"/);
   });
 
+  it('exports capture metadata for editor and stitching workflows', async () => {
+    const bundle = await createRecordingBundle({
+      ...source,
+      files: [
+        {
+          label: 'Host ISO',
+          fileName: 'host-iso.webm',
+          blob: new Blob(['iso-track'], { type: 'video/webm' }),
+          kind: 'iso',
+          capture: {
+            sourceId: 'host-iso',
+            sourceKind: 'iso',
+            sourceLabel: 'Host ISO',
+            mimeType: 'video/webm;codecs=vp9,opus',
+            requestedBitsPerSecond: 8500000,
+            startedAt: '2026-06-11T10:00:00.000Z',
+            stoppedAt: '2026-06-11T10:01:05.000Z',
+            durationMs: 65000,
+            trackCount: 2,
+            tracks: [
+              {
+                kind: 'video',
+                label: 'Camera',
+                readyState: 'live',
+                enabled: true,
+                muted: false,
+                settings: { width: 1920, height: 1080, frameRate: 30 },
+              },
+              {
+                kind: 'audio',
+                label: 'Mic',
+                readyState: 'live',
+                enabled: true,
+                muted: false,
+                settings: { sampleRate: 48000, channelCount: 1 },
+              },
+            ],
+          },
+        },
+      ],
+    } as any);
+    const text = new TextDecoder().decode(await bundle.arrayBuffer());
+
+    assert.match(text, /"capture"/);
+    assert.match(text, /"sourceId": "host-iso"/);
+    assert.match(text, /"requestedBitsPerSecond": 8500000/);
+    assert.match(text, /"durationMs": 65000/);
+    assert.match(text, /"width": 1920/);
+    assert.match(text, /"capture": \{/);
+  });
+
   it('creates podcast audio bundles without video tracks', async () => {
     const bundle = await createPodcastAudioBundle({
       ...source,
