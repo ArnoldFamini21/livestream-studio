@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  buildRecordingDriveRetentionManifest,
   buildGeneratedRecordingTranscriptText,
   createRecordingDriveHandoffFiles,
   buildDaVinciResolveXml,
@@ -294,6 +295,40 @@ describe('recording bundle editor export', () => {
     const podcastBundleText = new TextDecoder().decode(await handoffFiles[3].blob.arrayBuffer());
     assert.match(podcastBundleText, /podcast-audio-bundle/);
     assert.match(podcastBundleText, /audio-tracks\/01_host-audio\.webm/);
+  });
+
+  it('adds a portable Google Drive retention manifest to handoff files', async () => {
+    const retention = {
+      policyId: 'cloud-30-days' as const,
+      label: '30-day cloud handoff',
+      uploadedAt: '2026-06-11T10:05:00.000Z',
+      expiresAt: '2026-07-11T10:05:00.000Z',
+      permanent: false,
+    };
+    const manifest = buildRecordingDriveRetentionManifest(source, retention);
+    const handoffFiles = await createRecordingDriveHandoffFiles({
+      ...source,
+      files: [
+        {
+          label: 'Host Camera',
+          fileName: 'host.webm',
+          blob: new Blob(['video-track'], { type: 'video/webm' }),
+          kind: 'video',
+        },
+      ],
+    } as any, retention);
+
+    assert.match(manifest, /google-drive-retention-policy/);
+    assert.match(manifest, /2026-07-11T10:05:00\.000Z/);
+    assert.deepEqual(
+      handoffFiles.map((file) => file.label),
+      ['Host Camera', 'Editor bundle ZIP', 'Drive retention manifest']
+    );
+    assert.match(handoffFiles[2].fileName, /Launch__Demo__&_Review_drive_retention_2026-06-11-10-00-00\.json/);
+    assert.match(
+      new TextDecoder().decode(await handoffFiles[2].blob.arrayBuffer()),
+      /Review or remove this Drive handoff after 2026-07-11T10:05:00\.000Z/
+    );
   });
 
   it('omits the podcast handoff ZIP when no audio track exists', async () => {

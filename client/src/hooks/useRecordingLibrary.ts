@@ -33,6 +33,28 @@ export interface LocalRecordingMarker {
   createdAt: string;
 }
 
+export type RecordingCloudRetentionPolicyId = 'cloud-30-days' | 'cloud-permanent';
+
+export interface RecordingCloudRetentionPolicy {
+  id: RecordingCloudRetentionPolicyId;
+  label: string;
+  description: string;
+  expiresAfterDays: number | null;
+  permanent: boolean;
+}
+
+export interface RecordingCloudHandoff {
+  provider: 'google-drive';
+  folderId: string;
+  webViewLink: string;
+  uploadedAt: string;
+  expiresAt: string | null;
+  retentionPolicyId: RecordingCloudRetentionPolicyId;
+  permanent: boolean;
+  fileCount: number;
+  totalBytes: number;
+}
+
 export interface LocalRecordingSession {
   id: string;
   roomName: string;
@@ -42,6 +64,7 @@ export interface LocalRecordingSession {
   durationSeconds: number | null;
   files: LocalRecordingFileMetadata[];
   markers?: LocalRecordingMarker[];
+  cloud?: RecordingCloudHandoff;
 }
 
 interface SaveRecordingSessionInput {
@@ -52,6 +75,46 @@ interface SaveRecordingSessionInput {
 }
 
 type LocalRecordingTrackKind = 'audio' | 'video' | 'screen' | 'program' | 'iso';
+
+export const DEFAULT_RECORDING_CLOUD_RETENTION_POLICY_ID: RecordingCloudRetentionPolicyId = 'cloud-30-days';
+
+export const RECORDING_CLOUD_RETENTION_POLICIES: RecordingCloudRetentionPolicy[] = [
+  {
+    id: 'cloud-30-days',
+    label: '30-day cloud handoff',
+    description: 'Mark this Drive folder for review or removal 30 days after upload.',
+    expiresAfterDays: 30,
+    permanent: false,
+  },
+  {
+    id: 'cloud-permanent',
+    label: 'Permanent cloud archive',
+    description: 'Keep this Drive folder as a permanent production archive.',
+    expiresAfterDays: null,
+    permanent: true,
+  },
+];
+
+export function getRecordingCloudRetentionPolicy(
+  policyId: unknown
+): RecordingCloudRetentionPolicy {
+  return (
+    RECORDING_CLOUD_RETENTION_POLICIES.find((policy) => policy.id === policyId) ||
+    RECORDING_CLOUD_RETENTION_POLICIES.find((policy) => policy.id === DEFAULT_RECORDING_CLOUD_RETENTION_POLICY_ID) ||
+    RECORDING_CLOUD_RETENTION_POLICIES[0]
+  );
+}
+
+export function getRecordingCloudRetentionExpiresAt(
+  policyId: unknown,
+  uploadedAt: string
+): string | null {
+  const policy = getRecordingCloudRetentionPolicy(policyId);
+  if (policy.expiresAfterDays === null) return null;
+  const uploadedAtMs = Date.parse(uploadedAt);
+  if (!Number.isFinite(uploadedAtMs)) return null;
+  return new Date(uploadedAtMs + policy.expiresAfterDays * 24 * 60 * 60 * 1000).toISOString();
+}
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -176,6 +239,25 @@ async function deleteRecordingSession(sessionId: string): Promise<void> {
   }
 }
 
+async function updateRecordingSessionCloudHandoff(
+  sessionId: string,
+  cloud: RecordingCloudHandoff
+): Promise<LocalRecordingSession> {
+  const db = await openRecordingDb();
+  try {
+    const transaction = db.transaction(SESSION_STORE, 'readwrite');
+    const store = transaction.objectStore(SESSION_STORE);
+    const session = await requestToPromise<LocalRecordingSession | undefined>(store.get(sessionId));
+    if (!session) throw new Error('Recording session not found');
+    const nextSession: LocalRecordingSession = { ...session, cloud };
+    store.put(nextSession);
+    await transactionDone(transaction);
+    return nextSession;
+  } finally {
+    db.close();
+  }
+}
+
 export function useRecordingLibrary() {
   const [sessions, setSessions] = useState<LocalRecordingSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -212,6 +294,12 @@ export function useRecordingLibrary() {
 
   const loadFiles = useCallback((sessionId: string) => getRecordingFiles(sessionId), []);
 
+  const updateSessionCloudHandoff = useCallback(async (sessionId: string, cloud: RecordingCloudHandoff) => {
+    const session = await updateRecordingSessionCloudHandoff(sessionId, cloud);
+    setSessions((current) => current.map((item) => (item.id === sessionId ? session : item)));
+    return session;
+  }, []);
+
   return {
     sessions,
     isLoading,
@@ -220,5 +308,6 @@ export function useRecordingLibrary() {
     saveSession,
     deleteSession,
     loadFiles,
+    updateSessionCloudHandoff,
   };
 }

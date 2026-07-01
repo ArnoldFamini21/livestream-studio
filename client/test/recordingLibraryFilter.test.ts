@@ -6,8 +6,10 @@ import {
   buildRecordingLibraryCatalogCsv,
   buildRecordingLibraryCatalogFilename,
   filterRecordingLibrarySessions,
+  getRecordingCloudRetentionLabel,
   isPreviewableRecordingFile,
 } from '../src/components/RecordingPanel.tsx';
+import { getRecordingCloudRetentionExpiresAt } from '../src/hooks/useRecordingLibrary.ts';
 
 const sessions: LocalRecordingSession[] = [
   {
@@ -70,6 +72,17 @@ const sessions: LocalRecordingSession[] = [
       },
     ],
     markers: [],
+    cloud: {
+      provider: 'google-drive',
+      folderId: 'drive-folder-123',
+      webViewLink: 'https://drive.google.com/drive/folders/drive-folder-123',
+      uploadedAt: '2026-06-02T16:00:00.000Z',
+      expiresAt: '2026-07-02T16:00:00.000Z',
+      retentionPolicyId: 'cloud-30-days',
+      permanent: false,
+      fileCount: 4,
+      totalBytes: 4096,
+    },
   },
   {
     id: 'recording-3',
@@ -173,6 +186,19 @@ describe('recording library filters', () => {
     );
   });
 
+  it('filters and searches cloud recording handoffs', () => {
+    assert.deepEqual(
+      filterRecordingLibrarySessions(sessions, '', 'cloud').map((session) => session.id),
+      ['recording-2']
+    );
+    assert.deepEqual(
+      filterRecordingLibrarySessions(sessions, '30-day cloud handoff drive-folder-123', 'all').map((session) => session.id),
+      ['recording-2']
+    );
+    assert.equal(getRecordingCloudRetentionExpiresAt('cloud-30-days', '2026-06-02T16:00:00.000Z'), '2026-07-02T16:00:00.000Z');
+    assert.match(getRecordingCloudRetentionLabel(sessions[1].cloud), /^Expires /);
+  });
+
   it('summarizes the saved recording dashboard totals', () => {
     const filtered = filterRecordingLibrarySessions(sessions, '', 'screen');
     const summary = buildRecordingLibraryDashboardSummary(sessions, filtered);
@@ -184,6 +210,9 @@ describe('recording library filters', () => {
       totalBytes: 5888,
       totalDurationSeconds: 7800,
       markerCount: 1,
+      cloudSessionCount: 1,
+      expiringCloudSessionCount: 1,
+      permanentCloudSessionCount: 0,
       latestSession: {
         id: 'recording-5',
         roomName: 'Founder Interview',
@@ -213,8 +242,16 @@ describe('recording library filters', () => {
 
     assert.equal(lines.length, 4);
     assert.match(lines[0], /sessionId,roomName,createdAt,durationTimecode/);
-    assert.match(lines[1], /recording-1,Weekly Launch Show,2026-06-01T12:00:00\.000Z,30:00,1800,3,1024,1,7:00 Product demo,1,Host audio,audio,weekly_launch_host_audio\.webm,audio\/webm,256/);
+    assert.match(lines[0], /cloudProvider,cloudFolderId,cloudShareLink,cloudUploadedAt,cloudRetentionPolicy,cloudExpiresAt,cloudPermanent/);
+    assert.match(lines[1], /recording-1,Weekly Launch Show,2026-06-01T12:00:00\.000Z,30:00,1800,3,1024,1,7:00 Product demo,,,,,,,,1,Host audio,audio,weekly_launch_host_audio\.webm,audio\/webm,256/);
     assert.match(lines[3], /Deck screen,screen,weekly_launch_deck_screen\.webm/);
+  });
+
+  it('exports cloud retention metadata in the recording library catalog', () => {
+    const csv = buildRecordingLibraryCatalogCsv([sessions[1]]);
+
+    assert.match(csv, /google-drive,drive-folder-123,https:\/\/drive\.google\.com\/drive\/folders\/drive-folder-123/);
+    assert.match(csv, /2026-06-02T16:00:00\.000Z,30-day cloud handoff,2026-07-02T16:00:00\.000Z,false/);
   });
 
   it('escapes catalog CSV cells and builds deterministic filenames', () => {

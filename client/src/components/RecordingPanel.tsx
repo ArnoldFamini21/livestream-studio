@@ -3,7 +3,13 @@ import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { LocalRecordingFileResult, RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
 import {
+  DEFAULT_RECORDING_CLOUD_RETENTION_POLICY_ID,
+  RECORDING_CLOUD_RETENTION_POLICIES,
+  getRecordingCloudRetentionExpiresAt,
+  getRecordingCloudRetentionPolicy,
   useRecordingLibrary,
+  type RecordingCloudHandoff,
+  type RecordingCloudRetentionPolicyId,
   type LocalRecordingFileRecord,
   type LocalRecordingSession,
 } from '../hooks/useRecordingLibrary';
@@ -68,6 +74,14 @@ export interface RecordingBundleSource {
   generatedTranscript?: RecordingTranscriptionResult | null;
 }
 
+export interface RecordingDriveRetentionManifest {
+  policyId: RecordingCloudRetentionPolicyId;
+  label: string;
+  uploadedAt: string;
+  expiresAt: string | null;
+  permanent: boolean;
+}
+
 interface RecordingCaptionFile {
   label: string;
   format: 'txt' | 'vtt';
@@ -119,7 +133,7 @@ interface AudioStemBuildResult {
   candidateCount: number;
 }
 
-export type RecordingLibraryFilter = 'all' | 'audio' | 'video' | 'screen' | 'program' | 'iso' | 'markers';
+export type RecordingLibraryFilter = 'all' | 'audio' | 'video' | 'screen' | 'program' | 'iso' | 'markers' | 'cloud';
 
 const RECORDING_LIBRARY_FILTERS: Array<{ value: RecordingLibraryFilter; label: string }> = [
   { value: 'all', label: 'All' },
@@ -129,6 +143,7 @@ const RECORDING_LIBRARY_FILTERS: Array<{ value: RecordingLibraryFilter; label: s
   { value: 'program', label: 'Program' },
   { value: 'iso', label: 'ISO' },
   { value: 'markers', label: 'Marked' },
+  { value: 'cloud', label: 'Cloud' },
 ];
 
 export interface RecordingLibraryDashboardSummary {
@@ -138,6 +153,9 @@ export interface RecordingLibraryDashboardSummary {
   totalBytes: number;
   totalDurationSeconds: number;
   markerCount: number;
+  cloudSessionCount: number;
+  expiringCloudSessionCount: number;
+  permanentCloudSessionCount: number;
   latestSession: Pick<LocalRecordingSession, 'id' | 'roomName' | 'createdAt'> | null;
 }
 
@@ -395,12 +413,57 @@ function makePodcastBundleFileName(roomName: string, createdAt: string): string 
   return `${roomPrefix}_podcast_audio_${timestamp}.zip`;
 }
 
+function makeDriveRetentionManifestFileName(roomName: string, createdAt: string): string {
+  const roomPrefix = sanitizeFileName(roomName, 'studio');
+  const timestamp = createdAt.slice(0, 19).replace(/[:T]/g, '-');
+  return `${roomPrefix}_drive_retention_${timestamp}.json`;
+}
+
+export function getRecordingCloudRetentionLabel(cloud: RecordingCloudHandoff | undefined): string {
+  if (!cloud) return 'Local only';
+  const policy = getRecordingCloudRetentionPolicy(cloud.retentionPolicyId);
+  if (cloud.permanent) return policy.label;
+  if (cloud.expiresAt) return `Expires ${formatDateTime(cloud.expiresAt)}`;
+  return policy.label;
+}
+
+export function buildRecordingDriveRetentionManifest(
+  source: RecordingBundleSource,
+  retention: RecordingDriveRetentionManifest
+): string {
+  return JSON.stringify({
+    app: 'livestream-studio',
+    exportType: 'google-drive-retention-policy',
+    version: 1,
+    roomName: source.roomName,
+    sessionId: source.sessionId,
+    recordingCreatedAt: source.createdAt,
+    uploadedAt: retention.uploadedAt,
+    policy: {
+      id: retention.policyId,
+      label: retention.label,
+      permanent: retention.permanent,
+      expiresAt: retention.expiresAt,
+    },
+    review: retention.expiresAt
+      ? `Review or remove this Drive handoff after ${retention.expiresAt}.`
+      : 'Permanent cloud archive. Keep this Drive handoff until manually removed.',
+  }, null, 2);
+}
+
 function getRecordingSessionSearchText(session: LocalRecordingSession): string {
   return [
     session.roomName,
     session.createdAt,
     new Date(session.createdAt).toLocaleString(),
     formatDuration(session.durationSeconds),
+    session.cloud?.provider || '',
+    session.cloud?.folderId || '',
+    session.cloud?.webViewLink || '',
+    session.cloud?.uploadedAt || '',
+    session.cloud?.expiresAt || '',
+    session.cloud ? getRecordingCloudRetentionPolicy(session.cloud.retentionPolicyId).label : '',
+    session.cloud ? getRecordingCloudRetentionLabel(session.cloud) : '',
     ...session.files.flatMap((file) => [
       file.label,
       file.fileName,
@@ -417,6 +480,7 @@ function getRecordingSessionSearchText(session: LocalRecordingSession): string {
 function sessionMatchesRecordingFilter(session: LocalRecordingSession, filter: RecordingLibraryFilter): boolean {
   if (filter === 'all') return true;
   if (filter === 'markers') return Boolean(session.markers?.length);
+  if (filter === 'cloud') return Boolean(session.cloud);
   if (filter === 'video') return session.files.some((file) => file.kind === 'video' || file.kind === 'program' || file.kind === 'iso');
   return session.files.some((file) => file.kind === filter);
 }
@@ -467,6 +531,9 @@ export function buildRecordingLibraryDashboardSummary(
       return total + Math.max(0, Number(session.durationSeconds));
     }, 0)),
     markerCount: sessions.reduce((total, session) => total + (session.markers?.length || 0), 0),
+    cloudSessionCount: sessions.reduce((total, session) => total + (session.cloud ? 1 : 0), 0),
+    expiringCloudSessionCount: sessions.reduce((total, session) => total + (session.cloud && !session.cloud.permanent ? 1 : 0), 0),
+    permanentCloudSessionCount: sessions.reduce((total, session) => total + (session.cloud?.permanent ? 1 : 0), 0),
     latestSession: latestSession
       ? {
           id: latestSession.id,
@@ -763,6 +830,13 @@ export function buildRecordingLibraryCatalogCsv(sessions: LocalRecordingSession[
     'totalBytes',
     'markerCount',
     'markers',
+    'cloudProvider',
+    'cloudFolderId',
+    'cloudShareLink',
+    'cloudUploadedAt',
+    'cloudRetentionPolicy',
+    'cloudExpiresAt',
+    'cloudPermanent',
     'trackIndex',
     'trackLabel',
     'trackKind',
@@ -782,6 +856,13 @@ export function buildRecordingLibraryCatalogCsv(sessions: LocalRecordingSession[
       session.totalBytes,
       markers.length,
       getRecordingLibraryMarkerSummary(session),
+      session.cloud?.provider || '',
+      session.cloud?.folderId || '',
+      session.cloud?.webViewLink || '',
+      session.cloud?.uploadedAt ? formatIsoTimestamp(session.cloud.uploadedAt) : '',
+      session.cloud ? getRecordingCloudRetentionPolicy(session.cloud.retentionPolicyId).label : '',
+      session.cloud?.expiresAt ? formatIsoTimestamp(session.cloud.expiresAt) : '',
+      session.cloud ? String(session.cloud.permanent) : '',
     ];
     if (session.files.length === 0) return [[...base, '', '', '', '', '', '']];
     return session.files.map((file, index) => [
@@ -1793,7 +1874,10 @@ export async function createPodcastAudioBundle(source: RecordingBundleSource): P
   ]);
 }
 
-export async function createRecordingDriveHandoffFiles(source: RecordingBundleSource): Promise<RecordedFile[]> {
+export async function createRecordingDriveHandoffFiles(
+  source: RecordingBundleSource,
+  retention?: RecordingDriveRetentionManifest
+): Promise<RecordedFile[]> {
   const uploadFiles = source.files.filter((file) => file.blob.size > 0);
   const editorBundle = await createRecordingBundle(source);
   const handoffFiles: RecordedFile[] = [
@@ -1811,6 +1895,14 @@ export async function createRecordingDriveHandoffFiles(source: RecordingBundleSo
       label: 'Podcast audio ZIP',
       blob: podcastBundle,
       fileName: makePodcastBundleFileName(source.roomName, source.createdAt),
+    });
+  }
+
+  if (retention) {
+    handoffFiles.push({
+      label: 'Drive retention manifest',
+      blob: new Blob([buildRecordingDriveRetentionManifest(source, retention)], { type: 'application/json' }),
+      fileName: makeDriveRetentionManifestFileName(source.roomName, source.createdAt),
     });
   }
 
@@ -1856,6 +1948,9 @@ export function RecordingPanel({
   const [driveUploadMessage, setDriveUploadMessage] = useState<string | null>(null);
   const [driveUploadError, setDriveUploadError] = useState<string | null>(null);
   const [driveLinkCopied, setDriveLinkCopied] = useState(false);
+  const [driveRetentionPolicyId, setDriveRetentionPolicyId] = useState<RecordingCloudRetentionPolicyId>(
+    DEFAULT_RECORDING_CLOUD_RETENTION_POLICY_ID
+  );
   const [generatedTranscript, setGeneratedTranscript] = useState<RecordingTranscriptionResult | null>(null);
   const [isGeneratingTranscript, setIsGeneratingTranscript] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
@@ -1876,6 +1971,7 @@ export function RecordingPanel({
     saveSession,
     deleteSession,
     loadFiles,
+    updateSessionCloudHandoff,
   } = useRecordingLibrary();
   const visibleTrackLabels = recordingTrackLabels.length > 0
     ? recordingTrackLabels
@@ -1906,6 +2002,10 @@ export function RecordingPanel({
     markerCount,
     captionCount: finalCaptionCount,
   }), [finalCaptionCount, lastRecordingDurationSeconds, markerCount, recordedFiles]);
+  const driveRetentionPolicy = useMemo(
+    () => getRecordingCloudRetentionPolicy(driveRetentionPolicyId),
+    [driveRetentionPolicyId]
+  );
 
   useEffect(() => {
     return () => {
@@ -2139,11 +2239,20 @@ export function RecordingPanel({
       markers: sortedRecordingMarkers,
       generatedTranscript,
     };
+    const uploadedAt = new Date().toISOString();
+    const retentionPolicy = getRecordingCloudRetentionPolicy(driveRetentionPolicyId);
+    const retentionManifest: RecordingDriveRetentionManifest = {
+      policyId: retentionPolicy.id,
+      label: retentionPolicy.label,
+      uploadedAt,
+      expiresAt: getRecordingCloudRetentionExpiresAt(retentionPolicy.id, uploadedAt),
+      permanent: retentionPolicy.permanent,
+    };
 
     let uploadFiles: RecordedFile[];
     try {
       setDriveUploadMessage('Preparing editor bundles for Google Drive...');
-      uploadFiles = await createRecordingDriveHandoffFiles(source);
+      uploadFiles = await createRecordingDriveHandoffFiles(source, retentionManifest);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to prepare Google Drive upload bundle.';
       setDriveUploadError(message);
@@ -2181,9 +2290,26 @@ export function RecordingPanel({
     }
 
     setDriveShareLink(shareResult.webViewLink);
-    setDriveUploadMessage(`Uploaded ${uploadFiles.length} files to Google Drive. Share link is ready.`);
+    const cloudHandoff: RecordingCloudHandoff = {
+      provider: 'google-drive',
+      folderId: shareResult.folderId || folderId,
+      webViewLink: shareResult.webViewLink,
+      uploadedAt,
+      expiresAt: retentionManifest.expiresAt,
+      retentionPolicyId: retentionManifest.policyId,
+      permanent: retentionManifest.permanent,
+      fileCount: uploadFiles.length,
+      totalBytes: uploadFiles.reduce((total, file) => total + file.blob.size, 0),
+    };
+    if (activeSession?.id) {
+      await updateSessionCloudHandoff(activeSession.id, cloudHandoff);
+    }
+    const retentionLabel = retentionManifest.permanent
+      ? 'permanent archive'
+      : `expires ${formatDateTime(retentionManifest.expiresAt || uploadedAt)}`;
+    setDriveUploadMessage(`Uploaded ${uploadFiles.length} files to Google Drive. Share link is ready; ${retentionLabel}.`);
     console.log('All files uploaded to Google Drive');
-  }, [activeSessionId, authorize, captionLanguage, captionSegments, createFolder, createShareLink, formattedTime, generatedTranscript, isAuthorized, recordedFiles, roomName, sessions, sortedRecordingMarkers, uploadFile]);
+  }, [activeSessionId, authorize, captionLanguage, captionSegments, createFolder, createShareLink, driveRetentionPolicyId, formattedTime, generatedTranscript, isAuthorized, recordedFiles, roomName, sessions, sortedRecordingMarkers, updateSessionCloudHandoff, uploadFile]);
 
   const handleCopyDriveShareLink = useCallback(async () => {
     if (!driveShareLink) return;
@@ -2704,6 +2830,21 @@ export function RecordingPanel({
               <div style={styles.captionSidecarNote}>
                 Google Drive uploads include original tracks plus an editor ZIP and a podcast ZIP when audio is available.
               </div>
+              <div style={styles.driveRetentionCard}>
+                <label style={styles.driveRetentionLabel} htmlFor="recording-drive-retention">Drive retention</label>
+                <select
+                  id="recording-drive-retention"
+                  style={styles.driveRetentionSelect}
+                  value={driveRetentionPolicyId}
+                  onChange={(event) => setDriveRetentionPolicyId(event.target.value as RecordingCloudRetentionPolicyId)}
+                  disabled={isUploading}
+                >
+                  {RECORDING_CLOUD_RETENTION_POLICIES.map((policy) => (
+                    <option key={policy.id} value={policy.id}>{policy.label}</option>
+                  ))}
+                </select>
+                <span style={styles.driveRetentionDescription}>{driveRetentionPolicy.description}</span>
+              </div>
               <button
                 className="hover-lift"
                 style={{
@@ -2868,6 +3009,10 @@ export function RecordingPanel({
                 <span style={styles.libraryStatLabel}>Storage</span>
                 <span style={styles.libraryStatValue}>{formatFileSize(libraryDashboard.totalBytes)}</span>
               </div>
+              <div style={styles.libraryStat}>
+                <span style={styles.libraryStatLabel}>Cloud</span>
+                <span style={styles.libraryStatValue}>{libraryDashboard.cloudSessionCount}</span>
+              </div>
               <div style={styles.libraryDashboardFooter}>
                 <span style={styles.libraryLatestLabel}>Latest</span>
                 <span style={styles.libraryLatestValue}>
@@ -2877,6 +3022,9 @@ export function RecordingPanel({
                 </span>
                 <span style={styles.libraryLatestLabel}>
                   {libraryDashboard.markerCount} mark{libraryDashboard.markerCount === 1 ? '' : 's'}
+                </span>
+                <span style={styles.libraryLatestLabel}>
+                  {libraryDashboard.expiringCloudSessionCount} expiring / {libraryDashboard.permanentCloudSessionCount} permanent
                 </span>
               </div>
             </div>
@@ -2930,23 +3078,38 @@ export function RecordingPanel({
             const sessionTracks = libraryTrackFiles[session.id];
             const trackError = libraryTrackError?.sessionId === session.id ? libraryTrackError.message : null;
             return (
-              <div key={session.id} style={{ ...styles.sessionCard, ...(isActive ? styles.sessionCardActive : {}) }}>
-                <div style={styles.sessionTop}>
-                  <div style={styles.sessionInfo}>
-                    <span style={styles.sessionName}>{session.roomName}</span>
-                    <span style={styles.sessionMeta}>
-                      {formatDateTime(session.createdAt)} | {formatDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'} | {session.markers?.length || 0} mark{(session.markers?.length || 0) === 1 ? '' : 's'} | {formatFileSize(session.totalBytes)}
-                    </span>
+                <div key={session.id} style={{ ...styles.sessionCard, ...(isActive ? styles.sessionCardActive : {}) }}>
+                  <div style={styles.sessionTop}>
+                    <div style={styles.sessionInfo}>
+                      <span style={styles.sessionName}>{session.roomName}</span>
+                      <span style={styles.sessionMeta}>
+                        {formatDateTime(session.createdAt)} | {formatDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'} | {session.markers?.length || 0} mark{(session.markers?.length || 0) === 1 ? '' : 's'} | {formatFileSize(session.totalBytes)}
+                      </span>
+                      {session.cloud && (
+                        <span style={styles.sessionCloudMeta}>
+                          Google Drive | {getRecordingCloudRetentionLabel(session.cloud)} | {session.cloud.fileCount} file{session.cloud.fileCount === 1 ? '' : 's'}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div style={styles.sessionActions}>
-                  <button
-                    style={styles.sessionBtn}
-                    onClick={() => handleDownloadSessionBundle(session)}
-                    disabled={isBusy}
-                  >
-                    {isBusy ? 'Working...' : 'ZIP'}
-                  </button>
+                  <div style={styles.sessionActions}>
+                    {session.cloud?.webViewLink && (
+                      <button
+                        style={styles.sessionBtn}
+                        onClick={() => window.open(session.cloud?.webViewLink, '_blank', 'noopener,noreferrer')}
+                        disabled={isBusy}
+                        title="Open Google Drive handoff"
+                      >
+                        Cloud
+                      </button>
+                    )}
+                    <button
+                      style={styles.sessionBtn}
+                      onClick={() => handleDownloadSessionBundle(session)}
+                      disabled={isBusy}
+                    >
+                      {isBusy ? 'Working...' : 'ZIP'}
+                    </button>
                   <button
                     style={{
                       ...styles.sessionBtn,
@@ -3805,6 +3968,37 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
   },
+  driveRetentionCard: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr)',
+    gap: 6,
+    padding: '8px 9px',
+    borderRadius: 8,
+    border: '1px solid rgba(66, 133, 244, 0.24)',
+    background: 'rgba(66, 133, 244, 0.08)',
+  },
+  driveRetentionLabel: {
+    fontSize: 10,
+    fontWeight: 800,
+    color: '#bfdbfe',
+    textTransform: 'uppercase' as const,
+  },
+  driveRetentionSelect: {
+    width: '100%',
+    minHeight: 32,
+    borderRadius: 7,
+    border: '1px solid rgba(147, 197, 253, 0.34)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
+    padding: '0 9px',
+    fontSize: 12,
+    outline: 'none',
+  },
+  driveRetentionDescription: {
+    fontSize: 10,
+    color: '#bfdbfe',
+    lineHeight: 1.35,
+  },
   driveShareBox: {
     display: 'flex',
     alignItems: 'center',
@@ -3858,7 +4052,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   libraryDashboard: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(76px, 1fr))',
     gap: 6,
     padding: 8,
     borderRadius: 8,
@@ -3890,7 +4084,7 @@ const styles: Record<string, React.CSSProperties> = {
     gridColumn: '1 / -1',
     minWidth: 0,
     display: 'grid',
-    gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+    gridTemplateColumns: 'auto minmax(0, 1fr) auto auto',
     gap: 6,
     alignItems: 'center',
     paddingTop: 6,
@@ -3939,7 +4133,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   libraryFilterRow: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(58px, 1fr))',
     gap: 4,
   },
   libraryFilterBtn: {
@@ -3997,9 +4191,15 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)',
     lineHeight: 1.35,
   },
+  sessionCloudMeta: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#bfdbfe',
+    lineHeight: 1.35,
+  },
   sessionActions: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(58px, 1fr))',
     gap: 6,
   },
   sessionBtn: {
