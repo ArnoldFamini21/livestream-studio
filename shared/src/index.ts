@@ -686,12 +686,21 @@ export interface RecordingExportSessionRequest {
 export type RecordingExportJobStatusValue = 'queued' | 'running' | 'ready' | 'error';
 export type RecordingExportArtifactFormat = 'mp4' | 'wav' | 'mp3' | 'json';
 
+export interface RecordingExportArtifactStorage {
+  provider: 's3';
+  bucket: string;
+  key: string;
+  url?: string;
+  uploadedAt?: string;
+}
+
 export interface RecordingExportArtifactStatus {
   id: string;
   label: string;
   format: RecordingExportArtifactFormat;
   status: RecordingExportJobStatusValue;
   bytes?: number;
+  storage?: RecordingExportArtifactStorage;
   error?: string;
 }
 
