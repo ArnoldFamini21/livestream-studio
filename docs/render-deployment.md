@@ -65,6 +65,22 @@ RECORDING_STORAGE_PUBLIC_BASE_URL=<optional CDN/public base URL>
 
 The export job still streams downloads from the media server, but job status and manifest JSON include the durable `s3` bucket/key for every uploaded artifact.
 
+## Static Client CDN Caching
+
+The Hostinger client deploy includes `client/public/.htaccess`, which is copied into `client/dist` by Vite. It sets:
+
+- HTML/SPA responses: `Cache-Control: no-cache, no-store, must-revalidate` so browsers discover new deploys promptly
+- hashed build assets under `assets/`: `Cache-Control: public, max-age=31536000, immutable` so JS/CSS chunks can be cached at CDN/browser edge for one year
+- SPA rewrites back to `index.html` for deep studio and join links
+
+After a static deploy, verify the cache contract with:
+
+```sh
+PRODUCTION_CHECK_SCOPE=client \
+PRODUCTION_REQUIRE_CLIENT_CACHE=true \
+npm run production:check
+```
+
 ## GitHub Deploy Hooks
 
 The Hostinger workflow builds all workspaces and deploys the client to the `deploy` branch. To make the same merge trigger Render deploys, create deploy hooks in Render for both web services and add these GitHub repository secrets:
@@ -76,7 +92,7 @@ RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL=<deploy hook URL for livestream-studio-media
 
 When these secrets are missing, GitHub Actions still deploys the static client but logs notices that the Render deploy triggers were skipped.
 
-When both deploy hook secrets are present, the workflow waits for production verification after the Hostinger deploy. It runs `npm run production:check` with the pushed commit SHA and polls for up to 15 minutes until both Render services report the new commit in `/health`.
+Every deploy verifies the static client cache headers after publishing to Hostinger. When both deploy hook secrets are present, the workflow also waits for Render service verification after the Hostinger deploy. It runs `npm run production:check` with the pushed commit SHA and polls for up to 15 minutes until both Render services report the new commit in `/health`.
 
 ## Production Smoke Check
 
@@ -104,9 +120,12 @@ npm run production:check
 The check verifies:
 
 - `https://studio.arnoldfamini.com` serves a built client bundle
+- client HTML and hashed assets send CDN-ready cache headers when `PRODUCTION_REQUIRE_CLIENT_CACHE=true`
 - `https://livestream-studio-server.onrender.com/health` reports `service: "signaling-server"`
 - `https://livestream-studio-media-server.onrender.com/health` reports `service: "media-server"`
 - both services report the expected deployment commit when `EXPECTED_COMMIT` is set
+
+Use `PRODUCTION_CHECK_SCOPE=client` to check only the Hostinger client, or `PRODUCTION_CHECK_SCOPE=services` to check only Render health metadata.
 
 To fail the check unless production TURN credentials are configured:
 
