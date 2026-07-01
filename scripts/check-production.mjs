@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { pathToFileURL } from 'node:url';
+
 const DEFAULT_CLIENT_URL = 'https://studio.arnoldfamini.com';
 const DEFAULT_API_URL = 'https://livestream-studio-server.onrender.com';
 const DEFAULT_MEDIA_HTTP_URL = 'https://livestream-studio-media-server.onrender.com';
@@ -10,6 +12,8 @@ const expectedCommit = normalizeSha(process.env.EXPECTED_COMMIT || process.env.G
 const waitMs = parseNonNegativeInt(process.env.PRODUCTION_CHECK_WAIT_MS, 0);
 const intervalMs = parsePositiveInt(process.env.PRODUCTION_CHECK_INTERVAL_MS, 15_000);
 const requireProductionTurn = parseBoolean(process.env.PRODUCTION_REQUIRE_TURN || process.env.REQUIRE_PRODUCTION_TURN);
+const requireClientCache = parseBoolean(process.env.PRODUCTION_REQUIRE_CLIENT_CACHE || process.env.REQUIRE_CLIENT_CACHE);
+const checkScope = normalizeProductionCheckScope(process.env.PRODUCTION_CHECK_SCOPE || 'all');
 
 function trimUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
@@ -34,6 +38,14 @@ function parseBoolean(value) {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim());
 }
 
+export function normalizeProductionCheckScope(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'client' || normalized === 'static') return 'client';
+  if (normalized === 'services' || normalized === 'server') return 'services';
+  if (!normalized || normalized === 'all') return 'all';
+  throw new Error(`Unsupported PRODUCTION_CHECK_SCOPE ${JSON.stringify(value)}. Use client, services, or all.`);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -42,6 +54,11 @@ async function fetchText(url) {
   const response = await fetch(url, { redirect: 'follow' });
   const text = await response.text();
   return { response, text };
+}
+
+async function fetchHeaders(url) {
+  const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+  return response;
 }
 
 async function fetchJson(url) {
@@ -95,12 +112,63 @@ function requireProductionTurnReady(signaling) {
   }
 }
 
+function getMaxAgeSeconds(cacheControl) {
+  const match = String(cacheControl || '').match(/(?:^|,)\s*max-age=(\d+)\s*(?:,|$)/i);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+export function evaluateClientCacheHeaders({ htmlCacheControl = '', assetCacheControl = '' } = {}) {
+  const errors = [];
+  const html = String(htmlCacheControl || '').toLowerCase();
+  const asset = String(assetCacheControl || '').toLowerCase();
+  const assetMaxAge = getMaxAgeSeconds(asset);
+
+  if (!html.includes('no-cache') && !html.includes('no-store')) {
+    errors.push('Client HTML must send Cache-Control no-cache or no-store so new deploys are discovered promptly');
+  }
+  if (!asset.includes('public')) {
+    errors.push('Built client assets must send public Cache-Control');
+  }
+  if (assetMaxAge === null || assetMaxAge < 31_536_000) {
+    errors.push('Built client assets must be cached for at least one year');
+  }
+  if (!asset.includes('immutable')) {
+    errors.push('Built client assets must send immutable Cache-Control');
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    htmlCacheControl,
+    assetCacheControl,
+    assetMaxAge,
+  };
+}
+
+async function requireClientCacheHeaders(htmlResponse, assetUrl) {
+  const assetResponse = await fetchHeaders(assetUrl);
+  requireOk(assetResponse, 'Client asset', '');
+
+  const validation = evaluateClientCacheHeaders({
+    htmlCacheControl: htmlResponse.headers.get('cache-control') || '',
+    assetCacheControl: assetResponse.headers.get('cache-control') || '',
+  });
+
+  if (!validation.ok) {
+    throw new Error(`Client cache headers are not CDN-ready: ${validation.errors.join('; ')}`);
+  }
+
+  return validation;
+}
+
 async function checkClient() {
   const { response, text } = await fetchText(clientUrl);
   requireOk(response, 'Client', text);
   const asset = text.match(/assets\/index-[^"'\s]+\.js/)?.[0];
   if (!asset) throw new Error('Client HTML did not reference a built index asset');
-  return asset;
+  const assetUrl = new URL(asset, `${clientUrl}/`).toString();
+  const cache = requireClientCache ? await requireClientCacheHeaders(response, assetUrl) : null;
+  return { asset, cache };
 }
 
 async function checkHealth(label, url, expectedService) {
@@ -116,28 +184,46 @@ async function main() {
 }
 
 async function runOnce() {
-  const clientAsset = await checkClient();
-  const signaling = await checkHealth('Signaling server', apiUrl, 'signaling-server');
-  const media = await checkHealth('Media server', mediaHttpUrl, 'media-server');
-  if (requireProductionTurn) requireProductionTurnReady(signaling);
-
-  return {
+  const result = {
     status: 'ok',
-    client: { url: clientUrl, asset: clientAsset },
-    signaling: {
+  };
+
+  if (checkScope === 'all' || checkScope === 'client') {
+    const client = await checkClient();
+    result.client = {
+      url: clientUrl,
+      asset: client.asset,
+      cache: client.cache
+        ? {
+            htmlCacheControl: client.cache.htmlCacheControl || null,
+            assetCacheControl: client.cache.assetCacheControl || null,
+            assetMaxAge: client.cache.assetMaxAge,
+          }
+        : null,
+    };
+  }
+
+  if (checkScope === 'all' || checkScope === 'services') {
+    const signaling = await checkHealth('Signaling server', apiUrl, 'signaling-server');
+    const media = await checkHealth('Media server', mediaHttpUrl, 'media-server');
+    if (requireProductionTurn) requireProductionTurnReady(signaling);
+
+    result.signaling = {
       url: apiUrl,
       version: signaling.version || null,
       commit: signaling.commit || null,
       environment: signaling.environment || null,
       ice: signaling.ice || null,
-    },
-    media: {
+    };
+    result.media = {
       url: mediaHttpUrl,
       version: media.version || null,
       commit: media.commit || null,
       environment: media.environment || null,
-    },
-  };
+    };
+  }
+
+  return result;
 }
 
 async function runWithOptionalWait() {
@@ -161,7 +247,9 @@ async function runWithOptionalWait() {
   throw lastError || new Error('Production check failed');
 }
 
-main().catch((err) => {
-  console.error(`Production check failed: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(`Production check failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}

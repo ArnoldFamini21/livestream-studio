@@ -73,10 +73,19 @@ jobs:
           publish_branch: deploy
           keep_files: false
 
+      - name: Verify static client cache
+        run: npm run production:check
+        env:
+          PRODUCTION_CHECK_SCOPE: client
+          PRODUCTION_REQUIRE_CLIENT_CACHE: 'true'
+          PRODUCTION_CHECK_WAIT_MS: 300000
+          PRODUCTION_CHECK_INTERVAL_MS: 15000
+
       - name: Verify production services
         if: steps.render-deploys.outputs.hooks_configured == 'true'
         run: npm run production:check
         env:
+          PRODUCTION_CHECK_SCOPE: services
           EXPECTED_COMMIT: ${{ github.sha }}
           PRODUCTION_CHECK_WAIT_MS: 900000
           PRODUCTION_CHECK_INTERVAL_MS: 15000
