@@ -2,8 +2,13 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   createRecordingCaptureMetadata,
   finalizeRecordingCaptureMetadata,
+  type RecordingCaptureEncoderMetadata,
   type RecordingCaptureMetadata,
 } from '../utils/recordingCaptureMetadata.ts';
+import {
+  canUseWebCodecsVideoRecorder,
+  resolveWebCodecsVideoRecorderConfig,
+} from '../utils/webCodecsRecording.ts';
 
 export interface RecordingResult {
   audio: Blob;
@@ -98,6 +103,43 @@ export function useLocalRecording() {
     return hasVideo ? 8_000_000 : 256_000;
   };
 
+  const getEncoderMetadataForSource = (
+    stream: MediaStream,
+    mimeType: string,
+    bitsPerSecond: number
+  ): RecordingCaptureEncoderMetadata => {
+    const hasVideo = stream.getVideoTracks().some((track) => track.readyState === 'live');
+    const container = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('webm') ? 'webm' : 'browser';
+    if (!hasVideo) {
+      return {
+        pipeline: 'media-recorder',
+        container,
+        fallbackReason: 'Audio-only sources use MediaRecorder for playable browser containers.',
+      };
+    }
+
+    const webCodecsConfig = resolveWebCodecsVideoRecorderConfig({
+      stream,
+      contentType: mimeType,
+      bitsPerSecond,
+    });
+    if (webCodecsConfig && canUseWebCodecsVideoRecorder()) {
+      return {
+        pipeline: 'media-recorder',
+        container,
+        codec: webCodecsConfig.config.codec,
+        hardwareAcceleration: webCodecsConfig.config.hardwareAcceleration,
+        fallbackReason: 'WebCodecs VideoEncoder is available for this video track, but playable recording files use MediaRecorder until WebM muxing is enabled.',
+      };
+    }
+
+    return {
+      pipeline: 'media-recorder',
+      container,
+      fallbackReason: 'WebCodecs VideoEncoder or MediaStreamTrackProcessor is unavailable; using MediaRecorder for playable recording files.',
+    };
+  };
+
   const createTrackRecorder = async (source: LocalRecordingSource, dirHandle?: any): Promise<TrackRecorder | null> => {
     const stream = new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live'));
     if (stream.getTracks().length === 0) return null;
@@ -134,6 +176,7 @@ export function useLocalRecording() {
       mimeType,
       requestedBitsPerSecond: bitsPerSecond,
       startedAt: new Date().toISOString(),
+      encoder: getEncoderMetadataForSource(stream, mimeType, bitsPerSecond),
     });
 
     let currentWritePromise: Promise<void> | null = null;
