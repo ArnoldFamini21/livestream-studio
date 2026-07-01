@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -894,6 +894,7 @@ export function StudioRoom() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatTypingIndicators, setChatTypingIndicators] = useState<ChatTypingIndicator[]>([]);
   const [supportsChatTyping, setSupportsChatTyping] = useState(false);
+  const [externalChatStatus, setExternalChatStatus] = useState<ExternalChatStatusPayload | null>(null);
   const [guestNotification, setGuestNotification] = useState<ParticipantNotificationPayload | null>(null);
 
   // Layout
@@ -2097,6 +2098,9 @@ export function StudioRoom() {
             chatMessage.id === message.payload.id ? message.payload : chatMessage
           )));
           break;
+        case 'external-chat-status':
+          setExternalChatStatus(message.payload);
+          break;
         case 'chat-typing':
           setChatTypingIndicators((prev) => upsertChatTypingIndicator(
             prev,
@@ -2315,6 +2319,8 @@ export function StudioRoom() {
         case 'poll-vote':
         case 'poll-update':
         case 'live-stream-token-request':
+        case 'external-chat-connect':
+        case 'external-chat-disconnect':
         case 'co-host-invite-token-request':
         case 'end-room':
           break;
@@ -2622,6 +2628,16 @@ export function StudioRoom() {
 
   const onToggleChatPin = (messageId: string, pinned: boolean) => {
     send({ type: 'chat-pin-update', payload: { messageId, pinned } });
+  };
+
+  const onConnectExternalChat = (liveChatId: string) => {
+    if (!isHostOrCoHost) return;
+    send({ type: 'external-chat-connect', payload: { platform: 'youtube', liveChatId } });
+  };
+
+  const onDisconnectExternalChat = () => {
+    if (!isHostOrCoHost) return;
+    send({ type: 'external-chat-disconnect', payload: { platform: 'youtube' } });
   };
 
   const popoutSendChatRef = useRef(onSendChat);
@@ -4917,6 +4933,9 @@ export function StudioRoom() {
             onReactChat={onReactChat}
             onToggleChatStar={onToggleChatStar}
             onToggleChatPin={onToggleChatPin}
+            externalChatStatus={externalChatStatus}
+            onConnectExternalChat={onConnectExternalChat}
+            onDisconnectExternalChat={onDisconnectExternalChat}
             chatSenderName={userName}
             chatTypingNames={{
               public: publicChatTypingNames,
