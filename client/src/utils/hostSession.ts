@@ -27,6 +27,8 @@ export interface HostSession {
 }
 
 export interface LegacyHostlessCreateResponseLike {
+  id?: unknown;
+  name?: unknown;
   hostToken?: unknown;
   hostId?: unknown;
   coHostIds?: unknown;
@@ -86,10 +88,9 @@ export function getValidHostToken(value: unknown): string {
 }
 
 export function isLegacyHostlessCreateResponse(room: LegacyHostlessCreateResponseLike): boolean {
-  return !getValidHostToken(room.hostToken) && (
-    typeof room.hostId === 'string' ||
-    Array.isArray(room.coHostIds)
-  );
+  if (getValidHostToken(room.hostToken)) return false;
+  if (typeof room.hostId === 'string' || Array.isArray(room.coHostIds)) return true;
+  return typeof room.id === 'string' && typeof room.name === 'string';
 }
 
 function sortHostStudios(rooms: SavedHostStudio[]): SavedHostStudio[] {
