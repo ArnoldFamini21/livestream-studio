@@ -103,6 +103,17 @@ function buildRelayItem(readiness: LivePreflightRelayReadiness | undefined): Liv
   };
 }
 
+function buildEncodingItem(sessionHealth: LivePreflightSessionHealth | undefined): LivePreflightItem {
+  const encoding = findHealthCheck(sessionHealth, 'encoding');
+  return {
+    id: 'encoding',
+    label: 'Browser encoder',
+    status: encoding?.status || 'warning',
+    detail: encoding?.detail || 'Browser WebM encoder readiness has not been checked.',
+    blocksStart: encoding?.status === 'bad',
+  };
+}
+
 function buildHealthItem(
   id: string,
   label: string,
@@ -145,6 +156,7 @@ export function buildLivePreflightChecklist(options: LivePreflightOptions): Live
   const items: LivePreflightItem[] = [
     buildDestinationItem(options.destinations),
     buildRelayItem(options.relayReadiness),
+    buildEncodingItem(options.sessionHealth),
     buildHealthItem('studio-connection', 'Studio connection', signaling, 'Studio connection has not been checked.'),
     buildHealthItem('network', 'Network', network, 'Network status has not been checked.'),
     buildMediaItem(options.sessionHealth),

@@ -17,6 +17,7 @@ const healthySession: LivePreflightSessionHealth = {
   checks: [
     { id: 'signaling', label: 'Studio connection', status: 'good', detail: 'Connected.' },
     { id: 'network', label: 'Network', status: 'good', detail: 'Online.' },
+    { id: 'encoding', label: 'Browser encoder', status: 'good', detail: '1080p encoder ready.' },
     { id: 'audio', label: 'Microphone', status: 'good', detail: 'Microphone ready.' },
     { id: 'video', label: 'Camera', status: 'good', detail: 'Camera ready.' },
     { id: 'storage', label: 'Recording storage', status: 'good', detail: 'Storage ready.' },
@@ -36,6 +37,7 @@ describe('live preflight checklist', () => {
     assert.equal(checklist.status, 'good');
     assert.equal(checklist.blockingIssue, null);
     assert.equal(checklist.warningCount, 0);
+    assert.equal(checklist.items.find((item) => item.id === 'encoding')?.status, 'good');
   });
 
   it('blocks live when no destination is enabled', () => {
@@ -109,5 +111,49 @@ describe('live preflight checklist', () => {
     assert.equal(checklist.blockingIssue, null);
     assert.equal(checklist.items.find((item) => item.id === 'media')?.status, 'warning');
     assert.equal(checklist.items.find((item) => item.id === 'scenes')?.status, 'warning');
+  });
+
+  it('warns without blocking when browser encoding readiness is limited', () => {
+    const checklist = buildLivePreflightChecklist({
+      destinations: [destination],
+      relayReadiness: { status: 'ready', message: 'Media relay is ready.' },
+      sessionHealth: {
+        checks: healthySession.checks.map((check) => check.id === 'encoding'
+          ? {
+              ...check,
+              status: 'warning',
+              detail: 'Use 720p for the most reliable recording and live relay on this browser.',
+            }
+          : check),
+      },
+      sceneCount: 1,
+      outputSummary: 'Landscape 720p30',
+    });
+
+    assert.equal(checklist.status, 'warning');
+    assert.equal(checklist.blockingIssue, null);
+    assert.equal(checklist.items.find((item) => item.id === 'encoding')?.status, 'warning');
+  });
+
+  it('blocks live when browser encoding is unsupported', () => {
+    const checklist = buildLivePreflightChecklist({
+      destinations: [destination],
+      relayReadiness: { status: 'ready', message: 'Media relay is ready.' },
+      sessionHealth: {
+        checks: healthySession.checks.map((check) => check.id === 'encoding'
+          ? {
+              ...check,
+              status: 'bad',
+              detail: 'This browser cannot record or relay WebM chunks.',
+            }
+          : check),
+      },
+      sceneCount: 1,
+      outputSummary: 'Landscape 720p30',
+    });
+
+    assert.equal(checklist.status, 'bad');
+    assert.equal(checklist.blockingIssue, 'This browser cannot record or relay WebM chunks.');
+    assert.equal(checklist.items.find((item) => item.id === 'encoding')?.blocksStart, true);
   });
 });
