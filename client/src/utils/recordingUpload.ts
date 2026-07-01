@@ -9,6 +9,8 @@ import type { RecordingCaptureMetadata } from './recordingCaptureMetadata.ts';
 import { resolveMediaHttpUrl } from './apiClient.ts';
 
 export const RECORDING_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+export const RECORDING_EXPORT_POLL_INTERVAL_MS = 1_500;
+export const RECORDING_EXPORT_POLL_TIMEOUT_MS = 15_000;
 
 export interface RecordingUploadFileInput {
   label: string;
@@ -28,7 +30,19 @@ export interface UploadRecordingToMediaServerInput {
   startExport?: boolean;
   exportBasename?: string;
   includeAudioStems?: boolean;
+  exportPollIntervalMs?: number;
+  exportPollTimeoutMs?: number;
   onProgress?: (progress: RecordingUploadProgress) => void;
+}
+
+export interface PollRecordingExportJobInput {
+  token: string;
+  uploadId: string;
+  exportId: string;
+  mediaHttpUrl?: string;
+  intervalMs?: number;
+  timeoutMs?: number;
+  initialJob?: RecordingExportJobResponse;
 }
 
 export interface RecordingUploadProgress {
@@ -167,6 +181,21 @@ function getChunkSize(value: number | undefined): number {
   return Math.max(256 * 1024, Math.min(RECORDING_UPLOAD_CHUNK_BYTES, Math.floor(value as number)));
 }
 
+function getPollIntervalMs(value: number | undefined): number {
+  if (!Number.isFinite(value)) return RECORDING_EXPORT_POLL_INTERVAL_MS;
+  return Math.max(0, Math.min(30_000, Math.floor(value as number)));
+}
+
+function getPollTimeoutMs(value: number | undefined): number {
+  if (!Number.isFinite(value)) return RECORDING_EXPORT_POLL_TIMEOUT_MS;
+  return Math.max(0, Math.min(10 * 60_000, Math.floor(value as number)));
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
+
 async function postJson<T>(url: string, token: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: 'POST',
@@ -179,11 +208,51 @@ async function postJson<T>(url: string, token: string, body: unknown): Promise<T
   return parseJsonResponse<T>(response);
 }
 
+async function getJson<T>(url: string, token: string): Promise<T> {
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return parseJsonResponse<T>(response);
+}
+
 async function cleanupUpload(baseUrl: string, uploadId: string, token: string): Promise<void> {
   await fetch(buildMediaUrl(baseUrl, `/recordings/uploads/${encodeURIComponent(uploadId)}`), {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` },
   }).catch(() => {});
+}
+
+export async function pollRecordingExportJob(
+  input: PollRecordingExportJobInput
+): Promise<RecordingExportJobResponse> {
+  const token = assertNonEmpty(input.token, 'A host upload token');
+  const uploadId = assertNonEmpty(input.uploadId, 'Upload id');
+  const exportId = assertNonEmpty(input.exportId, 'Export id');
+  const mediaHttpUrl = assertNonEmpty(input.mediaHttpUrl || resolveMediaHttpUrl(), 'Media server URL');
+  const timeoutMs = getPollTimeoutMs(input.timeoutMs);
+  const intervalMs = getPollIntervalMs(input.intervalMs);
+  const deadline = Date.now() + timeoutMs;
+  let latest = input.initialJob;
+
+  while (!latest || (latest.status !== 'ready' && latest.status !== 'error')) {
+    if (Date.now() > deadline) {
+      if (latest) return latest;
+      throw new Error('Timed out while checking recording export status');
+    }
+    if (latest) {
+      await delay(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+    }
+    latest = await getJson<RecordingExportJobResponse>(
+      buildMediaUrl(
+        mediaHttpUrl,
+        `/recordings/uploads/${encodeURIComponent(uploadId)}/exports/${encodeURIComponent(exportId)}`
+      ),
+      token
+    );
+  }
+
+  return latest;
 }
 
 export async function uploadRecordingToMediaServer(
@@ -268,6 +337,15 @@ export async function uploadRecordingToMediaServer(
             includeAudioStems: input.includeAudioStems !== false,
           }
         );
+        exportJob = await pollRecordingExportJob({
+          token,
+          uploadId,
+          exportId: exportJob.exportId,
+          mediaHttpUrl,
+          intervalMs: input.exportPollIntervalMs,
+          timeoutMs: input.exportPollTimeoutMs,
+          initialJob: exportJob,
+        });
       } catch (err) {
         exportError = err instanceof Error && err.message
           ? err.message
