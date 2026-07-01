@@ -13,6 +13,7 @@ const waitMs = parseNonNegativeInt(process.env.PRODUCTION_CHECK_WAIT_MS, 0);
 const intervalMs = parsePositiveInt(process.env.PRODUCTION_CHECK_INTERVAL_MS, 15_000);
 const requireProductionTurn = parseBoolean(process.env.PRODUCTION_REQUIRE_TURN || process.env.REQUIRE_PRODUCTION_TURN);
 const requireClientCache = parseBoolean(process.env.PRODUCTION_REQUIRE_CLIENT_CACHE || process.env.REQUIRE_CLIENT_CACHE);
+const requireHostAccessContract = parseBoolean(process.env.PRODUCTION_REQUIRE_HOST_ACCESS || process.env.REQUIRE_HOST_ACCESS);
 const checkScope = normalizeProductionCheckScope(process.env.PRODUCTION_CHECK_SCOPE || 'all');
 
 function trimUrl(value) {
@@ -150,6 +151,31 @@ export function evaluateClientCacheHeaders({ htmlCacheControl = '', assetCacheCo
   };
 }
 
+export function evaluateHostAccessCreateResponse(room = {}) {
+  const errors = [];
+  const hostToken = typeof room.hostToken === 'string' ? room.hostToken.trim() : '';
+
+  if (typeof room.id !== 'string' || room.id.length === 0) {
+    errors.push('Create studio response must include room id');
+  }
+  if (typeof room.name !== 'string' || room.name.length === 0) {
+    errors.push('Create studio response must include room name');
+  }
+  if (typeof room.hostName !== 'string' || room.hostName.length === 0) {
+    errors.push('Create studio response must include hostName');
+  }
+  if (!/^[A-Za-z0-9_-]{16,256}$/.test(hostToken)) {
+    errors.push('Create studio response must include a valid private hostToken');
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    roomId: typeof room.id === 'string' ? room.id : null,
+    hostTokenLength: hostToken.length || null,
+  };
+}
+
 async function requireClientCacheHeaders(htmlResponse, assetUrl) {
   const assetResponse = await fetchHeaders(assetUrl);
   requireOk(assetResponse, 'Client asset', '');
@@ -184,6 +210,40 @@ async function checkHealth(label, url, expectedService) {
   return json;
 }
 
+async function checkHostAccessContract() {
+  const response = await fetch(`${apiUrl}/api/rooms`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: clientUrl,
+    },
+    body: JSON.stringify({
+      name: `Production host access check ${new Date().toISOString()}`,
+      hostName: 'Production Check',
+    }),
+  });
+  const text = await response.text();
+  requireOk(response, 'Create studio host access contract', text);
+
+  let room = null;
+  try {
+    room = JSON.parse(text);
+  } catch {
+    throw new Error(`Create studio host access contract did not return JSON: ${text.slice(0, 120)}`);
+  }
+
+  const validation = evaluateHostAccessCreateResponse(room);
+  if (!validation.ok) {
+    throw new Error(`Create studio host access contract failed: ${validation.errors.join('; ')}`);
+  }
+
+  return {
+    ok: true,
+    roomId: validation.roomId,
+    hostTokenLength: validation.hostTokenLength,
+  };
+}
+
 async function main() {
   const result = await runWithOptionalWait();
   console.log(JSON.stringify(result, null, 2));
@@ -214,6 +274,7 @@ async function runOnce() {
     const signaling = await checkHealth('Signaling server', apiUrl, 'signaling-server');
     const media = await checkHealth('Media server', mediaHttpUrl, 'media-server');
     if (requireProductionTurn) requireProductionTurnReady(signaling);
+    const hostAccess = requireHostAccessContract ? await checkHostAccessContract() : null;
 
     result.signaling = {
       url: apiUrl,
@@ -221,6 +282,7 @@ async function runOnce() {
       commit: signaling.commit || null,
       environment: signaling.environment || null,
       ice: signaling.ice || null,
+      hostAccess,
     };
     result.media = {
       url: mediaHttpUrl,

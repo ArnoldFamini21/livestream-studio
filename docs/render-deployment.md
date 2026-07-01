@@ -104,6 +104,8 @@ When these secrets are missing, GitHub Actions still deploys the static client b
 
 Every deploy verifies the static client cache headers after publishing to Hostinger. When both deploy hook secrets are present, the workflow also waits for Render service verification after the Hostinger deploy. It runs `npm run production:check` with the pushed commit SHA and polls for up to 15 minutes until both Render services report the new commit in `/health`.
 
+The Render service verification also creates a disposable studio and requires the signaling API to return a valid private `hostToken`. This catches the production failure where the home page reports that a studio was created but host access was not returned.
+
 ## Production Smoke Check
 
 After Render deploys finish, run:
@@ -134,6 +136,7 @@ The check verifies:
 - `https://livestream-studio-server.onrender.com/health` reports `service: "signaling-server"`
 - `https://livestream-studio-media-server.onrender.com/health` reports `service: "media-server"`
 - both services report the expected deployment commit when `EXPECTED_COMMIT` is set
+- create-studio responses include valid private host access when `PRODUCTION_REQUIRE_HOST_ACCESS=true`
 
 Use `PRODUCTION_CHECK_SCOPE=client` to check only the Hostinger client, or `PRODUCTION_CHECK_SCOPE=services` to check only Render health metadata.
 
@@ -141,6 +144,14 @@ To fail the check unless production TURN credentials are configured:
 
 ```sh
 PRODUCTION_REQUIRE_TURN=true npm run production:check
+```
+
+To verify the create-studio host access contract specifically:
+
+```sh
+PRODUCTION_CHECK_SCOPE=services \
+PRODUCTION_REQUIRE_HOST_ACCESS=true \
+npm run production:check
 ```
 
 In GitHub Actions, set the repository variable `PRODUCTION_REQUIRE_TURN=true` after the Render TURN credentials are present. The workflow passes that value into the production smoke check.
