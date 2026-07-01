@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BroadcastOrientation,
+  RtmpRelayBackupRecordingPayload,
   RtmpRelayDestination,
   RtmpRelayDestinationStatus,
   RtmpRelayServerMessage,
@@ -419,6 +420,7 @@ export function useRtmpRelay({
   const readinessCheckIdRef = useRef(0);
   const [stats, setStats] = useState<RtmpRelayStats>(INITIAL_RELAY_STATS);
   const [readiness, setReadiness] = useState<RtmpRelayReadiness>(INITIAL_RELAY_READINESS);
+  const [backupRecording, setBackupRecording] = useState<RtmpRelayBackupRecordingPayload | null>(null);
 
   const setRelayStatus = useCallback((status: RtmpRelayStats['status']) => {
     setStats((current) => ({ ...current, status, updatedAt: Date.now() }));
@@ -641,6 +643,7 @@ export function useRtmpRelay({
       activeDestinationIdsRef.current = destinations.map((destination) => destination.id);
       intentionalStopRef.current = false;
       reconnectAttemptsRef.current = 0;
+      setBackupRecording(null);
       resetStats('connecting');
 
       let currentToken = token;
@@ -854,6 +857,11 @@ export function useRtmpRelay({
               return;
             }
 
+            if (message.type === 'backup-recording-status') {
+              setBackupRecording(message.payload);
+              return;
+            }
+
             if (message.type === 'pong') {
               markRelayLatency(message.payload.sequence, message.payload.sentAt);
               return;
@@ -933,5 +941,5 @@ export function useRtmpRelay({
 
   useEffect(() => cleanup, [cleanup]);
 
-  return { startRelay, stopRelay, stats, readiness, checkRelayReadiness };
+  return { startRelay, stopRelay, stats, readiness, backupRecording, checkRelayReadiness };
 }

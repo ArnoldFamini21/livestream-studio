@@ -65,6 +65,16 @@ RECORDING_STORAGE_PUBLIC_BASE_URL=<optional CDN/public base URL>
 
 The export job still streams downloads from the media server, but job status and manifest JSON include the durable `s3` bucket/key for every uploaded artifact.
 
+The RTMP relay also writes a server-side MP4 backup recording for every live session by default. The host/co-host client polls the media server after Go Live stops and exposes an authenticated backup download in the post-live notice. These backups are local to the media-server filesystem unless the service is deployed with persistent storage:
+
+```sh
+RTMP_BACKUP_RECORDING_ENABLED=true
+RTMP_BACKUP_RECORDING_DIR=/tmp/livestream-studio-live-backups
+RTMP_BACKUP_RECORDING_MAX_BYTES=8589934592
+```
+
+Set `RTMP_BACKUP_RECORDING_ENABLED=false` to disable this safety recording on constrained media-server instances.
+
 ## Static Client CDN Caching
 
 The Hostinger client deploy includes `client/public/.htaccess`, which is copied into `client/dist` by Vite. It sets:

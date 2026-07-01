@@ -225,7 +225,7 @@
 - [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants
 - [ ] Simulcast: send multiple quality layers, server selects best for each viewer
 - [ ] Bandwidth adaptation per participant
-- [ ] Server-side recording as backup
+- [x] Server-side recording as backup
 
 ### 10C. Deployment
 - [x] Docker Compose for local dev
