@@ -15,6 +15,12 @@ import type {
 import { buildServiceHealthPayload } from '@studio/shared';
 import { getLiveStreamTokenSecret, verifyLiveStreamToken } from './auth.js';
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
+import {
+  buildRecordingExportObjectKey,
+  getRecordingObjectStorageConfig,
+  uploadFileToObjectStorage,
+  type ObjectStorageConfig,
+} from './objectStorage.js';
 import { buildAllowedOrigins, isAllowedOrigin, normalizeOrigin } from './origins.js';
 import { parseControlMessage } from './protocol.js';
 import {
@@ -68,6 +74,7 @@ const sessions = new Map<WebSocket, RelaySession>();
 const recordingUploads = new RecordingUploadStore();
 let recordingExports: RecordingExportJobStore | null = null;
 let recordingExportsFfmpegPath = '';
+let recordingExportsStorageFingerprint = '';
 
 function sendJson(ws: WebSocket, message: RtmpRelayServerMessage) {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -82,14 +89,51 @@ function getFfmpegPath(): string | null {
   return process.env.FFMPEG_PATH || ffmpegStaticPath || null;
 }
 
+function getStorageFingerprint(config: ObjectStorageConfig | null): string {
+  if (!config) return '';
+  return JSON.stringify({
+    endpoint: config.endpoint,
+    region: config.region,
+    bucket: config.bucket,
+    accessKeyId: config.accessKeyId,
+    secretAccessKey: config.secretAccessKey,
+    forcePathStyle: config.forcePathStyle,
+    prefix: config.prefix,
+    publicBaseUrl: config.publicBaseUrl,
+  });
+}
+
 function getRecordingExportStore(): RecordingExportJobStore {
   const ffmpegPath = getFfmpegPath();
   if (!ffmpegPath) {
     throw new RecordingExportJobError(503, 'FFMPEG_UNAVAILABLE', 'FFmpeg binary is unavailable');
   }
-  if (!recordingExports || recordingExportsFfmpegPath !== ffmpegPath) {
-    recordingExports = new RecordingExportJobStore(createFfmpegExportRunner(ffmpegPath));
+  const storageConfig = getRecordingObjectStorageConfig();
+  const storageFingerprint = getStorageFingerprint(storageConfig);
+  if (
+    !recordingExports ||
+    recordingExportsFfmpegPath !== ffmpegPath ||
+    recordingExportsStorageFingerprint !== storageFingerprint
+  ) {
+    recordingExports = new RecordingExportJobStore(
+      createFfmpegExportRunner(ffmpegPath),
+      storageConfig
+        ? (input) => uploadFileToObjectStorage(storageConfig, {
+          filePath: input.filePath,
+          contentType: input.contentType,
+          key: buildRecordingExportObjectKey({
+            prefix: storageConfig.prefix,
+            roomId: input.roomId,
+            uploadId: input.uploadId,
+            exportId: input.exportId,
+            artifactId: input.artifactId,
+            fileName: path.basename(input.filePath),
+          }),
+        })
+        : undefined
+    );
     recordingExportsFfmpegPath = ffmpegPath;
+    recordingExportsStorageFingerprint = storageFingerprint;
   }
   return recordingExports;
 }

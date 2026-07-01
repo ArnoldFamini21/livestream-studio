@@ -4,6 +4,7 @@ import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   RecordingExportArtifactFormat,
+  RecordingExportArtifactStorage,
   RecordingExportArtifactStatus,
   RecordingExportJobResponse,
   RecordingExportJobStatusValue,
@@ -18,6 +19,22 @@ import {
 import type { RecordingUploadExportSource, RecordingUploadExportTrack } from './recordingUpload.js';
 
 export type RecordingExportRunner = (command: RecordingExportCommand) => Promise<void>;
+
+export interface RecordingExportArtifactUploadInput {
+  exportId: string;
+  uploadId: string;
+  roomId: string;
+  sessionId?: string;
+  artifactId: string;
+  label: string;
+  format: RecordingExportArtifactFormat;
+  filePath: string;
+  contentType: string;
+}
+
+export type RecordingExportArtifactUploader = (
+  input: RecordingExportArtifactUploadInput
+) => Promise<RecordingExportArtifactStorage>;
 
 interface RecordingExportArtifact extends RecordingExportArtifactStatus {
   outputPath: string;
@@ -80,6 +97,7 @@ function toPublicJob(job: RecordingExportJob): RecordingExportJobResponse {
       format: artifact.format,
       status: artifact.status,
       bytes: artifact.bytes,
+      storage: artifact.storage,
       error: artifact.error,
     })),
     error: job.error,
@@ -92,6 +110,13 @@ function getArtifactFormat(outputPath: string): RecordingExportArtifactFormat {
   if (extension === '.mp3') return 'mp3';
   if (extension === '.json') return 'json';
   return 'mp4';
+}
+
+function getArtifactContentType(format: RecordingExportArtifactFormat): string {
+  if (format === 'wav') return 'audio/wav';
+  if (format === 'mp3') return 'audio/mpeg';
+  if (format === 'json') return 'application/json';
+  return 'video/mp4';
 }
 
 function hasTrackAudio(track: RecordingUploadExportTrack): boolean {
@@ -197,6 +222,7 @@ function buildExportManifest(job: RecordingExportJob): string {
         format: artifact.format,
         status: artifact.status,
         bytes: artifact.bytes,
+        storage: artifact.storage,
         error: artifact.error,
       })),
   }, null, 2)}\n`;
@@ -224,7 +250,10 @@ export function createFfmpegExportRunner(ffmpegPath: string): RecordingExportRun
 export class RecordingExportJobStore {
   private readonly jobs = new Map<string, RecordingExportJob>();
 
-  constructor(private readonly runner: RecordingExportRunner) {}
+  constructor(
+    private readonly runner: RecordingExportRunner,
+    private readonly artifactUploader?: RecordingExportArtifactUploader
+  ) {}
 
   async createJob(
     source: RecordingUploadExportSource,
@@ -294,6 +323,7 @@ export class RecordingExportJobStore {
     for (const artifact of job.artifacts) {
       artifact.status = 'running';
       artifact.error = undefined;
+      artifact.storage = undefined;
       job.updatedAt = new Date().toISOString();
       try {
         if (artifact.generated === 'manifest') {
@@ -305,6 +335,19 @@ export class RecordingExportJobStore {
         }
         const outputStat = await stat(artifact.outputPath).catch(() => null);
         if (outputStat) artifact.bytes = outputStat.size;
+        if (this.artifactUploader) {
+          artifact.storage = await this.artifactUploader({
+            exportId: job.exportId,
+            uploadId: job.uploadId,
+            roomId: job.roomId,
+            sessionId: job.sessionId,
+            artifactId: artifact.id,
+            label: artifact.label,
+            format: artifact.format,
+            filePath: artifact.outputPath,
+            contentType: getArtifactContentType(artifact.format),
+          });
+        }
         artifact.status = 'ready';
         job.updatedAt = new Date().toISOString();
       } catch (err) {

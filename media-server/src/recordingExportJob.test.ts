@@ -7,6 +7,7 @@ import type { RecordingExportCommand } from './recordingExport.js';
 import {
   RecordingExportJobError,
   RecordingExportJobStore,
+  type RecordingExportArtifactUploadInput,
   type RecordingExportRunner,
 } from './recordingExportJob.js';
 import { RecordingUploadStore } from './recordingUpload.js';
@@ -54,15 +55,24 @@ async function createCompletedUpload() {
 
 describe('recording export jobs', () => {
   it('creates a private FFmpeg export job from completed uploaded WebM tracks', async () => {
-    const { uploads, session } = await createCompletedUpload();
+    const { uploads: uploadStore, session } = await createCompletedUpload();
     const commands: RecordingExportCommand[] = [];
+    const artifactUploads: RecordingExportArtifactUploadInput[] = [];
     const runner: RecordingExportRunner = async (command) => {
       commands.push(command);
       await writeFile(command.outputPath, Buffer.from(command.label));
     };
-    const exports = new RecordingExportJobStore(runner);
+    const exports = new RecordingExportJobStore(runner, async (input) => {
+      artifactUploads.push(input);
+      return {
+        provider: 's3',
+        bucket: 'recordings',
+        key: `exports/${input.exportId}/${input.artifactId}`,
+        uploadedAt: '2026-07-01T20:00:00.000Z',
+      };
+    });
 
-    const queued = await exports.createJob(uploads.getExportSource(session.uploadId), {
+    const queued = await exports.createJob(uploadStore.getExportSource(session.uploadId), {
       basename: 'Launch Demo',
       includeAudioStems: true,
     });
@@ -81,8 +91,14 @@ describe('recording export jobs', () => {
 
     assert.equal(ready.status, 'ready');
     assert.equal(commands.length, 6);
+    assert.equal(artifactUploads.length, 7);
+    assert.equal(artifactUploads[0].artifactId, 'final-mp4');
+    assert.equal(artifactUploads[0].contentType, 'video/mp4');
+    assert.equal(artifactUploads.at(-1)?.artifactId, 'export-manifest');
+    assert.equal(artifactUploads.at(-1)?.contentType, 'application/json');
     assert.equal(ready.artifacts.every((artifact) => artifact.status === 'ready'), true);
     assert.equal(ready.artifacts.every((artifact) => typeof artifact.bytes === 'number' && artifact.bytes > 0), true);
+    assert.equal(ready.artifacts.every((artifact) => artifact.storage?.provider === 's3'), true);
     assert.match(commands[0].outputPath, /Launch_Demo\.mp4$/);
     assert.equal(commands[0].args.includes('libx264'), true);
 
@@ -101,12 +117,14 @@ describe('recording export jobs', () => {
       exportType: string;
       export: { exportId: string };
       tracks: Array<{ durationMs?: number }>;
-      artifacts: Array<{ format: string }>;
+      artifacts: Array<{ format: string; storage?: { provider: string; key: string } }>;
     };
     assert.equal(manifestJson.exportType, 'recording-export-manifest');
     assert.equal(manifestJson.export.exportId, queued.exportId);
     assert.equal(manifestJson.tracks[0].durationMs, 65_000);
     assert.deepEqual(manifestJson.artifacts.map((item) => item.format), ['mp4', 'mp4', 'wav', 'mp3', 'wav', 'mp3']);
+    assert.equal(manifestJson.artifacts.every((item) => item.storage?.provider === 's3'), true);
+    assert.equal(manifestJson.artifacts[0].storage?.key, `exports/${queued.exportId}/final-mp4`);
   });
 
   it('can create a final-MP4-only export job', async () => {
@@ -121,6 +139,28 @@ describe('recording export jobs', () => {
     });
 
     assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'mp4', 'json']);
+  });
+
+  it('marks the export job as failed when configured artifact storage fails', async () => {
+    const { uploads, session } = await createCompletedUpload();
+    const runner: RecordingExportRunner = async (command) => {
+      await writeFile(command.outputPath, Buffer.from(command.label));
+    };
+    const exports = new RecordingExportJobStore(runner, async () => {
+      throw new Error('object storage unavailable');
+    });
+
+    const queued = await exports.createJob(uploads.getExportSource(session.uploadId), {
+      basename: 'Storage Failure',
+      includeAudioStems: false,
+    });
+    await exports.startJob(queued.exportId);
+    const failed = exports.getJob(queued.exportId, session.uploadId);
+
+    assert.equal(failed.status, 'error');
+    assert.equal(failed.artifacts[0].status, 'error');
+    assert.equal(failed.artifacts[0].error, 'object storage unavailable');
+    assert.equal(failed.artifacts[1].status, 'error');
   });
 
   it('rejects export jobs before all declared upload tracks are complete and non-empty', async () => {

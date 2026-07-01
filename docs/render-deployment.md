@@ -29,6 +29,21 @@ LIVE_STREAM_TOKEN_SECRET=<same random secret on both Render services>
 
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.
 
+The media server can also copy recording export artifacts to S3-compatible object storage. Set these on `livestream-studio-media-server` when durable recording handoff is needed:
+
+```sh
+RECORDING_STORAGE_ENDPOINT=<S3-compatible endpoint>
+RECORDING_STORAGE_REGION=us-east-1
+RECORDING_STORAGE_BUCKET=<bucket name>
+RECORDING_STORAGE_ACCESS_KEY_ID=<access key>
+RECORDING_STORAGE_SECRET_ACCESS_KEY=<secret key>
+RECORDING_STORAGE_FORCE_PATH_STYLE=true
+RECORDING_STORAGE_PREFIX=livestream-studio
+RECORDING_STORAGE_PUBLIC_BASE_URL=<optional CDN/public base URL>
+```
+
+The export job still streams downloads from the media server, but job status and manifest JSON include the durable `s3` bucket/key for every uploaded artifact.
+
 ## GitHub Deploy Hooks
 
 The Hostinger workflow builds all workspaces and deploys the client to the `deploy` branch. To make the same merge trigger Render deploys, create deploy hooks in Render for both web services and add these GitHub repository secrets:
