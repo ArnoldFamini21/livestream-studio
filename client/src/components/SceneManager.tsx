@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import type { Scene, LayoutMode } from '@studio/shared';
 import {
   getBackgroundPreview,
+  PRODUCTION_SCENE_PACK_TEMPLATE_IDS,
   PRODUCTION_SCENE_TEMPLATE_CARDS,
 } from '../utils/productionSceneTemplates.ts';
 import {
@@ -30,6 +31,7 @@ interface SceneManagerProps {
   onSceneStingerClipChange: (clip: SceneStingerClip | null) => void;
   onSaveScene: (name: string) => void | Promise<void>;
   onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
+  onCreateProductionScenePack: () => void;
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
@@ -94,6 +96,7 @@ export function SceneManager({
   onSceneStingerClipChange,
   onSaveScene,
   onCreateTemplateScene,
+  onCreateProductionScenePack,
   onApplyScene,
   onDeleteScene,
   onRenameScene,
@@ -115,6 +118,7 @@ export function SceneManager({
   const stingerInputRef = useRef<HTMLInputElement>(null);
 
   const atLimit = scenes.length >= MAX_SCENES;
+  const scenePackSlots = Math.max(0, Math.min(PRODUCTION_SCENE_PACK_TEMPLATE_IDS.length, MAX_SCENES - scenes.length));
 
   const handleSave = () => {
     const trimmed = newName.trim();
@@ -433,6 +437,27 @@ export function SceneManager({
           <span style={styles.templateTitle}>Templates</span>
           <span style={styles.templateHint}>Production scenes</span>
         </div>
+        <button
+          type="button"
+          style={{
+            ...styles.templatePackBtn,
+            ...(scenePackSlots === 0 ? styles.templatePackBtnDisabled : {}),
+          }}
+          onClick={() => scenePackSlots > 0 && onCreateProductionScenePack()}
+          disabled={scenePackSlots === 0}
+          title={scenePackSlots === 0 ? `Maximum of ${MAX_SCENES} scenes reached` : `Add ${scenePackSlots} production scenes`}
+        >
+          <span style={styles.templatePackIcon}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="5" rx="1.5" />
+              <rect x="3" y="15" width="18" height="5" rx="1.5" />
+              <path d="M8 9v6" />
+              <path d="M16 9v6" />
+            </svg>
+          </span>
+          Add Show Pack
+          <span style={styles.templatePackCount}>{scenePackSlots}</span>
+        </button>
         <div style={styles.templateGrid}>
           {PRODUCTION_SCENE_TEMPLATE_CARDS.map((template) => (
             <button
@@ -981,6 +1006,49 @@ const styles: Record<string, React.CSSProperties> = {
   templateHint: {
     fontSize: 10,
     color: 'var(--text-muted)',
+  },
+  templatePackBtn: {
+    minWidth: 0,
+    height: 34,
+    display: 'grid',
+    gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+    alignItems: 'center',
+    gap: 8,
+    padding: '0 9px',
+    borderRadius: 8,
+    border: '1px solid rgba(103, 232, 249, 0.34)',
+    background: 'rgba(103, 232, 249, 0.08)',
+    color: '#a5f3fc',
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  templatePackBtnDisabled: {
+    opacity: 0.42,
+    cursor: 'not-allowed',
+  },
+  templatePackIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(103, 232, 249, 0.12)',
+    color: '#67e8f9',
+  },
+  templatePackCount: {
+    minWidth: 18,
+    height: 18,
+    padding: '0 5px',
+    borderRadius: 999,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(15, 23, 42, 0.54)',
+    color: '#cffafe',
+    fontSize: 9,
+    fontWeight: 900,
   },
   templateGrid: {
     display: 'grid',
