@@ -92,6 +92,7 @@ import {
 } from '../utils/recordingReadiness.ts';
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
+import { buildLocalRecordingSources } from '../utils/localRecordingSources.ts';
 import { getScenePipCornerForApply, getSceneStageItemOrderForApply } from '../utils/sceneApplication.ts';
 import {
   getContainedVideoRect,
@@ -330,10 +331,6 @@ interface ActiveStreamScreenState {
 
 function getStudioStateKey(roomId: string): string {
   return `livestream-studio:room-state:${roomId}`;
-}
-
-function getRecordingSourceId(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'track';
 }
 
 type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
@@ -2453,8 +2450,6 @@ export function StudioRoom() {
   // Local recording (separate on-stage tracks)
   const onStartLocalRecording = () => {
     if (!myParticipant || !canControlRecording || !recordingReadiness.canStart) return;
-    const sources: LocalRecordingSource[] = [];
-    const liveTracks = (tracks: MediaStreamTrack[]) => tracks.filter((track) => track.readyState === 'live');
     const programSource = createProgramRecordingSource({
       compositeStream: compositeStreamRef.current,
       localStream,
@@ -2467,111 +2462,16 @@ export function StudioRoom() {
       participantAudioLevels: stageAudioLevels,
       audioDuckingEnabled,
     });
-    if (programSource) sources.push(programSource);
-
-    const localAudioTracks = liveTracks(localStream?.getAudioTracks() || []);
-    const localVideoTracks = liveTracks(localStream?.getVideoTracks() || []);
-    const localId = getRecordingSourceId(myParticipant.id);
-
-    if (myParticipant.status === 'on-stage' && localAudioTracks.length > 0 && localVideoTracks.length > 0) {
-      sources.push({
-        id: `${localId}-iso`,
-        label: `${myParticipant.name} ISO`,
-        kind: 'iso',
-        stream: new MediaStream([...localVideoTracks, ...localAudioTracks]),
-        bitsPerSecond: 8_500_000,
-      });
-    }
-
-    if (myParticipant.status === 'on-stage' && localAudioTracks.length > 0) {
-      sources.push({
-        id: `${localId}-audio`,
-        label: `${myParticipant.name} audio`,
-        kind: 'audio',
-        stream: new MediaStream(localAudioTracks),
-        bitsPerSecond: 256_000,
-      });
-    }
-
-    if (myParticipant.status === 'on-stage' && localVideoTracks.length > 0) {
-      sources.push({
-        id: `${localId}-camera`,
-        label: `${myParticipant.name} camera`,
-        kind: 'video',
-        stream: new MediaStream(localVideoTracks),
-        bitsPerSecond: 8_000_000,
-      });
-    }
-
-    for (const [id, participant] of participants) {
-      if (participant.status !== 'on-stage') continue;
-      const remoteStream = remoteStreams.get(id);
-      if (!remoteStream) continue;
-      const remoteId = getRecordingSourceId(id);
-      const remoteAudioTracks = liveTracks(remoteStream.getAudioTracks());
-      const remoteVideoTracks = liveTracks(remoteStream.getVideoTracks());
-      const isRemoteScreen = participant.screenSharing;
-
-      if (!isRemoteScreen && remoteAudioTracks.length > 0 && remoteVideoTracks.length > 0) {
-        sources.push({
-          id: `${remoteId}-iso`,
-          label: `${participant.name} ISO`,
-          kind: 'iso',
-          stream: new MediaStream([...remoteVideoTracks, ...remoteAudioTracks]),
-          bitsPerSecond: 8_500_000,
-        });
-      }
-
-      if (remoteAudioTracks.length > 0) {
-        sources.push({
-          id: `${remoteId}-audio`,
-          label: `${participant.name} audio`,
-          kind: 'audio',
-          stream: new MediaStream(remoteAudioTracks),
-          bitsPerSecond: 256_000,
-        });
-      }
-
-      if (remoteVideoTracks.length > 0) {
-        sources.push({
-          id: `${remoteId}-${isRemoteScreen ? 'screen' : 'camera'}`,
-          label: `${participant.name} ${isRemoteScreen ? 'screen' : 'camera'}`,
-          kind: isRemoteScreen ? 'screen' : 'video',
-          stream: new MediaStream(remoteVideoTracks),
-          bitsPerSecond: 8_000_000,
-        });
-      }
-    }
-
-    if (isScreenSharing && screenStream) {
-      const screenVideoTracks = liveTracks(screenStream.getVideoTracks());
-      const screenAudioTracks = liveTracks(screenStream.getAudioTracks());
-      if (screenVideoTracks.length > 0) {
-        sources.push({
-          id: `${localId}-screen`,
-          label: `${myParticipant.name} screen`,
-          kind: 'screen',
-          stream: new MediaStream(screenVideoTracks),
-          bitsPerSecond: 8_000_000,
-        });
-        const screenPipSource = createScreenPictureInPictureRecordingSource({
-          id: `${localId}-screen-pip`,
-          label: `${myParticipant.name} screen PiP`,
-          screenStream,
-          cameraStream: localStream,
-        });
-        if (screenPipSource) sources.push(screenPipSource);
-      }
-      if (screenAudioTracks.length > 0) {
-        sources.push({
-          id: `${localId}-screen-audio`,
-          label: `${myParticipant.name} screen audio`,
-          kind: 'audio',
-          stream: new MediaStream(screenAudioTracks),
-          bitsPerSecond: 256_000,
-        });
-      }
-    }
+    const sources = buildLocalRecordingSources({
+      localParticipant: myParticipant,
+      localStream,
+      participants,
+      remoteStreams,
+      screenStream,
+      isScreenSharing,
+      programSource,
+      createScreenPictureInPictureSource: createScreenPictureInPictureRecordingSource,
+    });
 
     if (sources.length === 0) return;
     void startLocalRecording(sources).catch((err) => console.error('Failed to start local recording:', err));

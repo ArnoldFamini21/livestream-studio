@@ -5,7 +5,7 @@
 
 ## Phase 1: Recording Engine (Priority: Critical)
 ### 1A. Local-First Per-Participant Recording (Riverside approach)
-- [ ] MediaRecorder API per participant capturing local camera/mic in high quality
+- [x] MediaRecorder API per participant capturing local camera/mic in high quality
 - [ ] Record as WebM (VP9/Opus) locally, then upload chunks to server via WebSocket/HTTP
 - [ ] Separate isolated audio tracks (WAV) + video tracks per participant
 - [ ] Server-side stitching with FFmpeg into final MP4 (H.264 + AAC)
