@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -75,6 +75,13 @@ import {
   type ProductionSceneTemplateConfig,
 } from '../utils/productionSceneTemplates.ts';
 import { getStreamDestinationIssue } from '../utils/streamDestinations.ts';
+import {
+  CHAT_TYPING_TTL_MS,
+  getChatTypingNames,
+  removeExpiredChatTypingIndicators,
+  upsertChatTypingIndicator,
+  type ChatTypingIndicator,
+} from '../utils/chatTyping.ts';
 import {
   DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID,
   type RtmpRelayOutputPresetId,
@@ -851,6 +858,8 @@ export function StudioRoom() {
   const [showInvitePanel, setShowInvitePanel] = useState(false);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>('people');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatTypingIndicators, setChatTypingIndicators] = useState<ChatTypingIndicator[]>([]);
+  const [supportsChatTyping, setSupportsChatTyping] = useState(false);
   const [guestNotification, setGuestNotification] = useState<ParticipantNotificationPayload | null>(null);
 
   // Layout
@@ -1189,6 +1198,7 @@ export function StudioRoom() {
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
   const popoutChatChannelRef = useRef<BroadcastChannel | null>(null);
   const popoutChatStateRef = useRef<PopoutChatState | null>(null);
+  const chatTypingExpiryTimerRef = useRef<number | null>(null);
   const bannerAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const lowerThirdAutoDismissTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; durationSeconds: number }>>(new Map());
   const sceneTransitionTimerRef = useRef<number | null>(null);
@@ -1497,6 +1507,7 @@ export function StudioRoom() {
       if (sceneTransitionFrameRef.current !== null) window.cancelAnimationFrame(sceneTransitionFrameRef.current);
       if (layoutTransitionTimerRef.current !== null) window.clearTimeout(layoutTransitionTimerRef.current);
       if (layoutTransitionFrameRef.current !== null) window.cancelAnimationFrame(layoutTransitionFrameRef.current);
+      if (chatTypingExpiryTimerRef.current !== null) window.clearTimeout(chatTypingExpiryTimerRef.current);
       for (const request of liveTokenRequestsRef.current.values()) {
         clearTimeout(request.timer);
         request.reject(new Error('Studio closed before live stream authorization completed.'));
@@ -1959,7 +1970,7 @@ export function StudioRoom() {
     (message: SignalMessage) => {
       switch (message.type) {
         case 'room-joined': {
-          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState, studioBranding } = message.payload;
+          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState, studioBranding, features } = message.payload;
           const live = Boolean(liveStreamState?.live || roomData.status === 'live');
           const liveStartedAt = live ? liveStreamState?.startedAt || new Date().toISOString() : null;
           const recordingStartedAt = recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null;
@@ -1972,6 +1983,8 @@ export function StudioRoom() {
           setMyParticipant(participant);
           setJoined(true);
           setChatMessages(existingChatMessages);
+          setChatTypingIndicators([]);
+          setSupportsChatTyping(features?.chatTyping === true);
           setQAQuestions(existingQuestions);
           setPolls(existingPolls);
           setRemoteStudioBranding(studioBranding || null);
@@ -2041,6 +2054,20 @@ export function StudioRoom() {
           setChatMessages((prev) => prev.map((chatMessage) => (
             chatMessage.id === message.payload.id ? message.payload : chatMessage
           )));
+          break;
+        case 'chat-typing':
+          setChatTypingIndicators((prev) => upsertChatTypingIndicator(
+            prev,
+            message.payload,
+            myParticipantRef.current?.id || ''
+          ));
+          if (chatTypingExpiryTimerRef.current !== null) {
+            window.clearTimeout(chatTypingExpiryTimerRef.current);
+          }
+          chatTypingExpiryTimerRef.current = window.setTimeout(() => {
+            setChatTypingIndicators((prev) => removeExpiredChatTypingIndicators(prev));
+            chatTypingExpiryTimerRef.current = null;
+          }, CHAT_TYPING_TTL_MS + 150);
           break;
         case 'chat-reaction': {
           const reaction = createFloatingReaction(
@@ -2614,6 +2641,30 @@ export function StudioRoom() {
     }
 
     send({ type: 'chat-message', payload: msg });
+  };
+
+  const onChatTypingChange = (typing: boolean, isBackstage = false, recipientId?: string) => {
+    if (!supportsChatTyping || !myParticipant) return;
+    const recipient = recipientId
+      ? participants.get(recipientId) || (myParticipant.id === recipientId ? myParticipant : undefined)
+      : undefined;
+    if (recipientId && !recipient) return;
+
+    const payload: ChatTypingPayload = {
+      participantId: myParticipant.id,
+      participantName: myParticipant.name,
+      typing,
+      timestamp: new Date().toISOString(),
+      isBackstage: recipient ? false : isBackstage,
+      ...(recipient
+        ? {
+            recipientId: recipient.id,
+            recipientName: recipient.name,
+          }
+        : {}),
+    };
+
+    send({ type: 'chat-typing', payload });
   };
 
   const onReactChat = (messageId: string, reaction: ChatReactionType) => {
@@ -3614,6 +3665,22 @@ export function StudioRoom() {
     }
     return map;
   }, [myParticipant, participants]);
+  const publicChatTypingNames = useMemo(
+    () => getChatTypingNames(chatTypingIndicators, 'public'),
+    [chatTypingIndicators]
+  );
+  const directChatTypingNames = useMemo(
+    () => getChatTypingNames(chatTypingIndicators, 'direct'),
+    [chatTypingIndicators]
+  );
+  const backstageChatTypingNames = useMemo(
+    () => getChatTypingNames(chatTypingIndicators, 'backstage'),
+    [chatTypingIndicators]
+  );
+  const guestChatTypingNames = useMemo(
+    () => Array.from(new Set([...publicChatTypingNames, ...directChatTypingNames])),
+    [directChatTypingNames, publicChatTypingNames]
+  );
 
   // Stage background style - memoized
   const stageBackgroundStyle = useMemo((): React.CSSProperties => {
@@ -4121,8 +4188,10 @@ export function StudioRoom() {
             messages={chatMessages.filter((msg) => msg.isBackstage)}
             onSend={(content) => onSendChat(content, true)}
             onReact={onReactChat}
+            onTypingChange={(typing) => onChatTypingChange(typing, true)}
             onClose={() => setShowGuestChat(false)}
             senderName={userName}
+            typingUsers={backstageChatTypingNames}
             title="Backstage Chat"
             placeholder="Send a backstage note..."
             emptyText="No backstage notes yet"
@@ -4693,8 +4762,10 @@ export function StudioRoom() {
             messages={chatMessages.filter((msg) => !msg.isBackstage)}
             onSend={(content, recipientId) => onSendChat(content, false, recipientId)}
             onReact={onReactChat}
+            onTypingChange={(typing, recipientId) => onChatTypingChange(typing, false, recipientId)}
             onClose={() => setShowGuestChat(false)}
             senderName={userName}
+            typingUsers={guestChatTypingNames}
             directRecipients={Array.from(allParticipantsMap.values())
               .filter((participant) => (
                 participant.id !== myParticipant?.id &&
@@ -4795,6 +4866,12 @@ export function StudioRoom() {
             onToggleChatStar={onToggleChatStar}
             onToggleChatPin={onToggleChatPin}
             chatSenderName={userName}
+            chatTypingNames={{
+              public: publicChatTypingNames,
+              direct: directChatTypingNames,
+              backstage: backstageChatTypingNames,
+            }}
+            onChatTypingChange={onChatTypingChange}
             onOpenPopoutChat={onOpenPopoutChat}
             allParticipants={allParticipantsMap}
             myParticipantId={myParticipant?.id || ''}

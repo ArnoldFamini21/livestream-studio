@@ -1134,6 +1134,146 @@ describe('chat engagement', () => {
     }
   });
 
+  it('broadcasts chat typing only to visible chat recipients', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Chat typing privacy test', 'Arnold', {
+      creatorIp: `chat-typing-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      const hostState = await hostJoined;
+      assert.equal(hostState.payload.features.chatTyping, true);
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      const guestState = await guestJoined;
+
+      const observer = await connectClient(harness.url);
+      const observerJoined = waitForMessage(observer, 'room-joined');
+      joinRoom(observer, {
+        roomId: room.id,
+        name: 'Observer',
+        role: 'guest',
+      });
+      await observerJoined;
+
+      const hostPublicTyping = waitForMessage(host, 'chat-typing', (message) => (
+        message.payload.participantId === guestState.payload.participant.id &&
+        message.payload.typing === true &&
+        message.payload.isBackstage === false &&
+        !message.payload.recipientId
+      ));
+      const observerPublicTyping = waitForMessage(observer, 'chat-typing', (message) => (
+        message.payload.participantId === guestState.payload.participant.id &&
+        message.payload.typing === true &&
+        !message.payload.recipientId
+      ));
+      const guestNoSelfTyping = expectNoMessage(guest, 'chat-typing', (message) => (
+        message.payload.participantId === guestState.payload.participant.id
+      ));
+      sendSignal(guest, {
+        type: 'chat-typing',
+        payload: {
+          participantId: 'spoofed-id',
+          participantName: 'Spoofed Name',
+          typing: true,
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+      const [hostPublic, observerPublic] = await Promise.all([hostPublicTyping, observerPublicTyping, guestNoSelfTyping]);
+      assert.equal(hostPublic.payload.participantName, 'Guest');
+      assert.equal(observerPublic.payload.participantName, 'Guest');
+
+      const guestDirectTyping = waitForMessage(guest, 'chat-typing', (message) => (
+        message.payload.participantId === hostState.payload.participant.id &&
+        message.payload.recipientId === guestState.payload.participant.id &&
+        message.payload.typing === true
+      ));
+      const observerNoDirectTyping = expectNoMessage(observer, 'chat-typing', (message) => (
+        message.payload.recipientId === guestState.payload.participant.id
+      ));
+      sendSignal(host, {
+        type: 'chat-typing',
+        payload: {
+          participantId: 'client-claimed-host',
+          participantName: 'Client claimed host',
+          recipientId: guestState.payload.participant.id,
+          typing: true,
+          timestamp: new Date().toISOString(),
+          isBackstage: false,
+        },
+      });
+      const directTyping = await guestDirectTyping;
+      await observerNoDirectTyping;
+      assert.equal(directTyping.payload.participantName, 'Arnold');
+      assert.equal(directTyping.payload.recipientName, 'Guest');
+
+      const backstageGuest = await connectClient(harness.url);
+      const backstageGuestJoined = waitForMessage(backstageGuest, 'room-joined');
+      joinRoom(backstageGuest, {
+        roomId: room.id,
+        name: 'Backstage Guest',
+        role: 'guest',
+      });
+      const backstageGuestState = await backstageGuestJoined;
+
+      const backstageUpdated = waitForMessage(backstageGuest, 'participant-updated', (message) => (
+        message.payload.id === backstageGuestState.payload.participant.id &&
+        message.payload.status === 'backstage'
+      ));
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: {
+          action: 'move-to-backstage',
+          targetParticipantId: backstageGuestState.payload.participant.id,
+          performedBy: 'client-claimed-host',
+        },
+      });
+      await backstageUpdated;
+
+      const backstageTyping = waitForMessage(backstageGuest, 'chat-typing', (message) => (
+        message.payload.participantId === hostState.payload.participant.id &&
+        message.payload.isBackstage === true &&
+        message.payload.typing === true
+      ));
+      const observerNoBackstageTyping = expectNoMessage(observer, 'chat-typing', (message) => (
+        message.payload.isBackstage === true
+      ));
+      sendSignal(host, {
+        type: 'chat-typing',
+        payload: {
+          participantId: 'client-claimed-host',
+          participantName: 'Client claimed host',
+          typing: true,
+          timestamp: new Date().toISOString(),
+          isBackstage: true,
+        },
+      });
+      const backstage = await backstageTyping;
+      await observerNoBackstageTyping;
+      assert.equal(backstage.payload.participantName, 'Arnold');
+    } finally {
+      await harness.close();
+    }
+  });
+
   it('keeps backstage chat scoped to producers and backstage participants', async () => {
     const harness = await createSignalingHarness();
     const { room, hostToken } = createRoom('Backstage chat privacy test', 'Arnold', {

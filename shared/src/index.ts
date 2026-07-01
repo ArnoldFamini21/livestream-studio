@@ -179,6 +179,7 @@ export type SignalMessage =
   | { type: 'media-state-changed'; payload: MediaStatePayload }
   | { type: 'chat-message'; payload: ChatMessage }
   | { type: 'chat-message-updated'; payload: ChatMessage }
+  | { type: 'chat-typing'; payload: ChatTypingPayload }
   | { type: 'chat-reaction'; payload: ChatReactionPayload }
   | { type: 'chat-star-update'; payload: ChatStarUpdatePayload }
   | { type: 'chat-pin-update'; payload: ChatPinUpdatePayload }
@@ -228,6 +229,9 @@ export interface RoomJoinedPayload {
   recordingState?: RecordingStatePayload;
   liveStreamState?: LiveStreamStatePayload;
   studioBranding?: StudioBrandingPayload;
+  features?: {
+    chatTyping?: boolean;
+  };
 }
 
 export interface SDPPayload {
@@ -334,6 +338,16 @@ export interface ChatMessage {
   pinnedBy?: string;
   pinnedAt?: string;
   reactions?: Partial<Record<ChatReactionType, number>>;
+}
+
+export interface ChatTypingPayload {
+  participantId: string;
+  participantName: string;
+  typing: boolean;
+  timestamp: string;
+  isBackstage: boolean;
+  recipientId?: string;
+  recipientName?: string;
 }
 
 export const CHAT_REACTION_TYPES = ['like', 'love', 'clap', 'laugh', 'wow'] as const;

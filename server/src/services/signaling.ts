@@ -8,6 +8,7 @@ import type {
   JoinRoomPayload,
   MediaStatePayload,
   ChatMessage,
+  ChatTypingPayload,
   ChatReactionType,
   QAQuestion,
   LivePoll,
@@ -69,6 +70,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'ice-candidate',
   'media-state-changed',
   'chat-message',
+  'chat-typing',
   'chat-reaction',
   'chat-star-update',
   'chat-pin-update',
@@ -635,6 +637,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'chat-message':
       handleChatMessage(ws, message.payload);
       break;
+    case 'chat-typing':
+      handleChatTyping(ws, message.payload);
+      break;
     case 'chat-reaction':
       handleChatReaction(ws, message.payload);
       break;
@@ -848,6 +853,9 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
         : undefined,
       liveStreamState,
       studioBranding: roomState.studioBranding,
+      features: {
+        chatTyping: true,
+      },
     },
   });
 
@@ -1439,6 +1447,93 @@ function sendChatReactionToVisibleParticipants(
     if (!canSeeChatMessage(message, participant, participantId)) continue;
     send(ws, { type: 'chat-reaction', payload });
   }
+}
+
+function sendChatTypingToVisibleParticipants(roomState: RoomState, payload: ChatTypingPayload) {
+  const visibilityProbe: ChatMessage = {
+    id: '__typing__',
+    senderId: payload.participantId,
+    senderName: payload.participantName,
+    content: '',
+    timestamp: payload.timestamp,
+    isBackstage: payload.isBackstage,
+    ...(payload.recipientId
+      ? {
+          recipientId: payload.recipientId,
+          recipientName: payload.recipientName,
+        }
+      : {}),
+  };
+
+  for (const [participantId, { participant, ws }] of roomState.participants) {
+    if (participantId === payload.participantId) continue;
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (!canSeeChatMessage(visibilityProbe, participant, participantId)) continue;
+    send(ws, { type: 'chat-typing', payload });
+  }
+}
+
+function handleChatTyping(ws: WebSocket, payload: ChatTypingPayload) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  if (typeof payload.typing !== 'boolean') {
+    sendError(ws, 'Invalid chat typing state', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const senderEntry = roomState.participants.get(mapping.participantId);
+  if (!senderEntry) return;
+  if (senderEntry.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before sending studio chat updates', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  const requestedRecipientId = typeof payload.recipientId === 'string' ? payload.recipientId.trim() : '';
+  const recipientEntry = requestedRecipientId ? roomState.participants.get(requestedRecipientId) : undefined;
+  if (requestedRecipientId) {
+    if (!recipientEntry || requestedRecipientId === mapping.participantId) {
+      sendError(ws, 'Invalid private message recipient', 'VALIDATION_ERROR');
+      return;
+    }
+
+    const senderIsOperator = senderEntry.participant.role === 'host' || senderEntry.participant.role === 'co-host';
+    const recipientIsOperator = recipientEntry.participant.role === 'host' || recipientEntry.participant.role === 'co-host';
+    if (!senderIsOperator && !recipientIsOperator) {
+      sendError(ws, 'Private messages must include a host or co-host', 'UNAUTHORIZED');
+      return;
+    }
+  }
+
+  const isBackstageTyping = requestedRecipientId ? false : payload.isBackstage === true;
+  const canSendBackstageTyping = (
+    senderEntry.participant.role === 'host' ||
+    senderEntry.participant.role === 'co-host' ||
+    senderEntry.participant.status === 'backstage'
+  );
+  if (isBackstageTyping && !canSendBackstageTyping) {
+    sendError(ws, 'Only hosts, co-hosts, and backstage participants can send backstage chat updates', 'UNAUTHORIZED');
+    return;
+  }
+
+  const authoritativePayload: ChatTypingPayload = {
+    participantId: mapping.participantId,
+    participantName: senderEntry.participant.name,
+    typing: payload.typing,
+    timestamp: new Date().toISOString(),
+    isBackstage: isBackstageTyping,
+    ...(recipientEntry
+      ? {
+          recipientId: recipientEntry.participant.id,
+          recipientName: recipientEntry.participant.name,
+        }
+      : {}),
+  };
+
+  sendChatTypingToVisibleParticipants(roomState, authoritativePayload);
 }
 
 function handleChatMessage(ws: WebSocket, payload: ChatMessage) {

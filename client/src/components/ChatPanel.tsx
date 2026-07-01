@@ -1,14 +1,17 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import type { ChatMessage, ChatReactionType } from '@studio/shared';
 import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
+import { formatChatTypingNames } from '../utils/chatTyping.ts';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   onSend: (content: string, recipientId?: string) => void;
   onReact?: (messageId: string, reaction: ChatReactionType) => void;
+  onTypingChange?: (typing: boolean, recipientId?: string) => void;
   onClose: () => void;
   senderName: string;
   directRecipients?: Array<{ id: string; name: string; role?: string }>;
+  typingUsers?: string[];
   title?: string;
   placeholder?: string;
   emptyText?: string;
@@ -17,14 +20,17 @@ interface ChatPanelProps {
 
 const MAX_MESSAGE_LENGTH = 2000;
 const CHAR_COUNT_THRESHOLD = 1800;
+const TYPING_IDLE_MS = 2_500;
 
 export function ChatPanel({
   messages,
   onSend,
   onReact,
+  onTypingChange,
   onClose,
   senderName,
   directRecipients = [],
+  typingUsers = [],
   title = 'Chat',
   placeholder = 'Type a message...',
   emptyText = 'No messages yet',
@@ -35,7 +41,11 @@ export function ChatPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const typingStateRef = useRef<{ typing: boolean; recipientId?: string }>({ typing: false });
+  const typingTimerRef = useRef<number | null>(null);
+  const onTypingChangeRef = useRef(onTypingChange);
   const selectedRecipient = directRecipients.find((recipient) => recipient.id === recipientId);
+  const typingLabel = formatChatTypingNames(typingUsers);
   const pinnedMessage = messages.reduce<ChatMessage | null>((latest, message) => {
     if (!message.pinned || message.isBackstage || message.recipientId) return latest;
     if (!latest) return message;
@@ -51,6 +61,36 @@ export function ChatPanel({
     isNearBottomRef.current = distanceFromBottom < 100;
   };
 
+  const clearTypingTimer = useCallback(() => {
+    if (typingTimerRef.current === null) return;
+    window.clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = null;
+  }, []);
+
+  const emitTyping = useCallback((typing: boolean, nextRecipientId?: string) => {
+    const typingChangeHandler = onTypingChangeRef.current;
+    if (!typingChangeHandler) return;
+    const normalizedRecipientId = nextRecipientId || undefined;
+    const current = typingStateRef.current;
+    if (current.typing === typing && current.recipientId === normalizedRecipientId) return;
+    typingStateRef.current = { typing, recipientId: normalizedRecipientId };
+    typingChangeHandler(typing, normalizedRecipientId);
+  }, []);
+
+  const scheduleTypingStop = useCallback((nextRecipientId?: string) => {
+    clearTypingTimer();
+    typingTimerRef.current = window.setTimeout(() => {
+      emitTyping(false, nextRecipientId);
+      typingTimerRef.current = null;
+    }, TYPING_IDLE_MS);
+  }, [clearTypingTimer, emitTyping]);
+
+  const stopTyping = useCallback(() => {
+    clearTypingTimer();
+    const current = typingStateRef.current;
+    if (current.typing) emitTyping(false, current.recipientId);
+  }, [clearTypingTimer, emitTyping]);
+
   useEffect(() => {
     if (isNearBottomRef.current || messages.length === 1) { // Also auto-scroll on first message
       // Delay slightly to ensure React has fully committed the new message elements to the DOM
@@ -60,11 +100,41 @@ export function ChatPanel({
     }
   }, [messages.length]);
 
+  useEffect(() => {
+    onTypingChangeRef.current = onTypingChange;
+  }, [onTypingChange]);
+
+  useEffect(() => stopTyping, [stopTyping]);
+
   const handleSend = () => {
     const text = input.trim();
     if (!text || text.length > MAX_MESSAGE_LENGTH) return;
+    stopTyping();
     onSend(text, selectedRecipient?.id);
     setInput('');
+  };
+
+  const handleInputChange = (value: string) => {
+    setInput(value);
+    const nextRecipientId = selectedRecipient?.id;
+    if (!value.trim()) {
+      stopTyping();
+      return;
+    }
+    emitTyping(true, nextRecipientId);
+    scheduleTypingStop(nextRecipientId);
+  };
+
+  const handleRecipientChange = (nextRecipientId: string) => {
+    const wasTyping = typingStateRef.current.typing;
+    stopTyping();
+    setRecipientId(nextRecipientId);
+    if (!input.trim()) return;
+    if (wasTyping) {
+      const normalizedRecipientId = nextRecipientId || undefined;
+      emitTyping(true, normalizedRecipientId);
+      scheduleTypingStop(normalizedRecipientId);
+    }
   };
 
   return (
@@ -156,7 +226,7 @@ export function ChatPanel({
           <select
             style={styles.recipientSelect}
             value={recipientId}
-            onChange={(event) => setRecipientId(event.target.value)}
+            onChange={(event) => handleRecipientChange(event.target.value)}
             aria-label="Chat recipient"
           >
             <option value="">Everyone</option>
@@ -167,6 +237,9 @@ export function ChatPanel({
             ))}
           </select>
         )}
+        <div style={styles.typingIndicator} aria-live="polite">
+          {typingLabel}
+        </div>
         {input.length >= CHAR_COUNT_THRESHOLD && (
           <div style={{
             ...styles.charCount,
@@ -181,7 +254,7 @@ export function ChatPanel({
             placeholder={selectedRecipient ? `Message ${selectedRecipient.name} privately...` : placeholder}
             value={input}
             maxLength={MAX_MESSAGE_LENGTH}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => handleInputChange(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
           />
           <button
@@ -423,6 +496,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     textAlign: 'right' as const,
     padding: '4px 12px 0',
+  },
+  typingIndicator: {
+    minHeight: 18,
+    padding: '6px 12px 0',
+    color: '#67e8f9',
+    fontSize: 11,
+    fontWeight: 600,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
   },
   inputBar: {
     display: 'flex',

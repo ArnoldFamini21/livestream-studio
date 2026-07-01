@@ -44,6 +44,7 @@ import {
   MAX_WAITING_ROOM_HEADLINE_LENGTH,
   MAX_WAITING_ROOM_MESSAGE_LENGTH,
 } from '../utils/waitingRoomBranding.ts';
+import { formatChatTypingNames } from '../utils/chatTyping.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -144,6 +145,12 @@ interface SidebarProps {
   onToggleChatStar: (messageId: string, starred: boolean) => void;
   onToggleChatPin: (messageId: string, pinned: boolean) => void;
   chatSenderName: string;
+  chatTypingNames?: {
+    public: string[];
+    direct: string[];
+    backstage: string[];
+  };
+  onChatTypingChange?: (typing: boolean, isBackstage?: boolean, recipientId?: string) => void;
   onOpenPopoutChat?: () => void;
   // People props
   allParticipants: Map<string, Participant>;
@@ -390,6 +397,8 @@ export function Sidebar(props: SidebarProps) {
               onFlashComment={props.onFlashComment}
               onDismissComment={props.onDismissComment}
               senderName={props.chatSenderName}
+              typingNames={props.chatTypingNames}
+              onTypingChange={props.onChatTypingChange}
               onOpenPopoutChat={props.onOpenPopoutChat}
               participants={props.allParticipants}
               myParticipantId={props.myParticipantId}
@@ -1179,6 +1188,8 @@ function ChatContent({
   onFlashComment,
   onDismissComment,
   senderName,
+  typingNames,
+  onTypingChange,
   onOpenPopoutChat,
   participants,
   myParticipantId,
@@ -1193,6 +1204,12 @@ function ChatContent({
   onFlashComment: (comment: HighlightedComment) => void;
   onDismissComment: () => void;
   senderName: string;
+  typingNames?: {
+    public: string[];
+    direct: string[];
+    backstage: string[];
+  };
+  onTypingChange?: (typing: boolean, isBackstage?: boolean, recipientId?: string) => void;
   onOpenPopoutChat?: () => void;
   participants: Map<string, Participant>;
   myParticipantId: string;
@@ -1203,6 +1220,11 @@ function ChatContent({
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const typingStateRef = useRef<{ typing: boolean; isBackstage: boolean; recipientId?: string }>({
+    typing: false,
+    isBackstage: false,
+  });
+  const typingTimerRef = useRef<number | null>(null);
   const publicMessages = messages.filter((msg) => !msg.isBackstage && !msg.recipientId);
   const starredMessages = publicMessages.filter((msg) => msg.starred);
   const pinnedMessage = publicMessages.reduce<ChatMessage | null>((latest, message) => {
@@ -1234,6 +1256,12 @@ function ChatContent({
     .sort((a, b) => a.name.localeCompare(b.name));
   const selectedRecipient = directRecipients.find((participant) => participant.id === directRecipientId);
   const canSend = input.trim().length > 0 && (mode !== 'direct' || Boolean(selectedRecipient));
+  const activeTypingNames = mode === 'backstage'
+    ? typingNames?.backstage || []
+    : mode === 'direct'
+      ? typingNames?.direct || []
+      : typingNames?.public || [];
+  const typingLabel = formatChatTypingNames(activeTypingNames);
 
   const handleFeatureMessage = (message: ChatMessage) => {
     const isFeaturedMessage = isHighlightedCommentSource(highlightedComment, message.id)
@@ -1265,10 +1293,94 @@ function ChatContent({
     if (isNearBottomRef.current) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [visibleMessages.length, mode]);
 
+  const clearTypingTimer = () => {
+    if (typingTimerRef.current === null) return;
+    window.clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = null;
+  };
+
+  const getTypingTarget = (
+    nextMode: typeof mode = mode,
+    nextRecipientId: string = directRecipientId
+  ): { isBackstage: boolean; recipientId?: string } | null => {
+    if (nextMode === 'backstage') return { isBackstage: true };
+    if (nextMode === 'direct') {
+      return nextRecipientId ? { isBackstage: false, recipientId: nextRecipientId } : null;
+    }
+    return { isBackstage: false };
+  };
+
+  const emitTyping = (typing: boolean, target: { isBackstage: boolean; recipientId?: string } | null) => {
+    if (!onTypingChange || !target) return;
+    const current = typingStateRef.current;
+    if (
+      current.typing === typing &&
+      current.isBackstage === target.isBackstage &&
+      current.recipientId === target.recipientId
+    ) {
+      return;
+    }
+    typingStateRef.current = { typing, isBackstage: target.isBackstage, recipientId: target.recipientId };
+    onTypingChange(typing, target.isBackstage, target.recipientId);
+  };
+
+  const scheduleTypingStop = (target: { isBackstage: boolean; recipientId?: string } | null) => {
+    clearTypingTimer();
+    if (!target) return;
+    typingTimerRef.current = window.setTimeout(() => {
+      emitTyping(false, target);
+      typingTimerRef.current = null;
+    }, 2_500);
+  };
+
+  const stopTyping = () => {
+    clearTypingTimer();
+    const current = typingStateRef.current;
+    if (current.typing) {
+      emitTyping(false, { isBackstage: current.isBackstage, recipientId: current.recipientId });
+    }
+  };
+
+  useEffect(() => stopTyping, []);
+
+  const handleInputChange = (value: string) => {
+    setInput(value);
+    const target = getTypingTarget();
+    if (!value.trim() || !target) {
+      stopTyping();
+      return;
+    }
+    emitTyping(true, target);
+    scheduleTypingStop(target);
+  };
+
+  const handleModeChange = (nextMode: typeof mode) => {
+    const wasTyping = typingStateRef.current.typing;
+    stopTyping();
+    setMode(nextMode);
+    const target = getTypingTarget(nextMode);
+    if (input.trim() && wasTyping && target) {
+      emitTyping(true, target);
+      scheduleTypingStop(target);
+    }
+  };
+
+  const handleDirectRecipientChange = (nextRecipientId: string) => {
+    const wasTyping = typingStateRef.current.typing;
+    stopTyping();
+    setDirectRecipientId(nextRecipientId);
+    const target = getTypingTarget('direct', nextRecipientId);
+    if (input.trim() && wasTyping && target) {
+      emitTyping(true, target);
+      scheduleTypingStop(target);
+    }
+  };
+
   const handleSend = () => {
     const t = input.trim();
     if (!t) return;
     if (mode === 'direct' && !selectedRecipient) return;
+    stopTyping();
     onSend(t, mode === 'backstage', mode === 'direct' ? selectedRecipient?.id : undefined);
     setInput('');
   };
@@ -1314,7 +1426,7 @@ function ChatContent({
             role="tab"
             aria-selected={mode === 'public'}
             style={{ ...st.chatTab, ...(mode === 'public' ? st.chatTabActive : {}) }}
-            onClick={() => setMode('public')}
+            onClick={() => handleModeChange('public')}
           >
             Public
             {publicMessages.length > 0 && <span style={st.chatTabCount}>{publicMessages.length}</span>}
@@ -1324,7 +1436,7 @@ function ChatContent({
             role="tab"
             aria-selected={mode === 'starred'}
             style={{ ...st.chatTab, ...(mode === 'starred' ? st.chatTabActiveStarred : {}) }}
-            onClick={() => setMode('starred')}
+            onClick={() => handleModeChange('starred')}
           >
             Starred
             {starredMessages.length > 0 && <span style={st.chatTabCount}>{starredMessages.length}</span>}
@@ -1334,7 +1446,7 @@ function ChatContent({
             role="tab"
             aria-selected={mode === 'direct'}
             style={{ ...st.chatTab, ...(mode === 'direct' ? st.chatTabActiveDirect : {}) }}
-            onClick={() => setMode('direct')}
+            onClick={() => handleModeChange('direct')}
           >
             Direct
             {directMessages.length > 0 && <span style={st.chatTabCount}>{directMessages.length}</span>}
@@ -1344,7 +1456,7 @@ function ChatContent({
             role="tab"
             aria-selected={mode === 'backstage'}
             style={{ ...st.chatTab, ...(mode === 'backstage' ? st.chatTabActiveBackstage : {}) }}
-            onClick={() => setMode('backstage')}
+            onClick={() => handleModeChange('backstage')}
           >
             Backstage
             {backstageMessages.length > 0 && <span style={st.chatTabCount}>{backstageMessages.length}</span>}
@@ -1441,7 +1553,7 @@ function ChatContent({
           <select
             style={st.chatDirectSelect}
             value={directRecipientId}
-            onChange={(event) => setDirectRecipientId(event.target.value)}
+            onChange={(event) => handleDirectRecipientChange(event.target.value)}
             aria-label="Private message recipient"
           >
             <option value="">Select recipient</option>
@@ -1453,12 +1565,15 @@ function ChatContent({
           </select>
         </div>
       )}
+      <div style={st.chatTypingIndicator} aria-live="polite">
+        {typingLabel}
+      </div>
       <div style={st.chatInputBar}>
         <input
           style={st.chatInput}
           placeholder={mode === 'backstage' ? 'Send a backstage note...' : mode === 'direct' && selectedRecipient ? `Message ${selectedRecipient.name} privately...` : mode === 'direct' ? 'Choose a recipient first...' : 'Type a public message...'}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => handleInputChange(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
         />
         <button className="chat-send-btn" style={{ ...st.chatSendBtn, opacity: canSend ? 1 : 0.4 }} onClick={handleSend} disabled={!canSend} aria-label="Send message">
@@ -1750,6 +1865,7 @@ const st: Record<string, React.CSSProperties> = {
   chatReactionCount: { minWidth: 14, height: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', borderRadius: 999, background: 'rgba(255, 255, 255, 0.08)', color: 'var(--text-primary)', fontSize: 9, lineHeight: 1 },
   chatDirectControls: { padding: '10px 12px 0', borderTop: '1px solid var(--border)' },
   chatDirectSelect: { width: '100%', minHeight: 34, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' },
+  chatTypingIndicator: { minHeight: 18, padding: '6px 12px 0', color: '#67e8f9', fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   chatInputBar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderTop: '1px solid var(--border)' },
   chatInput: { flex: 1, padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', outline: 'none' },
   chatSendBtn: { width: 34, height: 34, borderRadius: 8, background: 'var(--accent-solid)', color: 'white', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, transition: 'opacity var(--transition-fast)' },

@@ -128,7 +128,7 @@
 
 ## Phase 6: Chat & Audience Interaction (Priority: Medium)
 ### 6A. Built-In Chat
-- [ ] Real-time WebSocket chat panel (host + guests)
+- [x] Real-time WebSocket chat panel (host + guests), including scoped typing indicators
 - [x] Chat message animations (slide in from right)
 - [x] Emoji reactions
 - [x] Pin messages
