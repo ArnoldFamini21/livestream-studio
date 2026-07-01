@@ -40,10 +40,6 @@ export interface LegacyHostlessCreateResponseLike {
 const LEGACY_HOST_SESSION_VERSION = 'v2';
 const LEGACY_HOST_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
 function getSessionItem(key: string): string {
   try {
     return sessionStorage.getItem(key) || '';
@@ -97,11 +93,10 @@ export function getValidHostToken(value: unknown): string {
 export function isLegacyHostlessCreateResponse(room: LegacyHostlessCreateResponseLike): boolean {
   if (getValidHostToken(room.hostToken)) return false;
   if (typeof room.id !== 'string' || typeof room.name !== 'string') return false;
-  // Older deployed APIs either returned only id/name or omitted passwordProtected
-  // from room settings. Modern token-required APIs include that field.
-  if (isRecord(room.settings) && Object.prototype.hasOwnProperty.call(room.settings, 'passwordProtected')) {
-    return false;
-  }
+  // If a create/schedule request succeeded but no host token survived the API
+  // response, keep the creator moving in same-tab legacy host mode. This covers
+  // older Render builds and any proxy/client response shape that strips the
+  // private token before the browser can persist it.
   return true;
 }
 

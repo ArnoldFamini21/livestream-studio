@@ -186,7 +186,7 @@ async function resolveCreatedRoomHostAccess(room: CreatedRoomWithDetails): Promi
     return { room: recoveredRoom, legacyHostless: false };
   }
 
-  throw new Error('Studio was created, but host access was not returned. Please try again in a moment.');
+  return { room: recoveredRoom, legacyHostless: true };
 }
 
 function toSavedScheduledRoom(

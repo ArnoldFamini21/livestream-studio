@@ -134,7 +134,7 @@ describe('host session links', () => {
         frameRate: 30,
         passwordProtected: false,
       },
-    }), false);
+    }), true);
     assert.equal(isLegacyHostlessCreateResponse({
       id: 'incomplete-room',
       name: 'Incomplete room',
