@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { nanoid } from 'nanoid';
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
 import type {
   SignalMessage,
   Room,
@@ -60,6 +61,7 @@ interface RoomState {
 // Extend WebSocket to track heartbeat state
 interface AliveWebSocket extends WebSocket {
   isAlive: boolean;
+  clientIp?: string;
 }
 
 // Known message types for validation (fix #10)
@@ -184,6 +186,22 @@ function parseBoundedDurationMs(
   return Math.min(Math.max(Math.trunc(parsed), min), max);
 }
 
+function getHeaderValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] || '';
+  return value || '';
+}
+
+function getClientIpFromRequest(req?: IncomingMessage): string {
+  if (!req) return 'unknown';
+  const forwardedFor = getHeaderValue(req.headers['x-forwarded-for'])
+    .split(',')[0]
+    .trim();
+  if (forwardedFor) return forwardedFor;
+  const realIp = getHeaderValue(req.headers['x-real-ip']).trim();
+  if (realIp) return realIp;
+  return req.socket.remoteAddress || 'unknown';
+}
+
 function checkWsRateLimit(ws: WebSocket): boolean {
   const now = Date.now();
   const entry = wsMessageCounts.get(ws);
@@ -286,6 +304,14 @@ function clearRoomEndingTimer(roomId: string) {
   clearTimeout(endingTimer);
   endingTimers.delete(roomId);
   return true;
+}
+
+function canUseCreatorNetworkHostFallback(ws: WebSocket, roomState: RoomState, nowMs = Date.now()): boolean {
+  if (roomState.hasBeenJoined || roomState.participants.size > 0 || roomState.room.hostId) return false;
+  const clientIp = (ws as AliveWebSocket).clientIp || 'unknown';
+  if (clientIp === 'unknown' || roomState.creatorIp !== clientIp) return false;
+  const createdAtMs = Date.parse(roomState.room.createdAt);
+  return Number.isFinite(createdAtMs) && nowMs - createdAtMs <= HOST_ACCESS_RECOVERY_WINDOW_MS;
 }
 
 function updateRoomActivityStatus(roomState: RoomState) {
@@ -576,12 +602,13 @@ export function setupSignalingServer(wss: WebSocketServer) {
     clearInterval(heartbeatInterval);
   });
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     console.log('New WebSocket connection');
 
     // Fix #3: Mark connection as alive on connect and on pong
     const aliveWs = ws as AliveWebSocket;
     aliveWs.isAlive = true;
+    aliveWs.clientIp = getClientIpFromRequest(req);
 
     ws.on('pong', () => {
       (ws as AliveWebSocket).isAlive = true;
@@ -725,8 +752,12 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   if (requestedRole === 'host') {
     const presented = typeof payload.hostToken === 'string' ? payload.hostToken : '';
     if (!presented || !safeEqual(presented, roomState.hostToken)) {
-      sendError(ws, 'Host access is missing or expired. Reopen this studio from the creator browser or saved host entry.', 'HOST_TOKEN_INVALID');
-      return;
+      if (!presented && canUseCreatorNetworkHostFallback(ws, roomState)) {
+        console.warn(`Room ${roomId} accepted first host from creator network without a host token`);
+      } else {
+        sendError(ws, 'Host access is missing or expired. Reopen this studio from the creator browser or saved host entry.', 'HOST_TOKEN_INVALID');
+        return;
+      }
     } else {
       const existingHostId = roomState.room.hostId;
       const hostStillConnected =

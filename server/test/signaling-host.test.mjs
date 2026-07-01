@@ -25,8 +25,8 @@ async function createSignalingHarness() {
   };
 }
 
-async function connectClient(url) {
-  const ws = new WebSocket(url);
+async function connectClient(url, options = undefined) {
+  const ws = new WebSocket(url, options);
   await new Promise((resolve, reject) => {
     ws.once('open', resolve);
     ws.once('error', reject);
@@ -114,6 +114,58 @@ function verifySignedLiveToken(token, secret) {
 }
 
 describe('host admission', () => {
+  it('allows the first host to enter without a token from the creator network', async () => {
+    const harness = await createSignalingHarness();
+    const creatorIp = `198.51.100.${Math.floor(Math.random() * 100) + 1}`;
+    const { room } = createRoom('Creator network fallback test', 'Arnold', {
+      creatorIp,
+    });
+
+    try {
+      const host = await connectClient(harness.url, {
+        headers: { 'x-forwarded-for': creatorIp },
+      });
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+      });
+
+      const joined = await hostJoined;
+      assert.equal(joined.payload.participant.role, 'host');
+      assert.equal(joined.payload.participant.status, 'on-stage');
+      assert.equal(getRooms().get(room.id)?.room.hostId, joined.payload.participant.id);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects a missing host-token claim from a different network', async () => {
+    const harness = await createSignalingHarness();
+    const { room } = createRoom('Wrong network fallback test', 'Arnold', {
+      creatorIp: '198.51.100.201',
+    });
+
+    try {
+      const host = await connectClient(harness.url, {
+        headers: { 'x-forwarded-for': '198.51.100.202' },
+      });
+      const errorMessage = waitForMessage(host, 'error');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+      });
+
+      const error = await errorMessage;
+      assert.equal(error.payload.code, 'HOST_TOKEN_INVALID');
+      assert.equal(getRooms().get(room.id)?.participants.size, 0);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it('keeps a valid host-token login on stage when replacing a stale host session', async () => {
     const harness = await createSignalingHarness();
     const { room, hostToken } = createRoom('Host reclaim test', 'Arnold', {

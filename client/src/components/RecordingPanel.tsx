@@ -143,6 +143,56 @@ interface RecordingAudioStemFile {
   encoding: 'pcm_s16le';
 }
 
+interface RecordingQualityFile {
+  label: string;
+  format: 'json' | 'txt';
+  zipPath: string;
+  size: number;
+  type: string;
+}
+
+interface RecordingQualityTrackReport {
+  trackIndex: number;
+  label: string;
+  kind: string;
+  zipPath: string;
+  size: number;
+  type: string;
+  captureDurationSeconds: number | null;
+  durationDeltaSeconds: number | null;
+  hasCaptureMetadata: boolean;
+  hasAudio: boolean;
+  hasVideo: boolean;
+  issues: string[];
+}
+
+interface RecordingQualityReport {
+  app: 'livestream-studio';
+  exportType: 'recording-quality-report';
+  version: 1;
+  exportedAt: string;
+  status: 'ready' | 'review';
+  session: {
+    id: string | null;
+    roomName: string;
+    createdAt: string;
+    durationSeconds: number | null;
+    trackCount: number;
+    totalBytes: number;
+  };
+  checks: {
+    hasAudioTrack: boolean;
+    hasVideoTrack: boolean;
+    hasProgramMix: boolean;
+    hasIsoTracks: boolean;
+    audioStemCandidateCount: number;
+    audioStemGeneratedCount: number;
+    audioStemSkippedCount: number;
+  };
+  tracks: RecordingQualityTrackReport[];
+  issues: string[];
+}
+
 interface ZipEntry {
   path: string;
   blob: Blob;
@@ -1427,6 +1477,163 @@ function buildPodcastReadme(source: RecordingBundleSource): string {
   ].join('\n');
 }
 
+function getFileHasAudio(file: RecordingBundleFile): boolean {
+  return file.type.startsWith('audio/') || Boolean(file.capture?.tracks.some((track) => track.kind === 'audio'));
+}
+
+function getFileHasVideo(file: RecordingBundleFile): boolean {
+  return file.type.startsWith('video/') || file.kind === 'video' || file.kind === 'screen' || file.kind === 'program' || file.kind === 'iso' || Boolean(file.capture?.tracks.some((track) => track.kind === 'video'));
+}
+
+function getCaptureDurationSeconds(file: RecordingBundleFile): number | null {
+  if (!Number.isFinite(file.capture?.durationMs)) return null;
+  return Number(((file.capture?.durationMs || 0) / 1000).toFixed(3));
+}
+
+function getDurationDeltaSeconds(sourceDuration: number | null, captureDuration: number | null): number | null {
+  if (!Number.isFinite(sourceDuration) || captureDuration === null) return null;
+  return Number(Math.abs((sourceDuration || 0) - captureDuration).toFixed(3));
+}
+
+function createRecordingQualityReport(
+  source: RecordingBundleSource,
+  files: RecordingBundleFile[],
+  exportedAt: string,
+  audioStemFiles: RecordingAudioStemFile[],
+  skippedAudioStemCount: number,
+  audioStemCandidateCount: number
+): RecordingQualityReport {
+  const totalBytes = files.reduce((total, file) => total + file.size, 0);
+  const safeSessionDuration = Number.isFinite(source.durationSeconds) ? Math.max(0, Number(source.durationSeconds)) : null;
+  const tracks = files.map((file, index): RecordingQualityTrackReport => {
+    const captureDurationSeconds = getCaptureDurationSeconds(file);
+    const durationDeltaSeconds = getDurationDeltaSeconds(safeSessionDuration, captureDurationSeconds);
+    const hasAudio = getFileHasAudio(file);
+    const hasVideo = getFileHasVideo(file);
+    const issues: string[] = [];
+
+    if (file.size <= 0) issues.push('Track file is empty.');
+    if (!file.capture) issues.push('Capture metadata is missing.');
+    if (!hasAudio && !hasVideo) issues.push('Track does not advertise audio or video media.');
+    if (durationDeltaSeconds !== null && durationDeltaSeconds > 2) {
+      issues.push(`Track duration differs from session by ${durationDeltaSeconds.toFixed(3)} seconds.`);
+    }
+
+    return {
+      trackIndex: index + 1,
+      label: file.label,
+      kind: file.kind || inferEditorTrackKind(file),
+      zipPath: file.zipPath,
+      size: file.size,
+      type: file.type,
+      captureDurationSeconds,
+      durationDeltaSeconds,
+      hasCaptureMetadata: Boolean(file.capture),
+      hasAudio,
+      hasVideo,
+      issues,
+    };
+  });
+
+  const issues = tracks.flatMap((track) => track.issues.map((issue) => `${track.label}: ${issue}`));
+  const hasAudioTrack = tracks.some((track) => track.hasAudio);
+  const hasVideoTrack = tracks.some((track) => track.hasVideo);
+  if (!hasAudioTrack) issues.push('No audio track was included in this export.');
+  if (!hasVideoTrack && files.some((file) => file.kind !== 'audio')) issues.push('No video track was included in this export.');
+  if (audioStemCandidateCount > 0 && skippedAudioStemCount > 0) {
+    issues.push(`${skippedAudioStemCount} of ${audioStemCandidateCount} audio stem candidate${audioStemCandidateCount === 1 ? '' : 's'} could not be converted to WAV in this browser.`);
+  }
+
+  return {
+    app: 'livestream-studio',
+    exportType: 'recording-quality-report',
+    version: 1,
+    exportedAt,
+    status: issues.length > 0 ? 'review' : 'ready',
+    session: {
+      id: source.sessionId,
+      roomName: source.roomName,
+      createdAt: source.createdAt,
+      durationSeconds: safeSessionDuration,
+      trackCount: files.length,
+      totalBytes,
+    },
+    checks: {
+      hasAudioTrack,
+      hasVideoTrack,
+      hasProgramMix: files.some((file) => file.kind === 'program'),
+      hasIsoTracks: files.some((file) => file.kind === 'iso'),
+      audioStemCandidateCount,
+      audioStemGeneratedCount: audioStemFiles.length,
+      audioStemSkippedCount: skippedAudioStemCount,
+    },
+    tracks,
+    issues,
+  };
+}
+
+function buildRecordingQualityReportText(report: RecordingQualityReport): string {
+  const lines = [
+    'LiveStream Studio Recording Quality Report',
+    '',
+    `Status: ${report.status.toUpperCase()}`,
+    `Room: ${report.session.roomName}`,
+    `Created: ${report.session.createdAt}`,
+    `Duration: ${formatDuration(report.session.durationSeconds)}`,
+    `Tracks: ${report.session.trackCount}`,
+    `Total size: ${formatFileSize(report.session.totalBytes)}`,
+    '',
+    'Checks:',
+    `- Audio track: ${report.checks.hasAudioTrack ? 'yes' : 'no'}`,
+    `- Video track: ${report.checks.hasVideoTrack ? 'yes' : 'no'}`,
+    `- Program mix: ${report.checks.hasProgramMix ? 'yes' : 'no'}`,
+    `- ISO tracks: ${report.checks.hasIsoTracks ? 'yes' : 'no'}`,
+    `- WAV stems: ${report.checks.audioStemGeneratedCount}/${report.checks.audioStemCandidateCount} generated, ${report.checks.audioStemSkippedCount} skipped`,
+    '',
+    'Track review:',
+  ];
+
+  for (const track of report.tracks) {
+    lines.push(`- ${track.trackIndex}. ${track.label} (${track.kind})`);
+    lines.push(`  Path: ${track.zipPath}`);
+    lines.push(`  Media: ${track.hasAudio ? 'audio' : 'no audio'} / ${track.hasVideo ? 'video' : 'no video'}`);
+    lines.push(`  Capture metadata: ${track.hasCaptureMetadata ? 'yes' : 'no'}`);
+    if (track.captureDurationSeconds !== null) lines.push(`  Capture duration: ${formatDuration(track.captureDurationSeconds)}`);
+    if (track.durationDeltaSeconds !== null) lines.push(`  Duration delta: ${track.durationDeltaSeconds.toFixed(3)}s`);
+    if (track.issues.length > 0) {
+      for (const issue of track.issues) lines.push(`  Issue: ${issue}`);
+    }
+  }
+
+  if (report.issues.length > 0) {
+    lines.push('', 'Issues:');
+    for (const issue of report.issues) lines.push(`- ${issue}`);
+  } else {
+    lines.push('', 'No quality issues detected by this browser-side export check.');
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
+function buildRecordingQualityEntries(report: RecordingQualityReport) {
+  const json = JSON.stringify(report, null, 2);
+  const text = buildRecordingQualityReportText(report);
+  return [
+    {
+      path: 'quality/recording_quality_report.json',
+      blob: new Blob([json], { type: 'application/json' }),
+      label: 'Recording quality report JSON',
+      format: 'json' as const,
+    },
+    {
+      path: 'quality/recording_quality_report.txt',
+      blob: new Blob([text], { type: 'text/plain;charset=utf-8' }),
+      label: 'Recording quality report text',
+      format: 'txt' as const,
+    },
+  ];
+}
+
 function createRecordingManifest(
   source: RecordingBundleSource,
   files: RecordingBundleFile[],
@@ -1434,6 +1641,7 @@ function createRecordingManifest(
   captionFiles: RecordingCaptionFile[],
   markerFiles: RecordingMarkerFile[],
   editorFiles: RecordingEditorFile[],
+  qualityFiles: RecordingQualityFile[],
   audioStemFiles: RecordingAudioStemFile[],
   skippedAudioStemCount: number,
   audioStemCandidateCount: number
@@ -1481,6 +1689,10 @@ function createRecordingManifest(
       timelineVersion: 1,
       files: editorFiles,
     },
+    quality: {
+      reportVersion: 1,
+      files: qualityFiles,
+    },
     ...(captionFiles.length > 0
       ? {
           captions: {
@@ -1519,6 +1731,7 @@ function createPodcastManifest(
   exportedAt: string,
   captionFiles: RecordingCaptionFile[],
   markerFiles: RecordingMarkerFile[],
+  qualityFiles: RecordingQualityFile[],
   audioStemFiles: RecordingAudioStemFile[],
   skippedAudioStemCount: number,
   audioStemCandidateCount: number
@@ -1558,6 +1771,10 @@ function createPodcastManifest(
       skippedCount: skippedAudioStemCount,
       candidateCount: audioStemCandidateCount,
       files: audioStemFiles,
+    },
+    quality: {
+      reportVersion: 1,
+      files: qualityFiles,
     },
     ...(captionFiles.length > 0
       ? {
@@ -1799,6 +2016,22 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     size: entry.blob.size,
     type: entry.blob.type,
   }));
+  const qualityReport = createRecordingQualityReport(
+    source,
+    manifestFiles,
+    exportedAt,
+    audioStemResult.files,
+    audioStemResult.skippedCount,
+    audioStemResult.candidateCount
+  );
+  const qualityEntries = buildRecordingQualityEntries(qualityReport);
+  const qualityFiles: RecordingQualityFile[] = qualityEntries.map((entry) => ({
+    label: entry.label,
+    format: entry.format,
+    zipPath: entry.path,
+    size: entry.blob.size,
+    type: entry.blob.type,
+  }));
   const manifest = createRecordingManifest(
     source,
     manifestFiles,
@@ -1806,6 +2039,7 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     captionFiles,
     markerFiles,
     editorFiles,
+    qualityFiles,
     audioStemResult.files,
     audioStemResult.skippedCount,
     audioStemResult.candidateCount
@@ -1817,6 +2051,7 @@ export async function createRecordingBundle(source: RecordingBundleSource): Prom
     ...trackEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...audioStemResult.entries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...editorEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    ...qualityEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...captionEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...markerEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
   ]);
@@ -1881,12 +2116,29 @@ export async function createPodcastAudioBundle(source: RecordingBundleSource): P
     path: 'README.txt',
     blob: new Blob([buildPodcastReadme(source)], { type: 'text/plain;charset=utf-8' }),
   };
+  const qualityReport = createRecordingQualityReport(
+    source,
+    manifestFiles,
+    exportedAt,
+    audioStemResult.files,
+    audioStemResult.skippedCount,
+    audioStemResult.candidateCount
+  );
+  const qualityEntries = buildRecordingQualityEntries(qualityReport);
+  const qualityFiles: RecordingQualityFile[] = qualityEntries.map((entry) => ({
+    label: entry.label,
+    format: entry.format,
+    zipPath: entry.path,
+    size: entry.blob.size,
+    type: entry.blob.type,
+  }));
   const manifest = createPodcastManifest(
     source,
     manifestFiles,
     exportedAt,
     captionFiles,
     markerFiles,
+    qualityFiles,
     audioStemResult.files,
     audioStemResult.skippedCount,
     audioStemResult.candidateCount
@@ -1897,6 +2149,7 @@ export async function createPodcastAudioBundle(source: RecordingBundleSource): P
     { path: 'manifest.json', blob: manifestBlob },
     ...audioEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...audioStemResult.entries.map((entry) => ({ path: entry.path, blob: entry.blob })),
+    ...qualityEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     readmeEntry,
     ...captionEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),
     ...markerEntries.map((entry) => ({ path: entry.path, blob: entry.blob })),

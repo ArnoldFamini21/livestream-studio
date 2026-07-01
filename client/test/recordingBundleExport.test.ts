@@ -230,6 +230,34 @@ describe('recording bundle editor export', () => {
     assert.match(text, /"durationMs": 65000/);
     assert.match(text, /"width": 1920/);
     assert.match(text, /"capture": \{/);
+    assert.match(text, /quality\/recording_quality_report\.json/);
+    assert.match(text, /quality\/recording_quality_report\.txt/);
+    assert.match(text, /"exportType": "recording-quality-report"/);
+    assert.match(text, /"status": "ready"/);
+    assert.match(text, /"label": "Host ISO"/);
+    assert.match(text, /"hasCaptureMetadata": true/);
+    assert.match(text, /"durationDeltaSeconds": 0/);
+  });
+
+  it('flags recording quality reports for review when capture metadata is missing', async () => {
+    const bundle = await createRecordingBundle({
+      ...source,
+      files: [
+        {
+          label: 'Host Mic',
+          fileName: 'host-audio.webm',
+          blob: new Blob(['audio-track'], { type: 'audio/webm' }),
+          kind: 'audio',
+        },
+      ],
+    } as any);
+    const text = new TextDecoder().decode(await bundle.arrayBuffer());
+
+    assert.match(text, /quality\/recording_quality_report\.json/);
+    assert.match(text, /LiveStream Studio Recording Quality Report/);
+    assert.match(text, /Status: REVIEW/);
+    assert.match(text, /Host Mic: Capture metadata is missing\./);
+    assert.match(text, /"hasCaptureMetadata": false/);
   });
 
   it('creates podcast audio bundles without video tracks', async () => {
@@ -266,6 +294,8 @@ describe('recording bundle editor export', () => {
     assert.match(text, /podcast-audio-bundle/);
     assert.match(text, /audio-tracks\/01_host-audio\.webm/);
     assert.match(text, /LiveStream Studio Podcast Audio Export/);
+    assert.match(text, /quality\/recording_quality_report\.txt/);
+    assert.match(text, /recording-quality-report/);
     assert.match(text, /captions\/live_captions\.txt/);
     assert.match(text, /markers\/recording_markers\.csv/);
     assert.doesNotMatch(text, /tracks\/01_host\.webm/);
