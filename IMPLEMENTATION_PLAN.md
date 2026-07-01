@@ -92,6 +92,7 @@
 - [x] Per-destination stream status (connected/buffering/error)
 - [x] Relay round-trip latency display
 - [x] Auto-reconnect on stream drop
+- [x] Post-live summary with duration and destination outcome
 
 ---
 
