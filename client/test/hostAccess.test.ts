@@ -68,12 +68,19 @@ describe('created room host access resolution', () => {
     assert.equal(result.room.hostToken, VALID_HOST_TOKEN);
   });
 
-  it('uses same-tab legacy host mode immediately when create prefers old server fallback', async () => {
-    let called = false;
-    console.warn = () => {};
-    globalThis.fetch = async () => {
-      called = true;
-      throw new Error('recovery should be skipped');
+  it('recovers host tokens before using same-tab legacy fallback', async () => {
+    let requestedUrl = '';
+    globalThis.fetch = async (input) => {
+      requestedUrl = String(input);
+      return new Response(JSON.stringify({
+        id: 'legacy-immediate-room',
+        name: 'Recovered legacy room',
+        hostName: 'Arnold',
+        hostToken: VALID_HOST_TOKEN,
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
     };
 
     const room: CreatedRoomResponse = {
@@ -87,10 +94,11 @@ describe('created room host access resolution', () => {
     assert.equal(hasCreatedRoomDetails(room), true);
     const result = await resolveCreatedRoomHostAccess(room, { preferLegacyFallback: true });
 
-    assert.equal(called, false);
-    assert.equal(result.legacyHostless, true);
+    assert.equal(requestedUrl, '/api/rooms/legacy-immediate-room/host-access');
+    assert.equal(result.legacyHostless, false);
     assert.equal(result.room.id, 'legacy-immediate-room');
-    assert.equal(result.room.hostToken, undefined);
+    assert.equal(result.room.name, 'Recovered legacy room');
+    assert.equal(result.room.hostToken, VALID_HOST_TOKEN);
   });
 
   it('falls back to same-tab legacy host mode when old servers have no recovery route', async () => {

@@ -196,6 +196,49 @@ describe('recording readiness summary', () => {
     assert.equal(summary.items.find((item) => item.id === 'encoding-quality')?.status, 'warning');
   });
 
+  it('reports hardware WebCodecs pipeline availability without replacing playable WebM output', () => {
+    const summary = buildRecordingReadinessSummary({
+      ...readyOptions,
+      encodingReadiness: {
+        status: 'ready',
+        detail: '1080p/30 WebM encoding is smooth with WebCodecs hardware acceleration.',
+        apiSupport: { webCodecs: true },
+        presets: [
+          {
+            presetId: '1080p',
+            label: '1080p',
+            hardwareAccelerated: true,
+            supported: true,
+            smooth: true,
+          },
+        ],
+      },
+    });
+
+    const item = summary.items.find((item) => item.id === 'webcodecs-pipeline');
+    assert.equal(summary.status, 'good');
+    assert.equal(item?.status, 'good');
+    assert.match(item?.detail || '', /Hardware VideoEncoder/);
+    assert.match(item?.detail || '', /MediaRecorder/);
+  });
+
+  it('keeps WebCodecs absence as a non-blocking recording pipeline warning', () => {
+    const summary = buildRecordingReadinessSummary({
+      ...readyOptions,
+      encodingReadiness: {
+        status: 'ready',
+        detail: '1080p/30 WebM encoding is advertised as smooth.',
+        apiSupport: { webCodecs: false },
+      },
+    });
+
+    const item = summary.items.find((item) => item.id === 'webcodecs-pipeline');
+    assert.equal(summary.status, 'warning');
+    assert.equal(summary.canStart, true);
+    assert.equal(item?.status, 'warning');
+    assert.match(item?.detail || '', /MediaRecorder container pipeline/);
+  });
+
   it('blocks recording when browser encoding is unsupported', () => {
     const summary = buildRecordingReadinessSummary({
       ...readyOptions,

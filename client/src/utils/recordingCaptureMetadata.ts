@@ -22,6 +22,14 @@ export interface RecordingCaptureTrackMetadata {
   settings: RecordingCaptureTrackSettings;
 }
 
+export interface RecordingCaptureEncoderMetadata {
+  pipeline: 'media-recorder' | 'webcodecs';
+  container: 'webm' | 'ogg' | 'raw-bitstream' | 'browser';
+  codec?: string;
+  hardwareAcceleration?: 'no-preference' | 'prefer-hardware' | 'prefer-software';
+  fallbackReason?: string;
+}
+
 export interface RecordingCaptureMetadata {
   sourceId: string;
   sourceKind: RecordingCaptureSourceKind;
@@ -33,6 +41,7 @@ export interface RecordingCaptureMetadata {
   durationMs?: number;
   trackCount: number;
   tracks: RecordingCaptureTrackMetadata[];
+  encoder?: RecordingCaptureEncoderMetadata;
 }
 
 interface RecordingCaptureMetadataInput {
@@ -43,6 +52,7 @@ interface RecordingCaptureMetadataInput {
   mimeType: string;
   requestedBitsPerSecond?: number;
   startedAt: string;
+  encoder?: RecordingCaptureEncoderMetadata;
 }
 
 function safeText(value: unknown, fallback: string, maxLength = 160): string {
@@ -81,6 +91,27 @@ function sanitizeTrackSettings(settings: MediaTrackSettings | Record<string, unk
   };
 }
 
+function normalizeEncoderMetadata(value: unknown): RecordingCaptureEncoderMetadata | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Partial<RecordingCaptureEncoderMetadata>;
+  const pipeline = input.pipeline === 'webcodecs' ? 'webcodecs' : input.pipeline === 'media-recorder' ? 'media-recorder' : undefined;
+  if (!pipeline) return undefined;
+  const container = input.container === 'webm' || input.container === 'ogg' || input.container === 'raw-bitstream' || input.container === 'browser'
+    ? input.container
+    : 'browser';
+  const hardwareAcceleration = input.hardwareAcceleration === 'no-preference' || input.hardwareAcceleration === 'prefer-hardware' || input.hardwareAcceleration === 'prefer-software'
+    ? input.hardwareAcceleration
+    : undefined;
+
+  return {
+    pipeline,
+    container,
+    ...(input.codec ? { codec: safeText(input.codec, 'codec', 80) } : {}),
+    ...(hardwareAcceleration ? { hardwareAcceleration } : {}),
+    ...(input.fallbackReason ? { fallbackReason: safeText(input.fallbackReason, 'Fallback active', 240) } : {}),
+  };
+}
+
 function collectTrackMetadata(track: MediaStreamTrack): RecordingCaptureTrackMetadata {
   let settings: MediaTrackSettings | Record<string, unknown> | undefined;
   try {
@@ -104,6 +135,7 @@ export function createRecordingCaptureMetadata(input: RecordingCaptureMetadataIn
   const requestedBitsPerSecond = Number.isFinite(input.requestedBitsPerSecond)
     ? Math.max(0, Math.floor(input.requestedBitsPerSecond || 0))
     : null;
+  const encoder = normalizeEncoderMetadata(input.encoder);
 
   return {
     sourceId: safeText(input.sourceId, 'recording-source', 120),
@@ -114,6 +146,7 @@ export function createRecordingCaptureMetadata(input: RecordingCaptureMetadataIn
     startedAt: safeIsoDate(input.startedAt),
     trackCount: tracks.length,
     tracks,
+    ...(encoder ? { encoder } : {}),
   };
 }
 
@@ -159,6 +192,7 @@ export function normalizeRecordingCaptureMetadata(value: unknown): RecordingCapt
   const startedAt = safeIsoDate(input.startedAt);
   const stoppedAt = input.stoppedAt ? safeIsoDate(input.stoppedAt) : undefined;
   const durationMs = Number.isFinite(input.durationMs) ? Math.max(0, Math.round(Number(input.durationMs))) : undefined;
+  const encoder = normalizeEncoderMetadata(input.encoder);
 
   return {
     sourceId: safeText(input.sourceId, 'recording-source', 120),
@@ -171,5 +205,6 @@ export function normalizeRecordingCaptureMetadata(value: unknown): RecordingCapt
     ...(durationMs !== undefined ? { durationMs } : {}),
     trackCount: Number.isFinite(input.trackCount) ? Math.max(0, Math.floor(Number(input.trackCount))) : tracks.length,
     tracks,
+    ...(encoder ? { encoder } : {}),
   };
 }

@@ -55,6 +55,13 @@ describe('recording capture metadata', () => {
       mimeType: 'video/webm;codecs=vp9,opus',
       requestedBitsPerSecond: 8_500_000,
       startedAt: '2026-06-11T10:00:00.000Z',
+      encoder: {
+        pipeline: 'media-recorder',
+        container: 'webm',
+        codec: 'vp09.00.10.08',
+        hardwareAcceleration: 'prefer-hardware',
+        fallbackReason: 'WebCodecs VideoEncoder is available, but playable recording files use MediaRecorder until muxing is enabled.',
+      },
     });
 
     assert.equal(capture.sourceId, 'host-iso');
@@ -66,6 +73,13 @@ describe('recording capture metadata', () => {
     assert.equal('deviceId' in capture.tracks[0].settings, false);
     assert.equal(capture.tracks[1].settings.sampleRate, 48000);
     assert.equal(capture.tracks[1].settings.echoCancellation, true);
+    assert.deepEqual(capture.encoder, {
+      pipeline: 'media-recorder',
+      container: 'webm',
+      codec: 'vp09.00.10.08',
+      hardwareAcceleration: 'prefer-hardware',
+      fallbackReason: 'WebCodecs VideoEncoder is available, but playable recording files use MediaRecorder until muxing is enabled.',
+    });
   });
 
   it('finalizes duration and normalizes persisted metadata defensively', () => {
@@ -77,6 +91,11 @@ describe('recording capture metadata', () => {
       requestedBitsPerSecond: 256_000,
       startedAt: '2026-06-11T10:00:00.000Z',
       trackCount: 1,
+      encoder: {
+        pipeline: 'media-recorder',
+        container: 'webm',
+        fallbackReason: 'Audio-only sources use MediaRecorder.',
+      },
       tracks: [
         {
           kind: 'audio',
@@ -112,5 +131,10 @@ describe('recording capture metadata', () => {
     assert.equal(normalized?.tracks[0].muted, true);
     assert.equal(normalized?.tracks[0].settings.sampleRate, 44100);
     assert.equal('deviceId' in normalized!.tracks[0].settings, false);
+    assert.deepEqual(normalized?.encoder, {
+      pipeline: 'media-recorder',
+      container: 'webm',
+      fallbackReason: 'Audio-only sources use MediaRecorder.',
+    });
   });
 });

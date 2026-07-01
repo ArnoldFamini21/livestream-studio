@@ -30,6 +30,16 @@ export interface RecordingReadinessOptions {
 export interface RecordingEncodingReadiness {
   status: 'ready' | 'limited' | 'unsupported';
   detail: string;
+  apiSupport?: {
+    webCodecs?: boolean;
+  };
+  presets?: Array<{
+    presetId?: string;
+    label?: string;
+    hardwareAccelerated?: boolean | null;
+    supported?: boolean | null;
+    smooth?: boolean | null;
+  }>;
 }
 
 export interface RecordingReadinessTrack {
@@ -100,6 +110,40 @@ function buildEncodingReadinessItem(encodingReadiness: RecordingEncodingReadines
   }
 }
 
+function buildWebCodecsPipelineItem(encodingReadiness: RecordingEncodingReadiness | undefined): RecordingReadinessItem | null {
+  if (!encodingReadiness?.apiSupport) return null;
+
+  const hardwarePreset = encodingReadiness.presets?.find((preset) => preset.hardwareAccelerated === true);
+  const webCodecsAvailable = encodingReadiness.apiSupport.webCodecs === true;
+  if (webCodecsAvailable && hardwarePreset) {
+    return {
+      id: 'webcodecs-pipeline',
+      label: 'WebCodecs pipeline',
+      status: 'good',
+      detail: `Hardware VideoEncoder is available for ${hardwarePreset.label || hardwarePreset.presetId || 'video'} tracks; playable WebM files continue to use MediaRecorder until muxing is enabled.`,
+      blocksStart: false,
+    };
+  }
+
+  if (webCodecsAvailable) {
+    return {
+      id: 'webcodecs-pipeline',
+      label: 'WebCodecs pipeline',
+      status: 'warning',
+      detail: 'VideoEncoder is available, but hardware acceleration was not confirmed; playable WebM files continue to use MediaRecorder.',
+      blocksStart: false,
+    };
+  }
+
+  return {
+    id: 'webcodecs-pipeline',
+    label: 'WebCodecs pipeline',
+    status: 'warning',
+    detail: 'WebCodecs VideoEncoder is not available in this browser, so recording uses the MediaRecorder container pipeline.',
+    blocksStart: false,
+  };
+}
+
 function buildExpectedTracks(options: RecordingReadinessOptions): RecordingReadinessTrack[] {
   const tracks: RecordingReadinessTrack[] = [];
   for (const participant of options.participants) {
@@ -164,6 +208,7 @@ export function buildRecordingReadinessSummary(options: RecordingReadinessOption
   const missingMedia = onStageParticipants.filter((participant) => participant.hasStream && !participant.hasAudio && !participant.hasVideo);
   const recordingKinds = new Set(expectedTracks.map((track) => track.kind));
   const encodingItem = buildEncodingReadinessItem(options.encodingReadiness);
+  const webCodecsPipelineItem = buildWebCodecsPipelineItem(options.encodingReadiness);
 
   const items: RecordingReadinessItem[] = [
     {
@@ -176,6 +221,7 @@ export function buildRecordingReadinessSummary(options: RecordingReadinessOption
       blocksStart: true,
     },
     ...(encodingItem ? [encodingItem] : []),
+    ...(webCodecsPipelineItem ? [webCodecsPipelineItem] : []),
     {
       id: 'isolated-tracks',
       label: 'Isolated tracks',

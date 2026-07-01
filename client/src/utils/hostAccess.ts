@@ -65,13 +65,13 @@ export async function resolveCreatedRoomHostAccess(
 ): Promise<CreatedRoomHostAccessResolution> {
   if (getValidHostToken(room.hostToken)) return { room, legacyHostless: false };
 
-  if (options.preferLegacyFallback && isLegacyHostlessCreateResponse(room)) {
-    return { room, legacyHostless: true };
-  }
-
   const recoveredRoom = await recoverHostAccess(room);
   if (getValidHostToken(recoveredRoom.hostToken)) {
     return { room: recoveredRoom, legacyHostless: false };
+  }
+
+  if (options.preferLegacyFallback && isLegacyHostlessCreateResponse(recoveredRoom)) {
+    return { room: recoveredRoom, legacyHostless: true };
   }
 
   return {
