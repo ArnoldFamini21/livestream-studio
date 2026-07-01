@@ -82,7 +82,14 @@ describe('host session links', () => {
       coHostIds: [],
     }), true);
     assert.equal(isLegacyHostlessCreateResponse({
+      id: 'legacy-room',
+      name: 'Legacy room',
+      hostToken: undefined,
+    }), true);
+    assert.equal(isLegacyHostlessCreateResponse({
       hostToken: URL_TOKEN,
+      id: 'token-room',
+      name: 'Token room',
       hostId: '',
       coHostIds: [],
     }), false);

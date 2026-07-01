@@ -675,7 +675,7 @@ describe('participant media moderation', () => {
     }
   });
 
-  it('keeps backstage participants out of media relay and clears screen sharing', async () => {
+  it('keeps backstage media private to operators and clears screen sharing', async () => {
     const harness = await createSignalingHarness();
     const { room, hostToken } = createRoom('Backstage media privacy test', 'Arnold', {
       creatorIp: `backstage-media-${Date.now()}`,
@@ -693,7 +693,7 @@ describe('participant media moderation', () => {
         role: 'host',
         hostToken,
       });
-      await hostJoined;
+      const hostState = await hostJoined;
 
       const stageGuest = await connectClient(harness.url);
       const stageGuestJoined = waitForMessage(stageGuest, 'room-joined');
@@ -757,6 +757,32 @@ describe('participant media moderation', () => {
       const updated = await backstageUpdated;
       assert.equal(updated.payload.screenSharing, false);
       assert.equal(roomState.participants.get(backstageGuestState.payload.participant.id)?.participant.screenSharing, false);
+
+      const hostToBackstageAllowed = waitForMessage(backstageGuest, 'offer', (message) => (
+        message.payload.from === hostState.payload.participant.id
+      ));
+      sendSignal(host, {
+        type: 'offer',
+        payload: {
+          to: backstageGuestState.payload.participant.id,
+          sdp: { type: 'offer', sdp: 'v=0\r\n' },
+        },
+      });
+      const privateHostOffer = await hostToBackstageAllowed;
+      assert.equal(privateHostOffer.payload.from, hostState.payload.participant.id);
+
+      const backstageToHostAllowed = waitForMessage(host, 'offer', (message) => (
+        message.payload.from === backstageGuestState.payload.participant.id
+      ));
+      sendSignal(backstageGuest, {
+        type: 'offer',
+        payload: {
+          to: hostState.payload.participant.id,
+          sdp: { type: 'offer', sdp: 'v=0\r\n' },
+        },
+      });
+      const privateBackstageOffer = await backstageToHostAllowed;
+      assert.equal(privateBackstageOffer.payload.from, backstageGuestState.payload.participant.id);
 
       const stageToBackstageBlocked = expectNoMessage(backstageGuest, 'offer', (message) => (
         message.payload.from === stageGuestState.payload.participant.id

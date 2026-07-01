@@ -119,7 +119,7 @@
 - [x] Reorder participant display order with stage-order controls
 
 ### 5D. Backstage
-- [ ] Private audio/video channel for host + selected guests
+- [x] Private audio/video channel for host + selected guests
 - [x] Backstage participants invisible to stream/recording
 - [x] Backstage text chat
 
