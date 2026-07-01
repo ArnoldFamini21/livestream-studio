@@ -1,27 +1,6 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import type { SignalMessage, Participant } from '@studio/shared';
-
-const ICE_SERVERS: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    {
-      urls: [
-        'turn:openrelay.metered.ca:80',
-        'turn:openrelay.metered.ca:443',
-        'turn:openrelay.metered.ca:443?transport=tcp',
-      ],
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turns:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-  ],
-  iceTransportPolicy: 'all',
-};
+import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
 
 interface PeerState {
   participantId: string;
@@ -37,6 +16,7 @@ interface UseWebRTCProps {
 
 export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps) {
   const peersRef = useRef<Map<string, PeerState>>(new Map());
+  const iceConfigRef = useRef<RTCConfiguration>(DEFAULT_ICE_CONFIG);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
 
   // Use refs to avoid stale closures in setTimeout callbacks
@@ -48,6 +28,20 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
   const localStreamRef = useRef(localStream);
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchIceConfig()
+      .then((config) => {
+        if (!cancelled) iceConfigRef.current = config;
+      })
+      .catch(() => {
+        if (!cancelled) iceConfigRef.current = DEFAULT_ICE_CONFIG;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Buffer ICE candidates that arrive before remote description is set.
   // Capped per peer so a misbehaving / never-materializing peer cannot accumulate memory.
@@ -94,7 +88,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         existing.connection.close();
       }
 
-      const pc = new RTCPeerConnection(ICE_SERVERS);
+      const pc = new RTCPeerConnection(iceConfigRef.current);
 
       const peerState: PeerState = {
         participantId: remoteParticipantId,

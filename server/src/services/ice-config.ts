@@ -1,0 +1,134 @@
+export interface StudioIceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+  credentialType?: 'password' | 'oauth';
+}
+
+export interface StudioIceConfig {
+  iceServers: StudioIceServer[];
+  iceTransportPolicy: 'all' | 'relay';
+}
+
+const DEFAULT_ICE_SERVERS: StudioIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  {
+    urls: [
+      'turn:openrelay.metered.ca:80',
+      'turn:openrelay.metered.ca:443',
+      'turn:openrelay.metered.ca:443?transport=tcp',
+    ],
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turns:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isIceUrl(value: string): boolean {
+  return /^(stun|stuns|turn|turns):[^\s,]+$/i.test(value.trim());
+}
+
+function normalizeUrlList(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(isIceUrl)
+      .slice(0, 16);
+  }
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(isIceUrl)
+    .slice(0, 16);
+}
+
+function normalizeOptionalString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= maxLength ? trimmed : undefined;
+}
+
+export function normalizeIceServer(value: unknown): StudioIceServer | null {
+  if (!isRecord(value)) return null;
+  const urls = normalizeUrlList(value.urls);
+  if (urls.length === 0) return null;
+  const username = normalizeOptionalString(value.username, 256);
+  const credential = normalizeOptionalString(value.credential, 512);
+  const credentialType = value.credentialType === 'oauth' ? 'oauth' : value.credentialType === 'password' ? 'password' : undefined;
+  return {
+    urls: urls.length === 1 ? urls[0] : urls,
+    ...(username ? { username } : {}),
+    ...(credential ? { credential } : {}),
+    ...(credentialType ? { credentialType } : {}),
+  };
+}
+
+function normalizeIceServers(value: unknown): StudioIceServer[] {
+  if (!Array.isArray(value)) return [];
+  const servers = value
+    .map(normalizeIceServer)
+    .filter((server): server is StudioIceServer => Boolean(server));
+  return servers.slice(0, 12);
+}
+
+function normalizePolicy(value: unknown): 'all' | 'relay' {
+  return value === 'relay' ? 'relay' : 'all';
+}
+
+function parseJsonConfig(value: string | undefined): StudioIceConfig | null {
+  if (!value?.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    const source = Array.isArray(parsed) ? { iceServers: parsed } : parsed;
+    if (!isRecord(source)) return null;
+    const iceServers = normalizeIceServers(source.iceServers);
+    if (iceServers.length === 0) return null;
+    return {
+      iceServers,
+      iceTransportPolicy: normalizePolicy(source.iceTransportPolicy),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function buildIceConfigFromEnv(env: NodeJS.ProcessEnv = process.env): StudioIceConfig {
+  const jsonConfig = parseJsonConfig(env.ICE_SERVERS_JSON);
+  if (jsonConfig) return jsonConfig;
+
+  const stunUrls = normalizeUrlList(env.STUN_URLS);
+  const turnUrls = normalizeUrlList(env.TURN_URLS);
+  const turnUsername = normalizeOptionalString(env.TURN_USERNAME, 256);
+  const turnCredential = normalizeOptionalString(env.TURN_CREDENTIAL, 512);
+  const turnCredentialType = env.TURN_CREDENTIAL_TYPE === 'oauth' ? 'oauth' : env.TURN_CREDENTIAL_TYPE === 'password' ? 'password' : undefined;
+  const configuredServers: StudioIceServer[] = [];
+
+  if (stunUrls.length > 0) {
+    configuredServers.push({ urls: stunUrls.length === 1 ? stunUrls[0] : stunUrls });
+  }
+
+  if (turnUrls.length > 0 && turnUsername && turnCredential) {
+    configuredServers.push({
+      urls: turnUrls.length === 1 ? turnUrls[0] : turnUrls,
+      username: turnUsername,
+      credential: turnCredential,
+      ...(turnCredentialType ? { credentialType: turnCredentialType } : {}),
+    });
+  }
+
+  return {
+    iceServers: configuredServers.length > 0 ? configuredServers : DEFAULT_ICE_SERVERS,
+    iceTransportPolicy: normalizePolicy(env.ICE_TRANSPORT_POLICY),
+  };
+}

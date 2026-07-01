@@ -224,7 +224,8 @@
 - [ ] Docker Compose for local dev
 - [ ] Kubernetes manifests for production
 - [ ] CDN for static assets
-- [ ] Global TURN servers for reliable connectivity
+- [x] Configurable STUN/TURN ICE config endpoint for WebRTC connectivity
+- [ ] Global TURN servers for reliable connectivity (production provider credentials)
 - [ ] Monitoring: Prometheus + Grafana for stream health metrics
 
 ---
