@@ -6,6 +6,8 @@ import {
   clearUrlHostToken,
   getHostSession,
   getValidHostToken,
+  isLegacyHostlessCreateResponse,
+  persistLegacyHostSession,
   persistHostSession,
   readHostTokenFromHash,
   upsertSavedHostStudio,
@@ -73,6 +75,22 @@ describe('host session links', () => {
     assert.equal(getValidHostToken(undefined), '');
   });
 
+  it('detects legacy create responses that omit host tokens', () => {
+    assert.equal(isLegacyHostlessCreateResponse({
+      hostToken: undefined,
+      hostId: '',
+      coHostIds: [],
+    }), true);
+    assert.equal(isLegacyHostlessCreateResponse({
+      hostToken: URL_TOKEN,
+      hostId: '',
+      coHostIds: [],
+    }), false);
+    assert.equal(isLegacyHostlessCreateResponse({
+      hostToken: undefined,
+    }), false);
+  });
+
   it('uses URL host access ahead of stale session or saved tokens', () => {
     persistHostSession({ roomId: ROOM_ID, hostName: 'Session Host', hostToken: SESSION_TOKEN });
     upsertSavedHostStudio({ id: ROOM_ID, hostName: 'Saved Host', hostToken: SAVED_TOKEN });
@@ -95,6 +113,16 @@ describe('host session links', () => {
 
     assert.equal(sessionStorage.getItem(`legacyHost:${ROOM_ID}`), null);
     assert.equal(getHostSession(ROOM_ID)?.hostToken, SESSION_TOKEN);
+  });
+
+  it('allows fresh same-tab legacy host sessions for older signaling servers', () => {
+    persistLegacyHostSession({ roomId: ROOM_ID, hostName: 'Legacy Host' });
+
+    const hostSession = getHostSession(ROOM_ID);
+
+    assert.equal(hostSession?.source, 'legacy');
+    assert.equal(hostSession?.hostName, 'Legacy Host');
+    assert.equal(hostSession?.hostToken, '');
   });
 
   it('strips a restored host token from the visible URL', () => {

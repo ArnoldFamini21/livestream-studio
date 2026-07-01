@@ -26,6 +26,7 @@ import {
   getStoredParticipantRole,
   getStoredUserName,
   getUrlHostToken,
+  persistLegacyHostSession,
   persistHostSession,
   removeSavedHostStudio,
 } from '../utils/hostSession.ts';
@@ -1161,6 +1162,10 @@ export function StudioRoom() {
 
   useEffect(() => {
     if (!roomId || !hostSession) return;
+    if (hostSession.source === 'legacy') {
+      persistLegacyHostSession({ roomId, hostName: hostSession.hostName });
+      return;
+    }
     persistHostSession({ roomId, hostName: hostSession.hostName, hostToken: hostSession.hostToken });
     if (hostSession.source === 'url') {
       clearUrlHostToken();
@@ -1921,7 +1926,7 @@ export function StudioRoom() {
       const coHostInviteToken = userRole === 'co-host'
         ? sessionStorage.getItem(`coHostInviteToken:${roomId}`) || undefined
         : undefined;
-      const roomPassword = hostToken || coHostInviteToken ? undefined : sessionStorage.getItem(`roomPassword:${roomId}`) || undefined;
+      const roomPassword = userRole === 'host' || coHostInviteToken ? undefined : sessionStorage.getItem(`roomPassword:${roomId}`) || undefined;
       const joinSessionId = userRole === 'host' ? undefined : getGuestJoinSessionId();
       send({
         type: 'join-room',

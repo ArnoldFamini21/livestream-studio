@@ -6,6 +6,8 @@ import {
   buildHostEntryPath,
   buildHostEntryUrl,
   getValidHostToken,
+  isLegacyHostlessCreateResponse,
+  persistLegacyHostSession,
   persistHostSession,
   readSavedHostStudios,
   removeSavedHostStudio,
@@ -46,6 +48,8 @@ interface CreatedRoomResponse {
   createdAt?: string;
   hostName?: string;
   hostToken?: unknown;
+  hostId?: unknown;
+  coHostIds?: unknown;
   scheduledFor?: string;
   settings?: {
     passwordProtected?: boolean;
@@ -184,6 +188,11 @@ export function HomePage() {
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
+        if (isLegacyHostlessCreateResponse(room)) {
+          persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
+          navigate(buildHostEntryPath(room.id));
+          return;
+        }
         setError(MISSING_HOST_TOKEN_MESSAGE);
         return;
       }
