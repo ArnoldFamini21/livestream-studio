@@ -48,7 +48,7 @@ import { SessionHealthPanel } from './SessionHealthPanel.tsx';
 import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
-import type { RecordingMarker } from './RecordingPanel.tsx';
+import type { RecordingMarker, RecordingServerUploadInput } from './RecordingPanel.tsx';
 import { buildBrandThemeVariables } from '../utils/brandTheme.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { getCustomLogoPositionStyle, getLogoPositionFromPointer, normalizeLogoPosition } from '../utils/logoPosition.ts';
@@ -93,6 +93,7 @@ import {
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
 import { buildLocalRecordingSources } from '../utils/localRecordingSources.ts';
+import { uploadRecordingToMediaServer } from '../utils/recordingUpload.ts';
 import { getScenePipCornerForApply, getSceneStageItemOrderForApply } from '../utils/sceneApplication.ts';
 import {
   getContainedVideoRect,
@@ -2733,6 +2734,17 @@ export function StudioRoom() {
     });
   }, [send]);
 
+  const uploadLocalRecordingToMediaServer = useCallback(async (input: RecordingServerUploadInput) => {
+    if (!roomId) throw new Error('Room id is required for recording upload.');
+    const token = await requestLiveStreamToken();
+    return uploadRecordingToMediaServer({
+      token,
+      roomId,
+      sessionId: input.sessionId,
+      files: input.files,
+    });
+  }, [requestLiveStreamToken, roomId]);
+
   const requestCoHostInvite = useCallback(async (): Promise<{ inviteUrl: string; expiresAt: string }> => {
     const requestId = `cohost-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const { token, expiresAt } = await new Promise<{ token: string; expiresAt: string }>((resolve, reject) => {
@@ -4871,6 +4883,7 @@ export function StudioRoom() {
               recordingReadiness={recordingReadiness}
               onStartRecording={onStartLocalRecording}
               onStopRecording={stopLocalRecording}
+              onUploadRecording={uploadLocalRecordingToMediaServer}
               onAddRecordingMarker={onAddRecordingMarker}
               onRemoveRecordingMarker={onRemoveRecordingMarker}
               onClearRecordingMarkers={onClearRecordingMarkers}

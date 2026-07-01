@@ -19,6 +19,7 @@ import {
   selectRecordingTranscriptionCandidate,
   type RecordingTranscriptionResult,
 } from '../utils/recordingTranscription.ts';
+import type { RecordingUploadSummary } from '../utils/recordingUpload.ts';
 import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
 import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
 
@@ -30,6 +31,7 @@ interface RecordingPanelProps {
   recordingMarkers?: RecordingMarker[];
   onStartRecording: () => void;
   onStopRecording: () => Promise<RecordingResult>;
+  onUploadRecording?: (input: RecordingServerUploadInput) => Promise<RecordingUploadSummary>;
   onAddRecordingMarker?: (seconds: number, label: string) => void;
   onRemoveRecordingMarker?: (markerId: string) => void;
   onClearRecordingMarkers?: () => void;
@@ -53,6 +55,11 @@ export interface RecordedFile {
   fileName: string;
   kind?: LocalRecordingFileResult['kind'];
   capture?: RecordingCaptureMetadata;
+}
+
+export interface RecordingServerUploadInput {
+  sessionId: string;
+  files: RecordedFile[];
 }
 
 interface RecordingBundleFile {
@@ -1926,6 +1933,7 @@ export function RecordingPanel({
   recordingMarkers = [],
   onStartRecording,
   onStopRecording,
+  onUploadRecording,
   onAddRecordingMarker,
   onRemoveRecordingMarker,
   onClearRecordingMarkers,
@@ -1956,6 +1964,8 @@ export function RecordingPanel({
   const [driveShareLink, setDriveShareLink] = useState<string | null>(null);
   const [driveUploadMessage, setDriveUploadMessage] = useState<string | null>(null);
   const [driveUploadError, setDriveUploadError] = useState<string | null>(null);
+  const [mediaUploadMessage, setMediaUploadMessage] = useState<string | null>(null);
+  const [mediaUploadError, setMediaUploadError] = useState<string | null>(null);
   const [driveLinkCopied, setDriveLinkCopied] = useState(false);
   const [driveRetentionPolicyId, setDriveRetentionPolicyId] = useState<RecordingCloudRetentionPolicyId>(
     DEFAULT_RECORDING_CLOUD_RETENTION_POLICY_ID
@@ -2032,6 +2042,8 @@ export function RecordingPanel({
       setDriveUploadMessage(null);
       setDriveUploadError(null);
       setDriveLinkCopied(false);
+      setMediaUploadMessage(null);
+      setMediaUploadError(null);
       setGeneratedTranscript(null);
       setTranscriptionError(null);
       const resultFiles = result.files.length > 0
@@ -2063,13 +2075,28 @@ export function RecordingPanel({
         });
         setActiveSessionId(session.id);
         setLibraryTrackFiles((current) => ({ ...current, [session.id]: files }));
+        if (onUploadRecording) {
+          setMediaUploadMessage('Uploading WebM tracks to media server...');
+          try {
+            const upload = await onUploadRecording({ sessionId: session.id, files });
+            const skipped = upload.skippedTracks > 0 ? `, ${upload.skippedTracks} skipped` : '';
+            setMediaUploadMessage(
+              `Media server received ${upload.uploadedTracks} track${upload.uploadedTracks === 1 ? '' : 's'} (${formatFileSize(upload.bytesReceived)}${skipped}).`
+            );
+            setMediaUploadError(null);
+          } catch (err) {
+            console.warn('Media-server recording upload failed:', err);
+            setMediaUploadMessage(null);
+            setMediaUploadError('Media server upload unavailable. Local recording is saved in this browser.');
+          }
+        }
       }
     } catch (err) {
       console.error('Error stopping recording:', err);
     } finally {
       setIsStopping(false);
     }
-  }, [formattedTime, onStopRecording, roomName, saveSession, sortedRecordingMarkers]);
+  }, [formattedTime, onStopRecording, onUploadRecording, roomName, saveSession, sortedRecordingMarkers]);
 
   const handleDownloadAll = useCallback(async () => {
     for (let i = 0; i < recordedFiles.length; i++) {
@@ -2726,6 +2753,15 @@ export function RecordingPanel({
                 )}
               </div>
             </div>
+            {(mediaUploadMessage || mediaUploadError) && (
+              <div style={{
+                ...styles.mediaUploadStatus,
+                ...(mediaUploadError ? styles.mediaUploadStatusError : {}),
+              }}>
+                <span style={styles.mediaUploadStatusLabel}>Media server</span>
+                <span style={styles.mediaUploadStatusText}>{mediaUploadError || mediaUploadMessage}</span>
+              </div>
+            )}
             <div style={styles.filesHeader}>
               <span style={styles.filesTitle}>Recorded Files</span>
               <span style={styles.filesCount}>{recordedFiles.length} track{recordedFiles.length !== 1 ? 's' : ''}</span>
@@ -3658,6 +3694,35 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 9,
     fontWeight: 800,
     textTransform: 'uppercase' as const,
+  },
+  mediaUploadStatus: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    padding: '8px 10px',
+    borderRadius: 8,
+    border: '1px solid rgba(56, 189, 248, 0.22)',
+    background: 'rgba(8, 47, 73, 0.22)',
+  },
+  mediaUploadStatusError: {
+    border: '1px solid rgba(245, 158, 11, 0.24)',
+    background: 'rgba(120, 53, 15, 0.16)',
+  },
+  mediaUploadStatusLabel: {
+    flexShrink: 0,
+    color: '#7dd3fc',
+    fontSize: 10,
+    fontWeight: 900,
+    textTransform: 'uppercase' as const,
+  },
+  mediaUploadStatusText: {
+    minWidth: 0,
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    fontWeight: 600,
+    lineHeight: 1.35,
+    textAlign: 'right' as const,
   },
   filesHeader: {
     display: 'flex',

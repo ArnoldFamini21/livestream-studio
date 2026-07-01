@@ -21,8 +21,6 @@ const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
 const HOST_ACCESS_RECOVERY_TIMEOUT_MS = 15_000;
 const SERVER_WAKE_NOTICE_DELAY_MS = 6_000;
-const MISSING_CREATED_HOST_TOKEN_MESSAGE = 'Studio was created, but host access was not returned. Please try again in a moment.';
-const MISSING_SCHEDULED_HOST_TOKEN_MESSAGE = 'Studio was scheduled, but host access was not returned. Please schedule it again in a moment.';
 const SAVED_HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing for this studio. Create a new studio to get a fresh private host link.';
 const INVITE_QR_OPTIONS = {
   errorCorrectionLevel: 'M',
@@ -245,10 +243,6 @@ export function HomePage() {
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
-        if (!isLegacyHostlessCreateResponse(room)) {
-          setError(MISSING_CREATED_HOST_TOKEN_MESSAGE);
-          return;
-        }
         persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
         navigate(buildHostEntryPath(room.id));
         return;
@@ -293,12 +287,8 @@ export function HomePage() {
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
-        if (isLegacyHostlessCreateResponse(room)) {
-          persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
-          navigate(buildHostEntryPath(room.id));
-          return;
-        }
-        setError(MISSING_SCHEDULED_HOST_TOKEN_MESSAGE);
+        persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
+        navigate(buildHostEntryPath(room.id));
         return;
       }
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
