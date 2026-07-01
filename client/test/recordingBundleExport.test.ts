@@ -239,6 +239,62 @@ describe('recording bundle editor export', () => {
     assert.match(text, /"durationDeltaSeconds": 0/);
   });
 
+  it('includes raw WebCodecs sidecars and marks them as hardware-encoded bitstreams', async () => {
+    const bundle = await createRecordingBundle({
+      ...source,
+      files: [
+        {
+          label: 'Host ISO',
+          fileName: 'host-iso.webm',
+          blob: new Blob(['iso-track'], { type: 'video/webm' }),
+          kind: 'iso',
+        },
+        {
+          label: 'Host ISO WebCodecs bitstream',
+          fileName: 'host-iso-webcodecs.vp9',
+          blob: new Blob(['raw-vp9'], { type: 'video/x-vp9' }),
+          kind: 'iso',
+          capture: {
+            sourceId: 'host-iso-webcodecs',
+            sourceKind: 'iso',
+            sourceLabel: 'Host ISO WebCodecs bitstream',
+            mimeType: 'video/x-vp9',
+            requestedBitsPerSecond: 8500000,
+            startedAt: '2026-06-11T10:00:00.000Z',
+            stoppedAt: '2026-06-11T10:01:05.000Z',
+            durationMs: 65000,
+            trackCount: 1,
+            encoder: {
+              pipeline: 'webcodecs',
+              container: 'raw-bitstream',
+              codec: 'vp09.00.10.08',
+              hardwareAcceleration: 'prefer-hardware',
+            },
+            tracks: [
+              {
+                kind: 'video',
+                label: 'Camera',
+                readyState: 'live',
+                enabled: true,
+                muted: false,
+                settings: { width: 1920, height: 1080, frameRate: 30 },
+              },
+            ],
+          },
+        },
+      ],
+    } as any);
+    const text = new TextDecoder().decode(await bundle.arrayBuffer());
+
+    assert.match(text, /tracks\/02_host-iso-webcodecs\.vp9/);
+    assert.match(text, /"mimeType": "video\/x-vp9"/);
+    assert.match(text, /"pipeline": "webcodecs"/);
+    assert.match(text, /"container": "raw-bitstream"/);
+    assert.match(text, /"codec": "vp09\.00\.10\.08"/);
+    assert.match(text, /Host ISO WebCodecs bitstream/);
+    assert.doesNotMatch(text, /Host ISO WebCodecs bitstream: Track does not advertise audio or video media\./);
+  });
+
   it('flags recording quality reports for review when capture metadata is missing', async () => {
     const bundle = await createRecordingBundle({
       ...source,

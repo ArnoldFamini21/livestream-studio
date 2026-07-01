@@ -341,8 +341,19 @@ interface PreviewableRecordingFile {
   blob?: Blob;
 }
 
+export function isRawWebCodecsBitstreamFile(file: PreviewableRecordingFile): boolean {
+  const type = (file.type || file.blob?.type || '').toLowerCase();
+  return (
+    type === 'video/x-vp8' ||
+    type === 'video/x-vp9' ||
+    type === 'video/avc' ||
+    /\.(vp8|vp9|h264)$/i.test(file.fileName)
+  );
+}
+
 export function isPreviewableRecordingFile(file: PreviewableRecordingFile): boolean {
   const type = file.type || file.blob?.type || '';
+  if (isRawWebCodecsBitstreamFile(file)) return false;
   return type.startsWith('video/') || type.startsWith('audio/') || /\.(webm|mp4|mov|ogg|mp3|wav)$/i.test(file.fileName);
 }
 
@@ -354,6 +365,9 @@ function isPreviewable(file: RecordedFile): boolean {
 }
 
 function getBlobExtension(blob: Blob): string {
+  if (blob.type.includes('video/x-vp9')) return 'vp9';
+  if (blob.type.includes('video/x-vp8')) return 'vp8';
+  if (blob.type.includes('video/avc')) return 'h264';
   if (blob.type.includes('ogg')) return 'ogg';
   if (blob.type.includes('mp4')) return 'mp4';
   if (blob.type.includes('mpeg') || blob.type.includes('mp3')) return 'mp3';

@@ -57,9 +57,15 @@ describe('recording media-server upload helper', () => {
         kind: 'video',
         blob: makeBlob(4, 'video/mp4'),
       },
+      {
+        label: 'Host WebCodecs bitstream',
+        fileName: 'host-webcodecs.vp9',
+        kind: 'video',
+        blob: makeBlob(4, 'video/x-vp9'),
+      },
     ]);
 
-    assert.equal(skippedTracks, 1);
+    assert.equal(skippedTracks, 2);
     assert.equal(tracks.length, 2);
     assert.equal(tracks[0].manifest.id, 'Show-Program');
     assert.equal(tracks[1].manifest.id, 'Show-Program-2');
