@@ -55,6 +55,8 @@ export interface RecordingUploadExportTrack {
   kind: RecordingUploadTrackKind;
   mimeType: string;
   filePath: string;
+  expectedBytes?: number;
+  durationMs?: number;
   bytesReceived: number;
   complete: boolean;
 }
@@ -285,6 +287,8 @@ export class RecordingUploadStore {
         kind: track.kind,
         mimeType: track.mimeType,
         filePath: track.filePath,
+        expectedBytes: track.expectedBytes,
+        durationMs: track.durationMs,
         bytesReceived: track.bytesReceived,
         complete: track.complete,
       })),

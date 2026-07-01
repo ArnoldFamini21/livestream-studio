@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   RecordingExportArtifactFormat,
@@ -21,7 +21,8 @@ export type RecordingExportRunner = (command: RecordingExportCommand) => Promise
 
 interface RecordingExportArtifact extends RecordingExportArtifactStatus {
   outputPath: string;
-  command: RecordingExportCommand;
+  command?: RecordingExportCommand;
+  generated?: 'manifest';
 }
 
 interface RecordingExportJob {
@@ -33,8 +34,20 @@ interface RecordingExportJob {
   status: RecordingExportJobStatusValue;
   createdAt: string;
   updatedAt: string;
+  tracks: RecordingExportManifestTrack[];
   artifacts: RecordingExportArtifact[];
   error?: string;
+}
+
+interface RecordingExportManifestTrack {
+  id: string;
+  label: string;
+  kind: RecordingUploadExportTrack['kind'];
+  mimeType: string;
+  expectedBytes?: number;
+  durationMs?: number;
+  bytesReceived: number;
+  complete: boolean;
 }
 
 export class RecordingExportJobError extends Error {
@@ -77,6 +90,7 @@ function getArtifactFormat(outputPath: string): RecordingExportArtifactFormat {
   const extension = path.extname(outputPath).toLowerCase();
   if (extension === '.wav') return 'wav';
   if (extension === '.mp3') return 'mp3';
+  if (extension === '.json') return 'json';
   return 'mp4';
 }
 
@@ -120,7 +134,7 @@ function buildArtifacts(commands: RecordingExportCommand[], includeAudioStems: b
   const selected = includeAudioStems
     ? commands
     : commands.filter((command) => getArtifactFormat(command.outputPath) === 'mp4');
-  return selected.map((command, index) => {
+  const artifacts: RecordingExportArtifact[] = selected.map((command, index): RecordingExportArtifact => {
     const format = getArtifactFormat(command.outputPath);
     return {
       id: format === 'mp4' ? 'final-mp4' : `stem-${index}-${format}`,
@@ -131,6 +145,61 @@ function buildArtifacts(commands: RecordingExportCommand[], includeAudioStems: b
       command,
     };
   });
+  const outputDirectory = selected[0]?.outputPath ? path.dirname(selected[0].outputPath) : '';
+  const basename = selected[0]?.outputPath ? path.basename(selected[0].outputPath, path.extname(selected[0].outputPath)) : 'recording-export';
+  if (outputDirectory) {
+    artifacts.push({
+      id: 'export-manifest',
+      label: 'Export manifest',
+      format: 'json',
+      status: 'queued',
+      outputPath: path.join(outputDirectory, `${basename}_manifest.json`),
+      generated: 'manifest',
+    });
+  }
+  return artifacts;
+}
+
+function toManifestTrack(track: RecordingUploadExportTrack): RecordingExportManifestTrack {
+  return {
+    id: track.id,
+    label: track.label,
+    kind: track.kind,
+    mimeType: track.mimeType,
+    expectedBytes: track.expectedBytes,
+    durationMs: track.durationMs,
+    bytesReceived: track.bytesReceived,
+    complete: track.complete,
+  };
+}
+
+function buildExportManifest(job: RecordingExportJob): string {
+  return `${JSON.stringify({
+    app: 'livestream-studio',
+    exportType: 'recording-export-manifest',
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    export: {
+      exportId: job.exportId,
+      uploadId: job.uploadId,
+      roomId: job.roomId,
+      sessionId: job.sessionId,
+      status: 'ready',
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+    },
+    tracks: job.tracks,
+    artifacts: job.artifacts
+      .filter((artifact) => artifact.id !== 'export-manifest')
+      .map((artifact) => ({
+        id: artifact.id,
+        label: artifact.label,
+        format: artifact.format,
+        status: artifact.status,
+        bytes: artifact.bytes,
+        error: artifact.error,
+      })),
+  }, null, 2)}\n`;
 }
 
 export function createFfmpegExportRunner(ffmpegPath: string): RecordingExportRunner {
@@ -186,6 +255,7 @@ export class RecordingExportJobStore {
       status: 'queued',
       createdAt,
       updatedAt: createdAt,
+      tracks: source.tracks.map(toManifestTrack),
       artifacts,
     };
     this.jobs.set(exportId, job);
@@ -226,7 +296,13 @@ export class RecordingExportJobStore {
       artifact.error = undefined;
       job.updatedAt = new Date().toISOString();
       try {
-        await this.runner(artifact.command);
+        if (artifact.generated === 'manifest') {
+          await writeFile(artifact.outputPath, buildExportManifest(job), 'utf8');
+        } else if (artifact.command) {
+          await this.runner(artifact.command);
+        } else {
+          throw new Error('Recording export artifact has no command');
+        }
         const outputStat = await stat(artifact.outputPath).catch(() => null);
         if (outputStat) artifact.bytes = outputStat.size;
         artifact.status = 'ready';

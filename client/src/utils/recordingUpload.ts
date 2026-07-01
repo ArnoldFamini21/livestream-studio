@@ -214,6 +214,7 @@ function delay(ms: number): Promise<void> {
 }
 
 function getExportArtifactExtension(format: RecordingExportArtifactFormat | undefined, contentType: string): string {
+  if (format === 'json' || contentType.includes('application/json')) return 'json';
   if (format === 'wav' || contentType.includes('audio/wav')) return 'wav';
   if (format === 'mp3' || contentType.includes('audio/mpeg')) return 'mp3';
   return 'mp4';

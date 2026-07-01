@@ -684,7 +684,7 @@ export interface RecordingExportSessionRequest {
 }
 
 export type RecordingExportJobStatusValue = 'queued' | 'running' | 'ready' | 'error';
-export type RecordingExportArtifactFormat = 'mp4' | 'wav' | 'mp3';
+export type RecordingExportArtifactFormat = 'mp4' | 'wav' | 'mp3' | 'json';
 
 export interface RecordingExportArtifactStatus {
   id: string;

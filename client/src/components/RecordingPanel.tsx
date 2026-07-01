@@ -373,6 +373,11 @@ function getRecordingFileType(file: RecordedFile): string {
   return 'application/octet-stream';
 }
 
+function getMediaExportDownloadLabel(artifact: RecordingExportArtifactStatus): string {
+  if (artifact.format === 'json') return 'Download Manifest';
+  return `Download ${artifact.format.toUpperCase()}`;
+}
+
 function createCrc32Table(): Uint32Array {
   const table = new Uint32Array(256);
   for (let i = 0; i < table.length; i++) {
@@ -3083,7 +3088,7 @@ export function RecordingPanel({
                         >
                           {mediaExportDownloadingId === artifact.id
                             ? 'Downloading'
-                            : `Download ${artifact.format.toUpperCase()}`}
+                            : getMediaExportDownloadLabel(artifact)}
                         </button>
                       ))}
                     </div>
