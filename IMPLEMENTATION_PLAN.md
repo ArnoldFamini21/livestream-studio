@@ -218,6 +218,7 @@
 ## Phase 10: Infrastructure & Scale (Priority: Ongoing)
 ### 10A. Database & Auth
 - [ ] PostgreSQL: users, rooms, recordings, sessions
+- [x] Optional PostgreSQL room snapshot persistence for signaling-server room recovery
 - [ ] Auth: email/password registration, magic links for guests
 - [x] Local user dashboard: manage saved studios, local recordings, and brand assets in-browser
 - [x] Portable workspace backup/import for saved studios, brand kits, and recording catalog metadata
