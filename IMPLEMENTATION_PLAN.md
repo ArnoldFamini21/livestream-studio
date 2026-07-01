@@ -178,7 +178,7 @@
 - [x] Download individual tracks and session ZIP bundles
 - [x] Recording completion summary with duration, tracks, markers, and storage
 - [x] Google Drive handoff uploads original tracks plus editor/podcast ZIP bundles
-- [ ] Cloud storage with expiry / permanent options
+- [x] Cloud storage with expiry / permanent options
 - [x] Share recording link
 
 ---
