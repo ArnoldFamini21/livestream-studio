@@ -6,6 +6,7 @@ import { setupSignalingServer } from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
 import { buildIceConfigFromEnv } from './services/ice-config.js';
+import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -92,6 +93,11 @@ app.use((_req, res, next) => {
 
 // Health check endpoint (before rate limiter to avoid false downtime)
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/metrics', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+  res.send(buildSignalingPrometheusMetrics());
+});
 
 // Simple in-memory rate limiter for REST endpoints.
 // Bounded map size so an attacker spreading requests across many IPs cannot exhaust memory.
