@@ -2742,8 +2742,9 @@ export function StudioRoom() {
       roomId,
       sessionId: input.sessionId,
       files: input.files,
+      exportBasename: `${room?.name || 'Studio'} ${input.sessionId}`,
     });
-  }, [requestLiveStreamToken, roomId]);
+  }, [requestLiveStreamToken, room?.name, roomId]);
 
   const requestCoHostInvite = useCallback(async (): Promise<{ inviteUrl: string; expiresAt: string }> => {
     const requestId = `cohost-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;

@@ -1,9 +1,12 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import { createReadStream } from 'node:fs';
+import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import ffmpegStaticPath from 'ffmpeg-static';
 import type {
+  RecordingExportSessionRequest,
   RtmpRelayDestination,
   RtmpRelayServerMessage,
   RtmpRelayStartPayload,
@@ -18,6 +21,11 @@ import {
   RecordingUploadError,
   RecordingUploadStore,
 } from './recordingUpload.js';
+import {
+  createFfmpegExportRunner,
+  RecordingExportJobError,
+  RecordingExportJobStore,
+} from './recordingExportJob.js';
 import {
   createFfmpegArgs,
   hasRemainingRelayWork,
@@ -56,6 +64,8 @@ interface RelaySession {
 const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
 const sessions = new Map<WebSocket, RelaySession>();
 const recordingUploads = new RecordingUploadStore();
+let recordingExports: RecordingExportJobStore | null = null;
+let recordingExportsFfmpegPath = '';
 
 function sendJson(ws: WebSocket, message: RtmpRelayServerMessage) {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -68,6 +78,18 @@ function sendError(ws: WebSocket, code: string, message: string, destinationId?:
 
 function getFfmpegPath(): string | null {
   return process.env.FFMPEG_PATH || ffmpegStaticPath || null;
+}
+
+function getRecordingExportStore(): RecordingExportJobStore {
+  const ffmpegPath = getFfmpegPath();
+  if (!ffmpegPath) {
+    throw new RecordingExportJobError(503, 'FFMPEG_UNAVAILABLE', 'FFmpeg binary is unavailable');
+  }
+  if (!recordingExports || recordingExportsFfmpegPath !== ffmpegPath) {
+    recordingExports = new RecordingExportJobStore(createFfmpegExportRunner(ffmpegPath));
+    recordingExportsFfmpegPath = ffmpegPath;
+  }
+  return recordingExports;
 }
 
 function stopRelayProcess(session: RelaySession, relay: RelayProcess) {
@@ -355,6 +377,16 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   }
 }
 
+async function readOptionalJsonBody(req: IncomingMessage): Promise<unknown> {
+  const body = await readRequestBody(req, 32 * 1024);
+  if (body.length === 0) return {};
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch {
+    throw new RecordingUploadError(400, 'INVALID_JSON', 'Request body must be valid JSON');
+  }
+}
+
 function parseNonNegativeInteger(value: string | null, label: string, fallback?: number): number {
   if (value === null || value === '') {
     if (fallback !== undefined) return fallback;
@@ -369,6 +401,16 @@ function parseNonNegativeInteger(value: string | null, label: string, fallback?:
 
 function isFinalChunk(value: string | null): boolean {
   return value === '1' || value === 'true';
+}
+
+function getArtifactContentType(format: string): string {
+  if (format === 'wav') return 'audio/wav';
+  if (format === 'mp3') return 'audio/mpeg';
+  return 'video/mp4';
+}
+
+function attachmentName(filePath: string): string {
+  return path.basename(filePath).replace(/["\r\n]/g, '_') || 'recording-export';
 }
 
 async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
@@ -427,6 +469,50 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
       return true;
     }
 
+    const exportMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)\/exports$/);
+    if (exportMatch && req.method === 'POST') {
+      const [, uploadId] = exportMatch;
+      const session = recordingUploads.getSession(uploadId);
+      authenticateRecordingUpload(req, session.roomId);
+      const body = await readOptionalJsonBody(req);
+      const request = isRecord(body) ? body as RecordingExportSessionRequest : {};
+      const exportStore = getRecordingExportStore();
+      const job = await exportStore.createJob(recordingUploads.getExportSource(uploadId), request);
+      void exportStore.startJob(job.exportId).catch((err) => {
+        console.error('Recording export job failed:', err);
+      });
+      writeJson(res, 202, job);
+      return true;
+    }
+
+    const artifactMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)\/exports\/([^/]+)\/artifacts\/([^/]+)$/);
+    if (artifactMatch && req.method === 'GET') {
+      const [, uploadId, exportId, artifactId] = artifactMatch;
+      const session = recordingUploads.getSession(uploadId);
+      authenticateRecordingUpload(req, session.roomId);
+      const artifact = getRecordingExportStore().getArtifact(exportId, artifactId, uploadId);
+      res.writeHead(200, {
+        'Content-Type': getArtifactContentType(artifact.format),
+        'Content-Disposition': `attachment; filename="${attachmentName(artifact.path)}"`,
+      });
+      createReadStream(artifact.path)
+        .on('error', (err) => {
+          console.error('Recording export artifact stream failed:', err);
+          res.destroy(err);
+        })
+        .pipe(res);
+      return true;
+    }
+
+    const exportStatusMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)\/exports\/([^/]+)$/);
+    if (exportStatusMatch && req.method === 'GET') {
+      const [, uploadId, exportId] = exportStatusMatch;
+      const session = recordingUploads.getSession(uploadId);
+      authenticateRecordingUpload(req, session.roomId);
+      writeJson(res, 200, getRecordingExportStore().getJob(exportId, uploadId));
+      return true;
+    }
+
     const sessionMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)$/);
     if (sessionMatch && (req.method === 'GET' || req.method === 'DELETE')) {
       const [, uploadId] = sessionMatch;
@@ -445,6 +531,10 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
     return true;
   } catch (err) {
     if (err instanceof RecordingUploadError) {
+      writeJson(res, err.statusCode, { error: err.message, code: err.code });
+      return true;
+    }
+    if (err instanceof RecordingExportJobError) {
       writeJson(res, err.statusCode, { error: err.message, code: err.code });
       return true;
     }
