@@ -175,6 +175,7 @@
 - [x] Recording dashboard: list all past recordings
 - [x] Playback preview in browser for saved recording tracks
 - [x] Download individual tracks and session ZIP bundles
+- [x] Recording completion summary with duration, tracks, markers, and storage
 - [ ] Cloud storage with expiry / permanent options
 - [x] Share recording link
 
