@@ -40,3 +40,5 @@ The provisioned dashboard tracks active rooms, participant stages, live streams,
 The `LIVE_STREAM_TOKEN_SECRET` value must match between `server` and `media-server`; `docker-compose.yml` wires both from the same environment value. Keep real RTMP stream keys in the browser session only. Do not add them to `.env`.
 
 To test an RTMP output locally, run or point at an RTMP ingest server, add a custom RTMP destination in the Studio UI, and start Go Live from the host session.
+
+While Go Live is active, the media-server also writes a local MP4 backup recording from the same composited WebM relay stream. After stopping live, the host sees the backup status in the post-live notice and can download it through the authenticated media-server route. Set `RTMP_BACKUP_RECORDING_ENABLED=false` in `.env` to disable this local safety recording.

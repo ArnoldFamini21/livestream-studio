@@ -24,6 +24,15 @@ import {
 import { buildAllowedOrigins, isAllowedOrigin, normalizeOrigin } from './origins.js';
 import { parseControlMessage } from './protocol.js';
 import {
+  createFfmpegLiveBackupArgs,
+  createLiveBackupRecording,
+  getLiveBackupMaxBytes,
+  isLiveBackupRecordingEnabled,
+  refreshLiveBackupSize,
+  toLiveBackupPublicStatus,
+  type LiveBackupRecording,
+} from './liveBackupRecording.js';
+import {
   MAX_RECORDING_UPLOAD_CHUNK_BYTES,
   RecordingUploadError,
   RecordingUploadStore,
@@ -58,12 +67,20 @@ interface RelayProcess {
   exited: boolean;
 }
 
+interface BackupProcess {
+  recording: LiveBackupRecording;
+  process: ChildProcessByStdio<Writable, null, Readable>;
+  exited: boolean;
+}
+
 interface RelaySession {
   started: boolean;
   stopping: boolean;
   claims: LiveStreamTokenClaims | null;
   destinations: RtmpRelayDestination[];
   relays: Map<string, RelayProcess>;
+  backup: BackupProcess | null;
+  backupStopTimer: ReturnType<typeof setTimeout> | null;
   stopTimers: Map<string, ReturnType<typeof setTimeout>>;
   restartTimers: Map<string, ReturnType<typeof setTimeout>>;
   restartAttempts: Map<string, number>;
@@ -71,6 +88,7 @@ interface RelaySession {
 
 const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
 const sessions = new Map<WebSocket, RelaySession>();
+const liveBackups = new Map<string, LiveBackupRecording>();
 const recordingUploads = new RecordingUploadStore();
 let recordingExports: RecordingExportJobStore | null = null;
 let recordingExportsFfmpegPath = '';
@@ -154,6 +172,29 @@ function stopRelayProcess(session: RelaySession, relay: RelayProcess) {
   session.stopTimers.set(relay.destination.id, timer);
 }
 
+function stopBackupProcess(ws: WebSocket, session: RelaySession) {
+  const backup = session.backup;
+  if (!backup || backup.exited) return;
+  backup.recording.status = 'finalizing';
+  backup.recording.stoppedAt = new Date().toISOString();
+  sendJson(ws, {
+    type: 'backup-recording-status',
+    payload: toLiveBackupPublicStatus(backup.recording),
+  });
+
+  try {
+    backup.process.stdin.end();
+  } catch {
+    // Process may already be exiting.
+  }
+
+  session.backupStopTimer = setTimeout(() => {
+    if (!backup.exited) {
+      backup.process.kill('SIGTERM');
+    }
+  }, SHUTDOWN_TIMEOUT_MS);
+}
+
 function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
   if (session.stopping) return;
   session.stopping = true;
@@ -161,6 +202,7 @@ function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
     clearTimeout(timer);
   }
   session.restartTimers.clear();
+  stopBackupProcess(ws, session);
   for (const relay of session.relays.values()) {
     stopRelayProcess(session, relay);
     sendJson(ws, {
@@ -264,7 +306,115 @@ function spawnRelay(
   });
 }
 
-function handleStart(ws: WebSocket, session: RelaySession, payload: RtmpRelayStartPayload) {
+async function spawnLiveBackup(
+  ws: WebSocket,
+  session: RelaySession,
+  ffmpegPath: string,
+  claims: LiveStreamTokenClaims,
+  payload: RtmpRelayStartPayload
+) {
+  if (!isLiveBackupRecordingEnabled()) {
+    sendJson(ws, {
+      type: 'backup-recording-status',
+      payload: {
+        backupId: '',
+        roomId: claims.roomId,
+        fileName: '',
+        startedAt: new Date().toISOString(),
+        status: 'disabled',
+      },
+    });
+    return;
+  }
+
+  try {
+    const recording = await createLiveBackupRecording({
+      roomId: claims.roomId,
+      video: normalizeVideoConfig(payload.video),
+      audio: normalizeAudioConfig(payload.audio),
+      maxBytes: getLiveBackupMaxBytes(),
+    });
+    const args = createFfmpegLiveBackupArgs(recording.filePath, {
+      video: normalizeVideoConfig(payload.video),
+      audio: normalizeAudioConfig(payload.audio),
+      maxBytes: getLiveBackupMaxBytes(),
+    });
+    const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
+    const backup: BackupProcess = {
+      recording,
+      process: child,
+      exited: false,
+    };
+    session.backup = backup;
+    liveBackups.set(recording.backupId, recording);
+
+    sendJson(ws, {
+      type: 'backup-recording-status',
+      payload: toLiveBackupPublicStatus(recording),
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      const line = redactFfmpegLine(chunk.toString('utf8').trim(), session.destinations);
+      if (line) console.warn(`ffmpeg live backup ${recording.backupId}: ${line}`);
+    });
+
+    child.on('error', (err) => {
+      backup.exited = true;
+      recording.status = 'error';
+      recording.error = err.message;
+      if (!recording.stoppedAt) recording.stoppedAt = new Date().toISOString();
+      sendJson(ws, {
+        type: 'backup-recording-status',
+        payload: toLiveBackupPublicStatus(recording),
+      });
+    });
+
+    child.on('close', (code, signal) => {
+      backup.exited = true;
+      if (session.backupStopTimer) {
+        clearTimeout(session.backupStopTimer);
+        session.backupStopTimer = null;
+      }
+      if (!recording.stoppedAt) recording.stoppedAt = new Date().toISOString();
+
+      void refreshLiveBackupSize(recording).then(() => {
+        if (code === 0 && !signal && (recording.sizeBytes || 0) > 0) {
+          recording.status = 'ready';
+        } else {
+          recording.status = 'error';
+          recording.error = signal
+            ? `Backup recording stopped from ${signal}`
+            : `Backup recording exited with code ${code ?? 'unknown'}`;
+        }
+        sendJson(ws, {
+          type: 'backup-recording-status',
+          payload: toLiveBackupPublicStatus(recording),
+        });
+      }).catch((err) => {
+        recording.status = 'error';
+        recording.error = err instanceof Error ? err.message : 'Backup recording finalization failed';
+        sendJson(ws, {
+          type: 'backup-recording-status',
+          payload: toLiveBackupPublicStatus(recording),
+        });
+      });
+    });
+  } catch (err) {
+    sendJson(ws, {
+      type: 'backup-recording-status',
+      payload: {
+        backupId: '',
+        roomId: claims.roomId,
+        fileName: '',
+        startedAt: new Date().toISOString(),
+        status: 'error',
+        error: err instanceof Error ? err.message : 'Backup recording could not start',
+      },
+    });
+  }
+}
+
+async function handleStart(ws: WebSocket, session: RelaySession, payload: RtmpRelayStartPayload) {
   if (session.started) {
     sendError(ws, 'ALREADY_STARTED', 'This relay session is already live');
     return;
@@ -302,6 +452,8 @@ function handleStart(ws: WebSocket, session: RelaySession, payload: RtmpRelaySta
   session.claims = claims;
   session.destinations = payload.destinations;
 
+  await spawnLiveBackup(ws, session, ffmpegPath, claims, payload);
+
   for (const destination of payload.destinations) {
     spawnRelay(ws, session, ffmpegPath, destination, payload);
   }
@@ -336,6 +488,10 @@ function handleBinaryChunk(ws: WebSocket, session: RelaySession, data: RawData) 
         payload: { destinationId: relay.destination.id, status: 'live' },
       });
     }
+  }
+  const backup = session.backup;
+  if (backup && !backup.exited && backup.process.stdin.writable) {
+    backup.process.stdin.write(chunk);
   }
 }
 
@@ -392,6 +548,28 @@ function authenticateRecordingUpload(req: IncomingMessage, roomId: string, bodyT
   }
   if (claims.roomId !== roomId) {
     throw new RecordingUploadError(403, 'ROOM_TOKEN_MISMATCH', 'Recording upload token does not match this room');
+  }
+  return claims;
+}
+
+function authenticateLiveBackupRequest(req: IncomingMessage, roomId: string) {
+  const secret = getLiveStreamTokenSecret();
+  if (!secret) {
+    throw new RecordingUploadError(503, 'LIVE_STREAM_NOT_CONFIGURED', 'Live backup downloads are not configured on this server');
+  }
+  const token = getBearerToken(req);
+  if (!token) {
+    throw new RecordingUploadError(401, 'UNAUTHORIZED', 'Live backup download token is required');
+  }
+  let claims: LiveStreamTokenClaims;
+  try {
+    claims = verifyLiveStreamToken(token, secret);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Invalid live backup download token';
+    throw new RecordingUploadError(401, 'UNAUTHORIZED', message);
+  }
+  if (claims.roomId !== roomId) {
+    throw new RecordingUploadError(403, 'ROOM_TOKEN_MISMATCH', 'Live backup token does not match this room');
   }
   return claims;
 }
@@ -458,6 +636,99 @@ function getArtifactContentType(format: string): string {
 
 function attachmentName(filePath: string): string {
   return path.basename(filePath).replace(/["\r\n]/g, '_') || 'recording-export';
+}
+
+function findLatestLiveBackup(roomId: string): LiveBackupRecording | null {
+  const backups = Array.from(liveBackups.values())
+    .filter((backup) => backup.roomId === roomId)
+    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  return backups[0] || null;
+}
+
+async function handleLiveBackupRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  if (!url.pathname.startsWith('/rtmp/backups')) return false;
+
+  if (!applyCorsHeaders(req, res)) {
+    writeJson(res, 403, { error: 'Forbidden: origin not allowed' });
+    return true;
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  try {
+    if (url.pathname === '/rtmp/backups/latest' && req.method === 'GET') {
+      const roomId = url.searchParams.get('roomId')?.trim() || '';
+      if (!roomId) {
+        throw new RecordingUploadError(400, 'INVALID_ROOM_ID', 'roomId is required');
+      }
+      authenticateLiveBackupRequest(req, roomId);
+      const latest = findLatestLiveBackup(roomId);
+      if (!latest) {
+        writeJson(res, 404, { error: 'No live backup recording found', code: 'LIVE_BACKUP_NOT_FOUND' });
+        return true;
+      }
+      if (latest.status === 'ready') await refreshLiveBackupSize(latest);
+      writeJson(res, 200, toLiveBackupPublicStatus(latest));
+      return true;
+    }
+
+    const downloadMatch = url.pathname.match(/^\/rtmp\/backups\/([^/]+)\/download$/);
+    if (downloadMatch && req.method === 'GET') {
+      const [, backupId] = downloadMatch;
+      const backup = liveBackups.get(backupId);
+      if (!backup) {
+        writeJson(res, 404, { error: 'Live backup recording not found', code: 'LIVE_BACKUP_NOT_FOUND' });
+        return true;
+      }
+      authenticateLiveBackupRequest(req, backup.roomId);
+      if (backup.status !== 'ready') {
+        writeJson(res, 409, { error: 'Live backup recording is not ready', code: 'LIVE_BACKUP_NOT_READY' });
+        return true;
+      }
+      await refreshLiveBackupSize(backup);
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Content-Length': String(backup.sizeBytes || 0),
+        'Content-Disposition': `attachment; filename="${attachmentName(backup.fileName)}"`,
+      });
+      createReadStream(backup.filePath)
+        .on('error', (err) => {
+          console.error('Live backup recording stream failed:', err);
+          res.destroy(err);
+        })
+        .pipe(res);
+      return true;
+    }
+
+    const statusMatch = url.pathname.match(/^\/rtmp\/backups\/([^/]+)$/);
+    if (statusMatch && req.method === 'GET') {
+      const [, backupId] = statusMatch;
+      const backup = liveBackups.get(backupId);
+      if (!backup) {
+        writeJson(res, 404, { error: 'Live backup recording not found', code: 'LIVE_BACKUP_NOT_FOUND' });
+        return true;
+      }
+      authenticateLiveBackupRequest(req, backup.roomId);
+      if (backup.status === 'ready') await refreshLiveBackupSize(backup);
+      writeJson(res, 200, toLiveBackupPublicStatus(backup));
+      return true;
+    }
+
+    writeJson(res, 404, { error: 'Live backup recording route not found' });
+    return true;
+  } catch (err) {
+    if (err instanceof RecordingUploadError) {
+      writeJson(res, err.statusCode, { error: err.message, code: err.code });
+      return true;
+    }
+    console.error('Live backup recording request failed:', err);
+    writeJson(res, 500, { error: 'Live backup recording request failed', code: 'LIVE_BACKUP_REQUEST_FAILED' });
+    return true;
+  }
 }
 
 async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
@@ -608,6 +879,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   }
 
   const url = new URL(req.url || '/', 'http://media-server.local');
+  if (await handleLiveBackupRequest(req, res, url)) return;
   if (await handleRecordingUploadRequest(req, res, url)) return;
 
   writeJson(res, 404, { error: 'Not found' });
@@ -644,6 +916,8 @@ wss.on('connection', (ws) => {
     claims: null,
     destinations: [],
     relays: new Map(),
+    backup: null,
+    backupStopTimer: null,
     stopTimers: new Map(),
     restartTimers: new Map(),
     restartAttempts: new Map(),
@@ -663,7 +937,11 @@ wss.on('connection', (ws) => {
     }
 
     if (message.type === 'start') {
-      handleStart(ws, session, message.payload);
+      void handleStart(ws, session, message.payload).catch((err) => {
+        const message = err instanceof Error ? err.message : 'Unable to start relay session';
+        sendError(ws, 'START_FAILED', message);
+        stopSession(ws, session, message);
+      });
     } else if (message.type === 'ping') {
       sendJson(ws, {
         type: 'pong',

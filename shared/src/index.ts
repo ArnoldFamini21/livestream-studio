@@ -605,12 +605,26 @@ export type RtmpRelayClientMessage =
   | { type: 'ping'; payload: RtmpRelayPingPayload };
 
 export type RtmpRelayDestinationStatus = 'connecting' | 'live' | 'error' | 'idle';
+export type RtmpRelayBackupRecordingStatus = 'recording' | 'finalizing' | 'ready' | 'error' | 'disabled';
+
+export interface RtmpRelayBackupRecordingPayload {
+  backupId: string;
+  roomId: string;
+  fileName: string;
+  startedAt: string;
+  stoppedAt?: string;
+  status: RtmpRelayBackupRecordingStatus;
+  sizeBytes?: number;
+  downloadPath?: string;
+  error?: string;
+}
 
 export type RtmpRelayServerMessage =
   | { type: 'session-started'; payload: { roomId: string; destinationIds: string[] } }
   | { type: 'session-stopped'; payload: { reason?: string } }
   | { type: 'pong'; payload: RtmpRelayPingPayload & { receivedAt: number } }
   | { type: 'destination-status'; payload: { destinationId: string; status: RtmpRelayDestinationStatus; message?: string } }
+  | { type: 'backup-recording-status'; payload: RtmpRelayBackupRecordingPayload }
   | { type: 'error'; payload: { code: string; message: string; destinationId?: string } };
 
 // ============ Recording Upload Protocol Types ============

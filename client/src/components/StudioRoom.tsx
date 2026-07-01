@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -102,6 +102,10 @@ import {
   downloadRecordingExportArtifact,
   uploadRecordingToMediaServer,
 } from '../utils/recordingUpload.ts';
+import {
+  downloadRtmpBackupRecording,
+  pollRtmpBackupRecording,
+} from '../utils/rtmpBackupRecording.ts';
 import { getScenePipCornerForApply, getSceneStageItemOrderForApply } from '../utils/sceneApplication.ts';
 import {
   getContainedVideoRect,
@@ -693,6 +697,26 @@ function getRoomActivityStatus(live: boolean, recordingStartedAt: string | null)
   return 'waiting';
 }
 
+function formatFileSize(bytes: number | undefined): string {
+  if (!bytes || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function getLiveBackupNoticeText(backup: RtmpRelayBackupRecordingPayload | null): string {
+  if (!backup) return '';
+  if (backup.status === 'disabled') return 'Server backup recording is disabled on this media server.';
+  if (backup.status === 'recording') return 'Server backup recording is active.';
+  if (backup.status === 'finalizing') return 'Server backup recording is finalizing.';
+  if (backup.status === 'ready') {
+    const size = formatFileSize(backup.sizeBytes);
+    return `Server backup recording is ready${size ? ` (${size})` : ''}.`;
+  }
+  return backup.error ? `Server backup recording failed: ${backup.error}` : 'Server backup recording failed.';
+}
+
 function isPersistableLogoUrl(url: string | null): url is string {
   return Boolean(url && !url.startsWith('blob:'));
 }
@@ -764,6 +788,10 @@ function getPersistableScenes(scenes: Scene[]): Scene[] {
 
 function downloadJsonFile(fileName: string, contents: string) {
   const blob = new Blob([contents], { type: 'application/json' });
+  downloadBlobFile(blob, fileName);
+}
+
+function downloadBlobFile(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -891,6 +919,8 @@ export function StudioRoom() {
   const [streamScreenConfig, setStreamScreenConfig] = useState<StreamScreenConfig>(DEFAULT_STREAM_SCREEN_CONFIG);
   const [activeStreamScreenState, setActiveStreamScreenState] = useState<ActiveStreamScreenState | null>(null);
   const [liveSessionSummary, setLiveSessionSummary] = useState<LiveSessionSummary | null>(null);
+  const [liveBackupRecording, setLiveBackupRecording] = useState<RtmpRelayBackupRecordingPayload | null>(null);
+  const [liveBackupDownloading, setLiveBackupDownloading] = useState(false);
 
   // Room ending countdown — driven by server-issued absolute end time.
   const [roomEnding, setRoomEnding] = useState(false);
@@ -1356,6 +1386,7 @@ export function StudioRoom() {
     stopRelay,
     stats: relayStats,
     readiness: relayReadiness,
+    backupRecording: relayBackupRecording,
     checkRelayReadiness,
   } = useRtmpRelay({
     compositeStreamRef,
@@ -1372,6 +1403,10 @@ export function StudioRoom() {
     onDestinationStatus: handleRelayDestinationStatus,
     onRelayStopped: handleRelayStopped,
   });
+
+  useEffect(() => {
+    if (relayBackupRecording) setLiveBackupRecording(relayBackupRecording);
+  }, [relayBackupRecording]);
 
   const localStudioBrandingPayload = useMemo(() => buildStudioBrandingPayload({
     brandColor,
@@ -1967,9 +2002,10 @@ export function StudioRoom() {
 
   useEffect(() => {
     if (!liveSessionSummary) return;
+    if (liveBackupRecording && liveBackupRecording.status !== 'disabled') return;
     const timer = window.setTimeout(() => setLiveSessionSummary(null), 20_000);
     return () => window.clearTimeout(timer);
-  }, [liveSessionSummary]);
+  }, [liveBackupRecording, liveSessionSummary]);
 
   // Signaling message handler
   const handleSignalingMessage = useCallback(
@@ -2773,6 +2809,67 @@ export function StudioRoom() {
     };
   }, [requestLiveStreamToken]);
 
+  const finalizeLiveBackupRecording = useCallback(async () => {
+    if (!roomId || !isHostOrCoHost) return;
+    if (liveBackupRecording?.status === 'disabled') return;
+    setLiveBackupRecording((current) => (
+      current
+        ? { ...current, status: current.status === 'recording' ? 'finalizing' : current.status }
+        : {
+            backupId: '',
+            roomId,
+            fileName: '',
+            startedAt: new Date().toISOString(),
+            status: 'finalizing',
+          }
+    ));
+    try {
+      const token = await requestLiveStreamToken();
+      const backup = await pollRtmpBackupRecording({ token, roomId });
+      if (backup) {
+        setLiveBackupRecording(backup);
+      } else {
+        setLiveBackupRecording({
+          backupId: '',
+          roomId,
+          fileName: '',
+          startedAt: new Date().toISOString(),
+          status: 'error',
+          error: 'No server backup recording was found.',
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Server backup recording status failed.';
+      setLiveBackupRecording({
+        backupId: '',
+        roomId,
+        fileName: '',
+        startedAt: new Date().toISOString(),
+        status: 'error',
+        error: message,
+      });
+      console.error('Failed to finalize live backup recording:', err);
+    }
+  }, [isHostOrCoHost, liveBackupRecording?.status, requestLiveStreamToken, roomId]);
+
+  const onDownloadLiveBackupRecording = useCallback(async () => {
+    if (!liveBackupRecording || liveBackupRecording.status !== 'ready') return;
+    setLiveBackupDownloading(true);
+    try {
+      const token = await requestLiveStreamToken();
+      const download = await downloadRtmpBackupRecording({
+        token,
+        backup: liveBackupRecording,
+      });
+      downloadBlobFile(download.blob, download.fileName);
+    } catch (err) {
+      console.error('Failed to download live backup recording:', err);
+      addToast(err instanceof Error ? err.message : 'Failed to download live backup recording.', 'error');
+    } finally {
+      setLiveBackupDownloading(false);
+    }
+  }, [addToast, liveBackupRecording, requestLiveStreamToken]);
+
   const requestCoHostInvite = useCallback(async (): Promise<{ inviteUrl: string; expiresAt: string }> => {
     const requestId = `cohost-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const { token, expiresAt } = await new Promise<{ token: string; expiresAt: string }>((resolve, reject) => {
@@ -2844,6 +2941,7 @@ export function StudioRoom() {
     setIsLive(true);
     setLiveStartedAt(null);
     setLiveSessionSummary(null);
+    setLiveBackupRecording(null);
     setDestinations((prev) => prev.map((d) => (
       d.enabled
         ? { ...d, status: 'connecting', statusMessage: 'Starting relay session...' }
@@ -2896,6 +2994,7 @@ export function StudioRoom() {
         stoppedAt: new Date().toISOString(),
       });
     }
+    void finalizeLiveBackupRecording();
     liveStartedAtRef.current = null;
     setIsLive(false);
     setLiveStartedAt(null);
@@ -4297,7 +4396,20 @@ export function StudioRoom() {
               <span style={styles.waitingNoticeCopy}>
                 <strong style={styles.waitingNoticeTitle}>{liveSessionSummary.title}</strong>
                 <span style={styles.waitingNoticeText}>{liveSessionSummary.message}</span>
+                {liveBackupRecording && (
+                  <span style={styles.waitingNoticeText}>{getLiveBackupNoticeText(liveBackupRecording)}</span>
+                )}
               </span>
+              {liveBackupRecording?.status === 'ready' && liveBackupRecording.downloadPath && (
+                <button
+                  type="button"
+                  style={styles.noticeActionBtn}
+                  onClick={onDownloadLiveBackupRecording}
+                  disabled={liveBackupDownloading}
+                >
+                  {liveBackupDownloading ? 'Preparing...' : 'Download Backup'}
+                </button>
+              )}
               <button
                 type="button"
                 style={styles.noticeDismissBtn}
@@ -5397,6 +5509,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     lineHeight: 1.4,
     color: 'var(--text-secondary)',
+  },
+  noticeActionBtn: {
+    borderRadius: 6,
+    border: '1px solid rgba(255, 255, 255, 0.16)',
+    background: 'rgba(255, 255, 255, 0.08)',
+    color: 'currentColor',
+    fontSize: 11,
+    fontWeight: 800,
+    whiteSpace: 'nowrap',
+    padding: '6px 9px',
+    cursor: 'pointer',
+    flexShrink: 0,
   },
   noticeDismissBtn: {
     width: 24,
