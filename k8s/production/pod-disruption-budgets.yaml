@@ -1,0 +1,29 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: livestream-studio-server
+  labels:
+    app.kubernetes.io/name: livestream-studio-server
+    app.kubernetes.io/component: signaling
+    app.kubernetes.io/part-of: livestream-studio
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: livestream-studio-server
+      app.kubernetes.io/component: signaling
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: livestream-studio-media-server
+  labels:
+    app.kubernetes.io/name: livestream-studio-media-server
+    app.kubernetes.io/component: media-relay
+    app.kubernetes.io/part-of: livestream-studio
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: livestream-studio-media-server
+      app.kubernetes.io/component: media-relay

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: livestream-studio-config
+  labels:
+    app.kubernetes.io/name: livestream-studio
+    app.kubernetes.io/part-of: livestream-studio
+data:
+  NODE_ENV: production
+  CLIENT_URLS: https://studio.arnoldfamini.com
+  OPENAI_TRANSCRIPTION_MODEL: whisper-1
+  ICE_TRANSPORT_POLICY: all
+  RECORDING_STORAGE_REGION: us-east-1
+  RECORDING_STORAGE_FORCE_PATH_STYLE: "true"
+  RECORDING_STORAGE_PREFIX: livestream-studio

@@ -229,7 +229,7 @@
 
 ### 10C. Deployment
 - [x] Docker Compose for local dev
-- [ ] Kubernetes manifests for production
+- [x] Kubernetes manifests for production
 - [ ] CDN for static assets
 - [x] GitHub Actions builds client, signaling server, and media-server workspaces
 - [x] Optional GitHub Actions deploy hooks for Render signaling and media-server services
