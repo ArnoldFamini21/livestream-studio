@@ -221,7 +221,7 @@
 - [ ] Server-side recording as backup
 
 ### 10C. Deployment
-- [ ] Docker Compose for local dev
+- [x] Docker Compose for local dev
 - [ ] Kubernetes manifests for production
 - [ ] CDN for static assets
 - [x] Configurable STUN/TURN ICE config endpoint for WebRTC connectivity
