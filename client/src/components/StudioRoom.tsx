@@ -60,6 +60,7 @@ import {
 } from '../utils/virtualBackgrounds.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
+import { getLiveStreamElapsedSeconds, getLiveStreamStatus } from '../utils/liveStreamStatus.ts';
 import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
 import {
   getProductionSceneTemplateConfig,
@@ -866,6 +867,8 @@ export function StudioRoom() {
   const [roomEnding, setRoomEnding] = useState(false);
   const [roomEndsAt, setRoomEndsAt] = useState<number | null>(null);
   const [endingCountdown, setEndingCountdown] = useState(10);
+  const [liveStartedAt, setLiveStartedAt] = useState<string | null>(null);
+  const [liveElapsed, setLiveElapsed] = useState(0);
   const [sessionRecordingStartedAt, setSessionRecordingStartedAt] = useState<string | null>(null);
   const [sessionRecordingElapsed, setSessionRecordingElapsed] = useState(0);
 
@@ -1182,6 +1185,7 @@ export function StudioRoom() {
   const isScreenSharingRef = useRef(isScreenSharing);
   const localStreamRef = useRef<MediaStream | null>(localStream);
   const isLiveRef = useRef(isLive);
+  const liveStartedAtRef = useRef<string | null>(liveStartedAt);
   const sessionRecordingStartedAtRef = useRef<string | null>(sessionRecordingStartedAt);
   const publishedTrackIdsRef = useRef<{ audio?: string; video?: string }>({});
   const reactionSequenceRef = useRef(0);
@@ -1270,7 +1274,9 @@ export function StudioRoom() {
   const handleRelayStopped = useCallback((message: string) => {
     const statusMessage = message.trim() || 'Media relay stopped unexpectedly.';
     isLiveRef.current = false;
+    liveStartedAtRef.current = null;
     setIsLive(false);
+    setLiveStartedAt(null);
     setActiveStreamScreenState(null);
     setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(false, sessionRecordingStartedAtRef.current) } : prev);
     send({
@@ -1599,6 +1605,7 @@ export function StudioRoom() {
   useEffect(() => { isScreenSharingRef.current = isScreenSharing; }, [isScreenSharing]);
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
   useEffect(() => { isLiveRef.current = isLive; }, [isLive]);
+  useEffect(() => { liveStartedAtRef.current = liveStartedAt; }, [liveStartedAt]);
   useEffect(() => { sessionRecordingStartedAtRef.current = sessionRecordingStartedAt; }, [sessionRecordingStartedAt]);
 
   useEffect(() => {
@@ -1777,6 +1784,18 @@ export function StudioRoom() {
   useEffect(() => { sendRef.current = send; }, [send]);
 
   useEffect(() => {
+    if (!liveStartedAt) {
+      setLiveElapsed(0);
+      return;
+    }
+
+    const updateElapsed = () => setLiveElapsed(getLiveStreamElapsedSeconds(liveStartedAt));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [liveStartedAt]);
+
+  useEffect(() => {
     if (!sessionRecordingStartedAt) {
       setSessionRecordingElapsed(0);
       return;
@@ -1893,11 +1912,14 @@ export function StudioRoom() {
         case 'room-joined': {
           const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState, studioBranding } = message.payload;
           const live = Boolean(liveStreamState?.live || roomData.status === 'live');
+          const liveStartedAt = live ? liveStreamState?.startedAt || new Date().toISOString() : null;
           const recordingStartedAt = recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null;
           isLiveRef.current = live;
+          liveStartedAtRef.current = liveStartedAt;
           sessionRecordingStartedAtRef.current = recordingStartedAt;
           setRoom(roomData);
           setIsLive(live);
+          setLiveStartedAt(liveStartedAt);
           setMyParticipant(participant);
           setJoined(true);
           setChatMessages(existingChatMessages);
@@ -2054,7 +2076,9 @@ export function StudioRoom() {
           break;
         case 'live-stream-state-changed':
           isLiveRef.current = message.payload.live;
+          liveStartedAtRef.current = message.payload.live ? message.payload.startedAt || new Date().toISOString() : null;
           setIsLive(message.payload.live);
+          setLiveStartedAt(liveStartedAtRef.current);
           setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(message.payload.live, sessionRecordingStartedAtRef.current) } : prev);
           if (!message.payload.live) {
             setActiveStreamScreenState(null);
@@ -2768,6 +2792,7 @@ export function StudioRoom() {
     }
 
     setIsLive(true);
+    setLiveStartedAt(null);
     setDestinations((prev) => prev.map((d) => (
       d.enabled
         ? { ...d, status: 'connecting', statusMessage: 'Starting relay session...' }
@@ -2798,6 +2823,7 @@ export function StudioRoom() {
       console.error('Failed to start live stream:', err);
       stopRelay();
       setIsLive(false);
+      setLiveStartedAt(null);
       setActiveStreamScreenState(null);
       const message = err instanceof Error ? err.message : 'Failed to start live stream.';
       setDestinations((prev) => prev.map((d) => (
@@ -2814,6 +2840,7 @@ export function StudioRoom() {
     }
     stopRelay();
     setIsLive(false);
+    setLiveStartedAt(null);
     setActiveStreamScreenState(null);
     send({
       type: 'live-stream-state-changed',
@@ -3708,6 +3735,11 @@ export function StudioRoom() {
     sessionStartedAt: sessionRecordingStartedAt,
     sessionElapsedSeconds: sessionRecordingElapsed,
   });
+  const liveStatus = getLiveStreamStatus({
+    live: isLive,
+    startedAt: liveStartedAt,
+    elapsedSeconds: liveElapsed,
+  });
   const productionExitGuard = useMemo(() => getProductionExitGuardDecision({
     isLive,
     isMixedRecording: isRecording,
@@ -4018,10 +4050,10 @@ export function StudioRoom() {
               REC {recordingStatus.formattedTime}
             </span>
           )}
-          {isLive && (
+          {liveStatus.active && (
             <span style={styles.liveBadge}>
               <span style={styles.liveBadgeDot} />
-              LIVE
+              LIVE {liveStatus.formattedTime}
             </span>
           )}
           {captionsEnabled && isHostOrCoHost && (
@@ -4901,7 +4933,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 11, fontWeight: 700, padding: '3px 12px', borderRadius: 20,
     background: '#ef4444', color: 'white',
-    textTransform: 'uppercase' as const, letterSpacing: '0.05em',
+    textTransform: 'uppercase' as const, letterSpacing: 0,
+    fontFamily: 'monospace',
+    fontVariantNumeric: 'tabular-nums',
+    minWidth: 78,
   },
   liveBadgeDot: {
     width: 6, height: 6, borderRadius: '50%', background: 'white',
