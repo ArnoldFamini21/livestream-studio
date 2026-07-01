@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   buildGeneratedRecordingTranscriptText,
+  createRecordingDriveHandoffFiles,
   buildDaVinciResolveXml,
   buildFinalCutProXml,
   buildPremiereProXml,
@@ -256,6 +257,62 @@ describe('recording bundle editor export', () => {
     const podcastText = new TextDecoder().decode(await podcastBundle.arrayBuffer());
     assert.match(podcastText, /captions\/generated_transcript\.txt/);
     assert.match(podcastText, /Welcome to the generated transcript/);
+  });
+
+  it('builds Google Drive handoff files with raw tracks and production bundles', async () => {
+    const handoffFiles = await createRecordingDriveHandoffFiles({
+      ...source,
+      files: [
+        {
+          label: 'Host Camera',
+          fileName: 'host.webm',
+          blob: new Blob(['video-track'], { type: 'video/webm' }),
+          kind: 'video',
+        },
+        {
+          label: 'Host Mic',
+          fileName: 'host-audio.webm',
+          blob: new Blob(['audio-track'], { type: 'audio/webm' }),
+          kind: 'audio',
+        },
+      ],
+      markers,
+    } as any);
+
+    assert.deepEqual(
+      handoffFiles.map((file) => file.label),
+      ['Host Camera', 'Host Mic', 'Editor bundle ZIP', 'Podcast audio ZIP']
+    );
+    assert.match(handoffFiles[2].fileName, /Launch__Demo__&_Review_recording_bundle_2026-06-11-10-00-00\.zip/);
+    assert.match(handoffFiles[3].fileName, /Launch__Demo__&_Review_podcast_audio_2026-06-11-10-00-00\.zip/);
+
+    const editorBundleText = new TextDecoder().decode(await handoffFiles[2].blob.arrayBuffer());
+    assert.match(editorBundleText, /manifest\.json/);
+    assert.match(editorBundleText, /editor\/local_recording_timeline\.csv/);
+    assert.match(editorBundleText, /markers\/recording_markers\.csv/);
+
+    const podcastBundleText = new TextDecoder().decode(await handoffFiles[3].blob.arrayBuffer());
+    assert.match(podcastBundleText, /podcast-audio-bundle/);
+    assert.match(podcastBundleText, /audio-tracks\/01_host-audio\.webm/);
+  });
+
+  it('omits the podcast handoff ZIP when no audio track exists', async () => {
+    const handoffFiles = await createRecordingDriveHandoffFiles({
+      ...source,
+      files: [
+        {
+          label: 'Host Camera',
+          fileName: 'host.webm',
+          blob: new Blob(['video-track'], { type: 'video/webm' }),
+          kind: 'video',
+        },
+      ],
+    } as any);
+
+    assert.deepEqual(
+      handoffFiles.map((file) => file.label),
+      ['Host Camera', 'Editor bundle ZIP']
+    );
   });
 
   it('rejects podcast audio bundles when no audio tracks exist', async () => {

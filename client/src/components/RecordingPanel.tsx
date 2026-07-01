@@ -40,7 +40,7 @@ export interface RecordingMarker {
   createdAt: string;
 }
 
-interface RecordedFile {
+export interface RecordedFile {
   label: string;
   blob: Blob;
   fileName: string;
@@ -56,7 +56,7 @@ interface RecordingBundleFile {
   kind?: LocalRecordingFileResult['kind'];
 }
 
-interface RecordingBundleSource {
+export interface RecordingBundleSource {
   roomName: string;
   sessionId: string | null;
   createdAt: string;
@@ -1793,6 +1793,30 @@ export async function createPodcastAudioBundle(source: RecordingBundleSource): P
   ]);
 }
 
+export async function createRecordingDriveHandoffFiles(source: RecordingBundleSource): Promise<RecordedFile[]> {
+  const uploadFiles = source.files.filter((file) => file.blob.size > 0);
+  const editorBundle = await createRecordingBundle(source);
+  const handoffFiles: RecordedFile[] = [
+    ...uploadFiles,
+    {
+      label: 'Editor bundle ZIP',
+      blob: editorBundle,
+      fileName: makeBundleFileName(source.roomName, source.createdAt),
+    },
+  ];
+
+  if (uploadFiles.some(isPodcastAudioFile)) {
+    const podcastBundle = await createPodcastAudioBundle(source);
+    handoffFiles.push({
+      label: 'Podcast audio ZIP',
+      blob: podcastBundle,
+      fileName: makePodcastBundleFileName(source.roomName, source.createdAt),
+    });
+  }
+
+  return handoffFiles;
+}
+
 export function RecordingPanel({
   isRecording,
   formattedTime,
@@ -2103,9 +2127,33 @@ export function RecordingPanel({
       }
     }
 
+    const activeSession = activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null;
+    const source: RecordingBundleSource = {
+      roomName: activeSession?.roomName || roomName,
+      sessionId: activeSession?.id || activeSessionId,
+      createdAt: activeSession?.createdAt || new Date().toISOString(),
+      durationSeconds: activeSession?.durationSeconds ?? parseDurationSeconds(formattedTime),
+      files: recordedFiles,
+      captionSegments,
+      captionLanguage,
+      markers: sortedRecordingMarkers,
+      generatedTranscript,
+    };
+
+    let uploadFiles: RecordedFile[];
+    try {
+      setDriveUploadMessage('Preparing editor bundles for Google Drive...');
+      uploadFiles = await createRecordingDriveHandoffFiles(source);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to prepare Google Drive upload bundle.';
+      setDriveUploadError(message);
+      setDriveUploadMessage(null);
+      return;
+    }
+
     // Create a folder for this recording session
     const date = new Date().toISOString().slice(0, 10);
-    const folderName = `${roomName} - ${date}`;
+    const folderName = `${source.roomName} - ${date}`;
     const folderId = await createFolder(folderName);
 
     if (!folderId) {
@@ -2115,13 +2163,14 @@ export function RecordingPanel({
     }
 
     // Upload all files into the folder
-    const uploadPromises = recordedFiles.map((file) =>
+    setDriveUploadMessage(`Uploading ${uploadFiles.length} Drive handoff files...`);
+    const uploadPromises = uploadFiles.map((file) =>
       uploadFile(file.blob, file.fileName, folderId)
     );
 
     const uploadResults = await Promise.all(uploadPromises);
     if (uploadResults.some((id) => !id)) {
-      setDriveUploadError('Some recording tracks failed to upload.');
+      setDriveUploadError('Some recording handoff files failed to upload.');
       return;
     }
 
@@ -2132,9 +2181,9 @@ export function RecordingPanel({
     }
 
     setDriveShareLink(shareResult.webViewLink);
-    setDriveUploadMessage('Uploaded to Google Drive. Share link is ready.');
+    setDriveUploadMessage(`Uploaded ${uploadFiles.length} files to Google Drive. Share link is ready.`);
     console.log('All files uploaded to Google Drive');
-  }, [isAuthorized, authorize, createFolder, createShareLink, uploadFile, recordedFiles, roomName]);
+  }, [activeSessionId, authorize, captionLanguage, captionSegments, createFolder, createShareLink, formattedTime, generatedTranscript, isAuthorized, recordedFiles, roomName, sessions, sortedRecordingMarkers, uploadFile]);
 
   const handleCopyDriveShareLink = useCallback(async () => {
     if (!driveShareLink) return;
@@ -2652,6 +2701,9 @@ export function RecordingPanel({
                   ZIP includes recording markers as JSON and CSV sidecars.
                 </div>
               )}
+              <div style={styles.captionSidecarNote}>
+                Google Drive uploads include original tracks plus an editor ZIP and a podcast ZIP when audio is available.
+              </div>
               <button
                 className="hover-lift"
                 style={{
