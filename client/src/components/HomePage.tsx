@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { buildStudioCalendarInvite } from '@studio/shared';
@@ -20,6 +20,18 @@ import {
   type CreatedRoomResponse,
 } from '../utils/hostAccess.ts';
 import { buildGuestInviteEmailHref, buildGuestInviteUrl } from '../utils/inviteLinks.ts';
+import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
+import {
+  BRAND_KIT_STORAGE_KEY,
+  parseSavedBrandKits,
+  serializeSavedBrandKits,
+  type SavedBrandKit,
+} from '../utils/brandKits.ts';
+import {
+  buildWorkspaceDashboardSummary,
+  formatWorkspaceDuration,
+  formatWorkspaceFileSize,
+} from '../utils/workspaceDashboard.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
@@ -58,6 +70,23 @@ function readSavedScheduledStudios(): SavedScheduledStudio[] {
       ...item,
       passwordProtected: Boolean(item.passwordProtected),
     }));
+}
+
+function readSavedBrandKitLibrary(): SavedBrandKit[] {
+  try {
+    return parseSavedBrandKits(localStorage.getItem(BRAND_KIT_STORAGE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedBrandKitLibrary(kits: SavedBrandKit[]) {
+  try {
+    localStorage.setItem(BRAND_KIT_STORAGE_KEY, serializeSavedBrandKits(kits));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function upsertSavedScheduledStudio(room: SavedScheduledStudio): SavedScheduledStudio[] {
@@ -121,6 +150,16 @@ function formatScheduledDate(value?: string): string {
   });
 }
 
+function formatDashboardDate(value?: string): string {
+  if (!value) return 'Unscheduled';
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return 'Unscheduled';
+  return new Date(timestamp).toLocaleString([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
 function getScheduleState(room: SavedScheduledStudio): string {
   if (!room.scheduledFor) return 'Ready';
   const scheduledAt = Date.parse(room.scheduledFor);
@@ -154,7 +193,10 @@ export function HomePage() {
   const [schedulingLoading, setSchedulingLoading] = useState(false);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [savedScheduledRooms, setSavedScheduledRooms] = useState<SavedScheduledStudio[]>(() => readSavedScheduledStudios());
+  const [savedBrandKits, setSavedBrandKits] = useState<SavedBrandKit[]>(() => readSavedBrandKitLibrary());
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const recordingLibrary = useRecordingLibrary();
 
   const [error, setError] = useState<string | null>(null);
 
@@ -261,6 +303,17 @@ export function HomePage() {
   const hostEntryLink = scheduledRoom ? buildHostEntryUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.hostToken) : '';
   const buildInviteLink = (room: SavedScheduledStudio) => buildGuestInviteUrl(INVITE_BASE_URL, room.id, room.name);
   const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
+  const workspaceDashboard = useMemo(
+    () => buildWorkspaceDashboardSummary(savedScheduledRooms, recordingLibrary.sessions, savedBrandKits),
+    [savedScheduledRooms, recordingLibrary.sessions, savedBrandKits]
+  );
+  const hasWorkspaceAssets = (
+    workspaceDashboard.totalStudios > 0 ||
+    workspaceDashboard.totalRecordings > 0 ||
+    workspaceDashboard.totalBrandKits > 0
+  );
+  const recentRecordings = recordingLibrary.sessions.slice(0, 3);
+  const recentBrandKits = savedBrandKits.slice(0, 4);
 
   useEffect(() => {
     if (!scheduledRoom || !inviteLink) {
@@ -379,6 +432,27 @@ export function HomePage() {
 
   const forgetScheduledRoom = (roomId: string) => {
     setSavedScheduledRooms(removeSavedScheduledStudio(roomId));
+  };
+
+  const deleteRecordingSession = async (session: LocalRecordingSession) => {
+    if (!window.confirm(`Delete recording "${session.roomName}" from this browser?`)) return;
+    setDashboardError(null);
+    try {
+      await recordingLibrary.deleteSession(session.id);
+    } catch {
+      setDashboardError('Could not delete that recording.');
+    }
+  };
+
+  const deleteBrandKit = (kit: SavedBrandKit) => {
+    if (!window.confirm(`Delete brand kit "${kit.name}" from this browser?`)) return;
+    const next = savedBrandKits.filter((item) => item.id !== kit.id);
+    if (!writeSavedBrandKitLibrary(next)) {
+      setDashboardError('Could not update saved brand kits in this browser.');
+      return;
+    }
+    setDashboardError(null);
+    setSavedBrandKits(next);
   };
 
   const goToStudioAsHost = () => {
@@ -550,6 +624,128 @@ export function HomePage() {
               </button>
             </div>
           </div>
+
+          {hasWorkspaceAssets && (
+            <section style={styles.workspacePanel} aria-label="Workspace dashboard">
+              <div style={styles.workspaceHeader}>
+                <div style={styles.workspaceHeaderCopy}>
+                  <h2 style={styles.workspaceTitle}>Workspace</h2>
+                  <p style={styles.workspaceSubtitle}>Saved studios, recordings, and brand assets</p>
+                </div>
+                <span style={styles.workspaceBadge}>
+                  {workspaceDashboard.totalStudios + workspaceDashboard.totalRecordings + workspaceDashboard.totalBrandKits}
+                </span>
+              </div>
+
+              <div style={styles.workspaceStats}>
+                <div style={styles.workspaceStat}>
+                  <span style={styles.workspaceStatValue}>{workspaceDashboard.totalStudios}</span>
+                  <span style={styles.workspaceStatLabel}>
+                    {workspaceDashboard.upcomingStudios} upcoming | {workspaceDashboard.passwordProtectedStudios} locked
+                  </span>
+                </div>
+                <div style={styles.workspaceStat}>
+                  <span style={styles.workspaceStatValue}>{workspaceDashboard.totalRecordings}</span>
+                  <span style={styles.workspaceStatLabel}>
+                    {workspaceDashboard.totalRecordingTracks} tracks | {formatWorkspaceFileSize(workspaceDashboard.totalRecordingBytes)}
+                  </span>
+                </div>
+                <div style={styles.workspaceStat}>
+                  <span style={styles.workspaceStatValue}>{workspaceDashboard.totalBrandKits}</span>
+                  <span style={styles.workspaceStatLabel}>
+                    {workspaceDashboard.brandKitsWithLogo} logo | {workspaceDashboard.brandKitsWithBackground} background
+                  </span>
+                </div>
+              </div>
+
+              <div style={styles.workspaceMetaGrid}>
+                {workspaceDashboard.latestStudio && (
+                  <div style={styles.workspaceMetaItem}>
+                    <span style={styles.workspaceMetaLabel}>Latest studio</span>
+                    <span style={styles.workspaceMetaValue}>{workspaceDashboard.latestStudio.name || 'Untitled studio'}</span>
+                    <span style={styles.workspaceMetaSub}>{formatDashboardDate(workspaceDashboard.latestStudio.scheduledFor || workspaceDashboard.latestStudio.createdAt)}</span>
+                  </div>
+                )}
+                {workspaceDashboard.latestRecording && (
+                  <div style={styles.workspaceMetaItem}>
+                    <span style={styles.workspaceMetaLabel}>Latest recording</span>
+                    <span style={styles.workspaceMetaValue}>{workspaceDashboard.latestRecording.roomName}</span>
+                    <span style={styles.workspaceMetaSub}>{formatDashboardDate(workspaceDashboard.latestRecording.createdAt)}</span>
+                  </div>
+                )}
+                {workspaceDashboard.latestBrandKit && (
+                  <div style={styles.workspaceMetaItem}>
+                    <span style={styles.workspaceMetaLabel}>Latest brand kit</span>
+                    <span style={styles.workspaceMetaValue}>{workspaceDashboard.latestBrandKit.name}</span>
+                    <span style={styles.workspaceMetaSub}>{formatDashboardDate(workspaceDashboard.latestBrandKit.createdAt)}</span>
+                  </div>
+                )}
+              </div>
+
+              {(dashboardError || recordingLibrary.error) && (
+                <p style={styles.workspaceError}>{dashboardError || recordingLibrary.error}</p>
+              )}
+
+              {(recordingLibrary.isLoading || recentRecordings.length > 0) && (
+                <div style={styles.workspaceSection}>
+                  <div style={styles.workspaceSectionHeader}>
+                    <span style={styles.workspaceSectionTitle}>Recent recordings</span>
+                    <span style={styles.workspaceSectionCount}>
+                      {recordingLibrary.isLoading ? 'Loading' : `${workspaceDashboard.cloudRecordingCount} cloud`}
+                    </span>
+                  </div>
+                  {!recordingLibrary.isLoading && (
+                    <div style={styles.workspaceRows}>
+                      {recentRecordings.map((session) => (
+                        <div key={session.id} style={styles.workspaceRow}>
+                          <div style={styles.workspaceRowCopy}>
+                            <span style={styles.workspaceRowTitle}>{session.roomName}</span>
+                            <span style={styles.workspaceRowMeta}>
+                              {formatDashboardDate(session.createdAt)} | {formatWorkspaceDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                          <button
+                            style={styles.workspaceRowAction}
+                            onClick={() => void deleteRecordingSession(session)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {recentBrandKits.length > 0 && (
+                <div style={styles.workspaceSection}>
+                  <div style={styles.workspaceSectionHeader}>
+                    <span style={styles.workspaceSectionTitle}>Brand kits</span>
+                    <span style={styles.workspaceSectionCount}>{recentBrandKits.length}/{workspaceDashboard.totalBrandKits}</span>
+                  </div>
+                  <div style={styles.workspaceRows}>
+                    {recentBrandKits.map((kit) => (
+                      <div key={kit.id} style={styles.workspaceRow}>
+                        <span style={{ ...styles.workspaceBrandSwatch, background: kit.brandColor }} />
+                        <div style={styles.workspaceRowCopy}>
+                          <span style={styles.workspaceRowTitle}>{kit.name}</span>
+                          <span style={styles.workspaceRowMeta}>
+                            {kit.studioTheme} | {kit.logoUrl ? 'Logo saved' : 'No logo'} | {kit.stageBackground.type}
+                          </span>
+                        </div>
+                        <button
+                          style={styles.workspaceRowAction}
+                          onClick={() => deleteBrandKit(kit)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
 
           {savedScheduledRooms.length > 0 && (
             <section style={styles.schedulePanel}>
@@ -954,6 +1150,207 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     transition: 'all 0.18s ease',
     letterSpacing: '-0.01em',
+  },
+  workspacePanel: {
+    width: '100%',
+    maxWidth: 460,
+    flex: '1 1 360px',
+    background: 'rgba(255, 255, 255, 0.035)',
+    borderRadius: 18,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
+    padding: 18,
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
+  },
+  workspaceHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 14,
+  },
+  workspaceHeaderCopy: {
+    minWidth: 0,
+  },
+  workspaceTitle: {
+    fontSize: 16,
+    fontWeight: 700,
+    color: 'rgba(226, 232, 240, 0.94)',
+    letterSpacing: 0,
+    marginBottom: 3,
+  },
+  workspaceSubtitle: {
+    fontSize: 12,
+    color: 'var(--text-muted)',
+    lineHeight: 1.35,
+  },
+  workspaceBadge: {
+    minWidth: 26,
+    height: 26,
+    borderRadius: 13,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 12,
+    fontWeight: 700,
+    color: '#bbf7d0',
+    background: 'rgba(34, 197, 94, 0.1)',
+    border: '1px solid rgba(34, 197, 94, 0.18)',
+  },
+  workspaceStats: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(112px, 1fr))',
+    gap: 8,
+    marginBottom: 12,
+  },
+  workspaceStat: {
+    minWidth: 0,
+    borderRadius: 10,
+    background: 'rgba(15, 23, 42, 0.42)',
+    border: '1px solid rgba(255, 255, 255, 0.06)',
+    padding: '10px 11px',
+  },
+  workspaceStatValue: {
+    display: 'block',
+    fontSize: 20,
+    fontWeight: 800,
+    color: 'var(--text-primary)',
+    lineHeight: 1.1,
+    marginBottom: 5,
+  },
+  workspaceStatLabel: {
+    display: 'block',
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+    lineHeight: 1.3,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  workspaceMetaGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr',
+    gap: 8,
+    marginBottom: 12,
+  },
+  workspaceMetaItem: {
+    minWidth: 0,
+    display: 'grid',
+    gridTemplateColumns: '96px minmax(0, 1fr)',
+    gap: '2px 8px',
+    alignItems: 'baseline',
+    padding: '8px 0',
+    borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+  },
+  workspaceMetaLabel: {
+    gridRow: '1 / span 2',
+    fontSize: 10,
+    fontWeight: 800,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  workspaceMetaValue: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+    fontSize: 12,
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+  },
+  workspaceMetaSub: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+    fontSize: 11,
+    color: 'var(--text-muted)',
+  },
+  workspaceError: {
+    fontSize: 12,
+    color: '#f87171',
+    marginBottom: 10,
+    lineHeight: 1.4,
+  },
+  workspaceSection: {
+    borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+    paddingTop: 12,
+    marginTop: 12,
+  },
+  workspaceSectionHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 8,
+  },
+  workspaceSectionTitle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: 'rgba(226, 232, 240, 0.9)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  workspaceSectionCount: {
+    flexShrink: 0,
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+  },
+  workspaceRows: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  workspaceRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 42,
+  },
+  workspaceRowCopy: {
+    minWidth: 0,
+    flex: '1 1 auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+  },
+  workspaceRowTitle: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+    fontSize: 12,
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+  },
+  workspaceRowMeta: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+    fontSize: 11,
+    color: 'var(--text-muted)',
+  },
+  workspaceRowAction: {
+    flex: '0 0 68px',
+    minHeight: 30,
+    borderRadius: 8,
+    border: '1px solid rgba(248, 113, 113, 0.18)',
+    background: 'rgba(248, 113, 113, 0.06)',
+    color: '#fca5a5',
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  workspaceBrandSwatch: {
+    flex: '0 0 18px',
+    width: 18,
+    height: 18,
+    borderRadius: 999,
+    border: '1px solid rgba(255, 255, 255, 0.18)',
   },
   schedulePanel: {
     width: '100%',

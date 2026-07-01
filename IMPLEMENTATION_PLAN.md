@@ -218,7 +218,8 @@
 ### 10A. Database & Auth
 - [ ] PostgreSQL: users, rooms, recordings, sessions
 - [ ] Auth: email/password registration, magic links for guests
-- [ ] User dashboard: manage studios, recordings, brand assets
+- [x] Local user dashboard: manage saved studios, local recordings, and brand assets in-browser
+- [ ] Account-backed user dashboard: manage studios, recordings, and brand assets across devices
 - [ ] Team/organization support
 
 ### 10B. Media Server (SFU)
