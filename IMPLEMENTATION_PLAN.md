@@ -74,6 +74,7 @@
 - [x] Capture composite canvas as MediaStream
 - [x] Stream canvas frames + mixed audio to server via WebSocket
 - [x] Server-side FFmpeg transcodes and pushes RTMP to destinations
+- [x] Go Live preflight warns or blocks based on browser encoder readiness
 - [ ] Configurable output: 720p/1080p 30fps bitrate presets are implemented; 4K and 60fps remain future live-relay work
 
 ### 4B. Multi-Destination Streaming
