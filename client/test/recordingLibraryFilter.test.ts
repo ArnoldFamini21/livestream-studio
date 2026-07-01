@@ -7,6 +7,7 @@ import {
   buildRecordingLibraryCatalogFilename,
   filterRecordingLibrarySessions,
   getRecordingCloudRetentionLabel,
+  isRawWebCodecsBitstreamFile,
   isPreviewableRecordingFile,
 } from '../src/components/RecordingPanel.tsx';
 import { getRecordingCloudRetentionExpiresAt } from '../src/hooks/useRecordingLibrary.ts';
@@ -290,6 +291,14 @@ describe('recording library filters', () => {
     assert.equal(isPreviewableRecordingFile({
       fileName: 'recording-notes.txt',
       type: 'text/plain',
+    }), false);
+    assert.equal(isRawWebCodecsBitstreamFile({
+      fileName: 'host-camera-webcodecs.vp9',
+      type: 'video/x-vp9',
+    }), true);
+    assert.equal(isPreviewableRecordingFile({
+      fileName: 'host-camera-webcodecs.vp9',
+      type: 'video/x-vp9',
     }), false);
   });
 });

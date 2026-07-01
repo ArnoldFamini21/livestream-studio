@@ -7,7 +7,10 @@ import {
 } from '../utils/recordingCaptureMetadata.ts';
 import {
   canUseWebCodecsVideoRecorder,
+  createWebCodecsVideoTrackRecorder,
   resolveWebCodecsVideoRecorderConfig,
+  type WebCodecsVideoRecorderConfig,
+  type WebCodecsVideoTrackRecorder,
 } from '../utils/webCodecsRecording.ts';
 
 export interface RecordingResult {
@@ -41,10 +44,27 @@ interface TrackRecorder {
   recorder: MediaRecorder;
   chunks: Blob[];
   capture: RecordingCaptureMetadata;
+  webCodecsSidecar?: WebCodecsSidecarRecorder;
   activeWritable?: any; // FileSystemWritableFileStream
   fileHandle?: any; // FileSystemFileHandle
   getWritePromise: () => Promise<void> | null;
   cleanup?: () => void;
+}
+
+interface WebCodecsSidecarRecorder {
+  id: string;
+  label: string;
+  kind: LocalRecordingSource['kind'];
+  stream: MediaStream;
+  recorder: WebCodecsVideoTrackRecorder;
+  capture?: RecordingCaptureMetadata;
+  started: boolean;
+  cleanup: () => void;
+}
+
+interface StoppedTrackRecorderResult {
+  blob: Blob | null;
+  sidecars: LocalRecordingFileResult[];
 }
 
 export function useLocalRecording() {
@@ -106,7 +126,8 @@ export function useLocalRecording() {
   const getEncoderMetadataForSource = (
     stream: MediaStream,
     mimeType: string,
-    bitsPerSecond: number
+    bitsPerSecond: number,
+    webCodecsSidecarActive = false
   ): RecordingCaptureEncoderMetadata => {
     const hasVideo = stream.getVideoTracks().some((track) => track.readyState === 'live');
     const container = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('webm') ? 'webm' : 'browser';
@@ -123,13 +144,23 @@ export function useLocalRecording() {
       contentType: mimeType,
       bitsPerSecond,
     });
+    if (webCodecsSidecarActive && webCodecsConfig && canUseWebCodecsVideoRecorder()) {
+      return {
+        pipeline: 'media-recorder',
+        container,
+        codec: webCodecsConfig.config.codec,
+        hardwareAcceleration: webCodecsConfig.config.hardwareAcceleration,
+        fallbackReason: 'Playable WebM primary captured with MediaRecorder; WebCodecs raw video sidecar captured for hardware-accelerated review.',
+      };
+    }
+
     if (webCodecsConfig && canUseWebCodecsVideoRecorder()) {
       return {
         pipeline: 'media-recorder',
         container,
         codec: webCodecsConfig.config.codec,
         hardwareAcceleration: webCodecsConfig.config.hardwareAcceleration,
-        fallbackReason: 'WebCodecs VideoEncoder is available for this video track, but playable recording files use MediaRecorder until WebM muxing is enabled.',
+        fallbackReason: 'WebCodecs VideoEncoder is available; raw bitstream sidecar starts when recording begins.',
       };
     }
 
@@ -138,6 +169,136 @@ export function useLocalRecording() {
       container,
       fallbackReason: 'WebCodecs VideoEncoder or MediaStreamTrackProcessor is unavailable; using MediaRecorder for playable recording files.',
     };
+  };
+
+  const createWebCodecsSidecarRecorder = (
+    source: LocalRecordingSource,
+    stream: MediaStream,
+    mimeType: string,
+    bitsPerSecond: number
+  ): WebCodecsSidecarRecorder | undefined => {
+    if (!canUseWebCodecsVideoRecorder()) return undefined;
+    const liveVideoTracks = stream.getVideoTracks().filter((track) => track.readyState === 'live');
+    if (liveVideoTracks.length === 0) return undefined;
+
+    const clonedTracks: MediaStreamTrack[] = [];
+    const sidecarTracks = liveVideoTracks.map((track) => {
+      if (typeof track.clone === 'function') {
+        const clone = track.clone();
+        clonedTracks.push(clone);
+        return clone;
+      }
+      return track;
+    });
+    const sidecarStream = new MediaStream(sidecarTracks);
+    const config = resolveWebCodecsVideoRecorderConfig({
+      stream: sidecarStream,
+      contentType: mimeType,
+      bitsPerSecond,
+    });
+    if (!config) {
+      clonedTracks.forEach((track) => track.stop());
+      return undefined;
+    }
+
+    return {
+      id: `${source.id}-webcodecs`,
+      label: `${source.label} WebCodecs bitstream`,
+      kind: source.kind,
+      stream: sidecarStream,
+      recorder: createWebCodecsVideoTrackRecorder({
+        stream: sidecarStream,
+        contentType: mimeType,
+        bitsPerSecond,
+      }),
+      started: false,
+      cleanup: () => clonedTracks.forEach((track) => track.stop()),
+    };
+  };
+
+  const startWebCodecsSidecar = async (
+    trackRecorder: TrackRecorder,
+    startedAt: string
+  ): Promise<void> => {
+    const sidecar = trackRecorder.webCodecsSidecar;
+    if (!sidecar) return;
+
+    try {
+      const config = await sidecar.recorder.start();
+      sidecar.capture = createWebCodecsSidecarCapture(trackRecorder, sidecar, config, startedAt);
+      sidecar.started = true;
+      trackRecorder.capture = {
+        ...trackRecorder.capture,
+        encoder: getEncoderMetadataForSource(
+          new MediaStream(trackRecorder.recorder.stream.getTracks()),
+          trackRecorder.recorder.mimeType,
+          trackRecorder.capture.requestedBitsPerSecond || 0,
+          true
+        ),
+      };
+    } catch (err) {
+      console.warn(`WebCodecs sidecar disabled for ${trackRecorder.label}:`, err);
+      sidecar.cleanup();
+      trackRecorder.webCodecsSidecar = undefined;
+    }
+  };
+
+  const createWebCodecsSidecarCapture = (
+    trackRecorder: TrackRecorder,
+    sidecar: WebCodecsSidecarRecorder,
+    config: WebCodecsVideoRecorderConfig,
+    startedAt: string
+  ): RecordingCaptureMetadata => createRecordingCaptureMetadata({
+    sourceId: sidecar.id,
+    sourceKind: sidecar.kind,
+    sourceLabel: sidecar.label,
+    stream: sidecar.stream,
+    mimeType: config.mimeType,
+    requestedBitsPerSecond: Number(config.config.bitrate) || trackRecorder.capture.requestedBitsPerSecond || undefined,
+    startedAt,
+    encoder: {
+      pipeline: 'webcodecs',
+      container: 'raw-bitstream',
+      codec: config.config.codec,
+      hardwareAcceleration: config.config.hardwareAcceleration,
+    },
+  });
+
+  const stopWebCodecsSidecar = async (
+    sidecar: WebCodecsSidecarRecorder | undefined,
+    stoppedAt: string
+  ): Promise<LocalRecordingFileResult | null> => {
+    if (!sidecar) return null;
+    try {
+      if (!sidecar.started) return null;
+      const result = await sidecar.recorder.stop();
+      const capture = finalizeRecordingCaptureMetadata(
+        sidecar.capture || createRecordingCaptureMetadata({
+          sourceId: sidecar.id,
+          sourceKind: sidecar.kind,
+          sourceLabel: sidecar.label,
+          stream: sidecar.stream,
+          mimeType: result.mimeType,
+          requestedBitsPerSecond: Number(result.config.bitrate) || undefined,
+          startedAt: new Date().toISOString(),
+          encoder: {
+            pipeline: 'webcodecs',
+            container: 'raw-bitstream',
+            codec: result.config.codec,
+            hardwareAcceleration: result.config.hardwareAcceleration,
+          },
+        }),
+        stoppedAt
+      );
+      return result.blob.size > 0
+        ? { label: sidecar.label, kind: sidecar.kind, blob: result.blob, capture }
+        : null;
+    } catch (err) {
+      console.warn(`WebCodecs sidecar stop failed for ${sidecar.label}:`, err);
+      return null;
+    } finally {
+      sidecar.cleanup();
+    }
   };
 
   const createTrackRecorder = async (source: LocalRecordingSource, dirHandle?: any): Promise<TrackRecorder | null> => {
@@ -168,6 +329,7 @@ export function useLocalRecording() {
       mimeType,
       bitsPerSecond,
     });
+    const webCodecsSidecar = createWebCodecsSidecarRecorder(source, stream, mimeType, bitsPerSecond);
     const capture = createRecordingCaptureMetadata({
       sourceId: source.id,
       sourceKind: source.kind,
@@ -211,6 +373,7 @@ export function useLocalRecording() {
       recorder,
       chunks,
       capture,
+      webCodecsSidecar,
       fileHandle,
       activeWritable,
       getWritePromise: () => currentWritePromise,
@@ -296,6 +459,7 @@ export function useLocalRecording() {
         for (const trackRecorder of recorders) {
           trackRecorder.capture = { ...trackRecorder.capture, startedAt };
           trackRecorder.recorder.start(1000);
+          await startWebCodecsSidecar(trackRecorder, startedAt);
         }
       } catch (err) {
         for (const trackRecorder of recorders) {
@@ -304,6 +468,7 @@ export function useLocalRecording() {
           } catch {
             // ignore failed cleanup after a start failure
           }
+          await stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, new Date().toISOString());
           trackRecorder.cleanup?.();
         }
         throw err;
@@ -326,10 +491,10 @@ export function useLocalRecording() {
   const stopSingleRecorder = (
     trackRecorder: TrackRecorder | null,
     label: string
-  ): Promise<Blob | null> => {
+  ): Promise<StoppedTrackRecorderResult> => {
     return new Promise((resolve) => {
       if (!trackRecorder) {
-        resolve(null);
+        resolve({ blob: null, sidecars: [] });
         return;
       }
 
@@ -342,7 +507,10 @@ export function useLocalRecording() {
       };
 
       const finishUp = async () => {
-        trackRecorder.capture = finalizeRecordingCaptureMetadata(trackRecorder.capture, new Date().toISOString());
+        const stoppedAt = new Date().toISOString();
+        trackRecorder.capture = finalizeRecordingCaptureMetadata(trackRecorder.capture, stoppedAt);
+        const sidecar = await stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, stoppedAt);
+        const sidecars = sidecar ? [sidecar] : [];
         if (activeWritable) {
           try {
             const p = getWritePromise();
@@ -351,7 +519,7 @@ export function useLocalRecording() {
             const file = await fileHandle.getFile();
             console.log(`${label} OPFS recording stopped. Size: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
             cleanupSource();
-            resolve(file); // returning File object maps to disk, doesn't load into RAM
+            resolve({ blob: file, sidecars }); // returning File object maps to disk, doesn't load into RAM
             return;
           } catch (err) {
             console.error(`Error closing OPFS file for ${label}:`, err);
@@ -362,7 +530,7 @@ export function useLocalRecording() {
         const blob = new Blob(chunks, { type: recorder.mimeType });
         console.log(`${label} RAM recording stopped. Size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
         cleanupSource();
-        resolve(blob);
+        resolve({ blob, sidecars });
       };
 
       if (recorder.state === 'inactive') {
@@ -395,7 +563,7 @@ export function useLocalRecording() {
     const stopPromises = activeRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder, trackRecorder.label));
 
     return Promise.all(stopPromises).then(
-      (blobs) => {
+      (results) => {
         // Clean up refs
         recordersRef.current = [];
 
@@ -405,10 +573,11 @@ export function useLocalRecording() {
         stoppingRef.current = false;
 
         const files = activeRecorders.flatMap((recorder, index): LocalRecordingFileResult[] => {
-          const blob = blobs[index];
-          return blob && blob.size > 0
-            ? [{ label: recorder.label, kind: recorder.kind, blob, capture: recorder.capture }]
+          const result = results[index];
+          const primary = result.blob && result.blob.size > 0
+            ? [{ label: recorder.label, kind: recorder.kind, blob: result.blob, capture: recorder.capture }]
             : [];
+          return [...primary, ...result.sidecars];
         });
         const audioBlob = files.find((file) => file.kind === 'audio')?.blob || new Blob();
         const videoBlob = files.find((file) => file.kind === 'video')?.blob || new Blob();
@@ -449,9 +618,12 @@ export function useLocalRecording() {
         timerRef.current = null;
       }
       for (const trackRecorder of recordersRef.current) {
-        if (trackRecorder && trackRecorder.recorder.state !== 'inactive') {
+        if (trackRecorder) {
           try {
-            trackRecorder.recorder.stop();
+            if (trackRecorder.recorder.state !== 'inactive') {
+              trackRecorder.recorder.stop();
+            }
+            void stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, new Date().toISOString());
             if (trackRecorder.activeWritable) {
               // Fire-and-forget close during quick unmount
               trackRecorder.activeWritable.close().catch(() => {});

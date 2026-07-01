@@ -25,7 +25,7 @@
 - [x] Recording preflight warns or blocks based on browser encoding readiness
 - [x] WebCodecs hardware acceleration readiness probe for 1080p/4K presets
 - [x] WebCodecs video encoder core with bounded chunk capture and recording pipeline metadata
-- [ ] Use hardware-accelerated WebCodecs encode pipeline where available
+- [x] Use hardware-accelerated WebCodecs encode pipeline where available
 - [x] Chunked upload with resume support for large 4K files
 - [x] Server-side S3-compatible storage integration
 - [x] Export pipeline: MP4 (H.264/H.265), separate WAV/MP3 audio stems
