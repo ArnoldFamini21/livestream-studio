@@ -39,6 +39,7 @@ export interface VideoEncodingPresetSupport {
   supported: boolean | null;
   smooth: boolean | null;
   powerEfficient: boolean | null;
+  hardwareAccelerated: boolean | null;
 }
 
 export interface VideoEncodingReadiness {
@@ -63,10 +64,30 @@ export interface BrowserMediaRecorderLike {
   isTypeSupported?: (contentType: string) => boolean;
 }
 
+export type BrowserVideoEncoderHardwareAcceleration = 'no-preference' | 'prefer-hardware' | 'prefer-software';
+
+export interface BrowserVideoEncoderConfigLike {
+  codec: string;
+  width: number;
+  height: number;
+  bitrate: number;
+  framerate: number;
+  hardwareAcceleration?: BrowserVideoEncoderHardwareAcceleration;
+}
+
+export interface BrowserVideoEncoderSupportLike {
+  supported?: boolean;
+  config?: BrowserVideoEncoderConfigLike;
+}
+
+export interface BrowserVideoEncoderLike {
+  isConfigSupported?: (configuration: BrowserVideoEncoderConfigLike) => Promise<BrowserVideoEncoderSupportLike>;
+}
+
 export interface BrowserVideoEncodingEnvironment {
   mediaRecorder?: BrowserMediaRecorderLike | null;
   mediaCapabilities?: BrowserMediaCapabilitiesLike | null;
-  videoEncoder?: unknown;
+  videoEncoder?: BrowserVideoEncoderLike | null;
 }
 
 const VIDEO_ENCODING_CONTENT_TYPES = [
@@ -92,7 +113,7 @@ function getCurrentBrowserVideoEncodingEnvironment(): BrowserVideoEncodingEnviro
   return {
     mediaRecorder: root.MediaRecorder as BrowserMediaRecorderLike | null | undefined,
     mediaCapabilities: nav?.mediaCapabilities ?? null,
-    videoEncoder: root.VideoEncoder,
+    videoEncoder: root.VideoEncoder as BrowserVideoEncoderLike | null | undefined,
   };
 }
 
@@ -103,6 +124,11 @@ function readBoolean(value: unknown): boolean | null {
 function getMediaRecorderTypeSupport(mediaRecorder: unknown): BrowserMediaRecorderLike['isTypeSupported'] | null {
   const candidate = mediaRecorder as BrowserMediaRecorderLike | undefined;
   return typeof candidate?.isTypeSupported === 'function' ? candidate.isTypeSupported.bind(candidate) : null;
+}
+
+function getVideoEncoderConfigSupport(videoEncoder: unknown): BrowserVideoEncoderLike['isConfigSupported'] | null {
+  const candidate = videoEncoder as BrowserVideoEncoderLike | undefined;
+  return typeof candidate?.isConfigSupported === 'function' ? candidate.isConfigSupported.bind(candidate) : null;
 }
 
 export function getPreferredVideoEncodingContentType(
@@ -120,9 +146,17 @@ export function getPreferredVideoEncodingContentType(
   }) || VIDEO_ENCODING_CONTENT_TYPES[0];
 }
 
+export function getPreferredWebCodecsCodec(contentType: string = VIDEO_ENCODING_CONTENT_TYPES[0]): string {
+  const normalized = contentType.toLowerCase();
+  if (normalized.includes('vp9')) return 'vp09.00.10.08';
+  if (normalized.includes('vp8')) return 'vp8';
+  return 'vp8';
+}
+
 function getPresetSupportFromConfig(
   preset: VideoQualityPreset,
-  info?: BrowserVideoEncodingInfoLike | null
+  info?: BrowserVideoEncodingInfoLike | null,
+  hardwareAccelerated: boolean | null = null
 ): VideoEncodingPresetSupport {
   return {
     presetId: preset.id,
@@ -134,6 +168,7 @@ function getPresetSupportFromConfig(
     supported: readBoolean(info?.supported),
     smooth: readBoolean(info?.smooth),
     powerEfficient: readBoolean(info?.powerEfficient),
+    hardwareAccelerated,
   };
 }
 
@@ -164,13 +199,33 @@ export function buildVideoEncodingConfigs(
   }));
 }
 
+export function buildWebCodecsEncodingConfigs(
+  presets: readonly VideoQualityPreset[] = VIDEO_QUALITY_PRESETS,
+  contentType: string = VIDEO_ENCODING_CONTENT_TYPES[0],
+  hardwareAcceleration: BrowserVideoEncoderHardwareAcceleration = 'prefer-hardware'
+): Array<{ presetId: VideoQualityPresetId; label: string; configuration: BrowserVideoEncoderConfigLike }> {
+  const codec = getPreferredWebCodecsCodec(contentType);
+  return presets.map((preset) => ({
+    presetId: preset.id,
+    label: preset.label,
+    configuration: {
+      codec,
+      width: preset.width,
+      height: preset.height,
+      bitrate: VIDEO_ENCODING_BITRATES[preset.id],
+      framerate: preset.frameRate,
+      hardwareAcceleration,
+    },
+  }));
+}
+
 export function getBrowserVideoEncodingApiSupport(
   environment: BrowserVideoEncodingEnvironment = getCurrentBrowserVideoEncodingEnvironment()
 ): VideoEncodingApiSupport {
   return {
     mediaRecorder: Boolean(environment.mediaRecorder),
     mediaCapabilities: typeof environment.mediaCapabilities?.encodingInfo === 'function',
-    webCodecs: Boolean(environment.videoEncoder),
+    webCodecs: typeof environment.videoEncoder?.isConfigSupported === 'function',
   };
 }
 
@@ -202,15 +257,21 @@ export function evaluateVideoEncodingReadiness(
   const hdSupported = hd?.supported === true;
   const hdSmooth = hd?.smooth !== false;
   const hdPowerEfficient = hd?.powerEfficient === true;
+  const hdHardwareAccelerated = hd?.hardwareAccelerated === true;
   const ultraHd = findPreset(presets, '4k');
+  const ultraHdHardwareAccelerated = ultraHd?.hardwareAccelerated === true;
 
-  if (hdSupported && hdSmooth && hdPowerEfficient) {
+  if (hdSupported && hdSmooth && (hdPowerEfficient || hdHardwareAccelerated)) {
     return {
       status: 'ready',
-      label: apiSupport.webCodecs ? 'Hardware-ready encoder' : 'Efficient encoder',
-      detail: ultraHd?.supported === true && ultraHd.smooth !== false
-        ? '1080p/30 and 4K/30 WebM encoding are advertised as smooth; 1080p is power efficient.'
-        : '1080p/30 WebM encoding is advertised as smooth and power efficient.',
+      label: hdHardwareAccelerated ? 'Hardware-ready encoder' : 'Efficient encoder',
+      detail: hdHardwareAccelerated
+        ? ultraHd?.supported === true && ultraHd.smooth !== false
+          ? `1080p/30 WebM encoding is smooth with WebCodecs hardware acceleration${ultraHdHardwareAccelerated ? '; 4K/30 hardware acceleration is also available.' : '; 4K/30 should be tested before long sessions.'}`
+          : '1080p/30 WebM encoding is smooth with WebCodecs hardware acceleration.'
+        : ultraHd?.supported === true && ultraHd.smooth !== false
+          ? '1080p/30 and 4K/30 WebM encoding are advertised as smooth; 1080p is power efficient.'
+          : '1080p/30 WebM encoding is advertised as smooth and power efficient.',
       apiSupport,
       presets: [...presets],
     };
@@ -275,7 +336,8 @@ export async function detectBrowserVideoEncodingReadiness(
     );
   }
 
-  const configs = buildVideoEncodingConfigs(presets, getPreferredVideoEncodingContentType(environment));
+  const preferredContentType = getPreferredVideoEncodingContentType(environment);
+  const configs = buildVideoEncodingConfigs(presets, preferredContentType);
   const presetSupport = await Promise.all(configs.map(async ({ presetId, configuration }) => {
     const preset = presets.find((item) => item.id === presetId);
     if (!preset) throw new Error(`Unknown encoding preset ${presetId}`);
@@ -287,6 +349,24 @@ export async function detectBrowserVideoEncodingReadiness(
       return getPresetSupportFromConfig(preset);
     }
   }));
+
+  const isConfigSupported = getVideoEncoderConfigSupport(environment.videoEncoder);
+  if (isConfigSupported) {
+    const webCodecsConfigs = buildWebCodecsEncodingConfigs(presets, preferredContentType, 'prefer-hardware');
+    const hardwareSupport = new Map<VideoQualityPresetId, boolean | null>();
+    await Promise.all(webCodecsConfigs.map(async ({ presetId, configuration }) => {
+      try {
+        const info = await isConfigSupported(configuration);
+        hardwareSupport.set(presetId, readBoolean(info?.supported));
+      } catch {
+        hardwareSupport.set(presetId, null);
+      }
+    }));
+
+    for (const preset of presetSupport) {
+      preset.hardwareAccelerated = hardwareSupport.get(preset.presetId) ?? null;
+    }
+  }
 
   return evaluateVideoEncodingReadiness(apiSupport, presetSupport);
 }
