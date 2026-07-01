@@ -98,7 +98,7 @@ describe('host session links', () => {
       id: 'incomplete-room',
       name: 'Incomplete room',
       hostToken: undefined,
-    }), false);
+    }), true);
     assert.equal(isLegacyHostlessCreateResponse({
       hostToken: URL_TOKEN,
       id: 'token-room',
