@@ -6,6 +6,7 @@ import {
   getJson,
   postJson,
   resolveApiBaseUrl,
+  resolveMediaHttpUrl,
   resolveMediaWsUrl,
   resolveWebSocketUrl,
 } from '../src/utils/apiClient.ts';
@@ -27,10 +28,15 @@ describe('client API configuration', () => {
       resolveMediaWsUrl({ PROD: true }, { protocol: 'https:', host: 'studio.arnoldfamini.com' }),
       'wss://livestream-studio-media-server.onrender.com/rtmp'
     );
+    assert.equal(
+      resolveMediaHttpUrl({ PROD: true }, { protocol: 'https:', host: 'studio.arnoldfamini.com' }),
+      'https://livestream-studio-media-server.onrender.com'
+    );
   });
 
   it('normalizes configured URLs and local API paths', () => {
     assert.equal(resolveApiBaseUrl({ VITE_API_URL: 'https://api.example.com/' }), 'https://api.example.com');
+    assert.equal(resolveMediaHttpUrl({ VITE_MEDIA_HTTP_URL: 'https://media.example.com/' }), 'https://media.example.com');
     assert.equal(buildApiUrl('/api/rooms', 'https://api.example.com/'), 'https://api.example.com/api/rooms');
     assert.equal(buildApiUrl('api/rooms', ''), '/api/rooms');
   });
@@ -39,6 +45,21 @@ describe('client API configuration', () => {
     assert.equal(
       resolveMediaWsUrl({}, { protocol: 'http:', host: 'localhost:5173', hostname: 'localhost' }),
       'ws://localhost:3002/rtmp'
+    );
+    assert.equal(
+      resolveMediaHttpUrl({}, { protocol: 'http:', host: 'localhost:5173', hostname: 'localhost' }),
+      'http://localhost:3002'
+    );
+  });
+
+  it('derives the media HTTP base from configured media WebSocket URLs', () => {
+    assert.equal(
+      resolveMediaHttpUrl({ VITE_MEDIA_WS_URL: 'wss://media.example.com/rtmp' }),
+      'https://media.example.com'
+    );
+    assert.equal(
+      resolveMediaHttpUrl({ VITE_MEDIA_WS_URL: 'ws://localhost:3002/rtmp/' }),
+      'http://localhost:3002'
     );
   });
 });

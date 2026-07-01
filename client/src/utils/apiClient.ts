@@ -1,12 +1,14 @@
 const PRODUCTION_API_URL = 'https://livestream-studio-server.onrender.com';
 const PRODUCTION_WS_URL = 'wss://livestream-studio-server.onrender.com/ws';
 const PRODUCTION_MEDIA_WS_URL = 'wss://livestream-studio-media-server.onrender.com/rtmp';
+const PRODUCTION_MEDIA_HTTP_URL = 'https://livestream-studio-media-server.onrender.com';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 interface ClientRuntimeEnv {
   VITE_API_URL?: string;
   VITE_WS_URL?: string;
   VITE_MEDIA_WS_URL?: string;
+  VITE_MEDIA_HTTP_URL?: string;
   PROD?: boolean;
 }
 
@@ -89,6 +91,25 @@ export function resolveMediaWsUrl(
   if (env.PROD || !location) return PRODUCTION_MEDIA_WS_URL;
   if (isLocalhost(location)) return `${getWebSocketProtocol(location)}//localhost:3002/rtmp`;
   return `${getWebSocketProtocol(location)}//${location.host}/rtmp`;
+}
+
+export function resolveMediaHttpUrl(
+  env: ClientRuntimeEnv = getRuntimeEnv(),
+  location: BrowserLocationLike | undefined = getBrowserLocation()
+): string {
+  const configured = getConfiguredUrl(env.VITE_MEDIA_HTTP_URL);
+  if (configured) return configured;
+  const mediaWsUrl = resolveMediaWsUrl(env, location);
+  try {
+    const url = new URL(mediaWsUrl);
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    url.pathname = url.pathname.replace(/\/rtmp\/?$/, '') || '/';
+    url.search = '';
+    url.hash = '';
+    return trimTrailingSlash(url.toString());
+  } catch {
+    return env.PROD ? PRODUCTION_MEDIA_HTTP_URL : '';
+  }
 }
 
 export function buildApiUrl(path: string, baseUrl = resolveApiBaseUrl()): string {
