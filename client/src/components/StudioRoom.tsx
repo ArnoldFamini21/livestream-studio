@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -894,7 +894,7 @@ export function StudioRoom() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatTypingIndicators, setChatTypingIndicators] = useState<ChatTypingIndicator[]>([]);
   const [supportsChatTyping, setSupportsChatTyping] = useState(false);
-  const [externalChatStatus, setExternalChatStatus] = useState<ExternalChatStatusPayload | null>(null);
+  const [externalChatStatuses, setExternalChatStatuses] = useState<Partial<Record<ExternalChatPlatform, ExternalChatStatusPayload>>>({});
   const [guestNotification, setGuestNotification] = useState<ParticipantNotificationPayload | null>(null);
 
   // Layout
@@ -2099,7 +2099,10 @@ export function StudioRoom() {
           )));
           break;
         case 'external-chat-status':
-          setExternalChatStatus(message.payload);
+          setExternalChatStatuses((prev) => ({
+            ...prev,
+            [message.payload.platform]: message.payload,
+          }));
           break;
         case 'chat-typing':
           setChatTypingIndicators((prev) => upsertChatTypingIndicator(
@@ -2630,14 +2633,14 @@ export function StudioRoom() {
     send({ type: 'chat-pin-update', payload: { messageId, pinned } });
   };
 
-  const onConnectExternalChat = (liveChatId: string) => {
+  const onConnectExternalChat = (platform: ExternalChatPlatform, liveChatId: string) => {
     if (!isHostOrCoHost) return;
-    send({ type: 'external-chat-connect', payload: { platform: 'youtube', liveChatId } });
+    send({ type: 'external-chat-connect', payload: { platform, liveChatId } });
   };
 
-  const onDisconnectExternalChat = () => {
+  const onDisconnectExternalChat = (platform: ExternalChatPlatform) => {
     if (!isHostOrCoHost) return;
-    send({ type: 'external-chat-disconnect', payload: { platform: 'youtube' } });
+    send({ type: 'external-chat-disconnect', payload: { platform } });
   };
 
   const popoutSendChatRef = useRef(onSendChat);
@@ -4933,7 +4936,7 @@ export function StudioRoom() {
             onReactChat={onReactChat}
             onToggleChatStar={onToggleChatStar}
             onToggleChatPin={onToggleChatPin}
-            externalChatStatus={externalChatStatus}
+            externalChatStatuses={externalChatStatuses}
             onConnectExternalChat={onConnectExternalChat}
             onDisconnectExternalChat={onDisconnectExternalChat}
             chatSenderName={userName}

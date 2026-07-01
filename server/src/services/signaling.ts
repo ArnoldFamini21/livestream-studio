@@ -35,6 +35,12 @@ import {
   normalizeYouTubeLiveChatId,
   type YouTubeLiveChatMessage,
 } from './youtubeLiveChat.js';
+import {
+  fetchFacebookLiveComments,
+  normalizeFacebookAccessToken,
+  normalizeFacebookLiveVideoId,
+  type FacebookLiveComment,
+} from './facebookLiveComments.js';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
 
@@ -1548,6 +1554,24 @@ function getYouTubeLiveChatApiKey(): string {
   );
 }
 
+function getFacebookLiveCommentsAccessToken(): string {
+  return normalizeFacebookAccessToken(
+    process.env.FACEBOOK_ACCESS_TOKEN ||
+    process.env.FACEBOOK_PAGE_ACCESS_TOKEN ||
+    process.env.FACEBOOK_LIVE_COMMENTS_ACCESS_TOKEN ||
+    ''
+  );
+}
+
+function getFacebookCommentsPollIntervalMs(): number | undefined {
+  const parsed = Number.parseInt(String(process.env.FACEBOOK_COMMENTS_POLL_INTERVAL_MS || ''), 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function getExternalChatPlatformLabel(platform: ExternalChatPlatform): string {
+  return platform === 'youtube' ? 'YouTube' : 'Facebook';
+}
+
 function getExternalChatOperator(
   ws: WebSocket,
   unauthorizedMessage: string
@@ -1624,7 +1648,7 @@ function stopExternalChatConnection(
       payload: {
         platform,
         status: 'idle',
-        message: `${platform === 'youtube' ? 'YouTube' : 'External'} chat disconnected.`,
+        message: `${getExternalChatPlatformLabel(platform)} chat disconnected.`,
       },
     });
   }
@@ -1636,10 +1660,11 @@ function stopAllExternalChatConnections(roomId: string, roomState: RoomState, br
   }
 }
 
-function toExternalChatMessage(message: YouTubeLiveChatMessage): ChatMessage {
+function toExternalChatMessage(message: YouTubeLiveChatMessage | FacebookLiveComment): ChatMessage {
+  const platform = message.source.platform;
   return {
-    id: `youtube-${nanoid(10)}`,
-    senderId: `external:youtube:${message.source.externalId}`,
+    id: `${platform}-${nanoid(10)}`,
+    senderId: `external:${platform}:${message.source.externalId}`,
     senderName: message.authorName,
     content: message.content,
     timestamp: message.publishedAt,
@@ -1711,6 +1736,70 @@ async function pollYouTubeLiveChat(
   }
 }
 
+async function pollFacebookLiveComments(
+  roomId: string,
+  roomState: RoomState,
+  connection: ExternalChatConnectionState,
+  accessToken: string
+) {
+  if (connection.polling || connection.stopped) return;
+  connection.polling = true;
+
+  try {
+    const result = await fetchFacebookLiveComments({
+      accessToken,
+      liveVideoId: connection.liveChatId,
+      pageToken: connection.nextPageToken,
+      pollIntervalMs: getFacebookCommentsPollIntervalMs(),
+    });
+    if (connection.stopped || roomState.externalChatConnections.get('facebook') !== connection) return;
+
+    connection.nextPageToken = result.nextPageToken || connection.nextPageToken;
+    let imported = 0;
+
+    for (const externalMessage of result.comments) {
+      if (connection.seenMessageIds.has(externalMessage.id)) continue;
+      connection.seenMessageIds.add(externalMessage.id);
+      const chatMessage = toExternalChatMessage(externalMessage);
+      storeChatMessage(roomState, chatMessage);
+      sendChatToVisibleParticipants(roomId, roomState, chatMessage, 'chat-message');
+      imported++;
+    }
+
+    const nextPollAt = new Date(Date.now() + result.pollingIntervalMillis).toISOString();
+    setExternalChatStatus(roomId, roomState, connection, {
+      status: 'connected',
+      message: imported > 0
+        ? `Imported ${imported} Facebook comment${imported === 1 ? '' : 's'}.`
+        : 'Facebook comments connected.',
+      nextPollAt,
+    });
+
+    connection.timer = setTimeout(() => {
+      pollFacebookLiveComments(roomId, roomState, connection, accessToken).catch((err) => {
+        console.warn(`Facebook live comments poll failed for room ${roomId}:`, err);
+      });
+    }, result.pollingIntervalMillis);
+    connection.timer.unref?.();
+  } catch (err) {
+    if (connection.stopped || roomState.externalChatConnections.get('facebook') !== connection) return;
+    const message = err instanceof Error ? err.message : 'Facebook comments polling failed.';
+    setExternalChatStatus(roomId, roomState, connection, {
+      status: 'error',
+      message,
+      nextPollAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    connection.timer = setTimeout(() => {
+      pollFacebookLiveComments(roomId, roomState, connection, accessToken).catch((retryErr) => {
+        console.warn(`Facebook live comments retry failed for room ${roomId}:`, retryErr);
+      });
+    }, 30_000);
+    connection.timer.unref?.();
+  } finally {
+    connection.polling = false;
+  }
+}
+
 function handleExternalChatConnect(
   ws: WebSocket,
   payload: Extract<SignalMessage, { type: 'external-chat-connect' }>['payload']
@@ -1723,53 +1812,66 @@ function handleExternalChatConnect(
     sendError(ws, 'External chat platform is not supported', 'VALIDATION_ERROR');
     return;
   }
-  if (platform !== 'youtube') {
-    sendError(ws, 'Facebook comments are not available yet', 'EXTERNAL_CHAT_UNSUPPORTED');
-    return;
-  }
-
-  const liveChatId = normalizeYouTubeLiveChatId(payload.liveChatId);
+  const liveChatId = platform === 'youtube'
+    ? normalizeYouTubeLiveChatId(payload.liveChatId)
+    : normalizeFacebookLiveVideoId(payload.liveChatId);
   if (!liveChatId) {
-    sendError(ws, 'A valid YouTube live chat id is required', 'VALIDATION_ERROR');
+    sendError(
+      ws,
+      platform === 'youtube'
+        ? 'A valid YouTube live chat id is required'
+        : 'A valid Facebook live video id is required',
+      'VALIDATION_ERROR'
+    );
     return;
   }
 
-  const apiKey = getYouTubeLiveChatApiKey();
-  if (!apiKey) {
+  const secret = platform === 'youtube'
+    ? getYouTubeLiveChatApiKey()
+    : getFacebookLiveCommentsAccessToken();
+  if (!secret) {
     send(ws, {
       type: 'external-chat-status',
       payload: {
-        platform: 'youtube',
+        platform,
         status: 'error',
         liveChatId,
-        message: 'YouTube Live Chat requires YOUTUBE_API_KEY on the signaling server.',
+        message: platform === 'youtube'
+          ? 'YouTube Live Chat requires YOUTUBE_API_KEY on the signaling server.'
+          : 'Facebook comments require FACEBOOK_ACCESS_TOKEN on the signaling server.',
       },
     });
     return;
   }
 
-  stopExternalChatConnection(operator.roomId, operator.roomState, 'youtube', false);
+  stopExternalChatConnection(operator.roomId, operator.roomState, platform, false);
   const connection: ExternalChatConnectionState = {
-    platform: 'youtube',
+    platform,
     liveChatId,
     status: {
-      platform: 'youtube',
+      platform,
       status: 'connecting',
       liveChatId,
-      message: 'Connecting to YouTube Live Chat...',
+      message: `Connecting to ${getExternalChatPlatformLabel(platform)} chat...`,
     },
     seenMessageIds: new Set(),
     polling: false,
     stopped: false,
   };
-  operator.roomState.externalChatConnections.set('youtube', connection);
+  operator.roomState.externalChatConnections.set(platform, connection);
   setExternalChatStatus(operator.roomId, operator.roomState, connection, {
     status: 'connecting',
-    message: 'Connecting to YouTube Live Chat...',
+    message: `Connecting to ${getExternalChatPlatformLabel(platform)} chat...`,
   });
-  pollYouTubeLiveChat(operator.roomId, operator.roomState, connection, apiKey).catch((err) => {
-    console.warn(`YouTube live chat connect failed for room ${operator.roomId}:`, err);
-  });
+  if (platform === 'youtube') {
+    pollYouTubeLiveChat(operator.roomId, operator.roomState, connection, secret).catch((err) => {
+      console.warn(`YouTube live chat connect failed for room ${operator.roomId}:`, err);
+    });
+  } else {
+    pollFacebookLiveComments(operator.roomId, operator.roomState, connection, secret).catch((err) => {
+      console.warn(`Facebook live comments connect failed for room ${operator.roomId}:`, err);
+    });
+  }
 }
 
 function handleExternalChatDisconnect(

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding, ExternalChatStatusPayload } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
 import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
@@ -144,9 +144,9 @@ interface SidebarProps {
   onReactChat: (messageId: string, reaction: ChatReactionType) => void;
   onToggleChatStar: (messageId: string, starred: boolean) => void;
   onToggleChatPin: (messageId: string, pinned: boolean) => void;
-  externalChatStatus: ExternalChatStatusPayload | null;
-  onConnectExternalChat: (liveChatId: string) => void;
-  onDisconnectExternalChat: () => void;
+  externalChatStatuses: Partial<Record<ExternalChatPlatform, ExternalChatStatusPayload>>;
+  onConnectExternalChat: (platform: ExternalChatPlatform, liveChatId: string) => void;
+  onDisconnectExternalChat: (platform: ExternalChatPlatform) => void;
   chatSenderName: string;
   chatTypingNames?: {
     public: string[];
@@ -395,7 +395,7 @@ export function Sidebar(props: SidebarProps) {
               onReact={props.onReactChat}
               onToggleStar={props.onToggleChatStar}
               onTogglePin={props.onToggleChatPin}
-              externalChatStatus={props.externalChatStatus}
+              externalChatStatuses={props.externalChatStatuses}
               onConnectExternalChat={props.onConnectExternalChat}
               onDisconnectExternalChat={props.onDisconnectExternalChat}
               canManageExternalChat={props.myRole === 'host' || props.myRole === 'co-host'}
@@ -1190,7 +1190,7 @@ function ChatContent({
   onReact,
   onToggleStar,
   onTogglePin,
-  externalChatStatus,
+  externalChatStatuses,
   onConnectExternalChat,
   onDisconnectExternalChat,
   canManageExternalChat,
@@ -1210,9 +1210,9 @@ function ChatContent({
   onReact: (messageId: string, reaction: ChatReactionType) => void;
   onToggleStar: (messageId: string, starred: boolean) => void;
   onTogglePin: (messageId: string, pinned: boolean) => void;
-  externalChatStatus: ExternalChatStatusPayload | null;
-  onConnectExternalChat: (liveChatId: string) => void;
-  onDisconnectExternalChat: () => void;
+  externalChatStatuses: Partial<Record<ExternalChatPlatform, ExternalChatStatusPayload>>;
+  onConnectExternalChat: (platform: ExternalChatPlatform, liveChatId: string) => void;
+  onDisconnectExternalChat: (platform: ExternalChatPlatform) => void;
   canManageExternalChat: boolean;
   highlightedComment: HighlightedComment | null;
   onHighlightComment: (comment: HighlightedComment) => void;
@@ -1231,6 +1231,7 @@ function ChatContent({
 }) {
   const [input, setInput] = useState('');
   const [youtubeLiveChatId, setYoutubeLiveChatId] = useState('');
+  const [facebookLiveVideoId, setFacebookLiveVideoId] = useState('');
   const [mode, setMode] = useState<'public' | 'starred' | 'backstage' | 'direct'>('public');
   const [directRecipientId, setDirectRecipientId] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -1272,10 +1273,13 @@ function ChatContent({
     .sort((a, b) => a.name.localeCompare(b.name));
   const selectedRecipient = directRecipients.find((participant) => participant.id === directRecipientId);
   const canSend = input.trim().length > 0 && (mode !== 'direct' || Boolean(selectedRecipient));
-  const youtubeStatus = externalChatStatus?.platform === 'youtube' ? externalChatStatus : null;
+  const youtubeStatus = externalChatStatuses.youtube || null;
+  const facebookStatus = externalChatStatuses.facebook || null;
   const youtubeBusy = youtubeStatus?.status === 'connecting';
   const youtubeConnected = youtubeStatus?.status === 'connected' || youtubeStatus?.status === 'connecting';
-  const youtubeControlsDisabled = !canManageExternalChat;
+  const facebookBusy = facebookStatus?.status === 'connecting';
+  const facebookConnected = facebookStatus?.status === 'connected' || facebookStatus?.status === 'connecting';
+  const externalChatControlsDisabled = !canManageExternalChat;
   const activeTypingNames = mode === 'backstage'
     ? typingNames?.backstage || []
     : mode === 'direct'
@@ -1416,8 +1420,14 @@ function ChatContent({
 
   const handleConnectYouTubeChat = () => {
     const liveChatId = youtubeLiveChatId.trim();
-    if (!liveChatId || youtubeBusy || youtubeControlsDisabled) return;
-    onConnectExternalChat(liveChatId);
+    if (!liveChatId || youtubeBusy || externalChatControlsDisabled) return;
+    onConnectExternalChat('youtube', liveChatId);
+  };
+
+  const handleConnectFacebookComments = () => {
+    const liveVideoId = facebookLiveVideoId.trim();
+    if (!liveVideoId || facebookBusy || externalChatControlsDisabled) return;
+    onConnectExternalChat('facebook', liveVideoId);
   };
 
   return (
@@ -1508,16 +1518,16 @@ function ChatContent({
             onChange={(event) => setYoutubeLiveChatId(event.currentTarget.value)}
             placeholder="YouTube live chat id"
             style={st.externalChatInput}
-            disabled={youtubeBusy || youtubeControlsDisabled}
+            disabled={youtubeBusy || externalChatControlsDisabled}
           />
           <button
             type="button"
             style={{
               ...st.externalChatBtn,
-              ...(!youtubeLiveChatId.trim() || youtubeBusy || youtubeControlsDisabled ? st.externalChatBtnDisabled : {}),
+              ...(!youtubeLiveChatId.trim() || youtubeBusy || externalChatControlsDisabled ? st.externalChatBtnDisabled : {}),
             }}
             onClick={handleConnectYouTubeChat}
-            disabled={!youtubeLiveChatId.trim() || youtubeBusy || youtubeControlsDisabled}
+            disabled={!youtubeLiveChatId.trim() || youtubeBusy || externalChatControlsDisabled}
           >
             Connect
           </button>
@@ -1526,18 +1536,69 @@ function ChatContent({
             style={{
               ...st.externalChatBtn,
               ...st.externalChatDisconnectBtn,
-              ...(!youtubeConnected || youtubeControlsDisabled ? st.externalChatBtnDisabled : {}),
+              ...(!youtubeConnected || externalChatControlsDisabled ? st.externalChatBtnDisabled : {}),
             }}
-            onClick={onDisconnectExternalChat}
-            disabled={!youtubeConnected || youtubeControlsDisabled}
+            onClick={() => onDisconnectExternalChat('youtube')}
+            disabled={!youtubeConnected || externalChatControlsDisabled}
           >
             Disconnect
           </button>
         </div>
         <p style={st.externalChatHint}>
-          {youtubeControlsDisabled
+          {externalChatControlsDisabled
             ? 'Hosts and co-hosts can connect platform comments.'
             : youtubeStatus?.message || 'Paste a YouTube live chat id to import comments into Public chat.'}
+        </p>
+        <div style={st.externalChatDivider} />
+        <div style={st.externalChatTopRow}>
+          <span style={st.externalChatLabel}>Facebook Live Comments</span>
+          {facebookStatus && (
+            <span style={{
+              ...st.externalChatStatus,
+              ...(facebookStatus.status === 'connected' ? st.externalChatStatusConnected : {}),
+              ...(facebookStatus.status === 'error' ? st.externalChatStatusError : {}),
+            }}>
+              {facebookStatus.status}
+            </span>
+          )}
+        </div>
+        <div style={st.externalChatControls}>
+          <input
+            value={facebookLiveVideoId}
+            onChange={(event) => setFacebookLiveVideoId(event.currentTarget.value)}
+            placeholder="Facebook live video id"
+            style={st.externalChatInput}
+            disabled={facebookBusy || externalChatControlsDisabled}
+          />
+          <button
+            type="button"
+            style={{
+              ...st.externalChatBtn,
+              ...st.externalChatBtnFacebook,
+              ...(!facebookLiveVideoId.trim() || facebookBusy || externalChatControlsDisabled ? st.externalChatBtnDisabled : {}),
+            }}
+            onClick={handleConnectFacebookComments}
+            disabled={!facebookLiveVideoId.trim() || facebookBusy || externalChatControlsDisabled}
+          >
+            Connect
+          </button>
+          <button
+            type="button"
+            style={{
+              ...st.externalChatBtn,
+              ...st.externalChatDisconnectBtn,
+              ...(!facebookConnected || externalChatControlsDisabled ? st.externalChatBtnDisabled : {}),
+            }}
+            onClick={() => onDisconnectExternalChat('facebook')}
+            disabled={!facebookConnected || externalChatControlsDisabled}
+          >
+            Disconnect
+          </button>
+        </div>
+        <p style={st.externalChatHint}>
+          {externalChatControlsDisabled
+            ? 'Hosts and co-hosts can connect platform comments.'
+            : facebookStatus?.message || 'Paste a Facebook live video id to import comments into Public chat.'}
         </p>
       </div>
       <div ref={containerRef} style={st.chatMessages} onScroll={handleScroll}>
@@ -1562,6 +1623,7 @@ function ChatContent({
               <div style={st.chatMsgHead}>
                 <span style={{ ...st.chatMsgName, color: msg.senderName === senderName ? 'var(--accent-hover)' : 'var(--text-primary)' }}>{msg.senderName}</span>
                 {msg.source?.platform === 'youtube' && <span style={st.chatSourceBadge}>YouTube</span>}
+                {msg.source?.platform === 'facebook' && <span style={{ ...st.chatSourceBadge, ...st.chatSourceBadgeFacebook }}>Facebook</span>}
                 {msg.isBackstage && <span style={st.chatBackstageBadge}>Backstage</span>}
                 {msg.recipientId && <span style={st.chatPrivateBadge}>Private</span>}
                 {msg.recipientId && <span style={st.chatPrivateMeta}>to {msg.recipientName || 'participant'}</span>}
@@ -1922,9 +1984,11 @@ const st: Record<string, React.CSSProperties> = {
   externalChatControls: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto auto', gap: 6 },
   externalChatInput: { width: '100%', minWidth: 0, height: 30, padding: '0 9px', borderRadius: 7, border: '1px solid var(--border)', background: 'rgba(15, 23, 42, 0.55)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' },
   externalChatBtn: { minHeight: 30, padding: '0 9px', borderRadius: 7, border: '1px solid rgba(239, 68, 68, 0.28)', background: 'rgba(239, 68, 68, 0.1)', color: '#fca5a5', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' },
+  externalChatBtnFacebook: { borderColor: 'rgba(59, 130, 246, 0.3)', background: 'rgba(59, 130, 246, 0.1)', color: '#bfdbfe' },
   externalChatDisconnectBtn: { borderColor: 'rgba(148, 163, 184, 0.24)', background: 'rgba(148, 163, 184, 0.08)', color: '#cbd5e1' },
   externalChatBtnDisabled: { opacity: 0.48, cursor: 'not-allowed' },
   externalChatHint: { margin: 0, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.35 },
+  externalChatDivider: { height: 1, background: 'var(--border)', opacity: 0.7 },
   chatMessages: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 },
   chatPinnedBanner: { display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 8, border: '1px solid rgba(34, 211, 238, 0.28)', background: 'rgba(34, 211, 238, 0.08)' },
   chatPinnedLabel: { flexShrink: 0, fontSize: 9, fontWeight: 800, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: '0.04em' },
@@ -1938,6 +2002,7 @@ const st: Record<string, React.CSSProperties> = {
   chatMsgHead: { display: 'flex', alignItems: 'baseline', gap: 8 },
   chatMsgName: { fontSize: 12, fontWeight: 600 },
   chatSourceBadge: { fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: 'rgba(239, 68, 68, 0.14)', color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  chatSourceBadgeFacebook: { background: 'rgba(59, 130, 246, 0.14)', color: '#bfdbfe' },
   chatBackstageBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.14)', color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatPrivateBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(34, 197, 94, 0.13)', color: '#86efac', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatPrivateMeta: { fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },

@@ -26,6 +26,10 @@ const messages: ChatMessage[] = [
     pinned: true,
     starred: true,
     reactions: { like: 2, clap: 1 },
+    source: {
+      platform: 'facebook',
+      externalId: 'fb-comment-1',
+    },
   },
   {
     id: 'public-early',
@@ -64,7 +68,7 @@ describe('chat transcript export', () => {
     assert.match(csv, /"Hello, ""team""\nGreat demo"/);
     assert.match(csv, /"Source","External ID","Pinned","Starred"/);
     assert.match(csv, /"youtube","yt-message-1"/);
-    assert.match(csv, /"studio",""/);
+    assert.match(csv, /"facebook","fb-comment-1"/);
     assert.match(csv, /"Like: 2; Clap: 1"/);
     assert.doesNotMatch(csv, /Guest mic is hot/);
     assert.doesNotMatch(csv, /You are next/);
