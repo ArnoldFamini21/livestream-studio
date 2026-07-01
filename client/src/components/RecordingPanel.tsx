@@ -13,6 +13,7 @@ import {
   selectRecordingTranscriptionCandidate,
   type RecordingTranscriptionResult,
 } from '../utils/recordingTranscription.ts';
+import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -1810,6 +1811,7 @@ export function RecordingPanel({
   onClose,
 }: RecordingPanelProps) {
   const [recordedFiles, setRecordedFiles] = useState<RecordedFile[]>([]);
+  const [lastRecordingDurationSeconds, setLastRecordingDurationSeconds] = useState<number | null>(null);
   const [isStopping, setIsStopping] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ url: string; type: string; label: string } | null>(null);
@@ -1874,6 +1876,12 @@ export function RecordingPanel({
     () => buildRecordingLibraryDashboardSummary(sessions, filteredSessions),
     [filteredSessions, sessions]
   );
+  const recordingSummary = useMemo(() => buildRecordingSessionSummary({
+    durationSeconds: lastRecordingDurationSeconds,
+    files: recordedFiles.map((file) => ({ size: file.blob.size, kind: file.kind })),
+    markerCount,
+    captionCount: finalCaptionCount,
+  }), [finalCaptionCount, lastRecordingDurationSeconds, markerCount, recordedFiles]);
 
   useEffect(() => {
     return () => {
@@ -1883,6 +1891,7 @@ export function RecordingPanel({
 
   const handleStop = useCallback(async () => {
     setIsStopping(true);
+    const durationSeconds = parseDurationSeconds(formattedTime);
     try {
       const result = await onStopRecording();
       const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
@@ -1910,10 +1919,11 @@ export function RecordingPanel({
         }));
 
       setRecordedFiles(files);
+      setLastRecordingDurationSeconds(durationSeconds);
       if (files.length > 0) {
         const session = await saveSession({
           roomName,
-          durationSeconds: parseDurationSeconds(formattedTime),
+          durationSeconds,
           files,
           markers: sortedRecordingMarkers,
         });
@@ -2139,6 +2149,7 @@ export function RecordingPanel({
 
   const handleNewRecording = useCallback(() => {
     setRecordedFiles([]);
+    setLastRecordingDurationSeconds(null);
     setActiveSessionId(null);
     setPreview(null);
     setDriveShareLink(null);
@@ -2491,6 +2502,43 @@ export function RecordingPanel({
         {/* Recorded Files */}
         {!isRecording && recordedFiles.length > 0 && (
           <>
+            <div style={styles.recordingSummaryCard}>
+              <div style={styles.recordingSummaryHeader}>
+                <span style={styles.recordingSummaryIcon}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                </span>
+                <div style={styles.recordingSummaryCopy}>
+                  <span style={styles.recordingSummaryTitle}>{recordingSummary.title}</span>
+                  <p style={styles.recordingSummaryText}>{recordingSummary.message}</p>
+                </div>
+              </div>
+              <div style={styles.recordingSummaryStats} aria-label="Recording completion summary">
+                <span style={styles.recordingSummaryStat}>
+                  <strong>{recordingSummary.durationLabel}</strong>
+                  <span>Duration</span>
+                </span>
+                <span style={styles.recordingSummaryStat}>
+                  <strong>{recordingSummary.trackLabel}</strong>
+                  <span>Tracks</span>
+                </span>
+                <span style={styles.recordingSummaryStat}>
+                  <strong>{recordingSummary.storageLabel}</strong>
+                  <span>Storage</span>
+                </span>
+                <span style={styles.recordingSummaryStat}>
+                  <strong>{recordingSummary.markerLabel}</strong>
+                  <span>Markers</span>
+                </span>
+                {recordingSummary.captionLabel && (
+                  <span style={styles.recordingSummaryStat}>
+                    <strong>{recordingSummary.captionLabel}</strong>
+                    <span>Captions</span>
+                  </span>
+                )}
+              </div>
+            </div>
             <div style={styles.filesHeader}>
               <span style={styles.filesTitle}>Recorded Files</span>
               <span style={styles.filesCount}>{recordedFiles.length} track{recordedFiles.length !== 1 ? 's' : ''}</span>
@@ -3323,6 +3371,67 @@ const styles: Record<string, React.CSSProperties> = {
   },
 
   // Recorded Files
+  recordingSummaryCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+    padding: 12,
+    borderRadius: 10,
+    border: '1px solid rgba(34, 197, 94, 0.24)',
+    background: 'rgba(34, 197, 94, 0.09)',
+  },
+  recordingSummaryHeader: {
+    display: 'grid',
+    gridTemplateColumns: '22px minmax(0, 1fr)',
+    gap: 9,
+    alignItems: 'start',
+  },
+  recordingSummaryIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    background: 'rgba(34, 197, 94, 0.16)',
+    color: '#86efac',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recordingSummaryCopy: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  },
+  recordingSummaryTitle: {
+    color: '#bbf7d0',
+    fontSize: 13,
+    fontWeight: 800,
+  },
+  recordingSummaryText: {
+    margin: 0,
+    color: 'var(--text-secondary)',
+    fontSize: 12,
+    lineHeight: 1.4,
+  },
+  recordingSummaryStats: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(82px, 1fr))',
+    gap: 6,
+  },
+  recordingSummaryStat: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    padding: '7px 8px',
+    borderRadius: 8,
+    border: '1px solid rgba(34, 197, 94, 0.16)',
+    background: 'rgba(15, 23, 42, 0.24)',
+    color: 'var(--text-secondary)',
+    fontSize: 9,
+    fontWeight: 800,
+    textTransform: 'uppercase' as const,
+  },
   filesHeader: {
     display: 'flex',
     alignItems: 'center',
