@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   evaluateClientCacheHeaders,
+  evaluateHostAccessCreateResponse,
   normalizeProductionCheckScope,
 } from './check-production.mjs';
 
@@ -39,4 +40,31 @@ test('rejects weak client cache headers', () => {
   assert.match(result.errors.join('\n'), /at least one year/);
   assert.match(result.errors.join('\n'), /immutable/);
   assert.match(result.errors.join('\n'), /Expires: 0/);
+});
+
+test('accepts create studio responses with private host access', () => {
+  const result = evaluateHostAccessCreateResponse({
+    id: 'room-123',
+    name: 'Production check',
+    hostName: 'Arnold',
+    hostToken: 'validHostToken_1234567890',
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.roomId, 'room-123');
+  assert.equal(result.hostTokenLength, 25);
+});
+
+test('rejects create studio responses that omit host access', () => {
+  const result = evaluateHostAccessCreateResponse({
+    id: 'room-123',
+    name: 'Production check',
+    hostName: 'Arnold',
+    hostId: '',
+    coHostIds: [],
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join('\n'), /valid private hostToken/);
 });
