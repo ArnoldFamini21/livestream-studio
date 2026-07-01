@@ -95,6 +95,27 @@ describe('host session links', () => {
       hostToken: undefined,
     }), true);
     assert.equal(isLegacyHostlessCreateResponse({
+      id: 'old-settings-room',
+      name: 'Old settings room',
+      hostToken: undefined,
+      settings: {
+        maxParticipants: 12,
+        resolution: '1080p',
+        frameRate: 30,
+      },
+    }), true);
+    assert.equal(isLegacyHostlessCreateResponse({
+      id: 'modern-token-stripped-room',
+      name: 'Modern token stripped room',
+      hostToken: undefined,
+      settings: {
+        maxParticipants: 7,
+        resolution: '1080p',
+        frameRate: 30,
+        passwordProtected: false,
+      },
+    }), false);
+    assert.equal(isLegacyHostlessCreateResponse({
       id: 'incomplete-room',
       name: 'Incomplete room',
       hostToken: undefined,
