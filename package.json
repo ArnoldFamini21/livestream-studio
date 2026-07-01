@@ -19,6 +19,7 @@
     "docker:monitoring": "docker compose --profile monitoring up --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
+    "production:check": "node scripts/check-production.mjs",
     "build": "npm run build --workspaces",
     "lint": "npm run lint --workspaces"
   },

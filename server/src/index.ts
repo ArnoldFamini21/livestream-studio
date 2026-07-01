@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import { WebSocketServer } from 'ws';
+import { buildServiceHealthPayload } from '@studio/shared';
 import { setupSignalingServer } from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
@@ -11,6 +12,7 @@ import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
+const healthPayload = () => buildServiceHealthPayload('signaling-server', process.env);
 
 // Allowed origins for CORS (HTTP) and WebSocket origin checking.
 // CLIENT_URL and CLIENT_URLS accept one URL or a comma-separated list.
@@ -92,7 +94,7 @@ app.use((_req, res, next) => {
 });
 
 // Health check endpoint (before rate limiter to avoid false downtime)
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/health', (_req, res) => res.json(healthPayload()));
 app.get('/metrics', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
@@ -187,7 +189,10 @@ app.use(
 );
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    ...healthPayload(),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.get('/api/ice-config', (_req, res) => {
