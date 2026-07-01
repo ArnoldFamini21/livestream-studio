@@ -137,7 +137,7 @@ function buildArtifacts(commands: RecordingExportCommand[], includeAudioStems: b
   const artifacts: RecordingExportArtifact[] = selected.map((command, index): RecordingExportArtifact => {
     const format = getArtifactFormat(command.outputPath);
     return {
-      id: format === 'mp4' ? 'final-mp4' : `stem-${index}-${format}`,
+      id: command.artifactId || (format === 'mp4' ? 'final-mp4' : `stem-${index}-${format}`),
       label: command.label,
       format,
       status: 'queued',
@@ -244,7 +244,7 @@ export class RecordingExportJobStore {
       video: request.video,
       audio: request.audio,
     });
-    const artifacts = buildArtifacts([commands.mp4, ...commands.stems], request.includeAudioStems !== false);
+    const artifacts = buildArtifacts([commands.mp4, ...commands.isolatedVideos, ...commands.stems], request.includeAudioStems !== false);
     const createdAt = new Date(nowMs).toISOString();
     const job: RecordingExportJob = {
       exportId,

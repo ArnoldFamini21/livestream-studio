@@ -19,6 +19,7 @@ async function createCompletedUpload() {
     sessionId: 'session-123',
     tracks: [
       { id: 'program', label: 'Program mix', kind: 'program', mimeType: 'video/webm', expectedBytes: 7, durationMs: 65_000 },
+      { id: 'host-camera', label: 'Host camera', kind: 'video', mimeType: 'video/webm', expectedBytes: 6, durationMs: 65_000 },
       { id: 'host-audio', label: 'Host audio', kind: 'audio', mimeType: 'audio/webm', expectedBytes: 5, durationMs: 65_000 },
     ],
   });
@@ -28,6 +29,13 @@ async function createCompletedUpload() {
     sequence: 0,
     final: true,
     data: Buffer.from('program'),
+  });
+  await uploads.appendChunk({
+    uploadId: session.uploadId,
+    trackId: 'host-camera',
+    sequence: 0,
+    final: true,
+    data: Buffer.from('camera'),
   });
   await uploads.appendChunk({
     uploadId: session.uploadId,
@@ -63,15 +71,16 @@ describe('recording export jobs', () => {
     assert.equal(queued.roomId, 'room-123');
     assert.equal(queued.sessionId, 'session-123');
     assert.equal(queued.status, 'queued');
-    assert.equal(queued.artifacts.length, 6);
+    assert.equal(queued.artifacts.length, 7);
     assert.equal(queued.artifacts.some((artifact) => 'outputPath' in artifact), false);
-    assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'wav', 'mp3', 'wav', 'mp3', 'json']);
+    assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'mp4', 'wav', 'mp3', 'wav', 'mp3', 'json']);
+    assert.equal(queued.artifacts[1].id, 'isolated-video-host-camera');
 
     await exports.startJob(queued.exportId);
     const ready = exports.getJob(queued.exportId, session.uploadId);
 
     assert.equal(ready.status, 'ready');
-    assert.equal(commands.length, 5);
+    assert.equal(commands.length, 6);
     assert.equal(ready.artifacts.every((artifact) => artifact.status === 'ready'), true);
     assert.equal(ready.artifacts.every((artifact) => typeof artifact.bytes === 'number' && artifact.bytes > 0), true);
     assert.match(commands[0].outputPath, /Launch_Demo\.mp4$/);
@@ -80,6 +89,10 @@ describe('recording export jobs', () => {
     const artifact = exports.getArtifact(queued.exportId, 'final-mp4', session.uploadId);
     assert.equal(artifact.format, 'mp4');
     assert.match(artifact.path, /Launch_Demo\.mp4$/);
+
+    const isolatedVideo = exports.getArtifact(queued.exportId, 'isolated-video-host-camera', session.uploadId);
+    assert.equal(isolatedVideo.format, 'mp4');
+    assert.match(isolatedVideo.path, /Launch_Demo_Host_camera_video\.mp4$/);
 
     const manifest = exports.getArtifact(queued.exportId, 'export-manifest', session.uploadId);
     assert.equal(manifest.format, 'json');
@@ -93,7 +106,7 @@ describe('recording export jobs', () => {
     assert.equal(manifestJson.exportType, 'recording-export-manifest');
     assert.equal(manifestJson.export.exportId, queued.exportId);
     assert.equal(manifestJson.tracks[0].durationMs, 65_000);
-    assert.deepEqual(manifestJson.artifacts.map((item) => item.format), ['mp4', 'wav', 'mp3', 'wav', 'mp3']);
+    assert.deepEqual(manifestJson.artifacts.map((item) => item.format), ['mp4', 'mp4', 'wav', 'mp3', 'wav', 'mp3']);
   });
 
   it('can create a final-MP4-only export job', async () => {
@@ -107,7 +120,7 @@ describe('recording export jobs', () => {
       includeAudioStems: false,
     });
 
-    assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'json']);
+    assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'mp4', 'json']);
   });
 
   it('rejects export jobs before all declared upload tracks are complete and non-empty', async () => {

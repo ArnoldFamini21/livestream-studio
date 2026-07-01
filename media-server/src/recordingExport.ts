@@ -38,10 +38,12 @@ export interface RecordingExportCommand {
   label: string;
   outputPath: string;
   args: string[];
+  artifactId?: string;
 }
 
 export interface RecordingExportCommands {
   mp4: RecordingExportCommand;
+  isolatedVideos: RecordingExportCommand[];
   stems: RecordingExportCommand[];
 }
 
@@ -53,6 +55,7 @@ const MAX_EXPORT_FRAME_RATE = 60;
 const MAX_EXPORT_VIDEO_BITRATE = 50_000_000;
 const MAX_EXPORT_AUDIO_BITRATE = 320_000;
 const AUDIO_INPUT_LIMIT = 16;
+const ISOLATED_VIDEO_INPUT_LIMIT = 16;
 
 function clampNumber(value: number | undefined, fallback: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return fallback;
@@ -154,6 +157,17 @@ function selectAudioTracks(tracks: RecordingExportTrack[], primaryVideoTrack: Re
     .slice(0, AUDIO_INPUT_LIMIT);
 }
 
+function selectIsolatedVideoTracks(tracks: RecordingExportTrack[]): RecordingExportTrack[] {
+  return tracks
+    .filter((track) => track.kind === 'iso' || track.kind === 'video' || track.kind === 'screen')
+    .filter((track) => track.hasVideo !== false)
+    .slice(0, ISOLATED_VIDEO_INPUT_LIMIT);
+}
+
+function sanitizeArtifactId(value: string): string {
+  return value.trim().replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'track';
+}
+
 export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExportCommand {
   const issue = validateRecordingExportTracks(plan.tracks);
   if (issue) throw new Error(issue);
@@ -211,7 +225,57 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
     outputPath
   );
 
-  return { label: 'Final MP4', outputPath, args };
+  return { label: 'Final MP4', outputPath, args, artifactId: 'final-mp4' };
+}
+
+export function createRecordingIsolatedVideoArgs(
+  track: RecordingExportTrack,
+  outputDirectory: string,
+  basename: string,
+  videoOptions: Partial<RecordingExportVideoOptions> = {},
+  audioOptions: Partial<RecordingExportAudioOptions> = {}
+): RecordingExportCommand {
+  if (!['video', 'screen', 'iso'].includes(track.kind) || track.hasVideo === false) {
+    throw new Error(`${track.label} does not contain an exportable video track`);
+  }
+  const pathIssue = validateLocalPath(track.path, track.label);
+  if (pathIssue) throw new Error(pathIssue);
+  const video = normalizeRecordingExportVideoOptions(videoOptions);
+  const audio = normalizeRecordingExportAudioOptions(audioOptions);
+  const outputBase = sanitizeExportBasename(`${basename}_${track.label}_video`);
+  const outputPath = path.join(outputDirectory, `${outputBase}.mp4`);
+  const videoFilter = `scale=${video.width}:${video.height}:force_original_aspect_ratio=decrease,pad=${video.width}:${video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+  const videoBitrateKbps = Math.round(video.videoBitsPerSecond / 1000);
+  const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'warning',
+    '-fflags', '+genpts',
+    '-i', track.path,
+    '-vf', videoFilter,
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-c:v', 'libx264',
+    '-preset', 'medium',
+    '-pix_fmt', 'yuv420p',
+    '-r', String(video.frameRate),
+    '-b:v', `${videoBitrateKbps}k`,
+    '-maxrate', `${Math.round(videoBitrateKbps * 1.15)}k`,
+    '-bufsize', `${videoBitrateKbps * 2}k`,
+    '-c:a', 'aac',
+    '-b:a', `${audioBitrateKbps}k`,
+    '-ar', String(audio.sampleRate),
+    '-ac', String(audio.channelCount),
+    '-movflags', '+faststart',
+    outputPath,
+  ];
+
+  return {
+    label: `${track.label} isolated MP4`,
+    outputPath,
+    args,
+    artifactId: `isolated-video-${sanitizeArtifactId(track.id)}`,
+  };
 }
 
 export function createRecordingAudioStemArgs(
@@ -255,11 +319,14 @@ export function createRecordingAudioStemArgs(
 export function createRecordingExportCommands(plan: RecordingExportPlan): RecordingExportCommands {
   const mp4 = createRecordingMp4Args(plan);
   const basename = sanitizeExportBasename(plan.basename);
+  const isolatedVideos = selectIsolatedVideoTracks(plan.tracks).map((track) => (
+    createRecordingIsolatedVideoArgs(track, plan.outputDirectory, basename, plan.video, plan.audio)
+  ));
   const audioTracks = plan.tracks.filter((track) => track.kind === 'audio' || track.hasAudio === true).slice(0, AUDIO_INPUT_LIMIT);
   const stems = audioTracks.flatMap((track) => [
     createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'wav', plan.audio),
     createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'mp3', plan.audio),
   ]);
 
-  return { mp4, stems };
+  return { mp4, isolatedVideos, stems };
 }
