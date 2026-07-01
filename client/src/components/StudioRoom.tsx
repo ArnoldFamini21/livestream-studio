@@ -60,6 +60,7 @@ import {
 } from '../utils/virtualBackgrounds.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
+import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
 import {
   getProductionSceneTemplateConfig,
   type ProductionSceneTemplate,
@@ -3707,6 +3708,25 @@ export function StudioRoom() {
     sessionStartedAt: sessionRecordingStartedAt,
     sessionElapsedSeconds: sessionRecordingElapsed,
   });
+  const productionExitGuard = useMemo(() => getProductionExitGuardDecision({
+    isLive,
+    isMixedRecording: isRecording,
+    isLocalRecording,
+    isSessionRecording: Boolean(sessionRecordingStartedAt),
+  }), [isLive, isRecording, isLocalRecording, sessionRecordingStartedAt]);
+
+  useEffect(() => {
+    if (!productionExitGuard.shouldBlock) return undefined;
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = productionExitGuard.message;
+      return productionExitGuard.message;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [productionExitGuard]);
 
   useEffect(() => {
     displayedLowerThirdRef.current = displayedLowerThird;
