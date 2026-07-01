@@ -110,6 +110,20 @@ describe('recording media-server upload helper', () => {
           ],
         });
       }
+      if (String(url).endsWith('/exports')) {
+        return jsonResponse({
+          exportId: 'export-1',
+          uploadId: 'upload-1',
+          roomId: 'room-1',
+          sessionId: 'session-1',
+          status: 'queued',
+          createdAt: '2026-07-01T00:00:01.000Z',
+          updatedAt: '2026-07-01T00:00:01.000Z',
+          artifacts: [
+            { id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'queued' },
+          ],
+        }, 202);
+      }
       throw new Error(`Unexpected fetch ${url}`);
     };
 
@@ -134,14 +148,61 @@ describe('recording media-server upload helper', () => {
     assert.equal(summary.uploadId, 'upload-1');
     assert.equal(summary.bytesReceived, 300_000);
     assert.equal(summary.uploadedTracks, 1);
+    assert.equal(summary.exportJob?.exportId, 'export-1');
     assert.deepEqual(progress, [262_144, 300_000]);
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5);
     assert.equal(calls[0].url, 'https://media.example.com/recordings/uploads');
     assert.match(calls[1].url, /sequence=0&offset=0/);
     assert.match(calls[2].url, /sequence=1&offset=262144&final=1/);
+    assert.equal(calls[4].url, 'https://media.example.com/recordings/uploads/upload-1/exports');
     assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
     assert.equal((calls[1].init?.body as Blob).size, 262_144);
     assert.equal((calls[2].init?.body as Blob).size, 37_856);
+  });
+
+  it('keeps the completed upload summary when export startup fails', async () => {
+    globalThis.fetch = async (url) => {
+      if (String(url).endsWith('/recordings/uploads')) {
+        return jsonResponse({
+          uploadId: 'upload-no-export',
+          roomId: 'room-1',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          expiresAt: '2026-07-01T06:00:00.000Z',
+          maxBytes: 4,
+          bytesReceived: 0,
+          tracks: [],
+        }, 201);
+      }
+      if (String(url).includes('/chunks')) {
+        return jsonResponse({ uploadId: 'upload-no-export', track: { bytesReceived: 4 }, bytesReceived: 4 });
+      }
+      if (String(url).endsWith('/complete')) {
+        return jsonResponse({
+          uploadId: 'upload-no-export',
+          roomId: 'room-1',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          expiresAt: '2026-07-01T06:00:00.000Z',
+          maxBytes: 4,
+          bytesReceived: 4,
+          tracks: [],
+        });
+      }
+      if (String(url).endsWith('/exports')) {
+        return jsonResponse({ error: 'FFmpeg binary is unavailable' }, 503);
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    };
+
+    const summary = await uploadRecordingToMediaServer({
+      token: 'token-123',
+      roomId: 'room-1',
+      mediaHttpUrl: 'https://media.example.com',
+      files: [{ label: 'Program', fileName: 'program.webm', kind: 'program', blob: makeBlob(4, 'video/webm') }],
+    });
+
+    assert.equal(summary.uploadId, 'upload-no-export');
+    assert.equal(summary.bytesReceived, 4);
+    assert.match(summary.exportError || '', /FFmpeg binary/);
   });
 
   it('cleans up the upload session after a chunk failure', async () => {

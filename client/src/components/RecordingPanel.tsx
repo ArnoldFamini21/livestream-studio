@@ -2080,8 +2080,13 @@ export function RecordingPanel({
           try {
             const upload = await onUploadRecording({ sessionId: session.id, files });
             const skipped = upload.skippedTracks > 0 ? `, ${upload.skippedTracks} skipped` : '';
+            const exportStatus = upload.exportJob
+              ? ` Export job ${upload.exportJob.status}.`
+              : upload.exportError
+                ? ` Export not started: ${upload.exportError}.`
+                : '';
             setMediaUploadMessage(
-              `Media server received ${upload.uploadedTracks} track${upload.uploadedTracks === 1 ? '' : 's'} (${formatFileSize(upload.bytesReceived)}${skipped}).`
+              `Media server received ${upload.uploadedTracks} track${upload.uploadedTracks === 1 ? '' : 's'} (${formatFileSize(upload.bytesReceived)}${skipped}).${exportStatus}`
             );
             setMediaUploadError(null);
           } catch (err) {

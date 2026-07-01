@@ -1,4 +1,5 @@
 import type {
+  RecordingExportJobResponse,
   RecordingUploadSessionResponse,
   RecordingUploadTrackKind,
   RecordingUploadTrackManifest,
@@ -24,6 +25,9 @@ export interface UploadRecordingToMediaServerInput {
   files: RecordingUploadFileInput[];
   mediaHttpUrl?: string;
   chunkSizeBytes?: number;
+  startExport?: boolean;
+  exportBasename?: string;
+  includeAudioStems?: boolean;
   onProgress?: (progress: RecordingUploadProgress) => void;
 }
 
@@ -45,6 +49,8 @@ export interface RecordingUploadSummary {
   skippedTracks: number;
   bytesReceived: number;
   tracks: RecordingUploadTrackStatus[];
+  exportJob?: RecordingExportJobResponse;
+  exportError?: string;
 }
 
 interface UploadableRecordingTrack {
@@ -250,6 +256,24 @@ export async function uploadRecordingToMediaServer(
       token,
       {}
     );
+    let exportJob: RecordingExportJobResponse | undefined;
+    let exportError: string | undefined;
+    if (input.startExport !== false) {
+      try {
+        exportJob = await postJson<RecordingExportJobResponse>(
+          buildMediaUrl(mediaHttpUrl, `/recordings/uploads/${encodeURIComponent(uploadId)}/exports`),
+          token,
+          {
+            basename: input.exportBasename || input.sessionId || uploadId,
+            includeAudioStems: input.includeAudioStems !== false,
+          }
+        );
+      } catch (err) {
+        exportError = err instanceof Error && err.message
+          ? err.message
+          : 'Media server export could not be started';
+      }
+    }
 
     return {
       uploadId: complete.uploadId,
@@ -259,6 +283,8 @@ export async function uploadRecordingToMediaServer(
       skippedTracks,
       bytesReceived: complete.bytesReceived,
       tracks: complete.tracks,
+      exportJob,
+      exportError,
     };
   } catch (err) {
     if (uploadId) await cleanupUpload(mediaHttpUrl, uploadId, token);

@@ -49,6 +49,24 @@ export interface RecordingUploadChunkInput {
   data: Buffer;
 }
 
+export interface RecordingUploadExportTrack {
+  id: string;
+  label: string;
+  kind: RecordingUploadTrackKind;
+  mimeType: string;
+  filePath: string;
+  bytesReceived: number;
+  complete: boolean;
+}
+
+export interface RecordingUploadExportSource {
+  uploadId: string;
+  roomId: string;
+  sessionId?: string;
+  rootDir: string;
+  tracks: RecordingUploadExportTrack[];
+}
+
 export class RecordingUploadError extends Error {
   constructor(
     public readonly statusCode: number,
@@ -252,6 +270,25 @@ export class RecordingUploadStore {
 
   getStatus(uploadId: string, nowMs = Date.now()): RecordingUploadSessionResponse {
     return sessionStatus(this.getSession(uploadId, nowMs));
+  }
+
+  getExportSource(uploadId: string, nowMs = Date.now()): RecordingUploadExportSource {
+    const session = this.getSession(uploadId, nowMs);
+    return {
+      uploadId: session.uploadId,
+      roomId: session.roomId,
+      sessionId: session.sessionId,
+      rootDir: session.rootDir,
+      tracks: Array.from(session.tracks.values()).map((track) => ({
+        id: track.id,
+        label: track.label,
+        kind: track.kind,
+        mimeType: track.mimeType,
+        filePath: track.filePath,
+        bytesReceived: track.bytesReceived,
+        complete: track.complete,
+      })),
+    };
   }
 
   async appendChunk(input: RecordingUploadChunkInput, nowMs = Date.now()): Promise<RecordingUploadChunkResponse> {

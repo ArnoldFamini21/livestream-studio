@@ -625,6 +625,51 @@ export interface RecordingUploadChunkResponse {
   bytesReceived: number;
 }
 
+export interface RecordingExportVideoSettings {
+  width?: number;
+  height?: number;
+  frameRate?: number;
+  videoBitsPerSecond?: number;
+}
+
+export interface RecordingExportAudioSettings {
+  sampleRate?: number;
+  channelCount?: number;
+  audioBitsPerSecond?: number;
+}
+
+export interface RecordingExportSessionRequest {
+  token?: string;
+  basename?: string;
+  includeAudioStems?: boolean;
+  video?: RecordingExportVideoSettings;
+  audio?: RecordingExportAudioSettings;
+}
+
+export type RecordingExportJobStatusValue = 'queued' | 'running' | 'ready' | 'error';
+export type RecordingExportArtifactFormat = 'mp4' | 'wav' | 'mp3';
+
+export interface RecordingExportArtifactStatus {
+  id: string;
+  label: string;
+  format: RecordingExportArtifactFormat;
+  status: RecordingExportJobStatusValue;
+  bytes?: number;
+  error?: string;
+}
+
+export interface RecordingExportJobResponse {
+  exportId: string;
+  uploadId: string;
+  roomId: string;
+  sessionId?: string;
+  status: RecordingExportJobStatusValue;
+  createdAt: string;
+  updatedAt: string;
+  artifacts: RecordingExportArtifactStatus[];
+  error?: string;
+}
+
 // ============ Scene Types ============
 
 export interface Scene {
