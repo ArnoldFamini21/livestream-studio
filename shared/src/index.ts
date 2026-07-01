@@ -576,6 +576,55 @@ export type RtmpRelayServerMessage =
   | { type: 'destination-status'; payload: { destinationId: string; status: RtmpRelayDestinationStatus; message?: string } }
   | { type: 'error'; payload: { code: string; message: string; destinationId?: string } };
 
+// ============ Recording Upload Protocol Types ============
+
+export type RecordingUploadTrackKind = 'audio' | 'video' | 'screen' | 'program' | 'iso';
+
+export interface RecordingUploadTrackManifest {
+  id: string;
+  label: string;
+  kind: RecordingUploadTrackKind;
+  mimeType: string;
+  expectedBytes?: number;
+  durationMs?: number;
+  capture?: Record<string, unknown>;
+}
+
+export interface RecordingUploadSessionRequest {
+  token?: string;
+  roomId: string;
+  sessionId?: string;
+  tracks: RecordingUploadTrackManifest[];
+  maxBytes?: number;
+}
+
+export interface RecordingUploadTrackStatus {
+  id: string;
+  label: string;
+  kind: RecordingUploadTrackKind;
+  mimeType: string;
+  bytesReceived: number;
+  chunksReceived: number;
+  complete: boolean;
+}
+
+export interface RecordingUploadSessionResponse {
+  uploadId: string;
+  roomId: string;
+  sessionId?: string;
+  createdAt: string;
+  expiresAt: string;
+  maxBytes: number;
+  bytesReceived: number;
+  tracks: RecordingUploadTrackStatus[];
+}
+
+export interface RecordingUploadChunkResponse {
+  uploadId: string;
+  track: RecordingUploadTrackStatus;
+  bytesReceived: number;
+}
+
 // ============ Scene Types ============
 
 export interface Scene {
