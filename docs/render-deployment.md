@@ -109,9 +109,9 @@ RENDER_SERVER_DEPLOY_HOOK_URL=<deploy hook URL for livestream-studio-server>
 RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL=<deploy hook URL for livestream-studio-media-server>
 ```
 
-When these secrets are missing, GitHub Actions still deploys the static client but logs notices that the Render deploy triggers were skipped.
+Client-only merges can still deploy the static Hostinger bundle without Render hooks. If a merge changes `server/`, `media-server/`, `shared/`, root package files, or `render.yaml`, the workflow now requires the matching Render deploy hook secret and fails before publishing when it is missing. This prevents backend fixes from appearing green while Render is still serving an older build.
 
-Every deploy verifies the static client cache headers after publishing to Hostinger. When both deploy hook secrets are present, the workflow also waits for Render service verification after the Hostinger deploy. It runs `npm run production:check` with the pushed commit SHA and polls for up to 15 minutes until both Render services report the new commit in `/health`.
+Every deploy verifies the static client cache headers after publishing to Hostinger. When service files changed and the required deploy hook secrets are present, the workflow also waits for Render service verification after the Hostinger deploy. It runs `npm run production:check` with the pushed commit SHA and polls for up to 15 minutes until the changed Render services report the new commit in `/health`.
 
 The Render service verification also creates a disposable studio and requires the signaling API to return a valid private `hostToken`. This catches the production failure where the home page reports that a studio was created but host access was not returned.
 

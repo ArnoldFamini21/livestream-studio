@@ -14,6 +14,33 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Classify changed paths
+        id: changed-paths
+        shell: bash
+        run: |
+          before="${{ github.event.before }}"
+          after="${{ github.sha }}"
+
+          if [[ -z "$before" || "$before" =~ ^0+$ ]]; then
+            git diff-tree --no-commit-id --name-only -r "$after" > changed-files.txt
+          else
+            if ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=2 origin "$before" || true
+            fi
+
+            if git cat-file -e "$before^{commit}" 2>/dev/null; then
+              git diff --name-only "$before" "$after" > changed-files.txt
+            else
+              git diff-tree --no-commit-id --name-only -r "$after" > changed-files.txt
+            fi
+          fi
+
+          echo "Changed files:"
+          cat changed-files.txt
+          node scripts/classify-production-changes.mjs --files-from changed-files.txt --github-output "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -22,6 +49,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test deployment scripts
+        run: node --test scripts/*.test.mjs
 
       - name: Build shared workspace
         run: npm run -w shared build
@@ -46,24 +76,42 @@ jobs:
         env:
           RENDER_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_SERVER_DEPLOY_HOOK_URL }}
           RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL }}
+          SIGNALING_CHANGED: ${{ steps.changed-paths.outputs.signaling_changed }}
+          MEDIA_CHANGED: ${{ steps.changed-paths.outputs.media_changed }}
         run: |
           hooks_configured=true
+          services_changed=false
 
-          if [ -n "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
-            curl --fail --silent --show-error --request POST "$RENDER_SERVER_DEPLOY_HOOK_URL"
+          if [ "$SIGNALING_CHANGED" = "true" ]; then
+            services_changed=true
+            if [ -n "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
+              curl --fail --silent --show-error --request POST "$RENDER_SERVER_DEPLOY_HOOK_URL"
+            else
+              hooks_configured=false
+              echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this push changes signaling-server files."
+            fi
           else
-            hooks_configured=false
-            echo "::notice::RENDER_SERVER_DEPLOY_HOOK_URL is not configured; skipping signaling server deploy trigger."
+            echo "::notice::No signaling-server changes detected; skipping signaling server deploy trigger."
           fi
 
-          if [ -n "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
-            curl --fail --silent --show-error --request POST "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL"
+          if [ "$MEDIA_CHANGED" = "true" ]; then
+            services_changed=true
+            if [ -n "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
+              curl --fail --silent --show-error --request POST "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL"
+            else
+              hooks_configured=false
+              echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this push changes media-server files."
+            fi
           else
-            hooks_configured=false
-            echo "::notice::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is not configured; skipping media-server deploy trigger."
+            echo "::notice::No media-server changes detected; skipping media-server deploy trigger."
           fi
 
           echo "hooks_configured=$hooks_configured" >> "$GITHUB_OUTPUT"
+          echo "services_changed=$services_changed" >> "$GITHUB_OUTPUT"
+
+          if [ "$services_changed" = "true" ] && [ "$hooks_configured" != "true" ]; then
+            exit 1
+          fi
 
       - name: Deploy to deploy branch
         uses: peaceiris/actions-gh-pages@v4
@@ -82,7 +130,7 @@ jobs:
           PRODUCTION_CHECK_INTERVAL_MS: 15000
 
       - name: Verify production services
-        if: steps.render-deploys.outputs.hooks_configured == 'true'
+        if: steps.render-deploys.outputs.services_changed == 'true' && steps.render-deploys.outputs.hooks_configured == 'true'
         run: npm run production:check
         env:
           PRODUCTION_CHECK_SCOPE: services
