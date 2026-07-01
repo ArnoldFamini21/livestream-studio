@@ -133,7 +133,7 @@ deploy_media=true
 verify_services=true
 ```
 
-That run requires both Render deploy hook secrets. It will fail if the media-server has not been created/synced in Render, if the signaling service still serves the old `{ "status": "ok" }` health payload, or if create-studio responses still omit private host access.
+That run requires both Render deploy hook secrets and the workflow checks for them before installing dependencies or building workspaces. It will fail if the media-server has not been created/synced in Render, if the signaling service still serves the old `{ "status": "ok" }` health payload, or if create-studio responses still omit private host access.
 
 ## Production Smoke Check
 

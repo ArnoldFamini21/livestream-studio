@@ -63,6 +63,35 @@ jobs:
           cat changed-files.txt
           node scripts/classify-production-changes.mjs --files-from changed-files.txt --github-output "$GITHUB_OUTPUT"
 
+      - name: Validate Render deploy hook secrets
+        env:
+          RENDER_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_SERVER_DEPLOY_HOOK_URL }}
+          RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL }}
+          SIGNALING_CHANGED: ${{ steps.changed-paths.outputs.signaling_changed }}
+          MEDIA_CHANGED: ${{ steps.changed-paths.outputs.media_changed }}
+          FORCE_SIGNALING_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_signaling }}
+          FORCE_MEDIA_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_media }}
+        run: |
+          missing=false
+
+          if [ "$SIGNALING_CHANGED" = "true" ] || [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
+            if [ -z "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
+              missing=true
+              echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this run deploys the signaling server."
+            fi
+          fi
+
+          if [ "$MEDIA_CHANGED" = "true" ] || [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
+            if [ -z "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
+              missing=true
+              echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this run deploys the media server."
+            fi
+          fi
+
+          if [ "$missing" = "true" ]; then
+            exit 1
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
