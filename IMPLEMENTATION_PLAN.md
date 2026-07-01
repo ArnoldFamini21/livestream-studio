@@ -78,7 +78,7 @@
 - [x] Server-side FFmpeg transcodes and pushes RTMP to destinations
 - [x] Go Live preflight warns or blocks based on browser encoder readiness
 - [x] Authoritative live elapsed timer in the studio header
-- [ ] Configurable output: 720p/1080p 30fps bitrate presets are implemented; 4K and 60fps remain future live-relay work
+- [x] Configurable output: 720p/1080p/1080p60/4K30 bitrate presets with preflight warnings and FFmpeg relay bounds
 
 ### 4B. Multi-Destination Streaming
 - [x] YouTube Live RTMP integration (stream key input)

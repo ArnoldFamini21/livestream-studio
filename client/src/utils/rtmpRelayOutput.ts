@@ -1,6 +1,12 @@
 import type { BroadcastOrientation, RtmpRelayVideoConfig } from '@studio/shared';
+import type { VideoEncodingReadiness } from './videoEncodingCapabilities.ts';
 
-export type RtmpRelayOutputPresetId = 'smooth-720p' | 'standard-1080p' | 'maximum-1080p';
+export type RtmpRelayOutputPresetId =
+  | 'smooth-720p'
+  | 'standard-1080p'
+  | 'maximum-1080p'
+  | 'motion-1080p60'
+  | 'ultra-4k30';
 
 export interface RtmpRelayOutputPreset {
   id: RtmpRelayOutputPresetId;
@@ -8,8 +14,13 @@ export interface RtmpRelayOutputPreset {
   detail: string;
   width: number;
   height: number;
-  frameRate: 30;
+  frameRate: 30 | 60;
   videoBitsPerSecond: number;
+}
+
+export interface RtmpRelayOutputPreflight {
+  status: 'good' | 'warning';
+  detail: string;
 }
 
 export const RTMP_RELAY_AUDIO_BITS_PER_SECOND = 160_000;
@@ -42,6 +53,24 @@ export const RTMP_RELAY_OUTPUT_PRESETS: RtmpRelayOutputPreset[] = [
     height: 1080,
     frameRate: 30,
     videoBitsPerSecond: 8_000_000,
+  },
+  {
+    id: 'motion-1080p60',
+    label: '1080p 60',
+    detail: 'Fast motion, 10 Mbps',
+    width: 1920,
+    height: 1080,
+    frameRate: 60,
+    videoBitsPerSecond: 10_000_000,
+  },
+  {
+    id: 'ultra-4k30',
+    label: '4K 30',
+    detail: 'Ultra HD, 18 Mbps',
+    width: 3840,
+    height: 2160,
+    frameRate: 30,
+    videoBitsPerSecond: 18_000_000,
   },
 ];
 
@@ -80,4 +109,43 @@ export function formatRtmpRelayOutputSummary(
   const config = getRtmpRelayVideoConfig(orientation, presetId);
   const targetMbps = getRtmpRelayTargetKbps(presetId) / 1000;
   return `${config.width}x${config.height} / ${config.frameRate} FPS / ${targetMbps.toFixed(1)} Mbps`;
+}
+
+export function getRtmpRelayOutputPreflight(
+  orientation: BroadcastOrientation,
+  presetId: RtmpRelayOutputPresetId,
+  encoding?: VideoEncodingReadiness
+): RtmpRelayOutputPreflight {
+  const config = getRtmpRelayVideoConfig(orientation, presetId);
+  const summary = formatRtmpRelayOutputSummary(orientation, presetId);
+  const ultraHd = encoding?.presets.find((preset) => preset.presetId === '4k');
+  const ultraHdSmooth = ultraHd?.supported === true && ultraHd.smooth !== false;
+  const ultraHdHardware = ultraHd?.hardwareAccelerated === true;
+
+  if (config.frameRate > 30) {
+    return {
+      status: 'warning',
+      detail: `${summary}. 60 FPS doubles encoder work; test this browser and upload path before a long live session.`,
+    };
+  }
+
+  if (config.width > 1920 || config.height > 1920) {
+    if (ultraHdSmooth) {
+      return {
+        status: 'warning',
+        detail: ultraHdHardware
+          ? `${summary}. 4K hardware encoding is available, but confirm upload stability before going live.`
+          : `${summary}. Browser reports smooth 4K encoding, but hardware acceleration is not confirmed.`,
+      };
+    }
+    return {
+      status: 'warning',
+      detail: `${summary}. 4K live relay is available, but this browser has not proven smooth 4K encoding.`,
+    };
+  }
+
+  return {
+    status: 'good',
+    detail: summary,
+  };
 }

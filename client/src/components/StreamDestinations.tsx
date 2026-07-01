@@ -12,6 +12,7 @@ import {
 import {
   formatRtmpRelayOutputSummary,
   getRtmpRelayOutputPreset,
+  getRtmpRelayOutputPreflight,
   getRtmpRelayTargetKbps,
   RTMP_RELAY_OUTPUT_PRESETS,
   type RtmpRelayOutputPresetId,
@@ -172,6 +173,11 @@ export function StreamDestinations({
   const selectedOrientation = ORIENTATION_OPTIONS.find((option) => option.value === broadcastOrientation) || ORIENTATION_OPTIONS[0];
   const selectedOutputPreset = getRtmpRelayOutputPreset(relayOutputPreset);
   const selectedOutputSummary = formatRtmpRelayOutputSummary(broadcastOrientation, relayOutputPreset);
+  const selectedOutputPreflight = getRtmpRelayOutputPreflight(
+    broadcastOrientation,
+    relayOutputPreset,
+    sessionHealth?.encoding
+  );
   const relayTargetKbps = getRtmpRelayTargetKbps(relayOutputPreset);
   const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
   const relayIssue = getRelayReadinessIssue(relayReadiness);
@@ -182,6 +188,8 @@ export function StreamDestinations({
     sessionHealth,
     sceneCount,
     outputSummary: selectedOutputSummary,
+    outputStatus: selectedOutputPreflight.status,
+    outputDetail: selectedOutputPreflight.detail,
   });
   const preflightIssue = livePreflight.blockingIssue || getEnabledDestinationPreflightIssue(destinations, relayIssue);
   const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue && !livePreflight.blockingIssue;
