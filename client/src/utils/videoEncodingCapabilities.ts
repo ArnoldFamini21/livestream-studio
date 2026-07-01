@@ -1,0 +1,292 @@
+import {
+  VIDEO_QUALITY_PRESETS,
+  type VideoQualityPreset,
+  type VideoQualityPresetId,
+} from './mediaPreferences.ts';
+
+export type VideoEncodingReadinessStatus = 'ready' | 'limited' | 'unsupported';
+
+export interface VideoEncodingApiSupport {
+  mediaRecorder: boolean;
+  mediaCapabilities: boolean;
+  webCodecs: boolean;
+}
+
+export interface BrowserVideoEncodingConfiguration {
+  type: 'record';
+  video: {
+    contentType: string;
+    width: number;
+    height: number;
+    bitrate: number;
+    framerate: number;
+  };
+}
+
+export interface VideoEncodingPresetConfig {
+  presetId: VideoQualityPresetId;
+  label: string;
+  configuration: BrowserVideoEncodingConfiguration;
+}
+
+export interface VideoEncodingPresetSupport {
+  presetId: VideoQualityPresetId;
+  label: string;
+  width: number;
+  height: number;
+  frameRate: number;
+  bitrate: number;
+  supported: boolean | null;
+  smooth: boolean | null;
+  powerEfficient: boolean | null;
+}
+
+export interface VideoEncodingReadiness {
+  status: VideoEncodingReadinessStatus;
+  label: string;
+  detail: string;
+  apiSupport: VideoEncodingApiSupport;
+  presets: VideoEncodingPresetSupport[];
+}
+
+export interface BrowserVideoEncodingInfoLike {
+  supported?: boolean;
+  smooth?: boolean;
+  powerEfficient?: boolean;
+}
+
+export interface BrowserMediaCapabilitiesLike {
+  encodingInfo?: (configuration: BrowserVideoEncodingConfiguration) => Promise<BrowserVideoEncodingInfoLike>;
+}
+
+export interface BrowserMediaRecorderLike {
+  isTypeSupported?: (contentType: string) => boolean;
+}
+
+export interface BrowserVideoEncodingEnvironment {
+  mediaRecorder?: BrowserMediaRecorderLike | null;
+  mediaCapabilities?: BrowserMediaCapabilitiesLike | null;
+  videoEncoder?: unknown;
+}
+
+const VIDEO_ENCODING_CONTENT_TYPES = [
+  'video/webm;codecs=vp9',
+  'video/webm;codecs=vp8',
+  'video/webm',
+] as const;
+
+const VIDEO_ENCODING_BITRATES: Record<VideoQualityPresetId, number> = {
+  '720p': 4_000_000,
+  '1080p': 8_000_000,
+  '4k': 24_000_000,
+};
+
+function getCurrentBrowserVideoEncodingEnvironment(): BrowserVideoEncodingEnvironment {
+  const nav = typeof navigator === 'undefined'
+    ? undefined
+    : navigator as Navigator & { mediaCapabilities?: BrowserMediaCapabilitiesLike };
+  const root = typeof globalThis === 'undefined'
+    ? {}
+    : globalThis as { MediaRecorder?: unknown; VideoEncoder?: unknown };
+
+  return {
+    mediaRecorder: root.MediaRecorder as BrowserMediaRecorderLike | null | undefined,
+    mediaCapabilities: nav?.mediaCapabilities ?? null,
+    videoEncoder: root.VideoEncoder,
+  };
+}
+
+function readBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function getMediaRecorderTypeSupport(mediaRecorder: unknown): BrowserMediaRecorderLike['isTypeSupported'] | null {
+  const candidate = mediaRecorder as BrowserMediaRecorderLike | undefined;
+  return typeof candidate?.isTypeSupported === 'function' ? candidate.isTypeSupported.bind(candidate) : null;
+}
+
+export function getPreferredVideoEncodingContentType(
+  environment: BrowserVideoEncodingEnvironment = getCurrentBrowserVideoEncodingEnvironment()
+): string {
+  const isTypeSupported = getMediaRecorderTypeSupport(environment.mediaRecorder);
+  if (!isTypeSupported) return VIDEO_ENCODING_CONTENT_TYPES[0];
+
+  return VIDEO_ENCODING_CONTENT_TYPES.find((contentType) => {
+    try {
+      return isTypeSupported(contentType);
+    } catch {
+      return false;
+    }
+  }) || VIDEO_ENCODING_CONTENT_TYPES[0];
+}
+
+function getPresetSupportFromConfig(
+  preset: VideoQualityPreset,
+  info?: BrowserVideoEncodingInfoLike | null
+): VideoEncodingPresetSupport {
+  return {
+    presetId: preset.id,
+    label: preset.label,
+    width: preset.width,
+    height: preset.height,
+    frameRate: preset.frameRate,
+    bitrate: VIDEO_ENCODING_BITRATES[preset.id],
+    supported: readBoolean(info?.supported),
+    smooth: readBoolean(info?.smooth),
+    powerEfficient: readBoolean(info?.powerEfficient),
+  };
+}
+
+function findPreset(
+  presets: readonly VideoEncodingPresetSupport[],
+  presetId: VideoQualityPresetId
+): VideoEncodingPresetSupport | null {
+  return presets.find((preset) => preset.presetId === presetId) || null;
+}
+
+export function buildVideoEncodingConfigs(
+  presets: readonly VideoQualityPreset[] = VIDEO_QUALITY_PRESETS,
+  contentType: string = VIDEO_ENCODING_CONTENT_TYPES[0]
+): VideoEncodingPresetConfig[] {
+  return presets.map((preset) => ({
+    presetId: preset.id,
+    label: preset.label,
+    configuration: {
+      type: 'record',
+      video: {
+        contentType,
+        width: preset.width,
+        height: preset.height,
+        bitrate: VIDEO_ENCODING_BITRATES[preset.id],
+        framerate: preset.frameRate,
+      },
+    },
+  }));
+}
+
+export function getBrowserVideoEncodingApiSupport(
+  environment: BrowserVideoEncodingEnvironment = getCurrentBrowserVideoEncodingEnvironment()
+): VideoEncodingApiSupport {
+  return {
+    mediaRecorder: Boolean(environment.mediaRecorder),
+    mediaCapabilities: typeof environment.mediaCapabilities?.encodingInfo === 'function',
+    webCodecs: Boolean(environment.videoEncoder),
+  };
+}
+
+export function evaluateVideoEncodingReadiness(
+  apiSupport: VideoEncodingApiSupport,
+  presets: readonly VideoEncodingPresetSupport[] = VIDEO_QUALITY_PRESETS.map((preset) => getPresetSupportFromConfig(preset))
+): VideoEncodingReadiness {
+  if (!apiSupport.mediaRecorder) {
+    return {
+      status: 'unsupported',
+      label: 'Encoder unavailable',
+      detail: 'This browser cannot record or relay WebM chunks. Use a modern Chromium, Safari, or Firefox build over HTTPS.',
+      apiSupport,
+      presets: [...presets],
+    };
+  }
+
+  if (!apiSupport.mediaCapabilities) {
+    return {
+      status: 'limited',
+      label: 'Basic encoder',
+      detail: 'Recording can start, but this browser does not expose per-quality encoding checks.',
+      apiSupport,
+      presets: [...presets],
+    };
+  }
+
+  const hd = findPreset(presets, '1080p');
+  const hdSupported = hd?.supported === true;
+  const hdSmooth = hd?.smooth !== false;
+  const hdPowerEfficient = hd?.powerEfficient === true;
+  const ultraHd = findPreset(presets, '4k');
+
+  if (hdSupported && hdSmooth && hdPowerEfficient) {
+    return {
+      status: 'ready',
+      label: apiSupport.webCodecs ? 'Hardware-ready encoder' : 'Efficient encoder',
+      detail: ultraHd?.supported === true && ultraHd.smooth !== false
+        ? '1080p/30 and 4K/30 WebM encoding are advertised as smooth; 1080p is power efficient.'
+        : '1080p/30 WebM encoding is advertised as smooth and power efficient.',
+      apiSupport,
+      presets: [...presets],
+    };
+  }
+
+  if (hdSupported && hdSmooth) {
+    return {
+      status: 'ready',
+      label: '1080p encoder ready',
+      detail: '1080p/30 WebM encoding is advertised as smooth; power efficiency is not confirmed.',
+      apiSupport,
+      presets: [...presets],
+    };
+  }
+
+  const fallback = presets.find((preset) => preset.supported === true && preset.smooth !== false);
+  if (fallback) {
+    return {
+      status: 'limited',
+      label: `${fallback.label} encoder ready`,
+      detail: `Use ${fallback.label} for the most reliable recording and live relay on this browser.`,
+      apiSupport,
+      presets: [...presets],
+    };
+  }
+
+  return {
+    status: 'limited',
+    label: 'Encoder check limited',
+    detail: 'The browser recorder is available, but 1080p/30 encoding was not advertised as smooth.',
+    apiSupport,
+    presets: [...presets],
+  };
+}
+
+export function getInitialVideoEncodingReadiness(
+  environment: BrowserVideoEncodingEnvironment = getCurrentBrowserVideoEncodingEnvironment()
+): VideoEncodingReadiness {
+  const apiSupport = getBrowserVideoEncodingApiSupport(environment);
+  if (!apiSupport.mediaRecorder || !apiSupport.mediaCapabilities) {
+    return evaluateVideoEncodingReadiness(apiSupport);
+  }
+  return {
+    status: 'limited',
+    label: 'Checking encoder',
+    detail: 'Checking browser support for 720p, 1080p, and 4K WebM encoding.',
+    apiSupport,
+    presets: VIDEO_QUALITY_PRESETS.map((preset) => getPresetSupportFromConfig(preset)),
+  };
+}
+
+export async function detectBrowserVideoEncodingReadiness(
+  environment: BrowserVideoEncodingEnvironment = getCurrentBrowserVideoEncodingEnvironment(),
+  presets: readonly VideoQualityPreset[] = VIDEO_QUALITY_PRESETS
+): Promise<VideoEncodingReadiness> {
+  const apiSupport = getBrowserVideoEncodingApiSupport(environment);
+
+  if (!apiSupport.mediaRecorder || !apiSupport.mediaCapabilities || !environment.mediaCapabilities?.encodingInfo) {
+    return evaluateVideoEncodingReadiness(
+      apiSupport,
+      presets.map((preset) => getPresetSupportFromConfig(preset))
+    );
+  }
+
+  const configs = buildVideoEncodingConfigs(presets, getPreferredVideoEncodingContentType(environment));
+  const presetSupport = await Promise.all(configs.map(async ({ presetId, configuration }) => {
+    const preset = presets.find((item) => item.id === presetId);
+    if (!preset) throw new Error(`Unknown encoding preset ${presetId}`);
+
+    try {
+      const info = await environment.mediaCapabilities?.encodingInfo?.(configuration);
+      return getPresetSupportFromConfig(preset, info);
+    } catch {
+      return getPresetSupportFromConfig(preset);
+    }
+  }));
+
+  return evaluateVideoEncodingReadiness(apiSupport, presetSupport);
+}
