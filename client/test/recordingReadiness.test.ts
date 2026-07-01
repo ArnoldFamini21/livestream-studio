@@ -160,4 +160,54 @@ describe('recording readiness summary', () => {
     assert.equal(summary.canStart, true);
     assert.equal(summary.items.find((item) => item.id === 'storage')?.status, 'warning');
   });
+
+  it('includes a ready encoder check when browser encoding readiness is available', () => {
+    const summary = buildRecordingReadinessSummary({
+      ...readyOptions,
+      encodingReadiness: {
+        status: 'ready',
+        detail: '1080p/30 WebM encoding is advertised as smooth and power efficient.',
+      },
+    });
+
+    assert.equal(summary.status, 'good');
+    assert.equal(summary.canStart, true);
+    assert.deepEqual(summary.items.find((item) => item.id === 'encoding-quality'), {
+      id: 'encoding-quality',
+      label: 'Encoding quality',
+      status: 'good',
+      detail: '1080p/30 WebM encoding is advertised as smooth and power efficient.',
+      blocksStart: false,
+    });
+  });
+
+  it('warns without blocking when the browser encoder is limited', () => {
+    const summary = buildRecordingReadinessSummary({
+      ...readyOptions,
+      encodingReadiness: {
+        status: 'limited',
+        detail: 'Use 720p for the most reliable recording and live relay on this browser.',
+      },
+    });
+
+    assert.equal(summary.status, 'warning');
+    assert.equal(summary.canStart, true);
+    assert.equal(summary.blockingIssue, null);
+    assert.equal(summary.items.find((item) => item.id === 'encoding-quality')?.status, 'warning');
+  });
+
+  it('blocks recording when browser encoding is unsupported', () => {
+    const summary = buildRecordingReadinessSummary({
+      ...readyOptions,
+      encodingReadiness: {
+        status: 'unsupported',
+        detail: 'This browser cannot record or relay WebM chunks.',
+      },
+    });
+
+    assert.equal(summary.status, 'bad');
+    assert.equal(summary.canStart, false);
+    assert.equal(summary.blockingIssue, 'This browser cannot record or relay WebM chunks.');
+    assert.equal(summary.items.find((item) => item.id === 'encoding-quality')?.blocksStart, true);
+  });
 });

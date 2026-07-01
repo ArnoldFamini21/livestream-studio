@@ -1096,6 +1096,7 @@ export function StudioRoom() {
         hasAudio: liveTracks(screenStream?.getAudioTracks()).length > 0,
       },
       mediaRecorderSupported: typeof MediaRecorder !== 'undefined',
+      encodingReadiness: sessionHealth.encoding,
       persistentStorageSupported: typeof navigator !== 'undefined' && Boolean(navigator.storage?.getDirectory),
       captionsEnabled: captionsAllowed && captionsEnabled,
       markerCount: recordingMarkers.length,
@@ -1110,6 +1111,7 @@ export function StudioRoom() {
     recordingMarkers.length,
     remoteStreams,
     screenStream,
+    sessionHealth.encoding,
   ]);
   const {
     supported: captionsSupported,
