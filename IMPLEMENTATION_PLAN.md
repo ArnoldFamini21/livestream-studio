@@ -9,7 +9,7 @@
 - [x] Record as WebM (VP9/Opus) locally, then upload chunks to server via WebSocket/HTTP
 - [x] Media-server authenticated WebM upload sessions with bounded per-track chunk intake
 - [x] Client-side media-server handoff for completed local WebM tracks via bounded HTTP chunks
-- [ ] Separate isolated audio tracks (WAV) + video tracks per participant
+- [x] Separate isolated audio tracks (WAV) + video tracks per participant
 - [x] Server-side stitching with FFmpeg into final MP4 (H.264 + AAC)
 - [x] Media-server FFmpeg export command builders for MP4 stitching plus WAV/MP3 stems
 - [x] Media-server export manifest artifact for MP4/stem handoff review

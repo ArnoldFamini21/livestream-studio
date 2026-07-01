@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createRecordingAudioStemArgs,
   createRecordingExportCommands,
+  createRecordingIsolatedVideoArgs,
   createRecordingMp4Args,
   normalizeRecordingExportVideoOptions,
   sanitizeExportBasename,
@@ -27,6 +28,16 @@ const hostAudioTrack: RecordingExportTrack = {
   path: '/tmp/recordings/host-audio.webm',
   mimeType: 'audio/webm',
   hasAudio: true,
+};
+
+const hostVideoTrack: RecordingExportTrack = {
+  id: 'host-camera',
+  label: 'Host camera',
+  kind: 'video',
+  path: '/tmp/recordings/host-camera.webm',
+  mimeType: 'video/webm',
+  hasAudio: true,
+  hasVideo: true,
 };
 
 describe('recording export FFmpeg command builders', () => {
@@ -112,19 +123,46 @@ describe('recording export FFmpeg command builders', () => {
     assert.equal(mp3.args.includes('192k'), true);
   });
 
+  it('builds isolated MP4 args for participant video exports', () => {
+    const command = createRecordingIsolatedVideoArgs(hostVideoTrack, '/tmp/exports', 'Launch Demo', {
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+      videoBitsPerSecond: 6_000_000,
+    });
+
+    assert.equal(command.artifactId, 'isolated-video-host-camera');
+    assert.equal(command.outputPath, '/tmp/exports/Launch_Demo_Host_camera_video.mp4');
+    assert.equal(command.args.includes('/tmp/recordings/host-camera.webm'), true);
+    assert.equal(command.args.includes('libx264'), true);
+    assert.equal(command.args.includes('aac'), true);
+    assert.equal(command.args.includes('-map'), true);
+    assert.equal(command.args.includes('0:v:0'), true);
+    assert.equal(command.args.includes('0:a:0?'), true);
+    assert.equal(command.args.includes('scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1'), true);
+  });
+
   it('builds the full export command set with MP4 plus WAV/MP3 stems', () => {
     const commands = createRecordingExportCommands({
-      tracks: [programTrack, hostAudioTrack],
+      tracks: [programTrack, hostVideoTrack, hostAudioTrack],
       outputDirectory: '/tmp/exports',
       basename: 'Full Export',
     });
 
     assert.equal(commands.mp4.outputPath, '/tmp/exports/Full_Export.mp4');
     assert.deepEqual(
+      commands.isolatedVideos.map((command) => [command.artifactId, command.outputPath]),
+      [
+        ['isolated-video-host-camera', '/tmp/exports/Full_Export_Host_camera_video.mp4'],
+      ]
+    );
+    assert.deepEqual(
       commands.stems.map((command) => command.outputPath),
       [
         '/tmp/exports/Full_Export_Program_mix.wav',
         '/tmp/exports/Full_Export_Program_mix.mp3',
+        '/tmp/exports/Full_Export_Host_camera.wav',
+        '/tmp/exports/Full_Export_Host_camera.mp3',
         '/tmp/exports/Full_Export_Host_audio.wav',
         '/tmp/exports/Full_Export_Host_audio.mp3',
       ]
