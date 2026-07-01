@@ -21,9 +21,15 @@ export interface RecordingReadinessOptions {
   participants: RecordingParticipantReadiness[];
   screen: RecordingScreenReadiness;
   mediaRecorderSupported: boolean;
+  encodingReadiness?: RecordingEncodingReadiness;
   persistentStorageSupported: boolean;
   captionsEnabled: boolean;
   markerCount: number;
+}
+
+export interface RecordingEncodingReadiness {
+  status: 'ready' | 'limited' | 'unsupported';
+  detail: string;
 }
 
 export interface RecordingReadinessTrack {
@@ -61,6 +67,37 @@ function getReadinessStatus(items: RecordingReadinessItem[]): RecordingReadiness
   if (items.some((item) => item.blocksStart && item.status === 'bad')) return 'bad';
   if (items.some((item) => item.status !== 'good')) return 'warning';
   return 'good';
+}
+
+function buildEncodingReadinessItem(encodingReadiness: RecordingEncodingReadiness | undefined): RecordingReadinessItem | null {
+  if (!encodingReadiness) return null;
+
+  switch (encodingReadiness.status) {
+    case 'ready':
+      return {
+        id: 'encoding-quality',
+        label: 'Encoding quality',
+        status: 'good',
+        detail: encodingReadiness.detail,
+        blocksStart: false,
+      };
+    case 'limited':
+      return {
+        id: 'encoding-quality',
+        label: 'Encoding quality',
+        status: 'warning',
+        detail: encodingReadiness.detail,
+        blocksStart: false,
+      };
+    case 'unsupported':
+      return {
+        id: 'encoding-quality',
+        label: 'Encoding quality',
+        status: 'bad',
+        detail: encodingReadiness.detail,
+        blocksStart: true,
+      };
+  }
 }
 
 function buildExpectedTracks(options: RecordingReadinessOptions): RecordingReadinessTrack[] {
@@ -126,6 +163,7 @@ export function buildRecordingReadinessSummary(options: RecordingReadinessOption
   const missingRemoteStreams = onStageParticipants.filter((participant) => !participant.isLocal && !participant.hasStream);
   const missingMedia = onStageParticipants.filter((participant) => participant.hasStream && !participant.hasAudio && !participant.hasVideo);
   const recordingKinds = new Set(expectedTracks.map((track) => track.kind));
+  const encodingItem = buildEncodingReadinessItem(options.encodingReadiness);
 
   const items: RecordingReadinessItem[] = [
     {
@@ -137,6 +175,7 @@ export function buildRecordingReadinessSummary(options: RecordingReadinessOption
         : 'This browser does not support MediaRecorder.',
       blocksStart: true,
     },
+    ...(encodingItem ? [encodingItem] : []),
     {
       id: 'isolated-tracks',
       label: 'Isolated tracks',
