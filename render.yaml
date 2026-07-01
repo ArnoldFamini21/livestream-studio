@@ -10,6 +10,10 @@ services:
         value: production
       - key: CLIENT_URLS
         value: https://studio.arnoldfamini.com
+      - key: DATABASE_URL
+        sync: false
+      - key: PGSSLMODE
+        value: require
       - key: LIVE_STREAM_TOKEN_SECRET
         sync: false
       - key: OPENAI_API_KEY

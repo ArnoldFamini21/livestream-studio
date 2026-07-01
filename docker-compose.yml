@@ -47,6 +47,9 @@ services:
       NODE_ENV: development
       PORT: 3001
       CLIENT_URLS: ${CLIENT_URLS:-http://localhost:5173}
+      DATABASE_URL: ${DATABASE_URL:-}
+      PGSSLMODE: ${PGSSLMODE:-disable}
+      ROOM_PERSISTENCE_DISABLED: ${ROOM_PERSISTENCE_DISABLED:-false}
       LIVE_STREAM_TOKEN_SECRET: *live-secret
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}
@@ -64,6 +67,24 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    profiles:
+      - persistence
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-studio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}
+      POSTGRES_DB: ${POSTGRES_DB:-livestream_studio}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - studio-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-studio} -d $${POSTGRES_DB:-livestream_studio}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   media-server:
     build:
@@ -135,5 +156,6 @@ volumes:
   studio-server-node-modules:
   studio-media-node-modules:
   studio-shared-node-modules:
+  studio-postgres-data:
   studio-prometheus-data:
   studio-grafana-data:

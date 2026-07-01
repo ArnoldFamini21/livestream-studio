@@ -3,19 +3,56 @@ import cors from 'cors';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { buildServiceHealthPayload } from '@studio/shared';
-import { setupSignalingServer } from './services/signaling.js';
+import {
+  configureRoomSnapshotStore,
+  restoreRoomSnapshots,
+  setupSignalingServer,
+} from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
 import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
+import {
+  createRoomSnapshotStoreFromEnv,
+  type RoomSnapshotStore,
+} from './services/roomPersistence.js';
 
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
+let roomSnapshotStore: RoomSnapshotStore | null = null;
+let restoredRoomSnapshotCount = 0;
 const healthPayload = () => ({
   ...buildServiceHealthPayload('signaling-server', process.env),
   ice: buildIceConfigStatusFromEnv(process.env),
+  roomPersistence: {
+    configured: Boolean(roomSnapshotStore),
+    restoredRooms: restoredRoomSnapshotCount,
+  },
 });
+
+async function initializeRoomPersistence() {
+  const store = createRoomSnapshotStoreFromEnv(process.env);
+  if (!store) {
+    configureRoomSnapshotStore(null);
+    return;
+  }
+
+  try {
+    await store.init();
+    const snapshots = await store.loadRoomSnapshots();
+    restoredRoomSnapshotCount = restoreRoomSnapshots(snapshots);
+    roomSnapshotStore = store;
+    configureRoomSnapshotStore(store);
+    console.log(`Room persistence enabled; restored ${restoredRoomSnapshotCount} room snapshot(s)`);
+  } catch (err) {
+    configureRoomSnapshotStore(null);
+    await store.close().catch(() => {});
+    console.warn('Room persistence disabled after initialization failure:', err instanceof Error ? err.message : err);
+  }
+}
+
+await initializeRoomPersistence();
 
 // Allowed origins for CORS (HTTP) and WebSocket origin checking.
 // CLIENT_URL and CLIENT_URLS accept one URL or a comma-separated list.
@@ -259,7 +296,14 @@ function gracefulShutdown(signal: string) {
     // Close the HTTP server (stops accepting new requests, waits for in-flight)
     server.close(() => {
       console.log('HTTP server closed.');
-      process.exit(0);
+      const persistenceClosed = roomSnapshotStore
+        ? roomSnapshotStore.close()
+        : Promise.resolve();
+      persistenceClosed
+        .catch((err) => {
+          console.warn('Room persistence close failed:', err instanceof Error ? err.message : err);
+        })
+        .finally(() => process.exit(0));
     });
   });
 

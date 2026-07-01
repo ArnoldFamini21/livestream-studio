@@ -41,10 +41,14 @@ import {
   normalizeFacebookLiveVideoId,
   type FacebookLiveComment,
 } from './facebookLiveComments.js';
+import {
+  buildPersistentRoomSnapshot,
+  type RoomSnapshot,
+  type RoomSnapshotStore,
+} from './roomPersistence.js';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
 
-// In-memory store (replace with Redis/PostgreSQL later)
 interface RoomState {
   room: Room;
   participants: Map<string, { participant: Participant; ws: WebSocket; joinSessionId?: string }>;
@@ -156,6 +160,7 @@ const wsToParticipant = new Map<WebSocket, { roomId: string; participantId: stri
 const endingTimers = new Map<string, NodeJS.Timeout>();
 // IP -> Set<roomId> of rooms this IP created and that are still active.
 const roomsByCreatorIp = new Map<string, Set<string>>();
+let roomSnapshotStore: RoomSnapshotStore | null = null;
 
 // Stale room cleanup: never-joined rooms expire after 30 min, joined rooms after 24h.
 const staleRoomCleanupTimer = setInterval(() => {
@@ -264,6 +269,87 @@ export class RoomQuotaError extends Error {
   }
 }
 
+function createEmptyRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
+  return {
+    room: {
+      ...snapshot.room,
+      hostId: '',
+      coHostIds: [],
+    },
+    participants: new Map(),
+    bannedJoinSessionIds: new Set(),
+    chatMessages: new Map(),
+    chatReactions: new Map(),
+    qaQuestions: new Map(),
+    qaVotes: new Map(),
+    polls: new Map(),
+    pollVotes: new Map(),
+    externalChatConnections: new Map(),
+    coHostInviteTokens: new Map(),
+    hostToken: snapshot.hostToken,
+    creatorIp: snapshot.creatorIp,
+    hasBeenJoined: snapshot.hasBeenJoined,
+    ...(snapshot.passwordHash ? { passwordHash: snapshot.passwordHash } : {}),
+    ...(snapshot.passwordSalt ? { passwordSalt: snapshot.passwordSalt } : {}),
+  };
+}
+
+function registerRoomState(roomState: RoomState): void {
+  rooms.set(roomState.room.id, roomState);
+  let ipSet = roomsByCreatorIp.get(roomState.creatorIp);
+  if (!ipSet) {
+    ipSet = new Set();
+    roomsByCreatorIp.set(roomState.creatorIp, ipSet);
+  }
+  ipSet.add(roomState.room.id);
+}
+
+function buildRoomSnapshot(roomState: RoomState): RoomSnapshot {
+  return buildPersistentRoomSnapshot({
+    room: roomState.room,
+    hostToken: roomState.hostToken,
+    creatorIp: roomState.creatorIp,
+    hasBeenJoined: roomState.hasBeenJoined,
+    ...(roomState.passwordHash ? { passwordHash: roomState.passwordHash } : {}),
+    ...(roomState.passwordSalt ? { passwordSalt: roomState.passwordSalt } : {}),
+  });
+}
+
+function persistRoomSnapshot(roomState: RoomState): void {
+  const store = roomSnapshotStore;
+  if (!store) return;
+  let snapshot: RoomSnapshot;
+  try {
+    snapshot = buildRoomSnapshot(roomState);
+  } catch (err) {
+    console.warn(`Skipped room snapshot for ${roomState.room.id}:`, err instanceof Error ? err.message : err);
+    return;
+  }
+  store.saveRoomSnapshot(snapshot).catch((err) => {
+    console.warn(`Room snapshot save failed for ${roomState.room.id}:`, err instanceof Error ? err.message : err);
+  });
+}
+
+function deleteRoomSnapshot(roomId: string): void {
+  roomSnapshotStore?.deleteRoomSnapshot(roomId).catch((err) => {
+    console.warn(`Room snapshot delete failed for ${roomId}:`, err instanceof Error ? err.message : err);
+  });
+}
+
+export function configureRoomSnapshotStore(store: RoomSnapshotStore | null): void {
+  roomSnapshotStore = store;
+}
+
+export function restoreRoomSnapshots(snapshots: RoomSnapshot[]): number {
+  let restored = 0;
+  for (const snapshot of snapshots) {
+    if (rooms.has(snapshot.room.id)) continue;
+    registerRoomState(createEmptyRoomStateFromSnapshot(snapshot));
+    restored++;
+  }
+  return restored;
+}
+
 export function recoverHostAccess(roomId: string, creatorIp: string, nowMs = Date.now()): HostAccessRecoveryResult {
   const roomState = rooms.get(roomId);
   if (!roomState) return { status: 'not_found' };
@@ -301,6 +387,7 @@ function deleteRoom(roomId: string) {
     if (ipSet.size === 0) roomsByCreatorIp.delete(state.creatorIp);
   }
   rooms.delete(roomId);
+  deleteRoomSnapshot(roomId);
 }
 
 function cancelEmptyRoomDeletion(roomId: string, roomState: RoomState) {
@@ -360,6 +447,7 @@ function clearLiveStreamStateForParticipant(roomId: string, roomState: RoomState
   roomState.liveStreamStartedAt = undefined;
   roomState.liveStreamStartedBy = undefined;
   updateRoomActivityStatus(roomState);
+  persistRoomSnapshot(roomState);
 
   broadcastToRoom(roomId, {
     type: 'live-stream-state-changed',
@@ -441,7 +529,7 @@ export function createRoom(
   const hostToken = nanoid(32);
   const passwordVerifier = options.password ? createPasswordVerifier(options.password) : {};
 
-  rooms.set(room.id, {
+  const roomState: RoomState = {
     room,
     participants: new Map(),
     bannedJoinSessionIds: new Set(),
@@ -457,14 +545,9 @@ export function createRoom(
     ...passwordVerifier,
     creatorIp: options.creatorIp,
     hasBeenJoined: false,
-  });
-
-  let ipSet = roomsByCreatorIp.get(options.creatorIp);
-  if (!ipSet) {
-    ipSet = new Set();
-    roomsByCreatorIp.set(options.creatorIp, ipSet);
-  }
-  ipSet.add(room.id);
+  };
+  registerRoomState(roomState);
+  persistRoomSnapshot(roomState);
 
   return { room, hostToken };
 }
@@ -884,6 +967,7 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   roomState.participants.set(participant.id, { participant, ws, joinSessionId });
   wsToParticipant.set(ws, { roomId, participantId: participant.id });
   roomState.hasBeenJoined = true;
+  persistRoomSnapshot(roomState);
 
   // Send room-joined to the new participant (include ALL participants for awareness)
   const allParticipants = Array.from(roomState.participants.values())
@@ -1171,6 +1255,7 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
     roomState.recordingStartedAt = undefined;
   }
   updateRoomActivityStatus(roomState);
+  persistRoomSnapshot(roomState);
 
   broadcastToRoom(mapping.roomId, {
     type: 'recording-state-changed',
@@ -1217,6 +1302,7 @@ function handleLiveStreamStateChange(ws: WebSocket, payload: LiveStreamStatePayl
     roomState.liveStreamStartedBy = undefined;
   }
   updateRoomActivityStatus(roomState);
+  persistRoomSnapshot(roomState);
 
   broadcastToRoom(mapping.roomId, {
     type: 'live-stream-state-changed',
