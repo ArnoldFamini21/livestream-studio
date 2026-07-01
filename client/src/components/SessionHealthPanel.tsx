@@ -21,6 +21,14 @@ function statusLabel(status: HealthStatus): string {
   }
 }
 
+function encodingMetricLabel(status: SessionHealthSummary['encoding']['status']): string {
+  switch (status) {
+    case 'ready': return 'Ready';
+    case 'limited': return 'Limited';
+    case 'unsupported': return 'Blocked';
+  }
+}
+
 function formatBytes(bytes: number | null): string {
   if (bytes === null) return 'Unknown';
   if (bytes < 1024) return `${bytes} B`;
@@ -98,6 +106,10 @@ export function SessionHealthPanel({ summary, onClose }: SessionHealthPanelProps
           <div style={styles.metric}>
             <span style={styles.metricLabel}>Camera</span>
             <span style={styles.metricValue}>{summary.media.videoTrack ? 'Ready' : 'Missing'}</span>
+          </div>
+          <div style={styles.metric}>
+            <span style={styles.metricLabel}>Encoder</span>
+            <span style={styles.metricValue}>{encodingMetricLabel(summary.encoding.status)}</span>
           </div>
         </div>
 

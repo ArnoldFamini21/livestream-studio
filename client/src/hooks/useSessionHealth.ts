@@ -1,4 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import {
+  detectBrowserVideoEncodingReadiness,
+  getInitialVideoEncodingReadiness,
+  type VideoEncodingReadiness,
+  type VideoEncodingReadinessStatus,
+} from '../utils/videoEncodingCapabilities.ts';
 
 export type HealthStatus = 'good' | 'warning' | 'bad';
 
@@ -32,6 +38,7 @@ export interface SessionHealthSummary {
     videoLabel: string;
     audioLabel: string;
   };
+  encoding: VideoEncodingReadiness;
 }
 
 interface NetworkInformationLike extends EventTarget {
@@ -101,6 +108,14 @@ function labelFromStatus(status: HealthStatus): string {
   }
 }
 
+function healthStatusFromEncoding(status: VideoEncodingReadinessStatus): HealthStatus {
+  switch (status) {
+    case 'ready': return 'good';
+    case 'limited': return 'warning';
+    case 'unsupported': return 'bad';
+  }
+}
+
 export function useSessionHealth({
   localStream,
   connected,
@@ -118,6 +133,7 @@ export function useSessionHealth({
     quota: null,
     percentUsed: null,
   });
+  const [encoding, setEncoding] = useState<VideoEncodingReadiness>(() => getInitialVideoEncodingReadiness());
 
   useEffect(() => {
     const update = () => setNetwork(getNetworkInfo());
@@ -158,6 +174,20 @@ export function useSessionHealth({
     };
   }, [isRecording]);
 
+  useEffect(() => {
+    let cancelled = false;
+    detectBrowserVideoEncodingReadiness()
+      .then((readiness) => {
+        if (!cancelled) setEncoding(readiness);
+      })
+      .catch(() => {
+        if (!cancelled) setEncoding(getInitialVideoEncodingReadiness());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return useMemo(() => {
     const audioTrack = localStream?.getAudioTracks()[0] ?? null;
     const videoTrack = localStream?.getVideoTracks()[0] ?? null;
@@ -171,6 +201,13 @@ export function useSessionHealth({
       detail: mediaApiReady && typeof MediaRecorder !== 'undefined'
         ? 'Camera, microphone, and recording APIs are available.'
         : 'Use a modern browser on HTTPS or localhost.',
+    });
+
+    checks.push({
+      id: 'encoding',
+      label: 'Browser encoder',
+      status: healthStatusFromEncoding(encoding.status),
+      detail: encoding.detail,
     });
 
     checks.push({
@@ -277,6 +314,7 @@ export function useSessionHealth({
         audioLabel: formatAudioLabel(audioTrack),
         videoLabel: formatVideoLabel(videoTrack),
       },
+      encoding,
     };
-  }, [audioDeviceCount, connected, isLive, isRecording, localStream, mediaError, network, participantCount, storage, videoDeviceCount]);
+  }, [audioDeviceCount, connected, encoding, isLive, isRecording, localStream, mediaError, network, participantCount, storage, videoDeviceCount]);
 }
