@@ -38,12 +38,12 @@
 - [x] Click-to-spotlight: click a participant to make them the main feed
 
 ### 2B. Scene System (OBS-style)
-- [ ] Scene manager: create/name/reorder scenes
-- [ ] Each scene has its own layout + overlay configuration
-- [ ] One-click scene switching with crossfade transition
-- [ ] "Starting Soon", "BRB", "Ending" built-in scene templates
+- [x] Scene manager: create/name/reorder scenes
+- [x] Each scene has its own layout + overlay configuration
+- [x] One-click scene switching with crossfade transition
+- [x] "Starting Soon", "BRB", "Ending" built-in scene templates
 - [x] One-click production scene pack for a full show flow
-- [ ] Scene preview thumbnails in the sidebar
+- [x] Scene preview thumbnails in the sidebar
 
 ---
 
