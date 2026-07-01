@@ -18,6 +18,43 @@ export const SCHEDULED_GUEST_EARLY_JOIN_MS = 15 * 60 * 1000;
 export const ROOM_NOT_OPEN_ERROR_CODE = 'ROOM_NOT_OPEN';
 export const SCHEDULED_GUEST_ACCESS_MESSAGE = 'This studio is scheduled. Guest access opens 15 minutes before the start time.';
 
+export interface ServiceHealthPayload {
+  status: 'ok';
+  service: string;
+  version?: string;
+  commit?: string;
+  environment?: string;
+}
+
+function firstNonEmptyEnv(env: Record<string, string | undefined>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = env[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function normalizeCommit(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return /^[a-f0-9]{7,40}$/i.test(value) ? value : undefined;
+}
+
+export function buildServiceHealthPayload(
+  service: string,
+  env: Record<string, string | undefined> = {}
+): ServiceHealthPayload {
+  const version = firstNonEmptyEnv(env, ['npm_package_version', 'APP_VERSION']);
+  const commit = normalizeCommit(firstNonEmptyEnv(env, ['RENDER_GIT_COMMIT', 'GIT_COMMIT', 'SOURCE_VERSION', 'GITHUB_SHA']));
+  const environment = firstNonEmptyEnv(env, ['NODE_ENV']);
+  return {
+    status: 'ok',
+    service,
+    ...(version ? { version } : {}),
+    ...(commit ? { commit } : {}),
+    ...(environment ? { environment } : {}),
+  };
+}
+
 export function getScheduledGuestOpenAtMs(scheduledFor: string | null | undefined): number | null {
   if (!scheduledFor) return null;
   const scheduledAt = Date.parse(scheduledFor);

@@ -229,6 +229,9 @@
 - [x] Docker Compose for local dev
 - [ ] Kubernetes manifests for production
 - [ ] CDN for static assets
+- [x] GitHub Actions builds client, signaling server, and media-server workspaces
+- [x] Optional GitHub Actions deploy hooks for Render signaling and media-server services
+- [x] Production smoke command verifies Hostinger client plus Render service health metadata
 - [x] Configurable STUN/TURN ICE config endpoint for WebRTC connectivity
 - [ ] Global TURN servers for reliable connectivity (production provider credentials)
 - [x] Prometheus-compatible `/metrics` endpoints for signaling and RTMP relay health

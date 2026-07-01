@@ -12,6 +12,7 @@ import type {
   RtmpRelayStartPayload,
   LiveStreamTokenClaims,
 } from '@studio/shared';
+import { buildServiceHealthPayload } from '@studio/shared';
 import { getLiveStreamTokenSecret, verifyLiveStreamToken } from './auth.js';
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
 import { buildAllowedOrigins, isAllowedOrigin, normalizeOrigin } from './origins.js';
@@ -42,6 +43,7 @@ const SHUTDOWN_TIMEOUT_MS = 5_000;
 const MAX_DESTINATION_RESTARTS = 2;
 const DESTINATION_RESTART_DELAY_MS = 1_500;
 const isProduction = process.env.NODE_ENV === 'production';
+const healthPayload = () => buildServiceHealthPayload('media-server', process.env);
 
 interface RelayProcess {
   destination: RtmpRelayDestination;
@@ -547,7 +549,7 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
 async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'media-server' }));
+    res.end(JSON.stringify(healthPayload()));
     return;
   }
 

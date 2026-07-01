@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install dependencies
         run: npm ci
@@ -40,6 +40,23 @@ jobs:
           VITE_MEDIA_WS_URL: wss://livestream-studio-media-server.onrender.com/rtmp
           VITE_MEDIA_HTTP_URL: https://livestream-studio-media-server.onrender.com
           VITE_INVITE_BASE_URL: https://studio.arnoldfamini.com
+
+      - name: Trigger Render deploys
+        env:
+          RENDER_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_SERVER_DEPLOY_HOOK_URL }}
+          RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
+            curl --fail --silent --show-error --request POST "$RENDER_SERVER_DEPLOY_HOOK_URL"
+          else
+            echo "::notice::RENDER_SERVER_DEPLOY_HOOK_URL is not configured; skipping signaling server deploy trigger."
+          fi
+
+          if [ -n "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
+            curl --fail --silent --show-error --request POST "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL"
+          else
+            echo "::notice::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is not configured; skipping media-server deploy trigger."
+          fi
 
       - name: Deploy to deploy branch
         uses: peaceiris/actions-gh-pages@v4
