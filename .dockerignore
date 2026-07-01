@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+**/node_modules
+dist
+**/dist
+.vite
+**/.vite
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.docker.example
+.DS_Store
+output

@@ -1,0 +1,94 @@
+name: livestream-studio
+
+x-workspace-volumes: &workspace-volumes
+  - .:/app
+  - studio-root-node-modules:/app/node_modules
+  - studio-client-node-modules:/app/client/node_modules
+  - studio-server-node-modules:/app/server/node_modules
+  - studio-media-node-modules:/app/media-server/node_modules
+  - studio-shared-node-modules:/app/shared/node_modules
+
+x-live-secret: &live-secret ${LIVE_STREAM_TOKEN_SECRET:-local-development-live-stream-token-secret}
+
+services:
+  client:
+    build:
+      context: .
+      target: dev
+    command: npm run dev --workspace=client -- --host 0.0.0.0
+    ports:
+      - "${CLIENT_PORT:-5173}:5173"
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:3001}
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:3001/ws}
+      VITE_MEDIA_WS_URL: ${VITE_MEDIA_WS_URL:-ws://localhost:3002/rtmp}
+      VITE_INVITE_BASE_URL: ${VITE_INVITE_BASE_URL:-http://localhost:5173}
+      VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+      CHOKIDAR_USEPOLLING: ${CHOKIDAR_USEPOLLING:-true}
+    volumes: *workspace-volumes
+    depends_on:
+      - server
+      - media-server
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:5173/').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  server:
+    build:
+      context: .
+      target: dev
+    command: npm run dev --workspace=server
+    ports:
+      - "${SERVER_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      CLIENT_URLS: ${CLIENT_URLS:-http://localhost:5173}
+      LIVE_STREAM_TOKEN_SECRET: *live-secret
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}
+      ICE_TRANSPORT_POLICY: ${ICE_TRANSPORT_POLICY:-all}
+      ICE_SERVERS_JSON: ${ICE_SERVERS_JSON:-}
+      STUN_URLS: ${STUN_URLS:-}
+      TURN_URLS: ${TURN_URLS:-}
+      TURN_USERNAME: ${TURN_USERNAME:-}
+      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
+      TURN_CREDENTIAL_TYPE: ${TURN_CREDENTIAL_TYPE:-}
+    volumes: *workspace-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  media-server:
+    build:
+      context: .
+      target: dev
+    command: npm run dev --workspace=media-server
+    ports:
+      - "${MEDIA_SERVER_PORT:-3002}:3002"
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+      CLIENT_URLS: ${CLIENT_URLS:-http://localhost:5173}
+      LIVE_STREAM_TOKEN_SECRET: *live-secret
+      FFMPEG_PATH: ${FFMPEG_PATH:-}
+    volumes: *workspace-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3002/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  studio-root-node-modules:
+  studio-client-node-modules:
+  studio-server-node-modules:
+  studio-media-node-modules:
+  studio-shared-node-modules:
