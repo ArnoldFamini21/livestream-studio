@@ -8,6 +8,7 @@ import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
 import type { WidgetOverlayData } from '../components/WidgetOverlay.tsx';
 import { buildLowerThirdCanvasFont, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
+import { createCompositorFrameTarget, type CompositorFrameTarget } from '../utils/compositorFrameTarget.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { getLogoCanvasRect } from '../utils/logoPosition.ts';
 import type { ActiveStreamScreen } from '../utils/streamScreens.ts';
@@ -1129,6 +1130,7 @@ export function useCompositor({
   const logoImageRef = useRef<HTMLImageElement | null>(null);
   const backgroundImageRef = useRef<HTMLImageElement | null>(null);
   const activeMediaImageRef = useRef<HTMLImageElement | null>(null);
+  const frameTargetRef = useRef<CompositorFrameTarget | null>(null);
 
   useEffect(() => {
     logoImageRef.current = null;
@@ -1192,6 +1194,7 @@ export function useCompositor({
     canvas.width = 1920;
     canvas.height = 1080;
     canvasRef.current = canvas;
+    frameTargetRef.current = createCompositorFrameTarget(canvas, { width: 1920, height: 1080 });
     
     // Capture the canvas video stream at 30 fps
     try {
@@ -1202,12 +1205,15 @@ export function useCompositor({
 
     return () => {
       cancelAnimationFrame(rAF.current);
+      frameTargetRef.current?.dispose();
+      frameTargetRef.current = null;
     };
   }, []);
 
   const drawLoop = useCallback(() => {
     if (!canvasRef.current || !containerRef.current) return;
-    const ctx = canvasRef.current.getContext('2d');
+    const target = frameTargetRef.current;
+    const ctx = target?.context || canvasRef.current.getContext('2d');
     if (!ctx) return;
     const backgroundVideo = containerRef.current.querySelector('.studio-stage-background-video') as HTMLVideoElement | null;
 
@@ -1215,6 +1221,7 @@ export function useCompositor({
     if (streamScreen) {
       drawStageBackground(ctx, streamScreen.background, backgroundImageRef.current);
       drawStreamScreen(ctx, streamScreen, logoImageRef.current, Date.now());
+      target?.commit();
       rAF.current = requestAnimationFrame(drawLoop);
       return;
     }
@@ -1223,6 +1230,7 @@ export function useCompositor({
 
     const containerBounds = containerRef.current.getBoundingClientRect();
     if (containerBounds.width === 0 || containerBounds.height === 0) {
+      target?.commit();
       rAF.current = requestAnimationFrame(drawLoop);
       return;
     }
@@ -1379,6 +1387,7 @@ export function useCompositor({
       drawBroadcastComment(ctx, highlightedComment, Math.max(reservedBottom, 96));
     }
     drawBroadcastReactions(ctx, floatingReactions, Date.now());
+    target?.commit();
 
     // Loop
     rAF.current = requestAnimationFrame(drawLoop);
