@@ -1,4 +1,4 @@
-import http from 'node:http';
+import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
@@ -11,8 +11,13 @@ import type {
 } from '@studio/shared';
 import { getLiveStreamTokenSecret, verifyLiveStreamToken } from './auth.js';
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
-import { buildAllowedOrigins, isAllowedOrigin } from './origins.js';
+import { buildAllowedOrigins, isAllowedOrigin, normalizeOrigin } from './origins.js';
 import { parseControlMessage } from './protocol.js';
+import {
+  MAX_RECORDING_UPLOAD_CHUNK_BYTES,
+  RecordingUploadError,
+  RecordingUploadStore,
+} from './recordingUpload.js';
 import {
   createFfmpegArgs,
   hasRemainingRelayWork,
@@ -50,6 +55,7 @@ interface RelaySession {
 
 const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
 const sessions = new Map<WebSocket, RelaySession>();
+const recordingUploads = new RecordingUploadStore();
 
 function sendJson(ws: WebSocket, message: RtmpRelayServerMessage) {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -265,7 +271,190 @@ function handleBinaryChunk(ws: WebSocket, session: RelaySession, data: RawData) 
   }
 }
 
-const server = http.createServer((req, res) => {
+function writeJson(res: ServerResponse, statusCode: number, payload: unknown) {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+}
+
+function getRequestOrigin(req: IncomingMessage): string | undefined {
+  const origin = req.headers.origin;
+  return Array.isArray(origin) ? origin[0] : origin;
+}
+
+function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): boolean {
+  const origin = getRequestOrigin(req);
+  if (!isAllowedOrigin(origin, { allowedOrigins, production: isProduction })) return false;
+  const normalized = origin ? normalizeOrigin(origin) : null;
+  if (normalized) {
+    res.setHeader('Access-Control-Allow-Origin', normalized);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type');
+  res.setHeader('Access-Control-Max-Age', '600');
+  return true;
+}
+
+function getBearerToken(req: IncomingMessage): string {
+  const authorization = req.headers.authorization;
+  const header = Array.isArray(authorization) ? authorization[0] : authorization;
+  const match = header?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || '';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function authenticateRecordingUpload(req: IncomingMessage, roomId: string, bodyToken?: unknown) {
+  const secret = getLiveStreamTokenSecret();
+  if (!secret) {
+    throw new RecordingUploadError(503, 'LIVE_STREAM_NOT_CONFIGURED', 'Recording uploads are not configured on this server');
+  }
+  const token = getBearerToken(req) || (typeof bodyToken === 'string' ? bodyToken.trim() : '');
+  if (!token) {
+    throw new RecordingUploadError(401, 'UNAUTHORIZED', 'Recording upload token is required');
+  }
+  let claims: LiveStreamTokenClaims;
+  try {
+    claims = verifyLiveStreamToken(token, secret);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Invalid recording upload token';
+    throw new RecordingUploadError(401, 'UNAUTHORIZED', message);
+  }
+  if (claims.roomId !== roomId) {
+    throw new RecordingUploadError(403, 'ROOM_TOKEN_MISMATCH', 'Recording upload token does not match this room');
+  }
+  return claims;
+}
+
+async function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const contentLength = Number(req.headers['content-length'] || 0);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new RecordingUploadError(413, 'REQUEST_TOO_LARGE', 'Request body is too large');
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) {
+      throw new RecordingUploadError(413, 'REQUEST_TOO_LARGE', 'Request body is too large');
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const body = await readRequestBody(req, 32 * 1024);
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch {
+    throw new RecordingUploadError(400, 'INVALID_JSON', 'Request body must be valid JSON');
+  }
+}
+
+function parseNonNegativeInteger(value: string | null, label: string, fallback?: number): number {
+  if (value === null || value === '') {
+    if (fallback !== undefined) return fallback;
+    throw new RecordingUploadError(400, 'INVALID_RECORDING_CHUNK', `${label} is required`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new RecordingUploadError(400, 'INVALID_RECORDING_CHUNK', `${label} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function isFinalChunk(value: string | null): boolean {
+  return value === '1' || value === 'true';
+}
+
+async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  if (!url.pathname.startsWith('/recordings/uploads')) return false;
+
+  if (!applyCorsHeaders(req, res)) {
+    writeJson(res, 403, { error: 'Forbidden: origin not allowed' });
+    return true;
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  try {
+    if (url.pathname === '/recordings/uploads' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!isRecord(body) || typeof body.roomId !== 'string') {
+        throw new RecordingUploadError(400, 'INVALID_RECORDING_UPLOAD', 'Invalid recording upload request');
+      }
+      const roomId = body.roomId;
+      authenticateRecordingUpload(req, roomId, isRecord(body) ? body.token : undefined);
+      const session = await recordingUploads.createSession(body);
+      writeJson(res, 201, session);
+      return true;
+    }
+
+    const chunkMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)\/tracks\/([^/]+)\/chunks$/);
+    if (chunkMatch && req.method === 'POST') {
+      const [, uploadId, trackId] = chunkMatch;
+      const session = recordingUploads.getSession(uploadId);
+      authenticateRecordingUpload(req, session.roomId);
+      const data = await readRequestBody(req, MAX_RECORDING_UPLOAD_CHUNK_BYTES);
+      const response = await recordingUploads.appendChunk({
+        uploadId,
+        trackId,
+        sequence: parseNonNegativeInteger(url.searchParams.get('sequence'), 'sequence'),
+        offset: url.searchParams.has('offset')
+          ? parseNonNegativeInteger(url.searchParams.get('offset'), 'offset')
+          : undefined,
+        final: isFinalChunk(url.searchParams.get('final')),
+        data,
+      });
+      writeJson(res, 200, response);
+      return true;
+    }
+
+    const completeMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)\/complete$/);
+    if (completeMatch && req.method === 'POST') {
+      const [, uploadId] = completeMatch;
+      const session = recordingUploads.getSession(uploadId);
+      authenticateRecordingUpload(req, session.roomId);
+      writeJson(res, 200, recordingUploads.completeSession(uploadId));
+      return true;
+    }
+
+    const sessionMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)$/);
+    if (sessionMatch && (req.method === 'GET' || req.method === 'DELETE')) {
+      const [, uploadId] = sessionMatch;
+      const session = recordingUploads.getSession(uploadId);
+      authenticateRecordingUpload(req, session.roomId);
+      if (req.method === 'DELETE') {
+        await recordingUploads.deleteSession(uploadId);
+        writeJson(res, 200, { uploadId, deleted: true });
+      } else {
+        writeJson(res, 200, recordingUploads.getStatus(uploadId));
+      }
+      return true;
+    }
+
+    writeJson(res, 404, { error: 'Recording upload route not found' });
+    return true;
+  } catch (err) {
+    if (err instanceof RecordingUploadError) {
+      writeJson(res, err.statusCode, { error: err.message, code: err.code });
+      return true;
+    }
+    console.error('Recording upload request failed:', err);
+    writeJson(res, 500, { error: 'Recording upload failed', code: 'RECORDING_UPLOAD_FAILED' });
+    return true;
+  }
+}
+
+async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'media-server' }));
@@ -281,8 +470,18 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not found' }));
+  const url = new URL(req.url || '/', 'http://media-server.local');
+  if (await handleRecordingUploadRequest(req, res, url)) return;
+
+  writeJson(res, 404, { error: 'Not found' });
+}
+
+const server = http.createServer((req, res) => {
+  handleHttpRequest(req, res).catch((err) => {
+    console.error('Media server request failed:', err);
+    if (!res.headersSent) writeJson(res, 500, { error: 'Internal server error' });
+    else res.end();
+  });
 });
 
 const wss = new WebSocketServer({
