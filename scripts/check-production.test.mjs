@@ -5,6 +5,7 @@ import {
   evaluateClientCacheHeaders,
   evaluateHostAccessCreateResponse,
   normalizeProductionCheckScope,
+  parseCurlHeaderText,
 } from './check-production.mjs';
 
 test('normalizes production check scopes', () => {
@@ -40,6 +41,23 @@ test('rejects weak client cache headers', () => {
   assert.match(result.errors.join('\n'), /at least one year/);
   assert.match(result.errors.join('\n'), /immutable/);
   assert.match(result.errors.join('\n'), /Expires: 0/);
+});
+
+test('parses the final curl response header block after redirects', () => {
+  const response = parseCurlHeaderText([
+    'HTTP/2 301',
+    'location: https://studio.example.com/',
+    '',
+    'HTTP/2 200',
+    'cache-control: public, max-age=31536000, immutable',
+    'expires: Wed, 08 Jul 2026 22:43:28 GMT',
+    '',
+  ].join('\r\n'));
+
+  assert.equal(response.ok, true);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  assert.equal(response.headers.get('expires'), 'Wed, 08 Jul 2026 22:43:28 GMT');
 });
 
 test('accepts create studio responses with private host access', () => {

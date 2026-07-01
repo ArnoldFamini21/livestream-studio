@@ -1,5 +1,10 @@
 #!/usr/bin/env node
+import { execFile as execFileCallback } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 const DEFAULT_CLIENT_URL = 'https://studio.arnoldfamini.com';
 const DEFAULT_API_URL = 'https://livestream-studio-server.onrender.com';
@@ -15,6 +20,7 @@ const requireProductionTurn = parseBoolean(process.env.PRODUCTION_REQUIRE_TURN |
 const requireClientCache = parseBoolean(process.env.PRODUCTION_REQUIRE_CLIENT_CACHE || process.env.REQUIRE_CLIENT_CACHE);
 const requireHostAccessContract = parseBoolean(process.env.PRODUCTION_REQUIRE_HOST_ACCESS || process.env.REQUIRE_HOST_ACCESS);
 const checkScope = normalizeProductionCheckScope(process.env.PRODUCTION_CHECK_SCOPE || 'all');
+const execFile = promisify(execFileCallback);
 
 function trimUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
@@ -51,15 +57,89 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function parseCurlHeaderText(text) {
+  const blocks = String(text || '')
+    .replace(/\r\n/g, '\n')
+    .split(/\n\n+/)
+    .map((block) => block.trim())
+    .filter((block) => /^HTTP\/\S+\s+\d+/i.test(block));
+  const block = blocks.at(-1) || '';
+  const lines = block.split('\n').filter(Boolean);
+  const status = Number.parseInt(lines[0]?.match(/^HTTP\/\S+\s+(\d+)/i)?.[1] || '', 10);
+  const headers = new Headers();
+
+  for (const line of lines.slice(1)) {
+    const separator = line.indexOf(':');
+    if (separator <= 0) continue;
+    const name = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim();
+    if (name) headers.append(name, value);
+  }
+
+  return {
+    ok: Number.isFinite(status) && status >= 200 && status < 300,
+    status: Number.isFinite(status) ? status : 0,
+    headers,
+  };
+}
+
+async function fetchWithCurlFallback(url, options = {}, fetchError) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'livestream-production-check-'));
+  const headersPath = path.join(directory, 'headers.txt');
+  const bodyPath = path.join(directory, 'body.txt');
+  const method = String(options.method || 'GET').toUpperCase();
+  const args = [
+    '--silent',
+    '--show-error',
+    '--location',
+    '--max-time',
+    '30',
+    '--dump-header',
+    headersPath,
+    '--output',
+    bodyPath,
+  ];
+
+  if (method === 'HEAD') {
+    args.push('--head');
+  } else if (method !== 'GET') {
+    args.push('--request', method);
+  }
+
+  args.push(url);
+
+  try {
+    await execFile('curl', args, { maxBuffer: 5 * 1024 * 1024 });
+    const headerText = await readFile(headersPath, 'utf8');
+    const body = method === 'HEAD' ? '' : await readFile(bodyPath, 'utf8');
+    return { response: parseCurlHeaderText(headerText), text: body };
+  } catch (curlError) {
+    const originalMessage = fetchError instanceof Error ? fetchError.message : String(fetchError);
+    const curlMessage = curlError instanceof Error ? curlError.message : String(curlError);
+    throw new Error(`fetch failed for ${url}: ${originalMessage}; curl fallback failed: ${curlMessage}`);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function fetchText(url) {
-  const response = await fetch(url, { redirect: 'follow' });
-  const text = await response.text();
-  return { response, text };
+  try {
+    const response = await fetch(url, { redirect: 'follow' });
+    const text = await response.text();
+    return { response, text };
+  } catch (err) {
+    return fetchWithCurlFallback(url, {}, err);
+  }
 }
 
 async function fetchHeaders(url) {
-  const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
-  return response;
+  try {
+    const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+    return response;
+  } catch (err) {
+    const { response } = await fetchWithCurlFallback(url, { method: 'HEAD' }, err);
+    return response;
+  }
 }
 
 async function fetchJson(url) {
