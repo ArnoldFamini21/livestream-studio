@@ -60,6 +60,11 @@ type CreatedRoomWithDetails = CreatedRoomResponse & {
   name: string;
 };
 
+interface CreatedRoomHostAccessResolution {
+  room: CreatedRoomWithDetails;
+  legacyHostless: boolean;
+}
+
 function hasCreatedRoomDetails(room: CreatedRoomResponse): room is CreatedRoomWithDetails {
   return typeof room.id === 'string' && typeof room.name === 'string';
 }
@@ -172,10 +177,16 @@ async function recoverHostAccess(room: CreatedRoomWithDetails): Promise<CreatedR
   }
 }
 
-async function resolveCreatedRoomHostAccess(room: CreatedRoomWithDetails): Promise<CreatedRoomWithDetails> {
-  if (getValidHostToken(room.hostToken)) return room;
-  if (isLegacyHostlessCreateResponse(room)) return room;
-  return recoverHostAccess(room);
+async function resolveCreatedRoomHostAccess(room: CreatedRoomWithDetails): Promise<CreatedRoomHostAccessResolution> {
+  if (getValidHostToken(room.hostToken)) return { room, legacyHostless: false };
+  if (isLegacyHostlessCreateResponse(room)) return { room, legacyHostless: true };
+
+  const recoveredRoom = await recoverHostAccess(room);
+  if (getValidHostToken(recoveredRoom.hostToken)) {
+    return { room: recoveredRoom, legacyHostless: false };
+  }
+
+  throw new Error('Studio was created, but host access was not returned. Please try again in a moment.');
 }
 
 function toSavedScheduledRoom(
@@ -239,10 +250,13 @@ export function HomePage() {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
       }
-      const room = await resolveCreatedRoomHostAccess(createdRoom);
+      const { room, legacyHostless } = await resolveCreatedRoomHostAccess(createdRoom);
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
+        if (!legacyHostless) {
+          throw new Error('Studio was created, but host access was not returned. Please try again in a moment.');
+        }
         persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
         navigate(buildHostEntryPath(room.id));
         return;
@@ -283,10 +297,13 @@ export function HomePage() {
         setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
         return;
       }
-      const room = await resolveCreatedRoomHostAccess(createdRoom);
+      const { room, legacyHostless } = await resolveCreatedRoomHostAccess(createdRoom);
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
+        if (!legacyHostless) {
+          throw new Error('Studio was scheduled, but host access was not returned. Please try again in a moment.');
+        }
         persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
         navigate(buildHostEntryPath(room.id));
         return;

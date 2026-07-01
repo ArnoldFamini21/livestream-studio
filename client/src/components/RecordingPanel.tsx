@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import type { RecordingExportArtifactStatus, RecordingExportJobResponse } from '@studio/shared';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { LocalRecordingFileResult, RecordingResult } from '../hooks/useLocalRecording';
 import { useGoogleDriveUpload } from '../hooks/useGoogleDriveUpload';
@@ -32,6 +33,7 @@ interface RecordingPanelProps {
   onStartRecording: () => void;
   onStopRecording: () => Promise<RecordingResult>;
   onUploadRecording?: (input: RecordingServerUploadInput) => Promise<RecordingUploadSummary>;
+  onDownloadRecordingExportArtifact?: (input: RecordingServerExportArtifactInput) => Promise<BlobExportDownload>;
   onAddRecordingMarker?: (seconds: number, label: string) => void;
   onRemoveRecordingMarker?: (markerId: string) => void;
   onClearRecordingMarkers?: () => void;
@@ -60,6 +62,17 @@ export interface RecordedFile {
 export interface RecordingServerUploadInput {
   sessionId: string;
   files: RecordedFile[];
+}
+
+export interface RecordingServerExportArtifactInput {
+  uploadId: string;
+  exportId: string;
+  artifact: RecordingExportArtifactStatus;
+}
+
+export interface BlobExportDownload {
+  blob: Blob;
+  fileName: string;
 }
 
 interface RecordingBundleFile {
@@ -1934,6 +1947,7 @@ export function RecordingPanel({
   onStartRecording,
   onStopRecording,
   onUploadRecording,
+  onDownloadRecordingExportArtifact,
   onAddRecordingMarker,
   onRemoveRecordingMarker,
   onClearRecordingMarkers,
@@ -1966,6 +1980,9 @@ export function RecordingPanel({
   const [driveUploadError, setDriveUploadError] = useState<string | null>(null);
   const [mediaUploadMessage, setMediaUploadMessage] = useState<string | null>(null);
   const [mediaUploadError, setMediaUploadError] = useState<string | null>(null);
+  const [mediaExportJob, setMediaExportJob] = useState<RecordingExportJobResponse | null>(null);
+  const [mediaExportDownloadError, setMediaExportDownloadError] = useState<string | null>(null);
+  const [mediaExportDownloadingId, setMediaExportDownloadingId] = useState<string | null>(null);
   const [driveLinkCopied, setDriveLinkCopied] = useState(false);
   const [driveRetentionPolicyId, setDriveRetentionPolicyId] = useState<RecordingCloudRetentionPolicyId>(
     DEFAULT_RECORDING_CLOUD_RETENTION_POLICY_ID
@@ -2044,6 +2061,9 @@ export function RecordingPanel({
       setDriveLinkCopied(false);
       setMediaUploadMessage(null);
       setMediaUploadError(null);
+      setMediaExportJob(null);
+      setMediaExportDownloadError(null);
+      setMediaExportDownloadingId(null);
       setGeneratedTranscript(null);
       setTranscriptionError(null);
       const resultFiles = result.files.length > 0
@@ -2092,11 +2112,14 @@ export function RecordingPanel({
             setMediaUploadMessage(
               `Media server received ${upload.uploadedTracks} track${upload.uploadedTracks === 1 ? '' : 's'} (${formatFileSize(upload.bytesReceived)}${skipped}).${exportStatus}`
             );
+            setMediaExportJob(upload.exportJob || null);
+            setMediaExportDownloadError(null);
             setMediaUploadError(null);
           } catch (err) {
             console.warn('Media-server recording upload failed:', err);
             setMediaUploadMessage(null);
             setMediaUploadError('Media server upload unavailable. Local recording is saved in this browser.');
+            setMediaExportJob(null);
           }
         }
       }
@@ -2106,6 +2129,31 @@ export function RecordingPanel({
       setIsStopping(false);
     }
   }, [formattedTime, onStopRecording, onUploadRecording, roomName, saveSession, sortedRecordingMarkers]);
+
+  const readyMediaExportArtifacts = useMemo(() => (
+    mediaExportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || []
+  ), [mediaExportJob]);
+
+  const handleDownloadMediaExportArtifact = useCallback(async (artifact: RecordingExportArtifactStatus) => {
+    if (!mediaExportJob || !onDownloadRecordingExportArtifact) return;
+    setMediaExportDownloadingId(artifact.id);
+    setMediaExportDownloadError(null);
+    try {
+      const download = await onDownloadRecordingExportArtifact({
+        uploadId: mediaExportJob.uploadId,
+        exportId: mediaExportJob.exportId,
+        artifact,
+      });
+      downloadBlob(download.blob, download.fileName);
+    } catch (err) {
+      console.warn('Media-server export artifact download failed:', err);
+      setMediaExportDownloadError(err instanceof Error && err.message
+        ? err.message
+        : 'Media server export download failed.');
+    } finally {
+      setMediaExportDownloadingId(null);
+    }
+  }, [mediaExportJob, onDownloadRecordingExportArtifact]);
 
   const handleDownloadAll = useCallback(async () => {
     for (let i = 0; i < recordedFiles.length; i++) {
@@ -2768,7 +2816,29 @@ export function RecordingPanel({
                 ...(mediaUploadError ? styles.mediaUploadStatusError : {}),
               }}>
                 <span style={styles.mediaUploadStatusLabel}>Media server</span>
-                <span style={styles.mediaUploadStatusText}>{mediaUploadError || mediaUploadMessage}</span>
+                <div style={styles.mediaUploadStatusContent}>
+                  <span style={styles.mediaUploadStatusText}>{mediaUploadError || mediaUploadMessage}</span>
+                  {readyMediaExportArtifacts.length > 0 && onDownloadRecordingExportArtifact && (
+                    <div style={styles.mediaExportActions}>
+                      {readyMediaExportArtifacts.map((artifact) => (
+                        <button
+                          key={artifact.id}
+                          type="button"
+                          style={styles.mediaExportButton}
+                          onClick={() => void handleDownloadMediaExportArtifact(artifact)}
+                          disabled={mediaExportDownloadingId === artifact.id}
+                        >
+                          {mediaExportDownloadingId === artifact.id
+                            ? 'Downloading'
+                            : `Download ${artifact.format.toUpperCase()}`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {mediaExportDownloadError && (
+                    <span style={styles.mediaUploadStatusErrorText}>{mediaExportDownloadError}</span>
+                  )}
+                </div>
               </div>
             )}
             <div style={styles.filesHeader}>
@@ -3725,6 +3795,13 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     textTransform: 'uppercase' as const,
   },
+  mediaUploadStatusContent: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    gap: 7,
+  },
   mediaUploadStatusText: {
     minWidth: 0,
     color: 'var(--text-secondary)',
@@ -3732,6 +3809,30 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     lineHeight: 1.35,
     textAlign: 'right' as const,
+  },
+  mediaUploadStatusErrorText: {
+    color: '#fbbf24',
+    fontSize: 10,
+    fontWeight: 700,
+    lineHeight: 1.3,
+    textAlign: 'right' as const,
+  },
+  mediaExportActions: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  mediaExportButton: {
+    padding: '5px 8px',
+    borderRadius: 7,
+    border: '1px solid rgba(125, 211, 252, 0.32)',
+    background: 'rgba(14, 116, 144, 0.18)',
+    color: '#bae6fd',
+    fontSize: 10,
+    fontWeight: 800,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap' as const,
   },
   filesHeader: {
     display: 'flex',

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import {
   buildRecordingUploadTracks,
+  downloadRecordingExportArtifact,
   pollRecordingExportJob,
   uploadRecordingToMediaServer,
 } from '../src/utils/recordingUpload.ts';
@@ -222,6 +223,54 @@ describe('recording media-server upload helper', () => {
       'https://media.example.com/recordings/uploads/upload-2/exports/export-2',
       'https://media.example.com/recordings/uploads/upload-2/exports/export-2',
     ]);
+  });
+
+  it('downloads ready export artifacts with bearer auth and safe filenames', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      return new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'video/mp4' }), {
+        status: 200,
+        headers: {
+          'content-type': 'video/mp4',
+          'content-disposition': 'attachment; filename="Launch Demo Final.mp4"',
+        },
+      });
+    };
+
+    const download = await downloadRecordingExportArtifact({
+      token: 'token-123',
+      uploadId: 'upload-1',
+      exportId: 'export-1',
+      artifactId: 'final-mp4',
+      artifactLabel: 'Final MP4',
+      format: 'mp4',
+      mediaHttpUrl: 'https://media.example.com',
+    });
+
+    assert.equal(download.fileName, 'Launch_Demo_Final.mp4');
+    assert.equal(download.contentType, 'video/mp4');
+    assert.equal(download.blob.size, 3);
+    assert.equal(
+      calls[0].url,
+      'https://media.example.com/recordings/uploads/upload-1/exports/export-1/artifacts/final-mp4'
+    );
+    assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
+  });
+
+  it('surfaces export artifact download errors from the media server', async () => {
+    globalThis.fetch = async () => jsonResponse({ error: 'Recording export artifact is not ready' }, 409);
+
+    await assert.rejects(
+      () => downloadRecordingExportArtifact({
+        token: 'token-123',
+        uploadId: 'upload-1',
+        exportId: 'export-1',
+        artifactId: 'final-mp4',
+        mediaHttpUrl: 'https://media.example.com',
+      }),
+      /not ready/
+    );
   });
 
   it('keeps the completed upload summary when export startup fails', async () => {
