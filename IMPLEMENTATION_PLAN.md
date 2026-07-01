@@ -142,8 +142,8 @@
 
 ### 6B. Live Chat Integration
 - [x] YouTube Live Chat API integration (read incoming messages)
-- [ ] Facebook Live Comments API integration
-- [ ] Unified chat view merging all platforms
+- [x] Facebook Live Comments API integration
+- [x] Unified chat view merging all platforms
 - [x] Highlight/feature a chat message on screen (overlay)
 - [x] Animated comment pop-up on stream (StreamYard-style)
 
