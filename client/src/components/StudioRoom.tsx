@@ -48,7 +48,12 @@ import { SessionHealthPanel } from './SessionHealthPanel.tsx';
 import { LivePollsPanel, LivePollOverlay } from './LivePolls.tsx';
 import { LiveCaptionsPanel, LiveCaptionOverlay } from './LiveCaptions.tsx';
 import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
-import type { RecordingMarker, RecordingServerUploadInput } from './RecordingPanel.tsx';
+import type {
+  BlobExportDownload,
+  RecordingMarker,
+  RecordingServerExportArtifactInput,
+  RecordingServerUploadInput,
+} from './RecordingPanel.tsx';
 import { buildBrandThemeVariables } from '../utils/brandTheme.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { getCustomLogoPositionStyle, getLogoPositionFromPointer, normalizeLogoPosition } from '../utils/logoPosition.ts';
@@ -93,7 +98,10 @@ import {
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
 import { buildLocalRecordingSources } from '../utils/localRecordingSources.ts';
-import { uploadRecordingToMediaServer } from '../utils/recordingUpload.ts';
+import {
+  downloadRecordingExportArtifact,
+  uploadRecordingToMediaServer,
+} from '../utils/recordingUpload.ts';
 import { getScenePipCornerForApply, getSceneStageItemOrderForApply } from '../utils/sceneApplication.ts';
 import {
   getContainedVideoRect,
@@ -2746,6 +2754,24 @@ export function StudioRoom() {
     });
   }, [requestLiveStreamToken, room?.name, roomId]);
 
+  const downloadMediaServerRecordingArtifact = useCallback(async (
+    input: RecordingServerExportArtifactInput
+  ): Promise<BlobExportDownload> => {
+    const token = await requestLiveStreamToken();
+    const download = await downloadRecordingExportArtifact({
+      token,
+      uploadId: input.uploadId,
+      exportId: input.exportId,
+      artifactId: input.artifact.id,
+      artifactLabel: input.artifact.label,
+      format: input.artifact.format,
+    });
+    return {
+      blob: download.blob,
+      fileName: download.fileName,
+    };
+  }, [requestLiveStreamToken]);
+
   const requestCoHostInvite = useCallback(async (): Promise<{ inviteUrl: string; expiresAt: string }> => {
     const requestId = `cohost-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const { token, expiresAt } = await new Promise<{ token: string; expiresAt: string }>((resolve, reject) => {
@@ -4885,6 +4911,7 @@ export function StudioRoom() {
               onStartRecording={onStartLocalRecording}
               onStopRecording={stopLocalRecording}
               onUploadRecording={uploadLocalRecordingToMediaServer}
+              onDownloadRecordingExportArtifact={downloadMediaServerRecordingArtifact}
               onAddRecordingMarker={onAddRecordingMarker}
               onRemoveRecordingMarker={onRemoveRecordingMarker}
               onClearRecordingMarkers={onClearRecordingMarkers}

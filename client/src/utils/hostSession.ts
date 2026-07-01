@@ -96,12 +96,13 @@ export function getValidHostToken(value: unknown): string {
 
 export function isLegacyHostlessCreateResponse(room: LegacyHostlessCreateResponseLike): boolean {
   if (getValidHostToken(room.hostToken)) return false;
-  if (typeof room.hostId === 'string' || Array.isArray(room.coHostIds)) return true;
   if (typeof room.id !== 'string' || typeof room.name !== 'string') return false;
   // Older deployed APIs either returned only id/name or omitted passwordProtected
   // from room settings. Modern token-required APIs include that field.
-  if (!isRecord(room.settings)) return true;
-  return !Object.prototype.hasOwnProperty.call(room.settings, 'passwordProtected');
+  if (isRecord(room.settings) && Object.prototype.hasOwnProperty.call(room.settings, 'passwordProtected')) {
+    return false;
+  }
+  return true;
 }
 
 function sortHostStudios(rooms: SavedHostStudio[]): SavedHostStudio[] {

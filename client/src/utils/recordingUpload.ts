@@ -1,4 +1,5 @@
 import type {
+  RecordingExportArtifactFormat,
   RecordingExportJobResponse,
   RecordingUploadSessionResponse,
   RecordingUploadTrackKind,
@@ -43,6 +44,22 @@ export interface PollRecordingExportJobInput {
   intervalMs?: number;
   timeoutMs?: number;
   initialJob?: RecordingExportJobResponse;
+}
+
+export interface DownloadRecordingExportArtifactInput {
+  token: string;
+  uploadId: string;
+  exportId: string;
+  artifactId: string;
+  artifactLabel?: string;
+  format?: RecordingExportArtifactFormat;
+  mediaHttpUrl?: string;
+}
+
+export interface RecordingExportArtifactDownload {
+  blob: Blob;
+  fileName: string;
+  contentType: string;
 }
 
 export interface RecordingUploadProgress {
@@ -196,6 +213,40 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
 
+function getExportArtifactExtension(format: RecordingExportArtifactFormat | undefined, contentType: string): string {
+  if (format === 'wav' || contentType.includes('audio/wav')) return 'wav';
+  if (format === 'mp3' || contentType.includes('audio/mpeg')) return 'mp3';
+  return 'mp4';
+}
+
+function safeArtifactFileName(value: string, extension: string): string {
+  const trimmed = value
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^\.+/, '')
+    .slice(0, 120);
+  const base = trimmed || 'recording-export';
+  return new RegExp(`\\.${extension}$`, 'i').test(base) ? base : `${base}.${extension}`;
+}
+
+function parseContentDispositionFileName(value: string | null): string {
+  if (!value) return '';
+  const encodedMatch = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1].trim());
+    } catch {
+      return encodedMatch[1].trim();
+    }
+  }
+  const quotedMatch = value.match(/filename="([^"]+)"/i);
+  if (quotedMatch?.[1]) return quotedMatch[1].trim();
+  const plainMatch = value.match(/filename=([^;]+)/i);
+  return plainMatch?.[1]?.trim() || '';
+}
+
 async function postJson<T>(url: string, token: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: 'POST',
@@ -253,6 +304,40 @@ export async function pollRecordingExportJob(
   }
 
   return latest;
+}
+
+export async function downloadRecordingExportArtifact(
+  input: DownloadRecordingExportArtifactInput
+): Promise<RecordingExportArtifactDownload> {
+  const token = assertNonEmpty(input.token, 'A host upload token');
+  const uploadId = assertNonEmpty(input.uploadId, 'Upload id');
+  const exportId = assertNonEmpty(input.exportId, 'Export id');
+  const artifactId = assertNonEmpty(input.artifactId, 'Artifact id');
+  const mediaHttpUrl = assertNonEmpty(input.mediaHttpUrl || resolveMediaHttpUrl(), 'Media server URL');
+  const response = await fetch(
+    buildMediaUrl(
+      mediaHttpUrl,
+      `/recordings/uploads/${encodeURIComponent(uploadId)}/exports/${encodeURIComponent(exportId)}/artifacts/${encodeURIComponent(artifactId)}`
+    ),
+    {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+
+  if (!response.ok) {
+    await parseJsonResponse(response);
+  }
+
+  const contentType = response.headers.get('content-type') || 'application/octet-stream';
+  const extension = getExportArtifactExtension(input.format, contentType.toLowerCase());
+  const headerFileName = parseContentDispositionFileName(response.headers.get('content-disposition'));
+  const fileName = safeArtifactFileName(headerFileName || input.artifactLabel || artifactId, extension);
+  return {
+    blob: await response.blob(),
+    fileName,
+    contentType,
+  };
 }
 
 export async function uploadRecordingToMediaServer(

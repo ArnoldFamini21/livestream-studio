@@ -80,7 +80,7 @@ describe('host session links', () => {
       hostToken: undefined,
       hostId: '',
       coHostIds: [],
-    }), true);
+    }), false);
     assert.equal(isLegacyHostlessCreateResponse({
       id: 'legacy-room',
       name: 'Legacy room',
@@ -125,6 +125,8 @@ describe('host session links', () => {
     assert.equal(isLegacyHostlessCreateResponse({
       id: 'modern-token-stripped-room',
       name: 'Modern token stripped room',
+      hostId: '',
+      coHostIds: [],
       hostToken: undefined,
       settings: {
         maxParticipants: 7,
