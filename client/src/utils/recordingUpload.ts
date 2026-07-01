@@ -1,6 +1,7 @@
 import type {
   RecordingExportArtifactFormat,
   RecordingExportJobResponse,
+  RecordingExportVideoCodec,
   RecordingUploadSessionResponse,
   RecordingUploadTrackKind,
   RecordingUploadTrackManifest,
@@ -30,6 +31,7 @@ export interface UploadRecordingToMediaServerInput {
   chunkSizeBytes?: number;
   startExport?: boolean;
   exportBasename?: string;
+  exportVideoCodec?: RecordingExportVideoCodec;
   includeAudioStems?: boolean;
   exportPollIntervalMs?: number;
   exportPollTimeoutMs?: number;
@@ -421,6 +423,9 @@ export async function uploadRecordingToMediaServer(
           {
             basename: input.exportBasename || input.sessionId || uploadId,
             includeAudioStems: input.includeAudioStems !== false,
+            video: {
+              codec: input.exportVideoCodec || 'h264',
+            },
           }
         );
         exportJob = await pollRecordingExportJob({

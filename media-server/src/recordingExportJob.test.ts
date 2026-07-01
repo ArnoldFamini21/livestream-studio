@@ -129,16 +129,24 @@ describe('recording export jobs', () => {
 
   it('can create a final-MP4-only export job', async () => {
     const { uploads, session } = await createCompletedUpload();
+    const commands: RecordingExportCommand[] = [];
     const runner: RecordingExportRunner = async (command) => {
+      commands.push(command);
       await writeFile(command.outputPath, Buffer.from(command.label));
     };
     const exports = new RecordingExportJobStore(runner);
 
     const queued = await exports.createJob(uploads.getExportSource(session.uploadId), {
       includeAudioStems: false,
+      video: { codec: 'h265' },
     });
 
     assert.deepEqual(queued.artifacts.map((artifact) => artifact.format), ['mp4', 'mp4', 'json']);
+    await exports.startJob(queued.exportId);
+    assert.equal(commands.length, 2);
+    assert.equal(commands.every((command) => command.args.includes('libx265')), true);
+    assert.equal(commands.every((command) => command.args.includes('hvc1')), true);
+    assert.equal(commands.every((command) => !command.args.includes('libx264')), true);
   });
 
   it('marks the export job as failed when configured artifact storage fails', async () => {

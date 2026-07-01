@@ -2751,6 +2751,7 @@ export function StudioRoom() {
       sessionId: input.sessionId,
       files: input.files,
       exportBasename: `${room?.name || 'Studio'} ${input.sessionId}`,
+      exportVideoCodec: input.exportVideoCodec,
     });
   }, [requestLiveStreamToken, room?.name, roomId]);
 

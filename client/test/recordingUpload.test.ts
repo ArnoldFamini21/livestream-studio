@@ -154,6 +154,7 @@ describe('recording media-server upload helper', () => {
       chunkSizeBytes: 4,
       exportPollIntervalMs: 0,
       exportPollTimeoutMs: 1_000,
+      exportVideoCodec: 'h265',
       files: [
         {
           label: 'Program',
@@ -178,6 +179,13 @@ describe('recording media-server upload helper', () => {
     assert.match(calls[2].url, /sequence=1&offset=262144&final=1/);
     assert.equal(calls[4].url, 'https://media.example.com/recordings/uploads/upload-1/exports');
     assert.equal(calls[5].url, 'https://media.example.com/recordings/uploads/upload-1/exports/export-1');
+    assert.deepEqual(JSON.parse(String(calls[4].init?.body)), {
+      basename: 'session-1',
+      includeAudioStems: true,
+      video: {
+        codec: 'h265',
+      },
+    });
     assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
     assert.equal((calls[1].init?.body as Blob).size, 262_144);
     assert.equal((calls[2].init?.body as Blob).size, 37_856);

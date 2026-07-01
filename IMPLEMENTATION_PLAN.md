@@ -27,7 +27,7 @@
 - [ ] Use hardware-accelerated WebCodecs encode pipeline where available
 - [x] Chunked upload with resume support for large 4K files
 - [x] Server-side S3-compatible storage integration
-- [ ] Export pipeline: MP4 (H.264/H.265), separate WAV/MP3 audio stems
+- [x] Export pipeline: MP4 (H.264/H.265), separate WAV/MP3 audio stems
 
 ### 1C. Screen Recording
 - [x] getDisplayMedia() for screen/window/tab sharing

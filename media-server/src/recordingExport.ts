@@ -2,6 +2,7 @@ import path from 'node:path';
 
 export type RecordingExportTrackKind = 'audio' | 'video' | 'screen' | 'program' | 'iso';
 export type RecordingAudioStemFormat = 'wav' | 'mp3';
+export type RecordingExportVideoCodec = 'h264' | 'h265';
 
 export interface RecordingExportTrack {
   id: string;
@@ -18,6 +19,7 @@ export interface RecordingExportVideoOptions {
   height: number;
   frameRate: number;
   videoBitsPerSecond: number;
+  codec: RecordingExportVideoCodec;
 }
 
 export interface RecordingExportAudioOptions {
@@ -66,6 +68,10 @@ function roundToEven(value: number): number {
   return Math.max(2, Math.round(value / 2) * 2);
 }
 
+function normalizeRecordingExportVideoCodec(value: unknown): RecordingExportVideoCodec {
+  return value === 'h265' ? 'h265' : 'h264';
+}
+
 export function sanitizeExportBasename(value: string): string {
   const cleaned = value
     .trim()
@@ -92,7 +98,36 @@ export function normalizeRecordingExportVideoOptions(
     height,
     frameRate: clampNumber(options.frameRate, 30, 15, MAX_EXPORT_FRAME_RATE),
     videoBitsPerSecond: clampNumber(options.videoBitsPerSecond, 12_000_000, 1_000_000, MAX_EXPORT_VIDEO_BITRATE),
+    codec: normalizeRecordingExportVideoCodec(options.codec),
   };
+}
+
+function pushVideoEncodingArgs(args: string[], video: RecordingExportVideoOptions) {
+  const videoBitrateKbps = Math.round(video.videoBitsPerSecond / 1000);
+  if (video.codec === 'h265') {
+    args.push(
+      '-c:v', 'libx265',
+      '-preset', 'medium',
+      '-tag:v', 'hvc1',
+      '-pix_fmt', 'yuv420p',
+      '-r', String(video.frameRate),
+      '-b:v', `${videoBitrateKbps}k`,
+      '-maxrate', `${Math.round(videoBitrateKbps * 1.15)}k`,
+      '-bufsize', `${videoBitrateKbps * 2}k`,
+      '-x265-params', 'log-level=error'
+    );
+    return;
+  }
+
+  args.push(
+    '-c:v', 'libx264',
+    '-preset', 'medium',
+    '-pix_fmt', 'yuv420p',
+    '-r', String(video.frameRate),
+    '-b:v', `${videoBitrateKbps}k`,
+    '-maxrate', `${Math.round(videoBitrateKbps * 1.15)}k`,
+    '-bufsize', `${videoBitrateKbps * 2}k`
+  );
 }
 
 export function normalizeRecordingExportAudioOptions(
@@ -190,7 +225,6 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
   });
 
   const videoFilter = `scale=${video.width}:${video.height}:force_original_aspect_ratio=decrease,pad=${video.width}:${video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
-  const videoBitrateKbps = Math.round(video.videoBitsPerSecond / 1000);
   const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
 
   if (audioTracks.length > 0) {
@@ -209,14 +243,8 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
     );
   }
 
+  pushVideoEncodingArgs(args, video);
   args.push(
-    '-c:v', 'libx264',
-    '-preset', 'medium',
-    '-pix_fmt', 'yuv420p',
-    '-r', String(video.frameRate),
-    '-b:v', `${videoBitrateKbps}k`,
-    '-maxrate', `${Math.round(videoBitrateKbps * 1.15)}k`,
-    '-bufsize', `${videoBitrateKbps * 2}k`,
     '-c:a', 'aac',
     '-b:a', `${audioBitrateKbps}k`,
     '-ar', String(audio.sampleRate),
@@ -245,7 +273,6 @@ export function createRecordingIsolatedVideoArgs(
   const outputBase = sanitizeExportBasename(`${basename}_${track.label}_video`);
   const outputPath = path.join(outputDirectory, `${outputBase}.mp4`);
   const videoFilter = `scale=${video.width}:${video.height}:force_original_aspect_ratio=decrease,pad=${video.width}:${video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
-  const videoBitrateKbps = Math.round(video.videoBitsPerSecond / 1000);
   const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
   const args = [
     '-hide_banner',
@@ -255,20 +282,16 @@ export function createRecordingIsolatedVideoArgs(
     '-vf', videoFilter,
     '-map', '0:v:0',
     '-map', '0:a:0?',
-    '-c:v', 'libx264',
-    '-preset', 'medium',
-    '-pix_fmt', 'yuv420p',
-    '-r', String(video.frameRate),
-    '-b:v', `${videoBitrateKbps}k`,
-    '-maxrate', `${Math.round(videoBitrateKbps * 1.15)}k`,
-    '-bufsize', `${videoBitrateKbps * 2}k`,
+  ];
+  pushVideoEncodingArgs(args, video);
+  args.push(
     '-c:a', 'aac',
     '-b:a', `${audioBitrateKbps}k`,
     '-ar', String(audio.sampleRate),
     '-ac', String(audio.channelCount),
     '-movflags', '+faststart',
     outputPath,
-  ];
+  );
 
   return {
     label: `${track.label} isolated MP4`,
