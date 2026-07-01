@@ -28,6 +28,10 @@ export interface CreatedRoomHostAccessResolution {
   legacyHostless: boolean;
 }
 
+export interface ResolveCreatedRoomHostAccessOptions {
+  preferLegacyFallback?: boolean;
+}
+
 export function hasCreatedRoomDetails(room: CreatedRoomResponse): room is CreatedRoomWithDetails {
   return typeof room.id === 'string' && typeof room.name === 'string';
 }
@@ -55,8 +59,14 @@ async function recoverHostAccess(room: CreatedRoomWithDetails): Promise<CreatedR
   }
 }
 
-export async function resolveCreatedRoomHostAccess(room: CreatedRoomWithDetails): Promise<CreatedRoomHostAccessResolution> {
+export async function resolveCreatedRoomHostAccess(
+  room: CreatedRoomWithDetails,
+  options: ResolveCreatedRoomHostAccessOptions = {}
+): Promise<CreatedRoomHostAccessResolution> {
   if (getValidHostToken(room.hostToken)) return { room, legacyHostless: false };
+  if (options.preferLegacyFallback && isLegacyHostlessCreateResponse(room)) {
+    return { room, legacyHostless: true };
+  }
 
   const recoveredRoom = await recoverHostAccess(room);
   if (getValidHostToken(recoveredRoom.hostToken)) {
