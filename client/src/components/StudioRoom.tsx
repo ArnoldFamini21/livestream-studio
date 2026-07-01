@@ -60,7 +60,12 @@ import {
 } from '../utils/virtualBackgrounds.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
-import { getLiveStreamElapsedSeconds, getLiveStreamStatus } from '../utils/liveStreamStatus.ts';
+import {
+  buildLiveSessionSummary,
+  getLiveStreamElapsedSeconds,
+  getLiveStreamStatus,
+  type LiveSessionSummary,
+} from '../utils/liveStreamStatus.ts';
 import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
 import {
   getProductionSceneTemplateConfig,
@@ -862,6 +867,7 @@ export function StudioRoom() {
   const [isLive, setIsLive] = useState(false);
   const [streamScreenConfig, setStreamScreenConfig] = useState<StreamScreenConfig>(DEFAULT_STREAM_SCREEN_CONFIG);
   const [activeStreamScreenState, setActiveStreamScreenState] = useState<ActiveStreamScreenState | null>(null);
+  const [liveSessionSummary, setLiveSessionSummary] = useState<LiveSessionSummary | null>(null);
 
   // Room ending countdown — driven by server-issued absolute end time.
   const [roomEnding, setRoomEnding] = useState(false);
@@ -1186,6 +1192,7 @@ export function StudioRoom() {
   const localStreamRef = useRef<MediaStream | null>(localStream);
   const isLiveRef = useRef(isLive);
   const liveStartedAtRef = useRef<string | null>(liveStartedAt);
+  const destinationsRef = useRef<StreamDestination[]>(destinations);
   const sessionRecordingStartedAtRef = useRef<string | null>(sessionRecordingStartedAt);
   const publishedTrackIdsRef = useRef<{ audio?: string; video?: string }>({});
   const reactionSequenceRef = useRef(0);
@@ -1271,8 +1278,31 @@ export function StudioRoom() {
     )));
   }, []);
 
+  const showLiveSessionSummary = useCallback((
+    startedAt: string | null,
+    destinationSnapshot: StreamDestination[],
+    options: { stoppedAt?: string; relayError?: boolean } = {},
+  ) => {
+    const enabledDestinations = destinationSnapshot.filter((destination) => destination.enabled);
+    const statusErrorCount = enabledDestinations.filter((destination) => destination.status === 'error').length;
+    const errorCount = options.relayError && enabledDestinations.length > 0
+      ? Math.max(1, statusErrorCount)
+      : statusErrorCount;
+    setLiveSessionSummary(buildLiveSessionSummary({
+      startedAt,
+      stoppedAt: options.stoppedAt,
+      destinationCount: enabledDestinations.length,
+      errorCount,
+    }));
+  }, []);
+
   const handleRelayStopped = useCallback((message: string) => {
     const statusMessage = message.trim() || 'Media relay stopped unexpectedly.';
+    const previousLiveStartedAt = liveStartedAtRef.current;
+    showLiveSessionSummary(previousLiveStartedAt, destinationsRef.current, {
+      stoppedAt: new Date().toISOString(),
+      relayError: true,
+    });
     isLiveRef.current = false;
     liveStartedAtRef.current = null;
     setIsLive(false);
@@ -1291,7 +1321,7 @@ export function StudioRoom() {
         ? { ...destination, status: 'error', statusMessage }
         : { ...destination, status: 'idle', statusMessage: undefined }
     )));
-  }, [send]);
+  }, [send, showLiveSessionSummary]);
 
   const {
     startRelay,
@@ -1606,6 +1636,7 @@ export function StudioRoom() {
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
   useEffect(() => { isLiveRef.current = isLive; }, [isLive]);
   useEffect(() => { liveStartedAtRef.current = liveStartedAt; }, [liveStartedAt]);
+  useEffect(() => { destinationsRef.current = destinations; }, [destinations]);
   useEffect(() => { sessionRecordingStartedAtRef.current = sessionRecordingStartedAt; }, [sessionRecordingStartedAt]);
 
   useEffect(() => {
@@ -1905,6 +1936,12 @@ export function StudioRoom() {
     return () => window.clearTimeout(timer);
   }, [guestNotification]);
 
+  useEffect(() => {
+    if (!liveSessionSummary) return;
+    const timer = window.setTimeout(() => setLiveSessionSummary(null), 20_000);
+    return () => window.clearTimeout(timer);
+  }, [liveSessionSummary]);
+
   // Signaling message handler
   const handleSignalingMessage = useCallback(
     (message: SignalMessage) => {
@@ -2074,17 +2111,27 @@ export function StudioRoom() {
           setSessionRecordingStartedAt(sessionRecordingStartedAtRef.current);
           setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(isLiveRef.current, sessionRecordingStartedAtRef.current) } : prev);
           break;
-        case 'live-stream-state-changed':
+        case 'live-stream-state-changed': {
+          const previousLiveStartedAt = liveStartedAtRef.current;
           isLiveRef.current = message.payload.live;
           liveStartedAtRef.current = message.payload.live ? message.payload.startedAt || new Date().toISOString() : null;
           setIsLive(message.payload.live);
           setLiveStartedAt(liveStartedAtRef.current);
           setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(message.payload.live, sessionRecordingStartedAtRef.current) } : prev);
+          if (message.payload.live) {
+            setLiveSessionSummary(null);
+          }
           if (!message.payload.live) {
+            if (previousLiveStartedAt) {
+              showLiveSessionSummary(previousLiveStartedAt, destinationsRef.current, {
+                stoppedAt: message.payload.stoppedAt,
+              });
+            }
             setActiveStreamScreenState(null);
             setDestinations((prev) => prev.map((destination) => ({ ...destination, status: 'idle', statusMessage: undefined })));
           }
           break;
+        }
         case 'live-stream-token-issued': {
           const pending = liveTokenRequestsRef.current.get(message.payload.requestId);
           if (pending) {
@@ -2194,7 +2241,7 @@ export function StudioRoom() {
           assertNever(message);
       }
     },
-    [] // No external dependencies — all mutable values accessed via refs
+    [showLiveSessionSummary]
   );
 
   useEffect(() => {
@@ -2793,6 +2840,7 @@ export function StudioRoom() {
 
     setIsLive(true);
     setLiveStartedAt(null);
+    setLiveSessionSummary(null);
     setDestinations((prev) => prev.map((d) => (
       d.enabled
         ? { ...d, status: 'connecting', statusMessage: 'Starting relay session...' }
@@ -2839,6 +2887,13 @@ export function StudioRoom() {
       liveStatusTimerRef.current = null;
     }
     stopRelay();
+    const previousLiveStartedAt = liveStartedAtRef.current;
+    if (previousLiveStartedAt) {
+      showLiveSessionSummary(previousLiveStartedAt, destinationsRef.current, {
+        stoppedAt: new Date().toISOString(),
+      });
+    }
+    liveStartedAtRef.current = null;
     setIsLive(false);
     setLiveStartedAt(null);
     setActiveStreamScreenState(null);
@@ -4101,25 +4156,63 @@ export function StudioRoom() {
         </div>
       </div>
 
-      {guestNotification && (
+      {(guestNotification || (isHostOrCoHost && liveSessionSummary)) && (
         <div style={styles.studioNoticeWrap} role="status" aria-live="polite">
-          <div style={{
-            ...styles.waitingNotice,
-            ...styles.studioNotice,
-            ...(guestNotification.tone === 'warning' ? styles.waitingNoticeWarning : {}),
-            ...(guestNotification.tone === 'success' ? styles.waitingNoticeSuccess : {}),
-          }}>
-            <span style={styles.waitingNoticeIcon}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 2 11 13" />
-                <path d="m22 2-7 20-4-9-9-4 20-7z" />
-              </svg>
-            </span>
-            <span style={styles.waitingNoticeCopy}>
-              <strong style={styles.waitingNoticeTitle}>{guestNotification.title}</strong>
-              <span style={styles.waitingNoticeText}>{guestNotification.message}</span>
-            </span>
-          </div>
+          {guestNotification && (
+            <div style={{
+              ...styles.waitingNotice,
+              ...styles.studioNotice,
+              ...(guestNotification.tone === 'warning' ? styles.waitingNoticeWarning : {}),
+              ...(guestNotification.tone === 'success' ? styles.waitingNoticeSuccess : {}),
+            }}>
+              <span style={styles.waitingNoticeIcon}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 2 11 13" />
+                  <path d="m22 2-7 20-4-9-9-4 20-7z" />
+                </svg>
+              </span>
+              <span style={styles.waitingNoticeCopy}>
+                <strong style={styles.waitingNoticeTitle}>{guestNotification.title}</strong>
+                <span style={styles.waitingNoticeText}>{guestNotification.message}</span>
+              </span>
+            </div>
+          )}
+          {isHostOrCoHost && liveSessionSummary && (
+            <div style={{
+              ...styles.waitingNotice,
+              ...styles.studioNotice,
+              ...(liveSessionSummary.tone === 'warning' ? styles.waitingNoticeWarning : styles.waitingNoticeSuccess),
+            }}>
+              <span style={styles.waitingNoticeIcon}>
+                {liveSessionSummary.tone === 'warning' ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                    <path d="M12 9v4" />
+                    <path d="M12 17h.01" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                )}
+              </span>
+              <span style={styles.waitingNoticeCopy}>
+                <strong style={styles.waitingNoticeTitle}>{liveSessionSummary.title}</strong>
+                <span style={styles.waitingNoticeText}>{liveSessionSummary.message}</span>
+              </span>
+              <button
+                type="button"
+                style={styles.noticeDismissBtn}
+                onClick={() => setLiveSessionSummary(null)}
+                aria-label="Dismiss stream summary"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -5076,6 +5169,9 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 80,
     width: 'min(420px, calc(100vw - 32px))',
     pointerEvents: 'none',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
   },
   studioNotice: {
     width: '100%',
@@ -5118,6 +5214,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     lineHeight: 1.4,
     color: 'var(--text-secondary)',
+  },
+  noticeDismissBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    border: '1px solid rgba(255, 255, 255, 0.12)',
+    background: 'rgba(255, 255, 255, 0.06)',
+    color: 'currentColor',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    padding: 0,
+    flexShrink: 0,
   },
   waitingQueue: {
     marginTop: 4,
