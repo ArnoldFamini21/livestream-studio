@@ -40,6 +40,10 @@ export interface LegacyHostlessCreateResponseLike {
 const LEGACY_HOST_SESSION_VERSION = 'v2';
 const LEGACY_HOST_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
 function getSessionItem(key: string): string {
   try {
     return sessionStorage.getItem(key) || '';
@@ -94,8 +98,10 @@ export function isLegacyHostlessCreateResponse(room: LegacyHostlessCreateRespons
   if (getValidHostToken(room.hostToken)) return false;
   if (typeof room.hostId === 'string' || Array.isArray(room.coHostIds)) return true;
   if (typeof room.id !== 'string' || typeof room.name !== 'string') return false;
-  // Older deployed APIs can return only id/name; allow the same tab to continue as creator.
-  return true;
+  // Older deployed APIs either returned only id/name or omitted passwordProtected
+  // from room settings. Modern token-required APIs include that field.
+  if (!isRecord(room.settings)) return true;
+  return !Object.prototype.hasOwnProperty.call(room.settings, 'passwordProtected');
 }
 
 function sortHostStudios(rooms: SavedHostStudio[]): SavedHostStudio[] {
