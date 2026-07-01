@@ -6,7 +6,6 @@ import {
   buildHostEntryPath,
   buildHostEntryUrl,
   getValidHostToken,
-  isLegacyHostlessCreateResponse,
   persistLegacyHostSession,
   persistHostSession,
   readSavedHostStudios,
@@ -15,11 +14,15 @@ import {
   type SavedHostStudio,
 } from '../utils/hostSession.ts';
 import { getApiErrorMessage, postJson } from '../utils/apiClient.ts';
+import {
+  hasCreatedRoomDetails,
+  resolveCreatedRoomHostAccess,
+  type CreatedRoomResponse,
+} from '../utils/hostAccess.ts';
 import { buildGuestInviteEmailHref, buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
-const HOST_ACCESS_RECOVERY_TIMEOUT_MS = 15_000;
 const SERVER_WAKE_NOTICE_DELAY_MS = 6_000;
 const SAVED_HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing for this studio. Create a new studio to get a fresh private host link.';
 const INVITE_QR_OPTIONS = {
@@ -39,35 +42,6 @@ interface SavedScheduledStudio extends SavedHostStudio {
 }
 
 interface ScheduledRoomModal extends SavedScheduledStudio {}
-
-interface CreatedRoomResponse {
-  id?: unknown;
-  name?: unknown;
-  status?: string;
-  createdAt?: string;
-  hostName?: string;
-  hostToken?: unknown;
-  hostId?: unknown;
-  coHostIds?: unknown;
-  scheduledFor?: string;
-  settings?: {
-    passwordProtected?: boolean;
-  };
-}
-
-type CreatedRoomWithDetails = CreatedRoomResponse & {
-  id: string;
-  name: string;
-};
-
-interface CreatedRoomHostAccessResolution {
-  room: CreatedRoomWithDetails;
-  legacyHostless: boolean;
-}
-
-function hasCreatedRoomDetails(room: CreatedRoomResponse): room is CreatedRoomWithDetails {
-  return typeof room.id === 'string' && typeof room.name === 'string';
-}
 
 function toDateTimeLocalValue(date: Date): string {
   const timezoneOffsetMs = date.getTimezoneOffset() * 60_000;
@@ -152,41 +126,6 @@ function getScheduleState(room: SavedScheduledStudio): string {
   const scheduledAt = Date.parse(room.scheduledFor);
   if (!Number.isFinite(scheduledAt)) return 'Ready';
   return scheduledAt > Date.now() ? 'Upcoming' : 'Ready';
-}
-
-async function recoverHostAccess(room: CreatedRoomWithDetails): Promise<CreatedRoomWithDetails> {
-  if (typeof room.id !== 'string' || getValidHostToken(room.hostToken)) return room;
-
-  try {
-    const recoveredRoom = await postJson<CreatedRoomResponse>(
-      `/api/rooms/${encodeURIComponent(room.id)}/host-access`,
-      {},
-      { timeoutMs: HOST_ACCESS_RECOVERY_TIMEOUT_MS }
-    );
-    return {
-      ...room,
-      ...recoveredRoom,
-      id: room.id,
-      name: typeof recoveredRoom.name === 'string' ? recoveredRoom.name : room.name,
-      settings: recoveredRoom.settings || room.settings,
-      hostName: recoveredRoom.hostName || room.hostName,
-    };
-  } catch (err) {
-    console.warn('Host access recovery failed:', err);
-    return room;
-  }
-}
-
-async function resolveCreatedRoomHostAccess(room: CreatedRoomWithDetails): Promise<CreatedRoomHostAccessResolution> {
-  if (getValidHostToken(room.hostToken)) return { room, legacyHostless: false };
-  if (isLegacyHostlessCreateResponse(room)) return { room, legacyHostless: true };
-
-  const recoveredRoom = await recoverHostAccess(room);
-  if (getValidHostToken(recoveredRoom.hostToken)) {
-    return { room: recoveredRoom, legacyHostless: false };
-  }
-
-  return { room: recoveredRoom, legacyHostless: true };
 }
 
 function toSavedScheduledRoom(
