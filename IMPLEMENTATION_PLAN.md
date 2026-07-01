@@ -197,6 +197,9 @@
 - [x] Custom waiting room page with branding
 - [x] Custom stream starting/ending screens
 
+### 9D. Production Safety
+- [x] Browser exit warning while live streaming or recording
+
 ---
 
 ## Phase 10: Infrastructure & Scale (Priority: Ongoing)
