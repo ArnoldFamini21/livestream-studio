@@ -176,6 +176,7 @@ async function recoverHostAccess(room: CreatedRoomWithDetails): Promise<CreatedR
 
 async function resolveCreatedRoomHostAccess(room: CreatedRoomWithDetails): Promise<CreatedRoomWithDetails> {
   if (getValidHostToken(room.hostToken)) return room;
+  if (isLegacyHostlessCreateResponse(room)) return room;
   return recoverHostAccess(room);
 }
 
