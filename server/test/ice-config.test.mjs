@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildIceConfigFromEnv, normalizeIceServer } from '../dist/services/ice-config.js';
+import {
+  buildIceConfigFromEnv,
+  buildIceConfigStatusFromEnv,
+  buildIceConfigWithStatusFromEnv,
+  normalizeIceServer,
+} from '../dist/services/ice-config.js';
 
 describe('ICE configuration', () => {
   it('normalizes valid STUN and TURN servers without leaking invalid URLs', () => {
@@ -20,7 +25,7 @@ describe('ICE configuration', () => {
   });
 
   it('prefers ICE_SERVERS_JSON when configured', () => {
-    const config = buildIceConfigFromEnv({
+    const config = buildIceConfigWithStatusFromEnv({
       ICE_SERVERS_JSON: JSON.stringify({
         iceTransportPolicy: 'relay',
         iceServers: [
@@ -43,6 +48,17 @@ describe('ICE configuration', () => {
           credential: 'turn-secret',
         },
       ],
+      status: {
+        source: 'ice_servers_json',
+        serverCount: 1,
+        stunServerCount: 0,
+        turnServerCount: 1,
+        hasTurn: true,
+        hasConfiguredTurn: true,
+        usingFallbackTurn: false,
+        turnReady: true,
+        iceTransportPolicy: 'relay',
+      },
     });
   });
 
@@ -76,5 +92,48 @@ describe('ICE configuration', () => {
       const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
       return urls.some((url) => url.startsWith('turn:') || url.startsWith('turns:'));
     }));
+  });
+
+  it('reports default TURN fallback as not production ready', () => {
+    const status = buildIceConfigStatusFromEnv({ ICE_SERVERS_JSON: 'not json' });
+
+    assert.equal(status.source, 'default');
+    assert.equal(status.hasTurn, true);
+    assert.equal(status.hasConfiguredTurn, false);
+    assert.equal(status.usingFallbackTurn, true);
+    assert.equal(status.turnReady, false);
+  });
+
+  it('reports split env TURN credentials as production ready', () => {
+    const status = buildIceConfigStatusFromEnv({
+      STUN_URLS: 'stun:stun.example.com:19302',
+      TURN_URLS: 'turn:turn.example.com:3478,turns:turn.example.com:443',
+      TURN_USERNAME: 'relay-user',
+      TURN_CREDENTIAL: 'relay-secret',
+      ICE_TRANSPORT_POLICY: 'all',
+    });
+
+    assert.deepEqual(status, {
+      source: 'split_env',
+      serverCount: 2,
+      stunServerCount: 1,
+      turnServerCount: 1,
+      hasTurn: true,
+      hasConfiguredTurn: true,
+      usingFallbackTurn: false,
+      turnReady: true,
+      iceTransportPolicy: 'all',
+    });
+  });
+
+  it('does not report split STUN-only env as TURN ready', () => {
+    const status = buildIceConfigStatusFromEnv({
+      STUN_URLS: 'stun:stun.example.com:19302',
+    });
+
+    assert.equal(status.source, 'split_env');
+    assert.equal(status.hasTurn, false);
+    assert.equal(status.hasConfiguredTurn, false);
+    assert.equal(status.turnReady, false);
   });
 });

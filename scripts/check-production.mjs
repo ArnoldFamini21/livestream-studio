@@ -9,6 +9,7 @@ const mediaHttpUrl = trimUrl(process.env.PRODUCTION_MEDIA_HTTP_URL || DEFAULT_ME
 const expectedCommit = normalizeSha(process.env.EXPECTED_COMMIT || process.env.GITHUB_SHA || '');
 const waitMs = parseNonNegativeInt(process.env.PRODUCTION_CHECK_WAIT_MS, 0);
 const intervalMs = parsePositiveInt(process.env.PRODUCTION_CHECK_INTERVAL_MS, 15_000);
+const requireProductionTurn = parseBoolean(process.env.PRODUCTION_REQUIRE_TURN || process.env.REQUIRE_PRODUCTION_TURN);
 
 function trimUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
@@ -27,6 +28,10 @@ function parseNonNegativeInt(value, fallback) {
 function parsePositiveInt(value, fallback) {
   const parsed = Number.parseInt(String(value || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseBoolean(value) {
+  return /^(1|true|yes|on)$/i.test(String(value || '').trim());
 }
 
 function sleep(ms) {
@@ -71,6 +76,25 @@ function requireServiceHealth(label, json, expectedService) {
   }
 }
 
+function requireProductionTurnReady(signaling) {
+  const ice = signaling?.ice;
+  if (
+    !ice ||
+    ice.turnReady !== true ||
+    ice.hasConfiguredTurn !== true ||
+    ice.source === 'default' ||
+    ice.usingFallbackTurn === true
+  ) {
+    const detail = ice
+      ? `source=${JSON.stringify(ice.source)}, turnReady=${JSON.stringify(ice.turnReady)}, hasConfiguredTurn=${JSON.stringify(ice.hasConfiguredTurn)}, usingFallbackTurn=${JSON.stringify(ice.usingFallbackTurn)}`
+      : 'no ice metadata';
+    throw new Error(
+      `Signaling server is not using configured production TURN (${detail}). ` +
+      'Set ICE_SERVERS_JSON or TURN_URLS/TURN_USERNAME/TURN_CREDENTIAL on Render and redeploy.'
+    );
+  }
+}
+
 async function checkClient() {
   const { response, text } = await fetchText(clientUrl);
   requireOk(response, 'Client', text);
@@ -95,6 +119,7 @@ async function runOnce() {
   const clientAsset = await checkClient();
   const signaling = await checkHealth('Signaling server', apiUrl, 'signaling-server');
   const media = await checkHealth('Media server', mediaHttpUrl, 'media-server');
+  if (requireProductionTurn) requireProductionTurnReady(signaling);
 
   return {
     status: 'ok',
@@ -104,6 +129,7 @@ async function runOnce() {
       version: signaling.version || null,
       commit: signaling.commit || null,
       environment: signaling.environment || null,
+      ice: signaling.ice || null,
     },
     media: {
       url: mediaHttpUrl,
