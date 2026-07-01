@@ -68,15 +68,12 @@ describe('created room host access resolution', () => {
     assert.equal(result.room.hostToken, VALID_HOST_TOKEN);
   });
 
-  it('tries recovery before same-tab legacy host mode on old no-token servers', async () => {
-    let requestedUrl = '';
+  it('uses same-tab legacy host mode immediately when create prefers old server fallback', async () => {
+    let called = false;
     console.warn = () => {};
-    globalThis.fetch = async (input) => {
-      requestedUrl = String(input);
-      return new Response('<!doctype html><pre>Cannot POST /host-access</pre>', {
-        status: 404,
-        headers: { 'content-type': 'text/html' },
-      });
+    globalThis.fetch = async () => {
+      called = true;
+      throw new Error('recovery should be skipped');
     };
 
     const room: CreatedRoomResponse = {
@@ -90,7 +87,7 @@ describe('created room host access resolution', () => {
     assert.equal(hasCreatedRoomDetails(room), true);
     const result = await resolveCreatedRoomHostAccess(room, { preferLegacyFallback: true });
 
-    assert.equal(requestedUrl, '/api/rooms/legacy-immediate-room/host-access');
+    assert.equal(called, false);
     assert.equal(result.legacyHostless, true);
     assert.equal(result.room.id, 'legacy-immediate-room');
     assert.equal(result.room.hostToken, undefined);
