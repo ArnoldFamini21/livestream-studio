@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
+import {
+  formatPeerBandwidthHealthTitle,
+  formatPeerBandwidthQualityLabel,
+} from '../utils/peerBandwidthDisplay.ts';
 import type { CameraShape, NameTagStyle } from '@studio/shared';
+import type { PeerBandwidthHealth, PeerBandwidthQuality } from '../utils/webrtcBandwidthAdaptation.ts';
 
 interface VideoTileProps {
   participantId?: string;
@@ -15,6 +20,7 @@ interface VideoTileProps {
   brandColor?: string;
   cameraShape?: CameraShape;
   nameTagStyle?: NameTagStyle;
+  connectionHealth?: PeerBandwidthHealth | null;
   onAudioLevelChange?: (participantId: string, level: number) => void;
 }
 
@@ -126,6 +132,19 @@ function nameToGradient(name: string): string {
   return `linear-gradient(135deg, hsl(${h1}, 60%, 35%), hsl(${h2}, 50%, 25%))`;
 }
 
+function getConnectionBadgeStyle(quality: PeerBandwidthQuality): React.CSSProperties {
+  switch (quality) {
+    case 'good':
+      return { background: 'rgba(34, 197, 94, 0.18)', color: '#86efac', borderColor: 'rgba(134, 239, 172, 0.28)' };
+    case 'fair':
+      return { background: 'rgba(245, 158, 11, 0.18)', color: '#fbbf24', borderColor: 'rgba(251, 191, 36, 0.3)' };
+    case 'poor':
+      return { background: 'rgba(239, 68, 68, 0.18)', color: '#fca5a5', borderColor: 'rgba(252, 165, 165, 0.3)' };
+    default:
+      return {};
+  }
+}
+
 export function VideoTile({ 
   participantId,
   stream, 
@@ -138,6 +157,7 @@ export function VideoTile({
   brandColor = '#a78bfa',
   cameraShape = 'rectangle',
   nameTagStyle = 'classic',
+  connectionHealth = null,
   onAudioLevelChange,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -243,6 +263,17 @@ export function VideoTile({
             </div>
           </div>
           <span style={tileStyles.offlineLabel}>Camera Off</span>
+        </div>
+      )}
+
+      {connectionHealth && !isLocal && (
+        <div
+          style={{ ...tileStyles.connectionBadge, ...getConnectionBadgeStyle(connectionHealth.quality) }}
+          title={formatPeerBandwidthHealthTitle(connectionHealth)}
+          aria-label={`Connection quality: ${formatPeerBandwidthQualityLabel(connectionHealth)}`}
+        >
+          <span style={tileStyles.connectionBadgeDot} />
+          {formatPeerBandwidthQualityLabel(connectionHealth)}
         </div>
       )}
 
@@ -358,6 +389,34 @@ const tileStyles: Record<string, React.CSSProperties> = {
     height: 72,
     background: 'linear-gradient(transparent, rgba(0, 0, 0, 0.65))',
     pointerEvents: 'none',
+  },
+  connectionBadge: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    padding: '4px 7px',
+    borderRadius: 999,
+    border: '1px solid rgba(255, 255, 255, 0.12)',
+    background: 'rgba(15, 23, 42, 0.72)',
+    color: 'rgba(255, 255, 255, 0.72)',
+    fontSize: 10,
+    fontWeight: 700,
+    lineHeight: 1,
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    pointerEvents: 'auto',
+    zIndex: 3,
+  },
+  connectionBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: '50%',
+    background: 'currentColor',
+    boxShadow: '0 0 8px currentColor',
+    flexShrink: 0,
   },
   nameBar: {
     position: 'absolute',
