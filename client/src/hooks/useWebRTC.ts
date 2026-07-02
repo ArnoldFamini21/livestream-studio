@@ -3,11 +3,13 @@ import type { SignalMessage, Participant } from '@studio/shared';
 import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
 import {
   applyBandwidthModeToVideoSender,
+  buildPeerBandwidthHealth,
   createInitialBandwidthAdaptationState,
   readOutboundVideoStatsSnapshot,
   updateBandwidthAdaptationState,
   type BandwidthAdaptationMode,
   type BandwidthAdaptationState,
+  type PeerBandwidthHealth,
 } from '../utils/webrtcBandwidthAdaptation.ts';
 import {
   addTrackWithOptionalSimulcast,
@@ -30,6 +32,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   const peersRef = useRef<Map<string, PeerState>>(new Map());
   const iceConfigRef = useRef<RTCConfiguration>(DEFAULT_ICE_CONFIG);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [peerBandwidthHealth, setPeerBandwidthHealth] = useState<Map<string, PeerBandwidthHealth>>(new Map());
 
   // Use refs to avoid stale closures in setTimeout callbacks
   const myParticipantIdRef = useRef<string | null>(myParticipantId);
@@ -76,6 +79,30 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     setRemoteStreams(new Map(streams));
   }, []);
 
+  const publishPeerBandwidthHealth = useCallback(() => {
+    const updatedAtMs = Date.now();
+    const next = new Map<string, PeerBandwidthHealth>();
+    for (const [participantId, state] of bandwidthStatesRef.current) {
+      next.set(participantId, buildPeerBandwidthHealth(state, updatedAtMs));
+    }
+    setPeerBandwidthHealth(next);
+  }, []);
+
+  const removePeerBandwidthState = useCallback((participantId: string) => {
+    bandwidthStatesRef.current.delete(participantId);
+    setPeerBandwidthHealth((current) => {
+      if (!current.has(participantId)) return current;
+      const next = new Map(current);
+      next.delete(participantId);
+      return next;
+    });
+  }, []);
+
+  const clearPeerBandwidthStates = useCallback(() => {
+    bandwidthStatesRef.current.clear();
+    setPeerBandwidthHealth(new Map());
+  }, []);
+
   // Bug fix #1: Drain buffered ICE candidates for a given peer
   const drainPendingCandidates = useCallback(async (peerId: string, pc: RTCPeerConnection) => {
     const pending = pendingCandidatesRef.current.get(peerId);
@@ -101,7 +128,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         existing.connection.onicecandidate = null;
         existing.connection.onconnectionstatechange = null;
         existing.connection.close();
-        bandwidthStatesRef.current.delete(remoteParticipantId);
+        removePeerBandwidthState(remoteParticipantId);
       }
 
       const pc = new RTCPeerConnection(iceConfigRef.current);
@@ -176,7 +203,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
                 pc.close();
                 peersRef.current.delete(remoteParticipantId);
                 pendingCandidatesRef.current.delete(remoteParticipantId);
-                bandwidthStatesRef.current.delete(remoteParticipantId);
+                removePeerBandwidthState(remoteParticipantId);
                 updateRemoteStreams();
               }
             }
@@ -200,12 +227,12 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
           pc.close();
           peersRef.current.delete(remoteParticipantId);
           pendingCandidatesRef.current.delete(remoteParticipantId);
-          bandwidthStatesRef.current.delete(remoteParticipantId);
+          removePeerBandwidthState(remoteParticipantId);
           updateRemoteStreams();
         } else if (pc.connectionState === 'closed') {
           peersRef.current.delete(remoteParticipantId);
           pendingCandidatesRef.current.delete(remoteParticipantId);
-          bandwidthStatesRef.current.delete(remoteParticipantId);
+          removePeerBandwidthState(remoteParticipantId);
           updateRemoteStreams();
         }
       };
@@ -213,7 +240,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       peersRef.current.set(remoteParticipantId, peerState);
       return pc;
     },
-    [updateRemoteStreams]
+    [removePeerBandwidthState, updateRemoteStreams]
   );
 
   // Initiate a connection to a remote participant (caller side)
@@ -235,7 +262,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
           existing.connection.close();
           peersRef.current.delete(remoteParticipantId);
           pendingCandidatesRef.current.delete(remoteParticipantId);
-          bandwidthStatesRef.current.delete(remoteParticipantId);
+          removePeerBandwidthState(remoteParticipantId);
         } else {
           // Connection exists and is healthy or still negotiating; skip
           return;
@@ -263,10 +290,10 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         pc.close();
         peersRef.current.delete(remoteParticipantId);
         pendingCandidatesRef.current.delete(remoteParticipantId);
-        bandwidthStatesRef.current.delete(remoteParticipantId);
+        removePeerBandwidthState(remoteParticipantId);
       }
     },
-    [createPeerConnection]
+    [createPeerConnection, removePeerBandwidthState]
   );
 
   // Handle incoming offer (callee side)
@@ -321,10 +348,10 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         pc.close();
         peersRef.current.delete(from);
         pendingCandidatesRef.current.delete(from);
-        bandwidthStatesRef.current.delete(from);
+        removePeerBandwidthState(from);
       }
     },
-    [createPeerConnection, drainPendingCandidates]
+    [createPeerConnection, drainPendingCandidates, removePeerBandwidthState]
   );
 
   // Handle incoming answer
@@ -349,11 +376,11 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         }
         peersRef.current.delete(from);
         pendingCandidatesRef.current.delete(from);
-        bandwidthStatesRef.current.delete(from);
+        removePeerBandwidthState(from);
         updateRemoteStreams();
       }
     },
-    [drainPendingCandidates, updateRemoteStreams]
+    [drainPendingCandidates, removePeerBandwidthState, updateRemoteStreams]
   );
 
   // Push an ICE candidate into the per-peer pending buffer, with a cap.
@@ -404,11 +431,11 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         peer.connection.close();
         peersRef.current.delete(participantId);
         pendingCandidatesRef.current.delete(participantId);
-        bandwidthStatesRef.current.delete(participantId);
+        removePeerBandwidthState(participantId);
         updateRemoteStreams();
       }
     },
-    [updateRemoteStreams]
+    [removePeerBandwidthState, updateRemoteStreams]
   );
 
   const applyPeerBandwidthMode = useCallback(async (peer: PeerState, mode: BandwidthAdaptationMode) => {
@@ -423,6 +450,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   }, []);
 
   const samplePeerBandwidth = useCallback(async () => {
+    let updatedHealth = false;
     for (const [participantId, peer] of peersRef.current) {
       if (peer.connection.connectionState !== 'connected') continue;
 
@@ -434,6 +462,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         const previousState = bandwidthStatesRef.current.get(participantId) || createInitialBandwidthAdaptationState();
         const nextState = updateBandwidthAdaptationState(previousState, snapshot);
         bandwidthStatesRef.current.set(participantId, nextState);
+        updatedHealth = true;
 
         if (nextState.mode !== previousState.mode) {
           await applyPeerBandwidthMode(peer, nextState.mode);
@@ -442,7 +471,8 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         console.warn(`Failed to sample outbound video bandwidth for peer ${participantId}:`, err);
       }
     }
-  }, [applyPeerBandwidthMode]);
+    if (updatedHealth) publishPeerBandwidthHealth();
+  }, [applyPeerBandwidthMode, publishPeerBandwidthHealth]);
 
   // Replace a track on all active peer connections (used when switching devices)
   const replaceTrack = useCallback(
@@ -502,9 +532,9 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     }
     peersRef.current.clear();
     pendingCandidatesRef.current.clear();
-    bandwidthStatesRef.current.clear();
+    clearPeerBandwidthStates();
     setRemoteStreams(new Map());
-  }, []);
+  }, [clearPeerBandwidthStates]);
 
   useEffect(() => {
     return () => {
@@ -514,6 +544,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
   return {
     remoteStreams,
+    peerBandwidthHealth,
     connectToPeer,
     handleOffer,
     handleAnswer,
