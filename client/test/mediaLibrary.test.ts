@@ -5,8 +5,10 @@ import {
   SUPPORTED_MEDIA_ACCEPT,
   canPlayMediaAsset,
   detectMediaType,
+  getDeckUploadBlockMessage,
   getMediaAssetStatusLabel,
   getMediaTabForType,
+  hasDeckFiles,
 } from '../src/components/MediaLibrary.tsx';
 
 describe('media library upload support', () => {
@@ -34,6 +36,35 @@ describe('media library upload support', () => {
     assert.equal(getMediaTabForType('video'), 'videos');
     assert.equal(getMediaTabForType('image'), 'images');
     assert.equal(getMediaTabForType('file'), 'files');
+  });
+
+  it('detects deck files for media-server upload preflight without blocking normal media', () => {
+    assert.equal(hasDeckFiles([
+      { name: 'clip.mp4', type: 'video/mp4' } as File,
+      { name: 'still.png', type: 'image/png' } as File,
+    ]), false);
+
+    assert.equal(hasDeckFiles([
+      { name: 'clip.mp4', type: 'video/mp4' } as File,
+      { name: 'Discipleship-Via-Triads.pptx', type: '' } as File,
+    ]), true);
+
+    assert.equal(hasDeckFiles([
+      { name: 'Distinct But Not Distant.pdf', type: 'application/pdf' } as File,
+    ]), true);
+  });
+
+  it('blocks deck uploads only while the exact renderer is not ready', () => {
+    assert.equal(getDeckUploadBlockMessage(null), '');
+    assert.equal(getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }), '');
+    assert.match(
+      getDeckUploadBlockMessage({ status: 'checking', message: 'Checking media-server readiness...' }),
+      /Checking the media-server/
+    );
+    assert.equal(
+      getDeckUploadBlockMessage({ status: 'unavailable', message: 'Media server is not provisioned on Render.' }),
+      'Media server is not provisioned on Render.'
+    );
   });
 
   it('requires uploaded decks to have rendered slide previews before playback', () => {
