@@ -36,6 +36,7 @@ interface RecordingPanelProps {
   onStopRecording: () => Promise<RecordingResult>;
   onUploadRecording?: (input: RecordingServerUploadInput) => Promise<RecordingUploadSummary>;
   onDownloadRecordingExportArtifact?: (input: RecordingServerExportArtifactInput) => Promise<BlobExportDownload>;
+  onRefreshRecordingExport?: (input: RecordingServerExportRefreshInput) => Promise<RecordingExportJobResponse>;
   onAddRecordingMarker?: (seconds: number, label: string) => void;
   onRemoveRecordingMarker?: (markerId: string) => void;
   onClearRecordingMarkers?: () => void;
@@ -71,6 +72,11 @@ export interface RecordingServerExportArtifactInput {
   uploadId: string;
   exportId: string;
   artifact: RecordingExportArtifactStatus;
+}
+
+export interface RecordingServerExportRefreshInput {
+  uploadId: string;
+  exportId: string;
 }
 
 export interface BlobExportDownload {
@@ -425,6 +431,12 @@ export function getReadyFinalMp4Artifact(
 
 export function hasReadyFinalMp4Export(session: Pick<LocalRecordingSession, 'mediaExport'>): boolean {
   return Boolean(getReadyFinalMp4Artifact(session.mediaExport));
+}
+
+export function isRecordingMediaExportRefreshable(
+  exportJob: Pick<RecordingExportJobResponse, 'status'> | null | undefined
+): boolean {
+  return exportJob?.status === 'queued' || exportJob?.status === 'running';
 }
 
 function getRecordingMediaExportLabel(exportJob: RecordingMediaExportHandoff | undefined): string {
@@ -2290,6 +2302,7 @@ export function RecordingPanel({
   onStopRecording,
   onUploadRecording,
   onDownloadRecordingExportArtifact,
+  onRefreshRecordingExport,
   onAddRecordingMarker,
   onRemoveRecordingMarker,
   onClearRecordingMarkers,
@@ -2326,6 +2339,7 @@ export function RecordingPanel({
   const [mediaExportJob, setMediaExportJob] = useState<RecordingExportJobResponse | null>(null);
   const [mediaExportDownloadError, setMediaExportDownloadError] = useState<string | null>(null);
   const [mediaExportDownloadingId, setMediaExportDownloadingId] = useState<string | null>(null);
+  const [isRefreshingMediaExport, setIsRefreshingMediaExport] = useState(false);
   const [recordingExportVideoCodec, setRecordingExportVideoCodec] = useState<RecordingExportVideoCodec>('h264');
   const [driveLinkCopied, setDriveLinkCopied] = useState(false);
   const [driveRetentionPolicyId, setDriveRetentionPolicyId] = useState<RecordingCloudRetentionPolicyId>(
@@ -2409,6 +2423,7 @@ export function RecordingPanel({
       setMediaExportJob(null);
       setMediaExportDownloadError(null);
       setMediaExportDownloadingId(null);
+      setIsRefreshingMediaExport(false);
       setGeneratedTranscript(null);
       setTranscriptionError(null);
       const resultFiles = result.files.length > 0
@@ -2489,6 +2504,7 @@ export function RecordingPanel({
   const readyMediaExportArtifacts = useMemo(() => (
     mediaExportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || []
   ), [mediaExportJob]);
+  const mediaExportCanRefresh = isRecordingMediaExportRefreshable(mediaExportJob) && Boolean(onRefreshRecordingExport);
 
   const handleDownloadMediaExportArtifact = useCallback(async (artifact: RecordingExportArtifactStatus) => {
     if (!mediaExportJob || !onDownloadRecordingExportArtifact) return;
@@ -2510,6 +2526,37 @@ export function RecordingPanel({
       setMediaExportDownloadingId(null);
     }
   }, [mediaExportJob, onDownloadRecordingExportArtifact]);
+
+  const handleRefreshCurrentMediaExport = useCallback(async () => {
+    if (!mediaExportJob || !onRefreshRecordingExport) return;
+    setIsRefreshingMediaExport(true);
+    setMediaExportDownloadError(null);
+    try {
+      const refreshed = await onRefreshRecordingExport({
+        uploadId: mediaExportJob.uploadId,
+        exportId: mediaExportJob.exportId,
+      });
+      setMediaExportJob(refreshed);
+      const readyArtifacts = refreshed.artifacts.filter((artifact) => artifact.status === 'ready');
+      const artifactSummary = readyArtifacts.length > 0
+        ? ` ${readyArtifacts.map((artifact) => artifact.format.toUpperCase()).join(', ')} ready.`
+        : '';
+      setMediaUploadMessage(`Media-server export ${refreshed.status}.${artifactSummary}`);
+      if (activeSessionId) {
+        try {
+          await updateSessionMediaExport(activeSessionId, refreshed);
+        } catch (err) {
+          console.warn('Failed to refresh saved media export metadata:', err);
+        }
+      }
+    } catch (err) {
+      setMediaExportDownloadError(err instanceof Error && err.message
+        ? err.message
+        : 'Media-server export refresh failed.');
+    } finally {
+      setIsRefreshingMediaExport(false);
+    }
+  }, [activeSessionId, mediaExportJob, onRefreshRecordingExport, updateSessionMediaExport]);
 
   const handleDownloadAll = useCallback(async () => {
     for (let i = 0; i < recordedFiles.length; i++) {
@@ -2872,6 +2919,30 @@ export function RecordingPanel({
       setLibraryBusyId(null);
     }
   }, [onDownloadRecordingExportArtifact]);
+
+  const handleRefreshSessionMediaExport = useCallback(async (session: LocalRecordingSession) => {
+    if (!session.mediaExport || !onRefreshRecordingExport) return;
+
+    setLibraryBusyId(session.id);
+    setLibraryActionError(null);
+    try {
+      const refreshed = await onRefreshRecordingExport({
+        uploadId: session.mediaExport.uploadId,
+        exportId: session.mediaExport.exportId,
+      });
+      await updateSessionMediaExport(session.id, refreshed);
+      if (activeSessionId === session.id) {
+        setMediaExportJob(refreshed);
+      }
+    } catch (err) {
+      const message = err instanceof Error && err.message
+        ? err.message
+        : 'Media-server export status refresh failed.';
+      setLibraryActionError(message);
+    } finally {
+      setLibraryBusyId(null);
+    }
+  }, [activeSessionId, onRefreshRecordingExport, updateSessionMediaExport]);
 
   const handleDownloadSessionBundle = useCallback(async (session: LocalRecordingSession) => {
     setLibraryBusyId(session.id);
@@ -3246,6 +3317,16 @@ export function RecordingPanel({
                         </button>
                       ))}
                     </div>
+                  )}
+                  {mediaExportCanRefresh && (
+                    <button
+                      type="button"
+                      style={styles.mediaExportButton}
+                      onClick={() => void handleRefreshCurrentMediaExport()}
+                      disabled={isRefreshingMediaExport}
+                    >
+                      {isRefreshingMediaExport ? 'Refreshing' : 'Refresh Export'}
+                    </button>
                   )}
                   {mediaExportDownloadError && (
                     <span style={styles.mediaUploadStatusErrorText}>{mediaExportDownloadError}</span>
@@ -3623,6 +3704,11 @@ export function RecordingPanel({
             const trackError = libraryTrackError?.sessionId === session.id ? libraryTrackError.message : null;
             const sessionMp4Artifact = getReadyFinalMp4Artifact(session.mediaExport);
             const canDownloadSessionMp4 = Boolean(sessionMp4Artifact && onDownloadRecordingExportArtifact);
+            const canRefreshSessionMp4 = Boolean(
+              session.mediaExport &&
+              isRecordingMediaExportRefreshable(session.mediaExport) &&
+              onRefreshRecordingExport
+            );
             return (
                 <div key={session.id} style={{ ...styles.sessionCard, ...(isActive ? styles.sessionCardActive : {}) }}>
                   <div style={styles.sessionTop}>
@@ -3665,6 +3751,16 @@ export function RecordingPanel({
                         title={canDownloadSessionMp4 ? 'Download the media-server MP4 export' : 'MP4 export is not ready'}
                       >
                         {isBusy && canDownloadSessionMp4 ? 'Working...' : 'MP4'}
+                      </button>
+                    )}
+                    {session.mediaExport && canRefreshSessionMp4 && (
+                      <button
+                        style={styles.sessionBtn}
+                        onClick={() => handleRefreshSessionMediaExport(session)}
+                        disabled={isBusy}
+                        title="Refresh media-server export status"
+                      >
+                        {isBusy ? 'Working...' : 'Refresh'}
                       </button>
                     )}
                     <button

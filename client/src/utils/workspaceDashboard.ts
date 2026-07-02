@@ -13,6 +13,8 @@ export interface WorkspaceDashboardSummary {
   totalRecordingBytes: number;
   totalRecordingDurationSeconds: number;
   cloudRecordingCount: number;
+  mediaExportRecordingCount: number;
+  readyMp4RecordingCount: number;
   totalBrandKits: number;
   brandKitsWithLogo: number;
   brandKitsWithBackground: number;
@@ -34,6 +36,12 @@ function getStudioTime(studio: SavedHostStudio): number {
 function getCreatedAtTime(value: { createdAt?: string }): number {
   const createdAt = Date.parse(value.createdAt || '');
   return Number.isFinite(createdAt) ? createdAt : 0;
+}
+
+function hasReadyMp4Export(recording: LocalRecordingSession): boolean {
+  return Boolean(recording.mediaExport?.artifacts.some((artifact) => (
+    artifact.status === 'ready' && (artifact.id === 'final-mp4' || artifact.format === 'mp4')
+  )));
 }
 
 export function buildWorkspaceDashboardSummary(
@@ -81,6 +89,8 @@ export function buildWorkspaceDashboardSummary(
       return total + Math.max(0, Number(recording.durationSeconds));
     }, 0)),
     cloudRecordingCount: recordings.filter((recording) => Boolean(recording.cloud)).length,
+    mediaExportRecordingCount: recordings.filter((recording) => Boolean(recording.mediaExport)).length,
+    readyMp4RecordingCount: recordings.filter(hasReadyMp4Export).length,
     totalBrandKits: brandKits.length,
     brandKitsWithLogo: brandKits.filter((kit) => Boolean(kit.logoUrl)).length,
     brandKitsWithBackground: brandKits.filter((kit) => kit.stageBackground.type !== 'none' && Boolean(kit.stageBackground.value)).length,

@@ -16,6 +16,8 @@ const WORKSPACE_BACKUP_TYPE = 'livestream-studio-workspace-backup';
 const WORKSPACE_BACKUP_VERSION = 1;
 const MAX_BACKUP_STUDIOS = 20;
 
+type WorkspaceRecordingMediaExportStatus = 'queued' | 'running' | 'ready' | 'error';
+
 export interface WorkspaceRecordingCatalogItem {
   id: string;
   roomName: string;
@@ -30,6 +32,18 @@ export interface WorkspaceRecordingCatalogItem {
     uploadedAt: string;
     expiresAt: string | null;
     permanent: boolean;
+  };
+  mediaExport?: {
+    status: WorkspaceRecordingMediaExportStatus;
+    uploadId: string;
+    exportId: string;
+    roomId: string;
+    sessionId?: string;
+    updatedAt: string;
+    savedAt?: string;
+    readyMp4: boolean;
+    artifactCount: number;
+    readyArtifactCount: number;
   };
 }
 
@@ -77,6 +91,12 @@ function readOptionalIsoDate(value: unknown): string | undefined {
 function readNonNegativeInteger(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+function readMediaExportStatus(value: unknown): WorkspaceRecordingMediaExportStatus | null {
+  return value === 'queued' || value === 'running' || value === 'ready' || value === 'error'
+    ? value
+    : null;
 }
 
 function sanitizeStudio(value: unknown): SavedHostStudio | null {
@@ -160,6 +180,29 @@ function sanitizeRecordingCatalogItem(value: unknown): WorkspaceRecordingCatalog
     }
   }
 
+  if (isRecord(value.mediaExport)) {
+    const status = readMediaExportStatus(value.mediaExport.status);
+    const uploadId = readString(value.mediaExport.uploadId, 128);
+    const exportId = readString(value.mediaExport.exportId, 128);
+    const roomId = readString(value.mediaExport.roomId, 128);
+    if (status && uploadId && exportId && roomId) {
+      const sessionId = readString(value.mediaExport.sessionId, 128);
+      const savedAt = readOptionalIsoDate(value.mediaExport.savedAt);
+      item.mediaExport = {
+        status,
+        uploadId,
+        exportId,
+        roomId,
+        ...(sessionId ? { sessionId } : {}),
+        updatedAt: readIsoDate(value.mediaExport.updatedAt),
+        ...(savedAt ? { savedAt } : {}),
+        readyMp4: Boolean(value.mediaExport.readyMp4),
+        artifactCount: readNonNegativeInteger(value.mediaExport.artifactCount),
+        readyArtifactCount: readNonNegativeInteger(value.mediaExport.readyArtifactCount),
+      };
+    }
+  }
+
   return item;
 }
 
@@ -191,6 +234,25 @@ function recordingToCatalogItem(session: LocalRecordingSession): WorkspaceRecord
       uploadedAt: session.cloud.uploadedAt,
       expiresAt: session.cloud.expiresAt,
       permanent: session.cloud.permanent,
+    };
+  }
+
+  if (session.mediaExport) {
+    const readyArtifactCount = session.mediaExport.artifacts.filter((artifact) => artifact.status === 'ready').length;
+    const readyMp4 = session.mediaExport.artifacts.some((artifact) => (
+      artifact.status === 'ready' && (artifact.id === 'final-mp4' || artifact.format === 'mp4')
+    ));
+    item.mediaExport = {
+      status: session.mediaExport.status,
+      uploadId: session.mediaExport.uploadId,
+      exportId: session.mediaExport.exportId,
+      roomId: session.mediaExport.roomId,
+      ...(session.mediaExport.sessionId ? { sessionId: session.mediaExport.sessionId } : {}),
+      updatedAt: session.mediaExport.updatedAt,
+      savedAt: session.mediaExport.savedAt,
+      readyMp4,
+      artifactCount: session.mediaExport.artifacts.length,
+      readyArtifactCount,
     };
   }
 
