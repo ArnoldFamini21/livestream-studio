@@ -426,12 +426,31 @@ function getMediaExportDownloadLabel(artifact: RecordingExportArtifactStatus): s
   return `Download ${artifact.format.toUpperCase()}`;
 }
 
+export function getRecordingArtifactShareUrl(
+  artifact: Pick<RecordingExportArtifactStatus, 'status' | 'storage'> | null | undefined
+): string | null {
+  const value = artifact?.status === 'ready' ? artifact.storage?.url?.trim() : '';
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getReadyFinalMp4Artifact(
   exportJob: { artifacts: RecordingExportArtifactStatus[] } | null | undefined
 ): RecordingExportArtifactStatus | null {
   return exportJob?.artifacts.find((artifact) => artifact.status === 'ready' && artifact.id === 'final-mp4') ||
     exportJob?.artifacts.find((artifact) => artifact.status === 'ready' && artifact.format === 'mp4') ||
     null;
+}
+
+export function getReadyFinalMp4ShareUrl(
+  exportJob: { artifacts: RecordingExportArtifactStatus[] } | null | undefined
+): string | null {
+  return getRecordingArtifactShareUrl(getReadyFinalMp4Artifact(exportJob));
 }
 
 export function hasReadyFinalMp4Export(session: Pick<LocalRecordingSession, 'mediaExport'>): boolean {
@@ -448,7 +467,10 @@ function getRecordingMediaExportLabel(exportJob: RecordingMediaExportHandoff | u
   if (!exportJob) return '';
   const readyMp4 = getReadyFinalMp4Artifact(exportJob);
   const readyCount = exportJob.artifacts.filter((artifact) => artifact.status === 'ready').length;
-  if (readyMp4) return `Media export | MP4 ready | ${readyCount} artifact${readyCount === 1 ? '' : 's'}`;
+  if (readyMp4) {
+    const shareLabel = getRecordingArtifactShareUrl(readyMp4) ? ' | share link ready' : '';
+    return `Media export | MP4 ready${shareLabel} | ${readyCount} artifact${readyCount === 1 ? '' : 's'}`;
+  }
   return `Media export | ${exportJob.status} | ${readyCount} artifact${readyCount === 1 ? '' : 's'} ready`;
 }
 
@@ -1011,6 +1033,7 @@ export function buildRecordingLibraryCatalogCsv(sessions: LocalRecordingSession[
     'mediaUploadId',
     'mediaExportId',
     'mediaMp4Ready',
+    'mediaMp4ShareUrl',
     'mediaArtifactCount',
     'trackIndex',
     'trackLabel',
@@ -1042,6 +1065,7 @@ export function buildRecordingLibraryCatalogCsv(sessions: LocalRecordingSession[
       session.mediaExport?.uploadId || '',
       session.mediaExport?.exportId || '',
       String(hasReadyFinalMp4Export(session)),
+      getReadyFinalMp4ShareUrl(session.mediaExport) || '',
       session.mediaExport?.artifacts.length || '',
     ];
     if (session.files.length === 0) return [[...base, '', '', '', '', '', '']];
@@ -2350,9 +2374,11 @@ export function RecordingPanel({
   const [mediaExportJob, setMediaExportJob] = useState<RecordingExportJobResponse | null>(null);
   const [mediaExportDownloadError, setMediaExportDownloadError] = useState<string | null>(null);
   const [mediaExportDownloadingId, setMediaExportDownloadingId] = useState<string | null>(null);
+  const [mediaExportShareCopiedId, setMediaExportShareCopiedId] = useState<string | null>(null);
   const [isRefreshingMediaExport, setIsRefreshingMediaExport] = useState(false);
   const [recordingExportVideoCodec, setRecordingExportVideoCodec] = useState<RecordingExportVideoCodec>('h264');
   const [driveLinkCopied, setDriveLinkCopied] = useState(false);
+  const [libraryCopiedMp4SessionId, setLibraryCopiedMp4SessionId] = useState<string | null>(null);
   const [driveRetentionPolicyId, setDriveRetentionPolicyId] = useState<RecordingCloudRetentionPolicyId>(
     DEFAULT_RECORDING_CLOUD_RETENTION_POLICY_ID
   );
@@ -2444,6 +2470,7 @@ export function RecordingPanel({
     setMediaExportJob(null);
     setMediaExportDownloadError(null);
     setMediaExportDownloadingId(null);
+    setMediaExportShareCopiedId(null);
     setIsRefreshingMediaExport(false);
     setGeneratedTranscript(null);
     setTranscriptionError(null);
@@ -2638,6 +2665,21 @@ export function RecordingPanel({
       setMediaExportDownloadingId(null);
     }
   }, [mediaExportJob, onDownloadRecordingExportArtifact]);
+
+  const handleCopyMediaExportShareLink = useCallback(async (artifact: RecordingExportArtifactStatus) => {
+    const shareUrl = getRecordingArtifactShareUrl(artifact);
+    if (!shareUrl) return;
+    setMediaExportDownloadError(null);
+    try {
+      await copyTextToClipboard(shareUrl);
+      setMediaExportShareCopiedId(artifact.id);
+      window.setTimeout(() => setMediaExportShareCopiedId((current) => (current === artifact.id ? null : current)), 2200);
+    } catch (err) {
+      setMediaExportDownloadError(err instanceof Error && err.message
+        ? err.message
+        : 'Could not copy MP4 share link.');
+    }
+  }, []);
 
   const handleRefreshCurrentMediaExport = useCallback(async () => {
     if (!mediaExportJob || !onRefreshRecordingExport) return;
@@ -3024,6 +3066,22 @@ export function RecordingPanel({
       setLibraryBusyId(null);
     }
   }, [onDownloadRecordingExportArtifact]);
+
+  const handleCopySessionMp4ShareLink = useCallback(async (session: LocalRecordingSession, shareUrl: string) => {
+    setLibraryActionError(null);
+    try {
+      await copyTextToClipboard(shareUrl);
+      setLibraryCopiedMp4SessionId(session.id);
+      window.setTimeout(() => {
+        setLibraryCopiedMp4SessionId((current) => (current === session.id ? null : current));
+      }, 2200);
+    } catch (err) {
+      const message = err instanceof Error && err.message
+        ? err.message
+        : 'Could not copy MP4 share link.';
+      setLibraryActionError(message);
+    }
+  }, []);
 
   const handleRefreshSessionMediaExport = useCallback(async (session: LocalRecordingSession) => {
     if (!session.mediaExport || !onRefreshRecordingExport) return;
@@ -3452,19 +3510,32 @@ export function RecordingPanel({
                   <span style={styles.mediaUploadStatusText}>{mediaUploadError || mediaUploadMessage}</span>
                   {readyMediaExportArtifacts.length > 0 && onDownloadRecordingExportArtifact && (
                     <div style={styles.mediaExportActions}>
-                      {readyMediaExportArtifacts.map((artifact) => (
-                        <button
-                          key={artifact.id}
-                          type="button"
-                          style={styles.mediaExportButton}
-                          onClick={() => void handleDownloadMediaExportArtifact(artifact)}
-                          disabled={mediaExportDownloadingId === artifact.id}
-                        >
-                          {mediaExportDownloadingId === artifact.id
-                            ? 'Downloading'
-                            : getMediaExportDownloadLabel(artifact)}
-                        </button>
-                      ))}
+                      {readyMediaExportArtifacts.map((artifact) => {
+                        const shareUrl = getRecordingArtifactShareUrl(artifact);
+                        return (
+                          <div key={artifact.id} style={styles.mediaExportButtonGroup}>
+                            <button
+                              type="button"
+                              style={styles.mediaExportButton}
+                              onClick={() => void handleDownloadMediaExportArtifact(artifact)}
+                              disabled={mediaExportDownloadingId === artifact.id}
+                            >
+                              {mediaExportDownloadingId === artifact.id
+                                ? 'Downloading'
+                                : getMediaExportDownloadLabel(artifact)}
+                            </button>
+                            {shareUrl && (
+                              <button
+                                type="button"
+                                style={styles.mediaExportButtonSecondary}
+                                onClick={() => void handleCopyMediaExportShareLink(artifact)}
+                              >
+                                {mediaExportShareCopiedId === artifact.id ? 'Copied' : 'Copy Link'}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                   {mediaExportCanRefresh && (
@@ -3852,6 +3923,7 @@ export function RecordingPanel({
             const sessionTracks = libraryTrackFiles[session.id];
             const trackError = libraryTrackError?.sessionId === session.id ? libraryTrackError.message : null;
             const sessionMp4Artifact = getReadyFinalMp4Artifact(session.mediaExport);
+            const sessionMp4ShareUrl = getRecordingArtifactShareUrl(sessionMp4Artifact);
             const canDownloadSessionMp4 = Boolean(sessionMp4Artifact && onDownloadRecordingExportArtifact);
             const canRefreshSessionMp4 = Boolean(
               session.mediaExport &&
@@ -3900,6 +3972,16 @@ export function RecordingPanel({
                         title={canDownloadSessionMp4 ? 'Download the media-server MP4 export' : 'MP4 export is not ready'}
                       >
                         {isBusy && canDownloadSessionMp4 ? 'Working...' : 'MP4'}
+                      </button>
+                    )}
+                    {sessionMp4ShareUrl && (
+                      <button
+                        style={styles.sessionBtn}
+                        onClick={() => void handleCopySessionMp4ShareLink(session, sessionMp4ShareUrl)}
+                        disabled={isBusy}
+                        title="Copy the cloud MP4 share link"
+                      >
+                        {libraryCopiedMp4SessionId === session.id ? 'Copied' : 'Link'}
                       </button>
                     )}
                     {session.mediaExport && canRefreshSessionMp4 && (
@@ -4560,12 +4642,29 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'flex-end',
     gap: 6,
   },
+  mediaExportButtonGroup: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
   mediaExportButton: {
     padding: '5px 8px',
     borderRadius: 7,
     border: '1px solid rgba(125, 211, 252, 0.32)',
     background: 'rgba(14, 116, 144, 0.18)',
     color: '#bae6fd',
+    fontSize: 10,
+    fontWeight: 800,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap' as const,
+  },
+  mediaExportButtonSecondary: {
+    padding: '5px 8px',
+    borderRadius: 7,
+    border: '1px solid rgba(167, 139, 250, 0.36)',
+    background: 'rgba(124, 58, 237, 0.18)',
+    color: '#ddd6fe',
     fontSize: 10,
     fontWeight: 800,
     cursor: 'pointer',
