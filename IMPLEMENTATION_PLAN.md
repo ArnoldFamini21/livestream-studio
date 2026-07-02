@@ -228,6 +228,7 @@
 - [ ] Account-backed user dashboard: manage studios, recordings, and brand assets across devices
   - [x] Workspace dashboard reads host-scoped server recording catalogs and exposes synced MP4 share links
 - [ ] Team/organization support
+  - [x] Local roster can compose role-aware production team invites for saved studios
 
 ### 10B. Media Server (SFU)
 - [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants
