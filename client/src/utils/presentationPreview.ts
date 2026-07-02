@@ -13,7 +13,7 @@ const RENDERED_SLIDE_HEIGHT = 720;
 const RENDER_SETTLE_FRAMES = 2;
 const RENDER_SETTLE_TIMEOUT_MS = 40;
 const PDF_RENDER_SCALE_LIMIT = 2;
-const SERVER_RENDER_TIMEOUT_MS = 60_000;
+const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
@@ -30,6 +30,7 @@ interface PresentationPreviewOptions {
   mediaHttpUrl?: string;
   fetchImpl?: typeof fetch;
   serverRenderTimeoutMs?: number;
+  requireRenderedSlides?: boolean;
 }
 
 interface ServerPresentationPreviewResponse {
@@ -216,6 +217,20 @@ export function applyRenderedSlideImages(
   ));
 }
 
+function isRenderedSlideImageUrl(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^data:image\/(?:png|jpeg|jpg|webp);base64,/i.test(value)
+  );
+}
+
+export function hasRenderedPresentationSlides(preview: StudioMediaAssetPreview | undefined): boolean {
+  return Boolean(
+    preview?.slides.length &&
+    preview.slides.every((slide) => isRenderedSlideImageUrl(slide.imageUrl))
+  );
+}
+
 function isValidRenderedSlide(value: unknown): value is PresentationSlidePreview {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<PresentationSlidePreview>;
@@ -226,7 +241,7 @@ function isValidRenderedSlide(value: unknown): value is PresentationSlidePreview
     candidate.lines.every((line) => typeof line === 'string') &&
     (candidate.imageUrl === undefined || (
       typeof candidate.imageUrl === 'string' &&
-      candidate.imageUrl.startsWith('data:image/png;base64,')
+      isRenderedSlideImageUrl(candidate.imageUrl)
     ))
   );
 }
@@ -539,12 +554,13 @@ async function buildPdfPresentationPreview(
   if (!isPdfFile(file) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
 
   const serverPreview = await buildServerRenderedPresentationPreview(file, options);
-  if (serverPreview) return serverPreview;
+  if (serverPreview && (!options.requireRenderedSlides || hasRenderedPresentationSlides(serverPreview))) return serverPreview;
 
   const slides = await renderPdfPagesToImages(await file.arrayBuffer());
-  return slides.length > 0
+  const preview: StudioMediaAssetPreview | undefined = slides.length > 0
     ? { kind: 'presentation-slides', sourceFormat: 'pdf', slides }
     : undefined;
+  return options.requireRenderedSlides && !hasRenderedPresentationSlides(preview) ? undefined : preview;
 }
 
 function getSortedSlidePaths(zip: JSZip): string[] {
@@ -571,7 +587,8 @@ export async function buildPresentationPreview(
   const serverPreviewPromise = buildServerRenderedPresentationPreview(file, options).catch(() => undefined);
 
   if (isLegacyPowerPointFile(file)) {
-    return serverPreviewPromise;
+    const serverPreview = await serverPreviewPromise;
+    return options.requireRenderedSlides && !hasRenderedPresentationSlides(serverPreview) ? undefined : serverPreview;
   }
 
   try {
@@ -595,16 +612,21 @@ export async function buildPresentationPreview(
 
     const serverPreview = await serverPreviewPromise;
     if (serverPreview) {
-      return mergeRenderedPresentationPreview(slides, serverPreview, 'pptx');
+      const mergedServerPreview = mergeRenderedPresentationPreview(slides, serverPreview, 'pptx');
+      if (!options.requireRenderedSlides || hasRenderedPresentationSlides(mergedServerPreview)) {
+        return mergedServerPreview;
+      }
     }
 
     const renderedImageUrls = await renderPptxSlidesToImages(arrayBuffer, slides.length);
     const finalSlides = applyRenderedSlideImages(slides, renderedImageUrls);
 
-    return finalSlides.length > 0
+    const preview: StudioMediaAssetPreview | undefined = finalSlides.length > 0
       ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides: finalSlides }
       : undefined;
+    return options.requireRenderedSlides && !hasRenderedPresentationSlides(preview) ? undefined : preview;
   } catch {
-    return serverPreviewPromise;
+    const serverPreview = await serverPreviewPromise;
+    return options.requireRenderedSlides && !hasRenderedPresentationSlides(serverPreview) ? undefined : serverPreview;
   }
 }

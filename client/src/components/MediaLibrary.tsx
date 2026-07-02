@@ -59,6 +59,8 @@ export function MediaLibrary({
   const [activeTab, setActiveTab] = useState<MediaTab>('videos');
   const [videoUrl, setVideoUrl] = useState('');
   const [imageUrl, setImageUrl] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const inputRefs = {
     videos: useRef<HTMLInputElement>(null),
     slides: useRef<HTMLInputElement>(null),
@@ -93,9 +95,14 @@ export function MediaLibrary({
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
     setActiveTab(getMediaTabForType(detectMediaType(files[0])));
-    void Promise.resolve(onUpload(files)).catch((error) => {
-      console.error('Failed to upload media:', error);
-    });
+    setUploadError('');
+    setIsUploading(true);
+    void Promise.resolve(onUpload(files))
+      .catch((error) => {
+        console.error('Failed to upload media:', error);
+        setUploadError('Upload failed. Try that file again.');
+      })
+      .finally(() => setIsUploading(false));
   };
 
   const counts = {
@@ -160,11 +167,17 @@ export function MediaLibrary({
             <p style={styles.uploadMeta}>{getUploadMeta(activeTab)}</p>
             <p style={styles.uploadHint}>PDF and PowerPoint files are accepted from any tab.</p>
           </div>
-          <button type="button" style={styles.uploadBtn} onClick={() => inputRefs[activeTab].current?.click()}>
+          <button
+            type="button"
+            style={{ ...styles.uploadBtn, ...(isUploading ? styles.uploadBtnDisabled : {}) }}
+            disabled={isUploading}
+            onClick={() => inputRefs[activeTab].current?.click()}
+          >
             <UploadIcon />
-            Upload
+            {isUploading ? 'Rendering...' : 'Upload'}
           </button>
         </div>
+        {uploadError && <div style={styles.uploadError}>{uploadError}</div>}
 
         {activeTab === 'videos' && (
           <UrlBox
@@ -195,17 +208,28 @@ export function MediaLibrary({
           ) : (
             filteredAssets.map((asset) => {
               const isActive = activeMedia?.assetId === asset.id || activeMedia?.url === asset.url;
+              const canPlay = canPlayMediaAsset(asset);
+              const hasError = asset.processingStatus === 'error';
               return (
-                <div key={asset.id} style={{ ...styles.assetCard, ...(isActive ? styles.assetCardActive : {}) }}>
-                  <div style={styles.assetIcon}>
+                <div key={asset.id} style={{ ...styles.assetCard, ...(isActive ? styles.assetCardActive : {}), ...(hasError ? styles.assetCardError : {}) }}>
+                  <div style={{ ...styles.assetIcon, ...(hasError ? styles.assetIconError : {}) }}>
                     <MediaTypeIcon type={asset.type} />
                   </div>
                   <div style={styles.assetInfo}>
                     <span style={styles.assetName}>{asset.name}</span>
-                    <span style={styles.assetMeta}>{getAssetLabel(asset)}</span>
+                    <span style={{ ...styles.assetMeta, ...(hasError ? styles.assetMetaError : {}) }}>
+                      {hasError ? asset.processingMessage || 'This asset could not be prepared for broadcast.' : getAssetLabel(asset)}
+                    </span>
                   </div>
                   <div style={styles.assetActions}>
-                    <button type="button" style={styles.iconBtn} onClick={() => onPlay(asset)} aria-label={`Show ${asset.name}`}>
+                    <button
+                      type="button"
+                      style={{ ...styles.iconBtn, ...(!canPlay ? styles.iconBtnDisabled : {}) }}
+                      onClick={() => { if (canPlay) onPlay(asset); }}
+                      disabled={!canPlay}
+                      aria-label={`Show ${asset.name}`}
+                      title={canPlay ? `Show ${asset.name}` : asset.processingMessage || 'Asset is not ready'}
+                    >
                       <PlayIcon />
                     </button>
                     <button type="button" style={styles.iconBtn} onClick={() => onRemove(asset.id)} aria-label={`Remove ${asset.name}`}>
@@ -375,6 +399,14 @@ export function getMediaTabForType(type: StudioMediaType): MediaTab {
   return 'files';
 }
 
+export function canPlayMediaAsset(asset: StudioMediaAsset): boolean {
+  if (asset.processingStatus === 'error') return false;
+  if ((asset.type === 'presentation' || asset.type === 'pdf') && asset.source === 'upload') {
+    return Boolean(asset.preview?.kind === 'presentation-slides' && asset.preview.slides.length > 0);
+  }
+  return true;
+}
+
 function getUploadMeta(tab: MediaTab): string {
   switch (tab) {
     case 'videos':
@@ -507,6 +539,8 @@ const styles: Record<string, React.CSSProperties> = {
   uploadMeta: { margin: '3px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.25 },
   uploadHint: { margin: '3px 0 0', fontSize: 9, color: 'var(--text-muted)', lineHeight: 1.25 },
   uploadBtn: { height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 7, border: '1px solid var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)', fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: '0 10px', flexShrink: 0 },
+  uploadBtnDisabled: { opacity: 0.58, cursor: 'wait' },
+  uploadError: { marginTop: -4, padding: '8px 10px', borderRadius: 7, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.1)', color: '#fecaca', fontSize: 10, fontWeight: 700, lineHeight: 1.3 },
   urlBox: { display: 'flex', gap: 6 },
   urlInput: { minWidth: 0, flex: 1, height: 34, padding: '0 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', outline: 'none', fontSize: 12 },
   urlBtn: { height: 34, borderRadius: 7, border: 'none', background: 'var(--accent-solid)', color: 'white', fontSize: 11, fontWeight: 700, padding: '0 10px', cursor: 'pointer' },
@@ -515,10 +549,14 @@ const styles: Record<string, React.CSSProperties> = {
   emptyText: { fontSize: 12, color: 'var(--text-muted)' },
   assetCard: { display: 'flex', alignItems: 'center', gap: 9, padding: '9px 10px', border: '1px solid var(--border)', background: 'var(--bg-tertiary)', borderRadius: 8 },
   assetCardActive: { border: '1px solid var(--success)', background: 'rgba(34,197,94,0.08)' },
+  assetCardError: { border: '1px solid rgba(248,113,113,0.45)', background: 'rgba(248,113,113,0.08)' },
   assetIcon: { width: 28, height: 28, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-hover)', background: 'rgba(167,139,250,0.1)', flexShrink: 0 },
+  assetIconError: { color: '#fca5a5', background: 'rgba(248,113,113,0.12)' },
   assetInfo: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
   assetName: { fontSize: 12, fontWeight: 650, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   assetMeta: { fontSize: 10, color: 'var(--text-muted)' },
+  assetMetaError: { color: '#fca5a5', lineHeight: 1.25, whiteSpace: 'normal' },
   assetActions: { display: 'flex', alignItems: 'center', gap: 4 },
   iconBtn: { width: 26, height: 26, borderRadius: 6, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0 },
+  iconBtnDisabled: { opacity: 0.35, cursor: 'not-allowed' },
 };
