@@ -84,6 +84,7 @@ describe('presentation rendering', () => {
     assert.equal(preview.slides.length, 2);
     assert.equal(preview.slides[0].title, 'Slide 1');
     assert.equal(preview.slides[0].imageUrl, `data:image/png;base64,${Buffer.from('png-one').toString('base64')}`);
+    assert.equal(preview.slides[0].rendered, true);
   });
 
   it('rejects unsupported files before invoking render commands', async () => {

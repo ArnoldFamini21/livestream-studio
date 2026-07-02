@@ -593,6 +593,7 @@ export interface PresentationSlidePreview {
   title: string;
   lines: string[];
   imageUrl?: string;
+  rendered?: boolean;
   notes?: string[];
 }
 
