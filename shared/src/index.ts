@@ -612,7 +612,7 @@ export interface StudioMediaAsset {
   createdAt: string;
   source: 'upload' | 'url';
   preview?: StudioMediaAssetPreview;
-  processingStatus?: 'ready' | 'error';
+  processingStatus?: 'processing' | 'ready' | 'error';
   processingMessage?: string;
 }
 

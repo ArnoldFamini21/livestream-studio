@@ -40,7 +40,7 @@ import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
-import { buildPresentationPreview } from '../utils/presentationPreview.ts';
+import { buildPresentationPreview, hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
 import {
   clampPresentationSlideIndex,
   getPresentationDeckUnitLabel,
@@ -703,7 +703,13 @@ function MediaDocumentCard({ media }: { media: ActiveMedia }) {
 function getDeckRenderFailureMessage(type: StudioMediaType): string {
   return type === 'pdf'
     ? 'PDF could not be rendered into broadcast slides. Try uploading it again.'
-    : 'PowerPoint design could not be rendered. Try uploading again, or export the deck to PDF and upload that.';
+    : 'PowerPoint design could not be rendered exactly. Try uploading again, or export the deck to PDF and upload that.';
+}
+
+function getDeckPreparationMessage(type: StudioMediaType): string {
+  return type === 'pdf'
+    ? 'Rendering PDF pages for broadcast...'
+    : 'Rendering PowerPoint design with the media server...';
 }
 
 function PresentationRenderMissingCard({ media }: { media: ActiveMedia }) {
@@ -733,9 +739,9 @@ function PresentationDeckStage({
   const currentIndex = clampPresentationSlideIndex(slideIndex, slides.length);
   const slide = slides[currentIndex];
 
-  if (!slide) return <MediaDocumentCard media={media} />;
+  if (!slide) return <PresentationRenderMissingCard media={media} />;
 
-  if (!slide.imageUrl) {
+  if (!hasRenderedPresentationSlides(media.preview)) {
     return <PresentationRenderMissingCard media={media} />;
   }
 
@@ -3273,18 +3279,10 @@ export function StudioRoom() {
 
   // Media library
   const onUploadMedia = async (files: FileList | File[]) => {
-    const nextAssets = await Promise.all(Array.from(files).map(async (file): Promise<StudioMediaAsset> => {
+    const uploads = Array.from(files).map((file) => {
       const type = detectMediaType(file);
       const isDeck = type === 'presentation' || type === 'pdf';
-      const preview = isDeck
-        ? await buildPresentationPreview(file, {
-            requireRenderedSlides: true,
-            requireServerRenderedPowerPoint: type === 'presentation',
-            allowBrowserPowerPointRenderFallback: type === 'presentation',
-          })
-        : undefined;
-      const renderFailed = isDeck && !preview;
-      return {
+      const asset: StudioMediaAsset = {
         id: `media-${++idCounters.current.media}`,
         name: file.name,
         url: URL.createObjectURL(file),
@@ -3293,16 +3291,54 @@ export function StudioRoom() {
         sizeBytes: file.size,
         createdAt: new Date().toISOString(),
         source: 'upload' as const,
-        ...(preview ? { preview } : {}),
-        ...(renderFailed ? {
-          processingStatus: 'error' as const,
-          processingMessage: getDeckRenderFailureMessage(type),
+        ...(isDeck ? {
+          processingStatus: 'processing' as const,
+          processingMessage: getDeckPreparationMessage(type),
         } : {}),
       };
-    }));
-    if (nextAssets.length > 0) {
-      setMediaAssets((prev) => [...nextAssets, ...prev].slice(0, 80));
+      return { file, type, isDeck, asset };
+    });
+
+    if (uploads.length > 0) {
+      setMediaAssets((prev) => [...uploads.map((upload) => upload.asset), ...prev].slice(0, 80));
     }
+
+    await Promise.all(uploads.map(async ({ file, type, isDeck, asset }) => {
+      if (!isDeck) return;
+
+      try {
+        const preview = await buildPresentationPreview(file, {
+          requireRenderedSlides: true,
+          requireServerRenderedPowerPoint: type === 'presentation',
+          allowBrowserPowerPointRenderFallback: false,
+        });
+        const nextState = preview
+          ? {
+              preview,
+              processingStatus: 'ready' as const,
+              processingMessage: undefined,
+            }
+          : {
+              processingStatus: 'error' as const,
+              processingMessage: getDeckRenderFailureMessage(type),
+            };
+
+        setMediaAssets((prev) => prev.map((item) => (
+          item.id === asset.id ? { ...item, ...nextState } : item
+        )));
+      } catch (err) {
+        console.error('Failed to render presentation media:', err);
+        setMediaAssets((prev) => prev.map((item) => (
+          item.id === asset.id
+            ? {
+                ...item,
+                processingStatus: 'error',
+                processingMessage: getDeckRenderFailureMessage(type),
+              }
+            : item
+        )));
+      }
+    }));
   };
 
   const onAddMediaUrl = (url: string, type: 'video' | 'image') => {
@@ -3324,11 +3360,16 @@ export function StudioRoom() {
     if (!canPlayMediaAsset(asset)) {
       setMediaAssets((prev) => prev.map((item) => (
         item.id === asset.id
-          ? {
-              ...item,
-              processingStatus: 'error',
-              processingMessage: item.processingMessage || getDeckRenderFailureMessage(item.type),
-            }
+          ? item.processingStatus === 'processing'
+            ? {
+                ...item,
+                processingMessage: item.processingMessage || getDeckPreparationMessage(item.type),
+              }
+            : {
+                ...item,
+                processingStatus: 'error',
+                processingMessage: item.processingMessage || getDeckRenderFailureMessage(item.type),
+              }
           : item
       )));
       return;

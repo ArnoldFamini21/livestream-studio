@@ -210,16 +210,38 @@ export function MediaLibrary({
             filteredAssets.map((asset) => {
               const isActive = activeMedia?.assetId === asset.id || activeMedia?.url === asset.url;
               const canPlay = canPlayMediaAsset(asset);
+              const isProcessing = asset.processingStatus === 'processing';
               const hasError = asset.processingStatus === 'error';
+              const statusLabel = getMediaAssetStatusLabel(asset);
               return (
-                <div key={asset.id} style={{ ...styles.assetCard, ...(isActive ? styles.assetCardActive : {}), ...(hasError ? styles.assetCardError : {}) }}>
-                  <div style={{ ...styles.assetIcon, ...(hasError ? styles.assetIconError : {}) }}>
+                <div
+                  key={asset.id}
+                  style={{
+                    ...styles.assetCard,
+                    ...(isActive ? styles.assetCardActive : {}),
+                    ...(isProcessing ? styles.assetCardProcessing : {}),
+                    ...(hasError ? styles.assetCardError : {}),
+                  }}
+                >
+                  <div
+                    style={{
+                      ...styles.assetIcon,
+                      ...(isProcessing ? styles.assetIconProcessing : {}),
+                      ...(hasError ? styles.assetIconError : {}),
+                    }}
+                  >
                     <MediaTypeIcon type={asset.type} />
                   </div>
                   <div style={styles.assetInfo}>
                     <span style={styles.assetName}>{asset.name}</span>
-                    <span style={{ ...styles.assetMeta, ...(hasError ? styles.assetMetaError : {}) }}>
-                      {hasError ? asset.processingMessage || 'This asset could not be prepared for broadcast.' : getAssetLabel(asset)}
+                    <span
+                      style={{
+                        ...styles.assetMeta,
+                        ...(isProcessing ? styles.assetMetaProcessing : {}),
+                        ...(hasError ? styles.assetMetaError : {}),
+                      }}
+                    >
+                      {statusLabel}
                     </span>
                   </div>
                   <div style={styles.assetActions}>
@@ -229,7 +251,7 @@ export function MediaLibrary({
                       onClick={() => { if (canPlay) onPlay(asset); }}
                       disabled={!canPlay}
                       aria-label={`Show ${asset.name}`}
-                      title={canPlay ? `Show ${asset.name}` : asset.processingMessage || 'Asset is not ready'}
+                      title={canPlay ? `Show ${asset.name}` : statusLabel}
                     >
                       <PlayIcon />
                     </button>
@@ -414,11 +436,25 @@ export function getMediaTabForType(type: StudioMediaType): MediaTab {
 }
 
 export function canPlayMediaAsset(asset: StudioMediaAsset): boolean {
+  if (asset.processingStatus === 'processing') return false;
   if (asset.processingStatus === 'error') return false;
   if ((asset.type === 'presentation' || asset.type === 'pdf') && asset.source === 'upload') {
     return hasRenderedPresentationSlides(asset.preview);
   }
   return true;
+}
+
+export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {
+  if (asset.processingStatus === 'processing') {
+    if (asset.processingMessage) return asset.processingMessage;
+    if (asset.type === 'presentation') return 'Rendering PowerPoint design for broadcast...';
+    if (asset.type === 'pdf') return 'Rendering PDF pages for broadcast...';
+    return 'Preparing media for broadcast...';
+  }
+  if (asset.processingStatus === 'error') {
+    return asset.processingMessage || 'This asset could not be prepared for broadcast.';
+  }
+  return getAssetLabel(asset);
 }
 
 function getUploadMeta(tab: MediaTab): string {
@@ -567,12 +603,15 @@ const styles: Record<string, React.CSSProperties> = {
   emptyText: { fontSize: 12, color: 'var(--text-muted)' },
   assetCard: { display: 'flex', alignItems: 'center', gap: 9, padding: '9px 10px', border: '1px solid var(--border)', background: 'var(--bg-tertiary)', borderRadius: 8 },
   assetCardActive: { border: '1px solid var(--success)', background: 'rgba(34,197,94,0.08)' },
+  assetCardProcessing: { border: '1px solid rgba(103,232,249,0.34)', background: 'rgba(103,232,249,0.07)' },
   assetCardError: { border: '1px solid rgba(248,113,113,0.45)', background: 'rgba(248,113,113,0.08)' },
   assetIcon: { width: 28, height: 28, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-hover)', background: 'rgba(167,139,250,0.1)', flexShrink: 0 },
+  assetIconProcessing: { color: '#67e8f9', background: 'rgba(103,232,249,0.12)' },
   assetIconError: { color: '#fca5a5', background: 'rgba(248,113,113,0.12)' },
   assetInfo: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
   assetName: { fontSize: 12, fontWeight: 650, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   assetMeta: { fontSize: 10, color: 'var(--text-muted)' },
+  assetMetaProcessing: { color: '#67e8f9', lineHeight: 1.25, whiteSpace: 'normal' },
   assetMetaError: { color: '#fca5a5', lineHeight: 1.25, whiteSpace: 'normal' },
   assetActions: { display: 'flex', alignItems: 'center', gap: 4 },
   iconBtn: { width: 26, height: 26, borderRadius: 6, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0 },
