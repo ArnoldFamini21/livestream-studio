@@ -16,7 +16,9 @@ const RENDER_SETTLE_TIMEOUT_MS = 120;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
-export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
+// Browser PPTX renderers can strip theme/layout fidelity. Broadcast PowerPoint
+// uploads should use the media-server renderer so the original design survives.
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',

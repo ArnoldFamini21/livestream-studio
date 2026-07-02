@@ -44,7 +44,6 @@ import {
   ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
   buildPresentationPreview,
   hasRenderedPresentationSlides,
-  isRecoverablePowerPointServerRenderFailure,
   type PresentationServerRenderFailure,
 } from '../utils/presentationPreview.ts';
 import {
@@ -723,6 +722,9 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
   }
   if (code === 'PRESENTATION_RENDERER_UNAVAILABLE') {
     return 'Presentation render service is missing LibreOffice or Poppler. Redeploy the Docker media-server, then upload this deck again.';
+  }
+  if (code === 'PRESENTATION_RENDER_UNAVAILABLE') {
+    return 'PowerPoint exact render service is unreachable. Check the Render media-server, then upload this deck again.';
   }
   return type === 'pdf'
     ? 'PDF could not be rendered into broadcast slides. Try uploading it again.'
@@ -3339,16 +3341,6 @@ export function StudioRoom() {
             : false,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
-            if (type === 'presentation' && isRecoverablePowerPointServerRenderFailure(failure)) {
-              setMediaAssets((prev) => prev.map((item) => (
-                item.id === asset.id
-                  ? {
-                      ...item,
-                      processingMessage: 'Media server unavailable; rendering PowerPoint design in this browser...',
-                    }
-                  : item
-              )));
-            }
           },
         });
         const nextState = preview
