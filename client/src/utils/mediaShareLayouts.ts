@@ -9,6 +9,15 @@ export interface MediaShareLayoutPlan {
   usesFloatingParticipant: boolean;
 }
 
+export interface SharedMediaParticipantItem {
+  id: string;
+}
+
+export interface VisibleStageItemSelectionOptions {
+  mediaVisibleParticipantCount?: number | null;
+  hasScreenShare?: boolean;
+}
+
 const MAX_SIDE_RAIL_PARTICIPANTS = 4;
 const MAX_BOTTOM_STRIP_PARTICIPANTS = 6;
 
@@ -60,5 +69,53 @@ export function getMediaShareLayoutPlan(layout: LayoutMode, participantCount: nu
         mediaIsDominant: true,
         usesFloatingParticipant: false,
       };
+  }
+}
+
+export function mergeSharedMediaParticipantItems<T extends SharedMediaParticipantItem>(
+  stageItems: T[],
+  presenterFallbackItems: T[],
+  maxFallbackItems = presenterFallbackItems.length
+): T[] {
+  const safeLimit = Math.max(0, Math.floor(Number.isFinite(maxFallbackItems) ? maxFallbackItems : 0));
+  if (safeLimit === 0 || presenterFallbackItems.length === 0) return stageItems;
+
+  const stageIds = new Set(stageItems.map((item) => item.id));
+  const mergedFallbacks: T[] = [];
+  const fallbackIds = new Set<string>();
+
+  for (const item of presenterFallbackItems) {
+    if (mergedFallbacks.length >= safeLimit) break;
+    if (stageIds.has(item.id) || fallbackIds.has(item.id)) continue;
+    mergedFallbacks.push(item);
+    fallbackIds.add(item.id);
+  }
+
+  if (mergedFallbacks.length === 0) return stageItems;
+  return [...mergedFallbacks, ...stageItems];
+}
+
+export function selectVisibleStageItems<T>(
+  stageItems: T[],
+  layout: LayoutMode,
+  options: VisibleStageItemSelectionOptions = {}
+): T[] {
+  if (typeof options.mediaVisibleParticipantCount === 'number') {
+    return stageItems.slice(0, normalizeParticipantCount(options.mediaVisibleParticipantCount));
+  }
+
+  if (options.hasScreenShare) return stageItems;
+
+  switch (layout) {
+    case 'side-by-side':
+      return stageItems.slice(0, 2);
+    case 'single':
+      return stageItems.slice(0, 1);
+    case 'pip':
+      return stageItems.slice(0, 2);
+    case 'grid':
+    case 'spotlight':
+    case 'featured':
+      return stageItems;
   }
 }
