@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import JSZip from 'jszip';
 
 import {
+  applyRenderedSlideImages,
   buildPresentationPreview,
   extractPptxSlideImageTargets,
   extractPptxSlideText,
@@ -21,6 +22,13 @@ describe('PowerPoint preview extraction', () => {
       isPptxFile({
         name: 'upload.bin',
         type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      } as File),
+      true
+    );
+    assert.equal(
+      isPptxFile({
+        name: 'talk.ppsx',
+        type: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
       } as File),
       true
     );
@@ -99,5 +107,17 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].title, 'Slide 1');
     assert.equal(preview?.slides[0].lines.length, 0);
     assert.match(preview?.slides[0].imageUrl || '', /^data:image\/png;base64,/);
+  });
+
+  it('replaces extracted placeholders with rendered slide images when available', () => {
+    const slides = [
+      { id: 'slide-1', title: 'Opening', lines: ['Point'] },
+      { id: 'slide-2', title: 'Second', lines: [] },
+    ];
+
+    assert.deepEqual(
+      applyRenderedSlideImages(slides, ['data:image/png;base64,one']).map((slide) => slide.imageUrl),
+      ['data:image/png;base64,one', undefined]
+    );
   });
 });
