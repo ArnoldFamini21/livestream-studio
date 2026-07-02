@@ -1400,7 +1400,23 @@ export function useCompositor({
     const scaleX = 1920 / containerBounds.width;
     const scaleY = 1080 / containerBounds.height;
 
-    // 2. Draw Videos mapped precisely from DOM coordinates
+    // 2. Draw shared media first so participant PiP tiles can remain visible above it.
+    if (activeMedia) {
+      drawActiveMediaOverlay(
+        ctx,
+        activeMedia,
+        containerRef.current.querySelector('.studio-active-media'),
+        containerBounds,
+        scaleX,
+        scaleY,
+        activeMediaImageRef.current,
+        activePresentationSlideImageRef.current,
+        brandColor,
+        activeMediaSlideIndex
+      );
+    }
+
+    // 3. Draw Videos mapped precisely from DOM coordinates
     const videos = containerRef.current.querySelectorAll('video');
     videos.forEach((video) => {
       if (video.classList.contains('studio-stage-background-video')) return;
@@ -1440,22 +1456,7 @@ export function useCompositor({
       }
     });
 
-    if (activeMedia) {
-      drawActiveMediaOverlay(
-        ctx,
-        activeMedia,
-        containerRef.current.querySelector('.studio-active-media'),
-        containerBounds,
-        scaleX,
-        scaleY,
-        activeMediaImageRef.current,
-        activePresentationSlideImageRef.current,
-        brandColor,
-        activeMediaSlideIndex
-      );
-    }
-
-    // 3. Draw logo watermark with the same placement and max-size rules as the stage.
+    // 4. Draw logo watermark with the same placement and max-size rules as the stage.
     const logoImage = logoImageRef.current;
     if (logoImage?.complete && logoImage.naturalWidth > 0) {
       const rect = getLogoCanvasRect({

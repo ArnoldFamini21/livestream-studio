@@ -72,6 +72,7 @@ import {
   parseVirtualBackgroundConfig,
   serializeVirtualBackgroundConfig,
 } from '../utils/virtualBackgrounds.ts';
+import { getMediaShareLayoutPlan, type MediaShareParticipantPlacement } from '../utils/mediaShareLayouts.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
@@ -3953,16 +3954,16 @@ export function StudioRoom() {
 
   // Auto-switch layout when participant count changes
   useEffect(() => {
-    const count = videoItems.length;
+    const count = videoItems.length + (activeMedia ? 1 : 0);
     // Layouts requiring >= 2 participants
     if (count < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
       applyLayout(count === 1 ? 'single' : 'grid');
     }
     // Single layout with multiple participants should switch to grid
-    if (count > 1 && layout === 'single') {
+    if (!activeMedia && videoItems.length > 1 && layout === 'single') {
       applyLayout('grid');
     }
-  }, [applyLayout, videoItems.length, layout]);
+  }, [activeMedia, applyLayout, videoItems.length, layout]);
 
   // All participants for the manager - memoized
   const allParticipantsMap = useMemo(() => {
@@ -4004,6 +4005,15 @@ export function StudioRoom() {
     containerStyle: React.CSSProperties;
     tileStyles: React.CSSProperties[];
     mode: 'flex' | 'grid' | 'custom';
+  };
+
+  type MediaShareLayoutResult = {
+    containerStyle: React.CSSProperties;
+    mediaStyle: React.CSSProperties;
+    participantStyles: React.CSSProperties[];
+    visibleParticipantCount: number;
+    placement: MediaShareParticipantPlacement;
+    usesFloatingParticipant: boolean;
   };
 
   const GAP = 8;
@@ -4150,6 +4160,174 @@ export function StudioRoom() {
     };
   }, [getAutoGridLayout]);
 
+  const getMediaShareLayout = useCallback((count: number, selectedLayout: LayoutMode): MediaShareLayoutResult => {
+    const plan = getMediaShareLayoutPlan(selectedLayout, count);
+    const visibleCount = plan.visibleParticipantCount;
+    const fullMediaStyle: React.CSSProperties = {
+      width: '100%',
+      height: '100%',
+      minWidth: 0,
+      minHeight: 0,
+    };
+
+    if (visibleCount <= 0) {
+      return {
+        containerStyle: {
+          ...containerBase,
+          display: 'grid',
+          gridTemplateColumns: '1fr',
+          gridTemplateRows: '1fr',
+          gap: GAP,
+          alignItems: 'stretch',
+          justifyItems: 'stretch',
+        },
+        mediaStyle: {
+          ...fullMediaStyle,
+          gridColumn: '1',
+          gridRow: '1',
+        },
+        participantStyles: [],
+        visibleParticipantCount: 0,
+        placement: plan.placement,
+        usesFloatingParticipant: false,
+      };
+    }
+
+    if (plan.placement === 'pip') {
+      const pipPos = {
+        TL: { top: 20, left: 20 },
+        TR: { top: 20, right: 20 },
+        BL: { bottom: 20, left: 20 },
+        BR: { bottom: 20, right: 20 },
+      }[pipCorner];
+      return {
+        containerStyle: {
+          ...containerBase,
+          display: 'grid',
+          gridTemplateColumns: '1fr',
+          gridTemplateRows: '1fr',
+          gap: GAP,
+          position: 'relative' as const,
+          overflow: 'hidden',
+          alignItems: 'stretch',
+          justifyItems: 'stretch',
+        },
+        mediaStyle: {
+          ...fullMediaStyle,
+          gridColumn: '1',
+          gridRow: '1',
+        },
+        participantStyles: [{
+          position: 'absolute' as const,
+          ...pipPos,
+          width: '24%',
+          aspectRatio: '16 / 9',
+          borderRadius: 12,
+          overflow: 'hidden',
+          boxShadow: '0 4px 24px rgba(0, 0, 0, 0.5)',
+          border: '2px solid rgba(255, 255, 255, 0.15)',
+          zIndex: 6,
+          flexShrink: 0,
+          flexGrow: 0,
+          cursor: 'pointer',
+          transition: 'top 0.3s ease, bottom 0.3s ease, left 0.3s ease, right 0.3s ease',
+        }],
+        visibleParticipantCount: visibleCount,
+        placement: plan.placement,
+        usesFloatingParticipant: true,
+      };
+    }
+
+    if (plan.placement === 'side-by-side') {
+      return {
+        containerStyle: {
+          ...containerBase,
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) minmax(220px, 0.52fr)',
+          gridTemplateRows: '1fr',
+          gap: GAP,
+          alignItems: 'stretch',
+          justifyItems: 'stretch',
+        },
+        mediaStyle: {
+          ...fullMediaStyle,
+          gridColumn: '1',
+          gridRow: '1',
+        },
+        participantStyles: [{
+          gridColumn: '2',
+          gridRow: '1',
+          width: '100%',
+          height: '100%',
+          minWidth: 0,
+          minHeight: 0,
+        }],
+        visibleParticipantCount: visibleCount,
+        placement: plan.placement,
+        usesFloatingParticipant: false,
+      };
+    }
+
+    if (plan.placement === 'bottom-strip') {
+      return {
+        containerStyle: {
+          ...containerBase,
+          display: 'grid',
+          gridTemplateColumns: `repeat(${visibleCount}, minmax(0, 1fr))`,
+          gridTemplateRows: 'minmax(0, 1fr) minmax(82px, 0.22fr)',
+          gap: GAP,
+          alignItems: 'stretch',
+          justifyItems: 'stretch',
+        },
+        mediaStyle: {
+          ...fullMediaStyle,
+          gridColumn: `1 / ${visibleCount + 1}`,
+          gridRow: '1',
+        },
+        participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
+          gridColumn: `${i + 1}`,
+          gridRow: '2',
+          width: '100%',
+          height: '100%',
+          minWidth: 0,
+          minHeight: 0,
+        })),
+        visibleParticipantCount: visibleCount,
+        placement: plan.placement,
+        usesFloatingParticipant: false,
+      };
+    }
+
+    return {
+      containerStyle: {
+        ...containerBase,
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) minmax(160px, 0.28fr)',
+        gridTemplateRows: `repeat(${visibleCount}, minmax(0, 1fr))`,
+        gap: GAP,
+        alignItems: 'center',
+        justifyItems: 'stretch',
+      },
+      mediaStyle: {
+        ...fullMediaStyle,
+        gridColumn: '1',
+        gridRow: `1 / ${visibleCount + 1}`,
+      },
+      participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
+        gridColumn: '2',
+        gridRow: `${i + 1}`,
+        width: '100%',
+        aspectRatio: '16 / 9',
+        alignSelf: 'center',
+        minWidth: 0,
+        minHeight: 0,
+      })),
+      visibleParticipantCount: visibleCount,
+      placement: plan.placement,
+      usesFloatingParticipant: false,
+    };
+  }, [pipCorner]);
+
   // Final computed layout
   const layoutResult = useMemo((): LayoutResult => {
     const count = renderedVideoItems.length;
@@ -4223,6 +4401,10 @@ export function StudioRoom() {
         return assertNever(layout);
     }
   }, [layout, renderedVideoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
+
+  const mediaShareLayoutResult = useMemo(() => (
+    activeMedia ? getMediaShareLayout(renderedVideoItems.length, layout) : null
+  ), [activeMedia, getMediaShareLayout, layout, renderedVideoItems.length]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
@@ -4727,26 +4909,61 @@ export function StudioRoom() {
               <div
                 style={{
                   ...styles.gridBase,
-                  ...layoutResult.containerStyle,
+                  ...(mediaShareLayoutResult?.containerStyle || layoutResult.containerStyle),
                   ...getStageLayoutTransitionStyle(layoutTransition),
                   position: 'relative',
                 }}
               >
+                {activeMedia && (
+                  <div
+                    className="studio-active-media"
+                    style={{
+                      ...styles.mediaOverlay,
+                      ...(mediaShareLayoutResult?.mediaStyle || {}),
+                    }}
+                  >
+                    {activeMedia.type === 'video' ? (
+                      <video src={activeMedia.url} style={styles.mediaContent} autoPlay controls />
+                    ) : activeMedia.type === 'image' ? (
+                      <img src={activeMedia.url} alt={activeMedia.name} style={styles.mediaContent} />
+                    ) : activeMedia.type === 'pdf' ? (
+                      <object data={`${activeMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
+                        <iframe src={`${activeMedia.url}#view=FitH`} style={styles.mediaContent} title={activeMedia.name} />
+                      </object>
+                    ) : activeMedia.type === 'presentation' ? (
+                      <PresentationDeckStage
+                        media={activeMedia}
+                        slideIndex={activeMediaSlideIndex}
+                        onSlideIndexChange={setActiveMediaSlideIndex}
+                      />
+                    ) : (
+                      <MediaDocumentCard media={activeMedia} />
+                    )}
+                    <button className="panel-close-btn" style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close shared media">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+
                 {/* Render tiles based on layout engine */}
                 {(() => {
                   // Determine which items to render based on layout
-                  const itemsToRender = layout === 'side-by-side'
-                    ? stagePresenceItems.slice(0, 2)
-                    : layout === 'single'
-                      ? stagePresenceItems.slice(0, 1)
-                      : layout === 'pip'
-                        ? stagePresenceItems.slice(0, 2)
-                        : stagePresenceItems;
+                  const itemsToRender = mediaShareLayoutResult
+                    ? stagePresenceItems.slice(0, mediaShareLayoutResult.visibleParticipantCount)
+                    : layout === 'side-by-side'
+                      ? stagePresenceItems.slice(0, 2)
+                      : layout === 'single'
+                        ? stagePresenceItems.slice(0, 1)
+                        : layout === 'pip'
+                          ? stagePresenceItems.slice(0, 2)
+                          : stagePresenceItems;
 
                   return itemsToRender.map((presence, i) => {
                     const item = presence.item;
                     const isLeavingTile = presence.phase === 'leaving';
-                    const isPipSmallTile = layout === 'pip' && i === 1;
+                    const isPipSmallTile = mediaShareLayoutResult?.usesFloatingParticipant || (layout === 'pip' && i === 1);
                     const isFocusedTile = !isLeavingTile && focusedVideoItemId === item.id;
                     const canFocusTile = !isLeavingTile && isHostOrCoHost && orderedVideoItems.length > 1;
                     const orderedIndex = orderedVideoItems.findIndex((orderedItem) => orderedItem.id === item.id);
@@ -4772,7 +4989,7 @@ export function StudioRoom() {
                           ...(canDragStageTile ? styles.tileWrapperDraggable : {}),
                           ...(isDraggedStageTile ? styles.tileWrapperDragging : {}),
                           ...(isStageDropTarget ? styles.tileWrapperDropTarget : {}),
-                          ...(layoutResult.tileStyles[i] || {}),
+                          ...((mediaShareLayoutResult?.participantStyles[i] || layoutResult.tileStyles[i]) || {}),
                           ...getStagePresenceWrapperStyle(presence.phase),
                         }}
                         onDragStart={canDragStageTile ? (event) => onStageTileDragStart(event, item.id) : undefined}
@@ -4861,34 +5078,6 @@ export function StudioRoom() {
                     );
                   });
                 })()}
-
-                {/* Media overlay on stage */}
-                {activeMedia && (
-                  <div className="studio-active-media" style={styles.mediaOverlay}>
-                    {activeMedia.type === 'video' ? (
-                      <video src={activeMedia.url} style={styles.mediaContent} autoPlay controls />
-                    ) : activeMedia.type === 'image' ? (
-                      <img src={activeMedia.url} alt={activeMedia.name} style={styles.mediaContent} />
-                    ) : activeMedia.type === 'pdf' ? (
-                      <object data={`${activeMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
-                        <iframe src={`${activeMedia.url}#view=FitH`} style={styles.mediaContent} title={activeMedia.name} />
-                      </object>
-                    ) : activeMedia.type === 'presentation' ? (
-                      <PresentationDeckStage
-                        media={activeMedia}
-                        slideIndex={activeMediaSlideIndex}
-                        onSlideIndexChange={setActiveMediaSlideIndex}
-                      />
-                    ) : (
-                      <MediaDocumentCard media={activeMedia} />
-                    )}
-                    <button className="panel-close-btn" style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close media overlay">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                    </button>
-                  </div>
-                )}
 
                 {/* Lower Third Overlay */}
                 {displayedLowerThird && <LowerThirdOverlay key={displayedLowerThird.id} data={displayedLowerThird} />}
@@ -5032,7 +5221,7 @@ export function StudioRoom() {
               <LayoutSwitcher
                 currentLayout={layout}
                 onLayoutChange={applyLayout}
-                participantCount={orderedVideoItems.length}
+                participantCount={orderedVideoItems.length + (activeMedia ? 1 : 0)}
               />
             </div>
           )}
@@ -6074,17 +6263,21 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     cursor: 'pointer',
   },
-  // Media overlay
+  // Shared media tile
   mediaOverlay: {
-    position: 'absolute',
-    inset: 8,
+    position: 'relative',
     background: '#000',
     borderRadius: 'var(--radius-lg)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 10,
+    boxSizing: 'border-box' as const,
+    minWidth: 0,
+    minHeight: 0,
     overflow: 'hidden',
+    border: '1px solid rgba(255, 255, 255, 0.10)',
+    boxShadow: '0 18px 44px rgba(0, 0, 0, 0.28)',
+    transition: 'width 0.3s ease, height 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease',
   },
   mediaContent: {
     width: '100%',
