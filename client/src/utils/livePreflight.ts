@@ -150,6 +150,31 @@ function buildMediaItem(sessionHealth: LivePreflightSessionHealth | undefined): 
   };
 }
 
+function buildTurnRelayItem(sessionHealth: LivePreflightSessionHealth | undefined): LivePreflightItem {
+  const relay = findHealthCheck(sessionHealth, 'turn-relay');
+  const status: LivePreflightStatus = relay?.status === 'good' ? 'good' : 'warning';
+
+  return {
+    id: 'turn-relay',
+    label: 'TURN relay',
+    status,
+    detail: relay?.detail || 'TURN relay readiness has not been checked.',
+    blocksStart: false,
+  };
+}
+
+function buildParticipantConnectionsItem(sessionHealth: LivePreflightSessionHealth | undefined): LivePreflightItem {
+  const connections = findHealthCheck(sessionHealth, 'participant-connections');
+
+  return {
+    id: 'participant-connections',
+    label: 'Guest connections',
+    status: connections?.status || 'warning',
+    detail: connections?.detail || 'Remote guest connection telemetry has not been checked.',
+    blocksStart: connections?.status === 'bad',
+  };
+}
+
 export function buildLivePreflightChecklist(options: LivePreflightOptions): LivePreflightChecklist {
   const signaling = findHealthCheck(options.sessionHealth, 'signaling');
   const network = findHealthCheck(options.sessionHealth, 'network');
@@ -161,6 +186,8 @@ export function buildLivePreflightChecklist(options: LivePreflightOptions): Live
     buildEncodingItem(options.sessionHealth),
     buildHealthItem('studio-connection', 'Studio connection', signaling, 'Studio connection has not been checked.'),
     buildHealthItem('network', 'Network', network, 'Network status has not been checked.'),
+    buildTurnRelayItem(options.sessionHealth),
+    buildParticipantConnectionsItem(options.sessionHealth),
     buildMediaItem(options.sessionHealth),
     {
       id: 'scenes',
