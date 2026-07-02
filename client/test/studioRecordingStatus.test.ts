@@ -85,4 +85,23 @@ describe('studio recording status', () => {
       source: 'local',
     });
   });
+
+  it('marks the local multitrack recorder as paused', () => {
+    const status = getStudioRecordingStatus({
+      mixRecording: false,
+      mixFormattedTime: '0:00',
+      localRecording: true,
+      localPaused: true,
+      localFormattedTime: '8:12',
+      sessionStartedAt: null,
+      sessionElapsedSeconds: 0,
+    });
+
+    assert.deepEqual(status, {
+      active: true,
+      paused: true,
+      formattedTime: '8:12',
+      source: 'local',
+    });
+  });
 });
