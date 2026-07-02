@@ -9,6 +9,7 @@ import {
   getReadyFinalMp4Artifact,
   getRecordingCloudRetentionLabel,
   hasReadyFinalMp4Export,
+  isRecordingMediaExportRefreshable,
   isRawWebCodecsBitstreamFile,
   isPreviewableRecordingFile,
 } from '../src/components/RecordingPanel.tsx';
@@ -240,6 +241,16 @@ describe('recording library filters', () => {
     assert.equal(hasReadyFinalMp4Export(sessions[3]), true);
     assert.equal(getReadyFinalMp4Artifact(sessions[3].mediaExport)?.id, 'final-mp4');
     assert.equal(hasReadyFinalMp4Export(sessions[0]), false);
+    assert.equal(isRecordingMediaExportRefreshable(sessions[3].mediaExport), false);
+    assert.equal(isRecordingMediaExportRefreshable({
+      exportId: 'export-running',
+      uploadId: 'upload-running',
+      roomId: 'room-running',
+      status: 'running',
+      createdAt: '2026-06-04T10:21:00.000Z',
+      updatedAt: '2026-06-04T10:22:00.000Z',
+      artifacts: [{ id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'running' }],
+    }), true);
   });
 
   it('summarizes the saved recording dashboard totals', () => {

@@ -3,6 +3,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   buildRecordingUploadTracks,
   downloadRecordingExportArtifact,
+  getRecordingExportJob,
   pollRecordingExportJob,
   uploadRecordingToMediaServer,
 } from '../src/utils/recordingUpload.ts';
@@ -241,6 +242,37 @@ describe('recording media-server upload helper', () => {
       'https://media.example.com/recordings/uploads/upload-2/exports/export-2',
       'https://media.example.com/recordings/uploads/upload-2/exports/export-2',
     ]);
+  });
+
+  it('fetches one recording export status for manual library refresh', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      return jsonResponse({
+        exportId: 'export-refresh',
+        uploadId: 'upload-refresh',
+        roomId: 'room-1',
+        status: 'running',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:01.000Z',
+        artifacts: [{ id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'running' }],
+      });
+    };
+
+    const job = await getRecordingExportJob({
+      token: 'token-123',
+      uploadId: 'upload-refresh',
+      exportId: 'export-refresh',
+      mediaHttpUrl: 'https://media.example.com',
+    });
+
+    assert.equal(job.status, 'running');
+    assert.equal(calls.length, 1);
+    assert.equal(
+      calls[0].url,
+      'https://media.example.com/recordings/uploads/upload-refresh/exports/export-refresh'
+    );
+    assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
   });
 
   it('downloads ready export artifacts with bearer auth and safe filenames', async () => {

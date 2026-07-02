@@ -48,6 +48,13 @@ export interface PollRecordingExportJobInput {
   initialJob?: RecordingExportJobResponse;
 }
 
+export interface GetRecordingExportJobInput {
+  token: string;
+  uploadId: string;
+  exportId: string;
+  mediaHttpUrl?: string;
+}
+
 export interface DownloadRecordingExportArtifactInput {
   token: string;
   uploadId: string;
@@ -301,16 +308,26 @@ export async function pollRecordingExportJob(
     if (latest) {
       await delay(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
     }
-    latest = await getJson<RecordingExportJobResponse>(
-      buildMediaUrl(
-        mediaHttpUrl,
-        `/recordings/uploads/${encodeURIComponent(uploadId)}/exports/${encodeURIComponent(exportId)}`
-      ),
-      token
-    );
+    latest = await getRecordingExportJob({ token, uploadId, exportId, mediaHttpUrl });
   }
 
   return latest;
+}
+
+export async function getRecordingExportJob(
+  input: GetRecordingExportJobInput
+): Promise<RecordingExportJobResponse> {
+  const token = assertNonEmpty(input.token, 'A host upload token');
+  const uploadId = assertNonEmpty(input.uploadId, 'Upload id');
+  const exportId = assertNonEmpty(input.exportId, 'Export id');
+  const mediaHttpUrl = assertNonEmpty(input.mediaHttpUrl || resolveMediaHttpUrl(), 'Media server URL');
+  return getJson<RecordingExportJobResponse>(
+    buildMediaUrl(
+      mediaHttpUrl,
+      `/recordings/uploads/${encodeURIComponent(uploadId)}/exports/${encodeURIComponent(exportId)}`
+    ),
+    token
+  );
 }
 
 export async function downloadRecordingExportArtifact(

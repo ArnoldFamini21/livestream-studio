@@ -57,6 +57,32 @@ const recording: LocalRecordingSession = {
     fileCount: 3,
     totalBytes: 5_242_880,
   },
+  mediaExport: {
+    uploadId: 'upload-recording-1',
+    exportId: 'export-recording-1',
+    roomId: 'room-recording-1',
+    sessionId: 'recording-1',
+    status: 'ready',
+    createdAt: '2026-07-02T14:05:00.000Z',
+    updatedAt: '2026-07-02T14:08:00.000Z',
+    savedAt: '2026-07-02T14:08:10.000Z',
+    artifacts: [
+      {
+        id: 'final-mp4',
+        label: 'Launch Recording.mp4',
+        format: 'mp4',
+        status: 'ready',
+        bytes: 8_388_608,
+      },
+      {
+        id: 'export-manifest',
+        label: 'Export manifest',
+        format: 'json',
+        status: 'ready',
+        bytes: 1024,
+      },
+    ],
+  },
 };
 
 const teamMember: SavedWorkspaceTeamMember = {
@@ -96,6 +122,18 @@ describe('workspace backup files', () => {
         uploadedAt: '2026-07-02T14:00:00.000Z',
         expiresAt: '2026-08-01T14:00:00.000Z',
         permanent: false,
+      },
+      mediaExport: {
+        status: 'ready',
+        uploadId: 'upload-recording-1',
+        exportId: 'export-recording-1',
+        roomId: 'room-recording-1',
+        sessionId: 'recording-1',
+        updatedAt: '2026-07-02T14:08:00.000Z',
+        savedAt: '2026-07-02T14:08:10.000Z',
+        readyMp4: true,
+        artifactCount: 2,
+        readyArtifactCount: 2,
       },
     }]);
   });
@@ -153,6 +191,8 @@ describe('workspace backup files', () => {
     assert.deepEqual(roundTrip.teamMembers, [teamMember]);
     assert.equal(roundTrip.recordingCatalog.length, 1);
     assert.equal(roundTrip.recordingCatalog[0]?.cloud?.folderId, 'drive-folder-1');
+    assert.equal(roundTrip.recordingCatalog[0]?.mediaExport?.readyMp4, true);
+    assert.equal(roundTrip.recordingCatalog[0]?.mediaExport?.artifactCount, 2);
   });
 
   it('merges imported studios and brand kits over existing local copies', () => {

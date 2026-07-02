@@ -978,7 +978,9 @@ export function HomePage() {
                   <div style={styles.workspaceSectionHeader}>
                     <span style={styles.workspaceSectionTitle}>Recent recordings</span>
                     <span style={styles.workspaceSectionCount}>
-                      {recordingLibrary.isLoading ? 'Loading' : `${workspaceDashboard.cloudRecordingCount} cloud`}
+                      {recordingLibrary.isLoading
+                        ? 'Loading'
+                        : `${workspaceDashboard.cloudRecordingCount} cloud | ${workspaceDashboard.readyMp4RecordingCount} MP4`}
                     </span>
                   </div>
                   {!recordingLibrary.isLoading && (

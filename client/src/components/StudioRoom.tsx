@@ -60,6 +60,7 @@ import type {
   BlobExportDownload,
   RecordingMarker,
   RecordingServerExportArtifactInput,
+  RecordingServerExportRefreshInput,
   RecordingServerUploadInput,
 } from './RecordingPanel.tsx';
 import { buildBrandThemeVariables } from '../utils/brandTheme.ts';
@@ -109,6 +110,7 @@ import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
 import { buildLocalRecordingSources } from '../utils/localRecordingSources.ts';
 import {
   downloadRecordingExportArtifact,
+  getRecordingExportJob,
   uploadRecordingToMediaServer,
   type RecordingUploadFileInput,
 } from '../utils/recordingUpload.ts';
@@ -3067,6 +3069,17 @@ export function StudioRoom() {
     };
   }, [requestLiveStreamToken]);
 
+  const refreshMediaServerRecordingExport = useCallback(async (
+    input: RecordingServerExportRefreshInput
+  ) => {
+    const token = await requestLiveStreamToken();
+    return getRecordingExportJob({
+      token,
+      uploadId: input.uploadId,
+      exportId: input.exportId,
+    });
+  }, [requestLiveStreamToken]);
+
   const finalizeLiveBackupRecording = useCallback(async () => {
     if (!roomId || !isHostOrCoHost) return;
     if (liveBackupRecording?.status === 'disabled') return;
@@ -5488,6 +5501,7 @@ export function StudioRoom() {
               onStopRecording={stopLocalRecording}
               onUploadRecording={uploadLocalRecordingToMediaServer}
               onDownloadRecordingExportArtifact={downloadMediaServerRecordingArtifact}
+              onRefreshRecordingExport={refreshMediaServerRecordingExport}
               onAddRecordingMarker={onAddRecordingMarker}
               onRemoveRecordingMarker={onRemoveRecordingMarker}
               onClearRecordingMarkers={onClearRecordingMarkers}
