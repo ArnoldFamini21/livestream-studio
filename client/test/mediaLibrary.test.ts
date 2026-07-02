@@ -59,7 +59,7 @@ describe('media library upload support', () => {
         kind: 'presentation-slides',
         sourceFormat: 'pptx',
         slides: [
-          { id: 'slide-1', title: 'Slide 1', lines: [], imageUrl: 'data:image/png;base64,rendered' },
+          { id: 'slide-1', title: 'Slide 1', lines: [], imageUrl: 'data:image/png;base64,rendered', rendered: true },
         ],
       },
     }), true);
@@ -77,6 +77,23 @@ describe('media library upload support', () => {
         sourceFormat: 'pptx',
         slides: [
           { id: 'slide-1', title: 'TRIAD FORMATION', lines: ['Discipleship'] },
+        ],
+      },
+    }), false);
+
+    assert.equal(canPlayMediaAsset({
+      id: 'deck-2c',
+      name: 'Embedded-image fallback.pptx',
+      url: 'blob:deck',
+      type: 'presentation',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      source: 'upload',
+      createdAt: '2026-07-02T05:56:32.000Z',
+      preview: {
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'slide-1', title: 'Slide 1', lines: [], imageUrl: 'data:image/png;base64,embedded' },
         ],
       },
     }), false);

@@ -159,6 +159,7 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].title, 'Slide 1');
     assert.equal(preview?.slides[0].lines.length, 0);
     assert.match(preview?.slides[0].imageUrl || '', /^data:image\/png;base64,/);
+    assert.equal(preview?.slides[0].rendered, undefined);
   });
 
   it('replaces extracted placeholders with rendered slide images when available', () => {
@@ -167,10 +168,10 @@ describe('PowerPoint preview extraction', () => {
       { id: 'slide-2', title: 'Second', lines: [] },
     ];
 
-    assert.deepEqual(
-      applyRenderedSlideImages(slides, ['data:image/png;base64,one']).map((slide) => slide.imageUrl),
-      ['data:image/png;base64,one', undefined]
-    );
+    const renderedSlides = applyRenderedSlideImages(slides, ['data:image/png;base64,one']);
+
+    assert.deepEqual(renderedSlides.map((slide) => slide.imageUrl), ['data:image/png;base64,one', undefined]);
+    assert.deepEqual(renderedSlides.map((slide) => slide.rendered), [true, undefined]);
   });
 
   it('detects whether every deck slide has a rendered visual', () => {
@@ -178,8 +179,8 @@ describe('PowerPoint preview extraction', () => {
       kind: 'presentation-slides',
       sourceFormat: 'pptx',
       slides: [
-        { id: 'slide-1', title: 'Opening', lines: [], imageUrl: 'data:image/png;base64,one' },
-        { id: 'slide-2', title: 'Second', lines: [], imageUrl: 'data:image/webp;base64,two' },
+        { id: 'slide-1', title: 'Opening', lines: [], imageUrl: 'data:image/png;base64,one', rendered: true },
+        { id: 'slide-2', title: 'Second', lines: [], imageUrl: 'data:image/webp;base64,two', rendered: true },
       ],
     }), true);
 
@@ -188,6 +189,14 @@ describe('PowerPoint preview extraction', () => {
       sourceFormat: 'pptx',
       slides: [
         { id: 'slide-1', title: 'Opening', lines: [], imageUrl: 'data:image/png;base64,one' },
+      ],
+    }), false);
+
+    assert.equal(hasRenderedPresentationSlides({
+      kind: 'presentation-slides',
+      sourceFormat: 'pptx',
+      slides: [
+        { id: 'slide-1', title: 'Opening', lines: [], imageUrl: 'data:image/png;base64,one', rendered: true },
         { id: 'slide-2', title: 'Second', lines: [] },
       ],
     }), false);
@@ -217,6 +226,7 @@ describe('PowerPoint preview extraction', () => {
 
     assert.equal(preview?.sourceFormat, 'pdf');
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,page');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 
   it('rejects server presentation previews without rendered slide images', async () => {
@@ -319,6 +329,7 @@ describe('PowerPoint preview extraction', () => {
     assert.deepEqual(preview?.slides[0].lines, ['Discipleship']);
     assert.deepEqual(preview?.slides[0].notes, undefined);
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 
   it('preserves extracted speaker notes when server-rendered images are merged', async () => {
@@ -350,6 +361,7 @@ describe('PowerPoint preview extraction', () => {
 
     assert.deepEqual(preview?.slides[0].notes, ['Mention covenant story']);
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 
   it('does not accept text-only PowerPoint extraction when rendered slides are required', async () => {
@@ -428,6 +440,7 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].title, 'TRIAD FORMATION');
     assert.deepEqual(preview?.slides[0].lines, ['Discipleship']);
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 
   it('uses browser-rendered PowerPoint images when a stale server response has no slide artwork', async () => {
@@ -457,6 +470,7 @@ describe('PowerPoint preview extraction', () => {
 
     assert.equal(preview?.sourceFormat, 'pptx');
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 
   it('rejects browser-rendered PowerPoint fallback when exact server visuals are required', async () => {
@@ -529,6 +543,7 @@ describe('PowerPoint preview extraction', () => {
     });
 
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,legacy');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 
   it('merges rendered previews when extracted slide data is missing', () => {
@@ -542,5 +557,6 @@ describe('PowerPoint preview extraction', () => {
 
     assert.equal(preview?.slides[0].title, 'Rendered');
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 });

@@ -170,6 +170,7 @@ async function buildPreviewFromPngs(pngPaths: string[], sourceFormat: Presentati
     title: sourceFormat === 'pdf' ? `Page ${index + 1}` : `Slide ${index + 1}`,
     lines: [],
     imageUrl: `data:image/png;base64,${(await readFile(pngPath)).toString('base64')}`,
+    rendered: true,
   })));
 
   return {

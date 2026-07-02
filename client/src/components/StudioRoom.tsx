@@ -3328,7 +3328,7 @@ export function StudioRoom() {
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
           requireServerRenderedPowerPoint: type === 'presentation',
-          allowBrowserPowerPointRenderFallback: type === 'presentation',
+          allowBrowserPowerPointRenderFallback: false,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
           },

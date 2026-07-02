@@ -269,7 +269,7 @@ export function applyRenderedSlideImages(
 ): PresentationSlidePreview[] {
   return slides.map((slide, index) => (
     renderedImageUrls[index]
-      ? { ...slide, imageUrl: renderedImageUrls[index] }
+      ? { ...slide, imageUrl: renderedImageUrls[index], rendered: true }
       : slide
   ));
 }
@@ -284,7 +284,7 @@ function isRenderedSlideImageUrl(value: unknown): value is string {
 export function hasRenderedPresentationSlides(preview: StudioMediaAssetPreview | undefined): boolean {
   return Boolean(
     preview?.slides.length &&
-    preview.slides.every((slide) => isRenderedSlideImageUrl(slide.imageUrl))
+    preview.slides.every((slide) => slide.rendered === true && isRenderedSlideImageUrl(slide.imageUrl))
   );
 }
 
@@ -316,6 +316,7 @@ function normalizeServerPreview(value: ServerPresentationPreviewResponse): Studi
 
   const slides = value.slides
     .filter(isValidRenderedSlide)
+    .map((slide) => ({ ...slide, rendered: true }))
     .slice(0, MAX_PREVIEW_SLIDES);
 
   return slides.length > 0
@@ -447,7 +448,7 @@ export function mergeRenderedPresentationPreview(
       title: extractedSlide?.title || renderedSlide?.title || fallbackTitle,
       lines: extractedSlide?.lines || renderedSlide?.lines || [],
       ...((extractedSlide?.notes || renderedSlide?.notes)?.length ? { notes: extractedSlide?.notes || renderedSlide?.notes } : {}),
-      ...(renderedSlide?.imageUrl ? { imageUrl: renderedSlide.imageUrl } : {}),
+      ...(renderedSlide?.imageUrl ? { imageUrl: renderedSlide.imageUrl, rendered: true } : {}),
     };
   });
 
@@ -597,6 +598,7 @@ function buildPdfPagePreview(pageNumber: number, imageUrl: string): Presentation
     title: `Page ${pageNumber}`,
     lines: [],
     imageUrl,
+    rendered: true,
   };
 }
 
