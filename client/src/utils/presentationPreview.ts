@@ -33,6 +33,8 @@ interface PresentationPreviewOptions {
   serverRenderTimeoutMs?: number;
   requireRenderedSlides?: boolean;
   requireServerRenderedPowerPoint?: boolean;
+  allowBrowserPowerPointRenderFallback?: boolean;
+  pptxSlideImageRenderer?: (arrayBuffer: ArrayBuffer, expectedSlideCount: number) => Promise<string[]>;
 }
 
 interface ServerPresentationPreviewResponse {
@@ -528,6 +530,15 @@ async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideC
   }
 }
 
+async function renderPptxSlidesWithConfiguredRenderer(
+  arrayBuffer: ArrayBuffer,
+  expectedSlideCount: number,
+  options: PresentationPreviewOptions
+): Promise<string[]> {
+  const renderer = options.pptxSlideImageRenderer || renderPptxSlidesToImages;
+  return renderer(arrayBuffer.slice(0), expectedSlideCount);
+}
+
 function buildPdfPagePreview(pageNumber: number, imageUrl: string): PresentationSlidePreview {
   return {
     id: `pdf-page-${pageNumber}`,
@@ -673,15 +684,17 @@ export async function buildPresentationPreview(
       }
     }
 
-    if (requireServerRenderedPowerPoint) return undefined;
+    if (requireServerRenderedPowerPoint && !options.allowBrowserPowerPointRenderFallback) return undefined;
 
-    const renderedImageUrls = await renderPptxSlidesToImages(arrayBuffer, slides.length);
+    const renderedImageUrls = await renderPptxSlidesWithConfiguredRenderer(arrayBuffer, slides.length, options);
     const finalSlides = applyRenderedSlideImages(slides, renderedImageUrls);
 
     const preview: StudioMediaAssetPreview | undefined = finalSlides.length > 0
       ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides: finalSlides }
       : undefined;
-    return options.requireRenderedSlides && !hasRenderedPresentationSlides(preview) ? undefined : preview;
+    return (options.requireRenderedSlides || requireServerRenderedPowerPoint) && !hasRenderedPresentationSlides(preview)
+      ? undefined
+      : preview;
   } catch {
     const serverPreview = await serverPreviewPromise;
     return requireServerRenderedPowerPoint && !hasRenderedPresentationSlides(serverPreview) ? undefined : serverPreview;

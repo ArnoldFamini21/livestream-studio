@@ -1,6 +1,16 @@
 import type { CameraShape, LayoutMode, NameTagStyle, StageBackground } from '@studio/shared';
+import type { LowerThirdAnimation, LowerThirdAnimationDirection, LowerThirdFont } from './lowerThirds.ts';
 
-export type ProductionSceneTemplate = 'starting-soon' | 'brb' | 'ending' | 'live-q-and-a' | 'screen-share';
+export type ProductionSceneTemplate =
+  | 'starting-soon'
+  | 'main-stage'
+  | 'interview'
+  | 'panel'
+  | 'presentation'
+  | 'live-q-and-a'
+  | 'screen-share'
+  | 'brb'
+  | 'ending';
 
 export interface ProductionSceneTemplateCard {
   id: ProductionSceneTemplate;
@@ -39,6 +49,18 @@ interface ProductionSceneTimer {
   visible: boolean;
 }
 
+interface ProductionSceneLowerThird {
+  name: string;
+  title: string;
+  style: 'minimal' | 'bold' | 'gradient' | 'glass';
+  visible: boolean;
+  durationSeconds?: number;
+  accentColor?: string;
+  animation?: LowerThirdAnimation;
+  animationDirection?: LowerThirdAnimationDirection;
+  fontFamily?: LowerThirdFont;
+}
+
 export interface ProductionSceneTemplateConfig {
   name: string;
   layout: LayoutMode;
@@ -46,6 +68,7 @@ export interface ProductionSceneTemplateConfig {
   brandColor: string;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
+  lowerThird?: ProductionSceneLowerThird;
   banner?: ProductionSceneBanner;
   ticker?: ProductionSceneTicker;
   timer?: ProductionSceneTimer;
@@ -58,6 +81,34 @@ export const PRODUCTION_SCENE_TEMPLATE_CARDS: ProductionSceneTemplateCard[] = [
     layout: 'single',
     background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #312e81 55%, #0e7490 100%)' },
     accent: '#67e8f9',
+  },
+  {
+    id: 'main-stage',
+    name: 'Main Stage',
+    layout: 'single',
+    background: { type: 'gradient', value: 'linear-gradient(135deg, #0f172a 0%, #3730a3 54%, #0891b2 100%)' },
+    accent: '#22d3ee',
+  },
+  {
+    id: 'interview',
+    name: 'Interview',
+    layout: 'side-by-side',
+    background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #1e3a8a 52%, #0f766e 100%)' },
+    accent: '#2dd4bf',
+  },
+  {
+    id: 'panel',
+    name: 'Panel',
+    layout: 'grid',
+    background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #581c87 52%, #be185d 100%)' },
+    accent: '#f472b6',
+  },
+  {
+    id: 'presentation',
+    name: 'Presentation',
+    layout: 'pip',
+    background: { type: 'gradient', value: 'linear-gradient(135deg, #0f172a 0%, #1e293b 52%, #0f766e 100%)' },
+    accent: '#5eead4',
   },
   {
     id: 'live-q-and-a',
@@ -91,6 +142,10 @@ export const PRODUCTION_SCENE_TEMPLATE_CARDS: ProductionSceneTemplateCard[] = [
 
 export const PRODUCTION_SCENE_PACK_TEMPLATE_IDS: readonly ProductionSceneTemplate[] = [
   'starting-soon',
+  'main-stage',
+  'interview',
+  'panel',
+  'presentation',
   'live-q-and-a',
   'screen-share',
   'brb',
@@ -152,6 +207,128 @@ export function getProductionSceneTemplateConfig(template: ProductionSceneTempla
           visible: true,
           position: 'top-right',
           style: 'bold',
+        },
+      };
+    case 'main-stage':
+      return {
+        name: 'Main Stage',
+        layout: 'single',
+        background: { type: 'gradient', value: 'linear-gradient(135deg, #0f172a 0%, #3730a3 54%, #0891b2 100%)' },
+        brandColor: '#22d3ee',
+        cameraShape: 'rounded',
+        nameTagStyle: 'classic',
+        lowerThird: {
+          name: 'Host',
+          title: 'Live Host',
+          style: 'glass',
+          visible: true,
+          durationSeconds: 12,
+          accentColor: '#22d3ee',
+          animation: 'slide',
+          animationDirection: 'left',
+          fontFamily: 'inter',
+        },
+        banner: {
+          text: 'Live Now',
+          visible: false,
+          style: 'custom',
+          customColor: '#0891b2',
+          isTicker: false,
+          position: 'top',
+        },
+        ticker: {
+          text: 'Welcome to the live broadcast.',
+          visible: false,
+          speed: 'normal',
+          backgroundColor: '#164e63',
+          textColor: '#ecfeff',
+          separator: '•',
+        },
+      };
+    case 'interview':
+      return {
+        name: 'Interview',
+        layout: 'side-by-side',
+        background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #1e3a8a 52%, #0f766e 100%)' },
+        brandColor: '#2dd4bf',
+        cameraShape: 'rounded',
+        nameTagStyle: 'classic',
+        lowerThird: {
+          name: 'Guest Name',
+          title: 'Interview Guest',
+          style: 'bold',
+          visible: true,
+          durationSeconds: 15,
+          accentColor: '#2dd4bf',
+          animation: 'slide',
+          animationDirection: 'left',
+          fontFamily: 'inter',
+        },
+        banner: {
+          text: 'Interview',
+          visible: false,
+          style: 'custom',
+          customColor: '#0f766e',
+          isTicker: false,
+          position: 'top',
+        },
+        ticker: {
+          text: 'Send your questions in chat for the interview segment.',
+          visible: false,
+          speed: 'normal',
+          backgroundColor: '#134e4a',
+          textColor: '#ccfbf1',
+          separator: '•',
+        },
+      };
+    case 'panel':
+      return {
+        name: 'Panel Discussion',
+        layout: 'grid',
+        background: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #581c87 52%, #be185d 100%)' },
+        brandColor: '#f472b6',
+        cameraShape: 'rounded',
+        nameTagStyle: 'minimal',
+        banner: {
+          text: 'Panel Discussion',
+          visible: true,
+          style: 'custom',
+          customColor: '#be185d',
+          isTicker: false,
+          position: 'top',
+        },
+        ticker: {
+          text: 'Panel segment live. Add questions and comments in chat.',
+          visible: true,
+          speed: 'normal',
+          backgroundColor: '#500724',
+          textColor: '#fce7f3',
+          separator: '•',
+        },
+      };
+    case 'presentation':
+      return {
+        name: 'Presentation',
+        layout: 'pip',
+        background: { type: 'gradient', value: 'linear-gradient(135deg, #0f172a 0%, #1e293b 52%, #0f766e 100%)' },
+        brandColor: '#5eead4',
+        cameraShape: 'rounded',
+        nameTagStyle: 'minimal',
+        banner: {
+          text: 'Presentation',
+          visible: false,
+          style: 'custom',
+          customColor: '#0f766e',
+          isTicker: false,
+          position: 'top',
+        },
+        ticker: {
+          text: 'Slides are on screen. Use the Media tab to start your deck.',
+          visible: true,
+          speed: 'slow',
+          backgroundColor: '#134e4a',
+          textColor: '#ccfbf1',
+          separator: '•',
         },
       };
     case 'live-q-and-a':

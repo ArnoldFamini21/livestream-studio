@@ -531,61 +531,16 @@ function drawPresentationMediaPreview(
     return true;
   }
 
-  const headerHeight = Math.max(58, finalHeight * 0.085);
-  const footerHeight = Math.max(46, finalHeight * 0.07);
-  const paddingX = finalWidth * 0.065;
-
-  ctx.save();
-  ctx.fillStyle = '#f8fafc';
-  ctx.beginPath();
-  ctx.roundRect(slideX, slideY, finalWidth, finalHeight, 24);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
-  ctx.lineWidth = 3;
-  ctx.stroke();
-
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(slideX, slideY, finalWidth, headerHeight);
-  ctx.fillStyle = brandColor;
-  ctx.fillRect(slideX, slideY, finalWidth, 8);
-  ctx.fillStyle = '#4338ca';
-  ctx.font = '900 24px Inter, Arial, sans-serif';
-  ctx.fillText(sourceLabel.toUpperCase(), slideX + paddingX, slideY + headerHeight / 2 + 9);
-  ctx.fillStyle = '#64748b';
-  ctx.font = '800 22px Inter, Arial, sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(`${unitLabel} ${currentIndex + 1} / ${slides.length}`, slideX + finalWidth - paddingX, slideY + headerHeight / 2 + 8);
-  ctx.textAlign = 'left';
-
-  const bodyX = slideX + paddingX;
-  const bodyY = slideY + headerHeight + finalHeight * 0.12;
-  const bodyWidth = finalWidth - paddingX * 2;
-  ctx.fillStyle = '#0f172a';
-  ctx.font = '900 58px Inter, Arial, sans-serif';
-  const titleLines = wrapCanvasText(ctx, slide.title, bodyWidth, 2);
-  titleLines.forEach((line, index) => {
-    ctx.fillText(line, bodyX, bodyY + index * 68);
-  });
-
-  const linesStartY = bodyY + Math.max(112, titleLines.length * 68 + 44);
-  ctx.fillStyle = '#334155';
-  ctx.font = '700 32px Inter, Arial, sans-serif';
-  slide.lines.slice(0, 6).forEach((line, index) => {
-    const yPosition = linesStartY + index * 48;
-    ctx.fillStyle = brandColor;
-    ctx.beginPath();
-    ctx.arc(bodyX + 10, yPosition - 10, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#334155';
-    ctx.fillText(truncateCanvasText(ctx, line, bodyWidth - 42), bodyX + 32, yPosition);
-  });
-
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(slideX, slideY + finalHeight - footerHeight, finalWidth, footerHeight);
-  ctx.fillStyle = '#64748b';
-  ctx.font = '800 20px Inter, Arial, sans-serif';
-  ctx.fillText(truncateCanvasText(ctx, media.name, finalWidth - paddingX * 2), slideX + paddingX, slideY + finalHeight - footerHeight / 2 + 8);
-  ctx.restore();
+  drawMediaFallbackCard(
+    ctx,
+    media,
+    x,
+    y,
+    width,
+    height,
+    brandColor,
+    slide.imageUrl ? `${sourceLabel} slide loading` : `${sourceLabel} render unavailable`
+  );
   return true;
 }
 

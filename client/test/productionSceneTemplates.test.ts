@@ -9,6 +9,15 @@ import {
   PRODUCTION_SCENE_TEMPLATE_CARDS,
 } from '../src/utils/productionSceneTemplates.ts';
 
+function hasVisibleProductionElement(config: ReturnType<typeof getProductionSceneTemplateConfig>): boolean {
+  return Boolean(
+    config.lowerThird?.visible ||
+    config.banner?.visible ||
+    config.ticker?.visible ||
+    config.timer?.visible
+  );
+}
+
 test('production scene template cards are unique and have matching configs', () => {
   const ids = new Set(PRODUCTION_SCENE_TEMPLATE_CARDS.map((template) => template.id));
 
@@ -20,8 +29,7 @@ test('production scene template cards are unique and have matching configs', () 
     assert.equal(config.layout, template.layout);
     assert.equal(config.background.value, template.background.value);
     assert.equal(config.brandColor, template.accent);
-    assert.ok(config.banner?.visible);
-    assert.ok(config.ticker?.visible);
+    assert.equal(hasVisibleProductionElement(config), true);
   }
 });
 
@@ -34,9 +42,26 @@ test('starting soon template includes a visible five minute countdown', () => {
   assert.equal(config.timer?.remainingSeconds, 300);
 });
 
-test('new producer templates cover audience questions and screen share workflows', () => {
+test('new producer templates cover core run-of-show workflows', () => {
+  const mainStage = getProductionSceneTemplateConfig('main-stage');
+  const interview = getProductionSceneTemplateConfig('interview');
+  const panel = getProductionSceneTemplateConfig('panel');
+  const presentation = getProductionSceneTemplateConfig('presentation');
   const qa = getProductionSceneTemplateConfig('live-q-and-a');
   const screenShare = getProductionSceneTemplateConfig('screen-share');
+
+  assert.equal(mainStage.layout, 'single');
+  assert.equal(mainStage.lowerThird?.visible, true);
+  assert.equal(mainStage.lowerThird?.style, 'glass');
+
+  assert.equal(interview.layout, 'side-by-side');
+  assert.equal(interview.lowerThird?.title, 'Interview Guest');
+
+  assert.equal(panel.layout, 'grid');
+  assert.equal(panel.banner?.text, 'Panel Discussion');
+
+  assert.equal(presentation.layout, 'pip');
+  assert.match(presentation.ticker?.text ?? '', /slides/i);
 
   assert.equal(qa.layout, 'featured');
   assert.equal(qa.banner?.text, 'Live Q&A');
@@ -50,12 +75,17 @@ test('new producer templates cover audience questions and screen share workflows
 test('production scene pack orders a complete show flow and respects available slots', () => {
   assert.deepEqual(PRODUCTION_SCENE_PACK_TEMPLATE_IDS, [
     'starting-soon',
+    'main-stage',
+    'interview',
+    'panel',
+    'presentation',
     'live-q-and-a',
     'screen-share',
     'brb',
     'ending',
   ]);
-  assert.deepEqual(getProductionScenePackTemplateIds(3), ['starting-soon', 'live-q-and-a', 'screen-share']);
+  assert.deepEqual(getProductionScenePackTemplateIds(3), ['starting-soon', 'main-stage', 'interview']);
+  assert.deepEqual(getProductionScenePackTemplateIds(5), ['starting-soon', 'main-stage', 'interview', 'panel', 'presentation']);
   assert.deepEqual(getProductionScenePackTemplateIds(0), []);
   assert.deepEqual(getProductionScenePackTemplateIds(-1), []);
 });
@@ -64,8 +94,7 @@ test('production scene pack references valid template configs', () => {
   for (const templateId of PRODUCTION_SCENE_PACK_TEMPLATE_IDS) {
     const config = getProductionSceneTemplateConfig(templateId);
     assert.ok(config.name);
-    assert.ok(config.banner?.visible);
-    assert.ok(config.ticker?.visible);
+    assert.equal(hasVisibleProductionElement(config), true);
   }
 });
 
