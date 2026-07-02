@@ -31,8 +31,16 @@ describe('media share layouts', () => {
     assert.equal(getMediaShareLayoutPlan('grid', 12).visibleParticipantCount, 4);
     assert.equal(getMediaShareLayoutPlan('featured', 12).visibleParticipantCount, 4);
     assert.equal(getMediaShareLayoutPlan('spotlight', 12).visibleParticipantCount, 6);
-    assert.equal(getMediaShareLayoutPlan('side-by-side', 12).visibleParticipantCount, 1);
-    assert.equal(getMediaShareLayoutPlan('pip', 12).visibleParticipantCount, 1);
+    assert.equal(getMediaShareLayoutPlan('side-by-side', 12).visibleParticipantCount, 2);
+    assert.equal(getMediaShareLayoutPlan('pip', 12).visibleParticipantCount, 2);
+    assert.equal(getMediaShareLayoutPlan('single', 12).visibleParticipantCount, 1);
+  });
+
+  it('keeps multiple participants visible in split and floating media share formats', () => {
+    assert.equal(getMediaShareLayoutPlan('side-by-side', 2).visibleParticipantCount, 2);
+    assert.equal(getMediaShareLayoutPlan('pip', 2).visibleParticipantCount, 2);
+    assert.equal(getMediaShareLayoutPlan('side-by-side', 1).visibleParticipantCount, 1);
+    assert.equal(getMediaShareLayoutPlan('pip', 1).visibleParticipantCount, 1);
   });
 
   it('does not invent participant tiles when media is the only stage item', () => {

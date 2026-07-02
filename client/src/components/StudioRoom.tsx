@@ -4258,12 +4258,20 @@ export function StudioRoom() {
     }
 
     if (plan.placement === 'pip') {
-      const pipPos = {
-        TL: { top: 20, left: 20 },
-        TR: { top: 20, right: 20 },
-        BL: { bottom: 20, left: 20 },
-        BR: { bottom: 20, right: 20 },
-      }[pipCorner];
+      const getPipPosition = (index: number): React.CSSProperties => {
+        const offset = `calc(20px + ${index * 25}%)`;
+        switch (pipCorner) {
+          case 'TL':
+            return { top: offset, left: 20 };
+          case 'TR':
+            return { top: offset, right: 20 };
+          case 'BL':
+            return { bottom: offset, left: 20 };
+          case 'BR':
+            return { bottom: offset, right: 20 };
+        }
+      };
+
       return {
         containerStyle: {
           ...containerBase,
@@ -4281,10 +4289,10 @@ export function StudioRoom() {
           gridColumn: '1',
           gridRow: '1',
         },
-        participantStyles: [{
+        participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
           position: 'absolute' as const,
-          ...pipPos,
-          width: '24%',
+          ...getPipPosition(i),
+          width: visibleCount > 1 ? '22%' : '24%',
           aspectRatio: '16 / 9',
           borderRadius: 12,
           overflow: 'hidden',
@@ -4295,7 +4303,7 @@ export function StudioRoom() {
           flexGrow: 0,
           cursor: 'pointer',
           transition: 'top 0.3s ease, bottom 0.3s ease, left 0.3s ease, right 0.3s ease',
-        }],
+        })),
         visibleParticipantCount: visibleCount,
         placement: plan.placement,
         usesFloatingParticipant: true,
@@ -4308,7 +4316,7 @@ export function StudioRoom() {
           ...containerBase,
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) minmax(220px, 0.52fr)',
-          gridTemplateRows: '1fr',
+          gridTemplateRows: `repeat(${visibleCount}, minmax(0, 1fr))`,
           gap: GAP,
           alignItems: 'stretch',
           justifyItems: 'stretch',
@@ -4316,16 +4324,16 @@ export function StudioRoom() {
         mediaStyle: {
           ...fullMediaStyle,
           gridColumn: '1',
-          gridRow: '1',
+          gridRow: `1 / ${visibleCount + 1}`,
         },
-        participantStyles: [{
+        participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
           gridColumn: '2',
-          gridRow: '1',
+          gridRow: `${i + 1}`,
           width: '100%',
           height: '100%',
           minWidth: 0,
           minHeight: 0,
-        }],
+        })),
         visibleParticipantCount: visibleCount,
         placement: plan.placement,
         usesFloatingParticipant: false,
@@ -5284,6 +5292,7 @@ export function StudioRoom() {
                 currentLayout={layout}
                 onLayoutChange={applyLayout}
                 participantCount={displayedStageVideoItems.length + (activeMedia ? 1 : 0)}
+                isMediaActive={Boolean(activeMedia)}
               />
             </div>
           )}

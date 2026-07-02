@@ -1,5 +1,7 @@
 import type { LayoutMode } from '@studio/shared';
 import {
+  getMediaShareLayoutDescription,
+  getMediaShareLayoutLabel,
   getStudioLayoutDescription,
   getStudioLayoutLabel,
   isMultiParticipantLayout,
@@ -10,6 +12,7 @@ interface LayoutSwitcherProps {
   currentLayout: LayoutMode;
   onLayoutChange: (layout: LayoutMode) => void;
   participantCount: number;
+  isMediaActive?: boolean;
 }
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
@@ -54,9 +57,9 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
   ),
 };
 
-export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount }: LayoutSwitcherProps) {
+export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount, isMediaActive = false }: LayoutSwitcherProps) {
   return (
-    <div style={styles.bar} role="radiogroup" aria-label="Layout switcher">
+    <div style={styles.bar} role="radiogroup" aria-label={isMediaActive ? 'Shared media layout switcher' : 'Layout switcher'}>
       <style>{`
         .ls-btn:hover:not(:disabled) {
           color: white !important;
@@ -76,8 +79,8 @@ export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount
         }
       `}</style>
       {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
-        const label = getStudioLayoutLabel(mode);
-        const description = getStudioLayoutDescription(mode);
+        const label = isMediaActive ? getMediaShareLayoutLabel(mode) : getStudioLayoutLabel(mode);
+        const description = isMediaActive ? getMediaShareLayoutDescription(mode) : getStudioLayoutDescription(mode);
         const isActive = currentLayout === mode;
         const isDisabled = participantCount < 2 && isMultiParticipantLayout(mode);
         return (
@@ -86,10 +89,10 @@ export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount
             className={`ls-btn ${isActive ? 'active' : ''}`}
             role="radio"
             aria-checked={isActive}
-            aria-label={`${label} layout — ${description}`}
+            aria-label={`${label} layout - ${description}`}
             onClick={() => onLayoutChange(mode)}
             disabled={isDisabled}
-            title={isDisabled ? `${label} (Requires 2+ people)` : `${label} — ${description}`}
+            title={isDisabled ? `${label} (Requires 2+ people)` : `${label} - ${description}`}
             style={{
               ...styles.btn,
               ...(isDisabled ? styles.btnDisabled : {}),

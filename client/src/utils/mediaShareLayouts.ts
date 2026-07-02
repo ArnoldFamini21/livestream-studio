@@ -20,6 +20,8 @@ export interface VisibleStageItemSelectionOptions {
 
 const MAX_SIDE_RAIL_PARTICIPANTS = 4;
 const MAX_BOTTOM_STRIP_PARTICIPANTS = 6;
+const MAX_SPLIT_PARTICIPANTS = 2;
+const MAX_FLOATING_PIP_PARTICIPANTS = 2;
 
 function normalizeParticipantCount(count: number): number {
   if (!Number.isFinite(count)) return 0;
@@ -40,6 +42,12 @@ export function getMediaShareLayoutPlan(layout: LayoutMode, participantCount: nu
 
   switch (layout) {
     case 'pip':
+      return {
+        placement: 'pip',
+        visibleParticipantCount: Math.min(count, MAX_FLOATING_PIP_PARTICIPANTS),
+        mediaIsDominant: true,
+        usesFloatingParticipant: true,
+      };
     case 'single':
       return {
         placement: 'pip',
@@ -50,7 +58,7 @@ export function getMediaShareLayoutPlan(layout: LayoutMode, participantCount: nu
     case 'side-by-side':
       return {
         placement: 'side-by-side',
-        visibleParticipantCount: 1,
+        visibleParticipantCount: Math.min(count, MAX_SPLIT_PARTICIPANTS),
         mediaIsDominant: false,
         usesFloatingParticipant: false,
       };
