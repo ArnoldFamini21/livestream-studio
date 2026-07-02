@@ -1252,7 +1252,7 @@ export function StudioRoom() {
       health: peerBandwidthHealth.get(id) || null,
     }))
   ), [participants, peerBandwidthHealth]);
-  const { health: mediaServerHealth } = useMediaServerHealth();
+  const { health: mediaServerHealth, refresh: refreshMediaServerHealth } = useMediaServerHealth();
   const sessionHealth = useSessionHealth({
     localStream,
     connected,
@@ -5488,6 +5488,8 @@ export function StudioRoom() {
             onPlayMediaAsset={onPlayMediaAsset}
             onRemoveMediaAsset={onRemoveMediaAsset}
             onStopMedia={onStopMedia}
+            mediaServerHealth={mediaServerHealth}
+            onRefreshMediaServerHealth={refreshMediaServerHealth}
             scenes={scenes}
             activeSceneId={activeSceneId}
             sceneTransitionPreset={sceneTransitionPreset}

@@ -50,6 +50,7 @@ import {
   formatPeerBandwidthQualityLabel,
 } from '../utils/peerBandwidthDisplay.ts';
 import type { PeerBandwidthHealth, PeerBandwidthQuality } from '../utils/webrtcBandwidthAdaptation.ts';
+import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -126,6 +127,8 @@ interface SidebarProps {
   onPlayMediaAsset: (asset: StudioMediaAsset) => void;
   onRemoveMediaAsset: (assetId: string) => void;
   onStopMedia: () => void;
+  mediaServerHealth?: MediaServerHealth | null;
+  onRefreshMediaServerHealth?: () => void | Promise<MediaServerHealth>;
   // Scene props
   scenes: Scene[];
   activeSceneId: string | null;
@@ -449,6 +452,8 @@ export function Sidebar(props: SidebarProps) {
               onPlay={props.onPlayMediaAsset}
               onRemove={props.onRemoveMediaAsset}
               onStop={props.onStopMedia}
+              mediaServerHealth={props.mediaServerHealth}
+              onRefreshMediaServerHealth={props.onRefreshMediaServerHealth}
             />
           )}
 

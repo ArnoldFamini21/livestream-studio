@@ -7,6 +7,7 @@ import {
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
 import { hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
+import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
 
@@ -20,6 +21,8 @@ interface MediaLibraryProps {
   onPlay: (asset: StudioMediaAsset) => void;
   onRemove: (assetId: string) => void;
   onStop: () => void;
+  mediaServerHealth?: MediaServerHealth | null;
+  onRefreshMediaServerHealth?: () => void | Promise<MediaServerHealth>;
 }
 
 const tabDefs: Array<{ id: MediaTab; label: string; accepts: string; title: string }> = [
@@ -56,6 +59,8 @@ export function MediaLibrary({
   onPlay,
   onRemove,
   onStop,
+  mediaServerHealth,
+  onRefreshMediaServerHealth,
 }: MediaLibraryProps) {
   const [activeTab, setActiveTab] = useState<MediaTab>('videos');
   const [videoUrl, setVideoUrl] = useState('');
@@ -71,6 +76,8 @@ export function MediaLibrary({
 
   const activeDef = tabDefs.find((tab) => tab.id === activeTab) || tabDefs[0];
   const deckStatus = getPresentationDeckStatus(activeMedia, activeMediaSlideIndex);
+  const deckUploadBlockMessage = getDeckUploadBlockMessage(mediaServerHealth);
+  const showDeckUploadNotice = (activeTab === 'slides' || activeTab === 'files') && Boolean(deckUploadBlockMessage);
   const filteredAssets = useMemo(() => {
     switch (activeTab) {
       case 'videos':
@@ -97,6 +104,13 @@ export function MediaLibrary({
     if (files.length === 0) return;
     setActiveTab(getMediaTabForType(detectMediaType(files[0])));
     setUploadError('');
+
+    if (deckUploadBlockMessage && hasDeckFiles(files)) {
+      setActiveTab('slides');
+      setUploadError(deckUploadBlockMessage);
+      return;
+    }
+
     setIsUploading(true);
     void Promise.resolve(onUpload(files))
       .catch((error) => {
@@ -151,6 +165,37 @@ export function MediaLibrary({
       </div>
 
       <div style={styles.body}>
+        {showDeckUploadNotice && (
+          <div
+            style={{
+              ...styles.deckReadinessNotice,
+              ...(mediaServerHealth?.status === 'checking' ? styles.deckReadinessNoticeChecking : styles.deckReadinessNoticeBlocked),
+            }}
+          >
+            <div style={styles.deckReadinessText}>
+              <span style={styles.deckReadinessTitle}>
+                {mediaServerHealth?.status === 'checking' ? 'Checking exact deck renderer' : 'Exact deck renderer unavailable'}
+              </span>
+              <span style={styles.deckReadinessMessage}>{deckUploadBlockMessage}</span>
+            </div>
+            {onRefreshMediaServerHealth && (
+              <button
+                type="button"
+                style={{
+                  ...styles.deckReadinessButton,
+                  ...(mediaServerHealth?.status === 'checking' ? styles.deckReadinessButtonDisabled : {}),
+                }}
+                disabled={mediaServerHealth?.status === 'checking'}
+                onClick={() => {
+                  setUploadError('');
+                  void onRefreshMediaServerHealth();
+                }}
+              >
+                Check
+              </button>
+            )}
+          </div>
+        )}
         <div style={styles.uploadCard}>
           <input
             ref={inputRefs[activeTab]}
@@ -444,6 +489,22 @@ export function canPlayMediaAsset(asset: StudioMediaAsset): boolean {
   return true;
 }
 
+function isDeckMediaType(type: StudioMediaType): boolean {
+  return type === 'presentation' || type === 'pdf';
+}
+
+export function hasDeckFiles(files: File[]): boolean {
+  return files.some((file) => isDeckMediaType(detectMediaType(file)));
+}
+
+export function getDeckUploadBlockMessage(health?: Pick<MediaServerHealth, 'status' | 'message'> | null): string {
+  if (!health || health.status === 'ready') return '';
+  if (health.status === 'checking') {
+    return 'Checking the media-server before accepting PowerPoint or PDF uploads.';
+  }
+  return health.message || 'Media server is unavailable. Check it before uploading PowerPoint or PDF files.';
+}
+
 export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {
   if (asset.processingStatus === 'processing') {
     if (asset.processingMessage) return asset.processingMessage;
@@ -595,6 +656,14 @@ const styles: Record<string, React.CSSProperties> = {
   uploadBtn: { height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 7, border: '1px solid var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)', fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: '0 10px', flexShrink: 0 },
   uploadBtnDisabled: { opacity: 0.58, cursor: 'wait' },
   uploadError: { marginTop: -4, padding: '8px 10px', borderRadius: 7, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.1)', color: '#fecaca', fontSize: 10, fontWeight: 700, lineHeight: 1.3 },
+  deckReadinessNotice: { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 8 },
+  deckReadinessNoticeChecking: { border: '1px solid rgba(103,232,249,0.3)', background: 'rgba(103,232,249,0.08)' },
+  deckReadinessNoticeBlocked: { border: '1px solid rgba(248,113,113,0.34)', background: 'rgba(248,113,113,0.09)' },
+  deckReadinessText: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
+  deckReadinessTitle: { fontSize: 10, fontWeight: 900, color: 'var(--text-primary)' },
+  deckReadinessMessage: { fontSize: 10, lineHeight: 1.3, color: 'var(--text-muted)' },
+  deckReadinessButton: { height: 28, borderRadius: 7, border: '1px solid var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)', fontSize: 10, fontWeight: 800, cursor: 'pointer', padding: '0 9px', flexShrink: 0 },
+  deckReadinessButtonDisabled: { opacity: 0.5, cursor: 'wait' },
   urlBox: { display: 'flex', gap: 6 },
   urlInput: { minWidth: 0, flex: 1, height: 34, padding: '0 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', outline: 'none', fontSize: 12 },
   urlBtn: { height: 34, borderRadius: 7, border: 'none', background: 'var(--accent-solid)', color: 'white', fontSize: 11, fontWeight: 700, padding: '0 10px', cursor: 'pointer' },
