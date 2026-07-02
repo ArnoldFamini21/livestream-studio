@@ -6,6 +6,7 @@ import type { SavedHostStudio } from '../src/utils/hostSession.ts';
 import type { SavedWorkspaceTeamMember } from '../src/utils/workspaceTeam.ts';
 import {
   buildWorkspaceDashboardSummary,
+  buildWorkspaceRecordingDashboardItems,
   formatWorkspaceDuration,
   formatWorkspaceFileSize,
 } from '../src/utils/workspaceDashboard.ts';
@@ -135,7 +136,7 @@ describe('workspace dashboard summary', () => {
   it('summarizes saved studios, local recordings, and brand kits', () => {
     const summary = buildWorkspaceDashboardSummary(
       studios,
-      recordings,
+      buildWorkspaceRecordingDashboardItems(recordings),
       brandKits,
       teamMembers,
       Date.parse('2026-07-01T00:00:00.000Z')
@@ -187,7 +188,7 @@ describe('workspace dashboard summary', () => {
   it('keeps the legacy nowMs fourth argument for existing callers', () => {
     const summary = buildWorkspaceDashboardSummary(
       studios,
-      recordings,
+      buildWorkspaceRecordingDashboardItems(recordings),
       brandKits,
       Date.parse('2026-07-01T00:00:00.000Z')
     );
@@ -204,5 +205,73 @@ describe('workspace dashboard summary', () => {
     assert.equal(formatWorkspaceDuration(null), '0:00');
     assert.equal(formatWorkspaceDuration(95), '1:35');
     assert.equal(formatWorkspaceDuration(3661), '1:01:01');
+  });
+
+  it('merges server catalog recordings with local recording metadata', () => {
+    const dashboardRecordings = buildWorkspaceRecordingDashboardItems(recordings, [
+      {
+        id: 'recording-1',
+        roomId: 'room-launch',
+        roomName: 'Launch Show',
+        createdAt: '2026-07-01T10:00:00.000Z',
+        updatedAt: '2026-07-01T11:10:00.000Z',
+        durationSeconds: 3605,
+        trackCount: 3,
+        totalBytes: 1024 * 1024 * 3,
+        markerCount: 2,
+        mediaExport: {
+          status: 'ready',
+          uploadId: 'upload-launch',
+          exportId: 'export-launch',
+          updatedAt: '2026-07-01T11:10:00.000Z',
+          readyMp4: true,
+          mp4ShareUrl: 'https://cdn.example.com/launch.mp4',
+          artifactCount: 2,
+          readyArtifactCount: 2,
+        },
+      },
+      {
+        id: 'server-only',
+        roomId: 'room-sermon',
+        roomName: 'Sermon Archive',
+        createdAt: '2026-07-02T09:00:00.000Z',
+        updatedAt: '2026-07-02T09:15:00.000Z',
+        durationSeconds: 1800,
+        trackCount: 1,
+        totalBytes: 1024 * 1024 * 42,
+        markerCount: 0,
+        mediaExport: {
+          status: 'ready',
+          uploadId: 'upload-sermon',
+          exportId: 'export-sermon',
+          updatedAt: '2026-07-02T09:15:00.000Z',
+          readyMp4: true,
+          mp4ShareUrl: 'https://cdn.example.com/sermon.mp4',
+          artifactCount: 1,
+          readyArtifactCount: 1,
+        },
+      },
+    ]);
+
+    assert.equal(dashboardRecordings.length, 3);
+    assert.equal(dashboardRecordings[0]?.id, 'server-only');
+    assert.equal(dashboardRecordings.find((item) => item.id === 'recording-1')?.source, 'local-and-server');
+    assert.equal(
+      dashboardRecordings.find((item) => item.id === 'recording-1')?.mediaExport?.mp4ShareUrl,
+      'https://cdn.example.com/launch.mp4'
+    );
+
+    const summary = buildWorkspaceDashboardSummary(
+      studios,
+      dashboardRecordings,
+      brandKits,
+      teamMembers,
+      Date.parse('2026-07-01T00:00:00.000Z')
+    );
+
+    assert.equal(summary.totalRecordings, 3);
+    assert.equal(summary.mediaExportRecordingCount, 2);
+    assert.equal(summary.readyMp4RecordingCount, 2);
+    assert.equal(summary.latestRecording?.roomName, 'Sermon Archive');
   });
 });

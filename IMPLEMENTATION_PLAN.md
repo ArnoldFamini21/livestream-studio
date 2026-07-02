@@ -226,6 +226,7 @@
 - [x] Local workspace team roster with role labels and portable backup/import
 - [x] Portable workspace backup/import for saved studios, brand kits, and recording catalog metadata
 - [ ] Account-backed user dashboard: manage studios, recordings, and brand assets across devices
+  - [x] Workspace dashboard reads host-scoped server recording catalogs and exposes synced MP4 share links
 - [ ] Team/organization support
 
 ### 10B. Media Server (SFU)

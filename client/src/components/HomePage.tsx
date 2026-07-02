@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { buildStudioCalendarInvite, type RoomRegistrantListResponse } from '@studio/shared';
+import { buildStudioCalendarInvite, type RecordingCatalogEntry, type RoomRegistrantListResponse } from '@studio/shared';
 import {
   buildHostEntryPath,
   buildHostEntryUrl,
@@ -31,9 +31,12 @@ import {
 } from '../utils/brandKits.ts';
 import {
   buildWorkspaceDashboardSummary,
+  buildWorkspaceRecordingDashboardItems,
   formatWorkspaceDuration,
   formatWorkspaceFileSize,
+  type WorkspaceDashboardRecording,
 } from '../utils/workspaceDashboard.ts';
+import { fetchRecordingCatalog } from '../utils/recordingCatalog.ts';
 import {
   buildWorkspaceBackup,
   mergeWorkspaceBackup,
@@ -249,6 +252,9 @@ export function HomePage() {
   const [teamMemberRole, setTeamMemberRole] = useState<WorkspaceTeamRole>('producer');
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [dashboardNotice, setDashboardNotice] = useState<string | null>(null);
+  const [serverRecordingCatalog, setServerRecordingCatalog] = useState<RecordingCatalogEntry[]>([]);
+  const [serverRecordingCatalogLoading, setServerRecordingCatalogLoading] = useState(false);
+  const [serverRecordingCatalogError, setServerRecordingCatalogError] = useState<string | null>(null);
   const navigate = useNavigate();
   const recordingLibrary = useRecordingLibrary();
   const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -364,11 +370,19 @@ export function HomePage() {
   const hostEntryLink = scheduledRoom ? buildHostEntryUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.hostToken) : '';
   const buildInviteLink = (room: SavedScheduledStudio) => buildGuestInviteUrl(INVITE_BASE_URL, room.id, room.name);
   const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
-  const workspaceDashboard = useMemo(
-    () => buildWorkspaceDashboardSummary(savedScheduledRooms, recordingLibrary.sessions, savedBrandKits, savedTeamMembers),
-    [savedScheduledRooms, recordingLibrary.sessions, savedBrandKits, savedTeamMembers]
+  const dashboardRecordings = useMemo(
+    () => buildWorkspaceRecordingDashboardItems(recordingLibrary.sessions, serverRecordingCatalog),
+    [recordingLibrary.sessions, serverRecordingCatalog]
   );
-  const recentRecordings = recordingLibrary.sessions.slice(0, 3);
+  const workspaceDashboard = useMemo(
+    () => buildWorkspaceDashboardSummary(savedScheduledRooms, dashboardRecordings, savedBrandKits, savedTeamMembers),
+    [savedScheduledRooms, dashboardRecordings, savedBrandKits, savedTeamMembers]
+  );
+  const recentRecordings = dashboardRecordings.slice(0, 3);
+  const localRecordingIds = useMemo(
+    () => new Set(recordingLibrary.sessions.map((session) => session.id)),
+    [recordingLibrary.sessions]
+  );
   const recentBrandKits = savedBrandKits.slice(0, 4);
   const recentTeamMembers = savedTeamMembers.slice(0, 5);
 
@@ -394,6 +408,55 @@ export function HomePage() {
       cancelled = true;
     };
   }, [inviteLink, scheduledRoom]);
+
+  useEffect(() => {
+    const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
+    if (hostAccessibleStudios.length === 0) {
+      setServerRecordingCatalog([]);
+      setServerRecordingCatalogError(null);
+      setServerRecordingCatalogLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setServerRecordingCatalogLoading(true);
+    setServerRecordingCatalogError(null);
+
+    Promise.allSettled(
+      hostAccessibleStudios.map((room) => fetchRecordingCatalog(room.id, room.hostToken))
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const byId = new Map<string, RecordingCatalogEntry>();
+        for (const result of results) {
+          if (result.status !== 'fulfilled') continue;
+          for (const recording of result.value.recordings) {
+            byId.set(recording.id, recording);
+          }
+        }
+        setServerRecordingCatalog(
+          Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        );
+        const failedCount = results.filter((result) => result.status === 'rejected').length;
+        setServerRecordingCatalogError(failedCount > 0
+          ? `Could not refresh cloud recordings for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
+          : null
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setServerRecordingCatalog([]);
+          setServerRecordingCatalogError('Could not refresh cloud recordings.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setServerRecordingCatalogLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [savedScheduledRooms]);
 
   const copyToClipboard = async () => {
     await writeClipboardText(inviteLink);
@@ -528,6 +591,28 @@ export function HomePage() {
     } catch {
       setDashboardError('Could not delete that recording.');
     }
+  };
+
+  const copyRecordingMp4ShareLink = async (recording: WorkspaceDashboardRecording) => {
+    const mp4ShareUrl = recording.mediaExport?.mp4ShareUrl;
+    if (!mp4ShareUrl) return;
+    setDashboardError(null);
+    setDashboardNotice(null);
+    try {
+      await writeClipboardText(mp4ShareUrl);
+      setDashboardNotice('MP4 share link copied.');
+    } catch {
+      setDashboardError('Could not copy the MP4 share link.');
+    }
+  };
+
+  const deleteDashboardRecordingSession = async (recording: WorkspaceDashboardRecording) => {
+    const localSession = recordingLibrary.sessions.find((session) => session.id === recording.id);
+    if (!localSession) {
+      setDashboardError('That recording is only in the cloud catalog and cannot be deleted from this browser.');
+      return;
+    }
+    await deleteRecordingSession(localSession);
   };
 
   const deleteBrandKit = (kit: SavedBrandKit) => {
@@ -907,8 +992,10 @@ export function HomePage() {
               {(dashboardError || recordingLibrary.error) && (
                 <p style={styles.workspaceError}>{dashboardError || recordingLibrary.error}</p>
               )}
-              {dashboardNotice && !dashboardError && !recordingLibrary.error && (
-                <p style={styles.workspaceNotice}>{dashboardNotice}</p>
+              {(dashboardNotice || serverRecordingCatalogError || serverRecordingCatalogLoading) && !dashboardError && !recordingLibrary.error && (
+                <p style={styles.workspaceNotice}>
+                  {dashboardNotice || (serverRecordingCatalogLoading ? 'Refreshing cloud recording catalog...' : serverRecordingCatalogError)}
+                </p>
               )}
 
               <div style={styles.workspaceSection}>
@@ -973,32 +1060,48 @@ export function HomePage() {
                 )}
               </div>
 
-              {(recordingLibrary.isLoading || recentRecordings.length > 0) && (
+              {(recordingLibrary.isLoading || serverRecordingCatalogLoading || recentRecordings.length > 0) && (
                 <div style={styles.workspaceSection}>
                   <div style={styles.workspaceSectionHeader}>
                     <span style={styles.workspaceSectionTitle}>Recent recordings</span>
                     <span style={styles.workspaceSectionCount}>
-                      {recordingLibrary.isLoading
+                      {recordingLibrary.isLoading || serverRecordingCatalogLoading
                         ? 'Loading'
                         : `${workspaceDashboard.cloudRecordingCount} cloud | ${workspaceDashboard.readyMp4RecordingCount} MP4`}
                     </span>
                   </div>
-                  {!recordingLibrary.isLoading && (
+                  {!recordingLibrary.isLoading && !serverRecordingCatalogLoading && (
                     <div style={styles.workspaceRows}>
                       {recentRecordings.map((session) => (
                         <div key={session.id} style={styles.workspaceRow}>
+                          <span style={styles.workspaceRecordingSourceBadge}>
+                            {session.source === 'local-and-server' ? 'Both' : session.source === 'server' ? 'Cloud' : 'Local'}
+                          </span>
                           <div style={styles.workspaceRowCopy}>
                             <span style={styles.workspaceRowTitle}>{session.roomName}</span>
                             <span style={styles.workspaceRowMeta}>
                               {formatDashboardDate(session.createdAt)} | {formatWorkspaceDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'}
+                              {session.mediaExport?.readyMp4 ? ' | MP4 ready' : ''}
                             </span>
                           </div>
-                          <button
-                            style={styles.workspaceRowAction}
-                            onClick={() => void deleteRecordingSession(session)}
-                          >
-                            Delete
-                          </button>
+                          <div style={styles.workspaceRowActions}>
+                            {session.mediaExport?.mp4ShareUrl && (
+                              <button
+                                style={styles.workspaceRowSecondaryAction}
+                                onClick={() => void copyRecordingMp4ShareLink(session)}
+                              >
+                                MP4
+                              </button>
+                            )}
+                            {localRecordingIds.has(session.id) && (
+                              <button
+                                style={styles.workspaceRowAction}
+                                onClick={() => void deleteDashboardRecordingSession(session)}
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1705,6 +1808,19 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     minHeight: 42,
   },
+  workspaceRecordingSourceBadge: {
+    flex: '0 0 42px',
+    minHeight: 24,
+    borderRadius: 8,
+    border: '1px solid rgba(103, 232, 249, 0.2)',
+    background: 'rgba(103, 232, 249, 0.08)',
+    color: '#67e8f9',
+    fontSize: 10,
+    fontWeight: 900,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   workspaceRowCopy: {
     minWidth: 0,
     flex: '1 1 auto',
@@ -1729,6 +1845,13 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: 'var(--text-muted)',
   },
+  workspaceRowActions: {
+    flex: '0 0 auto',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
   workspaceRowAction: {
     flex: '0 0 68px',
     minHeight: 30,
@@ -1736,6 +1859,17 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid rgba(248, 113, 113, 0.18)',
     background: 'rgba(248, 113, 113, 0.06)',
     color: '#fca5a5',
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  workspaceRowSecondaryAction: {
+    flex: '0 0 50px',
+    minHeight: 30,
+    borderRadius: 8,
+    border: '1px solid rgba(103, 232, 249, 0.22)',
+    background: 'rgba(103, 232, 249, 0.08)',
+    color: '#67e8f9',
     fontSize: 11,
     fontWeight: 800,
     cursor: 'pointer',
