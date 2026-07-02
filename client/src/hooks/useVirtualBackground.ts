@@ -8,6 +8,13 @@ import {
   normalizeChromaKeyColor,
   normalizeChromaSimilarity,
 } from '../utils/virtualBackgrounds.ts';
+import {
+  buildFallbackBackgroundFilter,
+  buildReplacementBackgroundFilter,
+  getExpandedDrawRect,
+  getVirtualBackgroundRefinementSettings,
+  refineSegmentationMaskAlpha,
+} from '../utils/virtualBackgroundRefinement.ts';
 
 declare global {
   interface Window {
@@ -75,8 +82,8 @@ function loadMediaPipeScript(): Promise<void> {
 // looking smooth for talking-head video. Most webcams cap around 30 anyway.
 const TARGET_FPS = 30;
 
-// Internal segmentation resolution. SelfieSegmentation model 1 expects 256x256;
-// downscaling reduces CPU/GPU work and the mask is upscaled back to canvas size.
+// Internal mask refinement resolution. Downscaling keeps per-frame alpha
+// cleanup affordable and the refined mask is upscaled back to canvas size.
 const SEGMENTATION_WIDTH = 256;
 const SEGMENTATION_HEIGHT = 256;
 
@@ -301,10 +308,20 @@ export function useVirtualBackground({
       return;
     }
 
-    // Downscaled mask canvas to keep segmentation fast.
+    // Downscaled mask canvas to keep per-frame alpha refinement fast.
     const maskCanvas = document.createElement('canvas');
     maskCanvas.width = SEGMENTATION_WIDTH;
     maskCanvas.height = SEGMENTATION_HEIGHT;
+    const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+    const refinedMaskCanvas = document.createElement('canvas');
+    const refinedMaskCtx = refinedMaskCanvas.getContext('2d');
+    const foregroundCanvas = document.createElement('canvas');
+    const foregroundCtx = foregroundCanvas.getContext('2d');
+    if (!maskCtx || !refinedMaskCtx || !foregroundCtx) {
+      setError('Canvas 2D context unavailable; cannot refine virtual background edges.');
+      setOutputStream(inputStream);
+      return;
+    }
 
     const finalize = () => {
       cancelled = true;
@@ -325,7 +342,104 @@ export function useVirtualBackground({
       if (outputCanvas.width !== w || outputCanvas.height !== h) {
         outputCanvas.width = w;
         outputCanvas.height = h;
+        refinedMaskCanvas.width = w;
+        refinedMaskCanvas.height = h;
+        foregroundCanvas.width = w;
+        foregroundCanvas.height = h;
       }
+    };
+
+    const drawBlurredCameraBackground = (
+      ctx: CanvasRenderingContext2D,
+      image: CanvasImageSource,
+      cw: number,
+      ch: number,
+      blurPx: number
+    ) => {
+      const refinement = getVirtualBackgroundRefinementSettings(cw, ch);
+      const rect = getExpandedDrawRect(cw, ch, Math.max(blurPx, refinement.edgeBlurPx) * 2);
+      ctx.save();
+      ctx.filter = buildFallbackBackgroundFilter(blurPx, refinement);
+      ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+      ctx.filter = 'none';
+      ctx.restore();
+    };
+
+    const drawReplacementBackground = (
+      ctx: CanvasRenderingContext2D,
+      image: CanvasImageSource,
+      cw: number,
+      ch: number,
+      mode: VirtualBackgroundMode
+    ) => {
+      const refinement = getVirtualBackgroundRefinementSettings(cw, ch);
+      if (mode === 'blur') {
+        drawBlurredCameraBackground(ctx, image, cw, ch, configRef.current.blurPx ?? 12);
+        return;
+      }
+
+      if (mode !== 'image') return;
+      const cached = bgImageRef.current?.img;
+      if (cached && cached.complete && cached.naturalWidth > 0) {
+        ctx.save();
+        ctx.filter = buildReplacementBackgroundFilter(refinement);
+        drawCover(ctx, cached, cw, ch, refinement.replacementBackgroundBlurPx * 3);
+        ctx.filter = 'none';
+        ctx.restore();
+      } else {
+        drawBlurredCameraBackground(ctx, image, cw, ch, 16);
+      }
+    };
+
+    const drawRefinedMask = (
+      segmentationMask: CanvasImageSource,
+      cw: number,
+      ch: number
+    ) => {
+      const refinement = getVirtualBackgroundRefinementSettings(cw, ch);
+
+      maskCtx.save();
+      maskCtx.clearRect(0, 0, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT);
+      maskCtx.imageSmoothingEnabled = true;
+      maskCtx.imageSmoothingQuality = 'high';
+      maskCtx.drawImage(segmentationMask, 0, 0, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT);
+      const maskFrame = maskCtx.getImageData(0, 0, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT);
+      refineSegmentationMaskAlpha(maskFrame.data);
+      maskCtx.putImageData(maskFrame, 0, 0);
+      maskCtx.restore();
+
+      refinedMaskCtx.save();
+      refinedMaskCtx.clearRect(0, 0, cw, ch);
+      refinedMaskCtx.imageSmoothingEnabled = true;
+      refinedMaskCtx.imageSmoothingQuality = 'high';
+      refinedMaskCtx.filter = `blur(${refinement.edgeBlurPx}px)`;
+      refinedMaskCtx.drawImage(maskCanvas, 0, 0, cw, ch);
+      refinedMaskCtx.filter = 'none';
+      refinedMaskCtx.globalAlpha = refinement.coreMaskOpacity;
+      refinedMaskCtx.drawImage(maskCanvas, 0, 0, cw, ch);
+      refinedMaskCtx.restore();
+    };
+
+    const drawRefinedForeground = (
+      ctx: CanvasRenderingContext2D,
+      image: CanvasImageSource,
+      segmentationMask: CanvasImageSource,
+      cw: number,
+      ch: number
+    ) => {
+      drawRefinedMask(segmentationMask, cw, ch);
+
+      foregroundCtx.save();
+      foregroundCtx.clearRect(0, 0, cw, ch);
+      foregroundCtx.imageSmoothingEnabled = true;
+      foregroundCtx.imageSmoothingQuality = 'high';
+      foregroundCtx.drawImage(image, 0, 0, cw, ch);
+      foregroundCtx.globalCompositeOperation = 'destination-in';
+      foregroundCtx.drawImage(refinedMaskCanvas, 0, 0, cw, ch);
+      foregroundCtx.globalCompositeOperation = 'source-over';
+      foregroundCtx.restore();
+
+      ctx.drawImage(foregroundCanvas, 0, 0, cw, ch);
     };
 
     const drawComposite = () => {
@@ -338,32 +452,10 @@ export function useVirtualBackground({
 
       ctx.save();
       ctx.clearRect(0, 0, cw, ch);
-
-      // Step 1: paint the segmentation mask alpha into the canvas.
-      ctx.drawImage(segmentationMask, 0, 0, cw, ch);
-
-      // Step 2: keep only the foreground (the person) where the mask is opaque.
-      ctx.globalCompositeOperation = 'source-in';
-      ctx.drawImage(image, 0, 0, cw, ch);
-
-      // Step 3: paint the chosen background BEHIND the foreground.
-      ctx.globalCompositeOperation = 'destination-over';
-      if (mode === 'blur') {
-        const blurPx = configRef.current.blurPx ?? 12;
-        ctx.filter = `blur(${blurPx}px)`;
-        ctx.drawImage(image, 0, 0, cw, ch);
-        ctx.filter = 'none';
-      } else if (mode === 'image') {
-        const cached = bgImageRef.current?.img;
-        if (cached && cached.complete && cached.naturalWidth > 0) {
-          drawCover(ctx, cached, cw, ch);
-        } else {
-          // Fallback while the image is loading or failed: blur the camera frame.
-          ctx.filter = 'blur(16px)';
-          ctx.drawImage(image, 0, 0, cw, ch);
-          ctx.filter = 'none';
-        }
-      }
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      drawReplacementBackground(ctx, image, cw, ch, mode);
+      drawRefinedForeground(ctx, image, segmentationMask, cw, ch);
       ctx.restore();
     };
 
@@ -397,7 +489,7 @@ export function useVirtualBackground({
         segmenter = new Ctor({
           locateFile: (file) => `${MEDIAPIPE_BASE}/${file}`,
         });
-        segmenter.setOptions({ modelSelection: 1, selfieMode: false });
+        segmenter.setOptions({ modelSelection: 0, selfieMode: false });
         segmenter.onResults((results) => {
           lastResults = results;
           drawComposite();
@@ -443,10 +535,18 @@ export function useVirtualBackground({
 }
 
 // "background-size: cover" style draw onto a canvas.
-function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, w: number, h: number) {
+function drawCover(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  w: number,
+  h: number,
+  bleedPx = 0
+) {
   const iw = img.naturalWidth;
   const ih = img.naturalHeight;
-  const scale = Math.max(w / iw, h / ih);
+  const targetW = w + Math.max(0, bleedPx) * 2;
+  const targetH = h + Math.max(0, bleedPx) * 2;
+  const scale = Math.max(targetW / iw, targetH / ih);
   const dw = iw * scale;
   const dh = ih * scale;
   ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
