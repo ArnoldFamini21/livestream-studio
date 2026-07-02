@@ -13,6 +13,15 @@ export interface SharedMediaParticipantItem {
   id: string;
 }
 
+export interface ScreenShareStageItem {
+  isScreenShare?: boolean;
+}
+
+export interface ScreenShareStageSplit<T> {
+  screenShareItem: T | null;
+  participantItems: T[];
+}
+
 export interface VisibleStageItemSelectionOptions {
   mediaVisibleParticipantCount?: number | null;
   hasScreenShare?: boolean;
@@ -101,6 +110,23 @@ export function mergeSharedMediaParticipantItems<T extends SharedMediaParticipan
 
   if (mergedFallbacks.length === 0) return stageItems;
   return [...mergedFallbacks, ...stageItems];
+}
+
+export function splitScreenShareStageItems<T extends ScreenShareStageItem>(
+  stageItems: T[]
+): ScreenShareStageSplit<T> {
+  let screenShareItem: T | null = null;
+  const participantItems: T[] = [];
+
+  for (const item of stageItems) {
+    if (item.isScreenShare) {
+      screenShareItem = screenShareItem || item;
+      continue;
+    }
+    participantItems.push(item);
+  }
+
+  return { screenShareItem, participantItems };
 }
 
 export function selectVisibleStageItems<T>(

@@ -4016,6 +4016,28 @@ export function StudioRoom() {
     stagePresenceItems.map((presence) => presence.item)
   ), [stagePresenceItems]);
 
+  const screenShareStageSplit = useMemo(() => {
+    let screenShareItem: StagePresenceTrackedItem<StageVideoItem> | null = null;
+    const participantItems: Array<StagePresenceTrackedItem<StageVideoItem>> = [];
+
+    for (const presence of stagePresenceItems) {
+      if (presence.item.isScreenShare) {
+        screenShareItem = screenShareItem || presence;
+        continue;
+      }
+      participantItems.push(presence);
+    }
+
+    return { screenShareItem, participantItems };
+  }, [stagePresenceItems]);
+
+  const sharedContentScreenShare = !activeMedia ? screenShareStageSplit.screenShareItem : null;
+  const sharedContentParticipantPresenceItems = activeMedia || sharedContentScreenShare
+    ? screenShareStageSplit.participantItems
+    : stagePresenceItems;
+  const sharedContentIsActive = Boolean(activeMedia || sharedContentScreenShare);
+  const sharedContentStageItemCount = sharedContentParticipantPresenceItems.length + (sharedContentIsActive ? 1 : 0);
+
   useEffect(() => {
     if (focusedVideoItemId && !videoItems.some((item) => item.id === focusedVideoItemId)) {
       setFocusedVideoItemId(null);
@@ -4090,16 +4112,15 @@ export function StudioRoom() {
 
   // Auto-switch layout when participant count changes
   useEffect(() => {
-    const count = displayedStageVideoItems.length + (activeMedia ? 1 : 0);
     // Layouts requiring >= 2 participants
-    if (count < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
-      applyLayout(count === 1 ? 'single' : 'grid');
+    if (sharedContentStageItemCount < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
+      applyLayout(sharedContentStageItemCount === 1 ? 'single' : 'grid');
     }
     // Single layout with multiple participants should switch to grid
-    if (!activeMedia && displayedStageVideoItems.length > 1 && layout === 'single') {
+    if (!sharedContentIsActive && displayedStageVideoItems.length > 1 && layout === 'single') {
       applyLayout('grid');
     }
-  }, [activeMedia, applyLayout, displayedStageVideoItems.length, layout]);
+  }, [applyLayout, displayedStageVideoItems.length, layout, sharedContentIsActive, sharedContentStageItemCount]);
 
   // All participants for the manager - memoized
   const allParticipantsMap = useMemo(() => {
@@ -4194,53 +4215,6 @@ export function StudioRoom() {
       },
       tileStyles: tiles,
       mode: 'flex',
-    };
-  }, []);
-
-  // Screen share layout: screen tile gets prominent placement.
-  const getScreenShareLayout = useCallback((items: StageVideoItem[]): LayoutResult => {
-    const screenIdx = items.findIndex(v => v.isScreenShare);
-    const speakerCount = items.length - 1;
-
-    if (speakerCount <= 4) {
-      // CSS Grid: screen takes left column, speakers stack in right column
-      const speakerRows = Math.max(speakerCount, 1);
-      const tiles: React.CSSProperties[] = items.map((_, i) => {
-        if (i === screenIdx) {
-          return { gridColumn: '1', gridRow: `1 / ${speakerRows + 1}`, width: '100%', aspectRatio: '16 / 9', alignSelf: 'center' };
-        }
-        const si = i < screenIdx ? i : i - 1;
-        return { gridColumn: '2', gridRow: `${si + 1}`, width: '100%', aspectRatio: '16 / 9', alignSelf: 'center' };
-      });
-      return {
-        containerStyle: {
-          ...containerBase,
-          display: 'grid',
-          gridTemplateColumns: speakerCount > 0 ? '1fr 0.32fr' : '1fr',
-          gridTemplateRows: `repeat(${speakerRows}, 1fr)`,
-          gap: GAP,
-          alignItems: 'center',
-          justifyItems: 'center',
-        },
-        tileStyles: tiles,
-        mode: 'grid',
-      };
-    }
-    // 5+ speakers: screen on top 80%, speaker strip at bottom 20%
-    const tiles: React.CSSProperties[] = items.map((_, i) => {
-      if (i === screenIdx) {
-        return { width: `calc(80% - ${GAP}px)`, aspectRatio: '16 / 9', flexShrink: 0, flexGrow: 0, order: 0 };
-      }
-      return {
-        width: `calc(20% - ${GAP}px)`,
-        aspectRatio: '16 / 9',
-        flexShrink: 0, flexGrow: 0, order: 1,
-      };
-    });
-    return {
-      containerStyle: { ...containerBase, display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'center', alignContent: 'center', gap: GAP },
-      tileStyles: tiles,
-      mode: 'custom',
     };
   }, []);
 
@@ -4472,18 +4446,8 @@ export function StudioRoom() {
     };
   }, [pipCorner]);
 
-  // Final computed layout
-  const hasRenderedScreenShare = useMemo(() => (
-    renderedVideoItems.some(v => v.isScreenShare)
-  ), [renderedVideoItems]);
-
   const layoutResult = useMemo((): LayoutResult => {
     const count = renderedVideoItems.length;
-    // Screen share layout takes priority across all layout modes
-    if (hasRenderedScreenShare) {
-      return getScreenShareLayout(renderedVideoItems);
-    }
-
     switch (layout) {
       case 'grid':
         return getAutoGridLayout(count);
@@ -4546,11 +4510,13 @@ export function StudioRoom() {
       default:
         return assertNever(layout);
     }
-  }, [layout, renderedVideoItems, hasRenderedScreenShare, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
+  }, [layout, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout]);
 
-  const mediaShareLayoutResult = useMemo(() => (
-    activeMedia ? getMediaShareLayout(renderedVideoItems.length, layout) : null
-  ), [activeMedia, getMediaShareLayout, layout, renderedVideoItems.length]);
+  const sharedContentLayoutResult = useMemo(() => (
+    sharedContentIsActive
+      ? getMediaShareLayout(sharedContentParticipantPresenceItems.length, layout)
+      : null
+  ), [getMediaShareLayout, layout, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
@@ -5057,7 +5023,7 @@ export function StudioRoom() {
               <div
                 style={{
                   ...styles.gridBase,
-                  ...(mediaShareLayoutResult?.containerStyle || layoutResult.containerStyle),
+                  ...(sharedContentLayoutResult?.containerStyle || layoutResult.containerStyle),
                   ...getStageLayoutTransitionStyle(layoutTransition),
                   position: 'relative',
                 }}
@@ -5067,7 +5033,7 @@ export function StudioRoom() {
                     className="studio-active-media"
                     style={{
                       ...styles.mediaOverlay,
-                      ...(mediaShareLayoutResult?.mediaStyle || {}),
+                      ...(sharedContentLayoutResult?.mediaStyle || {}),
                     }}
                   >
                     {activeMedia.preview?.kind === 'presentation-slides' ? (
@@ -5094,18 +5060,45 @@ export function StudioRoom() {
                     </button>
                   </div>
                 )}
+                {!activeMedia && sharedContentScreenShare && (
+                  <div
+                    className="studio-active-media"
+                    style={{
+                      ...styles.mediaOverlay,
+                      ...(sharedContentLayoutResult?.mediaStyle || {}),
+                      ...getStagePresenceWrapperStyle(sharedContentScreenShare.phase),
+                    }}
+                  >
+                    <VideoTile
+                      participantId={sharedContentScreenShare.item.id}
+                      stream={sharedContentScreenShare.item.stream}
+                      name={sharedContentScreenShare.item.name}
+                      isLocal={sharedContentScreenShare.item.isLocal}
+                      isScreenShare
+                      audioEnabled={false}
+                      videoEnabled={sharedContentScreenShare.item.videoEnabled}
+                      volume={sharedContentScreenShare.item.volume}
+                      brandColor={brandColor}
+                      cameraShape={cameraShape}
+                      nameTagStyle={nameTagStyle}
+                      connectionHealth={sharedContentScreenShare.item.connectionHealth}
+                    />
+                  </div>
+                )}
 
                 {/* Render tiles based on layout engine */}
                 {(() => {
-                  const itemsToRender = selectVisibleStageItems(stagePresenceItems, layout, {
-                    mediaVisibleParticipantCount: mediaShareLayoutResult?.visibleParticipantCount,
-                    hasScreenShare: hasRenderedScreenShare,
+                  const stageItemsForLayout = sharedContentIsActive
+                    ? sharedContentParticipantPresenceItems
+                    : stagePresenceItems;
+                  const itemsToRender = selectVisibleStageItems(stageItemsForLayout, layout, {
+                    mediaVisibleParticipantCount: sharedContentLayoutResult?.visibleParticipantCount,
                   });
 
                   return itemsToRender.map((presence, i) => {
                     const item = presence.item;
                     const isLeavingTile = presence.phase === 'leaving';
-                    const isPipSmallTile = mediaShareLayoutResult?.usesFloatingParticipant || (layout === 'pip' && i === 1);
+                    const isPipSmallTile = sharedContentLayoutResult?.usesFloatingParticipant || (layout === 'pip' && i === 1);
                     const isFocusedTile = !isLeavingTile && focusedVideoItemId === item.id;
                     const canFocusTile = !isLeavingTile && isHostOrCoHost && orderedVideoItems.length > 1;
                     const orderedIndex = orderedVideoItems.findIndex((orderedItem) => orderedItem.id === item.id);
@@ -5131,7 +5124,7 @@ export function StudioRoom() {
                           ...(canDragStageTile ? styles.tileWrapperDraggable : {}),
                           ...(isDraggedStageTile ? styles.tileWrapperDragging : {}),
                           ...(isStageDropTarget ? styles.tileWrapperDropTarget : {}),
-                          ...((mediaShareLayoutResult?.participantStyles[i] || layoutResult.tileStyles[i]) || {}),
+                          ...((sharedContentLayoutResult?.participantStyles[i] || layoutResult.tileStyles[i]) || {}),
                           ...getStagePresenceWrapperStyle(presence.phase),
                         }}
                         onDragStart={canDragStageTile ? (event) => onStageTileDragStart(event, item.id) : undefined}
@@ -5363,8 +5356,8 @@ export function StudioRoom() {
               <LayoutSwitcher
                 currentLayout={layout}
                 onLayoutChange={applyLayout}
-                participantCount={displayedStageVideoItems.length + (activeMedia ? 1 : 0)}
-                isMediaActive={Boolean(activeMedia)}
+                participantCount={sharedContentIsActive ? sharedContentStageItemCount : displayedStageVideoItems.length}
+                isMediaActive={sharedContentIsActive}
               />
             </div>
           )}
