@@ -3,6 +3,8 @@ import type { ActiveMedia, StudioMediaAsset, StudioMediaType } from '@studio/sha
 import {
   getNextPresentationSlideIndex,
   getPresentationDeckStatus,
+  getPresentationSlideDisplayTitle,
+  getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
@@ -21,9 +23,9 @@ interface MediaLibraryProps {
 
 const tabDefs: Array<{ id: MediaTab; label: string; accepts: string; title: string }> = [
   { id: 'videos', label: 'Videos', accepts: 'video/*', title: 'Video Clips' },
-  { id: 'slides', label: 'Slides', accepts: '.pdf,.ppt,.pptx,.pps,.ppsx,.key,image/*', title: 'Slides & Decks' },
+  { id: 'slides', label: 'Slides', accepts: '.pdf,.ppt,.pptx,.pps,.ppsx,.potx,.key,image/*', title: 'Slides & Decks' },
   { id: 'images', label: 'Images', accepts: 'image/*', title: 'Images' },
-  { id: 'files', label: 'Files', accepts: '.pdf,.ppt,.pptx,.pps,.ppsx,.key,.doc,.docx,.xls,.xlsx,.txt,image/*,video/*', title: 'Files' },
+  { id: 'files', label: 'Files', accepts: '.pdf,.ppt,.pptx,.pps,.ppsx,.potx,.key,.doc,.docx,.xls,.xlsx,.txt,image/*,video/*', title: 'Files' },
 ];
 
 export const SUPPORTED_MEDIA_ACCEPT = [
@@ -34,6 +36,7 @@ export const SUPPORTED_MEDIA_ACCEPT = [
   '.pptx',
   '.pps',
   '.ppsx',
+  '.potx',
   '.key',
   '.doc',
   '.docx',
@@ -234,6 +237,7 @@ function ActiveDeckControls({
   const goNext = () => {
     onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'));
   };
+  const slideItems = getPresentationSlidePickerItems(status.slides, status.currentIndex);
 
   return (
     <div style={styles.deckControl}>
@@ -242,9 +246,54 @@ function ActiveDeckControls({
         <span style={styles.deckCount}>Slide {status.currentIndex + 1} / {status.total}</span>
       </div>
       <div style={styles.deckName}>{mediaName}</div>
-      <div style={styles.deckCurrentTitle}>{status.currentSlide?.title || 'Untitled slide'}</div>
+      <div style={styles.deckCurrentTitle}>
+        {getPresentationSlideDisplayTitle(status.currentSlide, status.currentIndex)}
+      </div>
       <div style={styles.deckNextTitle}>
-        {status.nextSlide ? `Next: ${status.nextSlide.title}` : 'End of deck'}
+        {status.nextSlide
+          ? `Next: ${getPresentationSlideDisplayTitle(status.nextSlide, status.currentIndex + 1)}`
+          : 'End of deck'}
+      </div>
+      <label style={styles.deckJumpLabel}>
+        <span style={styles.deckJumpText}>Jump to</span>
+        <select
+          style={styles.deckJumpSelect}
+          value={status.currentIndex}
+          onChange={(event) => onSlideIndexChange(Number(event.target.value))}
+          aria-label="Jump to slide"
+        >
+          {slideItems.map((item) => (
+            <option key={item.index} value={item.index}>
+              {item.label}: {item.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div style={styles.deckFilmstrip} role="list" aria-label="Slides in live deck">
+        {slideItems.map((item) => (
+          <button
+            key={item.index}
+            type="button"
+            role="listitem"
+            style={{
+              ...styles.deckThumbButton,
+              ...(item.isCurrent ? styles.deckThumbButtonActive : {}),
+            }}
+            onClick={() => onSlideIndexChange(item.index)}
+            aria-pressed={item.isCurrent}
+            aria-label={`Show ${item.label}: ${item.title}`}
+            title={`${item.label}: ${item.title}`}
+          >
+            <span style={styles.deckThumbFrame}>
+              {item.imageUrl ? (
+                <img src={item.imageUrl} alt="" style={styles.deckThumbImage} />
+              ) : (
+                <span style={styles.deckThumbFallback}>{item.index + 1}</span>
+              )}
+            </span>
+            <span style={styles.deckThumbNumber}>{item.index + 1}</span>
+          </button>
+        ))}
       </div>
       <div style={styles.deckActions}>
         <button
@@ -309,10 +358,12 @@ export function detectMediaType(file: File): StudioMediaType {
     lower.endsWith('.pptx') ||
     lower.endsWith('.pps') ||
     lower.endsWith('.ppsx') ||
+    lower.endsWith('.potx') ||
     lower.endsWith('.key') ||
     file.type === 'application/vnd.ms-powerpoint' ||
     file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-    file.type === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow'
+    file.type === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' ||
+    file.type === 'application/vnd.openxmlformats-officedocument.presentationml.template'
   ) return 'presentation';
   return 'file';
 }
@@ -429,6 +480,16 @@ const styles: Record<string, React.CSSProperties> = {
   deckName: { fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 5 },
   deckCurrentTitle: { fontSize: 13, fontWeight: 800, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   deckNextTitle: { marginTop: 4, minHeight: 15, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  deckJumpLabel: { display: 'grid', gridTemplateColumns: '48px minmax(0, 1fr)', alignItems: 'center', gap: 7, marginTop: 9 },
+  deckJumpText: { fontSize: 10, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase' },
+  deckJumpSelect: { minWidth: 0, width: '100%', height: 30, padding: '0 8px', borderRadius: 7, border: '1px solid rgba(103,232,249,0.22)', background: 'rgba(15,23,42,0.72)', color: 'var(--text-primary)', fontSize: 11, fontWeight: 700, outline: 'none' },
+  deckFilmstrip: { display: 'flex', gap: 7, overflowX: 'auto', padding: '9px 1px 2px', marginTop: 2 },
+  deckThumbButton: { position: 'relative', flex: '0 0 68px', width: 68, minWidth: 68, padding: 3, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(15,23,42,0.5)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'stretch' },
+  deckThumbButtonActive: { border: '1px solid var(--accent)', background: 'var(--accent-subtle)', boxShadow: '0 0 0 1px rgba(167,139,250,0.35)' },
+  deckThumbFrame: { width: '100%', aspectRatio: '16 / 9', borderRadius: 5, overflow: 'hidden', background: 'rgba(2,6,23,0.78)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.08)' },
+  deckThumbImage: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
+  deckThumbFallback: { fontSize: 14, fontWeight: 900, color: 'var(--text-muted)' },
+  deckThumbNumber: { fontSize: 9, lineHeight: 1.2, fontWeight: 900, color: 'inherit', textAlign: 'center', fontVariantNumeric: 'tabular-nums' },
   deckActions: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 10 },
   deckButton: { minWidth: 0, height: 30, borderRadius: 7, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', fontSize: 11, fontWeight: 800, cursor: 'pointer' },
   deckPrimaryButton: { border: '1px solid var(--accent)', background: 'var(--accent-solid)', color: '#fff' },
