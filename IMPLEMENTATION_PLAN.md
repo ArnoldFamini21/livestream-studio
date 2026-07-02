@@ -228,7 +228,7 @@
 - [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants
 - [ ] Simulcast: send multiple quality layers, server selects best for each viewer
 - [x] Client WebRTC sender simulcast encodings for camera/screen mesh connections
-- [ ] Bandwidth adaptation per participant
+- [x] Bandwidth adaptation per participant for current mesh WebRTC senders
 - [x] Server-side recording as backup
 
 ### 10C. Deployment

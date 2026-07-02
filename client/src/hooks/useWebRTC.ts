@@ -2,6 +2,14 @@ import { useRef, useCallback, useState, useEffect } from 'react';
 import type { SignalMessage, Participant } from '@studio/shared';
 import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
 import {
+  applyBandwidthModeToVideoSender,
+  createInitialBandwidthAdaptationState,
+  readOutboundVideoStatsSnapshot,
+  updateBandwidthAdaptationState,
+  type BandwidthAdaptationMode,
+  type BandwidthAdaptationState,
+} from '../utils/webrtcBandwidthAdaptation.ts';
+import {
   addTrackWithOptionalSimulcast,
   refreshSenderVideoEncodingParameters,
 } from '../utils/webrtcSimulcast.ts';
@@ -54,6 +62,9 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
   // Bug fix #5: Track disconnected timers for ICE restart
   const disconnectTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const bandwidthStatesRef = useRef<Map<string, BandwidthAdaptationState>>(new Map());
+  const bandwidthAdaptationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const BANDWIDTH_ADAPTATION_INTERVAL_MS = 5_000;
 
   const updateRemoteStreams = useCallback(() => {
     const streams = new Map<string, MediaStream>();
@@ -90,6 +101,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         existing.connection.onicecandidate = null;
         existing.connection.onconnectionstatechange = null;
         existing.connection.close();
+        bandwidthStatesRef.current.delete(remoteParticipantId);
       }
 
       const pc = new RTCPeerConnection(iceConfigRef.current);
@@ -164,6 +176,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
                 pc.close();
                 peersRef.current.delete(remoteParticipantId);
                 pendingCandidatesRef.current.delete(remoteParticipantId);
+                bandwidthStatesRef.current.delete(remoteParticipantId);
                 updateRemoteStreams();
               }
             }
@@ -187,10 +200,12 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
           pc.close();
           peersRef.current.delete(remoteParticipantId);
           pendingCandidatesRef.current.delete(remoteParticipantId);
+          bandwidthStatesRef.current.delete(remoteParticipantId);
           updateRemoteStreams();
         } else if (pc.connectionState === 'closed') {
           peersRef.current.delete(remoteParticipantId);
           pendingCandidatesRef.current.delete(remoteParticipantId);
+          bandwidthStatesRef.current.delete(remoteParticipantId);
           updateRemoteStreams();
         }
       };
@@ -220,6 +235,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
           existing.connection.close();
           peersRef.current.delete(remoteParticipantId);
           pendingCandidatesRef.current.delete(remoteParticipantId);
+          bandwidthStatesRef.current.delete(remoteParticipantId);
         } else {
           // Connection exists and is healthy or still negotiating; skip
           return;
@@ -247,6 +263,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         pc.close();
         peersRef.current.delete(remoteParticipantId);
         pendingCandidatesRef.current.delete(remoteParticipantId);
+        bandwidthStatesRef.current.delete(remoteParticipantId);
       }
     },
     [createPeerConnection]
@@ -304,6 +321,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         pc.close();
         peersRef.current.delete(from);
         pendingCandidatesRef.current.delete(from);
+        bandwidthStatesRef.current.delete(from);
       }
     },
     [createPeerConnection, drainPendingCandidates]
@@ -331,6 +349,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         }
         peersRef.current.delete(from);
         pendingCandidatesRef.current.delete(from);
+        bandwidthStatesRef.current.delete(from);
         updateRemoteStreams();
       }
     },
@@ -385,22 +404,58 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         peer.connection.close();
         peersRef.current.delete(participantId);
         pendingCandidatesRef.current.delete(participantId);
+        bandwidthStatesRef.current.delete(participantId);
         updateRemoteStreams();
       }
     },
     [updateRemoteStreams]
   );
 
+  const applyPeerBandwidthMode = useCallback(async (peer: PeerState, mode: BandwidthAdaptationMode) => {
+    const videoSenders = peer.connection.getSenders().filter((sender) => sender.track?.kind === 'video');
+    await Promise.all(videoSenders.map(async (sender) => {
+      try {
+        await applyBandwidthModeToVideoSender(sender, mode);
+      } catch (err) {
+        console.warn(`Failed to apply ${mode} video bandwidth mode for peer ${peer.participantId}:`, err);
+      }
+    }));
+  }, []);
+
+  const samplePeerBandwidth = useCallback(async () => {
+    for (const [participantId, peer] of peersRef.current) {
+      if (peer.connection.connectionState !== 'connected') continue;
+
+      try {
+        const report = await peer.connection.getStats();
+        const snapshot = readOutboundVideoStatsSnapshot(report);
+        if (!snapshot) continue;
+
+        const previousState = bandwidthStatesRef.current.get(participantId) || createInitialBandwidthAdaptationState();
+        const nextState = updateBandwidthAdaptationState(previousState, snapshot);
+        bandwidthStatesRef.current.set(participantId, nextState);
+
+        if (nextState.mode !== previousState.mode) {
+          await applyPeerBandwidthMode(peer, nextState.mode);
+        }
+      } catch (err) {
+        console.warn(`Failed to sample outbound video bandwidth for peer ${participantId}:`, err);
+      }
+    }
+  }, [applyPeerBandwidthMode]);
+
   // Replace a track on all active peer connections (used when switching devices)
   const replaceTrack = useCallback(
     async (newTrack: MediaStreamTrack) => {
-      for (const [, peer] of peersRef.current) {
+      for (const [participantId, peer] of peersRef.current) {
         const senders = peer.connection.getSenders();
         const sender = senders.find((s) => s.track?.kind === newTrack.kind);
         if (sender) {
           await sender.replaceTrack(newTrack);
           try {
             await refreshSenderVideoEncodingParameters(sender, newTrack);
+            const currentMode = bandwidthStatesRef.current.get(participantId)?.mode || 'full';
+            await applyBandwidthModeToVideoSender(sender, currentMode);
           } catch (err) {
             console.warn('Failed to refresh video sender encoding parameters:', err);
           }
@@ -410,6 +465,22 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     []
   );
 
+  useEffect(() => {
+    const timer = setInterval(() => {
+      samplePeerBandwidth().catch((err) => {
+        console.warn('Failed to run WebRTC bandwidth adaptation:', err);
+      });
+    }, BANDWIDTH_ADAPTATION_INTERVAL_MS);
+    bandwidthAdaptationTimerRef.current = timer;
+
+    return () => {
+      clearInterval(timer);
+      if (bandwidthAdaptationTimerRef.current === timer) {
+        bandwidthAdaptationTimerRef.current = null;
+      }
+    };
+  }, [samplePeerBandwidth]);
+
   // Clean up all connections
   const cleanup = useCallback(() => {
     // Bug fix #5: Clear all disconnect timers
@@ -417,6 +488,10 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       clearTimeout(timer);
     }
     disconnectTimersRef.current.clear();
+    if (bandwidthAdaptationTimerRef.current) {
+      clearInterval(bandwidthAdaptationTimerRef.current);
+      bandwidthAdaptationTimerRef.current = null;
+    }
 
     for (const [, peer] of peersRef.current) {
       // Bug fix #3: Null out event handlers before closing
@@ -427,6 +502,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     }
     peersRef.current.clear();
     pendingCandidatesRef.current.clear();
+    bandwidthStatesRef.current.clear();
     setRemoteStreams(new Map());
   }, []);
 
