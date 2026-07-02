@@ -76,22 +76,22 @@ jobs:
 
           if [ "$SIGNALING_CHANGED" = "true" ] || [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
             if [ -z "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
-              missing=true
               if [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
+                missing=true
                 echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this manual run deploys the signaling server."
               else
-                echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this push changes signaling-server files."
+                echo "::warning::RENDER_SERVER_DEPLOY_HOOK_URL is not configured; this push will build the signaling server but skip the Render deploy trigger."
               fi
             fi
           fi
 
           if [ "$MEDIA_CHANGED" = "true" ] || [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
             if [ -z "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
-              missing=true
               if [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
+                missing=true
                 echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this manual run deploys the media server."
               else
-                echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this push changes media-server files."
+                echo "::warning::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is not configured; this push will build the media server but skip the Render deploy trigger."
               fi
             fi
           fi
@@ -177,7 +177,11 @@ jobs:
           echo "hooks_configured=$hooks_configured" >> "$GITHUB_OUTPUT"
           echo "services_changed=$services_changed" >> "$GITHUB_OUTPUT"
 
-          if [ "$services_changed" = "true" ] && [ "$hooks_configured" != "true" ]; then
+          if [ "$FORCE_SIGNALING_DEPLOY" = "true" ] && [ -z "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
+            exit 1
+          fi
+
+          if [ "$FORCE_MEDIA_DEPLOY" = "true" ] && [ -z "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
             exit 1
           fi
 
