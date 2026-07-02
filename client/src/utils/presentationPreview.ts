@@ -32,6 +32,7 @@ interface PresentationPreviewOptions {
   fetchImpl?: typeof fetch;
   serverRenderTimeoutMs?: number;
   requireRenderedSlides?: boolean;
+  requireServerRenderedPowerPoint?: boolean;
 }
 
 interface ServerPresentationPreviewResponse {
@@ -634,11 +635,12 @@ export async function buildPresentationPreview(
 
   if (!isPowerPointFile(file) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
 
+  const requireServerRenderedPowerPoint = options.requireServerRenderedPowerPoint || options.requireRenderedSlides;
   const serverPreviewPromise = buildServerRenderedPresentationPreview(file, options).catch(() => undefined);
 
   if (isLegacyPowerPointFile(file)) {
     const serverPreview = await serverPreviewPromise;
-    return options.requireRenderedSlides && !hasRenderedPresentationSlides(serverPreview) ? undefined : serverPreview;
+    return requireServerRenderedPowerPoint && !hasRenderedPresentationSlides(serverPreview) ? undefined : serverPreview;
   }
 
   try {
@@ -666,10 +668,12 @@ export async function buildPresentationPreview(
     const serverPreview = await serverPreviewPromise;
     if (serverPreview) {
       const mergedServerPreview = mergeRenderedPresentationPreview(slides, serverPreview, 'pptx');
-      if (!options.requireRenderedSlides || hasRenderedPresentationSlides(mergedServerPreview)) {
+      if (!requireServerRenderedPowerPoint || hasRenderedPresentationSlides(mergedServerPreview)) {
         return mergedServerPreview;
       }
     }
+
+    if (requireServerRenderedPowerPoint) return undefined;
 
     const renderedImageUrls = await renderPptxSlidesToImages(arrayBuffer, slides.length);
     const finalSlides = applyRenderedSlideImages(slides, renderedImageUrls);
@@ -680,6 +684,6 @@ export async function buildPresentationPreview(
     return options.requireRenderedSlides && !hasRenderedPresentationSlides(preview) ? undefined : preview;
   } catch {
     const serverPreview = await serverPreviewPromise;
-    return options.requireRenderedSlides && !hasRenderedPresentationSlides(serverPreview) ? undefined : serverPreview;
+    return requireServerRenderedPowerPoint && !hasRenderedPresentationSlides(serverPreview) ? undefined : serverPreview;
   }
 }

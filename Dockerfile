@@ -49,8 +49,12 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     libreoffice-impress \
     poppler-utils \
+    fonts-crosextra-caladea \
+    fonts-crosextra-carlito \
     fonts-dejavu \
     fonts-liberation \
+    fonts-noto-core \
+    fonts-noto-color-emoji \
     fontconfig \
   && rm -rf /var/lib/apt/lists/*
 

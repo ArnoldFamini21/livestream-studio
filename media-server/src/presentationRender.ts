@@ -2,11 +2,12 @@ import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { StudioMediaAssetPreview } from '@studio/shared';
 
 export const MAX_PRESENTATION_RENDER_BYTES = 50 * 1024 * 1024;
 export const MAX_PRESENTATION_RENDER_SLIDES = 60;
-export const PRESENTATION_RENDER_WIDTH = 1280;
+export const PRESENTATION_RENDER_WIDTH = 1920;
 const COMMAND_TIMEOUT_MS = 45_000;
 
 export class PresentationRenderError extends Error {
@@ -65,8 +66,13 @@ function getInputExtension(fileName: string, sourceFormat: PresentationRenderSou
   return '.pptx';
 }
 
-export function createLibreOfficePdfArgs(inputPath: string, outputDir: string): string[] {
+export function createLibreOfficePdfArgs(
+  inputPath: string,
+  outputDir: string,
+  userInstallationUrl?: string
+): string[] {
   return [
+    ...(userInstallationUrl ? [`-env:UserInstallation=${userInstallationUrl}`] : []),
     '--headless',
     '--nologo',
     '--nofirststartwizard',
@@ -74,7 +80,7 @@ export function createLibreOfficePdfArgs(inputPath: string, outputDir: string): 
     '--nolockcheck',
     '--norestore',
     '--convert-to',
-    'pdf',
+    'pdf:impress_pdf_Export',
     '--outdir',
     outputDir,
     inputPath,
@@ -201,7 +207,13 @@ export async function renderPresentationPreview(
     let pdfPath = inputPath;
     if (sourceFormat === 'pptx') {
       const sofficePath = options.sofficePath || getLibreOfficePath();
-      await commandRunner(sofficePath, createLibreOfficePdfArgs(inputPath, outputDir), { timeoutMs: COMMAND_TIMEOUT_MS });
+      const libreOfficeProfileDir = path.join(workspace, 'lo-profile');
+      await mkdir(libreOfficeProfileDir, { recursive: true });
+      await commandRunner(
+        sofficePath,
+        createLibreOfficePdfArgs(inputPath, outputDir, pathToFileURL(libreOfficeProfileDir).href),
+        { timeoutMs: COMMAND_TIMEOUT_MS }
+      );
       pdfPath = path.join(outputDir, 'source.pdf');
     }
 

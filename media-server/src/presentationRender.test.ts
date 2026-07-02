@@ -27,11 +27,16 @@ describe('presentation rendering', () => {
       '--nolockcheck',
       '--norestore',
       '--convert-to',
-      'pdf',
+      'pdf:impress_pdf_Export',
       '--outdir',
       '/tmp/out',
       '/tmp/source.pptx',
     ]);
+
+    assert.deepEqual(
+      createLibreOfficePdfArgs('/tmp/source.pptx', '/tmp/out', 'file:///tmp/lo-profile').slice(0, 2),
+      ['-env:UserInstallation=file:///tmp/lo-profile', '--headless']
+    );
 
     assert.deepEqual(createPdfToPngArgs('/tmp/source.pdf', '/tmp/slide'), [
       '-png',
@@ -40,7 +45,7 @@ describe('presentation rendering', () => {
       '-l',
       '60',
       '-scale-to-x',
-      '1280',
+      '1920',
       '-scale-to-y',
       '-1',
       '/tmp/source.pdf',
@@ -72,6 +77,7 @@ describe('presentation rendering', () => {
     });
 
     assert.equal(commands[0].command, 'soffice-test');
+    assert.match(commands[0].args[0], /^-env:UserInstallation=file:\/\//);
     assert.equal(commands[1].command, 'pdftoppm-test');
     assert.equal(preview.kind, 'presentation-slides');
     assert.equal(preview.sourceFormat, 'pptx');

@@ -300,6 +300,34 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview, undefined);
   });
 
+  it('requires server-rendered PowerPoint images when exact deck visuals are required', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<p:sld><p:cSld><p:spTree /></p:cSld></p:sld>');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+      </Relationships>
+    `);
+    zip.file('ppt/media/image1.png', onePixelPng);
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'designed-message.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      requireRenderedSlides: true,
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: 'renderer unavailable',
+        code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    assert.equal(preview, undefined);
+  });
+
   it('builds legacy PowerPoint previews from the media server renderer', async () => {
     const file = new File(
       [Buffer.from('legacy-binary-powerpoint')],

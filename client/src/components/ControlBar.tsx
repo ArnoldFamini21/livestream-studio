@@ -12,8 +12,10 @@ interface ControlBarProps {
   roomName?: string;
   isHost: boolean;
   isRecording?: boolean;
+  recordingPaused?: boolean;
   formattedTime?: string;
   onToggleRecording?: () => void;
+  onToggleRecordingPause?: () => void;
   isScreenSharing?: boolean;
   onToggleScreenShare?: () => void;
   onOpenParticipants?: () => void;
@@ -46,8 +48,10 @@ export function ControlBar({
   roomName,
   isHost,
   isRecording = false,
+  recordingPaused = false,
   formattedTime = '0:00',
   onToggleRecording,
+  onToggleRecordingPause,
   isScreenSharing = false,
   onToggleScreenShare,
   onOpenParticipants,
@@ -439,7 +443,7 @@ export function ControlBar({
         {onToggleRecording && (
           <button
             className="cb-focusable"
-            style={{ ...styles.pill, ...(isRecording ? styles.pillRecording : {}) }}
+            style={{ ...styles.pill, ...(isRecording ? styles.pillRecording : {}), ...(recordingPaused ? styles.pillRecordingPaused : {}) }}
             onClick={onToggleRecording}
             aria-label={isRecording ? 'Stop recording' : 'Start recording'}
             aria-pressed={isRecording}
@@ -454,8 +458,30 @@ export function ControlBar({
               </svg>
             )}
             <span style={{ minWidth: 42, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
-              {isRecording ? formattedTime : 'Record'}
+              {isRecording ? `${recordingPaused ? 'PAUSED ' : ''}${formattedTime}` : 'Record'}
             </span>
+          </button>
+        )}
+        {isRecording && onToggleRecordingPause && (
+          <button
+            className="cb-focusable"
+            style={{ ...styles.pill, ...(recordingPaused ? styles.pillActive : {}) }}
+            onClick={onToggleRecordingPause}
+            aria-label={recordingPaused ? 'Resume recording' : 'Pause recording'}
+            aria-pressed={recordingPaused}
+            title={recordingPaused ? 'Resume recording' : 'Pause recording'}
+          >
+            {recordingPaused ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+            )}
+            {recordingPaused ? 'Resume' : 'Pause'}
           </button>
         )}
 
@@ -684,6 +710,11 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#ef4444',
     fontFamily: 'monospace',
     fontWeight: 600,
+  },
+  pillRecordingPaused: {
+    background: 'rgba(250, 204, 21, 0.14)',
+    border: '1px solid rgba(250, 204, 21, 0.28)',
+    color: '#facc15',
   },
   pillCopied: {
     background: 'var(--success-subtle)',

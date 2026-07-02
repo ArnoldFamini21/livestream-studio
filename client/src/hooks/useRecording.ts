@@ -13,15 +13,24 @@ interface RecordingTrack {
 
 export function useRecording() {
   const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const tracksRef = useRef<Map<string, RecordingTrack>>(new Map());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
+  const pausedAtRef = useRef<number | null>(null);
+  const accumulatedPausedMsRef = useRef<number>(0);
 
   // Bug fix #11: Guard against double-stop
   const stoppingRef = useRef<boolean>(false);
 
   const getMimeType = () => getPreferredVideoRecordingMimeType();
+
+  const getElapsedSeconds = useCallback(() => {
+    if (!startTimeRef.current) return 0;
+    const endTime = pausedAtRef.current || Date.now();
+    return Math.max(0, Math.floor((endTime - startTimeRef.current - accumulatedPausedMsRef.current) / 1000));
+  }, []);
 
   const startRecording = useCallback(
     (streams: Map<string, { stream: MediaStream; name: string; isLocal: boolean }>) => {
@@ -60,15 +69,62 @@ export function useRecording() {
       }
 
       startTimeRef.current = Date.now();
+      pausedAtRef.current = null;
+      accumulatedPausedMsRef.current = 0;
       timerRef.current = setInterval(() => {
-        setRecordingTime(Math.floor((Date.now() - startTimeRef.current) / 1000));
+        setRecordingTime(getElapsedSeconds());
       }, 1000);
 
       setIsRecording(true);
+      setIsPaused(false);
       console.log(`Recording started: ${streams.size} track(s)`);
     },
-    [isRecording]
+    [getElapsedSeconds, isRecording]
   );
+
+  const pauseRecording = useCallback(() => {
+    if (!isRecording || isPaused || stoppingRef.current) return;
+
+    let pausedAny = false;
+    for (const [, track] of tracksRef.current) {
+      if (track.recorder.state !== 'recording') continue;
+      try {
+        track.recorder.pause();
+        pausedAny = true;
+      } catch (err) {
+        console.warn(`Failed to pause recording for ${track.name}:`, err);
+      }
+    }
+
+    if (!pausedAny) return;
+    pausedAtRef.current = Date.now();
+    setRecordingTime(getElapsedSeconds());
+    setIsPaused(true);
+  }, [getElapsedSeconds, isPaused, isRecording]);
+
+  const resumeRecording = useCallback(() => {
+    if (!isRecording || !isPaused || stoppingRef.current) return;
+
+    let resumedAny = false;
+    for (const [, track] of tracksRef.current) {
+      if (track.recorder.state !== 'paused') continue;
+      try {
+        track.recorder.resume();
+        resumedAny = true;
+      } catch (err) {
+        console.warn(`Failed to resume recording for ${track.name}:`, err);
+      }
+    }
+
+    if (!resumedAny) return;
+    const pausedAt = pausedAtRef.current;
+    if (pausedAt !== null) {
+      accumulatedPausedMsRef.current += Date.now() - pausedAt;
+    }
+    pausedAtRef.current = null;
+    setRecordingTime(getElapsedSeconds());
+    setIsPaused(false);
+  }, [getElapsedSeconds, isPaused, isRecording]);
 
   const stopRecording = useCallback((): Promise<Map<string, { name: string; blob: Blob }>> => {
     // Bug fix #11: Guard against double-stop
@@ -82,12 +138,15 @@ export function useRecording() {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+      pausedAtRef.current = null;
+      accumulatedPausedMsRef.current = 0;
 
       const results = new Map<string, { name: string; blob: Blob }>();
       let pending = tracksRef.current.size;
 
       if (pending === 0) {
         setIsRecording(false);
+        setIsPaused(false);
         setRecordingTime(0);
         stoppingRef.current = false;
         resolve(results);
@@ -103,6 +162,7 @@ export function useRecording() {
           pending--;
           if (pending === 0) {
             setIsRecording(false);
+            setIsPaused(false);
             setRecordingTime(0);
             tracksRef.current.clear();
             stoppingRef.current = false;
@@ -115,6 +175,7 @@ export function useRecording() {
             pending--;
             if (pending === 0) {
               setIsRecording(false);
+              setIsPaused(false);
               setRecordingTime(0);
               tracksRef.current.clear();
               stoppingRef.current = false;
@@ -156,6 +217,8 @@ export function useRecording() {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+      pausedAtRef.current = null;
+      accumulatedPausedMsRef.current = 0;
       for (const [, track] of tracksRef.current) {
         if (track.recorder.state !== 'inactive') {
           try {
@@ -171,9 +234,12 @@ export function useRecording() {
 
   return {
     isRecording,
+    isPaused,
     recordingTime,
     formattedTime: formatTime(recordingTime),
     startRecording,
+    pauseRecording,
+    resumeRecording,
     stopRecording,
     downloadRecordings,
   };
