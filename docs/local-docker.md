@@ -35,6 +35,10 @@ Prometheus is available at `http://localhost:9090` and Grafana is available at `
 
 The provisioned dashboard tracks active rooms, participant stages, live streams, RTMP relay sessions, FFmpeg relay state, reconnect activity, and service reachability.
 
+## Room Persistence
+
+By default, local Docker runs the signaling server memory-only. To test restart-safe room snapshots, set `DATABASE_URL` in `.env` to a local or hosted PostgreSQL connection string before starting Compose. Use `PGSSLMODE=disable` for a trusted local database and `PGSSLMODE=require` for hosted PostgreSQL.
+
 ## RTMP Relay Notes
 
 The `LIVE_STREAM_TOKEN_SECRET` value must match between `server` and `media-server`; `docker-compose.yml` wires both from the same environment value. Keep real RTMP stream keys in the browser session only. Do not add them to `.env`.
