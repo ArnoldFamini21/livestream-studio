@@ -10,11 +10,13 @@ import {
 } from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
 import { configureRecordingCatalogStore, recordingRouter } from './routes/recordings.js';
+import { brandKitRouter, configureBrandKitCatalogStore } from './routes/brandKits.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
 import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { createRoomSnapshotStoreFromEnv } from './services/roomPersistence.js';
 import { createRecordingCatalogStoreFromEnv } from './services/recordingCatalog.js';
+import { createBrandKitCatalogStoreFromEnv } from './services/brandKitCatalog.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -69,7 +71,7 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '16kb' }));
+app.use(express.json({ limit: '256kb' }));
 
 // Security headers (CSP, X-Frame-Options, etc.).
 // Note: the SPA is served from a separate static host (Hostinger), so this CSP
@@ -189,6 +191,7 @@ app.use('/api/rooms', (req, res, next) => {
 }, roomRouter);
 
 app.use('/api/recordings', recordingRouter);
+app.use('/api/brand-kits', brandKitRouter);
 
 app.use(
   '/api/transcriptions',
@@ -247,6 +250,7 @@ setupSignalingServer(wss);
 
 const roomSnapshotStore = createRoomSnapshotStoreFromEnv(process.env);
 const recordingCatalogStore = createRecordingCatalogStoreFromEnv(process.env);
+const brandKitCatalogStore = createBrandKitCatalogStoreFromEnv(process.env);
 
 async function initializeRoomPersistence() {
   if (!roomSnapshotStore) {
@@ -289,8 +293,29 @@ async function initializeRecordingCatalogPersistence() {
   }
 }
 
+async function initializeBrandKitCatalogPersistence() {
+  if (!brandKitCatalogStore) {
+    configureBrandKitCatalogStore(null);
+    console.log('Brand kit catalog persistence disabled; using in-memory catalog.');
+    return;
+  }
+
+  try {
+    await brandKitCatalogStore.init();
+    configureBrandKitCatalogStore(brandKitCatalogStore);
+    console.log('Brand kit catalog persistence enabled.');
+  } catch (err) {
+    configureBrandKitCatalogStore(null);
+    console.warn(
+      'Brand kit catalog persistence disabled:',
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
 await initializeRoomPersistence();
 await initializeRecordingCatalogPersistence();
+await initializeBrandKitCatalogPersistence();
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
@@ -320,6 +345,9 @@ function gracefulShutdown(signal: string) {
       });
       await recordingCatalogStore?.close().catch((err) => {
         console.error('Recording catalog store close failed:', err instanceof Error ? err.message : err);
+      });
+      await brandKitCatalogStore?.close().catch((err) => {
+        console.error('Brand kit catalog store close failed:', err instanceof Error ? err.message : err);
       });
       process.exit(0);
     });

@@ -31,6 +31,10 @@ import {
   type BrandKitVisuals,
   type SavedBrandKit,
 } from '../utils/brandKits.ts';
+import {
+  deleteBrandKitCatalogEntry,
+  syncBrandKitCatalogEntry,
+} from '../utils/brandKitCatalog.ts';
 import type { SceneOrderDirection } from '../utils/sceneOrder.ts';
 import type { SceneStingerClip, SceneTransitionPresetId } from '../utils/sceneTransitions.ts';
 import {
@@ -117,6 +121,8 @@ interface SidebarProps {
   onCameraShapeChange: (shape: CameraShape) => void;
   nameTagStyle: NameTagStyle;
   onNameTagStyleChange: (style: NameTagStyle) => void;
+  brandKitCatalogRoomId?: string;
+  brandKitCatalogHostToken?: string;
   // Media props
   mediaAssets: StudioMediaAsset[];
   activeMedia: ActiveMedia | null;
@@ -347,7 +353,7 @@ export function Sidebar(props: SidebarProps) {
     setBrandKitMessage(null);
   };
 
-  const saveCurrentBrandKit = () => {
+  const saveCurrentBrandKit = async () => {
     if (savedBrandKits.length >= MAX_SAVED_BRAND_KITS) {
       setBrandKitMessage(`Maximum of ${MAX_SAVED_BRAND_KITS} saved kits reached.`);
       return;
@@ -371,12 +377,32 @@ export function Sidebar(props: SidebarProps) {
     setSavedBrandKits((current) => [nextKit, ...current].slice(0, MAX_SAVED_BRAND_KITS));
     setBrandKitName('');
     setBrandKitMessage(`Saved ${nextKit.name}.`);
+
+    if (props.brandKitCatalogRoomId && props.brandKitCatalogHostToken) {
+      try {
+        await syncBrandKitCatalogEntry({
+          roomId: props.brandKitCatalogRoomId,
+          hostToken: props.brandKitCatalogHostToken,
+          brandKit: nextKit,
+        });
+        setBrandKitMessage(`Saved ${nextKit.name} and synced to this studio.`);
+      } catch {
+        setBrandKitMessage(`Saved ${nextKit.name} locally. Cloud sync failed.`);
+      }
+    }
   };
 
-  const deleteSavedBrandKit = (kitId: string) => {
+  const deleteSavedBrandKit = async (kitId: string) => {
     const kit = savedBrandKits.find((item) => item.id === kitId);
     setSavedBrandKits((current) => current.filter((item) => item.id !== kitId));
     if (kit) setBrandKitMessage(`Deleted ${kit.name}.`);
+    if (kit && props.brandKitCatalogRoomId && props.brandKitCatalogHostToken) {
+      try {
+        await deleteBrandKitCatalogEntry(props.brandKitCatalogRoomId, props.brandKitCatalogHostToken, kit.id);
+      } catch {
+        setBrandKitMessage(`Deleted ${kit.name} locally. Cloud delete failed.`);
+      }
+    }
   };
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {

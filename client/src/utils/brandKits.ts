@@ -1,4 +1,13 @@
-import type { CameraShape, LogoPlacement, LogoPosition, LogoSize, NameTagStyle, StageBackground } from '@studio/shared';
+import type {
+  BrandKitCatalogEntry,
+  BrandKitCatalogStudioTheme,
+  CameraShape,
+  LogoPlacement,
+  LogoPosition,
+  LogoSize,
+  NameTagStyle,
+  StageBackground,
+} from '@studio/shared';
 import {
   DEFAULT_STUDIO_THEME_ID,
   normalizeStudioThemeId,
@@ -11,7 +20,7 @@ export const BRAND_KIT_STORAGE_KEY = 'livestream-studio:saved-brand-kits';
 export const MAX_SAVED_BRAND_KITS = 8;
 
 export interface BrandKitVisuals {
-  studioTheme: StudioThemeId;
+  studioTheme: StudioThemeId & BrandKitCatalogStudioTheme;
   brandColor: string;
   stageBackground: StageBackground;
   logoUrl: string | null;
@@ -23,11 +32,7 @@ export interface BrandKitVisuals {
   nameTagStyle: NameTagStyle;
 }
 
-export interface SavedBrandKit extends BrandKitVisuals {
-  id: string;
-  name: string;
-  createdAt: string;
-}
+export interface SavedBrandKit extends Omit<BrandKitCatalogEntry, 'roomId' | 'updatedAt'> {}
 
 const BACKGROUND_TYPES = ['color', 'image', 'video', 'gradient', 'none'] as const;
 const LOGO_PLACEMENTS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const;
