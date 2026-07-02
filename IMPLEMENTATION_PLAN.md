@@ -227,6 +227,7 @@
 ### 10B. Media Server (SFU)
 - [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants
 - [ ] Simulcast: send multiple quality layers, server selects best for each viewer
+- [x] Client WebRTC sender simulcast encodings for camera/screen mesh connections
 - [ ] Bandwidth adaptation per participant
 - [x] Server-side recording as backup
 
