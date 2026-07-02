@@ -10,6 +10,16 @@ export interface SavedWorkspaceTeamMember {
   createdAt: string;
 }
 
+export interface WorkspaceTeamStudioInviteInput {
+  roomName: string;
+  hostName?: string | null;
+  guestInviteUrl: string;
+  hostEntryUrl: string;
+  scheduledLabel?: string | null;
+  passwordProtected?: boolean;
+  members: SavedWorkspaceTeamMember[];
+}
+
 const MAX_TEAM_MEMBERS = 12;
 const TEAM_ROLE_LABELS: Record<WorkspaceTeamRole, string> = {
   owner: 'Owner',
@@ -127,4 +137,72 @@ export function removeWorkspaceTeamMember(
 
 export function getWorkspaceTeamRoleLabel(role: WorkspaceTeamRole): string {
   return TEAM_ROLE_LABELS[role] || TEAM_ROLE_LABELS.producer;
+}
+
+export function canUseWorkspaceOperatorLink(role: WorkspaceTeamRole): boolean {
+  return role === 'owner' || role === 'producer';
+}
+
+function normalizeInviteText(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .trim()
+    .replace(/[\x00-\x1F\x7F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, maxLength);
+}
+
+function normalizeInviteUrl(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  if (!text) return '';
+  try {
+    const url = new URL(text);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+export function buildWorkspaceTeamStudioInviteDetails(input: WorkspaceTeamStudioInviteInput): string {
+  const roomName = normalizeInviteText(input.roomName, 100) || 'Studio';
+  const hostName = normalizeInviteText(input.hostName, 80);
+  const scheduledLabel = normalizeInviteText(input.scheduledLabel, 120);
+  const guestInviteUrl = normalizeInviteUrl(input.guestInviteUrl);
+  const hostEntryUrl = normalizeInviteUrl(input.hostEntryUrl);
+  const members = normalizeWorkspaceTeamMembers(input.members);
+  const inviteLines = members.map((member) => {
+    const roleLabel = getWorkspaceTeamRoleLabel(member.role);
+    const inviteUrl = canUseWorkspaceOperatorLink(member.role) && hostEntryUrl ? hostEntryUrl : guestInviteUrl;
+    return `${member.name} (${roleLabel}): ${inviteUrl}`;
+  });
+
+  return [
+    `Production team invite: ${roomName}`,
+    hostName ? `Host: ${hostName}` : null,
+    scheduledLabel ? `Time: ${scheduledLabel}` : null,
+    input.passwordProtected ? 'Guest entry is password protected. Ask the host for the password if needed.' : null,
+    '',
+    'Access links:',
+    ...inviteLines,
+    '',
+    hostEntryUrl && members.some((member) => canUseWorkspaceOperatorLink(member.role))
+      ? 'Owner and Producer links include private operator access. Keep them inside the production team.'
+      : null,
+  ].filter((line) => line !== null).join('\n').trim();
+}
+
+export function buildWorkspaceTeamStudioInviteEmailHref(input: WorkspaceTeamStudioInviteInput): string {
+  const members = normalizeWorkspaceTeamMembers(input.members);
+  const recipients = members
+    .map((member) => member.email)
+    .filter(Boolean)
+    .filter((email, index, values) => values.indexOf(email) === index)
+    .map((email) => encodeURIComponent(email))
+    .join(',');
+  const roomName = normalizeInviteText(input.roomName, 100) || 'Studio';
+  const subject = encodeURIComponent(`Production team invite: ${roomName}`);
+  const body = encodeURIComponent(buildWorkspaceTeamStudioInviteDetails(input));
+
+  return `mailto:${recipients}?subject=${subject}&body=${body}`;
 }

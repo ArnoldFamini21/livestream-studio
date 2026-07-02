@@ -45,6 +45,7 @@ import {
 } from '../utils/workspaceBackup.ts';
 import {
   WORKSPACE_TEAM_STORAGE_KEY,
+  buildWorkspaceTeamStudioInviteEmailHref,
   createWorkspaceTeamMember,
   getWorkspaceTeamRoleLabel,
   parseSavedWorkspaceTeamMembers,
@@ -383,6 +384,7 @@ export function HomePage() {
     () => new Set(recordingLibrary.sessions.map((session) => session.id)),
     [recordingLibrary.sessions]
   );
+  const hasTeamInviteRecipients = savedTeamMembers.some((member) => member.email);
   const recentBrandKits = savedBrandKits.slice(0, 4);
   const recentTeamMembers = savedTeamMembers.slice(0, 5);
 
@@ -551,6 +553,24 @@ export function HomePage() {
       scheduledLabel: room.scheduledFor ? formatScheduledDate(room.scheduledFor) : null,
       inviteUrl: buildInviteLink(room),
       passwordProtected: room.passwordProtected,
+    });
+  };
+
+  const emailTeamInvite = (room: SavedScheduledStudio) => {
+    if (!hasTeamInviteRecipients) {
+      setDashboardError('Add at least one team member email before sending a team invite.');
+      return;
+    }
+
+    setDashboardError(null);
+    window.location.href = buildWorkspaceTeamStudioInviteEmailHref({
+      roomName: room.name,
+      hostName: room.hostName,
+      scheduledLabel: room.scheduledFor ? formatScheduledDate(room.scheduledFor) : null,
+      guestInviteUrl: buildInviteLink(room),
+      hostEntryUrl: buildHostLink(room),
+      passwordProtected: room.passwordProtected,
+      members: savedTeamMembers,
     });
   };
 
@@ -1178,6 +1198,15 @@ export function HomePage() {
                         >
                           Email
                         </button>
+                        {savedTeamMembers.length > 0 && (
+                          <button
+                            style={styles.savedRoomAction}
+                            onClick={() => emailTeamInvite(room)}
+                            disabled={!hasTeamInviteRecipients}
+                          >
+                            Team
+                          </button>
+                        )}
                         <button
                           style={styles.savedRoomAction}
                           onClick={() => copySavedHostLink(room)}
