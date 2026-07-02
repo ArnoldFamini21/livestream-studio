@@ -19,6 +19,7 @@ const intervalMs = parsePositiveInt(process.env.PRODUCTION_CHECK_INTERVAL_MS, 15
 const requireProductionTurn = parseBoolean(process.env.PRODUCTION_REQUIRE_TURN || process.env.REQUIRE_PRODUCTION_TURN);
 const requireClientCache = parseBoolean(process.env.PRODUCTION_REQUIRE_CLIENT_CACHE || process.env.REQUIRE_CLIENT_CACHE);
 const requireHostAccessContract = parseBoolean(process.env.PRODUCTION_REQUIRE_HOST_ACCESS || process.env.REQUIRE_HOST_ACCESS);
+const requireMediaServer = parseBoolean(process.env.PRODUCTION_REQUIRE_MEDIA_SERVER || process.env.REQUIRE_MEDIA_SERVER);
 const checkScope = normalizeProductionCheckScope(process.env.PRODUCTION_CHECK_SCOPE || 'all');
 const execFile = promisify(execFileCallback);
 
@@ -51,6 +52,10 @@ export function normalizeProductionCheckScope(value) {
   if (normalized === 'services' || normalized === 'server') return 'services';
   if (!normalized || normalized === 'all') return 'all';
   throw new Error(`Unsupported PRODUCTION_CHECK_SCOPE ${JSON.stringify(value)}. Use client, services, or all.`);
+}
+
+export function shouldCheckRequiredMediaServer(checkScopeValue, required) {
+  return normalizeProductionCheckScope(checkScopeValue) === 'client' && Boolean(required);
 }
 
 function sleep(ms) {
@@ -316,10 +321,23 @@ async function checkHealth(label, url, expectedService) {
   return json;
 }
 
+function formatMediaHealthResult(media) {
+  return {
+    url: mediaHttpUrl,
+    version: media.version || null,
+    commit: media.commit || null,
+    environment: media.environment || null,
+  };
+}
+
+async function checkMediaServer() {
+  return checkHealth('Media server', mediaHttpUrl, 'media-server');
+}
+
 async function checkProductionServices() {
   const [signalingResult, mediaResult] = await Promise.allSettled([
     checkHealth('Signaling server', apiUrl, 'signaling-server'),
-    checkHealth('Media server', mediaHttpUrl, 'media-server'),
+    checkMediaServer(),
   ]);
   const errors = [];
 
@@ -399,6 +417,10 @@ async function runOnce() {
     };
   }
 
+  if (shouldCheckRequiredMediaServer(checkScope, requireMediaServer)) {
+    result.media = formatMediaHealthResult(await checkMediaServer());
+  }
+
   if (checkScope === 'all' || checkScope === 'services') {
     const { signaling, media } = await checkProductionServices();
     if (requireProductionTurn) requireProductionTurnReady(signaling);
@@ -412,12 +434,7 @@ async function runOnce() {
       ice: signaling.ice || null,
       hostAccess,
     };
-    result.media = {
-      url: mediaHttpUrl,
-      version: media.version || null,
-      commit: media.commit || null,
-      environment: media.environment || null,
-    };
+    result.media = formatMediaHealthResult(media);
   }
 
   return result;

@@ -8,6 +8,7 @@ import {
   evaluateHostAccessCreateResponse,
   normalizeProductionCheckScope,
   parseCurlHeaderText,
+  shouldCheckRequiredMediaServer,
 } from './check-production.mjs';
 
 test('normalizes production check scopes', () => {
@@ -17,6 +18,14 @@ test('normalizes production check scopes', () => {
   assert.equal(normalizeProductionCheckScope('services'), 'services');
   assert.equal(normalizeProductionCheckScope('server'), 'services');
   assert.throws(() => normalizeProductionCheckScope('database'), /Unsupported PRODUCTION_CHECK_SCOPE/);
+});
+
+test('requires media server checks only for client scoped checks when requested', () => {
+  assert.equal(shouldCheckRequiredMediaServer('client', true), true);
+  assert.equal(shouldCheckRequiredMediaServer('static', true), true);
+  assert.equal(shouldCheckRequiredMediaServer('client', false), false);
+  assert.equal(shouldCheckRequiredMediaServer('services', true), false);
+  assert.equal(shouldCheckRequiredMediaServer('all', true), false);
 });
 
 test('accepts CDN-ready client cache headers', () => {
