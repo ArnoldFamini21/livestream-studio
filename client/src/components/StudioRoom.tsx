@@ -20,6 +20,7 @@ import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
+import type { SessionPeerHealthParticipant } from '../utils/sessionPeerHealth.ts';
 import {
   clearUrlHostToken,
   getHostSession,
@@ -1108,6 +1109,14 @@ export function StudioRoom() {
   const canUseOperatorControls = canUseAdmittedOperatorControls(myParticipant);
   const canControlRecording = canControlStudioRecording(myParticipant);
   const captionsAllowed = canUseOperatorControls;
+  const sessionPeerConnectionParticipants = useMemo<SessionPeerHealthParticipant[]>(() => (
+    Array.from(participants.entries()).map(([id, participant]) => ({
+      id,
+      name: participant.name,
+      status: participant.status,
+      health: peerBandwidthHealth.get(id) || null,
+    }))
+  ), [participants, peerBandwidthHealth]);
   const sessionHealth = useSessionHealth({
     localStream,
     connected,
@@ -1115,6 +1124,7 @@ export function StudioRoom() {
     audioDeviceCount: audioDevices.length,
     videoDeviceCount: videoDevices.length,
     participantCount: participants.size + (myParticipant ? 1 : 0),
+    peerConnectionParticipants: sessionPeerConnectionParticipants,
     isRecording: isRecording || isLocalRecording || Boolean(sessionRecordingStartedAt),
     isLive,
   });

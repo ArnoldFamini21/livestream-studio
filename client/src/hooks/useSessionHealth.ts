@@ -5,6 +5,11 @@ import {
   type VideoEncodingReadiness,
   type VideoEncodingReadinessStatus,
 } from '../utils/videoEncodingCapabilities.ts';
+import {
+  buildSessionPeerHealthSummary,
+  type SessionPeerHealthParticipant,
+  type SessionPeerHealthSummary,
+} from '../utils/sessionPeerHealth.ts';
 
 export type HealthStatus = 'good' | 'warning' | 'bad';
 
@@ -39,6 +44,7 @@ export interface SessionHealthSummary {
     audioLabel: string;
   };
   encoding: VideoEncodingReadiness;
+  peerConnections: SessionPeerHealthSummary;
 }
 
 interface NetworkInformationLike extends EventTarget {
@@ -54,6 +60,7 @@ interface UseSessionHealthOptions {
   audioDeviceCount: number;
   videoDeviceCount: number;
   participantCount: number;
+  peerConnectionParticipants?: SessionPeerHealthParticipant[];
   isRecording: boolean;
   isLive: boolean;
 }
@@ -123,6 +130,7 @@ export function useSessionHealth({
   audioDeviceCount,
   videoDeviceCount,
   participantCount,
+  peerConnectionParticipants = [],
   isRecording,
   isLive,
 }: UseSessionHealthOptions): SessionHealthSummary {
@@ -192,6 +200,7 @@ export function useSessionHealth({
     const audioTrack = localStream?.getAudioTracks()[0] ?? null;
     const videoTrack = localStream?.getVideoTracks()[0] ?? null;
     const checks: SessionHealthCheck[] = [];
+    const peerConnections = buildSessionPeerHealthSummary(peerConnectionParticipants);
 
     const mediaApiReady = Boolean(navigator.mediaDevices?.getUserMedia);
     checks.push({
@@ -276,6 +285,13 @@ export function useSessionHealth({
         : 'Mesh WebRTC sessions become fragile as participant count rises.',
     });
 
+    checks.push({
+      id: 'participant-connections',
+      label: 'Guest connections',
+      status: peerConnections.status,
+      detail: peerConnections.detail,
+    });
+
     if (mediaError) {
       checks.push({
         id: 'media-error',
@@ -315,6 +331,20 @@ export function useSessionHealth({
         videoLabel: formatVideoLabel(videoTrack),
       },
       encoding,
+      peerConnections,
     };
-  }, [audioDeviceCount, connected, encoding, isLive, isRecording, localStream, mediaError, network, participantCount, storage, videoDeviceCount]);
+  }, [
+    audioDeviceCount,
+    connected,
+    encoding,
+    isLive,
+    isRecording,
+    localStream,
+    mediaError,
+    network,
+    participantCount,
+    peerConnectionParticipants,
+    storage,
+    videoDeviceCount,
+  ]);
 }
