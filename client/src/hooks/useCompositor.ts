@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { CHAT_REACTION_EMOJIS, type ActiveMedia, type LivePoll, type LogoPlacement, type LogoPosition, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
 import type { BannerData } from '../components/BannerOverlay.tsx';
-import type { HighlightedComment } from '../components/CommentHighlight.tsx';
+import { getCommentSourceLabel, type HighlightedComment } from '../components/CommentHighlight.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
 import { REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from '../components/ReactionOverlay.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
@@ -894,7 +894,10 @@ function drawBroadcastComment(ctx: CanvasRenderingContext2D, comment: Highlighte
   const x = (1920 - width) / 2;
   const textX = x + padding + avatarSize + 20;
   const maxTextWidth = width - padding * 2 - avatarSize - 20;
-  const label = isFlash ? 'AUDIENCE FLASH' : 'FEATURED COMMENT';
+  const sourceLabel = getCommentSourceLabel(comment.sourcePlatform);
+  const label = sourceLabel
+    ? `${isFlash ? 'AUDIENCE FLASH' : 'FEATURED'} / ${sourceLabel.toUpperCase()}`
+    : isFlash ? 'AUDIENCE FLASH' : 'FEATURED COMMENT';
 
   ctx.save();
   ctx.font = '500 28px Inter, Arial, sans-serif';

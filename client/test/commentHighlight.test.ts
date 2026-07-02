@@ -47,6 +47,10 @@ const messages: ChatMessage[] = [
     starred: true,
     starredBy: 'host-1',
     starredAt: '2026-06-11T10:05:00.000Z',
+    source: {
+      platform: 'youtube',
+      externalId: 'yt-123',
+    },
   },
   {
     id: 'msg-5',
@@ -69,6 +73,7 @@ describe('comment highlight selection', () => {
         sourceMessageId: 'msg-1',
         senderName: 'Ari',
         content: 'Great launch segment',
+        sourcePlatform: undefined,
         displayMode: 'featured',
         durationMs: FEATURED_COMMENT_DURATION_MS,
       }
@@ -89,11 +94,16 @@ describe('comment highlight selection', () => {
       sourceMessageId: 'msg-1',
       senderName: 'Ari',
       content: 'Great launch segment',
+      sourcePlatform: undefined,
       displayMode: 'flash',
       durationMs: FLASH_COMMENT_DURATION_MS,
     });
     assert.equal(isHighlightedCommentSource(flash, 'msg-1'), true);
     assert.equal(isHighlightedCommentSource(flash, 'msg-2'), false);
+  });
+
+  it('carries imported platform source into highlighted comments', () => {
+    assert.equal(createHighlightedCommentFromChatMessage(messages[3])?.sourcePlatform, 'youtube');
   });
 
   it('returns starred public comments first for the ready filter', () => {
@@ -111,6 +121,10 @@ describe('comment highlight selection', () => {
     assert.deepEqual(
       getHighlightableChatMessages(messages, 'ari launch', 'all').map((message) => message.id),
       ['msg-1']
+    );
+    assert.deepEqual(
+      getHighlightableChatMessages(messages, 'youtube yt-123', 'all').map((message) => message.id),
+      ['msg-4']
     );
   });
 

@@ -81,6 +81,20 @@ describe('chat transcript export', () => {
     );
   });
 
+  it('exports imported social comments as their own operator inbox', () => {
+    assert.deepEqual(
+      getChatTranscriptMessages(messages, 'social').map((message) => message.id),
+      ['public-early', 'public-late']
+    );
+
+    const csv = buildChatTranscriptCsv(messages, 'social');
+
+    assert.match(csv, /"Social","youtube","yt-message-1"/);
+    assert.match(csv, /"Social","facebook","fb-comment-1"/);
+    assert.doesNotMatch(csv, /Guest mic is hot/);
+    assert.doesNotMatch(csv, /You are next/);
+  });
+
   it('exports backstage notes only when that scope is requested', () => {
     const csv = buildChatTranscriptCsv(messages, 'backstage');
 
@@ -105,8 +119,8 @@ describe('chat transcript export', () => {
 
   it('builds deterministic csv filenames by scope', () => {
     assert.equal(
-      buildChatTranscriptFilename('public', new Date('2026-06-11T10:05:30.000Z')),
-      'studio_chat_public_2026-06-11_10-05.csv'
+      buildChatTranscriptFilename('social', new Date('2026-06-11T10:05:30.000Z')),
+      'studio_chat_social_2026-06-11_10-05.csv'
     );
   });
 });

@@ -1299,7 +1299,7 @@ function ChatContent({
   const [input, setInput] = useState('');
   const [youtubeLiveChatId, setYoutubeLiveChatId] = useState('');
   const [facebookLiveVideoId, setFacebookLiveVideoId] = useState('');
-  const [mode, setMode] = useState<'public' | 'starred' | 'backstage' | 'direct'>('public');
+  const [mode, setMode] = useState<'public' | 'social' | 'starred' | 'backstage' | 'direct'>('public');
   const [directRecipientId, setDirectRecipientId] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1310,6 +1310,7 @@ function ChatContent({
   });
   const typingTimerRef = useRef<number | null>(null);
   const publicMessages = messages.filter((msg) => !msg.isBackstage && !msg.recipientId);
+  const socialMessages = publicMessages.filter((msg) => Boolean(msg.source?.platform));
   const starredMessages = publicMessages.filter((msg) => msg.starred);
   const pinnedMessage = publicMessages.reduce<ChatMessage | null>((latest, message) => {
     if (!message.pinned) return latest;
@@ -1324,22 +1325,26 @@ function ChatContent({
     ? backstageMessages
     : mode === 'direct'
       ? directMessages
-      : mode === 'starred'
-        ? starredMessages
-        : publicMessages;
+      : mode === 'social'
+        ? socialMessages
+        : mode === 'starred'
+          ? starredMessages
+          : publicMessages;
   const exportScope: ChatTranscriptScope = mode;
   const exportLabel = mode === 'backstage'
     ? 'Export Backstage'
     : mode === 'direct'
       ? 'Export Direct'
-      : mode === 'starred'
-        ? 'Export Starred'
-        : 'Export Public';
+      : mode === 'social'
+        ? 'Export Social'
+        : mode === 'starred'
+          ? 'Export Starred'
+          : 'Export Public';
   const directRecipients = Array.from(participants.values())
     .filter((participant) => participant.id !== myParticipantId)
     .sort((a, b) => a.name.localeCompare(b.name));
   const selectedRecipient = directRecipients.find((participant) => participant.id === directRecipientId);
-  const canSend = input.trim().length > 0 && (mode !== 'direct' || Boolean(selectedRecipient));
+  const canSend = input.trim().length > 0 && mode !== 'social' && (mode !== 'direct' || Boolean(selectedRecipient));
   const youtubeStatus = externalChatStatuses.youtube || null;
   const facebookStatus = externalChatStatuses.facebook || null;
   const youtubeBusy = youtubeStatus?.status === 'connecting';
@@ -1395,6 +1400,7 @@ function ChatContent({
     nextRecipientId: string = directRecipientId
   ): { isBackstage: boolean; recipientId?: string } | null => {
     if (nextMode === 'backstage') return { isBackstage: true };
+    if (nextMode === 'social') return null;
     if (nextMode === 'direct') {
       return nextRecipientId ? { isBackstage: false, recipientId: nextRecipientId } : null;
     }
@@ -1470,6 +1476,7 @@ function ChatContent({
   const handleSend = () => {
     const t = input.trim();
     if (!t) return;
+    if (mode === 'social') return;
     if (mode === 'direct' && !selectedRecipient) return;
     stopTyping();
     onSend(t, mode === 'backstage', mode === 'direct' ? selectedRecipient?.id : undefined);
@@ -1533,6 +1540,16 @@ function ChatContent({
           >
             Public
             {publicMessages.length > 0 && <span style={st.chatTabCount}>{publicMessages.length}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'social'}
+            style={{ ...st.chatTab, ...(mode === 'social' ? st.chatTabActiveSocial : {}) }}
+            onClick={() => handleModeChange('social')}
+          >
+            Social
+            {socialMessages.length > 0 && <span style={st.chatTabCount}>{socialMessages.length}</span>}
           </button>
           <button
             type="button"
@@ -1677,8 +1694,8 @@ function ChatContent({
         )}
         {visibleMessages.length === 0 && (
           <div style={st.chatEmpty}>
-            <p style={st.chatEmptyText}>{mode === 'backstage' ? 'No backstage notes yet' : mode === 'direct' ? 'No direct messages yet' : mode === 'starred' ? 'No starred comments yet' : 'No public messages yet'}</p>
-            <p style={st.chatEmptyHint}>{mode === 'backstage' ? 'Coordinate with producers, co-hosts, and backstage guests.' : mode === 'direct' ? 'Send a private note to one participant.' : mode === 'starred' ? 'Star comments to keep them ready for the broadcast.' : 'Messages here are visible to everyone.'}</p>
+            <p style={st.chatEmptyText}>{mode === 'backstage' ? 'No backstage notes yet' : mode === 'direct' ? 'No direct messages yet' : mode === 'social' ? 'No social comments yet' : mode === 'starred' ? 'No starred comments yet' : 'No public messages yet'}</p>
+            <p style={st.chatEmptyHint}>{mode === 'backstage' ? 'Coordinate with producers, co-hosts, and backstage guests.' : mode === 'direct' ? 'Send a private note to one participant.' : mode === 'social' ? 'Connect YouTube or Facebook comments above.' : mode === 'starred' ? 'Star comments to keep them ready for the broadcast.' : 'Messages here are visible to everyone.'}</p>
           </div>
         )}
         {visibleMessages.map((msg) => {
@@ -1778,8 +1795,9 @@ function ChatContent({
       <div style={st.chatInputBar}>
         <input
           style={st.chatInput}
-          placeholder={mode === 'backstage' ? 'Send a backstage note...' : mode === 'direct' && selectedRecipient ? `Message ${selectedRecipient.name} privately...` : mode === 'direct' ? 'Choose a recipient first...' : 'Type a public message...'}
+          placeholder={mode === 'backstage' ? 'Send a backstage note...' : mode === 'direct' && selectedRecipient ? `Message ${selectedRecipient.name} privately...` : mode === 'direct' ? 'Choose a recipient first...' : mode === 'social' ? 'Social comments are imported from connected platforms...' : 'Type a public message...'}
           value={input}
+          disabled={mode === 'social'}
           onChange={(e) => handleInputChange(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
         />
@@ -2190,13 +2208,14 @@ const st: Record<string, React.CSSProperties> = {
   overlayPackLabel: { minWidth: 0, color: 'var(--text-primary)', fontSize: 11, fontWeight: 900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   overlayPackMeta: { minWidth: 0, color: 'var(--text-muted)', fontSize: 9, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   // Chat
-  chatTabs: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 4, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
+  chatTabs: { display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 3, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
   chatHeaderActions: { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },
   chatPopoutBtn: { minHeight: 28, padding: '0 10px', borderRadius: 7, border: '1px solid rgba(167, 139, 250, 0.28)', background: 'rgba(167, 139, 250, 0.1)', color: '#ddd6fe', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' },
   chatExportBtn: { minHeight: 28, padding: '0 10px', borderRadius: 7, border: '1px solid rgba(96, 165, 250, 0.28)', background: 'rgba(96, 165, 250, 0.1)', color: '#bfdbfe', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' },
   chatExportBtnDisabled: { opacity: 0.45, cursor: 'not-allowed' },
-  chatTab: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, height: 28, padding: '0 8px', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
+  chatTab: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, minWidth: 0, height: 28, padding: '0 5px', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontSize: 10, fontWeight: 800, cursor: 'pointer', overflow: 'hidden' },
   chatTabActive: { background: 'rgba(96, 165, 250, 0.14)', color: '#93c5fd' },
+  chatTabActiveSocial: { background: 'rgba(239, 68, 68, 0.14)', color: '#fca5a5' },
   chatTabActiveStarred: { background: 'rgba(245, 158, 11, 0.16)', color: '#fbbf24' },
   chatTabActiveDirect: { background: 'rgba(34, 197, 94, 0.14)', color: '#86efac' },
   chatTabActiveBackstage: { background: 'rgba(245, 158, 11, 0.16)', color: '#fbbf24' },

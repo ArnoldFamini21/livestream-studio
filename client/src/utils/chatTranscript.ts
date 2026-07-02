@@ -1,10 +1,11 @@
 import type { ChatMessage, ChatReactionType } from '@studio/shared';
 import { CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
 
-export type ChatTranscriptScope = 'public' | 'starred' | 'backstage' | 'direct';
+export type ChatTranscriptScope = 'public' | 'social' | 'starred' | 'backstage' | 'direct';
 
 const SCOPE_LABELS: Record<ChatTranscriptScope, string> = {
   public: 'Public',
+  social: 'Social',
   starred: 'Starred',
   backstage: 'Backstage',
   direct: 'Direct',
@@ -41,6 +42,7 @@ export function getChatTranscriptMessages(
       if (scope === 'backstage') return message.isBackstage;
       if (scope === 'direct') return Boolean(message.recipientId);
       if (scope === 'starred') return !message.isBackstage && !message.recipientId && Boolean(message.starred);
+      if (scope === 'social') return !message.isBackstage && !message.recipientId && Boolean(message.source?.platform);
       return !message.isBackstage && !message.recipientId;
     })
     .sort((a, b) => {
@@ -62,7 +64,7 @@ export function buildChatTranscriptCsv(
     formatTimestamp(message.timestamp),
     message.senderName,
     message.recipientName || '',
-    SCOPE_LABELS[message.recipientId ? 'direct' : message.isBackstage ? 'backstage' : 'public'],
+    SCOPE_LABELS[message.recipientId ? 'direct' : message.isBackstage ? 'backstage' : message.source?.platform ? 'social' : 'public'],
     message.source?.platform || 'studio',
     message.source?.externalId || '',
     message.pinned ? 'Yes' : 'No',
