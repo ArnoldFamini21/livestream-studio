@@ -15,6 +15,7 @@ import {
   fetchIceConfigWithStatus,
   type ClientIceConfigStatus,
 } from '../utils/iceConfig.ts';
+import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 export type HealthStatus = 'good' | 'warning' | 'bad';
 
@@ -51,6 +52,7 @@ export interface SessionHealthSummary {
   encoding: VideoEncodingReadiness;
   ice: ClientIceConfigStatus;
   peerConnections: SessionPeerHealthSummary;
+  mediaServer: MediaServerHealth | null;
 }
 
 interface NetworkInformationLike extends EventTarget {
@@ -67,6 +69,7 @@ interface UseSessionHealthOptions {
   videoDeviceCount: number;
   participantCount: number;
   peerConnectionParticipants?: SessionPeerHealthParticipant[];
+  mediaServerHealth?: MediaServerHealth | null;
   isRecording: boolean;
   isLive: boolean;
 }
@@ -135,6 +138,11 @@ function healthStatusFromIceStatus(status: ClientIceConfigStatus): HealthStatus 
   return 'bad';
 }
 
+function healthStatusFromMediaServer(status: MediaServerHealth | null | undefined): HealthStatus {
+  if (!status || status.status === 'checking') return 'warning';
+  return status.status === 'ready' ? 'good' : 'bad';
+}
+
 function iceSourceLabel(source: ClientIceConfigStatus['source']): string {
   switch (source) {
     case 'ice_servers_json': return 'ICE_SERVERS_JSON';
@@ -165,6 +173,7 @@ export function useSessionHealth({
   videoDeviceCount,
   participantCount,
   peerConnectionParticipants = [],
+  mediaServerHealth = null,
   isRecording,
   isLive,
 }: UseSessionHealthOptions): SessionHealthSummary {
@@ -282,6 +291,13 @@ export function useSessionHealth({
       detail: formatIceStatusDetail(iceStatus),
     });
 
+    checks.push({
+      id: 'media-server',
+      label: 'Media server',
+      status: healthStatusFromMediaServer(mediaServerHealth),
+      detail: mediaServerHealth?.message || 'Media-server readiness has not been checked yet.',
+    });
+
     const networkStatus: HealthStatus = !network.online
       ? 'bad'
       : network.effectiveType && ['slow-2g', '2g'].includes(network.effectiveType)
@@ -389,6 +405,7 @@ export function useSessionHealth({
       encoding,
       ice: iceStatus,
       peerConnections,
+      mediaServer: mediaServerHealth,
     };
   }, [
     audioDeviceCount,
@@ -398,6 +415,7 @@ export function useSessionHealth({
     isLive,
     isRecording,
     localStream,
+    mediaServerHealth,
     mediaError,
     network,
     participantCount,
