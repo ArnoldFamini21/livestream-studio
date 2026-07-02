@@ -231,6 +231,7 @@
 - [x] Bandwidth adaptation per participant for current mesh WebRTC senders
 - [x] Operator-visible per-participant WebRTC connection quality from adaptation telemetry
 - [x] Stage-tile WebRTC connection quality badges for live production monitoring
+- [x] Session health rolls remote WebRTC connection risk into host production readiness
 - [x] Server-side recording as backup
 
 ### 10C. Deployment

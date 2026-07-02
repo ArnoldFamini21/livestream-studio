@@ -37,6 +37,15 @@ function formatBytes(bytes: number | null): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
+function formatRemoteLinkMetric(summary: SessionHealthSummary): string {
+  const peerConnections = summary.peerConnections;
+  if (peerConnections.remoteCount === 0) return 'None';
+  if (peerConnections.poorCount > 0) return `${peerConnections.poorCount} poor`;
+  if (peerConnections.fairCount > 0) return `${peerConnections.fairCount} fair`;
+  if (peerConnections.unknownCount > 0) return `${peerConnections.unknownCount} warming up`;
+  return `${peerConnections.goodCount}/${peerConnections.remoteCount} good`;
+}
+
 function CheckRow({ check }: { check: SessionHealthCheck }) {
   const color = statusColor(check.status);
   return (
@@ -110,6 +119,10 @@ export function SessionHealthPanel({ summary, onClose }: SessionHealthPanelProps
           <div style={styles.metric}>
             <span style={styles.metricLabel}>Encoder</span>
             <span style={styles.metricValue}>{encodingMetricLabel(summary.encoding.status)}</span>
+          </div>
+          <div style={styles.metric}>
+            <span style={styles.metricLabel}>Remote Links</span>
+            <span style={styles.metricValue}>{formatRemoteLinkMetric(summary)}</span>
           </div>
         </div>
 
