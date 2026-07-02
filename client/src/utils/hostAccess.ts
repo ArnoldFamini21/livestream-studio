@@ -1,3 +1,4 @@
+import type { RoomRegistrationSettings } from '@studio/shared';
 import { getValidHostToken, isLegacyHostlessCreateResponse } from './hostSession.ts';
 import { postJson } from './apiClient.ts';
 
@@ -16,6 +17,7 @@ export interface CreatedRoomResponse {
   settings?: {
     passwordProtected?: boolean;
   };
+  registration?: RoomRegistrationSettings;
 }
 
 export type CreatedRoomWithDetails = CreatedRoomResponse & {

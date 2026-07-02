@@ -19,6 +19,9 @@ import type {
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
   StudioBrandingPayload,
+  RoomRegistrant,
+  RoomRegistrantListResponse,
+  RoomRegistrantResponse,
   ExternalChatPlatform,
   ExternalChatStatusPayload,
 } from '@studio/shared';
@@ -55,6 +58,7 @@ interface RoomState {
   qaVotes: Map<string, Set<string>>;
   polls: Map<string, LivePoll>;
   pollVotes: Map<string, Map<string, string>>;
+  registrants: Map<string, RoomRegistrant>;
   externalChatConnections: Map<ExternalChatPlatform, ExternalChatConnectionState>;
   studioBranding?: StudioBrandingPayload;
   coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
@@ -192,6 +196,9 @@ const POLL_VOTE_OPTION_LETTERS = ['a', 'b', 'c', 'd', 'e', 'f'];
 const MAX_PARTICIPANT_NAME_LENGTH = 50;
 const MAX_JOIN_SESSION_ID_LENGTH = 128;
 const MAX_ROOM_PASSWORD_LENGTH = 100;
+const MAX_ROOM_REGISTRANTS = 1000;
+const MAX_REGISTRANT_NAME_LENGTH = 80;
+const MAX_REGISTRANT_EMAIL_LENGTH = 254;
 const LIVE_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
 const CO_HOST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_CO_HOST_INVITE_TOKENS_PER_ROOM = 20;
@@ -261,6 +268,13 @@ export class RoomQuotaError extends Error {
   constructor(message: string, public statusCode: number) {
     super(message);
     this.name = 'RoomQuotaError';
+  }
+}
+
+export class RoomRegistrationError extends Error {
+  constructor(public statusCode: number, public code: string, message: string) {
+    super(message);
+    this.name = 'RoomRegistrationError';
   }
 }
 
@@ -404,7 +418,13 @@ function replaceExistingHostSession(roomId: string, roomState: RoomState, existi
 export function createRoom(
   name: string,
   hostName: string,
-  options: { status?: 'waiting' | 'scheduled'; scheduledFor?: string; creatorIp: string; password?: string }
+  options: {
+    status?: 'waiting' | 'scheduled';
+    scheduledFor?: string;
+    creatorIp: string;
+    password?: string;
+    registrationEnabled?: boolean;
+  }
 ): CreatedRoom {
   if (rooms.size >= MAX_ROOMS) {
     throw new RoomQuotaError('Global room limit reached. Please try again later.', 503);
@@ -436,6 +456,10 @@ export function createRoom(
     },
     hostName,
     scheduledFor: options.scheduledFor,
+    registration: {
+      enabled: Boolean(options.registrationEnabled),
+      fields: ['name', 'email'],
+    },
   };
 
   const hostToken = nanoid(32);
@@ -451,6 +475,7 @@ export function createRoom(
     qaVotes: new Map(),
     polls: new Map(),
     pollVotes: new Map(),
+    registrants: new Map(),
     externalChatConnections: new Map(),
     coHostInviteTokens: new Map(),
     hostToken,
@@ -467,6 +492,87 @@ export function createRoom(
   ipSet.add(room.id);
 
   return { room, hostToken };
+}
+
+function sanitizeRegistrantText(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, maxLength);
+}
+
+function normalizeRegistrantEmail(value: unknown): string {
+  const email = sanitizeRegistrantText(value, MAX_REGISTRANT_EMAIL_LENGTH).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return '';
+  return email;
+}
+
+function assertRegistrationHostAccess(roomState: RoomState, hostToken: unknown) {
+  if (typeof hostToken !== 'string' || !safeEqual(hostToken, roomState.hostToken)) {
+    throw new RoomRegistrationError(403, 'HOST_TOKEN_INVALID', 'Host access is required to view registrants.');
+  }
+}
+
+export function registerRoomGuest(
+  roomId: string,
+  input: { name?: unknown; email?: unknown },
+  now = new Date()
+): RoomRegistrantResponse {
+  const roomState = rooms.get(roomId);
+  if (!roomState) {
+    throw new RoomRegistrationError(404, 'ROOM_NOT_FOUND', 'Room not found');
+  }
+  if (!roomState.room.registration?.enabled) {
+    throw new RoomRegistrationError(409, 'REGISTRATION_DISABLED', 'Registration is not enabled for this studio.');
+  }
+
+  const name = sanitizeRegistrantText(input.name, MAX_REGISTRANT_NAME_LENGTH);
+  const email = normalizeRegistrantEmail(input.email);
+  if (!name) {
+    throw new RoomRegistrationError(400, 'REGISTRANT_NAME_REQUIRED', 'Registrant name is required.');
+  }
+  if (!email) {
+    throw new RoomRegistrationError(400, 'REGISTRANT_EMAIL_INVALID', 'Enter a valid email address.');
+  }
+
+  const existing = roomState.registrants.get(email);
+  const registeredAt = now.toISOString();
+  const registrant: RoomRegistrant = {
+    id: existing?.id || nanoid(10),
+    roomId,
+    name,
+    email,
+    registeredAt: existing?.registeredAt || registeredAt,
+  };
+
+  if (!existing && roomState.registrants.size >= MAX_ROOM_REGISTRANTS) {
+    throw new RoomRegistrationError(429, 'REGISTRATION_LIMIT_REACHED', 'This studio registration list is full.');
+  }
+
+  roomState.registrants.set(email, registrant);
+
+  return {
+    registrant,
+    total: roomState.registrants.size,
+  };
+}
+
+export function getRoomRegistrantList(
+  roomId: string,
+  hostToken: unknown,
+  now = new Date()
+): RoomRegistrantListResponse {
+  const roomState = rooms.get(roomId);
+  if (!roomState) {
+    throw new RoomRegistrationError(404, 'ROOM_NOT_FOUND', 'Room not found');
+  }
+
+  assertRegistrationHostAccess(roomState, hostToken);
+
+  return {
+    roomId,
+    exportedAt: now.toISOString(),
+    registrants: Array.from(roomState.registrants.values())
+      .sort((a, b) => a.registeredAt.localeCompare(b.registeredAt)),
+  };
 }
 
 function createPasswordVerifier(password: string): { passwordHash: string; passwordSalt: string } {

@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { getScheduledGuestOpenAtMs, isScheduledGuestAccessBlocked } from '@studio/shared';
+import {
+  getScheduledGuestOpenAtMs,
+  isScheduledGuestAccessBlocked,
+  type RoomRegistrantResponse,
+  type RoomRegistrationSettings,
+} from '@studio/shared';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 import {
@@ -22,8 +27,13 @@ import {
   persistHostSession,
   upsertSavedHostStudio,
 } from '../utils/hostSession.ts';
-import { getJson, isAbortError } from '../utils/apiClient.ts';
+import { getApiErrorMessage, getJson, isAbortError, postJson } from '../utils/apiClient.ts';
 import { getInviteStudioName } from '../utils/inviteLinks.ts';
+import {
+  GUEST_REGISTRATION_EMAIL_STORAGE_KEY,
+  getRegistrationSessionKey,
+  isValidRegistrantEmail,
+} from '../utils/webinarRegistration.ts';
 
 const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing in this browser. Open this studio from Your Studios, use your private host link, or create a new studio.';
 
@@ -34,6 +44,24 @@ interface RoomExistsResponse {
   hostName?: string;
   scheduledFor?: string;
   passwordProtected?: boolean;
+  registration?: RoomRegistrationSettings;
+}
+
+function getStoredGuestEmail(): string {
+  try {
+    return localStorage.getItem(GUEST_REGISTRATION_EMAIL_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function hasStoredRegistration(roomId?: string): boolean {
+  if (!roomId) return false;
+  try {
+    return Boolean(sessionStorage.getItem(getRegistrationSessionKey(roomId)));
+  } catch {
+    return false;
+  }
 }
 
 function formatGuestOpenCountdown(ms: number): string {
@@ -71,10 +99,14 @@ export function JoinRoom() {
       : getStoredUserName() || savedHostStudio?.hostName || '';
   // Auto-fill from sessionStorage for Hosts
   const [guestName, setGuestName] = useState(initialName);
-  const [roomInfo, setRoomInfo] = useState<{ name: string; participantCount: number; status?: string; hostName?: string; scheduledFor?: string; passwordProtected?: boolean } | null>(null);
+  const [guestEmail, setGuestEmail] = useState(() => getStoredGuestEmail());
+  const [roomInfo, setRoomInfo] = useState<RoomExistsResponse | null>(null);
   const [roomPassword, setRoomPassword] = useState('');
   const [loading, setLoading] = useState(true);
+  const [joining, setJoining] = useState(false);
   const [notFound, setNotFound] = useState(false);
+  const [registrationSubmitted, setRegistrationSubmitted] = useState(() => hasStoredRegistration(roomId));
+  const [registrationError, setRegistrationError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const needsRoomPassword = Boolean(roomInfo?.passwordProtected && !hostEntryMode && !isCoHostInvite);
   const guestOpenAtMs = getScheduledGuestOpenAtMs(roomInfo?.scheduledFor);
@@ -82,6 +114,16 @@ export function JoinRoom() {
     !hostEntryMode &&
     !isCoHostInvite &&
     isScheduledGuestAccessBlocked(roomInfo?.scheduledFor, nowMs)
+  );
+  const registrationRequired = Boolean(
+    roomInfo?.registration?.enabled &&
+    !hostEntryMode &&
+    !isCoHostInvite
+  );
+  const canSubmitRegistration = Boolean(
+    registrationRequired &&
+    guestName.trim() &&
+    isValidRegistrantEmail(guestEmail)
   );
   const guestOpenLabel = guestOpenAtMs !== null
     ? new Date(guestOpenAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
@@ -271,10 +313,62 @@ export function JoinRoom() {
   }, []);
 
   const joinStudio = () => {
+    void joinStudioAsync();
+  };
+
+  const submitGuestRegistration = async (): Promise<boolean> => {
+    if (!roomId || !registrationRequired || registrationSubmitted) return true;
+    if (!guestName.trim()) {
+      setRegistrationError('Enter your name to register.');
+      return false;
+    }
+    if (!isValidRegistrantEmail(guestEmail)) {
+      setRegistrationError('Enter a valid email address to register.');
+      return false;
+    }
+
+    setRegistrationError(null);
+    setJoining(true);
+    try {
+      const response = await postJson<RoomRegistrantResponse>(
+        `/api/rooms/${encodeURIComponent(roomId)}/registrants`,
+        {
+          name: guestName.trim(),
+          email: guestEmail.trim(),
+        },
+        { timeoutMs: 15_000 }
+      );
+      try {
+        sessionStorage.setItem(getRegistrationSessionKey(roomId), response.registrant.id);
+        localStorage.setItem(GUEST_REGISTRATION_EMAIL_STORAGE_KEY, response.registrant.email);
+      } catch {
+        // Storage is best-effort; registration still succeeded server-side.
+      }
+      setRegistrationSubmitted(true);
+      return true;
+    } catch (err) {
+      setRegistrationError(getApiErrorMessage(err, 'Registration failed. Please try again.'));
+      return false;
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  const joinStudioAsync = async () => {
     if (!guestName.trim()) return;
     if (hostAccessMissing) return;
-    if (scheduledGuestBlocked) return;
+    if (scheduledGuestBlocked) {
+      if (registrationRequired && !registrationSubmitted) {
+        await submitGuestRegistration();
+      }
+      return;
+    }
     if (needsRoomPassword && !roomPassword.trim()) return;
+    if (registrationRequired && !registrationSubmitted) {
+      const registered = await submitGuestRegistration();
+      if (!registered) return;
+    }
+
     stopMedia();
     
     if (isHostSession) {
@@ -304,6 +398,29 @@ export function JoinRoom() {
     }
     navigate(`/studio/${roomId}`);
   };
+
+  const joinDisabled = Boolean(
+    joining ||
+    !guestName.trim() ||
+    hostAccessMissing ||
+    (scheduledGuestBlocked && (!registrationRequired || registrationSubmitted)) ||
+    (registrationRequired && !registrationSubmitted && !canSubmitRegistration) ||
+    (needsRoomPassword && !roomPassword.trim())
+  );
+
+  const joinButtonLabel = hostAccessMissing
+    ? 'Host Access Missing'
+    : joining
+      ? registrationSubmitted ? 'Joining...' : 'Registering...'
+      : scheduledGuestBlocked
+        ? registrationRequired && !registrationSubmitted ? 'Register for Studio' : 'Not Open Yet'
+        : isHostSession
+          ? 'Enter as Host'
+          : isCoHostInvite
+            ? 'Join as Co-host'
+            : registrationRequired && !registrationSubmitted
+              ? 'Register & Join Studio'
+              : 'Join Studio';
 
   const onAudioDeviceChange = async (deviceId: string) => {
     try {
@@ -446,6 +563,9 @@ export function JoinRoom() {
             <strong>Guest access opens {guestOpenLabel}</strong>
             <span>Hosts and co-hosts can enter now to prepare the studio.</span>
             <span>{guestOpenCountdown} remaining</span>
+            {registrationRequired && registrationSubmitted && (
+              <span>You're registered. Keep this link and return when access opens.</span>
+            )}
           </div>
         )}
         {hostAccessMissing && (
@@ -670,6 +790,35 @@ export function JoinRoom() {
           />
         </div>
 
+        {registrationRequired && (
+          <div style={styles.registrationBox}>
+            <div style={styles.registrationHeader}>
+              <span style={styles.registrationTitle}>Webinar registration</span>
+              {registrationSubmitted && <span style={styles.registrationBadge}>Registered</span>}
+            </div>
+            <p style={styles.registrationText}>
+              {registrationSubmitted
+                ? 'Your spot is saved for this studio.'
+                : 'Enter your email so the host can manage this scheduled guest list.'}
+            </p>
+            {!registrationSubmitted && (
+              <input
+                style={styles.input}
+                type="email"
+                placeholder="name@example.com"
+                value={guestEmail}
+                onChange={(e) => setGuestEmail(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
+                maxLength={254}
+                autoComplete="email"
+              />
+            )}
+            {registrationError && (
+              <p style={styles.registrationError}>{registrationError}</p>
+            )}
+          </div>
+        )}
+
         {needsRoomPassword && (
           <div style={styles.field}>
             <label style={styles.label}>Room password</label>
@@ -690,9 +839,9 @@ export function JoinRoom() {
           className="btn-primary"
           style={styles.joinButton}
           onClick={joinStudio}
-          disabled={!guestName.trim() || hostAccessMissing || scheduledGuestBlocked || Boolean(needsRoomPassword && !roomPassword.trim())}
+          disabled={joinDisabled}
         >
-          {hostAccessMissing ? 'Host Access Missing' : scheduledGuestBlocked ? 'Not Open Yet' : isHostSession ? 'Enter as Host' : isCoHostInvite ? 'Join as Co-host' : 'Join Studio'}
+          {joinButtonLabel}
         </button>
 
         <p style={styles.finePrint}>No account or download required</p>
@@ -1060,6 +1209,49 @@ const styles: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%',
+  },
+  registrationBox: {
+    marginBottom: 16,
+    padding: '12px 14px',
+    borderRadius: 12,
+    border: '1px solid rgba(103, 232, 249, 0.16)',
+    background: 'rgba(103, 232, 249, 0.07)',
+    textAlign: 'left' as const,
+  },
+  registrationHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 6,
+  },
+  registrationTitle: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: '#a5f3fc',
+  },
+  registrationBadge: {
+    fontSize: 10,
+    fontWeight: 800,
+    color: '#22c55e',
+    background: 'rgba(34, 197, 94, 0.12)',
+    border: '1px solid rgba(34, 197, 94, 0.2)',
+    borderRadius: 999,
+    padding: '3px 7px',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  registrationText: {
+    margin: '0 0 10px',
+    color: 'var(--text-secondary)',
+    fontSize: 12,
+    lineHeight: 1.4,
+  },
+  registrationError: {
+    margin: '8px 0 0',
+    color: '#fca5a5',
+    fontSize: 12,
+    lineHeight: 1.35,
   },
 
   joinButton: {

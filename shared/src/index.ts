@@ -10,6 +10,7 @@ export interface Room {
   settings: RoomSettings;
   scheduledFor?: string;
   hostName?: string;
+  registration?: RoomRegistrationSettings;
 }
 
 export type RoomStatus = 'waiting' | 'scheduled' | 'live' | 'recording' | 'ended';
@@ -154,6 +155,32 @@ export interface RoomSettings {
   enableStreaming: boolean;
   greenRoomEnabled: boolean;
   passwordProtected: boolean;
+}
+
+export type RoomRegistrationField = 'name' | 'email';
+
+export interface RoomRegistrationSettings {
+  enabled: boolean;
+  fields: RoomRegistrationField[];
+}
+
+export interface RoomRegistrant {
+  id: string;
+  roomId: string;
+  name: string;
+  email: string;
+  registeredAt: string;
+}
+
+export interface RoomRegistrantResponse {
+  registrant: RoomRegistrant;
+  total: number;
+}
+
+export interface RoomRegistrantListResponse {
+  roomId: string;
+  exportedAt: string;
+  registrants: RoomRegistrant[];
 }
 
 export type VideoResolution = '720p' | '1080p' | '4k';

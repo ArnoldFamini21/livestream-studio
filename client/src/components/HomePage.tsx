@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { buildStudioCalendarInvite } from '@studio/shared';
+import { buildStudioCalendarInvite, type RoomRegistrantListResponse } from '@studio/shared';
 import {
   buildHostEntryPath,
   buildHostEntryUrl,
@@ -14,12 +14,13 @@ import {
   upsertSavedHostStudio,
   type SavedHostStudio,
 } from '../utils/hostSession.ts';
-import { getApiErrorMessage, postJson } from '../utils/apiClient.ts';
+import { getApiErrorMessage, getJson, postJson } from '../utils/apiClient.ts';
 import {
   hasCreatedRoomDetails,
   resolveCreatedRoomHostAccess,
   type CreatedRoomResponse,
 } from '../utils/hostAccess.ts';
+import { buildRegistrantsCsv } from '../utils/webinarRegistration.ts';
 import { buildGuestInviteEmailHref, buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import {
@@ -69,6 +70,7 @@ interface SavedScheduledStudio extends SavedHostStudio {
   name: string;
   createdAt: string;
   passwordProtected: boolean;
+  registrationEnabled?: boolean;
 }
 
 interface ScheduledRoomModal extends SavedScheduledStudio {}
@@ -87,6 +89,7 @@ function readSavedScheduledStudios(): SavedScheduledStudio[] {
     .map((item) => ({
       ...item,
       passwordProtected: Boolean(item.passwordProtected),
+      registrationEnabled: Boolean(item.registrationEnabled),
     }));
 }
 
@@ -224,6 +227,7 @@ function toSavedScheduledRoom(
     createdAt: room.createdAt || new Date().toISOString(),
     scheduledFor: room.scheduledFor || undefined,
     passwordProtected: Boolean(room.settings?.passwordProtected),
+    registrationEnabled: Boolean(room.registration?.enabled),
     status: room.status,
   };
 }
@@ -233,6 +237,7 @@ export function HomePage() {
   const [hostName, setHostName] = useState('');
   const [scheduledFor, setScheduledFor] = useState('');
   const [roomPassword, setRoomPassword] = useState('');
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
   const [schedulingLoading, setSchedulingLoading] = useState(false);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
@@ -259,6 +264,7 @@ export function HomePage() {
   const [savedRoomCopiedId, setSavedRoomCopiedId] = useState<string | null>(null);
   const [savedHostCopiedId, setSavedHostCopiedId] = useState<string | null>(null);
   const [savedQrDownloadingId, setSavedQrDownloadingId] = useState<string | null>(null);
+  const [registrantsDownloadingId, setRegistrantsDownloadingId] = useState<string | null>(null);
 
   const createRoom = async () => {
     if (!roomName.trim() || !hostName.trim()) return;
@@ -274,6 +280,7 @@ export function HomePage() {
         name: roomName,
         hostName,
         password: roomPassword.trim() || undefined,
+        registrationEnabled,
       }, {
         timeoutMs: CREATE_STUDIO_TIMEOUT_MS,
       });
@@ -321,6 +328,7 @@ export function HomePage() {
         hostName,
         scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
         password: roomPassword.trim() || undefined,
+        registrationEnabled,
       }, {
         timeoutMs: CREATE_STUDIO_TIMEOUT_MS,
       });
@@ -442,6 +450,33 @@ export function HomePage() {
       setError('Could not generate a QR code for that studio.');
     } finally {
       setSavedQrDownloadingId(null);
+    }
+  };
+
+  const downloadRegistrants = async (room: SavedScheduledStudio) => {
+    if (registrantsDownloadingId) return;
+    setError(null);
+    setRegistrantsDownloadingId(room.id);
+    try {
+      const data = await getJson<RoomRegistrantListResponse>(
+        `/api/rooms/${encodeURIComponent(room.id)}/registrants`,
+        {
+          headers: {
+            'x-host-token': room.hostToken,
+          },
+          timeoutMs: 15_000,
+        }
+      );
+      downloadTextFile(
+        buildRegistrantsCsv(data, room.name),
+        `${safeFileName(room.name)}_registrants.csv`,
+        'text/csv;charset=utf-8'
+      );
+      setDashboardNotice(`Exported ${data.registrants.length} registrant${data.registrants.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'Could not export registrants for that studio.'));
+    } finally {
+      setRegistrantsDownloadingId(null);
     }
   };
 
@@ -618,6 +653,7 @@ export function HomePage() {
     setHostName('');
     setScheduledFor('');
     setRoomPassword('');
+    setRegistrationEnabled(false);
   };
 
   const minScheduleDateTime = toDateTimeLocalValue(new Date(Date.now() + 60_000));
@@ -713,6 +749,18 @@ export function HomePage() {
                 />
                 <p style={styles.fieldHint}>Hosts can still enter with the creator session.</p>
               </div>
+
+              <label style={styles.registrationToggle}>
+                <input
+                  type="checkbox"
+                  checked={registrationEnabled}
+                  onChange={(e) => setRegistrationEnabled(e.target.checked)}
+                />
+                <span style={styles.registrationToggleCopy}>
+                  <span style={styles.registrationToggleTitle}>Collect guest registration</span>
+                  <span style={styles.registrationToggleText}>Guests enter name and email before joining; hosts can export a CSV.</span>
+                </span>
+              </label>
 
               {error && (
                 <p style={styles.error}>{error}</p>
@@ -1046,6 +1094,15 @@ export function HomePage() {
                             Calendar
                           </button>
                         )}
+                        {room.registrationEnabled && (
+                          <button
+                            style={styles.savedRoomAction}
+                            onClick={() => void downloadRegistrants(room)}
+                            disabled={registrantsDownloadingId === room.id}
+                          >
+                            {registrantsDownloadingId === room.id ? 'Exporting...' : 'Registrants'}
+                          </button>
+                        )}
                         <button
                           style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
                           onClick={() => openScheduledAsHost(room)}
@@ -1109,6 +1166,9 @@ export function HomePage() {
             )}
             {scheduledRoom.passwordProtected && (
               <p style={styles.modalSchedule}>Password protected. Share the password with guests separately.</p>
+            )}
+            {scheduledRoom.registrationEnabled && (
+              <p style={styles.modalSchedule}>Guest registration is on. You can export registrants from Your Studios.</p>
             )}
 
             <div style={styles.linkBox}>
@@ -1319,6 +1379,33 @@ const styles: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%',
+  },
+  registrationToggle: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: '11px 12px',
+    marginBottom: 14,
+    borderRadius: 12,
+    border: '1px solid rgba(103, 232, 249, 0.14)',
+    background: 'rgba(103, 232, 249, 0.06)',
+    cursor: 'pointer',
+  },
+  registrationToggleCopy: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+    minWidth: 0,
+  },
+  registrationToggleTitle: {
+    fontSize: 12,
+    fontWeight: 700,
+    color: '#a5f3fc',
+  },
+  registrationToggleText: {
+    fontSize: 11,
+    color: 'var(--text-muted)',
+    lineHeight: 1.35,
   },
   button: {
     width: '100%',
