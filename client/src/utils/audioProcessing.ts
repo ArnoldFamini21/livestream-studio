@@ -17,10 +17,17 @@ export function createAudioTrackConstraints(
   preferences: Partial<AudioProcessingPreferences> = {}
 ): MediaTrackConstraints {
   const normalized = normalizeAudioProcessingPreferences(preferences);
-  return {
-    echoCancellation: normalized.echoCancellation,
-    noiseSuppression: normalized.noiseSuppression,
-    autoGainControl: true,
+  const constraints: MediaTrackConstraints = {
+    echoCancellation: normalized.echoCancellation ? { ideal: true } : false,
+    noiseSuppression: normalized.noiseSuppression ? { ideal: true } : false,
+    autoGainControl: { ideal: true },
+    channelCount: { ideal: 1 },
+    sampleRate: { ideal: 48_000 },
+    sampleSize: { ideal: 16 },
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
   };
+  return {
+    ...constraints,
+    latency: { ideal: 0.02 },
+  } as MediaTrackConstraints;
 }

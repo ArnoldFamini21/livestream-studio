@@ -23,6 +23,7 @@ import {
 import type { RecordingUploadSummary } from '../utils/recordingUpload.ts';
 import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
 import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
+import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -364,28 +365,45 @@ function isPreviewable(file: RecordedFile): boolean {
   });
 }
 
-function getBlobExtension(blob: Blob): string {
-  if (blob.type.includes('video/x-vp9')) return 'vp9';
-  if (blob.type.includes('video/x-vp8')) return 'vp8';
-  if (blob.type.includes('video/avc')) return 'h264';
-  if (blob.type.includes('ogg')) return 'ogg';
-  if (blob.type.includes('mp4')) return 'mp4';
-  if (blob.type.includes('mpeg') || blob.type.includes('mp3')) return 'mp3';
-  if (blob.type.includes('wav')) return 'wav';
-  return 'webm';
+function getMimeTypeFromFileName(fileName: string, kind?: RecordedFile['kind']): string {
+  if (/\.m4a$/i.test(fileName)) return 'audio/mp4';
+  if (/\.mp4$/i.test(fileName)) return kind === 'audio' ? 'audio/mp4' : 'video/mp4';
+  if (/\.webm$/i.test(fileName)) return kind === 'audio' ? 'audio/webm' : 'video/webm';
+  if (/\.ogg$/i.test(fileName)) return 'audio/ogg';
+  if (/\.mp3$/i.test(fileName)) return 'audio/mpeg';
+  if (/\.wav$/i.test(fileName)) return 'audio/wav';
+  return '';
 }
 
-function makeRecordingFileName(roomName: string, label: string, timestamp: string, index: number, blob: Blob): string {
+function getRecordedFileMimeType(file: Pick<RecordedFile, 'blob' | 'fileName' | 'kind' | 'capture'>): string {
+  if (file.blob.type) return file.blob.type;
+  if (file.capture?.mimeType) return file.capture.mimeType;
+  const fileNameMimeType = getMimeTypeFromFileName(file.fileName, file.kind);
+  if (fileNameMimeType) return fileNameMimeType;
+  if (file.kind === 'audio') return 'audio/mp4';
+  if (file.kind === 'video' || file.kind === 'screen' || file.kind === 'program' || file.kind === 'iso') return 'video/mp4';
+  return 'application/octet-stream';
+}
+
+function getRecordingResultExtension(file: Pick<LocalRecordingFileResult, 'blob' | 'kind' | 'capture'>): string {
+  const mimeType = file.blob.type || file.capture?.mimeType || (file.kind === 'audio' ? 'audio/mp4' : 'video/mp4');
+  return getRecordingFileExtension(mimeType);
+}
+
+function makeRecordingFileName(
+  roomName: string,
+  label: string,
+  timestamp: string,
+  index: number,
+  file: Pick<LocalRecordingFileResult, 'blob' | 'kind' | 'capture'>
+): string {
   const roomPrefix = sanitizeFileName(roomName, 'studio');
   const labelPart = sanitizeFileName(label, `track_${index + 1}`);
-  return `${roomPrefix}_${String(index + 1).padStart(2, '0')}_${labelPart}_${timestamp}.${getBlobExtension(blob)}`;
+  return `${roomPrefix}_${String(index + 1).padStart(2, '0')}_${labelPart}_${timestamp}.${getRecordingResultExtension(file)}`;
 }
 
 function getRecordingFileType(file: RecordedFile): string {
-  if (file.blob.type) return file.blob.type;
-  if (file.kind === 'audio') return 'audio/webm';
-  if (file.kind === 'video' || file.kind === 'screen' || file.kind === 'program' || file.kind === 'iso') return 'video/webm';
-  return 'application/octet-stream';
+  return getRecordedFileMimeType(file);
 }
 
 function getMediaExportDownloadLabel(artifact: RecordingExportArtifactStatus): string {
@@ -2353,7 +2371,7 @@ export function RecordingPanel({
         .map((file, index) => ({
           label: file.label,
           blob: file.blob,
-          fileName: makeRecordingFileName(roomName, file.label, timestamp, index, file.blob),
+          fileName: makeRecordingFileName(roomName, file.label, timestamp, index, file),
           kind: file.kind,
           capture: file.capture,
         }));
@@ -2370,7 +2388,7 @@ export function RecordingPanel({
         setActiveSessionId(session.id);
         setLibraryTrackFiles((current) => ({ ...current, [session.id]: files }));
         if (onUploadRecording) {
-          setMediaUploadMessage('Uploading WebM tracks to media server...');
+          setMediaUploadMessage('Uploading recording tracks to media server...');
           try {
             const upload = await onUploadRecording({
               sessionId: session.id,

@@ -1,11 +1,17 @@
 import { useMemo, useRef, useState } from 'react';
 import type { ActiveMedia, StudioMediaAsset, StudioMediaType } from '@studio/shared';
+import {
+  getNextPresentationSlideIndex,
+  getPresentationDeckStatus,
+} from '../utils/presentationDeckControls.ts';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
 
 interface MediaLibraryProps {
   assets: StudioMediaAsset[];
   activeMedia: ActiveMedia | null;
+  activeMediaSlideIndex: number;
+  onActiveMediaSlideIndexChange: (index: number) => void;
   onUpload: (files: FileList | File[]) => void | Promise<void>;
   onAddUrl: (url: string, type: 'video' | 'image') => void;
   onPlay: (asset: StudioMediaAsset) => void;
@@ -39,6 +45,8 @@ export const SUPPORTED_MEDIA_ACCEPT = [
 export function MediaLibrary({
   assets,
   activeMedia,
+  activeMediaSlideIndex,
+  onActiveMediaSlideIndexChange,
   onUpload,
   onAddUrl,
   onPlay,
@@ -56,6 +64,7 @@ export function MediaLibrary({
   };
 
   const activeDef = tabDefs.find((tab) => tab.id === activeTab) || tabDefs[0];
+  const deckStatus = getPresentationDeckStatus(activeMedia, activeMediaSlideIndex);
   const filteredAssets = useMemo(() => {
     switch (activeTab) {
       case 'videos':
@@ -105,6 +114,14 @@ export function MediaLibrary({
           </div>
         )}
       </div>
+
+      {deckStatus.hasDeck && (
+        <ActiveDeckControls
+          mediaName={activeMedia?.name || 'Presentation'}
+          status={deckStatus}
+          onSlideIndexChange={onActiveMediaSlideIndexChange}
+        />
+      )}
 
       <div style={styles.tabBar} role="tablist" aria-label="Media library">
         {tabDefs.map((tab) => (
@@ -202,6 +219,57 @@ export function MediaLibrary({
   );
 }
 
+function ActiveDeckControls({
+  mediaName,
+  status,
+  onSlideIndexChange,
+}: {
+  mediaName: string;
+  status: ReturnType<typeof getPresentationDeckStatus>;
+  onSlideIndexChange: (index: number) => void;
+}) {
+  const goPrevious = () => {
+    onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'previous'));
+  };
+  const goNext = () => {
+    onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'));
+  };
+
+  return (
+    <div style={styles.deckControl}>
+      <div style={styles.deckControlHeader}>
+        <span style={styles.deckEyebrow}>Live Deck</span>
+        <span style={styles.deckCount}>Slide {status.currentIndex + 1} / {status.total}</span>
+      </div>
+      <div style={styles.deckName}>{mediaName}</div>
+      <div style={styles.deckCurrentTitle}>{status.currentSlide?.title || 'Untitled slide'}</div>
+      <div style={styles.deckNextTitle}>
+        {status.nextSlide ? `Next: ${status.nextSlide.title}` : 'End of deck'}
+      </div>
+      <div style={styles.deckActions}>
+        <button
+          type="button"
+          style={{ ...styles.deckButton, ...(status.canGoPrevious ? {} : styles.deckButtonDisabled) }}
+          disabled={!status.canGoPrevious}
+          onClick={goPrevious}
+          aria-label="Show previous slide"
+        >
+          Previous
+        </button>
+        <button
+          type="button"
+          style={{ ...styles.deckButton, ...styles.deckPrimaryButton, ...(status.canGoNext ? {} : styles.deckButtonDisabled) }}
+          disabled={!status.canGoNext}
+          onClick={goNext}
+          aria-label="Show next slide"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function UrlBox({
   value,
   placeholder,
@@ -277,8 +345,11 @@ function getAssetLabel(asset: StudioMediaAsset): string {
     presentation: 'Deck',
     file: 'File',
   }[asset.type];
+  const slideCount = asset.preview?.kind === 'presentation-slides'
+    ? ` / ${asset.preview.slides.length} slide${asset.preview.slides.length === 1 ? '' : 's'}`
+    : '';
   const size = asset.sizeBytes ? ` / ${formatBytes(asset.sizeBytes)}` : '';
-  return `${typeLabel}${size}`;
+  return `${typeLabel}${slideCount}${size}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -351,6 +422,17 @@ const styles: Record<string, React.CSSProperties> = {
   liveDot: { width: 8, height: 8, borderRadius: '50%', background: 'var(--success)', flexShrink: 0 },
   liveMediaName: { fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 },
   stopBtn: { border: '1px solid rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.12)', color: '#fca5a5', borderRadius: 6, fontSize: 10, fontWeight: 700, padding: '3px 7px', cursor: 'pointer' },
+  deckControl: { margin: '10px 12px 8px', padding: 12, borderRadius: 8, border: '1px solid rgba(103,232,249,0.24)', background: 'rgba(103,232,249,0.07)' },
+  deckControlHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 7 },
+  deckEyebrow: { fontSize: 10, fontWeight: 800, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0 },
+  deckCount: { fontSize: 10, fontWeight: 800, color: 'var(--text-muted)' },
+  deckName: { fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 5 },
+  deckCurrentTitle: { fontSize: 13, fontWeight: 800, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  deckNextTitle: { marginTop: 4, minHeight: 15, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  deckActions: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 10 },
+  deckButton: { minWidth: 0, height: 30, borderRadius: 7, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', fontSize: 11, fontWeight: 800, cursor: 'pointer' },
+  deckPrimaryButton: { border: '1px solid var(--accent)', background: 'var(--accent-solid)', color: '#fff' },
+  deckButtonDisabled: { opacity: 0.4, cursor: 'not-allowed' },
   tabBar: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4, padding: 8, borderBottom: '1px solid var(--border)' },
   tabBtn: { minWidth: 0, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', borderRadius: 7, fontSize: 10, fontWeight: 700, cursor: 'pointer' },
   tabBtnActive: { border: '1px solid var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },

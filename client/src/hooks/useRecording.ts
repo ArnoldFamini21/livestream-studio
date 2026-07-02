@@ -1,4 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import {
+  getPreferredVideoRecordingMimeType,
+  getRecordingFileExtension,
+} from '../utils/recordingMimeTypes.ts';
 
 interface RecordingTrack {
   participantId: string;
@@ -17,15 +21,7 @@ export function useRecording() {
   // Bug fix #11: Guard against double-stop
   const stoppingRef = useRef<boolean>(false);
 
-  const getMimeType = () => {
-    const types = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm',
-      'video/mp4',
-    ];
-    return types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
-  };
+  const getMimeType = () => getPreferredVideoRecordingMimeType();
 
   const startRecording = useCallback(
     (streams: Map<string, { stream: MediaStream; name: string; isLocal: boolean }>) => {
@@ -137,7 +133,8 @@ export function useRecording() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${name.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 19)}.webm`;
+      const extension = getRecordingFileExtension(blob.type);
+      a.download = `${name.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 19)}.${extension}`;
       a.click();
       // Bug fix #13: Delay URL.revokeObjectURL to allow download to initiate
       setTimeout(() => URL.revokeObjectURL(url), 10000);

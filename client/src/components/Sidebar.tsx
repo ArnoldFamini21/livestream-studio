@@ -119,6 +119,8 @@ interface SidebarProps {
   // Media props
   mediaAssets: StudioMediaAsset[];
   activeMedia: ActiveMedia | null;
+  activeMediaSlideIndex: number;
+  onActiveMediaSlideIndexChange: (index: number) => void;
   onUploadMedia: (files: FileList | File[]) => void;
   onAddMediaUrl: (url: string, type: 'video' | 'image') => void;
   onPlayMediaAsset: (asset: StudioMediaAsset) => void;
@@ -440,6 +442,8 @@ export function Sidebar(props: SidebarProps) {
             <MediaLibrary
               assets={props.mediaAssets}
               activeMedia={props.activeMedia}
+              activeMediaSlideIndex={props.activeMediaSlideIndex}
+              onActiveMediaSlideIndexChange={props.onActiveMediaSlideIndexChange}
               onUpload={props.onUploadMedia}
               onAddUrl={props.onAddMediaUrl}
               onPlay={props.onPlayMediaAsset}

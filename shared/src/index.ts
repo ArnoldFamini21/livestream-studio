@@ -592,6 +592,7 @@ export interface PresentationSlidePreview {
   id: string;
   title: string;
   lines: string[];
+  imageUrl?: string;
 }
 
 export interface StudioMediaAssetPreview {

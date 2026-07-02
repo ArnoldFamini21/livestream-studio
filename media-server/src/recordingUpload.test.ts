@@ -43,7 +43,7 @@ const baseRequest = {
 } as const;
 
 describe('recording upload store', () => {
-  it('creates a bounded WebM upload session without exposing file paths', async () => {
+  it('creates a bounded recording upload session without exposing file paths', async () => {
     const { store } = await createStore();
 
     const session = await store.createSession(baseRequest);
@@ -99,9 +99,9 @@ describe('recording upload store', () => {
     await assert.rejects(
       () => store.createSession({
         ...baseRequest,
-        tracks: [{ id: 'program', label: 'Program', kind: 'program', mimeType: 'video/mp4' }],
+        tracks: [{ id: 'program', label: 'Program', kind: 'program', mimeType: 'video/quicktime' }],
       }),
-      /must be WebM/
+      /must be MP4 or WebM/
     );
     await assert.rejects(
       () => store.createSession({
@@ -113,6 +113,24 @@ describe('recording upload store', () => {
       }),
       /unique/
     );
+  });
+
+  it('accepts MP4 tracks and stores them with MP4 extensions', async () => {
+    const { store } = await createStore();
+    const session = await store.createSession({
+      roomId: 'room-mp4',
+      tracks: [
+        { id: 'program', label: 'Program', kind: 'program', mimeType: 'video/mp4;codecs=avc1.42e01e,mp4a.40.2' },
+        { id: 'host-audio', label: 'Host audio', kind: 'audio', mimeType: 'audio/mp4;codecs=mp4a.40.2' },
+      ],
+    });
+    const state = store.getSession(session.uploadId);
+    const [program, hostAudio] = state.tracks.values();
+
+    assert.match(program.filePath, /program\.mp4$/);
+    assert.match(hostAudio.filePath, /host-audio\.m4a$/);
+    assert.equal(session.tracks[0].mimeType, 'video/mp4;codecs=avc1.42e01e,mp4a.40.2');
+    assert.equal(session.tracks[1].mimeType, 'audio/mp4;codecs=mp4a.40.2');
   });
 
   it('appends ordered chunks and marks a track complete', async () => {

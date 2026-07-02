@@ -40,6 +40,11 @@ import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { detectMediaType } from './MediaLibrary.tsx';
 import { buildPresentationPreview } from '../utils/presentationPreview.ts';
+import {
+  clampPresentationSlideIndex,
+  getNextPresentationSlideIndex,
+  getPresentationSlides,
+} from '../utils/presentationDeckControls.ts';
 import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
@@ -769,9 +774,10 @@ function getWaitingRoomBackgroundStyle(
   };
 }
 
-function clampSlideIndex(index: number, total: number): number {
-  if (total <= 0) return 0;
-  return Math.min(total - 1, Math.max(0, index));
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select';
 }
 
 function MediaDocumentCard({ media }: { media: ActiveMedia }) {
@@ -800,32 +806,44 @@ function PresentationDeckStage({
   onSlideIndexChange: (index: number) => void;
 }) {
   const slides = media.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
-  const currentIndex = clampSlideIndex(slideIndex, slides.length);
+  const currentIndex = clampPresentationSlideIndex(slideIndex, slides.length);
   const slide = slides[currentIndex];
 
   if (!slide) return <MediaDocumentCard media={media} />;
 
   return (
     <div style={styles.presentationStage}>
-      <div style={styles.presentationSlide}>
-        <div style={styles.presentationSlideHeader}>
-          <span style={styles.presentationDeckLabel}>PowerPoint</span>
-          <span style={styles.presentationSlideCount}>Slide {currentIndex + 1} / {slides.length}</span>
+      {slide.imageUrl ? (
+        <div style={styles.presentationSlideVisualFrame}>
+          <img
+            src={slide.imageUrl}
+            alt={`${media.name} slide ${currentIndex + 1}`}
+            style={styles.presentationSlideImage}
+          />
+          <div style={styles.presentationSlideBadge}>Slide {currentIndex + 1} / {slides.length}</div>
+          <div style={styles.presentationFilePill}>{media.name}</div>
         </div>
-        <div style={styles.presentationSlideBody}>
-          <h2 style={styles.presentationTitle}>{slide.title}</h2>
-          {slide.lines.length > 0 ? (
-            <ul style={styles.presentationLines}>
-              {slide.lines.map((line, index) => (
-                <li key={`${slide.id}-${index}`} style={styles.presentationLine}>{line}</li>
-              ))}
-            </ul>
-          ) : (
-            <p style={styles.presentationEmptyLine}>No readable slide text found.</p>
-          )}
+      ) : (
+        <div style={styles.presentationSlide}>
+          <div style={styles.presentationSlideHeader}>
+            <span style={styles.presentationDeckLabel}>PowerPoint</span>
+            <span style={styles.presentationSlideCount}>Slide {currentIndex + 1} / {slides.length}</span>
+          </div>
+          <div style={styles.presentationSlideBody}>
+            <h2 style={styles.presentationTitle}>{slide.title}</h2>
+            {slide.lines.length > 0 ? (
+              <ul style={styles.presentationLines}>
+                {slide.lines.map((line, index) => (
+                  <li key={`${slide.id}-${index}`} style={styles.presentationLine}>{line}</li>
+                ))}
+              </ul>
+            ) : (
+              <p style={styles.presentationEmptyLine}>No slide visual could be extracted from this file.</p>
+            )}
+          </div>
+          <div style={styles.presentationFileName}>{media.name}</div>
         </div>
-        <div style={styles.presentationFileName}>{media.name}</div>
-      </div>
+      )}
       {slides.length > 1 && (
         <div style={styles.presentationControls}>
           <button
@@ -1021,6 +1039,27 @@ export function StudioRoom() {
   const [activeMedia, setActiveMedia] = useState<ActiveMedia | null>(null);
   const [activeMediaSlideIndex, setActiveMediaSlideIndex] = useState(0);
   const [mediaAssets, setMediaAssets] = useState<StudioMediaAsset[]>([]);
+
+  useEffect(() => {
+    const slideCount = getPresentationSlides(activeMedia).length;
+    if (slideCount <= 1) return;
+
+    const handlePresentationKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTextEntryTarget(event.target)) return;
+      const direction = event.key === 'ArrowLeft' || event.key === 'PageUp'
+        ? 'previous'
+        : event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' '
+          ? 'next'
+          : null;
+      if (!direction) return;
+
+      event.preventDefault();
+      setActiveMediaSlideIndex((current) => getNextPresentationSlideIndex(current, slideCount, direction));
+    };
+
+    window.addEventListener('keydown', handlePresentationKeyDown);
+    return () => window.removeEventListener('keydown', handlePresentationKeyDown);
+  }, [activeMedia]);
 
   const [stageBackground, setStageBackground] = useState<StageBackground>({ type: 'none', value: '' });
   const [studioTheme, setStudioTheme] = useState<StudioThemeId>(DEFAULT_STUDIO_THEME_ID);
@@ -5001,6 +5040,8 @@ export function StudioRoom() {
             onNameTagStyleChange={setNameTagStyle}
             mediaAssets={mediaAssets}
             activeMedia={activeMedia}
+            activeMediaSlideIndex={activeMediaSlideIndex}
+            onActiveMediaSlideIndexChange={setActiveMediaSlideIndex}
             onUploadMedia={onUploadMedia}
             onAddMediaUrl={onAddMediaUrl}
             onPlayMediaAsset={onPlayMediaAsset}
@@ -6009,6 +6050,63 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid rgba(255,255,255,0.24)',
     boxShadow: '0 28px 80px rgba(0,0,0,0.42)',
     overflow: 'hidden',
+  },
+  presentationSlideVisualFrame: {
+    position: 'relative',
+    width: 'min(92%, 1180px)',
+    aspectRatio: '16 / 9',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 18,
+    background: '#050816',
+    border: '1px solid rgba(255,255,255,0.24)',
+    boxShadow: '0 28px 80px rgba(0,0,0,0.42)',
+    overflow: 'hidden',
+  },
+  presentationSlideImage: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+    background: '#ffffff',
+  },
+  presentationSlideBadge: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    minWidth: 92,
+    height: 30,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '0 12px',
+    borderRadius: 999,
+    background: 'rgba(2,6,23,0.72)',
+    border: '1px solid rgba(255,255,255,0.18)',
+    color: '#f8fafc',
+    fontSize: 11,
+    fontWeight: 900,
+    boxShadow: '0 10px 26px rgba(0,0,0,0.28)',
+  },
+  presentationFilePill: {
+    position: 'absolute',
+    left: 12,
+    bottom: 12,
+    maxWidth: 'min(70%, 620px)',
+    minHeight: 32,
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0 13px',
+    borderRadius: 999,
+    background: 'rgba(2,6,23,0.72)',
+    border: '1px solid rgba(255,255,255,0.18)',
+    color: '#f8fafc',
+    fontSize: 12,
+    fontWeight: 900,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    boxShadow: '0 10px 26px rgba(0,0,0,0.28)',
   },
   presentationSlideHeader: {
     height: 52,
