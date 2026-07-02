@@ -10,6 +10,7 @@ function assertNever(value: never): never {
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
+import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
 import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
 import { useRecording } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
@@ -314,6 +315,7 @@ interface StageVideoItem {
   videoEnabled: boolean;
   volume: number;
   isScreenShare?: boolean;
+  connectionHealth?: PeerBandwidthHealth | null;
 }
 
 interface PendingLiveTokenRequest {
@@ -3539,11 +3541,11 @@ export function StudioRoom() {
     }
     for (const [id, p] of participants) {
       if (p.status === 'on-stage') {
-        items.push({ id, name: p.screenSharing ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.screenSharing ? false : p.audioEnabled, videoEnabled: p.screenSharing ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: p.screenSharing || false });
+        items.push({ id, name: p.screenSharing ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.screenSharing ? false : p.audioEnabled, videoEnabled: p.screenSharing ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: p.screenSharing || false, connectionHealth: peerBandwidthHealth.get(id) || null });
       }
     }
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream, participantVolumes]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream, participantVolumes, peerBandwidthHealth]);
 
   const backstagePrivateItems = useMemo(() => {
     if (!myParticipant || myParticipant.status === 'green-room') return [];
@@ -3574,11 +3576,12 @@ export function StudioRoom() {
         videoEnabled: participant.videoEnabled || participant.screenSharing,
         volume: participantVolumes[id] ?? 1,
         isScreenShare: participant.screenSharing || false,
+        connectionHealth: peerBandwidthHealth.get(id) || null,
       });
     }
 
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, participantVolumes]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, participantVolumes, peerBandwidthHealth]);
 
   const availableStageItemIds = useMemo(() => videoItems.map((item) => item.id), [videoItems]);
 
@@ -4604,6 +4607,7 @@ export function StudioRoom() {
                           brandColor={brandColor}
                           cameraShape={cameraShape}
                           nameTagStyle={nameTagStyle}
+                          connectionHealth={item.connectionHealth}
                           onAudioLevelChange={isLeavingTile ? undefined : handleStageAudioLevelChange}
                         />
                       </div>
@@ -5248,6 +5252,7 @@ function BackstagePrivateRoom({
               brandColor={brandColor}
               cameraShape={cameraShape}
               nameTagStyle={nameTagStyle}
+              connectionHealth={item.connectionHealth}
             />
           </div>
         ))}
