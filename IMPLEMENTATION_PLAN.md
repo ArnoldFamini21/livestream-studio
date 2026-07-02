@@ -229,6 +229,7 @@
 - [ ] Simulcast: send multiple quality layers, server selects best for each viewer
 - [x] Client WebRTC sender simulcast encodings for camera/screen mesh connections
 - [x] Bandwidth adaptation per participant for current mesh WebRTC senders
+- [x] Operator-visible per-participant WebRTC connection quality from adaptation telemetry
 - [x] Server-side recording as backup
 
 ### 10C. Deployment

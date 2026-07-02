@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   applyBandwidthModeToVideoSender,
+  buildPeerBandwidthHealth,
   calculateOutboundVideoStatsDelta,
   classifyBandwidthPressure,
   createInitialBandwidthAdaptationState,
+  getPeerBandwidthQuality,
   readOutboundVideoStatsSnapshot,
   updateBandwidthAdaptationState,
   type OutboundVideoStatsSnapshot,
@@ -148,6 +150,64 @@ describe('WebRTC bandwidth adaptation', () => {
     }
 
     assert.equal(state.mode, 'full');
+  });
+
+  it('builds operator-facing peer bandwidth health snapshots', () => {
+    let state = createInitialBandwidthAdaptationState();
+
+    assert.equal(getPeerBandwidthQuality(state), 'unknown');
+    assert.deepEqual(buildPeerBandwidthHealth(state, 123), {
+      mode: 'full',
+      quality: 'unknown',
+      bitrateKbps: null,
+      packetLossPercent: null,
+      roundTripTimeMs: null,
+      availableOutgoingBitrateKbps: null,
+      updatedAtMs: 123,
+    });
+
+    state = updateBandwidthAdaptationState(state, snapshot({
+      timestampMs: 1_000,
+      bytesSent: 100_000,
+      packetsSent: 1_000,
+      packetsLost: 0,
+      roundTripTimeMs: 90,
+      availableOutgoingBitrateKbps: 5000,
+    }));
+    state = updateBandwidthAdaptationState(state, snapshot({
+      timestampMs: 6_000,
+      bytesSent: 1_600_000,
+      packetsSent: 2_000,
+      packetsLost: 0,
+      roundTripTimeMs: 110,
+      availableOutgoingBitrateKbps: 5200,
+    }));
+
+    assert.equal(getPeerBandwidthQuality(state), 'good');
+    assert.deepEqual(buildPeerBandwidthHealth(state, 456), {
+      mode: 'full',
+      quality: 'good',
+      bitrateKbps: 2400,
+      packetLossPercent: 0,
+      roundTripTimeMs: 110,
+      availableOutgoingBitrateKbps: 5200,
+      updatedAtMs: 456,
+    });
+
+    state = updateBandwidthAdaptationState(state, snapshot({
+      timestampMs: 11_000,
+      bytesSent: 2_300_000,
+      packetsSent: 2_900,
+      packetsLost: 90,
+      roundTripTimeMs: 780,
+      availableOutgoingBitrateKbps: 650,
+    }));
+
+    const constrained = buildPeerBandwidthHealth(state, 789);
+    assert.equal(constrained.mode, 'constrained');
+    assert.equal(constrained.quality, 'poor');
+    assert.equal(constrained.packetLossPercent, 9.1);
+    assert.equal(constrained.roundTripTimeMs, 780);
   });
 
   it('applies balanced and constrained encoding caps to a video sender', async () => {

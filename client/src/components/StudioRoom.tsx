@@ -1073,7 +1073,7 @@ export function StudioRoom() {
     config: vbConfig,
   });
 
-  const { remoteStreams, connectToPeer, handleOffer, handleAnswer, handleIceCandidate, removePeer, replaceTrack, cleanup } = useWebRTC({
+  const { remoteStreams, peerBandwidthHealth, connectToPeer, handleOffer, handleAnswer, handleIceCandidate, removePeer, replaceTrack, cleanup } = useWebRTC({
     localStream,
     myParticipantId: myParticipant?.id || null,
     send,
@@ -4954,6 +4954,7 @@ export function StudioRoom() {
             focusedParticipantId={focusedVideoItemId}
             onSpotlightParticipant={onSpotlightParticipant}
             remoteStreams={remoteStreams}
+            peerBandwidthHealth={peerBandwidthHealth}
             localStream={localStream}
             participantVolumes={participantVolumes}
             onParticipantVolumeChange={handleParticipantVolumeChange}

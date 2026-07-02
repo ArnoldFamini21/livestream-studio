@@ -2,6 +2,7 @@ import { buildVideoSimulcastEncodingsForTrack } from './webrtcSimulcast.ts';
 
 export type BandwidthAdaptationMode = 'full' | 'balanced' | 'constrained';
 export type BandwidthPressureSignal = 'stable' | 'balanced' | 'constrained' | 'unknown';
+export type PeerBandwidthQuality = 'good' | 'fair' | 'poor' | 'unknown';
 
 export interface OutboundVideoStatsSnapshot {
   timestampMs: number;
@@ -25,6 +26,16 @@ export interface BandwidthAdaptationState {
   pressureSamples: number;
   lastSnapshot: OutboundVideoStatsSnapshot | null;
   lastDelta: OutboundVideoStatsDelta | null;
+}
+
+export interface PeerBandwidthHealth {
+  mode: BandwidthAdaptationMode;
+  quality: PeerBandwidthQuality;
+  bitrateKbps: number | null;
+  packetLossPercent: number | null;
+  roundTripTimeMs: number | null;
+  availableOutgoingBitrateKbps: number | null;
+  updatedAtMs: number;
 }
 
 type StatsRecord = Record<string, unknown>;
@@ -253,6 +264,34 @@ export function updateBandwidthAdaptationState(
     ...state,
     lastSnapshot: snapshot,
     lastDelta: delta,
+  };
+}
+
+export function getPeerBandwidthQuality(state: BandwidthAdaptationState): PeerBandwidthQuality {
+  if (!state.lastDelta) return 'unknown';
+
+  const pressure = classifyBandwidthPressure(state.lastDelta);
+  if (pressure === 'constrained' || state.mode === 'constrained') return 'poor';
+  if (pressure === 'balanced' || state.mode === 'balanced') return 'fair';
+  if (pressure === 'stable') return 'good';
+  return 'unknown';
+}
+
+export function buildPeerBandwidthHealth(
+  state: BandwidthAdaptationState,
+  updatedAtMs = Date.now()
+): PeerBandwidthHealth {
+  const delta = state.lastDelta;
+  return {
+    mode: state.mode,
+    quality: getPeerBandwidthQuality(state),
+    bitrateKbps: delta?.bitrateKbps ?? null,
+    packetLossPercent: delta?.packetLossRatio !== null && delta?.packetLossRatio !== undefined
+      ? Math.round(delta.packetLossRatio * 1000) / 10
+      : null,
+    roundTripTimeMs: delta?.roundTripTimeMs ?? null,
+    availableOutgoingBitrateKbps: delta?.availableOutgoingBitrateKbps ?? null,
+    updatedAtMs,
   };
 }
 

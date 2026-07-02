@@ -45,6 +45,7 @@ import {
   MAX_WAITING_ROOM_MESSAGE_LENGTH,
 } from '../utils/waitingRoomBranding.ts';
 import { formatChatTypingNames } from '../utils/chatTyping.ts';
+import type { PeerBandwidthHealth, PeerBandwidthQuality } from '../utils/webrtcBandwidthAdaptation.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -164,6 +165,7 @@ interface SidebarProps {
   onSpotlightParticipant: (participantId: string | null) => void;
   // Streams for live previews in People tab
   remoteStreams: Map<string, MediaStream>;
+  peerBandwidthHealth: Map<string, PeerBandwidthHealth>;
   localStream: MediaStream | null;
   participantVolumes: Record<string, number>;
   onParticipantVolumeChange: (participantId: string, volume: number) => void;
@@ -380,6 +382,7 @@ export function Sidebar(props: SidebarProps) {
               focusedParticipantId={props.focusedParticipantId}
               onSpotlightParticipant={props.onSpotlightParticipant}
               remoteStreams={props.remoteStreams}
+              peerBandwidthHealth={props.peerBandwidthHealth}
               localStream={props.localStream}
               participantVolumes={props.participantVolumes}
               onParticipantVolumeChange={props.onParticipantVolumeChange}
@@ -918,6 +921,7 @@ function PeopleContent({
   focusedParticipantId,
   onSpotlightParticipant,
   remoteStreams,
+  peerBandwidthHealth,
   localStream,
   participantVolumes,
   onParticipantVolumeChange,
@@ -930,6 +934,7 @@ function PeopleContent({
   focusedParticipantId: string | null;
   onSpotlightParticipant: (participantId: string | null) => void;
   remoteStreams: Map<string, MediaStream>;
+  peerBandwidthHealth: Map<string, PeerBandwidthHealth>;
   localStream: MediaStream | null;
   participantVolumes: Record<string, number>;
   onParticipantVolumeChange: (participantId: string, volume: number) => void;
@@ -1022,9 +1027,9 @@ function PeopleContent({
           </label>
         )}
         {grouped['green-room'].length > 0 && (
-          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
+          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
         )}
-        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} participantVolumes={participantVolumes} onParticipantVolumeChange={onParticipantVolumeChange} showVolumeControls actions={(p) => (<>
+        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} participantVolumes={participantVolumes} onParticipantVolumeChange={onParticipantVolumeChange} showVolumeControls actions={(p) => (<>
           <SmallBtn label={focusedParticipantId === p.id ? 'Clear' : 'Spotlight'} color={focusedParticipantId === p.id ? 'var(--text-muted)' : 'var(--accent)'} onClick={() => onSpotlightParticipant(focusedParticipantId === p.id ? null : p.id)} />
           {p.audioEnabled && <SmallBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />}
           {!p.audioEnabled && <SmallBtn label="Ask Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />}
@@ -1036,7 +1041,7 @@ function PeopleContent({
           <SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} />
         </>)} />
         {grouped['backstage'].length > 0 && (
-          <PeopleSection title="Backstage" subtitle="Off broadcast stage" color="var(--accent)" participants={grouped['backstage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="To Stage" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Hold" color="#fbbf24" onClick={() => onStageAction('move-to-green-room', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
+          <PeopleSection title="Backstage" subtitle="Off broadcast stage" color="var(--accent)" participants={grouped['backstage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="To Stage" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Hold" color="#fbbf24" onClick={() => onStageAction('move-to-green-room', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
         )}
         {grouped['green-room'].length > 1 && isHostOrCoHost && (
           <button className="btn-primary" style={st.admitAllBtn} onClick={() => grouped['green-room'].forEach((p) => onStageAction('move-to-stage', p.id))}>
@@ -1055,6 +1060,7 @@ function PeopleSection({
   participants,
   isHostOrCoHost,
   getStream,
+  peerBandwidthHealth,
   participantVolumes = {},
   onParticipantVolumeChange,
   showVolumeControls = false,
@@ -1062,6 +1068,7 @@ function PeopleSection({
 }: {
   title: string; subtitle: string; color: string; participants: Participant[];
   isHostOrCoHost: boolean; getStream: (id: string) => MediaStream | null;
+  peerBandwidthHealth: Map<string, PeerBandwidthHealth>;
   participantVolumes?: Record<string, number>;
   onParticipantVolumeChange?: (participantId: string, volume: number) => void;
   showVolumeControls?: boolean;
@@ -1075,6 +1082,7 @@ function PeopleSection({
         <div style={st.pList}>
           {participants.map((p) => {
             const canAdjustVolume = isHostOrCoHost && showVolumeControls && Boolean(onParticipantVolumeChange);
+            const health = peerBandwidthHealth.get(p.id);
             return (
               <div key={p.id} className="participant-item" style={{ ...st.personItem, ...st.personItemStack }}>
                 <div style={st.personRow}>
@@ -1084,6 +1092,14 @@ function PeopleSection({
                       <span style={st.personName}>{p.name}</span>
                       <div style={st.badges}>
                         {p.role !== 'guest' && <span style={{ ...st.roleBadge, background: p.role === 'host' ? 'var(--accent-subtle)' : 'var(--success-subtle)', color: p.role === 'host' ? 'var(--accent)' : 'var(--success)' }}>{p.role}</span>}
+                        {health && (
+                          <span
+                            style={{ ...st.qualityBadge, ...getPeerBandwidthQualityBadgeStyle(health.quality) }}
+                            title={formatPeerBandwidthHealthTitle(health)}
+                          >
+                            {formatPeerBandwidthQualityLabel(health)}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1122,6 +1138,43 @@ function PeopleSection({
       )}
     </div>
   );
+}
+
+function formatPeerBandwidthQualityLabel(health: PeerBandwidthHealth): string {
+  switch (health.quality) {
+    case 'good':
+      return 'Good';
+    case 'fair':
+      return 'Fair';
+    case 'poor':
+      return 'Poor';
+    default:
+      return 'Link';
+  }
+}
+
+function formatPeerBandwidthHealthTitle(health: PeerBandwidthHealth): string {
+  const details = [
+    `Mode: ${health.mode}`,
+    health.bitrateKbps !== null ? `Video: ${health.bitrateKbps} kbps` : null,
+    health.roundTripTimeMs !== null ? `RTT: ${health.roundTripTimeMs} ms` : null,
+    health.packetLossPercent !== null ? `Loss: ${health.packetLossPercent}%` : null,
+    health.availableOutgoingBitrateKbps !== null ? `Available: ${health.availableOutgoingBitrateKbps} kbps` : null,
+  ].filter(Boolean);
+  return details.join(' | ');
+}
+
+function getPeerBandwidthQualityBadgeStyle(quality: PeerBandwidthQuality): React.CSSProperties {
+  switch (quality) {
+    case 'good':
+      return { background: 'var(--success-subtle)', color: 'var(--success)' };
+    case 'fair':
+      return { background: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24' };
+    case 'poor':
+      return { background: 'rgba(239, 68, 68, 0.16)', color: 'var(--danger)' };
+    default:
+      return {};
+  }
 }
 
 function ParticipantVolumeControl({
