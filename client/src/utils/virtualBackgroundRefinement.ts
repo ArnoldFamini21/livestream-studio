@@ -2,10 +2,12 @@ export interface SegmentationMaskRefinementOptions {
   lowCutoff: number;
   highCutoff: number;
   gamma: number;
+  invert?: boolean;
 }
 
 export interface VirtualBackgroundRefinementSettings {
   edgeBlurPx: number;
+  maskExpansionPx: number;
   coreMaskOpacity: number;
   replacementBackgroundBlurPx: number;
   replacementBackgroundBrightness: number;
@@ -15,14 +17,15 @@ export interface VirtualBackgroundRefinementSettings {
 }
 
 export const DEFAULT_SEGMENTATION_MASK_REFINEMENT: SegmentationMaskRefinementOptions = {
-  lowCutoff: 0.2,
-  highCutoff: 0.86,
-  gamma: 0.9,
+  lowCutoff: 0.04,
+  highCutoff: 0.65,
+  gamma: 0.75,
 };
 
 const DEFAULT_REFINEMENT_SETTINGS: VirtualBackgroundRefinementSettings = {
-  edgeBlurPx: 3.5,
-  coreMaskOpacity: 0.68,
+  edgeBlurPx: 2.25,
+  maskExpansionPx: 1.5,
+  coreMaskOpacity: 1,
   replacementBackgroundBlurPx: 1.2,
   replacementBackgroundBrightness: 0.92,
   replacementBackgroundSaturation: 0.92,
@@ -55,6 +58,61 @@ export function getSegmentationConfidence(r: number, g: number, b: number, a: nu
   return alpha < 0.98 ? alpha : luminance;
 }
 
+function averageMaskConfidence(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number
+): number {
+  const x0 = clamp(Math.floor(startX), 0, width - 1);
+  const y0 = clamp(Math.floor(startY), 0, height - 1);
+  const x1 = clamp(Math.ceil(endX), x0 + 1, width);
+  const y1 = clamp(Math.ceil(endY), y0 + 1, height);
+  let total = 0;
+  let count = 0;
+
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
+      const index = (y * width + x) * 4;
+      total += getSegmentationConfidence(data[index], data[index + 1], data[index + 2], data[index + 3]);
+      count += 1;
+    }
+  }
+
+  return count > 0 ? total / count : 0;
+}
+
+export function shouldInvertSegmentationMask(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number
+): boolean {
+  if (width <= 1 || height <= 1 || data.length < width * height * 4) return false;
+
+  const center = averageMaskConfidence(
+    data,
+    width,
+    height,
+    width * 0.34,
+    height * 0.18,
+    width * 0.66,
+    height * 0.78
+  );
+  const cornerSizeX = width * 0.18;
+  const cornerSizeY = height * 0.18;
+  const corners = (
+    averageMaskConfidence(data, width, height, 0, 0, cornerSizeX, cornerSizeY) +
+    averageMaskConfidence(data, width, height, width - cornerSizeX, 0, width, cornerSizeY) +
+    averageMaskConfidence(data, width, height, 0, height - cornerSizeY, cornerSizeX, height) +
+    averageMaskConfidence(data, width, height, width - cornerSizeX, height - cornerSizeY, width, height)
+  ) / 4;
+
+  return corners > 0.62 && center < 0.42 && corners - center > 0.25;
+}
+
 export function refineSegmentationMaskAlpha(
   data: Uint8ClampedArray,
   options: SegmentationMaskRefinementOptions = DEFAULT_SEGMENTATION_MASK_REFINEMENT
@@ -64,7 +122,8 @@ export function refineSegmentationMaskAlpha(
   const gamma = Math.max(0.1, options.gamma);
 
   for (let i = 0; i < data.length; i += 4) {
-    const confidence = getSegmentationConfidence(data[i], data[i + 1], data[i + 2], data[i + 3]);
+    const rawConfidence = getSegmentationConfidence(data[i], data[i + 1], data[i + 2], data[i + 3]);
+    const confidence = options.invert ? 1 - rawConfidence : rawConfidence;
     const alpha = Math.pow(smoothStep(lowCutoff, highCutoff, confidence), gamma);
     data[i] = 255;
     data[i + 1] = 255;
@@ -83,6 +142,7 @@ export function getVirtualBackgroundRefinementSettings(
   return {
     ...DEFAULT_REFINEMENT_SETTINGS,
     edgeBlurPx: roundToHalf(clamp(DEFAULT_REFINEMENT_SETTINGS.edgeBlurPx * scale, 2.5, 5.5)),
+    maskExpansionPx: roundToHalf(clamp(DEFAULT_REFINEMENT_SETTINGS.maskExpansionPx * scale, 1, 3)),
     replacementBackgroundBlurPx: roundToHalf(clamp(
       DEFAULT_REFINEMENT_SETTINGS.replacementBackgroundBlurPx * scale,
       0.8,
