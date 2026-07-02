@@ -705,6 +705,19 @@ function getDeckRenderFailureMessage(type: StudioMediaType): string {
     : 'PowerPoint design could not be rendered. Try uploading again, or export the deck to PDF and upload that.';
 }
 
+function PresentationRenderMissingCard({ media }: { media: ActiveMedia }) {
+  return (
+    <div style={styles.presentationRenderMissingCard}>
+      <div style={styles.presentationRenderMissingTitle}>
+        {media.type === 'pdf' ? 'PDF render unavailable' : 'PowerPoint render unavailable'}
+      </div>
+      <div style={styles.presentationRenderMissingText}>
+        {getDeckRenderFailureMessage(media.type)}
+      </div>
+    </div>
+  );
+}
+
 function PresentationDeckStage({
   media,
   slideIndex,
@@ -716,45 +729,26 @@ function PresentationDeckStage({
 }) {
   const slides = media.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
   const unitLabel = getPresentationDeckUnitLabel(media.preview?.kind === 'presentation-slides' ? media.preview.sourceFormat : null);
-  const sourceLabel = media.preview?.sourceFormat === 'pdf' ? 'PDF' : 'PowerPoint';
   const currentIndex = clampPresentationSlideIndex(slideIndex, slides.length);
   const slide = slides[currentIndex];
 
   if (!slide) return <MediaDocumentCard media={media} />;
 
+  if (!slide.imageUrl) {
+    return <PresentationRenderMissingCard media={media} />;
+  }
+
   return (
     <div style={styles.presentationStage}>
-      {slide.imageUrl ? (
-        <div style={styles.presentationSlideVisualFrame}>
-          <img
-            src={slide.imageUrl}
-            alt={`${media.name} ${unitLabel.toLowerCase()} ${currentIndex + 1}`}
-            style={styles.presentationSlideImage}
-          />
-          <div style={styles.presentationSlideBadge}>{unitLabel} {currentIndex + 1} / {slides.length}</div>
-          <div style={styles.presentationFilePill}>{media.name}</div>
-        </div>
-      ) : (
-        <div style={styles.presentationSlide}>
-          <div style={styles.presentationSlideHeader}>
-            <span style={styles.presentationDeckLabel}>{sourceLabel}</span>
-            <span style={styles.presentationSlideCount}>{unitLabel} {currentIndex + 1} / {slides.length}</span>
-          </div>
-          <div style={styles.presentationSlideBody}>
-            <h2 style={styles.presentationTitle}>{slide.title}</h2>
-            {slide.lines.length > 0 ? (
-              <ul style={styles.presentationLines}>
-                {slide.lines.map((line, index) => (
-                  <li key={`${slide.id}-${index}`} style={styles.presentationLine}>{line}</li>
-                ))}
-              </ul>
-            ) : (
-              <p style={styles.presentationEmptyLine}>No slide visual could be extracted from this file.</p>
-            )}
-          </div>
-          <div style={styles.presentationFileName}>{media.name}</div>
-        </div>
-      )}
+      <div style={styles.presentationSlideVisualFrame}>
+        <img
+          src={slide.imageUrl}
+          alt={`${media.name} ${unitLabel.toLowerCase()} ${currentIndex + 1}`}
+          style={styles.presentationSlideImage}
+        />
+        <div style={styles.presentationSlideBadge}>{unitLabel} {currentIndex + 1} / {slides.length}</div>
+        <div style={styles.presentationFilePill}>{media.name}</div>
+      </div>
       {slides.length > 1 && (
         <div style={styles.presentationControls}>
           <button
@@ -6353,6 +6347,33 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'rgba(255,255,255,0.62)',
     textTransform: 'uppercase',
     letterSpacing: '0.08em',
+  },
+  presentationRenderMissingCard: {
+    width: 'min(86%, 760px)',
+    minHeight: 220,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    padding: 28,
+    borderRadius: 18,
+    background: 'linear-gradient(135deg, rgba(15,23,42,0.94), rgba(2,6,23,0.96))',
+    border: '1px solid rgba(248,113,113,0.45)',
+    boxShadow: '0 28px 80px rgba(0,0,0,0.38)',
+    color: '#f8fafc',
+    textAlign: 'center',
+  },
+  presentationRenderMissingTitle: {
+    fontSize: 18,
+    fontWeight: 900,
+    color: '#fecaca',
+  },
+  presentationRenderMissingText: {
+    maxWidth: 520,
+    fontSize: 13,
+    lineHeight: 1.5,
+    color: 'rgba(226,232,240,0.82)',
   },
   presentationStage: {
     position: 'relative',

@@ -7,6 +7,8 @@ import {
   buildPresentationPreview,
   buildServerRenderedPresentationPreview,
   extractPptxSlideImageTargets,
+  extractPptxSlideNotesTarget,
+  extractPptxSpeakerNotes,
   extractPptxSlideText,
   hasRenderedPresentationSlides,
   isLegacyPowerPointFile,
@@ -81,10 +83,33 @@ describe('PowerPoint preview extraction', () => {
     assert.deepEqual(targets, ['ppt/media/image1.png']);
   });
 
+  it('resolves and cleans speaker notes from PPTX note relationships', () => {
+    const relsXml = `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+      </Relationships>
+    `;
+
+    assert.equal(extractPptxSlideNotesTarget(relsXml), 'ppt/notesSlides/notesSlide1.xml');
+    assert.deepEqual(
+      extractPptxSpeakerNotes(
+        '<a:t>Opening</a:t><a:t>Click to add notes</a:t><a:t>Ask audience a question</a:t><a:t>Ask audience a question</a:t>',
+        ['Opening']
+      ),
+      ['Ask audience a question']
+    );
+  });
+
   it('builds bounded slide previews from a PPTX zip', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide2.xml', '<a:t>Second</a:t><a:t>Another point</a:t>');
     zip.file('ppt/slides/slide1.xml', '<a:t>First</a:t><a:t>Main point</a:t>');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+      </Relationships>
+    `);
+    zip.file('ppt/notesSlides/notesSlide1.xml', '<a:t>First</a:t><a:t>Prayer transition</a:t><a:t>Invite response</a:t>');
     const bytes = await zip.generateAsync({ type: 'uint8array' });
     const file = new File(
       [bytes],
@@ -98,6 +123,7 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.sourceFormat, 'pptx');
     assert.deepEqual(preview?.slides.map((slide) => slide.title), ['First', 'Second']);
     assert.deepEqual(preview?.slides[0].lines, ['Main point']);
+    assert.deepEqual(preview?.slides[0].notes, ['Prayer transition', 'Invite response']);
   });
 
   it('does not fail PDF uploads when browser canvas rendering is unavailable', async () => {
@@ -217,6 +243,38 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.sourceFormat, 'pptx');
     assert.equal(preview?.slides[0].title, 'TRIAD FORMATION');
     assert.deepEqual(preview?.slides[0].lines, ['Discipleship']);
+    assert.deepEqual(preview?.slides[0].notes, undefined);
+    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
+  });
+
+  it('preserves extracted speaker notes when server-rendered images are merged', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+      </Relationships>
+    `);
+    zip.file('ppt/notesSlides/notesSlide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Mention covenant story</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'Discipleship-Via-Triads.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'rendered-1', title: 'Slide 1', lines: [], imageUrl: 'data:image/png;base64,rendered' },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    assert.deepEqual(preview?.slides[0].notes, ['Mention covenant story']);
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
   });
 

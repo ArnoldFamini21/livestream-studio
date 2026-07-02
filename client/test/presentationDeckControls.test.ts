@@ -22,7 +22,7 @@ const deck: ActiveMedia = {
     sourceFormat: 'pptx',
     slides: [
       { id: 'slide-1', title: 'Opening', lines: ['Welcome'] },
-      { id: 'slide-2', title: 'Agenda', lines: ['Plan'] },
+      { id: 'slide-2', title: 'Agenda', lines: ['Plan'], notes: ['Ask the guest to introduce the next segment'] },
       { id: 'slide-3', title: 'Close', lines: [] },
     ],
   },
@@ -57,6 +57,7 @@ describe('presentation deck controls', () => {
     assert.equal(status.total, 3);
     assert.equal(status.currentIndex, 1);
     assert.equal(status.currentSlide?.title, 'Agenda');
+    assert.deepEqual(status.currentSlide?.notes, ['Ask the guest to introduce the next segment']);
     assert.equal(status.previousSlide?.title, 'Opening');
     assert.equal(status.nextSlide?.title, 'Close');
     assert.equal(status.canGoPrevious, true);

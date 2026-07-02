@@ -64,6 +64,23 @@ describe('media library upload support', () => {
     }), true);
 
     assert.equal(canPlayMediaAsset({
+      id: 'deck-2b',
+      name: 'Text-only fallback.pptx',
+      url: 'blob:deck',
+      type: 'presentation',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      source: 'upload',
+      createdAt: '2026-07-02T05:56:32.000Z',
+      preview: {
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'slide-1', title: 'TRIAD FORMATION', lines: ['Discipleship'] },
+        ],
+      },
+    }), false);
+
+    assert.equal(canPlayMediaAsset({
       id: 'deck-3',
       name: 'Failed deck.pptx',
       url: 'blob:deck',
