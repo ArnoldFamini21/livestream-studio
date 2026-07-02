@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { RecordingExportJobResponse } from '@studio/shared';
 import {
   normalizeRecordingCaptureMetadata,
   type RecordingCaptureMetadata,
@@ -61,6 +62,10 @@ export interface RecordingCloudHandoff {
   totalBytes: number;
 }
 
+export interface RecordingMediaExportHandoff extends RecordingExportJobResponse {
+  savedAt: string;
+}
+
 export interface LocalRecordingSession {
   id: string;
   roomName: string;
@@ -71,6 +76,7 @@ export interface LocalRecordingSession {
   files: LocalRecordingFileMetadata[];
   markers?: LocalRecordingMarker[];
   cloud?: RecordingCloudHandoff;
+  mediaExport?: RecordingMediaExportHandoff;
 }
 
 interface SaveRecordingSessionInput {
@@ -265,6 +271,31 @@ async function updateRecordingSessionCloudHandoff(
   }
 }
 
+async function updateRecordingSessionMediaExport(
+  sessionId: string,
+  exportJob: RecordingExportJobResponse
+): Promise<LocalRecordingSession> {
+  const db = await openRecordingDb();
+  try {
+    const transaction = db.transaction(SESSION_STORE, 'readwrite');
+    const store = transaction.objectStore(SESSION_STORE);
+    const session = await requestToPromise<LocalRecordingSession | undefined>(store.get(sessionId));
+    if (!session) throw new Error('Recording session not found');
+    const nextSession: LocalRecordingSession = {
+      ...session,
+      mediaExport: {
+        ...exportJob,
+        savedAt: new Date().toISOString(),
+      },
+    };
+    store.put(nextSession);
+    await transactionDone(transaction);
+    return nextSession;
+  } finally {
+    db.close();
+  }
+}
+
 export function useRecordingLibrary() {
   const [sessions, setSessions] = useState<LocalRecordingSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -307,6 +338,12 @@ export function useRecordingLibrary() {
     return session;
   }, []);
 
+  const updateSessionMediaExport = useCallback(async (sessionId: string, exportJob: RecordingExportJobResponse) => {
+    const session = await updateRecordingSessionMediaExport(sessionId, exportJob);
+    setSessions((current) => current.map((item) => (item.id === sessionId ? session : item)));
+    return session;
+  }, []);
+
   return {
     sessions,
     isLoading,
@@ -316,5 +353,6 @@ export function useRecordingLibrary() {
     deleteSession,
     loadFiles,
     updateSessionCloudHandoff,
+    updateSessionMediaExport,
   };
 }
