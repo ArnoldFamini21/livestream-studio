@@ -584,6 +584,48 @@ export interface LogoPosition {
   y: number;
 }
 
+export type BrandKitCatalogStudioTheme = 'dark' | 'light' | 'colorful';
+
+export interface BrandKitCatalogEntry {
+  id: string;
+  roomId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  studioTheme: BrandKitCatalogStudioTheme;
+  brandColor: string;
+  stageBackground: StageBackground;
+  logoUrl: string | null;
+  logoPlacement: LogoPlacement;
+  logoPosition: LogoPosition | null;
+  logoSize: LogoSize;
+  logoOpacity: number;
+  cameraShape: CameraShape;
+  nameTagStyle: NameTagStyle;
+}
+
+export interface BrandKitCatalogUpsertRequest {
+  id: string;
+  name: string;
+  createdAt: string;
+  studioTheme: BrandKitCatalogStudioTheme;
+  brandColor: string;
+  stageBackground: StageBackground;
+  logoUrl?: string | null;
+  logoPlacement?: LogoPlacement;
+  logoPosition?: LogoPosition | null;
+  logoSize?: LogoSize;
+  logoOpacity?: number;
+  cameraShape?: CameraShape;
+  nameTagStyle?: NameTagStyle;
+}
+
+export interface BrandKitCatalogListResponse {
+  roomId: string;
+  exportedAt: string;
+  brandKits: BrandKitCatalogEntry[];
+}
+
 // ============ Studio Media Types ============
 
 export type StudioMediaType = 'video' | 'image' | 'pdf' | 'presentation' | 'file';

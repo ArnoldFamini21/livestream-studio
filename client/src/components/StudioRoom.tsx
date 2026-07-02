@@ -5479,6 +5479,8 @@ export function StudioRoom() {
             onCameraShapeChange={setCameraShape}
             nameTagStyle={nameTagStyle}
             onNameTagStyleChange={setNameTagStyle}
+            brandKitCatalogRoomId={roomId || ''}
+            brandKitCatalogHostToken={roomHostToken}
             mediaAssets={mediaAssets}
             activeMedia={activeMedia}
             activeMediaSlideIndex={activeMediaSlideIndex}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { buildStudioCalendarInvite, type RecordingCatalogEntry, type RoomRegistrantListResponse } from '@studio/shared';
+import { buildStudioCalendarInvite, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse } from '@studio/shared';
 import {
   buildHostEntryPath,
   buildHostEntryUrl,
@@ -37,6 +37,10 @@ import {
   type WorkspaceDashboardRecording,
 } from '../utils/workspaceDashboard.ts';
 import { fetchRecordingCatalog } from '../utils/recordingCatalog.ts';
+import {
+  catalogEntryToSavedBrandKit,
+  fetchBrandKitCatalog,
+} from '../utils/brandKitCatalog.ts';
 import {
   buildWorkspaceBackup,
   mergeWorkspaceBackup,
@@ -256,6 +260,9 @@ export function HomePage() {
   const [serverRecordingCatalog, setServerRecordingCatalog] = useState<RecordingCatalogEntry[]>([]);
   const [serverRecordingCatalogLoading, setServerRecordingCatalogLoading] = useState(false);
   const [serverRecordingCatalogError, setServerRecordingCatalogError] = useState<string | null>(null);
+  const [serverBrandKitCatalog, setServerBrandKitCatalog] = useState<BrandKitCatalogEntry[]>([]);
+  const [serverBrandKitCatalogLoading, setServerBrandKitCatalogLoading] = useState(false);
+  const [serverBrandKitCatalogError, setServerBrandKitCatalogError] = useState<string | null>(null);
   const navigate = useNavigate();
   const recordingLibrary = useRecordingLibrary();
   const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -375,18 +382,35 @@ export function HomePage() {
     () => buildWorkspaceRecordingDashboardItems(recordingLibrary.sessions, serverRecordingCatalog),
     [recordingLibrary.sessions, serverRecordingCatalog]
   );
+  const dashboardBrandKits = useMemo(() => {
+    const byId = new Map<string, SavedBrandKit>();
+    for (const kit of savedBrandKits) byId.set(kit.id, kit);
+    for (const kit of serverBrandKitCatalog) {
+      if (!byId.has(kit.id)) byId.set(kit.id, catalogEntryToSavedBrandKit(kit));
+    }
+    return Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  }, [savedBrandKits, serverBrandKitCatalog]);
   const workspaceDashboard = useMemo(
-    () => buildWorkspaceDashboardSummary(savedScheduledRooms, dashboardRecordings, savedBrandKits, savedTeamMembers),
-    [savedScheduledRooms, dashboardRecordings, savedBrandKits, savedTeamMembers]
+    () => buildWorkspaceDashboardSummary(savedScheduledRooms, dashboardRecordings, dashboardBrandKits, savedTeamMembers),
+    [savedScheduledRooms, dashboardRecordings, dashboardBrandKits, savedTeamMembers]
   );
   const recentRecordings = dashboardRecordings.slice(0, 3);
   const localRecordingIds = useMemo(
     () => new Set(recordingLibrary.sessions.map((session) => session.id)),
     [recordingLibrary.sessions]
   );
+  const localBrandKitIds = useMemo(
+    () => new Set(savedBrandKits.map((kit) => kit.id)),
+    [savedBrandKits]
+  );
   const hasTeamInviteRecipients = savedTeamMembers.some((member) => member.email);
-  const recentBrandKits = savedBrandKits.slice(0, 4);
+  const recentBrandKits = dashboardBrandKits.slice(0, 4);
   const recentTeamMembers = savedTeamMembers.slice(0, 5);
+  const workspaceSyncNotice = dashboardNotice ||
+    (serverRecordingCatalogLoading ? 'Refreshing cloud recording catalog...' : null) ||
+    (serverBrandKitCatalogLoading ? 'Refreshing cloud brand kit catalog...' : null) ||
+    serverRecordingCatalogError ||
+    serverBrandKitCatalogError;
 
   useEffect(() => {
     if (!scheduledRoom || !inviteLink) {
@@ -453,6 +477,55 @@ export function HomePage() {
       })
       .finally(() => {
         if (!cancelled) setServerRecordingCatalogLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [savedScheduledRooms]);
+
+  useEffect(() => {
+    const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
+    if (hostAccessibleStudios.length === 0) {
+      setServerBrandKitCatalog([]);
+      setServerBrandKitCatalogError(null);
+      setServerBrandKitCatalogLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setServerBrandKitCatalogLoading(true);
+    setServerBrandKitCatalogError(null);
+
+    Promise.allSettled(
+      hostAccessibleStudios.map((room) => fetchBrandKitCatalog(room.id, room.hostToken))
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const byId = new Map<string, BrandKitCatalogEntry>();
+        for (const result of results) {
+          if (result.status !== 'fulfilled') continue;
+          for (const kit of result.value.brandKits) {
+            byId.set(kit.id, kit);
+          }
+        }
+        setServerBrandKitCatalog(
+          Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        );
+        const failedCount = results.filter((result) => result.status === 'rejected').length;
+        setServerBrandKitCatalogError(failedCount > 0
+          ? `Could not refresh cloud brand kits for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
+          : null
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setServerBrandKitCatalog([]);
+          setServerBrandKitCatalogError('Could not refresh cloud brand kits.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setServerBrandKitCatalogLoading(false);
       });
 
     return () => {
@@ -1012,9 +1085,9 @@ export function HomePage() {
               {(dashboardError || recordingLibrary.error) && (
                 <p style={styles.workspaceError}>{dashboardError || recordingLibrary.error}</p>
               )}
-              {(dashboardNotice || serverRecordingCatalogError || serverRecordingCatalogLoading) && !dashboardError && !recordingLibrary.error && (
+              {workspaceSyncNotice && !dashboardError && !recordingLibrary.error && (
                 <p style={styles.workspaceNotice}>
-                  {dashboardNotice || (serverRecordingCatalogLoading ? 'Refreshing cloud recording catalog...' : serverRecordingCatalogError)}
+                  {workspaceSyncNotice}
                 </p>
               )}
 
@@ -1143,14 +1216,17 @@ export function HomePage() {
                           <span style={styles.workspaceRowTitle}>{kit.name}</span>
                           <span style={styles.workspaceRowMeta}>
                             {kit.studioTheme} | {kit.logoUrl ? 'Logo saved' : 'No logo'} | {kit.stageBackground.type}
+                            {!localBrandKitIds.has(kit.id) ? ' | Cloud' : ''}
                           </span>
                         </div>
-                        <button
-                          style={styles.workspaceRowAction}
-                          onClick={() => deleteBrandKit(kit)}
-                        >
-                          Delete
-                        </button>
+                        {localBrandKitIds.has(kit.id) && (
+                          <button
+                            style={styles.workspaceRowAction}
+                            onClick={() => deleteBrandKit(kit)}
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
