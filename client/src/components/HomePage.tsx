@@ -249,7 +249,10 @@ export function HomePage() {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
       }
-      const { room } = await resolveCreatedRoomHostAccess(createdRoom, { preferLegacyFallback: true });
+      const { room } = await resolveCreatedRoomHostAccess(createdRoom, {
+        preferLegacyFallback: true,
+        recoverBeforeLegacyFallback: false,
+      });
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
       if (!hostToken) {
