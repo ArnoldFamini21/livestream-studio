@@ -7,6 +7,10 @@ const MAX_PREVIEW_LINES_PER_SLIDE = 10;
 const MAX_PREVIEW_TEXT_LENGTH = 180;
 const MAX_SLIDE_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_SLIDE_IMAGE_CANDIDATES = 12;
+const RENDERED_SLIDE_WIDTH = 1280;
+const RENDERED_SLIDE_HEIGHT = 720;
+const RENDER_SETTLE_FRAMES = 2;
+const RENDER_SETTLE_TIMEOUT_MS = 40;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
@@ -89,7 +93,14 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 
 export function isPptxFile(file: Pick<File, 'name' | 'type'>): boolean {
   const lower = file.name.toLowerCase();
-  return lower.endsWith('.pptx') || file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  return (
+    lower.endsWith('.pptx') ||
+    lower.endsWith('.ppsx') ||
+    lower.endsWith('.potx') ||
+    file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    file.type === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' ||
+    file.type === 'application/vnd.openxmlformats-officedocument.presentationml.template'
+  );
 }
 
 export function extractPptxSlideText(xml: string): string[] {
@@ -159,6 +170,128 @@ function buildSlidePreview(path: string, textRuns: string[], index: number, imag
   };
 }
 
+export function applyRenderedSlideImages(
+  slides: PresentationSlidePreview[],
+  renderedImageUrls: Array<string | undefined>
+): PresentationSlidePreview[] {
+  return slides.map((slide, index) => (
+    renderedImageUrls[index]
+      ? { ...slide, imageUrl: renderedImageUrls[index] }
+      : slide
+  ));
+}
+
+function canUseDomPresentationRenderer(): boolean {
+  return (
+    typeof document !== 'undefined' &&
+    typeof document.createElement === 'function' &&
+    typeof document.body?.appendChild === 'function' &&
+    typeof window !== 'undefined' &&
+    typeof window.requestAnimationFrame === 'function'
+  );
+}
+
+function waitForAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
+function waitForPresentationTimeout(): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(() => resolve(), RENDER_SETTLE_TIMEOUT_MS);
+  });
+}
+
+async function waitForPresentationRender(node: HTMLElement): Promise<void> {
+  for (let index = 0; index < RENDER_SETTLE_FRAMES; index += 1) {
+    await waitForAnimationFrame();
+  }
+  await waitForPresentationTimeout();
+
+  const images = Array.from(node.querySelectorAll('img'));
+  await Promise.all(images.map(async (image) => {
+    if (image.complete) return;
+    if (typeof image.decode === 'function') {
+      await image.decode().catch(() => undefined);
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      image.addEventListener('load', () => resolve(), { once: true });
+      image.addEventListener('error', () => resolve(), { once: true });
+    });
+  }));
+
+  await waitForAnimationFrame();
+}
+
+function createHiddenPresentationRenderHost(): HTMLElement {
+  const host = document.createElement('div');
+  host.setAttribute('aria-hidden', 'true');
+  host.style.position = 'fixed';
+  host.style.left = '-100000px';
+  host.style.top = '0';
+  host.style.width = `${RENDERED_SLIDE_WIDTH}px`;
+  host.style.height = `${RENDERED_SLIDE_HEIGHT}px`;
+  host.style.overflow = 'hidden';
+  host.style.pointerEvents = 'none';
+  host.style.zIndex = '-1';
+  document.body.appendChild(host);
+  return host;
+}
+
+async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideCount: number): Promise<string[]> {
+  if (!canUseDomPresentationRenderer() || expectedSlideCount <= 0) return [];
+
+  const host = createHiddenPresentationRenderHost();
+  let previewer: { load: (file: ArrayBuffer) => Promise<unknown>; renderSingleSlide: (slideIndex: number) => void; destroy: () => void; slideCount?: number } | null = null;
+
+  try {
+    const [{ init }, { toPng }] = await Promise.all([
+      import('pptx-preview'),
+      import('html-to-image'),
+    ]);
+    previewer = init(host, {
+      width: RENDERED_SLIDE_WIDTH,
+      height: RENDERED_SLIDE_HEIGHT,
+      mode: 'list',
+    });
+    await previewer.load(arrayBuffer.slice(0));
+
+    const slideCount = Math.min(
+      expectedSlideCount,
+      Number.isFinite(previewer.slideCount) ? Math.max(0, Math.floor(previewer.slideCount || 0)) : expectedSlideCount,
+      MAX_PREVIEW_SLIDES
+    );
+    const imageUrls: string[] = [];
+
+    for (let index = 0; index < slideCount; index += 1) {
+      previewer.renderSingleSlide(index);
+      const slideNode = host.querySelector(`.pptx-preview-slide-wrapper-${index}`) as HTMLElement | null;
+      if (!slideNode) {
+        imageUrls.push('');
+        continue;
+      }
+
+      await waitForPresentationRender(slideNode);
+      imageUrls.push(await toPng(slideNode, {
+        width: RENDERED_SLIDE_WIDTH,
+        height: RENDERED_SLIDE_HEIGHT,
+        pixelRatio: 1,
+        backgroundColor: '#ffffff',
+      }));
+    }
+
+    return imageUrls;
+  } catch (err) {
+    console.warn('Failed to render PowerPoint slide visuals:', err);
+    return [];
+  } finally {
+    previewer?.destroy();
+    host.remove();
+  }
+}
+
 function getSortedSlidePaths(zip: JSZip): string[] {
   return Object.keys(zip.files)
     .filter((path) => /^ppt\/slides\/slide\d+\.xml$/i.test(path))
@@ -175,7 +308,8 @@ export async function buildPresentationPreview(file: File): Promise<StudioMediaA
 
   try {
     const { default: JSZip } = await import('jszip');
-    const zip = await JSZip.loadAsync(await file.arrayBuffer());
+    const arrayBuffer = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(arrayBuffer);
     const slidePaths = getSortedSlidePaths(zip);
     const slides: PresentationSlidePreview[] = [];
 
@@ -191,8 +325,11 @@ export async function buildPresentationPreview(file: File): Promise<StudioMediaA
       slides.push(buildSlidePreview(path, textRuns, index, imageUrl));
     }
 
-    return slides.length > 0
-      ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides }
+    const renderedImageUrls = await renderPptxSlidesToImages(arrayBuffer, slides.length);
+    const finalSlides = applyRenderedSlideImages(slides, renderedImageUrls);
+
+    return finalSlides.length > 0
+      ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides: finalSlides }
       : undefined;
   } catch {
     return undefined;

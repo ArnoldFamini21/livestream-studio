@@ -128,10 +128,7 @@ import {
 } from '../utils/rtmpBackupRecording.ts';
 import { getScenePipCornerForApply, getSceneStageItemOrderForApply } from '../utils/sceneApplication.ts';
 import {
-  getContainedVideoRect,
-  getCoverSourceRect,
-  getScreenPictureInPictureCanvasSize,
-  getScreenPictureInPictureInsetRect,
+  createScreenPictureInPictureStream,
 } from '../utils/screenPictureInPicture.ts';
 import {
   canControlStudioRecording,
@@ -395,10 +392,6 @@ interface CreateScreenPictureInPictureRecordingSourceOptions {
   cameraStream: MediaStream | null;
 }
 
-type CanvasWithCaptureStream = HTMLCanvasElement & {
-  captureStream?: (frameRate?: number) => MediaStream;
-};
-
 function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
   const globalWithWebkit = globalThis as typeof globalThis & {
     webkitAudioContext?: BrowserAudioContextConstructor;
@@ -414,135 +407,26 @@ function createRecordingAudioContext(AudioContextConstructor: BrowserAudioContex
   }
 }
 
-function createRecordingVideoElement(stream: MediaStream): HTMLVideoElement {
-  const video = document.createElement('video');
-  video.muted = true;
-  video.playsInline = true;
-  video.srcObject = stream;
-  void video.play().catch(() => undefined);
-  return video;
-}
-
-function traceRoundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
-  const safeRadius = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + safeRadius, y);
-  ctx.lineTo(x + width - safeRadius, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
-  ctx.lineTo(x + width, y + height - safeRadius);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
-  ctx.lineTo(x + safeRadius, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
-  ctx.lineTo(x, y + safeRadius);
-  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
-  ctx.closePath();
-}
-
 function createScreenPictureInPictureRecordingSource(
   options: CreateScreenPictureInPictureRecordingSourceOptions
 ): LocalRecordingSource | null {
-  const screenVideoTrack = options.screenStream?.getVideoTracks().find((track) => track.readyState === 'live');
-  const cameraVideoTrack = options.cameraStream?.getVideoTracks().find((track) => track.readyState === 'live');
-  if (!screenVideoTrack || !cameraVideoTrack) return null;
-
-  const canvas = document.createElement('canvas') as CanvasWithCaptureStream;
-  if (typeof canvas.captureStream !== 'function') return null;
-
-  const canvasSize = getScreenPictureInPictureCanvasSize(screenVideoTrack.getSettings());
-  canvas.width = canvasSize.width;
-  canvas.height = canvasSize.height;
-
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-
-  const screenVideo = createRecordingVideoElement(new MediaStream([screenVideoTrack]));
-  const cameraVideo = createRecordingVideoElement(new MediaStream([cameraVideoTrack]));
-  const insetRect = getScreenPictureInPictureInsetRect(canvasSize);
-  const generatedStream = canvas.captureStream(30);
-  const generatedVideoTracks = generatedStream.getVideoTracks();
-  if (generatedVideoTracks.length === 0) {
-    screenVideo.pause();
-    cameraVideo.pause();
-    screenVideo.srcObject = null;
-    cameraVideo.srcObject = null;
-    return null;
-  }
-
-  let frame = 0;
-  let cleanedUp = false;
-  const draw = () => {
-    ctx.fillStyle = '#050816';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    if (screenVideo.readyState >= 2 && screenVideo.videoWidth > 0 && screenVideo.videoHeight > 0) {
-      const screenRect = getContainedVideoRect(
-        { width: screenVideo.videoWidth, height: screenVideo.videoHeight },
-        canvasSize
-      );
-      ctx.drawImage(screenVideo, screenRect.x, screenRect.y, screenRect.width, screenRect.height);
-    }
-
-    ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
-    ctx.shadowBlur = Math.round(canvas.width * 0.012);
-    ctx.shadowOffsetY = Math.round(canvas.height * 0.008);
-    traceRoundedRect(ctx, insetRect.x, insetRect.y, insetRect.width, insetRect.height, Math.round(insetRect.width * 0.045));
-    ctx.fillStyle = '#0f172a';
-    ctx.fill();
-    ctx.restore();
-
-    if (cameraVideo.readyState >= 2 && cameraVideo.videoWidth > 0 && cameraVideo.videoHeight > 0) {
-      const sourceRect = getCoverSourceRect(
-        { width: cameraVideo.videoWidth, height: cameraVideo.videoHeight },
-        { width: insetRect.width, height: insetRect.height }
-      );
-      ctx.save();
-      traceRoundedRect(ctx, insetRect.x, insetRect.y, insetRect.width, insetRect.height, Math.round(insetRect.width * 0.045));
-      ctx.clip();
-      ctx.drawImage(
-        cameraVideo,
-        sourceRect.x,
-        sourceRect.y,
-        sourceRect.width,
-        sourceRect.height,
-        insetRect.x,
-        insetRect.y,
-        insetRect.width,
-        insetRect.height
-      );
-      ctx.restore();
-    }
-
-    ctx.save();
-    traceRoundedRect(ctx, insetRect.x, insetRect.y, insetRect.width, insetRect.height, Math.round(insetRect.width * 0.045));
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.72)';
-    ctx.lineWidth = Math.max(2, Math.round(canvas.width * 0.002));
-    ctx.stroke();
-    ctx.restore();
-
-    if (!cleanedUp) frame = window.requestAnimationFrame(draw);
-  };
-  draw();
+  const pipStream = createScreenPictureInPictureStream({
+    screenStream: options.screenStream,
+    cameraStream: options.cameraStream,
+    frameRate: 30,
+  });
+  if (!pipStream) return null;
 
   return {
     id: options.id,
     label: options.label,
     kind: 'screen',
     stream: new MediaStream([
-      ...generatedVideoTracks,
+      pipStream.videoTrack,
       ...getLiveAudioTracks(options.screenStream),
     ]),
     bitsPerSecond: 8_500_000,
-    cleanup: () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      if (frame) window.cancelAnimationFrame(frame);
-      generatedVideoTracks.forEach((track) => track.stop());
-      screenVideo.pause();
-      cameraVideo.pause();
-      screenVideo.srcObject = null;
-      cameraVideo.srcObject = null;
-    },
+    cleanup: pipStream.cleanup,
   };
 }
 
@@ -1466,7 +1350,12 @@ export function StudioRoom() {
   const cleanupRef = useRef(cleanup);
   const disconnectRef = useRef(disconnect);
   const stopMediaRef = useRef(stopMedia);
-  const stopScreenShareRef = useRef(stopScreenShare);
+  const publishedScreenShareCleanupRef = useRef<(() => void) | null>(null);
+  const stopPublishedScreenShareRef = useRef<() => void>(() => {
+    publishedScreenShareCleanupRef.current?.();
+    publishedScreenShareCleanupRef.current = null;
+    stopScreenShare();
+  });
   const navigateRef = useRef(navigate);
 
   // Refs for onToggleScreenShare dependencies
@@ -2073,7 +1962,13 @@ export function StudioRoom() {
   useEffect(() => { cleanupRef.current = cleanup; }, [cleanup]);
   useEffect(() => { disconnectRef.current = disconnect; }, [disconnect]);
   useEffect(() => { stopMediaRef.current = stopMedia; }, [stopMedia]);
-  useEffect(() => { stopScreenShareRef.current = stopScreenShare; }, [stopScreenShare]);
+  useEffect(() => {
+    stopPublishedScreenShareRef.current = () => {
+      publishedScreenShareCleanupRef.current?.();
+      publishedScreenShareCleanupRef.current = null;
+      stopScreenShare();
+    };
+  }, [stopScreenShare]);
   useEffect(() => { navigateRef.current = navigate; }, [navigate]);
   useEffect(() => { replaceTrackRef.current = replaceTrack; }, [replaceTrack]);
   useEffect(() => { startScreenShareRef.current = startScreenShare; }, [startScreenShare]);
@@ -2367,7 +2262,7 @@ export function StudioRoom() {
         case 'participant-removed':
           cleanupRef.current();
           stopMediaRef.current();
-          stopScreenShareRef.current();
+          stopPublishedScreenShareRef.current();
           disconnectRef.current();
           setConnectionError(message.payload.reason || 'You were removed from this session.');
           break;
@@ -2445,7 +2340,7 @@ export function StudioRoom() {
           setRoomEnding(false);
           cleanupRef.current();
           stopMediaRef.current();
-          stopScreenShareRef.current();
+          stopPublishedScreenShareRef.current();
           navigateRef.current('/');
           break;
         case 'error':
@@ -2462,7 +2357,7 @@ export function StudioRoom() {
             if (roomId) sessionStorage.removeItem(`roomPassword:${roomId}`);
             cleanupRef.current();
             stopMediaRef.current();
-            stopScreenShareRef.current();
+            stopPublishedScreenShareRef.current();
             disconnectRef.current();
             setConnectionError(message.payload.message);
           }
@@ -2474,7 +2369,7 @@ export function StudioRoom() {
             sessionStorage.setItem('userRole', 'guest');
             cleanupRef.current();
             stopMediaRef.current();
-            stopScreenShareRef.current();
+            stopPublishedScreenShareRef.current();
             disconnectRef.current();
             setConnectionError(message.payload.message);
           }
@@ -2494,7 +2389,7 @@ export function StudioRoom() {
             sessionStorage.setItem('userRole', 'guest');
             cleanupRef.current();
             stopMediaRef.current();
-            stopScreenShareRef.current();
+            stopPublishedScreenShareRef.current();
             disconnectRef.current();
             setConnectionError(message.payload.message);
           }
@@ -2552,13 +2447,13 @@ export function StudioRoom() {
       }
     }
 
-    if (videoTrack?.id !== published.video) {
+    if (!isScreenSharing && videoTrack?.id !== published.video) {
       published.video = videoTrack?.id;
       if (videoTrack) {
         replaceTrack(videoTrack).catch((err) => console.error('Failed to publish video track:', err));
       }
     }
-  }, [localStream, replaceTrack]);
+  }, [isScreenSharing, localStream, replaceTrack]);
 
   // Sync local tracks when remotely muted/unmuted
   useEffect(() => {
@@ -2606,7 +2501,7 @@ export function StudioRoom() {
       send({ type: 'end-room', payload: {} });
     } else {
       // Guests just leave immediately
-      cleanup(); stopMedia(); stopScreenShare(); navigate('/');
+      cleanup(); stopMedia(); stopPublishedScreenShareRef.current(); navigate('/');
     }
   };
 
@@ -2619,36 +2514,47 @@ export function StudioRoom() {
     catch (err) { console.error('Failed to update audio processing:', err); }
   };
   const onVideoDeviceChange = async (id: string) => {
-    try { const t = await switchVideoDevice(id); if (t) await replaceTrack(t); }
+    try { const t = await switchVideoDevice(id); if (t && !isScreenSharingRef.current) await replaceTrack(t); }
     catch (err) { console.error('Failed to switch video device:', err); }
   };
   const onVideoQualityChange = async (next: VideoQualityPresetId) => {
-    try { const t = await updateVideoQuality(next); if (t) await replaceTrack(t); }
+    try { const t = await updateVideoQuality(next); if (t && !isScreenSharingRef.current) await replaceTrack(t); }
     catch (err) { console.error('Failed to update video quality:', err); }
   };
-  // Screen sharing — replace the camera video track on all peer connections
-  // so remote participants actually receive the screen feed.
+  // Screen sharing publishes a screen+camera PiP track when possible so remote
+  // viewers keep seeing the presenter while screen content is shared.
   const onToggleScreenShare = useCallback(async () => {
     if (isScreenSharingRef.current) {
-      stopScreenShareRef.current();
-      // Restore the camera video track on all peer connections
+      stopPublishedScreenShareRef.current();
       const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-      if (cameraTrack) await replaceTrackRef.current(cameraTrack);
+      if (cameraTrack) {
+        await replaceTrackRef.current(cameraTrack);
+        publishedTrackIdsRef.current.video = cameraTrack.id;
+      }
       if (myParticipantRef.current) sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: false } });
     } else {
       try {
         const stream = await startScreenShareRef.current();
         if (stream && myParticipantRef.current) {
-          // Replace the camera video track with the screen video track on all peers
           const screenTrack = stream.getVideoTracks()[0];
           if (screenTrack) {
-            await replaceTrackRef.current(screenTrack);
-            // When the user stops sharing via the browser's native button,
-            // restore the camera track automatically
+            const screenPip = createScreenPictureInPictureStream({
+              screenStream: stream,
+              cameraStream: localStreamRef.current,
+              frameRate: 30,
+            });
+            publishedScreenShareCleanupRef.current?.();
+            publishedScreenShareCleanupRef.current = screenPip?.cleanup || null;
+            const publishedVideoTrack = screenPip?.videoTrack || screenTrack;
+            await replaceTrackRef.current(publishedVideoTrack);
+            publishedTrackIdsRef.current.video = publishedVideoTrack.id;
             screenTrack.addEventListener('ended', async () => {
-              stopScreenShareRef.current();
+              stopPublishedScreenShareRef.current();
               const camTrack = localStreamRef.current?.getVideoTracks()[0];
-              if (camTrack) await replaceTrackRef.current(camTrack);
+              if (camTrack) {
+                await replaceTrackRef.current(camTrack);
+                publishedTrackIdsRef.current.video = camTrack.id;
+              }
               if (myParticipantRef.current) {
                 sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: false } });
               }
