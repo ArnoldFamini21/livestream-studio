@@ -14,6 +14,14 @@ export interface PresentationDeckStatus {
   canGoNext: boolean;
 }
 
+export interface PresentationSlidePickerItem {
+  index: number;
+  label: string;
+  title: string;
+  imageUrl?: string;
+  isCurrent: boolean;
+}
+
 export function getPresentationSlides(media: ActiveMedia | null | undefined): PresentationSlidePreview[] {
   if (media?.type !== 'presentation' || media.preview?.kind !== 'presentation-slides') return [];
   return media.preview.slides;
@@ -32,6 +40,25 @@ export function getNextPresentationSlideIndex(
   const normalized = clampPresentationSlideIndex(currentIndex, total);
   if (direction === 'previous') return clampPresentationSlideIndex(normalized - 1, total);
   return clampPresentationSlideIndex(normalized + 1, total);
+}
+
+export function getPresentationSlideDisplayTitle(slide: PresentationSlidePreview | null | undefined, index: number): string {
+  const title = slide?.title?.trim();
+  return title || `Slide ${Math.max(0, index) + 1}`;
+}
+
+export function getPresentationSlidePickerItems(
+  slides: PresentationSlidePreview[],
+  currentIndex: number
+): PresentationSlidePickerItem[] {
+  const normalizedIndex = clampPresentationSlideIndex(currentIndex, slides.length);
+  return slides.map((slide, index) => ({
+    index,
+    label: `Slide ${index + 1}`,
+    title: getPresentationSlideDisplayTitle(slide, index),
+    imageUrl: slide.imageUrl,
+    isCurrent: index === normalizedIndex,
+  }));
 }
 
 export function getPresentationDeckStatus(

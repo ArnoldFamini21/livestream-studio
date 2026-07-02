@@ -6,6 +6,7 @@ import {
   clampPresentationSlideIndex,
   getNextPresentationSlideIndex,
   getPresentationDeckStatus,
+  getPresentationSlidePickerItems,
   getPresentationSlides,
 } from '../src/utils/presentationDeckControls.ts';
 
@@ -56,5 +57,35 @@ describe('presentation deck controls', () => {
     assert.equal(status.nextSlide?.title, 'Close');
     assert.equal(status.canGoPrevious, true);
     assert.equal(status.canGoNext, true);
+  });
+
+  it('builds slide picker items with fallback titles and current state', () => {
+    const items = getPresentationSlidePickerItems([
+      { id: 'slide-1', title: 'Opening', lines: [], imageUrl: 'data:image/png;base64,one' },
+      { id: 'slide-2', title: '', lines: [] },
+    ], 9);
+
+    assert.deepEqual(items.map((item) => ({
+      index: item.index,
+      label: item.label,
+      title: item.title,
+      imageUrl: item.imageUrl,
+      isCurrent: item.isCurrent,
+    })), [
+      {
+        index: 0,
+        label: 'Slide 1',
+        title: 'Opening',
+        imageUrl: 'data:image/png;base64,one',
+        isCurrent: false,
+      },
+      {
+        index: 1,
+        label: 'Slide 2',
+        title: 'Slide 2',
+        imageUrl: undefined,
+        isCurrent: true,
+      },
+    ]);
   });
 });

@@ -13,6 +13,7 @@ describe('media library upload support', () => {
     assert.match(SUPPORTED_MEDIA_ACCEPT, /\.ppt/);
     assert.match(SUPPORTED_MEDIA_ACCEPT, /\.pptx/);
     assert.match(SUPPORTED_MEDIA_ACCEPT, /\.ppsx/);
+    assert.match(SUPPORTED_MEDIA_ACCEPT, /\.potx/);
     assert.match(SUPPORTED_MEDIA_ACCEPT, /video\/\*/);
     assert.match(SUPPORTED_MEDIA_ACCEPT, /image\/\*/);
   });
@@ -22,6 +23,7 @@ describe('media library upload support', () => {
     assert.equal(detectMediaType({ name: 'Discipleship-Via-Triads.pptx', type: '' } as File), 'presentation');
     assert.equal(detectMediaType({ name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File), 'presentation');
     assert.equal(detectMediaType({ name: 'slides.ppsx', type: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' } as File), 'presentation');
+    assert.equal(detectMediaType({ name: 'template.potx', type: 'application/vnd.openxmlformats-officedocument.presentationml.template' } as File), 'presentation');
   });
 
   it('routes PDF and PowerPoint uploads to the Slides tab', () => {
