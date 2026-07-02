@@ -12,6 +12,10 @@ services:
         value: https://studio.arnoldfamini.com
       - key: LIVE_STREAM_TOKEN_SECRET
         sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: PGSSLMODE
+        value: require
       - key: OPENAI_API_KEY
         sync: false
       - key: YOUTUBE_API_KEY

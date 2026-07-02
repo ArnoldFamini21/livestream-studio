@@ -25,7 +25,11 @@ Set these values in Render:
 ```sh
 CLIENT_URLS=https://studio.arnoldfamini.com
 LIVE_STREAM_TOKEN_SECRET=<same random secret on both Render services>
+DATABASE_URL=<Render PostgreSQL internal database URL for livestream-studio-server>
+PGSSLMODE=require
 ```
+
+The signaling server uses `DATABASE_URL` for PostgreSQL room snapshots. This keeps scheduled and newly created studios recoverable across Render restarts, while live participants still reconnect through the normal WebSocket flow. If `DATABASE_URL` is not set, the server logs that room snapshot persistence is disabled and continues with memory-only rooms.
 
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.
 

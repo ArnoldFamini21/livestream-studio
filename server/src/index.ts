@@ -3,11 +3,16 @@ import cors from 'cors';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { buildServiceHealthPayload } from '@studio/shared';
-import { setupSignalingServer } from './services/signaling.js';
+import {
+  configureRoomSnapshotStore,
+  restoreRoomSnapshots,
+  setupSignalingServer,
+} from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
 import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
+import { createRoomSnapshotStoreFromEnv } from './services/roomPersistence.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -236,6 +241,31 @@ const wss = new WebSocketServer({
 
 setupSignalingServer(wss);
 
+const roomSnapshotStore = createRoomSnapshotStoreFromEnv(process.env);
+
+async function initializeRoomPersistence() {
+  if (!roomSnapshotStore) {
+    console.log('Room snapshot persistence disabled; no PostgreSQL URL configured.');
+    return;
+  }
+
+  try {
+    await roomSnapshotStore.init();
+    const snapshots = await roomSnapshotStore.loadRoomSnapshots();
+    const restored = restoreRoomSnapshots(snapshots);
+    configureRoomSnapshotStore(roomSnapshotStore);
+    console.log(`Room snapshot persistence enabled; restored ${restored} room(s).`);
+  } catch (err) {
+    configureRoomSnapshotStore(null);
+    console.warn(
+      'Room snapshot persistence disabled:',
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+await initializeRoomPersistence();
+
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`WebSocket signaling on ws://localhost:${PORT}/ws`);
@@ -257,8 +287,11 @@ function gracefulShutdown(signal: string) {
     console.log('WebSocket server closed.');
 
     // Close the HTTP server (stops accepting new requests, waits for in-flight)
-    server.close(() => {
+    server.close(async () => {
       console.log('HTTP server closed.');
+      await roomSnapshotStore?.close().catch((err) => {
+        console.error('Room snapshot store close failed:', err instanceof Error ? err.message : err);
+      });
       process.exit(0);
     });
   });
