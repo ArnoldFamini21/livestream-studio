@@ -5,6 +5,7 @@ import {
   getMediaShareLayoutPlan,
   mergeSharedMediaParticipantItems,
   selectVisibleStageItems,
+  splitScreenShareStageItems,
 } from '../src/utils/mediaShareLayouts.ts';
 
 describe('media share layouts', () => {
@@ -79,6 +80,28 @@ describe('media share layouts', () => {
       mergeSharedMediaParticipantItems(stageItems, presenterItems, 2).map((item) => item.id),
       ['host', 'host-screen', 'guest']
     );
+  });
+
+  it('splits the active screen share from participant camera tiles', () => {
+    const { screenShareItem, participantItems } = splitScreenShareStageItems([
+      { id: 'host', isScreenShare: false },
+      { id: 'host-screen', isScreenShare: true },
+      { id: 'guest' },
+    ]);
+
+    assert.equal(screenShareItem?.id, 'host-screen');
+    assert.deepEqual(participantItems.map((item) => item.id), ['host', 'guest']);
+  });
+
+  it('keeps the first screen share as dominant shared content when duplicates are present', () => {
+    const { screenShareItem, participantItems } = splitScreenShareStageItems([
+      { id: 'screen-a', isScreenShare: true },
+      { id: 'screen-b', isScreenShare: true },
+      { id: 'guest' },
+    ]);
+
+    assert.equal(screenShareItem?.id, 'screen-a');
+    assert.deepEqual(participantItems.map((item) => item.id), ['guest']);
   });
 
   it('renders every stage item when a screen share is active even if the selected layout normally clips tiles', () => {
