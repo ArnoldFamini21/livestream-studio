@@ -159,21 +159,48 @@ function mergeMediaExportSummary(
   };
 }
 
+function getNormalizedRecordingKeyPart(value: string | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+function getRecordingDashboardMatchKeys(recording: WorkspaceDashboardRecording): string[] {
+  const keys = new Set<string>();
+  const id = getNormalizedRecordingKeyPart(recording.id);
+  const uploadId = getNormalizedRecordingKeyPart(recording.mediaExport?.uploadId);
+  const exportId = getNormalizedRecordingKeyPart(recording.mediaExport?.exportId);
+
+  if (id) keys.add(`id:${id}`);
+  if (uploadId && exportId) keys.add(`media-export:${uploadId}:${exportId}`);
+  if (uploadId) keys.add(`upload:${uploadId}`);
+  if (exportId) keys.add(`export:${exportId}`);
+
+  return Array.from(keys);
+}
+
+function mergeRecordingSource(
+  base: WorkspaceDashboardRecordingSource,
+  incoming: WorkspaceDashboardRecordingSource
+): WorkspaceDashboardRecordingSource {
+  if (base === incoming) return base;
+  return 'local-and-server';
+}
+
 function mergeRecordingDashboardItems(
-  local: WorkspaceDashboardRecording,
-  remote: WorkspaceDashboardRecording
+  base: WorkspaceDashboardRecording,
+  incoming: WorkspaceDashboardRecording
 ): WorkspaceDashboardRecording {
   return {
-    ...local,
-    roomId: remote.roomId || local.roomId,
-    roomName: local.roomName || remote.roomName,
-    createdAt: local.createdAt || remote.createdAt,
-    durationSeconds: local.durationSeconds ?? remote.durationSeconds,
-    trackCount: local.trackCount || remote.trackCount,
-    totalBytes: local.totalBytes || remote.totalBytes,
-    source: 'local-and-server',
-    cloud: remote.cloud || local.cloud,
-    mediaExport: mergeMediaExportSummary(local.mediaExport, remote.mediaExport),
+    ...base,
+    roomId: incoming.roomId || base.roomId,
+    roomName: base.roomName || incoming.roomName,
+    createdAt: base.createdAt || incoming.createdAt,
+    durationSeconds: base.durationSeconds ?? incoming.durationSeconds,
+    trackCount: base.trackCount || incoming.trackCount,
+    totalBytes: base.totalBytes || incoming.totalBytes,
+    source: mergeRecordingSource(base.source, incoming.source),
+    cloud: incoming.cloud || base.cloud,
+    mediaExport: mergeMediaExportSummary(base.mediaExport, incoming.mediaExport),
   };
 }
 
@@ -181,19 +208,50 @@ export function buildWorkspaceRecordingDashboardItems(
   localRecordings: LocalRecordingSession[],
   serverRecordings: RecordingCatalogEntry[] = []
 ): WorkspaceDashboardRecording[] {
-  const byId = new Map<string, WorkspaceDashboardRecording>();
+  const items: Array<WorkspaceDashboardRecording | null> = [];
+  const indexByKey = new Map<string, number>();
+
+  const addOrMerge = (item: WorkspaceDashboardRecording) => {
+    const keys = getRecordingDashboardMatchKeys(item);
+    const matchingIndexes = new Set<number>();
+    for (const key of keys) {
+      const index = indexByKey.get(key);
+      if (index !== undefined && items[index]) matchingIndexes.add(index);
+    }
+
+    if (matchingIndexes.size === 0) {
+      const index = items.length;
+      items.push(item);
+      for (const key of keys) indexByKey.set(key, index);
+      return;
+    }
+
+    const indexes = Array.from(matchingIndexes).sort((a, b) => a - b);
+    const targetIndex = indexes[0];
+    let merged = items[targetIndex] as WorkspaceDashboardRecording;
+    for (const duplicateIndex of indexes.slice(1)) {
+      merged = mergeRecordingDashboardItems(merged, items[duplicateIndex] as WorkspaceDashboardRecording);
+      items[duplicateIndex] = null;
+    }
+
+    merged = mergeRecordingDashboardItems(merged, item);
+    items[targetIndex] = merged;
+    for (const key of new Set([...keys, ...getRecordingDashboardMatchKeys(merged)])) {
+      indexByKey.set(key, targetIndex);
+    }
+  };
 
   for (const recording of localRecordings) {
-    byId.set(recording.id, buildLocalRecordingDashboardItem(recording));
+    addOrMerge(buildLocalRecordingDashboardItem(recording));
   }
 
   for (const recording of serverRecordings) {
-    const remoteItem = buildServerRecordingDashboardItem(recording);
-    const existing = byId.get(remoteItem.id);
-    byId.set(remoteItem.id, existing ? mergeRecordingDashboardItems(existing, remoteItem) : remoteItem);
+    addOrMerge(buildServerRecordingDashboardItem(recording));
   }
 
-  return Array.from(byId.values()).sort((a, b) => getCreatedAtTime(b) - getCreatedAtTime(a));
+  return items
+    .filter((item): item is WorkspaceDashboardRecording => Boolean(item))
+    .sort((a, b) => getCreatedAtTime(b) - getCreatedAtTime(a));
 }
 
 function hasReadyMp4Export(recording: WorkspaceDashboardRecording): boolean {
