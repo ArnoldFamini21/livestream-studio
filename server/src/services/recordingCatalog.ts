@@ -86,6 +86,17 @@ function readExportStatus(value: unknown): RecordingExportJobStatusValue | null 
     : null;
 }
 
+function readSafeHttpUrl(value: unknown, maxLength = 2048): string {
+  const text = safeText(value, maxLength);
+  if (!text) return '';
+  try {
+    const url = new URL(text);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString().slice(0, maxLength) : '';
+  } catch {
+    return '';
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -141,12 +152,14 @@ export function normalizeRecordingCatalogEntry(
     const exportId = safeText(value.mediaExport.exportId, 128);
     const updatedAt = safeIsoDate(value.mediaExport.updatedAt);
     if (status && uploadId && exportId && updatedAt) {
+      const mp4ShareUrl = readSafeHttpUrl(value.mediaExport.mp4ShareUrl);
       entry.mediaExport = {
         status,
         uploadId,
         exportId,
         updatedAt,
         readyMp4: value.mediaExport.readyMp4 === true,
+        ...(mp4ShareUrl ? { mp4ShareUrl } : {}),
         artifactCount: readNonNegativeInteger(value.mediaExport.artifactCount, 1000),
         readyArtifactCount: readNonNegativeInteger(value.mediaExport.readyArtifactCount, 1000),
       };

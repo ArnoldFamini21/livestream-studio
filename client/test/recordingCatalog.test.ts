@@ -57,6 +57,13 @@ describe('recording catalog helpers', () => {
             format: 'mp4',
             status: 'ready',
             bytes: 10_000_000,
+            storage: {
+              provider: 's3',
+              bucket: 'recordings',
+              key: 'studio/recordings/launch.mp4',
+              url: 'https://cdn.example.com/recordings/launch.mp4',
+              uploadedAt: '2026-07-02T14:02:10.000Z',
+            },
           },
           {
             id: 'manifest',
@@ -86,7 +93,48 @@ describe('recording catalog helpers', () => {
     assert.equal(request.cloud?.fileCount, 4);
     assert.equal(request.cloud?.permanent, false);
     assert.equal(request.mediaExport?.readyMp4, true);
+    assert.equal(request.mediaExport?.mp4ShareUrl, 'https://cdn.example.com/recordings/launch.mp4');
     assert.equal(request.mediaExport?.artifactCount, 2);
     assert.equal(request.mediaExport?.readyArtifactCount, 1);
+  });
+
+  it('drops unsafe MP4 share URLs before syncing the server catalog', () => {
+    const session: LocalRecordingSession = {
+      id: 'recording-unsafe',
+      roomName: 'Unsafe Export',
+      createdAt: '2026-07-02T13:00:00.000Z',
+      durationSeconds: 60,
+      trackCount: 1,
+      totalBytes: 100,
+      files: [],
+      mediaExport: {
+        uploadId: 'upload-unsafe',
+        exportId: 'export-unsafe',
+        roomId: 'room-unsafe',
+        status: 'ready',
+        createdAt: '2026-07-02T14:01:00.000Z',
+        updatedAt: '2026-07-02T14:02:00.000Z',
+        savedAt: '2026-07-02T14:03:00.000Z',
+        artifacts: [
+          {
+            id: 'final-mp4',
+            label: 'Unsafe.mp4',
+            format: 'mp4',
+            status: 'ready',
+            storage: {
+              provider: 's3',
+              bucket: 'recordings',
+              key: 'bad',
+              url: 'javascript:alert(1)',
+            },
+          },
+        ],
+      },
+    };
+
+    const request = buildRecordingCatalogUpsertRequest(session);
+
+    assert.equal(request.mediaExport?.readyMp4, true);
+    assert.equal(request.mediaExport?.mp4ShareUrl, undefined);
   });
 });

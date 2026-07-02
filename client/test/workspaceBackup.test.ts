@@ -73,6 +73,13 @@ const recording: LocalRecordingSession = {
         format: 'mp4',
         status: 'ready',
         bytes: 8_388_608,
+        storage: {
+          provider: 's3',
+          bucket: 'recordings',
+          key: 'studio/recordings/launch.mp4',
+          url: 'https://cdn.example.com/recordings/launch.mp4',
+          uploadedAt: '2026-07-02T14:08:05.000Z',
+        },
       },
       {
         id: 'export-manifest',
@@ -132,6 +139,7 @@ describe('workspace backup files', () => {
         updatedAt: '2026-07-02T14:08:00.000Z',
         savedAt: '2026-07-02T14:08:10.000Z',
         readyMp4: true,
+        mp4ShareUrl: 'https://cdn.example.com/recordings/launch.mp4',
         artifactCount: 2,
         readyArtifactCount: 2,
       },
@@ -158,6 +166,17 @@ describe('workspace backup files', () => {
           trackCount: 3,
           totalBytes: 5_242_880,
           durationSeconds: 1850,
+          mediaExport: {
+            status: 'ready',
+            uploadId: 'upload-1',
+            exportId: 'export-1',
+            roomId: 'room-1',
+            updatedAt: '2026-07-02T14:08:00.000Z',
+            readyMp4: true,
+            mp4ShareUrl: 'javascript:alert(1)',
+            artifactCount: 1,
+            readyArtifactCount: 1,
+          },
         },
         { id: '', roomName: '' },
       ],
@@ -169,6 +188,7 @@ describe('workspace backup files', () => {
     assert.deepEqual(backup.brandKits, [brandKit]);
     assert.deepEqual(backup.teamMembers, [teamMember]);
     assert.equal(backup.recordingCatalog.length, 1);
+    assert.equal(backup.recordingCatalog[0]?.mediaExport?.mp4ShareUrl, undefined);
     assert.throws(() => parseWorkspaceBackupJson('not json'), /valid JSON/);
     assert.throws(
       () => parseWorkspaceBackupJson(JSON.stringify({ type: 'other', version: 1 })),
@@ -192,6 +212,7 @@ describe('workspace backup files', () => {
     assert.equal(roundTrip.recordingCatalog.length, 1);
     assert.equal(roundTrip.recordingCatalog[0]?.cloud?.folderId, 'drive-folder-1');
     assert.equal(roundTrip.recordingCatalog[0]?.mediaExport?.readyMp4, true);
+    assert.equal(roundTrip.recordingCatalog[0]?.mediaExport?.mp4ShareUrl, 'https://cdn.example.com/recordings/launch.mp4');
     assert.equal(roundTrip.recordingCatalog[0]?.mediaExport?.artifactCount, 2);
   });
 

@@ -831,6 +831,7 @@ export interface RecordingCatalogMediaExportSummary {
   exportId: string;
   updatedAt: string;
   readyMp4: boolean;
+  mp4ShareUrl?: string;
   artifactCount: number;
   readyArtifactCount: number;
 }

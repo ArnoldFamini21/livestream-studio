@@ -57,6 +57,7 @@ function catalogBody(overrides = {}) {
       exportId: 'export-1',
       updatedAt: '2026-07-02T10:05:00.000Z',
       readyMp4: true,
+      mp4ShareUrl: 'https://cdn.example.com/recordings/session-1.mp4',
       artifactCount: 1,
       readyArtifactCount: 1,
     },
@@ -122,6 +123,7 @@ describe('recording catalog routes', () => {
     assert.equal(saved.roomId, room.id);
     assert.equal(saved.roomName, 'Client override');
     assert.equal(saved.mediaExport.readyMp4, true);
+    assert.equal(saved.mediaExport.mp4ShareUrl, 'https://cdn.example.com/recordings/session-1.mp4');
 
     const listResponse = await fetch(`${baseUrl}/api/recordings/rooms/${room.id}/catalog`, {
       headers: { 'x-host-token': room.hostToken },
@@ -132,6 +134,7 @@ describe('recording catalog routes', () => {
     assert.equal(listed.roomId, room.id);
     assert.equal(listed.recordings.length, 1);
     assert.equal(listed.recordings[0].id, 'session-1');
+    assert.equal(listed.recordings[0].mediaExport.mp4ShareUrl, 'https://cdn.example.com/recordings/session-1.mp4');
 
     const deleteResponse = await fetch(`${baseUrl}/api/recordings/rooms/${room.id}/catalog/session-1`, {
       method: 'DELETE',
