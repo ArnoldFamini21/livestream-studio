@@ -1,6 +1,10 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import type { SignalMessage, Participant } from '@studio/shared';
 import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
+import {
+  addTrackWithOptionalSimulcast,
+  refreshSenderVideoEncodingParameters,
+} from '../utils/webrtcSimulcast.ts';
 
 interface PeerState {
   participantId: string;
@@ -100,7 +104,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       const currentStream = localStreamRef.current;
       if (currentStream) {
         for (const track of currentStream.getTracks()) {
-          pc.addTrack(track, currentStream);
+          addTrackWithOptionalSimulcast(pc, track, currentStream);
         }
       }
 
@@ -395,6 +399,11 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         const sender = senders.find((s) => s.track?.kind === newTrack.kind);
         if (sender) {
           await sender.replaceTrack(newTrack);
+          try {
+            await refreshSenderVideoEncodingParameters(sender, newTrack);
+          } catch (err) {
+            console.warn('Failed to refresh video sender encoding parameters:', err);
+          }
         }
       }
     },
