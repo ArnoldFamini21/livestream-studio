@@ -5,6 +5,7 @@ import { resolveMediaHttpUrl } from './apiClient.ts';
 const MAX_PRESENTATION_PREVIEW_BYTES = 50 * 1024 * 1024;
 const MAX_PREVIEW_SLIDES = 60;
 const MAX_PREVIEW_LINES_PER_SLIDE = 10;
+const MAX_PREVIEW_NOTES_PER_SLIDE = 8;
 const MAX_PREVIEW_TEXT_LENGTH = 180;
 const MAX_SLIDE_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_SLIDE_IMAGE_CANDIDATES = 12;
@@ -171,6 +172,43 @@ export function extractPptxSlideImageTargets(relsXml: string): string[] {
   return targets;
 }
 
+export function extractPptxSlideNotesTarget(relsXml: string): string | null {
+  const relationships = relsXml.matchAll(/<Relationship\b[^>]*>/gi);
+
+  for (const relationship of relationships) {
+    const tag = relationship[0];
+    const type = getXmlAttribute(tag, 'Type');
+    const target = getXmlAttribute(tag, 'Target');
+    const targetMode = getXmlAttribute(tag, 'TargetMode');
+    if (!type?.toLowerCase().endsWith('/notesslide') || !target || targetMode?.toLowerCase() === 'external') continue;
+    const resolvedTarget = resolveSlideRelationshipTarget(target);
+    if (resolvedTarget && /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(resolvedTarget)) return resolvedTarget;
+  }
+
+  return null;
+}
+
+export function extractPptxSpeakerNotes(notesXml: string, slideTextRuns: string[] = []): string[] {
+  const slideText = new Set(slideTextRuns.map((line) => line.toLowerCase()));
+  const placeholderText = new Set([
+    'click to add notes',
+    'click to add text',
+    'notes',
+  ]);
+  const notes: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of extractPptxSlideText(notesXml)) {
+    const key = value.toLowerCase();
+    if (slideText.has(key) || placeholderText.has(key) || seen.has(key)) continue;
+    notes.push(value);
+    seen.add(key);
+    if (notes.length >= MAX_PREVIEW_NOTES_PER_SLIDE) break;
+  }
+
+  return notes;
+}
+
 async function buildBestSlideImageDataUrl(zip: JSZip, imageTargets: string[]): Promise<string | undefined> {
   let bestImage: { bytes: Uint8Array; mimeType: string } | null = null;
 
@@ -190,7 +228,13 @@ async function buildBestSlideImageDataUrl(zip: JSZip, imageTargets: string[]): P
   return `data:${bestImage.mimeType};base64,${uint8ArrayToBase64(bestImage.bytes)}`;
 }
 
-function buildSlidePreview(path: string, textRuns: string[], index: number, imageUrl?: string): PresentationSlidePreview {
+function buildSlidePreview(
+  path: string,
+  textRuns: string[],
+  index: number,
+  imageUrl?: string,
+  notes: string[] = []
+): PresentationSlidePreview {
   const fallbackTitle = `Slide ${index + 1}`;
   const title = textRuns[0] || fallbackTitle;
   const lines = textRuns
@@ -203,6 +247,7 @@ function buildSlidePreview(path: string, textRuns: string[], index: number, imag
     title,
     lines,
     ...(imageUrl ? { imageUrl } : {}),
+    ...(notes.length > 0 ? { notes } : {}),
   };
 }
 
@@ -239,6 +284,10 @@ function isValidRenderedSlide(value: unknown): value is PresentationSlidePreview
     typeof candidate.title === 'string' &&
     Array.isArray(candidate.lines) &&
     candidate.lines.every((line) => typeof line === 'string') &&
+    (candidate.notes === undefined || (
+      Array.isArray(candidate.notes) &&
+      candidate.notes.every((note) => typeof note === 'string')
+    )) &&
     (candidate.imageUrl === undefined || (
       typeof candidate.imageUrl === 'string' &&
       isRenderedSlideImageUrl(candidate.imageUrl)
@@ -342,6 +391,7 @@ export function mergeRenderedPresentationPreview(
       id: extractedSlide?.id || renderedSlide?.id || `${sourceFormat}-slide-${index + 1}`,
       title: extractedSlide?.title || renderedSlide?.title || fallbackTitle,
       lines: extractedSlide?.lines || renderedSlide?.lines || [],
+      ...((extractedSlide?.notes || renderedSlide?.notes)?.length ? { notes: extractedSlide?.notes || renderedSlide?.notes } : {}),
       ...(renderedSlide?.imageUrl ? { imageUrl: renderedSlide.imageUrl } : {}),
     };
   });
@@ -607,7 +657,10 @@ export async function buildPresentationPreview(
       const imageUrl = relsXml
         ? await buildBestSlideImageDataUrl(zip, extractPptxSlideImageTargets(relsXml))
         : undefined;
-      slides.push(buildSlidePreview(path, textRuns, index, imageUrl));
+      const notesPath = relsXml ? extractPptxSlideNotesTarget(relsXml) : null;
+      const notesXml = notesPath ? await zip.file(notesPath)?.async('text') : undefined;
+      const notes = notesXml ? extractPptxSpeakerNotes(notesXml, textRuns) : [];
+      slides.push(buildSlidePreview(path, textRuns, index, imageUrl, notes));
     }
 
     const serverPreview = await serverPreviewPromise;

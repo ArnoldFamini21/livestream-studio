@@ -6,6 +6,7 @@ import {
   getPresentationItemDisplayTitle,
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
+import { hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
 
@@ -262,6 +263,7 @@ function ActiveDeckControls({
     onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'));
   };
   const slideItems = getPresentationSlidePickerItems(status.slides, status.currentIndex, status.unitLabel);
+  const currentNotes = status.currentSlide?.notes || [];
 
   return (
     <div style={styles.deckControl}>
@@ -278,6 +280,18 @@ function ActiveDeckControls({
           ? `Next: ${getPresentationItemDisplayTitle(status.nextSlide, status.currentIndex + 1, status.unitLabel)}`
           : 'End of deck'}
       </div>
+      {currentNotes.length > 0 && (
+        <div style={styles.deckNotes}>
+          <div style={styles.deckNotesHeader}>Speaker Notes</div>
+          <ul style={styles.deckNotesList}>
+            {currentNotes.map((note, index) => (
+              <li key={`${status.currentSlide?.id || status.currentIndex}-note-${index}`} style={styles.deckNoteItem}>
+                {note}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <label style={styles.deckJumpLabel}>
         <span style={styles.deckJumpText}>Jump to</span>
         <select
@@ -402,7 +416,7 @@ export function getMediaTabForType(type: StudioMediaType): MediaTab {
 export function canPlayMediaAsset(asset: StudioMediaAsset): boolean {
   if (asset.processingStatus === 'error') return false;
   if ((asset.type === 'presentation' || asset.type === 'pdf') && asset.source === 'upload') {
-    return Boolean(asset.preview?.kind === 'presentation-slides' && asset.preview.slides.length > 0);
+    return hasRenderedPresentationSlides(asset.preview);
   }
   return true;
 }
@@ -515,6 +529,10 @@ const styles: Record<string, React.CSSProperties> = {
   deckName: { fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 5 },
   deckCurrentTitle: { fontSize: 13, fontWeight: 800, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   deckNextTitle: { marginTop: 4, minHeight: 15, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  deckNotes: { marginTop: 9, padding: '8px 9px', borderRadius: 7, border: '1px solid rgba(103,232,249,0.18)', background: 'rgba(2,6,23,0.28)' },
+  deckNotesHeader: { fontSize: 9, fontWeight: 900, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0, marginBottom: 5 },
+  deckNotesList: { margin: 0, paddingLeft: 15, display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 96, overflowY: 'auto' },
+  deckNoteItem: { fontSize: 10, lineHeight: 1.35, color: 'var(--text-secondary)' },
   deckJumpLabel: { display: 'grid', gridTemplateColumns: '48px minmax(0, 1fr)', alignItems: 'center', gap: 7, marginTop: 9 },
   deckJumpText: { fontSize: 10, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase' },
   deckJumpSelect: { minWidth: 0, width: '100%', height: 30, padding: '0 8px', borderRadius: 7, border: '1px solid rgba(103,232,249,0.22)', background: 'rgba(15,23,42,0.72)', color: 'var(--text-primary)', fontSize: 11, fontWeight: 700, outline: 'none' },

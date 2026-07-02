@@ -593,6 +593,7 @@ export interface PresentationSlidePreview {
   title: string;
   lines: string[];
   imageUrl?: string;
+  notes?: string[];
 }
 
 export interface StudioMediaAssetPreview {
