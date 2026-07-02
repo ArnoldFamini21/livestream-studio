@@ -6,6 +6,8 @@ import {
   buildRecordingLibraryCatalogCsv,
   buildRecordingLibraryCatalogFilename,
   filterRecordingLibrarySessions,
+  getReadyFinalMp4ShareUrl,
+  getRecordingArtifactShareUrl,
   getReadyFinalMp4Artifact,
   getRecordingCloudRetentionLabel,
   hasReadyFinalMp4Export,
@@ -139,6 +141,13 @@ const sessions: LocalRecordingSession[] = [
           format: 'mp4',
           status: 'ready',
           bytes: 4096,
+          storage: {
+            provider: 's3',
+            bucket: 'recordings',
+            key: 'studio/exports/export-town-hall/final-mp4-Town_Hall.mp4',
+            url: 'https://cdn.example.com/recordings/studio/exports/export-town-hall/final-mp4-Town_Hall.mp4',
+            uploadedAt: '2026-06-04T10:22:05.000Z',
+          },
         },
         {
           id: 'export-manifest',
@@ -240,6 +249,10 @@ describe('recording library filters', () => {
     );
     assert.equal(hasReadyFinalMp4Export(sessions[3]), true);
     assert.equal(getReadyFinalMp4Artifact(sessions[3].mediaExport)?.id, 'final-mp4');
+    assert.equal(
+      getReadyFinalMp4ShareUrl(sessions[3].mediaExport),
+      'https://cdn.example.com/recordings/studio/exports/export-town-hall/final-mp4-Town_Hall.mp4'
+    );
     assert.equal(hasReadyFinalMp4Export(sessions[0]), false);
     assert.equal(isRecordingMediaExportRefreshable(sessions[3].mediaExport), false);
     assert.equal(isRecordingMediaExportRefreshable({
@@ -251,6 +264,15 @@ describe('recording library filters', () => {
       updatedAt: '2026-06-04T10:22:00.000Z',
       artifacts: [{ id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'running' }],
     }), true);
+    assert.equal(getRecordingArtifactShareUrl({
+      status: 'ready',
+      storage: {
+        provider: 's3',
+        bucket: 'recordings',
+        key: 'bad',
+        url: 'javascript:alert(1)',
+      },
+    }), null);
   });
 
   it('summarizes the saved recording dashboard totals', () => {
@@ -299,7 +321,7 @@ describe('recording library filters', () => {
     assert.equal(lines.length, 4);
     assert.match(lines[0], /sessionId,roomName,createdAt,durationTimecode/);
     assert.match(lines[0], /cloudProvider,cloudFolderId,cloudShareLink,cloudUploadedAt,cloudRetentionPolicy,cloudExpiresAt,cloudPermanent/);
-    assert.match(lines[0], /mediaExportStatus,mediaUploadId,mediaExportId,mediaMp4Ready,mediaArtifactCount/);
+    assert.match(lines[0], /mediaExportStatus,mediaUploadId,mediaExportId,mediaMp4Ready,mediaMp4ShareUrl,mediaArtifactCount/);
     assert.match(lines[1], /recording-1,Weekly Launch Show,2026-06-01T12:00:00\.000Z,30:00,1800,3,1024,1,7:00 Product demo/);
     assert.match(lines[1], /Host audio,audio,weekly_launch_host_audio\.webm,audio\/webm,256/);
     assert.match(lines[3], /Deck screen,screen,weekly_launch_deck_screen\.webm/);
@@ -308,7 +330,7 @@ describe('recording library filters', () => {
   it('exports media-server MP4 metadata in the recording library catalog', () => {
     const csv = buildRecordingLibraryCatalogCsv([sessions[3]]);
 
-    assert.match(csv, /ready,upload-town-hall,export-town-hall,true,2/);
+    assert.match(csv, /ready,upload-town-hall,export-town-hall,true,https:\/\/cdn\.example\.com\/recordings\/studio\/exports\/export-town-hall\/final-mp4-Town_Hall\.mp4,2/);
     assert.match(csv, /Program mix,program,town_hall_program_mix\.webm/);
   });
 
