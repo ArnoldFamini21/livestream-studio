@@ -274,6 +274,10 @@ export type HostAccessRecoveryResult =
   | { status: 'ok'; room: Room; hostToken: string }
   | { status: 'not_found' | 'forbidden' | 'expired' | 'already_joined' };
 
+export type RoomHostAccessResult =
+  | { status: 'ok'; room: Room }
+  | { status: 'not_found' | 'forbidden' };
+
 export class RoomQuotaError extends Error {
   constructor(message: string, public statusCode: number) {
     super(message);
@@ -607,6 +611,15 @@ function assertRegistrationHostAccess(roomState: RoomState, hostToken: unknown) 
   if (typeof hostToken !== 'string' || !safeEqual(hostToken, roomState.hostToken)) {
     throw new RoomRegistrationError(403, 'HOST_TOKEN_INVALID', 'Host access is required to view registrants.');
   }
+}
+
+export function getRoomHostAccess(roomId: string, hostToken: unknown): RoomHostAccessResult {
+  const roomState = rooms.get(roomId);
+  if (!roomState) return { status: 'not_found' };
+  if (typeof hostToken !== 'string' || !safeEqual(hostToken, roomState.hostToken)) {
+    return { status: 'forbidden' };
+  }
+  return { status: 'ok', room: roomState.room };
 }
 
 export function registerRoomGuest(

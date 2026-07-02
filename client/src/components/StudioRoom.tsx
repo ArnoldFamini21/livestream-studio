@@ -15,6 +15,7 @@ import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/use
 import { useRecording } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
+import type { LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
@@ -114,6 +115,7 @@ import {
   uploadRecordingToMediaServer,
   type RecordingUploadFileInput,
 } from '../utils/recordingUpload.ts';
+import { syncRecordingCatalogEntry } from '../utils/recordingCatalog.ts';
 import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 import {
   downloadRtmpBackupRecording,
@@ -3080,6 +3082,15 @@ export function StudioRoom() {
     });
   }, [requestLiveStreamToken]);
 
+  const syncLocalRecordingCatalog = useCallback(async (session: LocalRecordingSession) => {
+    if (!roomId || !roomHostToken) return;
+    await syncRecordingCatalogEntry({
+      roomId,
+      hostToken: roomHostToken,
+      session,
+    });
+  }, [roomHostToken, roomId]);
+
   const finalizeLiveBackupRecording = useCallback(async () => {
     if (!roomId || !isHostOrCoHost) return;
     if (liveBackupRecording?.status === 'disabled') return;
@@ -5502,6 +5513,7 @@ export function StudioRoom() {
               onUploadRecording={uploadLocalRecordingToMediaServer}
               onDownloadRecordingExportArtifact={downloadMediaServerRecordingArtifact}
               onRefreshRecordingExport={refreshMediaServerRecordingExport}
+              onSyncRecordingCatalog={syncLocalRecordingCatalog}
               onAddRecordingMarker={onAddRecordingMarker}
               onRemoveRecordingMarker={onRemoveRecordingMarker}
               onClearRecordingMarkers={onClearRecordingMarkers}

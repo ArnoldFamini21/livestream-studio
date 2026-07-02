@@ -9,10 +9,12 @@ import {
   setupSignalingServer,
 } from './services/signaling.js';
 import { roomRouter } from './routes/rooms.js';
+import { configureRecordingCatalogStore, recordingRouter } from './routes/recordings.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
 import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { createRoomSnapshotStoreFromEnv } from './services/roomPersistence.js';
+import { createRecordingCatalogStoreFromEnv } from './services/recordingCatalog.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -186,6 +188,8 @@ app.use('/api/rooms', (req, res, next) => {
   next();
 }, roomRouter);
 
+app.use('/api/recordings', recordingRouter);
+
 app.use(
   '/api/transcriptions',
   transcriptionLimiter.middleware,
@@ -242,6 +246,7 @@ const wss = new WebSocketServer({
 setupSignalingServer(wss);
 
 const roomSnapshotStore = createRoomSnapshotStoreFromEnv(process.env);
+const recordingCatalogStore = createRecordingCatalogStoreFromEnv(process.env);
 
 async function initializeRoomPersistence() {
   if (!roomSnapshotStore) {
@@ -264,7 +269,28 @@ async function initializeRoomPersistence() {
   }
 }
 
+async function initializeRecordingCatalogPersistence() {
+  if (!recordingCatalogStore) {
+    configureRecordingCatalogStore(null);
+    console.log('Recording catalog persistence disabled; using in-memory catalog.');
+    return;
+  }
+
+  try {
+    await recordingCatalogStore.init();
+    configureRecordingCatalogStore(recordingCatalogStore);
+    console.log('Recording catalog persistence enabled.');
+  } catch (err) {
+    configureRecordingCatalogStore(null);
+    console.warn(
+      'Recording catalog persistence disabled:',
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
 await initializeRoomPersistence();
+await initializeRecordingCatalogPersistence();
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
@@ -291,6 +317,9 @@ function gracefulShutdown(signal: string) {
       console.log('HTTP server closed.');
       await roomSnapshotStore?.close().catch((err) => {
         console.error('Room snapshot store close failed:', err instanceof Error ? err.message : err);
+      });
+      await recordingCatalogStore?.close().catch((err) => {
+        console.error('Recording catalog store close failed:', err instanceof Error ? err.message : err);
       });
       process.exit(0);
     });

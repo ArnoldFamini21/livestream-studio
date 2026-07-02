@@ -37,6 +37,7 @@ interface RecordingPanelProps {
   onUploadRecording?: (input: RecordingServerUploadInput) => Promise<RecordingUploadSummary>;
   onDownloadRecordingExportArtifact?: (input: RecordingServerExportArtifactInput) => Promise<BlobExportDownload>;
   onRefreshRecordingExport?: (input: RecordingServerExportRefreshInput) => Promise<RecordingExportJobResponse>;
+  onSyncRecordingCatalog?: (session: LocalRecordingSession) => Promise<void>;
   onAddRecordingMarker?: (seconds: number, label: string) => void;
   onRemoveRecordingMarker?: (markerId: string) => void;
   onClearRecordingMarkers?: () => void;
@@ -2303,6 +2304,7 @@ export function RecordingPanel({
   onUploadRecording,
   onDownloadRecordingExportArtifact,
   onRefreshRecordingExport,
+  onSyncRecordingCatalog,
   onAddRecordingMarker,
   onRemoveRecordingMarker,
   onClearRecordingMarkers,
@@ -2401,6 +2403,14 @@ export function RecordingPanel({
     () => getRecordingCloudRetentionPolicy(driveRetentionPolicyId),
     [driveRetentionPolicyId]
   );
+  const syncRecordingCatalog = useCallback(async (session: LocalRecordingSession) => {
+    if (!onSyncRecordingCatalog) return;
+    try {
+      await onSyncRecordingCatalog(session);
+    } catch (err) {
+      console.warn('Failed to sync recording catalog:', err);
+    }
+  }, [onSyncRecordingCatalog]);
 
   useEffect(() => {
     return () => {
@@ -2453,6 +2463,7 @@ export function RecordingPanel({
           files,
           markers: sortedRecordingMarkers,
         });
+        void syncRecordingCatalog(session);
         setActiveSessionId(session.id);
         setLibraryTrackFiles((current) => ({ ...current, [session.id]: files }));
         if (onUploadRecording) {
@@ -2481,7 +2492,8 @@ export function RecordingPanel({
             setMediaUploadError(null);
             if (upload.exportJob) {
               try {
-                await updateSessionMediaExport(session.id, upload.exportJob);
+                const updatedSession = await updateSessionMediaExport(session.id, upload.exportJob);
+                void syncRecordingCatalog(updatedSession);
               } catch (err) {
                 console.warn('Failed to save media export metadata:', err);
               }
@@ -2499,7 +2511,7 @@ export function RecordingPanel({
     } finally {
       setIsStopping(false);
     }
-  }, [formattedTime, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, updateSessionMediaExport]);
+  }, [formattedTime, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
 
   const readyMediaExportArtifacts = useMemo(() => (
     mediaExportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || []
@@ -2544,7 +2556,8 @@ export function RecordingPanel({
       setMediaUploadMessage(`Media-server export ${refreshed.status}.${artifactSummary}`);
       if (activeSessionId) {
         try {
-          await updateSessionMediaExport(activeSessionId, refreshed);
+          const updatedSession = await updateSessionMediaExport(activeSessionId, refreshed);
+          void syncRecordingCatalog(updatedSession);
         } catch (err) {
           console.warn('Failed to refresh saved media export metadata:', err);
         }
@@ -2556,7 +2569,7 @@ export function RecordingPanel({
     } finally {
       setIsRefreshingMediaExport(false);
     }
-  }, [activeSessionId, mediaExportJob, onRefreshRecordingExport, updateSessionMediaExport]);
+  }, [activeSessionId, mediaExportJob, onRefreshRecordingExport, syncRecordingCatalog, updateSessionMediaExport]);
 
   const handleDownloadAll = useCallback(async () => {
     for (let i = 0; i < recordedFiles.length; i++) {
@@ -2799,14 +2812,15 @@ export function RecordingPanel({
       totalBytes: uploadFiles.reduce((total, file) => total + file.blob.size, 0),
     };
     if (activeSession?.id) {
-      await updateSessionCloudHandoff(activeSession.id, cloudHandoff);
+      const updatedSession = await updateSessionCloudHandoff(activeSession.id, cloudHandoff);
+      void syncRecordingCatalog(updatedSession);
     }
     const retentionLabel = retentionManifest.permanent
       ? 'permanent archive'
       : `expires ${formatDateTime(retentionManifest.expiresAt || uploadedAt)}`;
     setDriveUploadMessage(`Uploaded ${uploadFiles.length} files to Google Drive. Share link is ready; ${retentionLabel}.`);
     console.log('All files uploaded to Google Drive');
-  }, [activeSessionId, authorize, captionLanguage, captionSegments, createFolder, createShareLink, driveRetentionPolicyId, formattedTime, generatedTranscript, isAuthorized, recordedFiles, roomName, sessions, sortedRecordingMarkers, updateSessionCloudHandoff, uploadFile]);
+  }, [activeSessionId, authorize, captionLanguage, captionSegments, createFolder, createShareLink, driveRetentionPolicyId, formattedTime, generatedTranscript, isAuthorized, recordedFiles, roomName, sessions, sortedRecordingMarkers, syncRecordingCatalog, updateSessionCloudHandoff, uploadFile]);
 
   const handleCopyDriveShareLink = useCallback(async () => {
     if (!driveShareLink) return;
@@ -2930,7 +2944,8 @@ export function RecordingPanel({
         uploadId: session.mediaExport.uploadId,
         exportId: session.mediaExport.exportId,
       });
-      await updateSessionMediaExport(session.id, refreshed);
+      const updatedSession = await updateSessionMediaExport(session.id, refreshed);
+      void syncRecordingCatalog(updatedSession);
       if (activeSessionId === session.id) {
         setMediaExportJob(refreshed);
       }
@@ -2942,7 +2957,7 @@ export function RecordingPanel({
     } finally {
       setLibraryBusyId(null);
     }
-  }, [activeSessionId, onRefreshRecordingExport, updateSessionMediaExport]);
+  }, [activeSessionId, onRefreshRecordingExport, syncRecordingCatalog, updateSessionMediaExport]);
 
   const handleDownloadSessionBundle = useCallback(async (session: LocalRecordingSession) => {
     setLibraryBusyId(session.id);
