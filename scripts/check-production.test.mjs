@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  describeHttpFailure,
+  describeServiceHealthMetadataFailure,
   evaluateClientCacheHeaders,
   evaluateHostAccessCreateResponse,
   normalizeProductionCheckScope,
@@ -58,6 +60,32 @@ test('parses the final curl response header block after redirects', () => {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
   assert.equal(response.headers.get('expires'), 'Wed, 08 Jul 2026 22:43:28 GMT');
+});
+
+test('explains Render no-server responses as missing services', () => {
+  const response = new Response('Not Found', {
+    status: 404,
+    headers: {
+      'x-render-routing': 'no-server',
+    },
+  });
+
+  const message = describeHttpFailure(response, 'Media server', 'Not Found');
+
+  assert.match(message, /Media server is not provisioned on Render/);
+  assert.match(message, /Create or sync the Render service/);
+  assert.doesNotMatch(message, /did not return JSON/);
+});
+
+test('explains old Render health payloads as stale deployments', () => {
+  const message = describeServiceHealthMetadataFailure(
+    'Signaling server',
+    { status: 'ok' },
+    'signaling-server'
+  );
+
+  assert.match(message, /older Render deployment/);
+  assert.match(message, /deploy hook secret/);
 });
 
 test('accepts create studio responses with private host access', () => {
