@@ -455,9 +455,17 @@ function clampMediaSlideIndex(index: number, total: number): number {
   return Math.min(total - 1, Math.max(0, index));
 }
 
+function getPresentationSlideImageUrl(media: ActiveMedia | null | undefined, slideIndex: number): string | null {
+  const slides = media?.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
+  if (slides.length === 0) return null;
+  const currentIndex = clampMediaSlideIndex(slideIndex, slides.length);
+  return slides[currentIndex]?.imageUrl || null;
+}
+
 function drawPresentationMediaPreview(
   ctx: CanvasRenderingContext2D,
   media: ActiveMedia,
+  slideImage: HTMLImageElement | null,
   slideIndex: number,
   x: number,
   y: number,
@@ -476,6 +484,43 @@ function drawPresentationMediaPreview(
   const finalWidth = finalHeight * 16 / 9;
   const slideX = x + (width - finalWidth) / 2;
   const slideY = y + (height - finalHeight) / 2;
+
+  if (slide.imageUrl && slideImage?.complete && slideImage.naturalWidth > 0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(slideX, slideY, finalWidth, finalHeight, 24);
+    ctx.clip();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(slideX, slideY, finalWidth, finalHeight);
+    drawContainedSource(ctx, slideImage, slideImage.naturalWidth, slideImage.naturalHeight, slideX, slideY, finalWidth, finalHeight);
+    ctx.restore();
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(slideX, slideY, finalWidth, finalHeight, 24);
+    ctx.stroke();
+
+    const badgeText = `Slide ${currentIndex + 1} / ${slides.length}`;
+    ctx.font = '800 20px Inter, Arial, sans-serif';
+    const badgeWidth = Math.max(140, ctx.measureText(badgeText).width + 42);
+    const badgeHeight = 42;
+    const badgeX = slideX + finalWidth - badgeWidth - 22;
+    const badgeY = slideY + 22;
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.74)';
+    drawRoundedRect(ctx, badgeX, badgeY, badgeWidth, badgeHeight, 21);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = '#f8fafc';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeText, badgeX + badgeWidth / 2, badgeY + badgeHeight / 2 + 1);
+    ctx.restore();
+    return true;
+  }
+
   const headerHeight = Math.max(58, finalHeight * 0.085);
   const footerHeight = Math.max(46, finalHeight * 0.07);
   const paddingX = finalWidth * 0.065;
@@ -542,6 +587,7 @@ function drawActiveMediaOverlay(
   scaleX: number,
   scaleY: number,
   image: HTMLImageElement | null,
+  presentationSlideImage: HTMLImageElement | null,
   brandColor: string,
   slideIndex: number
 ) {
@@ -576,7 +622,7 @@ function drawActiveMediaOverlay(
     }
   }
 
-  if (media.type === 'presentation' && drawPresentationMediaPreview(ctx, media, slideIndex, rect.x, rect.y, rect.width, rect.height, brandColor)) {
+  if (media.type === 'presentation' && drawPresentationMediaPreview(ctx, media, presentationSlideImage, slideIndex, rect.x, rect.y, rect.width, rect.height, brandColor)) {
     ctx.restore();
     return;
   }
@@ -1222,7 +1268,9 @@ export function useCompositor({
   const logoImageRef = useRef<HTMLImageElement | null>(null);
   const backgroundImageRef = useRef<HTMLImageElement | null>(null);
   const activeMediaImageRef = useRef<HTMLImageElement | null>(null);
+  const activePresentationSlideImageRef = useRef<HTMLImageElement | null>(null);
   const frameTargetRef = useRef<CompositorFrameTarget | null>(null);
+  const activePresentationSlideImageUrl = getPresentationSlideImageUrl(activeMedia, activeMediaSlideIndex);
 
   useEffect(() => {
     logoImageRef.current = null;
@@ -1280,6 +1328,25 @@ export function useCompositor({
       cancelled = true;
     };
   }, [activeMedia?.type, activeMedia?.url]);
+
+  useEffect(() => {
+    activePresentationSlideImageRef.current = null;
+    if (!activePresentationSlideImageUrl) return;
+
+    let cancelled = false;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = activePresentationSlideImageUrl;
+    img.onload = () => {
+      if (!cancelled) activePresentationSlideImageRef.current = img;
+    };
+    img.onerror = () => {
+      if (!cancelled) activePresentationSlideImageRef.current = null;
+    };
+    return () => {
+      cancelled = true;
+    };
+  }, [activePresentationSlideImageUrl]);
 
   useEffect(() => {
     const canvas = document.createElement('canvas');
@@ -1379,6 +1446,7 @@ export function useCompositor({
         scaleX,
         scaleY,
         activeMediaImageRef.current,
+        activePresentationSlideImageRef.current,
         brandColor,
         activeMediaSlideIndex
       );
