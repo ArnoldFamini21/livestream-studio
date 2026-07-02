@@ -45,6 +45,15 @@ FROM node:24-slim AS media-server
 WORKDIR /app
 ENV NODE_ENV=production
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    libreoffice-impress \
+    poppler-utils \
+    fonts-dejavu \
+    fonts-liberation \
+    fontconfig \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json ./
 COPY media-server/package.json media-server/package.json
 COPY shared/package.json shared/package.json

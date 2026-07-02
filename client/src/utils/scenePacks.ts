@@ -14,6 +14,7 @@ import {
 import { normalizeLowerThirdAnimation, normalizeLowerThirdAnimationDirection, normalizeLowerThirdFont } from './lowerThirds.ts';
 import { normalizeLogoOpacity } from './logoWatermark.ts';
 import { normalizeLogoPosition } from './logoPosition.ts';
+import { normalizeSceneActiveMediaSnapshot } from './sceneApplication.ts';
 import { buildDuplicatedSceneName } from './sceneOrder.ts';
 
 export const SCENE_PACK_VERSION = 1;
@@ -156,6 +157,7 @@ function sanitizeScene(input: unknown): Scene | null {
     ? readString(input.focusedVideoItemId, 128) || null
     : null;
   scene.stageItemOrder = readStringArray(input.stageItemOrder, 64, 128);
+  scene.activeMedia = normalizeSceneActiveMediaSnapshot(input.activeMedia);
 
   return scene;
 }

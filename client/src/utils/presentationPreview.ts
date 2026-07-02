@@ -1,5 +1,6 @@
 import type JSZip from 'jszip';
 import type { StudioMediaAssetPreview, PresentationSlidePreview } from '@studio/shared';
+import { resolveMediaHttpUrl } from './apiClient.ts';
 
 const MAX_PRESENTATION_PREVIEW_BYTES = 50 * 1024 * 1024;
 const MAX_PREVIEW_SLIDES = 60;
@@ -12,6 +13,7 @@ const RENDERED_SLIDE_HEIGHT = 720;
 const RENDER_SETTLE_FRAMES = 2;
 const RENDER_SETTLE_TIMEOUT_MS = 40;
 const PDF_RENDER_SCALE_LIMIT = 2;
+const SERVER_RENDER_TIMEOUT_MS = 60_000;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
@@ -23,6 +25,18 @@ const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
 };
 
 let pdfWorkerConfigured = false;
+
+interface PresentationPreviewOptions {
+  mediaHttpUrl?: string;
+  fetchImpl?: typeof fetch;
+  serverRenderTimeoutMs?: number;
+}
+
+interface ServerPresentationPreviewResponse {
+  kind?: unknown;
+  sourceFormat?: unknown;
+  slides?: unknown;
+}
 
 function decodeXmlText(value: string): string {
   return value
@@ -106,6 +120,20 @@ export function isPptxFile(file: Pick<File, 'name' | 'type'>): boolean {
   );
 }
 
+export function isLegacyPowerPointFile(file: Pick<File, 'name' | 'type'>): boolean {
+  const lower = file.name.toLowerCase();
+  return (
+    lower.endsWith('.ppt') ||
+    lower.endsWith('.pps') ||
+    lower.endsWith('.pot') ||
+    file.type === 'application/vnd.ms-powerpoint'
+  );
+}
+
+export function isPowerPointFile(file: Pick<File, 'name' | 'type'>): boolean {
+  return isPptxFile(file) || isLegacyPowerPointFile(file);
+}
+
 export function isPdfFile(file: Pick<File, 'name' | 'type'>): boolean {
   return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 }
@@ -186,6 +214,128 @@ export function applyRenderedSlideImages(
       ? { ...slide, imageUrl: renderedImageUrls[index] }
       : slide
   ));
+}
+
+function isValidRenderedSlide(value: unknown): value is PresentationSlidePreview {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<PresentationSlidePreview>;
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.title === 'string' &&
+    Array.isArray(candidate.lines) &&
+    candidate.lines.every((line) => typeof line === 'string') &&
+    (candidate.imageUrl === undefined || (
+      typeof candidate.imageUrl === 'string' &&
+      candidate.imageUrl.startsWith('data:image/png;base64,')
+    ))
+  );
+}
+
+function normalizeServerPreview(value: ServerPresentationPreviewResponse): StudioMediaAssetPreview | undefined {
+  if (
+    value.kind !== 'presentation-slides' ||
+    (value.sourceFormat !== 'pptx' && value.sourceFormat !== 'pdf') ||
+    !Array.isArray(value.slides)
+  ) {
+    return undefined;
+  }
+
+  const slides = value.slides
+    .filter(isValidRenderedSlide)
+    .slice(0, MAX_PREVIEW_SLIDES);
+
+  return slides.length > 0
+    ? { kind: 'presentation-slides', sourceFormat: value.sourceFormat, slides }
+    : undefined;
+}
+
+function getSafeFileNameHeader(fileName: string): string {
+  return fileName
+    .replace(/[\r\n]/g, ' ')
+    .replace(/[^\x20-\x7e]/g, '_')
+    .trim()
+    .slice(0, 180) || 'presentation';
+}
+
+function buildMediaServerUrl(baseUrl: string, path: string): string {
+  const base = baseUrl.trim().replace(/\/+$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${normalizedPath}`;
+}
+
+function canTryServerRender(options: PresentationPreviewOptions): boolean {
+  if (options.mediaHttpUrl) return true;
+  return typeof window !== 'undefined' && typeof fetch === 'function';
+}
+
+export async function buildServerRenderedPresentationPreview(
+  file: File,
+  options: PresentationPreviewOptions = {}
+): Promise<StudioMediaAssetPreview | undefined> {
+  if (!canTryServerRender(options) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
+
+  const mediaHttpUrl = (options.mediaHttpUrl || resolveMediaHttpUrl()).trim();
+  const fetchImpl = options.fetchImpl || fetch;
+  if (!mediaHttpUrl || typeof fetchImpl !== 'function') return undefined;
+
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(
+    () => controller.abort(),
+    Math.max(1_000, options.serverRenderTimeoutMs || SERVER_RENDER_TIMEOUT_MS)
+  );
+
+  try {
+    const response = await fetchImpl(buildMediaServerUrl(mediaHttpUrl, '/presentation-preview'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-File-Name': getSafeFileNameHeader(file.name),
+      },
+      body: file,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) return undefined;
+    return normalizeServerPreview(await response.json() as ServerPresentationPreviewResponse);
+  } catch (err) {
+    if ((err as { name?: string })?.name !== 'AbortError') {
+      console.warn('Media server presentation render unavailable:', err);
+    }
+    return undefined;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
+
+export function mergeRenderedPresentationPreview(
+  slides: PresentationSlidePreview[],
+  renderedPreview: StudioMediaAssetPreview | undefined,
+  sourceFormat: StudioMediaAssetPreview['sourceFormat']
+): StudioMediaAssetPreview | undefined {
+  if (!renderedPreview?.slides.length) {
+    return slides.length > 0
+      ? { kind: 'presentation-slides', sourceFormat, slides }
+      : undefined;
+  }
+
+  const total = Math.max(slides.length, renderedPreview.slides.length);
+  const mergedSlides = Array.from({ length: total }, (_, index) => {
+    const extractedSlide = slides[index];
+    const renderedSlide = renderedPreview.slides[index];
+    const fallbackTitle = sourceFormat === 'pdf' ? `Page ${index + 1}` : `Slide ${index + 1}`;
+    return {
+      id: extractedSlide?.id || renderedSlide?.id || `${sourceFormat}-slide-${index + 1}`,
+      title: extractedSlide?.title || renderedSlide?.title || fallbackTitle,
+      lines: extractedSlide?.lines || renderedSlide?.lines || [],
+      ...(renderedSlide?.imageUrl ? { imageUrl: renderedSlide.imageUrl } : {}),
+    };
+  });
+
+  return {
+    kind: 'presentation-slides',
+    sourceFormat,
+    slides: mergedSlides,
+  };
 }
 
 function canUseDomPresentationRenderer(): boolean {
@@ -382,8 +532,14 @@ async function renderPdfPagesToImages(arrayBuffer: ArrayBuffer): Promise<Present
   }
 }
 
-async function buildPdfPresentationPreview(file: File): Promise<StudioMediaAssetPreview | undefined> {
+async function buildPdfPresentationPreview(
+  file: File,
+  options: PresentationPreviewOptions = {}
+): Promise<StudioMediaAssetPreview | undefined> {
   if (!isPdfFile(file) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
+
+  const serverPreview = await buildServerRenderedPresentationPreview(file, options);
+  if (serverPreview) return serverPreview;
 
   const slides = await renderPdfPagesToImages(await file.arrayBuffer());
   return slides.length > 0
@@ -402,12 +558,21 @@ function getSortedSlidePaths(zip: JSZip): string[] {
     .slice(0, MAX_PREVIEW_SLIDES);
 }
 
-export async function buildPresentationPreview(file: File): Promise<StudioMediaAssetPreview | undefined> {
+export async function buildPresentationPreview(
+  file: File,
+  options: PresentationPreviewOptions = {}
+): Promise<StudioMediaAssetPreview | undefined> {
   if (isPdfFile(file)) {
-    return buildPdfPresentationPreview(file);
+    return buildPdfPresentationPreview(file, options);
   }
 
-  if (!isPptxFile(file) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
+  if (!isPowerPointFile(file) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
+
+  const serverPreviewPromise = buildServerRenderedPresentationPreview(file, options).catch(() => undefined);
+
+  if (isLegacyPowerPointFile(file)) {
+    return serverPreviewPromise;
+  }
 
   try {
     const { default: JSZip } = await import('jszip');
@@ -428,6 +593,11 @@ export async function buildPresentationPreview(file: File): Promise<StudioMediaA
       slides.push(buildSlidePreview(path, textRuns, index, imageUrl));
     }
 
+    const serverPreview = await serverPreviewPromise;
+    if (serverPreview) {
+      return mergeRenderedPresentationPreview(slides, serverPreview, 'pptx');
+    }
+
     const renderedImageUrls = await renderPptxSlidesToImages(arrayBuffer, slides.length);
     const finalSlides = applyRenderedSlideImages(slides, renderedImageUrls);
 
@@ -435,6 +605,6 @@ export async function buildPresentationPreview(file: File): Promise<StudioMediaA
       ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides: finalSlides }
       : undefined;
   } catch {
-    return undefined;
+    return serverPreviewPromise;
   }
 }

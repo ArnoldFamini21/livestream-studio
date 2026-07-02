@@ -18,6 +18,7 @@ export interface ScenePreviewOverlays {
   timer: boolean;
   widget: boolean;
   logo: boolean;
+  media: boolean;
 }
 
 export function getScenePreviewTiles(
@@ -76,7 +77,7 @@ export function getScenePreviewPipTilePosition(corner: Scene['pipCorner'] = 'BR'
   }
 }
 
-export function getScenePreviewOverlays(scene: Pick<Scene, 'visibleOverlayIds' | 'logoUrl'>): ScenePreviewOverlays {
+export function getScenePreviewOverlays(scene: Pick<Scene, 'visibleOverlayIds' | 'logoUrl' | 'activeMedia'>): ScenePreviewOverlays {
   return {
     lowerThird: scene.visibleOverlayIds.some((id) => id.startsWith('lt-')),
     banner: scene.visibleOverlayIds.some((id) => id.startsWith('banner-')),
@@ -84,6 +85,7 @@ export function getScenePreviewOverlays(scene: Pick<Scene, 'visibleOverlayIds' |
     timer: scene.visibleOverlayIds.some((id) => id.startsWith('timer-')),
     widget: scene.visibleOverlayIds.some((id) => id.startsWith('widget-')),
     logo: Boolean(scene.logoUrl),
+    media: Boolean(scene.activeMedia?.assetId),
   };
 }
 

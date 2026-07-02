@@ -43,6 +43,11 @@ import {
   RecordingExportJobStore,
 } from './recordingExportJob.js';
 import {
+  MAX_PRESENTATION_RENDER_BYTES,
+  PresentationRenderError,
+  renderPresentationPreview,
+} from './presentationRender.js';
+import {
   createFfmpegArgs,
   hasRemainingRelayWork,
   normalizeAudioConfig,
@@ -514,7 +519,7 @@ function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): boolean {
     res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type,X-File-Name');
   res.setHeader('Access-Control-Max-Age', '600');
   return true;
 }
@@ -862,6 +867,55 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
   }
 }
 
+async function handlePresentationPreviewRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  if (url.pathname !== '/presentation-preview') return false;
+
+  if (!applyCorsHeaders(req, res)) {
+    writeJson(res, 403, { error: 'Forbidden: origin not allowed' });
+    return true;
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  if (req.method !== 'POST') {
+    writeJson(res, 405, { error: 'Method not allowed' });
+    return true;
+  }
+
+  try {
+    const fileNameHeader = req.headers['x-file-name'];
+    const contentTypeHeader = req.headers['content-type'];
+    const fileName = Array.isArray(fileNameHeader) ? fileNameHeader[0] : fileNameHeader;
+    const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
+    const data = await readRequestBody(req, MAX_PRESENTATION_RENDER_BYTES);
+
+    const preview = await renderPresentationPreview({
+      fileName: fileName || 'presentation',
+      contentType: contentType || 'application/octet-stream',
+      data,
+    });
+
+    writeJson(res, 200, preview);
+    return true;
+  } catch (err) {
+    if (err instanceof PresentationRenderError) {
+      writeJson(res, err.statusCode, { error: err.message, code: err.code });
+      return true;
+    }
+    if (err instanceof RecordingUploadError) {
+      writeJson(res, err.statusCode, { error: err.message, code: err.code });
+      return true;
+    }
+    console.error('Presentation preview render failed:', err);
+    writeJson(res, 500, { error: 'Presentation preview render failed', code: 'PRESENTATION_RENDER_FAILED' });
+    return true;
+  }
+}
+
 async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -881,6 +935,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || '/', 'http://media-server.local');
   if (await handleLiveBackupRequest(req, res, url)) return;
   if (await handleRecordingUploadRequest(req, res, url)) return;
+  if (await handlePresentationPreviewRequest(req, res, url)) return;
 
   writeJson(res, 404, { error: 'Not found' });
 }

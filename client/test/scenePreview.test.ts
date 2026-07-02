@@ -53,6 +53,7 @@ describe('scene preview thumbnails', () => {
       getScenePreviewOverlays({
         logoUrl: 'https://example.test/logo.png',
         visibleOverlayIds: ['lt-host', 'banner-2', 'ticker-3', 'timer-4', 'widget-5', 'unknown-6'],
+        activeMedia: null,
       }),
       {
         lowerThird: true,
@@ -61,8 +62,19 @@ describe('scene preview thumbnails', () => {
         timer: true,
         widget: true,
         logo: true,
+        media: false,
       }
     );
+  });
+
+  it('marks saved scene media in preview metadata', () => {
+    const overlays = getScenePreviewOverlays({
+      logoUrl: null,
+      visibleOverlayIds: [],
+      activeMedia: { assetId: 'media-1', slideIndex: 2 },
+    });
+
+    assert.equal(overlays.media, true);
   });
 
   it('positions logo markers by saved placement', () => {
