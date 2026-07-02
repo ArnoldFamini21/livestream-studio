@@ -28,12 +28,16 @@ import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
+  isRecordingPaused?: boolean;
   formattedTime: string;
   recordingTrackLabels?: string[];
   recordingReadiness?: RecordingReadinessSummary;
   recordingMarkers?: RecordingMarker[];
-  onStartRecording: () => void;
+  onStartRecording: () => void | Promise<void>;
+  onPauseRecording?: () => void | Promise<void>;
+  onResumeRecording?: () => void | Promise<void>;
   onStopRecording: () => Promise<RecordingResult>;
+  onCancelRecording?: () => void | Promise<void>;
   onUploadRecording?: (input: RecordingServerUploadInput) => Promise<RecordingUploadSummary>;
   onDownloadRecordingExportArtifact?: (input: RecordingServerExportArtifactInput) => Promise<BlobExportDownload>;
   onRefreshRecordingExport?: (input: RecordingServerExportRefreshInput) => Promise<RecordingExportJobResponse>;
@@ -2295,12 +2299,16 @@ export async function createRecordingDriveHandoffFiles(
 
 export function RecordingPanel({
   isRecording,
+  isRecordingPaused = false,
   formattedTime,
   recordingTrackLabels = [],
   recordingReadiness,
   recordingMarkers = [],
   onStartRecording,
+  onPauseRecording,
+  onResumeRecording,
   onStopRecording,
+  onCancelRecording,
   onUploadRecording,
   onDownloadRecordingExportArtifact,
   onRefreshRecordingExport,
@@ -2317,6 +2325,7 @@ export function RecordingPanel({
   const [recordedFiles, setRecordedFiles] = useState<RecordedFile[]>([]);
   const [lastRecordingDurationSeconds, setLastRecordingDurationSeconds] = useState<number | null>(null);
   const [isStopping, setIsStopping] = useState(false);
+  const [recordingControlAction, setRecordingControlAction] = useState<'start' | 'pause' | 'resume' | 'stop' | 'cancel' | 'restart' | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ url: string; type: string; label: string } | null>(null);
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
@@ -2418,8 +2427,59 @@ export function RecordingPanel({
     };
   }, [preview]);
 
+  const resetCompletedRecordingState = useCallback(() => {
+    setRecordedFiles([]);
+    setLastRecordingDurationSeconds(null);
+    setActiveSessionId(null);
+    setPreview((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return null;
+    });
+    setDriveShareLink(null);
+    setDriveUploadMessage(null);
+    setDriveUploadError(null);
+    setDriveLinkCopied(false);
+    setMediaUploadMessage(null);
+    setMediaUploadError(null);
+    setMediaExportJob(null);
+    setMediaExportDownloadError(null);
+    setMediaExportDownloadingId(null);
+    setIsRefreshingMediaExport(false);
+    setGeneratedTranscript(null);
+    setTranscriptionError(null);
+  }, []);
+
+  const handleStart = useCallback(async () => {
+    if (!canStartRecording || recordingControlAction) return;
+    resetCompletedRecordingState();
+    setRecordingControlAction('start');
+    try {
+      await Promise.resolve(onStartRecording());
+    } catch (err) {
+      console.error('Failed to start local recording:', err);
+    } finally {
+      setRecordingControlAction(null);
+    }
+  }, [canStartRecording, onStartRecording, recordingControlAction, resetCompletedRecordingState]);
+
+  const handlePauseResume = useCallback(async () => {
+    if (recordingControlAction) return;
+    const action = isRecordingPaused ? 'resume' : 'pause';
+    const handler = isRecordingPaused ? onResumeRecording : onPauseRecording;
+    if (!handler) return;
+    setRecordingControlAction(action);
+    try {
+      await Promise.resolve(handler());
+    } catch (err) {
+      console.error(`Failed to ${action} local recording:`, err);
+    } finally {
+      setRecordingControlAction(null);
+    }
+  }, [isRecordingPaused, onPauseRecording, onResumeRecording, recordingControlAction]);
+
   const handleStop = useCallback(async () => {
     setIsStopping(true);
+    setRecordingControlAction('stop');
     const durationSeconds = parseDurationSeconds(formattedTime);
     try {
       const result = await onStopRecording();
@@ -2510,8 +2570,48 @@ export function RecordingPanel({
       console.error('Error stopping recording:', err);
     } finally {
       setIsStopping(false);
+      setRecordingControlAction(null);
     }
   }, [formattedTime, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
+
+  const confirmDiscardActiveRecording = useCallback((action: 'cancel' | 'restart'): boolean => {
+    if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
+    const label = action === 'restart' ? 'restart' : 'cancel';
+    return window.confirm(`This will ${label} the active recording and discard unsaved chunks. Continue?`);
+  }, []);
+
+  const handleCancelRecording = useCallback(async () => {
+    if (!onCancelRecording || recordingControlAction || !confirmDiscardActiveRecording('cancel')) return;
+    setIsStopping(true);
+    setRecordingControlAction('cancel');
+    try {
+      await Promise.resolve(onCancelRecording());
+      resetCompletedRecordingState();
+      onClearRecordingMarkers?.();
+    } catch (err) {
+      console.error('Failed to cancel local recording:', err);
+    } finally {
+      setIsStopping(false);
+      setRecordingControlAction(null);
+    }
+  }, [confirmDiscardActiveRecording, onCancelRecording, onClearRecordingMarkers, recordingControlAction, resetCompletedRecordingState]);
+
+  const handleRestartRecording = useCallback(async () => {
+    if (!onCancelRecording || recordingControlAction || !confirmDiscardActiveRecording('restart')) return;
+    setIsStopping(true);
+    setRecordingControlAction('restart');
+    try {
+      await Promise.resolve(onCancelRecording());
+      resetCompletedRecordingState();
+      onClearRecordingMarkers?.();
+      await Promise.resolve(onStartRecording());
+    } catch (err) {
+      console.error('Failed to restart local recording:', err);
+    } finally {
+      setIsStopping(false);
+      setRecordingControlAction(null);
+    }
+  }, [confirmDiscardActiveRecording, onCancelRecording, onClearRecordingMarkers, onStartRecording, recordingControlAction, resetCompletedRecordingState]);
 
   const readyMediaExportArtifacts = useMemo(() => (
     mediaExportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || []
@@ -2834,18 +2934,9 @@ export function RecordingPanel({
   }, [driveShareLink]);
 
   const handleNewRecording = useCallback(() => {
-    setRecordedFiles([]);
-    setLastRecordingDurationSeconds(null);
-    setActiveSessionId(null);
-    setPreview(null);
-    setDriveShareLink(null);
-    setDriveUploadMessage(null);
-    setDriveUploadError(null);
-    setDriveLinkCopied(false);
-    setGeneratedTranscript(null);
-    setTranscriptionError(null);
+    resetCompletedRecordingState();
     onClearRecordingMarkers?.();
-  }, [onClearRecordingMarkers]);
+  }, [onClearRecordingMarkers, resetCompletedRecordingState]);
 
   const handlePreviewFile = useCallback((file: RecordedFile) => {
     setPreview((current) => {
@@ -3070,10 +3161,12 @@ export function RecordingPanel({
       <div style={styles.body}>
         {/* Recording Status */}
         {isRecording && (
-          <div style={styles.statusCard}>
+          <div style={{ ...styles.statusCard, ...(isRecordingPaused ? styles.statusCardPaused : {}) }}>
             <div style={styles.statusHeader}>
-              <span style={styles.recordingDot} />
-              <span style={styles.statusLabel}>Recording</span>
+              <span style={{ ...styles.recordingDot, ...(isRecordingPaused ? styles.recordingDotPaused : {}) }} />
+              <span style={{ ...styles.statusLabel, ...(isRecordingPaused ? styles.statusLabelPaused : {}) }}>
+                {isRecordingPaused ? 'Paused' : 'Recording'}
+              </span>
             </div>
             <div style={styles.timer}>{formattedTime}</div>
             <div style={styles.trackIndicators}>
@@ -3104,13 +3197,54 @@ export function RecordingPanel({
                 </button>
               </div>
             )}
+            <div style={styles.recordingControls}>
+              {onPauseRecording && onResumeRecording && (
+                <button
+                  type="button"
+                  className="hover-scale"
+                  style={{ ...styles.pauseBtn, ...(isRecordingPaused ? styles.resumeBtn : {}) }}
+                  onClick={() => void handlePauseResume()}
+                  disabled={Boolean(recordingControlAction) || isStopping}
+                >
+                  {recordingControlAction === 'pause'
+                    ? 'Pausing...'
+                    : recordingControlAction === 'resume'
+                      ? 'Resuming...'
+                      : isRecordingPaused
+                        ? 'Resume'
+                        : 'Pause'}
+                </button>
+              )}
+              {onCancelRecording && (
+                <button
+                  type="button"
+                  className="hover-scale"
+                  style={styles.restartBtn}
+                  onClick={() => void handleRestartRecording()}
+                  disabled={Boolean(recordingControlAction) || isStopping}
+                >
+                  {recordingControlAction === 'restart' ? 'Restarting...' : 'Restart'}
+                </button>
+              )}
+              {onCancelRecording && (
+                <button
+                  type="button"
+                  className="hover-scale"
+                  style={styles.cancelBtn}
+                  onClick={() => void handleCancelRecording()}
+                  disabled={Boolean(recordingControlAction) || isStopping}
+                >
+                  {recordingControlAction === 'cancel' ? 'Cancelling...' : 'Cancel'}
+                </button>
+              )}
+            </div>
             <button
               className="hover-scale"
               style={styles.stopBtn}
-              onClick={handleStop}
-              disabled={isStopping}
+              onClick={() => void handleStop()}
+              disabled={Boolean(recordingControlAction) || isStopping}
             >
-              {isStopping ? 'Stopping...' : 'Stop Recording'}
+              {recordingControlAction === 'stop' ? 'Stopping...' : 'Stop Recording'}
             </button>
           </div>
         )}
@@ -3254,16 +3388,16 @@ export function RecordingPanel({
               className="hover-scale"
               style={{
                 ...styles.startBtn,
-                ...(!canStartRecording ? styles.startBtnDisabled : {}),
+                ...(!canStartRecording || recordingControlAction === 'start' ? styles.startBtnDisabled : {}),
               }}
-              onClick={onStartRecording}
-              disabled={!canStartRecording}
+              onClick={() => void handleStart()}
+              disabled={!canStartRecording || recordingControlAction === 'start'}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10" />
                 <circle cx="12" cy="12" r="4" fill="currentColor" />
               </svg>
-              Start Recording
+              {recordingControlAction === 'start' ? 'Starting...' : 'Start Recording'}
             </button>
           </div>
         )}
@@ -3940,6 +4074,10 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 12,
   },
+  statusCardPaused: {
+    border: '1px solid rgba(250, 204, 21, 0.34)',
+    background: 'rgba(250, 204, 21, 0.06)',
+  },
   statusHeader: {
     display: 'flex',
     alignItems: 'center',
@@ -3952,12 +4090,19 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#ef4444',
     animation: 'livePulse 1.5s infinite',
   },
+  recordingDotPaused: {
+    background: '#facc15',
+    animation: 'none',
+  },
   statusLabel: {
     fontSize: 13,
     fontWeight: 600,
     color: '#ef4444',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
+  },
+  statusLabelPaused: {
+    color: '#facc15',
   },
   timer: {
     fontSize: 32,
@@ -3979,6 +4124,50 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     background: 'rgba(99, 102, 241, 0.15)',
     color: '#818cf8',
+  },
+  recordingControls: {
+    width: '100%',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gap: 8,
+  },
+  pauseBtn: {
+    minWidth: 0,
+    padding: '9px 10px',
+    fontSize: 12,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: '1px solid rgba(250, 204, 21, 0.28)',
+    background: 'rgba(250, 204, 21, 0.12)',
+    color: '#fde68a',
+    cursor: 'pointer',
+  },
+  resumeBtn: {
+    border: '1px solid rgba(34, 197, 94, 0.3)',
+    background: 'rgba(34, 197, 94, 0.12)',
+    color: '#86efac',
+  },
+  restartBtn: {
+    minWidth: 0,
+    padding: '9px 10px',
+    fontSize: 12,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: '1px solid rgba(167, 139, 250, 0.3)',
+    background: 'rgba(167, 139, 250, 0.12)',
+    color: '#ddd6fe',
+    cursor: 'pointer',
+  },
+  cancelBtn: {
+    minWidth: 0,
+    padding: '9px 10px',
+    fontSize: 12,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: '1px solid rgba(248, 113, 113, 0.35)',
+    background: 'rgba(248, 113, 113, 0.1)',
+    color: '#fecaca',
+    cursor: 'pointer',
   },
   markerComposer: {
     width: '100%',

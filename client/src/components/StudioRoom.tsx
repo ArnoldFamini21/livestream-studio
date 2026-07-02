@@ -1195,10 +1195,14 @@ export function StudioRoom() {
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
   const {
     isRecording: isLocalRecording,
+    isPaused: isLocalRecordingPaused,
     formattedTime: localRecFormattedTime,
     recordingLabels: localRecordingLabels,
     startRecording: startLocalRecording,
+    pauseRecording: pauseLocalRecording,
+    resumeRecording: resumeLocalRecording,
     stopRecording: stopLocalRecording,
+    cancelRecording: cancelLocalRecording,
   } = useLocalRecording();
 
   const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]?.enabled);
@@ -2692,7 +2696,7 @@ export function StudioRoom() {
   };
 
   // Local recording (separate on-stage tracks)
-  const onStartLocalRecording = () => {
+  const onStartLocalRecording = useCallback(async () => {
     if (!myParticipant || !canControlRecording || !recordingReadiness.canStart) return;
     const programSource = createProgramRecordingSource({
       compositeStream: compositeStreamRef.current,
@@ -2718,8 +2722,23 @@ export function StudioRoom() {
     });
 
     if (sources.length === 0) return;
-    void startLocalRecording(sources).catch((err) => console.error('Failed to start local recording:', err));
-  };
+    await startLocalRecording(sources);
+  }, [
+    audioDuckingEnabled,
+    broadcastAudioBus,
+    canControlRecording,
+    createScreenPictureInPictureRecordingSource,
+    isScreenSharing,
+    localStream,
+    myParticipant,
+    participantVolumes,
+    participants,
+    recordingReadiness.canStart,
+    remoteStreams,
+    screenStream,
+    stageAudioLevels,
+    startLocalRecording,
+  ]);
 
   const onAddRecordingMarker = useCallback((seconds: number, label: string) => {
     const safeSeconds = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
@@ -4469,6 +4488,7 @@ export function StudioRoom() {
     mixPaused: isRecordingPaused,
     mixFormattedTime: formattedTime,
     localRecording: isLocalRecording,
+    localPaused: isLocalRecordingPaused,
     localFormattedTime: localRecFormattedTime,
     sessionStartedAt: sessionRecordingStartedAt,
     sessionElapsedSeconds: sessionRecordingElapsed,
@@ -5522,12 +5542,16 @@ export function StudioRoom() {
           <Suspense fallback={<LazyPanelFallback />}>
             <RecordingPanel
               isRecording={isLocalRecording}
+              isRecordingPaused={isLocalRecordingPaused}
               formattedTime={localRecFormattedTime}
               recordingTrackLabels={localRecordingLabels}
               recordingMarkers={recordingMarkers}
               recordingReadiness={recordingReadiness}
               onStartRecording={onStartLocalRecording}
+              onPauseRecording={pauseLocalRecording}
+              onResumeRecording={resumeLocalRecording}
               onStopRecording={stopLocalRecording}
+              onCancelRecording={cancelLocalRecording}
               onUploadRecording={uploadLocalRecordingToMediaServer}
               onDownloadRecordingExportArtifact={downloadMediaServerRecordingArtifact}
               onRefreshRecordingExport={refreshMediaServerRecordingExport}
