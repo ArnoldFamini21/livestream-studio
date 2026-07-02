@@ -455,6 +455,14 @@ function clampMediaSlideIndex(index: number, total: number): number {
   return Math.min(total - 1, Math.max(0, index));
 }
 
+function getDeckUnitLabel(media: ActiveMedia): string {
+  return media.preview?.sourceFormat === 'pdf' ? 'Page' : 'Slide';
+}
+
+function getDeckSourceLabel(media: ActiveMedia): string {
+  return media.preview?.sourceFormat === 'pdf' ? 'PDF' : 'PowerPoint';
+}
+
 function getPresentationSlideImageUrl(media: ActiveMedia | null | undefined, slideIndex: number): string | null {
   const slides = media?.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
   if (slides.length === 0) return null;
@@ -477,6 +485,8 @@ function drawPresentationMediaPreview(
   if (slides.length === 0) return false;
 
   const currentIndex = clampMediaSlideIndex(slideIndex, slides.length);
+  const unitLabel = getDeckUnitLabel(media);
+  const sourceLabel = getDeckSourceLabel(media);
   const slide = slides[currentIndex];
   const slideWidth = Math.min(width * 0.86, 1460);
   const slideHeight = slideWidth * 9 / 16;
@@ -502,7 +512,7 @@ function drawPresentationMediaPreview(
     ctx.roundRect(slideX, slideY, finalWidth, finalHeight, 24);
     ctx.stroke();
 
-    const badgeText = `Slide ${currentIndex + 1} / ${slides.length}`;
+    const badgeText = `${unitLabel} ${currentIndex + 1} / ${slides.length}`;
     ctx.font = '800 20px Inter, Arial, sans-serif';
     const badgeWidth = Math.max(140, ctx.measureText(badgeText).width + 42);
     const badgeHeight = 42;
@@ -540,11 +550,11 @@ function drawPresentationMediaPreview(
   ctx.fillRect(slideX, slideY, finalWidth, 8);
   ctx.fillStyle = '#4338ca';
   ctx.font = '900 24px Inter, Arial, sans-serif';
-  ctx.fillText('POWERPOINT', slideX + paddingX, slideY + headerHeight / 2 + 9);
+  ctx.fillText(sourceLabel.toUpperCase(), slideX + paddingX, slideY + headerHeight / 2 + 9);
   ctx.fillStyle = '#64748b';
   ctx.font = '800 22px Inter, Arial, sans-serif';
   ctx.textAlign = 'right';
-  ctx.fillText(`Slide ${currentIndex + 1} / ${slides.length}`, slideX + finalWidth - paddingX, slideY + headerHeight / 2 + 8);
+  ctx.fillText(`${unitLabel} ${currentIndex + 1} / ${slides.length}`, slideX + finalWidth - paddingX, slideY + headerHeight / 2 + 8);
   ctx.textAlign = 'left';
 
   const bodyX = slideX + paddingX;
@@ -622,7 +632,7 @@ function drawActiveMediaOverlay(
     }
   }
 
-  if (media.type === 'presentation' && drawPresentationMediaPreview(ctx, media, presentationSlideImage, slideIndex, rect.x, rect.y, rect.width, rect.height, brandColor)) {
+  if (media.preview?.kind === 'presentation-slides' && drawPresentationMediaPreview(ctx, media, presentationSlideImage, slideIndex, rect.x, rect.y, rect.width, rect.height, brandColor)) {
     ctx.restore();
     return;
   }

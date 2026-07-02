@@ -3,7 +3,7 @@ import type { ActiveMedia, StudioMediaAsset, StudioMediaType } from '@studio/sha
 import {
   getNextPresentationSlideIndex,
   getPresentationDeckStatus,
-  getPresentationSlideDisplayTitle,
+  getPresentationItemDisplayTitle,
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
 
@@ -237,21 +237,21 @@ function ActiveDeckControls({
   const goNext = () => {
     onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'));
   };
-  const slideItems = getPresentationSlidePickerItems(status.slides, status.currentIndex);
+  const slideItems = getPresentationSlidePickerItems(status.slides, status.currentIndex, status.unitLabel);
 
   return (
     <div style={styles.deckControl}>
       <div style={styles.deckControlHeader}>
         <span style={styles.deckEyebrow}>Live Deck</span>
-        <span style={styles.deckCount}>Slide {status.currentIndex + 1} / {status.total}</span>
+        <span style={styles.deckCount}>{status.unitLabel} {status.currentIndex + 1} / {status.total}</span>
       </div>
       <div style={styles.deckName}>{mediaName}</div>
       <div style={styles.deckCurrentTitle}>
-        {getPresentationSlideDisplayTitle(status.currentSlide, status.currentIndex)}
+        {getPresentationItemDisplayTitle(status.currentSlide, status.currentIndex, status.unitLabel)}
       </div>
       <div style={styles.deckNextTitle}>
         {status.nextSlide
-          ? `Next: ${getPresentationSlideDisplayTitle(status.nextSlide, status.currentIndex + 1)}`
+          ? `Next: ${getPresentationItemDisplayTitle(status.nextSlide, status.currentIndex + 1, status.unitLabel)}`
           : 'End of deck'}
       </div>
       <label style={styles.deckJumpLabel}>
@@ -396,9 +396,12 @@ function getAssetLabel(asset: StudioMediaAsset): string {
     presentation: 'Deck',
     file: 'File',
   }[asset.type];
-  const slideCount = asset.preview?.kind === 'presentation-slides'
-    ? ` / ${asset.preview.slides.length} slide${asset.preview.slides.length === 1 ? '' : 's'}`
-    : '';
+  let slideCount = '';
+  if (asset.preview?.kind === 'presentation-slides') {
+    const unit = asset.preview.sourceFormat === 'pdf' ? 'page' : 'slide';
+    const total = asset.preview.slides.length;
+    slideCount = ` / ${total} ${unit}${total === 1 ? '' : 's'}`;
+  }
   const size = asset.sizeBytes ? ` / ${formatBytes(asset.sizeBytes)}` : '';
   return `${typeLabel}${slideCount}${size}`;
 }
