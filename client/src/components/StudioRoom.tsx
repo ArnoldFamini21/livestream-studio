@@ -1183,7 +1183,15 @@ export function StudioRoom() {
     return streams;
   }, [participants, remoteStreams]);
 
-  const { isRecording, formattedTime, startRecording, stopRecording } = useRecording();
+  const {
+    isRecording,
+    isPaused: isRecordingPaused,
+    formattedTime,
+    startRecording,
+    pauseRecording,
+    resumeRecording,
+    stopRecording,
+  } = useRecording();
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
   const {
     isRecording: isLocalRecording,
@@ -2589,6 +2597,15 @@ export function StudioRoom() {
   }, []); // All mutable values accessed via refs
 
   // Recording
+  const onToggleRecordingPause = useCallback(() => {
+    if (!myParticipantRef.current || !canControlRecording || !isRecording) return;
+    if (isRecordingPaused) {
+      resumeRecording();
+    } else {
+      pauseRecording();
+    }
+  }, [canControlRecording, isRecording, isRecordingPaused, pauseRecording, resumeRecording]);
+
   const onToggleRecording = async () => {
     if (!myParticipant || !canControlRecording) return;
     if (isRecording) {
@@ -3240,7 +3257,10 @@ export function StudioRoom() {
       const type = detectMediaType(file);
       const isDeck = type === 'presentation' || type === 'pdf';
       const preview = isDeck
-        ? await buildPresentationPreview(file, { requireRenderedSlides: true })
+        ? await buildPresentationPreview(file, {
+            requireRenderedSlides: true,
+            requireServerRenderedPowerPoint: type === 'presentation',
+          })
         : undefined;
       const renderFailed = isDeck && !preview;
       return {
@@ -4446,6 +4466,7 @@ export function StudioRoom() {
   const showCompositorDebug = import.meta.env.DEV && isLive;
   const recordingStatus = getStudioRecordingStatus({
     mixRecording: isRecording,
+    mixPaused: isRecordingPaused,
     mixFormattedTime: formattedTime,
     localRecording: isLocalRecording,
     localFormattedTime: localRecFormattedTime,
@@ -4777,7 +4798,7 @@ export function StudioRoom() {
           {recordingStatus.active && (
             <span style={styles.recBadge}>
               <span style={styles.recDot} />
-              REC {recordingStatus.formattedTime}
+              {recordingStatus.paused ? 'PAUSED' : 'REC'} {recordingStatus.formattedTime}
             </span>
           )}
           {liveStatus.active && (
@@ -5536,8 +5557,10 @@ export function StudioRoom() {
         roomName={room?.name || 'Studio'}
         isHost={isHostOrCoHost}
         isRecording={recordingStatus.active}
+        recordingPaused={recordingStatus.paused}
         formattedTime={recordingStatus.formattedTime}
         onToggleRecording={canControlRecording ? onToggleRecording : undefined}
+        onToggleRecordingPause={canControlRecording && isRecording ? onToggleRecordingPause : undefined}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={onToggleScreenShare}
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}

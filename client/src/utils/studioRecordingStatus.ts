@@ -1,5 +1,6 @@
 export interface StudioRecordingStatusInput {
   mixRecording: boolean;
+  mixPaused?: boolean;
   mixFormattedTime: string;
   localRecording: boolean;
   localFormattedTime: string;
@@ -9,6 +10,7 @@ export interface StudioRecordingStatusInput {
 
 export interface StudioRecordingStatus {
   active: boolean;
+  paused: boolean;
   formattedTime: string;
   source: 'mix' | 'session' | 'local' | null;
 }
@@ -26,6 +28,7 @@ export function getStudioRecordingStatus(input: StudioRecordingStatusInput): Stu
   if (input.mixRecording) {
     return {
       active: true,
+      paused: Boolean(input.mixPaused),
       formattedTime: input.mixFormattedTime || '0:00',
       source: 'mix',
     };
@@ -34,6 +37,7 @@ export function getStudioRecordingStatus(input: StudioRecordingStatusInput): Stu
   if (input.sessionStartedAt) {
     return {
       active: true,
+      paused: false,
       formattedTime: formatStudioRecordingDuration(input.sessionElapsedSeconds),
       source: 'session',
     };
@@ -42,6 +46,7 @@ export function getStudioRecordingStatus(input: StudioRecordingStatusInput): Stu
   if (input.localRecording) {
     return {
       active: true,
+      paused: false,
       formattedTime: input.localFormattedTime || '0:00',
       source: 'local',
     };
@@ -49,6 +54,7 @@ export function getStudioRecordingStatus(input: StudioRecordingStatusInput): Stu
 
   return {
     active: false,
+    paused: false,
     formattedTime: '0:00',
     source: null,
   };

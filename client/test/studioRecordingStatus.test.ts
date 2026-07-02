@@ -25,7 +25,27 @@ describe('studio recording status', () => {
 
     assert.deepEqual(status, {
       active: true,
+      paused: false,
       formattedTime: '2:14',
+      source: 'mix',
+    });
+  });
+
+  it('marks the mixed recorder as paused without changing the elapsed display', () => {
+    const status = getStudioRecordingStatus({
+      mixRecording: true,
+      mixPaused: true,
+      mixFormattedTime: '4:20',
+      localRecording: false,
+      localFormattedTime: '0:00',
+      sessionStartedAt: null,
+      sessionElapsedSeconds: 0,
+    });
+
+    assert.deepEqual(status, {
+      active: true,
+      paused: true,
+      formattedTime: '4:20',
       source: 'mix',
     });
   });
@@ -42,6 +62,7 @@ describe('studio recording status', () => {
 
     assert.deepEqual(status, {
       active: true,
+      paused: false,
       formattedTime: '2:05',
       source: 'session',
     });
@@ -59,6 +80,7 @@ describe('studio recording status', () => {
 
     assert.deepEqual(status, {
       active: true,
+      paused: false,
       formattedTime: '7:30',
       source: 'local',
     });
