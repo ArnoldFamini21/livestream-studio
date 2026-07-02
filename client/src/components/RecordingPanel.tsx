@@ -25,6 +25,7 @@ import type { RecordingUploadSummary } from '../utils/recordingUpload.ts';
 import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
 import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
 import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
+import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -42,6 +43,8 @@ interface RecordingPanelProps {
   onDownloadRecordingExportArtifact?: (input: RecordingServerExportArtifactInput) => Promise<BlobExportDownload>;
   onRefreshRecordingExport?: (input: RecordingServerExportRefreshInput) => Promise<RecordingExportJobResponse>;
   onSyncRecordingCatalog?: (session: LocalRecordingSession) => Promise<void>;
+  mediaServerHealth?: MediaServerHealth | null;
+  onRefreshMediaServerHealth?: () => void | Promise<MediaServerHealth>;
   onAddRecordingMarker?: (seconds: number, label: string) => void;
   onRemoveRecordingMarker?: (markerId: string) => void;
   onClearRecordingMarkers?: () => void;
@@ -472,6 +475,26 @@ function getRecordingMediaExportLabel(exportJob: RecordingMediaExportHandoff | u
     return `Media export | MP4 ready${shareLabel} | ${readyCount} artifact${readyCount === 1 ? '' : 's'}`;
   }
   return `Media export | ${exportJob.status} | ${readyCount} artifact${readyCount === 1 ? '' : 's'} ready`;
+}
+
+export function getRecordingMediaExportBlockMessage(
+  health?: Pick<MediaServerHealth, 'status' | 'message'> | null
+): string {
+  if (!health || health.status === 'ready') return '';
+  if (health.status === 'checking') {
+    return 'Checking the media-server before uploading tracks for MP4 export.';
+  }
+  return health.message || 'Media server is unavailable. Check it before exporting recordings to MP4.';
+}
+
+export function getRecordingMediaExportStatusLabel(
+  health: Pick<MediaServerHealth, 'status'> | null | undefined,
+  enabled: boolean
+): 'Disabled' | 'Ready' | 'Checking' | 'Blocked' {
+  if (!enabled) return 'Disabled';
+  if (!health || health.status === 'ready') return 'Ready';
+  if (health.status === 'checking') return 'Checking';
+  return 'Blocked';
 }
 
 function createCrc32Table(): Uint32Array {
@@ -2337,6 +2360,8 @@ export function RecordingPanel({
   onDownloadRecordingExportArtifact,
   onRefreshRecordingExport,
   onSyncRecordingCatalog,
+  mediaServerHealth,
+  onRefreshMediaServerHealth,
   onAddRecordingMarker,
   onRemoveRecordingMarker,
   onClearRecordingMarkers,
@@ -2438,6 +2463,8 @@ export function RecordingPanel({
     () => getRecordingCloudRetentionPolicy(driveRetentionPolicyId),
     [driveRetentionPolicyId]
   );
+  const mediaServerExportBlockMessage = getRecordingMediaExportBlockMessage(mediaServerHealth);
+  const mediaServerExportStatusLabel = getRecordingMediaExportStatusLabel(mediaServerHealth, Boolean(onUploadRecording));
   const syncRecordingCatalog = useCallback(async (session: LocalRecordingSession) => {
     if (!onSyncRecordingCatalog) return;
     try {
@@ -2554,6 +2581,13 @@ export function RecordingPanel({
         setActiveSessionId(session.id);
         setLibraryTrackFiles((current) => ({ ...current, [session.id]: files }));
         if (onUploadRecording) {
+          if (mediaServerExportBlockMessage) {
+            setMediaUploadMessage(null);
+            setMediaUploadError(`MP4 export unavailable: ${mediaServerExportBlockMessage} Local recording is saved in this browser.`);
+            setMediaExportJob(null);
+            return;
+          }
+
           setMediaUploadMessage('Uploading recording tracks to media server...');
           try {
             const upload = await onUploadRecording({
@@ -2599,7 +2633,7 @@ export function RecordingPanel({
       setIsStopping(false);
       setRecordingControlAction(null);
     }
-  }, [formattedTime, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
+  }, [formattedTime, mediaServerExportBlockMessage, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
 
   const confirmDiscardActiveRecording = useCallback((action: 'cancel' | 'restart'): boolean => {
     if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
@@ -3332,6 +3366,38 @@ export function RecordingPanel({
             <div style={styles.exportCodecHeader}>
               <span style={styles.exportCodecTitle}>Media export MP4</span>
               <span style={styles.exportCodecValue}>{recordingExportVideoCodec === 'h265' ? 'H.265' : 'H.264'}</span>
+            </div>
+            <div
+              style={{
+                ...styles.mediaServerReadinessCard,
+                ...(mediaServerExportBlockMessage ? styles.mediaServerReadinessCardBlocked : {}),
+                ...(mediaServerHealth?.status === 'checking' ? styles.mediaServerReadinessCardChecking : {}),
+              }}
+            >
+              <div style={styles.mediaServerReadinessCopy}>
+                <span style={styles.mediaServerReadinessTitle}>Media server {mediaServerExportStatusLabel}</span>
+                <span style={styles.mediaServerReadinessText}>
+                  {mediaServerExportBlockMessage ||
+                    'Tracks upload after Stop Recording and the media-server prepares the MP4 export.'}
+                </span>
+              </div>
+              {onRefreshMediaServerHealth && (
+                <button
+                  type="button"
+                  style={{
+                    ...styles.mediaServerReadinessButton,
+                    ...(mediaServerHealth?.status === 'checking' ? styles.mediaServerReadinessButtonDisabled : {}),
+                  }}
+                  disabled={mediaServerHealth?.status === 'checking'}
+                  onClick={() => {
+                    setMediaUploadError(null);
+                    setMediaUploadMessage(null);
+                    void onRefreshMediaServerHealth();
+                  }}
+                >
+                  Check
+                </button>
+              )}
             </div>
             <div style={styles.exportCodecToggle} role="group" aria-label="Media server MP4 codec">
               {(['h264', 'h265'] as const).map((codec) => {
@@ -4669,6 +4735,57 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: 'pointer',
     whiteSpace: 'nowrap' as const,
+  },
+  mediaServerReadinessCard: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 9px',
+    borderRadius: 7,
+    border: '1px solid rgba(34, 197, 94, 0.24)',
+    background: 'rgba(22, 163, 74, 0.1)',
+  },
+  mediaServerReadinessCardChecking: {
+    borderColor: 'rgba(125, 211, 252, 0.3)',
+    background: 'rgba(14, 116, 144, 0.14)',
+  },
+  mediaServerReadinessCardBlocked: {
+    borderColor: 'rgba(248, 113, 113, 0.36)',
+    background: 'rgba(127, 29, 29, 0.2)',
+  },
+  mediaServerReadinessCopy: {
+    minWidth: 0,
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  },
+  mediaServerReadinessTitle: {
+    color: 'var(--text-secondary)',
+    fontSize: 10,
+    fontWeight: 900,
+    textTransform: 'uppercase' as const,
+  },
+  mediaServerReadinessText: {
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    lineHeight: 1.32,
+  },
+  mediaServerReadinessButton: {
+    height: 26,
+    borderRadius: 7,
+    border: '1px solid rgba(125, 211, 252, 0.36)',
+    background: 'rgba(14, 116, 144, 0.18)',
+    color: '#bae6fd',
+    fontSize: 10,
+    fontWeight: 800,
+    cursor: 'pointer',
+    padding: '0 8px',
+    flexShrink: 0,
+  },
+  mediaServerReadinessButtonDisabled: {
+    opacity: 0.5,
+    cursor: 'wait',
   },
   exportCodecCard: {
     display: 'flex',

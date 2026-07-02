@@ -5645,6 +5645,8 @@ export function StudioRoom() {
               onDownloadRecordingExportArtifact={downloadMediaServerRecordingArtifact}
               onRefreshRecordingExport={refreshMediaServerRecordingExport}
               onSyncRecordingCatalog={syncLocalRecordingCatalog}
+              mediaServerHealth={mediaServerHealth}
+              onRefreshMediaServerHealth={refreshMediaServerHealth}
               onAddRecordingMarker={onAddRecordingMarker}
               onRemoveRecordingMarker={onRemoveRecordingMarker}
               onClearRecordingMarkers={onClearRecordingMarkers}
