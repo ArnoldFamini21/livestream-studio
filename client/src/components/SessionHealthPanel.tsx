@@ -46,6 +46,14 @@ function formatRemoteLinkMetric(summary: SessionHealthSummary): string {
   return `${peerConnections.goodCount}/${peerConnections.remoteCount} good`;
 }
 
+function formatTurnMetric(summary: SessionHealthSummary): string {
+  const ice = summary.ice;
+  if (ice.turnReady) return `${ice.turnServerCount} ready`;
+  if (ice.usingFallbackTurn) return 'Fallback';
+  if (ice.hasTurn) return 'Review';
+  return 'Missing';
+}
+
 function CheckRow({ check }: { check: SessionHealthCheck }) {
   const color = statusColor(check.status);
   return (
@@ -119,6 +127,10 @@ export function SessionHealthPanel({ summary, onClose }: SessionHealthPanelProps
           <div style={styles.metric}>
             <span style={styles.metricLabel}>Encoder</span>
             <span style={styles.metricValue}>{encodingMetricLabel(summary.encoding.status)}</span>
+          </div>
+          <div style={styles.metric}>
+            <span style={styles.metricLabel}>TURN Relay</span>
+            <span style={styles.metricValue}>{formatTurnMetric(summary)}</span>
           </div>
           <div style={styles.metric}>
             <span style={styles.metricLabel}>Remote Links</span>

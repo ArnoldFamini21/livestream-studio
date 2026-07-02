@@ -243,6 +243,7 @@
 - [x] Production smoke command verifies Hostinger client plus Render service health metadata
 - [x] GitHub Actions waits for Render service health metadata when deploy hooks are configured
 - [x] Configurable STUN/TURN ICE config endpoint for WebRTC connectivity
+- [x] Host-visible TURN relay readiness in Session Health
 - [ ] Global TURN servers for reliable connectivity (production provider credentials)
 - [x] Prometheus-compatible `/metrics` endpoints for signaling and RTMP relay health
 - [x] Grafana dashboards and alerting for stream health metrics

@@ -10,6 +10,11 @@ import {
   type SessionPeerHealthParticipant,
   type SessionPeerHealthSummary,
 } from '../utils/sessionPeerHealth.ts';
+import {
+  DEFAULT_ICE_CONFIG_STATUS,
+  fetchIceConfigWithStatus,
+  type ClientIceConfigStatus,
+} from '../utils/iceConfig.ts';
 
 export type HealthStatus = 'good' | 'warning' | 'bad';
 
@@ -44,6 +49,7 @@ export interface SessionHealthSummary {
     audioLabel: string;
   };
   encoding: VideoEncodingReadiness;
+  ice: ClientIceConfigStatus;
   peerConnections: SessionPeerHealthSummary;
 }
 
@@ -123,6 +129,34 @@ function healthStatusFromEncoding(status: VideoEncodingReadinessStatus): HealthS
   }
 }
 
+function healthStatusFromIceStatus(status: ClientIceConfigStatus): HealthStatus {
+  if (status.turnReady) return 'good';
+  if (status.hasTurn) return 'warning';
+  return 'bad';
+}
+
+function iceSourceLabel(source: ClientIceConfigStatus['source']): string {
+  switch (source) {
+    case 'ice_servers_json': return 'ICE_SERVERS_JSON';
+    case 'split_env': return 'TURN_URLS';
+    case 'default': return 'fallback';
+    default: return 'server';
+  }
+}
+
+function formatIceStatusDetail(status: ClientIceConfigStatus): string {
+  if (status.turnReady) {
+    return `${status.turnServerCount} production TURN relay${status.turnServerCount === 1 ? '' : 's'} configured from ${iceSourceLabel(status.source)}.`;
+  }
+  if (status.usingFallbackTurn) {
+    return 'Using fallback TURN relays. Configure production TURN credentials on Render for more reliable guest connectivity.';
+  }
+  if (status.hasTurn) {
+    return 'TURN URLs are present, but production TURN credentials were not confirmed.';
+  }
+  return 'No TURN relay is configured; guests behind strict networks may fail to connect.';
+}
+
 export function useSessionHealth({
   localStream,
   connected,
@@ -142,6 +176,7 @@ export function useSessionHealth({
     percentUsed: null,
   });
   const [encoding, setEncoding] = useState<VideoEncodingReadiness>(() => getInitialVideoEncodingReadiness());
+  const [iceStatus, setIceStatus] = useState<ClientIceConfigStatus>(() => DEFAULT_ICE_CONFIG_STATUS);
 
   useEffect(() => {
     const update = () => setNetwork(getNetworkInfo());
@@ -196,6 +231,20 @@ export function useSessionHealth({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetchIceConfigWithStatus()
+      .then(({ status }) => {
+        if (!cancelled) setIceStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setIceStatus(DEFAULT_ICE_CONFIG_STATUS);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return useMemo(() => {
     const audioTrack = localStream?.getAudioTracks()[0] ?? null;
     const videoTrack = localStream?.getVideoTracks()[0] ?? null;
@@ -224,6 +273,13 @@ export function useSessionHealth({
       label: 'Studio connection',
       status: connected ? 'good' : 'bad',
       detail: connected ? 'Connected to the studio signaling server.' : 'Not connected to the studio server.',
+    });
+
+    checks.push({
+      id: 'turn-relay',
+      label: 'TURN relay',
+      status: healthStatusFromIceStatus(iceStatus),
+      detail: formatIceStatusDetail(iceStatus),
     });
 
     const networkStatus: HealthStatus = !network.online
@@ -331,12 +387,14 @@ export function useSessionHealth({
         videoLabel: formatVideoLabel(videoTrack),
       },
       encoding,
+      ice: iceStatus,
       peerConnections,
     };
   }, [
     audioDeviceCount,
     connected,
     encoding,
+    iceStatus,
     isLive,
     isRecording,
     localStream,
