@@ -27,12 +27,38 @@ export const STUDIO_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
   single: 'Show one selected tile',
 };
 
+export const MEDIA_SHARE_LAYOUT_LABELS: Record<LayoutMode, string> = {
+  grid: 'Media Rail',
+  spotlight: 'Speaker Strip',
+  'side-by-side': 'Split Stage',
+  featured: 'Featured Rail',
+  pip: 'Floating PiP',
+  single: 'Presenter PiP',
+};
+
+export const MEDIA_SHARE_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
+  grid: 'Shared media with up to 4 participants in a side rail',
+  spotlight: 'Shared media with up to 6 participants below',
+  'side-by-side': 'Shared media beside up to 2 participant videos',
+  featured: 'Shared media with up to 4 participants in a compact rail',
+  pip: 'Shared media with up to 2 floating participant videos',
+  single: 'Shared media with one floating presenter video',
+};
+
 export function getStudioLayoutLabel(layout: LayoutMode): string {
   return STUDIO_LAYOUT_LABELS[layout];
 }
 
 export function getStudioLayoutDescription(layout: LayoutMode): string {
   return STUDIO_LAYOUT_DESCRIPTIONS[layout];
+}
+
+export function getMediaShareLayoutLabel(layout: LayoutMode): string {
+  return MEDIA_SHARE_LAYOUT_LABELS[layout];
+}
+
+export function getMediaShareLayoutDescription(layout: LayoutMode): string {
+  return MEDIA_SHARE_LAYOUT_DESCRIPTIONS[layout];
 }
 
 export function isMultiParticipantLayout(layout: LayoutMode): boolean {
