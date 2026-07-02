@@ -4,6 +4,7 @@ import {
   createAudioTrackConstraints,
   normalizeAudioProcessingPreferences,
 } from '../src/utils/audioProcessing.ts';
+import { getVoiceGateState } from '../src/utils/audioEnhancement.ts';
 
 describe('audio processing constraints', () => {
   it('defaults echo cancellation and noise suppression on', () => {
@@ -30,7 +31,11 @@ describe('audio processing constraints', () => {
     }), {
       echoCancellation: false,
       noiseSuppression: false,
-      autoGainControl: true,
+      autoGainControl: { ideal: true },
+      channelCount: { ideal: 1 },
+      sampleRate: { ideal: 48000 },
+      sampleSize: { ideal: 16 },
+      latency: { ideal: 0.02 },
       deviceId: { exact: 'mic-1' },
     });
   });
@@ -40,9 +45,28 @@ describe('audio processing constraints', () => {
       echoCancellation: true,
       noiseSuppression: false,
     }), {
-      echoCancellation: true,
+      echoCancellation: { ideal: true },
       noiseSuppression: false,
-      autoGainControl: true,
+      autoGainControl: { ideal: true },
+      channelCount: { ideal: 1 },
+      sampleRate: { ideal: 48000 },
+      sampleSize: { ideal: 16 },
+      latency: { ideal: 0.02 },
     });
+  });
+
+  it('keeps the voice gate open for speech above the adaptive noise floor', () => {
+    const state = getVoiceGateState(0.08, 0.012);
+
+    assert.equal(state.open, true);
+    assert.equal(state.targetGain, 1);
+  });
+
+  it('reduces mic gain when input stays near the room noise floor', () => {
+    const state = getVoiceGateState(0.008, 0.012);
+
+    assert.equal(state.open, false);
+    assert.ok(state.targetGain < 1);
+    assert.ok(state.noiseFloor > 0);
   });
 });

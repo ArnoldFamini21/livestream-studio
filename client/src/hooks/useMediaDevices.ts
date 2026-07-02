@@ -4,6 +4,10 @@ import {
   normalizeAudioProcessingPreferences,
 } from '../utils/audioProcessing.ts';
 import {
+  createEnhancedAudioStream,
+  type EnhancedAudioStream,
+} from '../utils/audioEnhancement.ts';
+import {
   createVideoTrackConstraints,
   getRecommendedVideoQualityPresetId,
   readPreferredAudioProcessing,
@@ -49,6 +53,7 @@ export function useMediaDevices() {
   const [selectedAudioOutputDeviceId, setSelectedAudioOutputDeviceId] = useState<string>(() => localStorage.getItem('preferredAudioOutputDeviceId') || '');
 
   const streamRef = useRef<MediaStream | null>(null);
+  const enhancedAudioRef = useRef<EnhancedAudioStream | null>(null);
   const switchingRef = useRef(false);
   const audioOutputIdRef = useRef<string>(selectedAudioOutputDeviceId);
   const audioProcessingOptionsRef = useRef<AudioProcessingPreferences>(readPreferredAudioProcessing());
@@ -61,6 +66,20 @@ export function useMediaDevices() {
     }
     setLocalStream(new MediaStream(streamRef.current.getTracks()));
   }, []);
+
+  const cleanupEnhancedAudio = useCallback((options: { stopSource?: boolean } = {}) => {
+    enhancedAudioRef.current?.cleanup(options);
+    enhancedAudioRef.current = null;
+  }, []);
+
+  const stopCurrentStream = useCallback(() => {
+    cleanupEnhancedAudio({ stopSource: true });
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setLocalStream(null);
+  }, [cleanupEnhancedAudio]);
 
   useEffect(() => {
     audioOutputIdRef.current = selectedAudioOutputDeviceId;
@@ -130,9 +149,7 @@ export function useMediaDevices() {
       writePreferredAudioProcessing(nextAudioProcessing);
       writePreferredVideoQuality(nextVideoQuality);
       // Stop any existing tracks first
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-      }
+      stopCurrentStream();
 
       const targetVideoId = videoDeviceId || localStorage.getItem('preferredVideoDeviceId');
       const targetAudioId = audioDeviceId || localStorage.getItem('preferredAudioDeviceId');
@@ -190,12 +207,14 @@ export function useMediaDevices() {
             setError('No media devices available');
             setAudioEnabled(false);
             setVideoEnabled(false);
-            streamRef.current = null;
-            setLocalStream(null);
+            stopCurrentStream();
             return null;
           }
         }
       }
+      const enhancedAudio = createEnhancedAudioStream(stream, nextAudioProcessing);
+      stream = enhancedAudio.stream;
+      enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
       streamRef.current = stream;
       setLocalStream(stream);
 
@@ -205,20 +224,27 @@ export function useMediaDevices() {
 
       // Track which devices are actually active
       const activeAudioTrack = stream.getAudioTracks()[0];
+      const activeSourceAudioTrack = enhancedAudio.sourceTrack || activeAudioTrack;
       const activeVideoTrack = stream.getVideoTracks()[0];
-      if (activeAudioTrack) activeAudioTrack.enabled = options.audioEnabled ?? true;
+      if (activeAudioTrack) {
+        const nextEnabled = options.audioEnabled ?? true;
+        activeAudioTrack.enabled = nextEnabled;
+        if (activeSourceAudioTrack && activeSourceAudioTrack !== activeAudioTrack) {
+          activeSourceAudioTrack.enabled = nextEnabled;
+        }
+      }
       if (activeVideoTrack) activeVideoTrack.enabled = options.videoEnabled ?? true;
       setAudioEnabled(Boolean(activeAudioTrack?.enabled));
       setVideoEnabled(Boolean(activeVideoTrack?.enabled));
 
       if (activeAudioTrack) {
-        const settings = activeAudioTrack.getSettings();
+        const settings = (activeSourceAudioTrack || activeAudioTrack).getSettings();
         const activeId = settings.deviceId || '';
         setSelectedAudioDeviceId(activeId);
         if (activeId) localStorage.setItem('preferredAudioDeviceId', activeId);
 
         // Bug fix #15: Add track.onended listener for audio
-        activeAudioTrack.onended = () => {
+        (activeSourceAudioTrack || activeAudioTrack).onended = () => {
           setAudioEnabled(false);
           setError('Audio device disconnected unexpectedly');
         };
@@ -264,12 +290,11 @@ export function useMediaDevices() {
       setError(message);
       setAudioEnabled(false);
       setVideoEnabled(false);
-      streamRef.current = null;
-      setLocalStream(null);
+      stopCurrentStream();
       console.error('Media device error:', err);
       return null;
     }
-  }, [enumerateDevices]);
+  }, [enumerateDevices, stopCurrentStream]);
 
   // Switch audio input device
   const switchAudioDevice = useCallback(async (
@@ -289,25 +314,38 @@ export function useMediaDevices() {
         audio: createAudioTrackConstraints(deviceId, nextAudioProcessing),
       });
 
-      const newAudioTrack = newAudioStream.getAudioTracks()[0];
+      const previousEnhancedAudio = enhancedAudioRef.current;
+      const enhancedAudio = createEnhancedAudioStream(newAudioStream, nextAudioProcessing);
+      const newAudioTrack = enhancedAudio.stream.getAudioTracks()[0];
+      const newSourceAudioTrack = enhancedAudio.sourceTrack || newAudioTrack;
+      if (!newAudioTrack) {
+        enhancedAudio.cleanup({ stopSource: true });
+        throw new Error('Selected microphone did not return an audio track.');
+      }
       const oldAudioTrack = streamRef.current.getAudioTracks()[0];
 
       if (oldAudioTrack) {
         // Preserve mute state
-        newAudioTrack.enabled = oldAudioTrack.enabled;
+        const nextEnabled = oldAudioTrack.enabled;
+        newAudioTrack.enabled = nextEnabled;
+        if (newSourceAudioTrack && newSourceAudioTrack !== newAudioTrack) {
+          newSourceAudioTrack.enabled = nextEnabled;
+        }
         streamRef.current.removeTrack(oldAudioTrack);
         oldAudioTrack.stop();
       }
+      previousEnhancedAudio?.cleanup({ stopSource: true });
+      enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
 
       // Bug fix #15: Add track.onended listener for new audio track
-      newAudioTrack.onended = () => {
+      (newSourceAudioTrack || newAudioTrack).onended = () => {
         setAudioEnabled(false);
         setError('Audio device disconnected unexpectedly');
       };
 
       streamRef.current.addTrack(newAudioTrack);
       publishStreamUpdate();
-      const activeDeviceId = newAudioTrack.getSettings().deviceId || deviceId;
+      const activeDeviceId = (newSourceAudioTrack || newAudioTrack).getSettings().deviceId || deviceId;
       setSelectedAudioDeviceId(activeDeviceId);
       if (activeDeviceId) localStorage.setItem('preferredAudioDeviceId', activeDeviceId);
       setError(null);
@@ -332,7 +370,12 @@ export function useMediaDevices() {
     const activeAudioTrack = streamRef.current?.getAudioTracks()[0];
     if (!streamRef.current || !activeAudioTrack || switchingRef.current) return null;
 
-    const activeDeviceId = selectedAudioDeviceId || activeAudioTrack.getSettings().deviceId || localStorage.getItem('preferredAudioDeviceId') || '';
+    const sourceAudioTrack = enhancedAudioRef.current?.sourceTrack;
+    const activeDeviceId = selectedAudioDeviceId
+      || sourceAudioTrack?.getSettings().deviceId
+      || activeAudioTrack.getSettings().deviceId
+      || localStorage.getItem('preferredAudioDeviceId')
+      || '';
     return switchAudioDevice(activeDeviceId, nextAudioProcessing);
   }, [selectedAudioDeviceId, switchAudioDevice]);
 
@@ -398,17 +441,17 @@ export function useMediaDevices() {
   }, [selectedVideoDeviceId, switchVideoDevice]);
 
   const stopMedia = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-      setLocalStream(null);
-    }
-  }, []);
+    stopCurrentStream();
+  }, [stopCurrentStream]);
 
   const setAudioTrackEnabled = useCallback((enabled: boolean) => {
     const audioTrack = streamRef.current?.getAudioTracks()[0];
     if (audioTrack) {
       audioTrack.enabled = enabled;
+      const sourceTrack = enhancedAudioRef.current?.sourceTrack;
+      if (sourceTrack && sourceTrack !== audioTrack) {
+        sourceTrack.enabled = enabled;
+      }
       setAudioEnabled(audioTrack.enabled);
       return audioTrack.enabled;
     }
@@ -444,7 +487,8 @@ export function useMediaDevices() {
 
       // Bug fix #16: Handle device disconnection - check if current tracks have ended
       if (streamRef.current) {
-        const audioTrack = streamRef.current.getAudioTracks()[0];
+        const publishedAudioTrack = streamRef.current.getAudioTracks()[0];
+        const audioTrack = enhancedAudioRef.current?.sourceTrack || publishedAudioTrack;
         const videoTrack = streamRef.current.getVideoTracks()[0];
 
         // If the audio track has ended, attempt to switch to a fallback device
@@ -460,14 +504,31 @@ export function useMediaDevices() {
               const newStream = await navigator.mediaDevices.getUserMedia({
                 audio: createAudioTrackConstraints(fallbackAudio.deviceId, audioProcessing),
               });
-              const newTrack = newStream.getAudioTracks()[0];
-              streamRef.current.removeTrack(audioTrack);
+              const previousEnhancedAudio = enhancedAudioRef.current;
+              const enhancedAudio = createEnhancedAudioStream(newStream, audioProcessing);
+              const newTrack = enhancedAudio.stream.getAudioTracks()[0];
+              const newSourceTrack = enhancedAudio.sourceTrack || newTrack;
+              if (!newTrack) {
+                enhancedAudio.cleanup({ stopSource: true });
+                throw new Error('Fallback microphone did not return an audio track.');
+              }
+              const nextEnabled = publishedAudioTrack?.enabled ?? true;
+              newTrack.enabled = nextEnabled;
+              if (newSourceTrack && newSourceTrack !== newTrack) {
+                newSourceTrack.enabled = nextEnabled;
+              }
+              if (publishedAudioTrack) {
+                streamRef.current.removeTrack(publishedAudioTrack);
+                publishedAudioTrack.stop();
+              }
+              previousEnhancedAudio?.cleanup({ stopSource: true });
+              enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
               streamRef.current.addTrack(newTrack);
               publishStreamUpdate();
               setSelectedAudioDeviceId(fallbackAudio.deviceId);
               setAudioEnabled(true);
 
-              newTrack.onended = () => {
+              (newSourceTrack || newTrack).onended = () => {
                 setAudioEnabled(false);
                 setError('Audio device disconnected unexpectedly');
               };
