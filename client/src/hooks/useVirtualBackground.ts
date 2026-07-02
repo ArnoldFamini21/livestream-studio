@@ -11,9 +11,11 @@ import {
 import {
   buildFallbackBackgroundFilter,
   buildReplacementBackgroundFilter,
+  DEFAULT_SEGMENTATION_MASK_REFINEMENT,
   getExpandedDrawRect,
   getVirtualBackgroundRefinementSettings,
   refineSegmentationMaskAlpha,
+  shouldInvertSegmentationMask,
 } from '../utils/virtualBackgroundRefinement.ts';
 
 declare global {
@@ -404,7 +406,10 @@ export function useVirtualBackground({
       maskCtx.imageSmoothingQuality = 'high';
       maskCtx.drawImage(segmentationMask, 0, 0, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT);
       const maskFrame = maskCtx.getImageData(0, 0, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT);
-      refineSegmentationMaskAlpha(maskFrame.data);
+      refineSegmentationMaskAlpha(maskFrame.data, {
+        ...DEFAULT_SEGMENTATION_MASK_REFINEMENT,
+        invert: shouldInvertSegmentationMask(maskFrame.data, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT),
+      });
       maskCtx.putImageData(maskFrame, 0, 0);
       maskCtx.restore();
 
@@ -413,7 +418,14 @@ export function useVirtualBackground({
       refinedMaskCtx.imageSmoothingEnabled = true;
       refinedMaskCtx.imageSmoothingQuality = 'high';
       refinedMaskCtx.filter = `blur(${refinement.edgeBlurPx}px)`;
-      refinedMaskCtx.drawImage(maskCanvas, 0, 0, cw, ch);
+      refinedMaskCtx.globalAlpha = 0.82;
+      refinedMaskCtx.drawImage(
+        maskCanvas,
+        -refinement.maskExpansionPx,
+        -refinement.maskExpansionPx,
+        cw + refinement.maskExpansionPx * 2,
+        ch + refinement.maskExpansionPx * 2
+      );
       refinedMaskCtx.filter = 'none';
       refinedMaskCtx.globalAlpha = refinement.coreMaskOpacity;
       refinedMaskCtx.drawImage(maskCanvas, 0, 0, cw, ch);
@@ -489,7 +501,7 @@ export function useVirtualBackground({
         segmenter = new Ctor({
           locateFile: (file) => `${MEDIAPIPE_BASE}/${file}`,
         });
-        segmenter.setOptions({ modelSelection: 0, selfieMode: false });
+        segmenter.setOptions({ modelSelection: 1, selfieMode: false });
         segmenter.onResults((results) => {
           lastResults = results;
           drawComposite();

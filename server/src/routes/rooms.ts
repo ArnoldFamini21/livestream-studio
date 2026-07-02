@@ -1,6 +1,14 @@
 import { Router, type Response } from 'express';
 import type { Room } from '@studio/shared';
-import { createRoom, getRooms, recoverHostAccess, RoomQuotaError } from '../services/signaling.js';
+import {
+  createRoom,
+  getRoomRegistrantList,
+  getRooms,
+  recoverHostAccess,
+  registerRoomGuest,
+  RoomQuotaError,
+  RoomRegistrationError,
+} from '../services/signaling.js';
 
 export const roomRouter = Router();
 
@@ -23,6 +31,10 @@ function sanitizeOptionalPassword(value: unknown): string | undefined {
   return sanitized || undefined;
 }
 
+function sanitizeBoolean(value: unknown): boolean {
+  return value === true || value === 'true';
+}
+
 function getClientIp(req: { ip?: string; socket: { remoteAddress?: string } }): string {
   return req.ip || req.socket.remoteAddress || 'unknown';
 }
@@ -36,6 +48,7 @@ function sendCreatorRoom(res: Response, room: Room, hostToken: string, statusCod
     hostName: room.hostName,
     scheduledFor: room.scheduledFor,
     settings: room.settings,
+    registration: room.registration,
     // hostToken is shown to the creator and stored client-side only.
     // Anyone who later joins as 'host' must present this token to the WS signaling server.
     hostToken,
@@ -48,6 +61,7 @@ roomRouter.post('/', (req, res) => {
     const name = sanitizeString(req.body.name);
     const hostName = sanitizeString(req.body.hostName);
     const password = sanitizeOptionalPassword(req.body.password);
+    const registrationEnabled = sanitizeBoolean(req.body.registrationEnabled);
 
     if (!name || !hostName) {
       res.status(400).json({ error: 'name and hostName are required' });
@@ -67,7 +81,7 @@ roomRouter.post('/', (req, res) => {
       return;
     }
 
-    const { room, hostToken } = createRoom(name, hostName, { creatorIp: getClientIp(req), password });
+    const { room, hostToken } = createRoom(name, hostName, { creatorIp: getClientIp(req), password, registrationEnabled });
     sendCreatorRoom(res, room, hostToken, 201);
   } catch (err) {
     if (err instanceof RoomQuotaError) {
@@ -85,6 +99,7 @@ roomRouter.post('/schedule', (req, res) => {
     const hostName = sanitizeString(req.body.hostName);
     const scheduledFor = sanitizeString(req.body.scheduledFor);
     const password = sanitizeOptionalPassword(req.body.password);
+    const registrationEnabled = sanitizeBoolean(req.body.registrationEnabled);
 
     if (!name || !hostName) {
       res.status(400).json({ error: 'name and hostName are required' });
@@ -121,6 +136,7 @@ roomRouter.post('/schedule', (req, res) => {
       scheduledFor: scheduledFor || undefined,
       creatorIp: getClientIp(req),
       password,
+      registrationEnabled,
     });
     sendCreatorRoom(res, room, hostToken, 201);
   } catch (err) {
@@ -154,6 +170,38 @@ roomRouter.post('/:id/host-access', (req, res) => {
   res.status(410).json({ error: 'Host access recovery expired. Create a new studio to get a fresh private host link.' });
 });
 
+// Register for a webinar-style guest invite. Host/co-host entry is unchanged.
+roomRouter.post('/:id/registrants', (req, res) => {
+  try {
+    const result = registerRoomGuest(req.params.id, {
+      name: req.body.name,
+      email: req.body.email,
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    if (err instanceof RoomRegistrationError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: 'Failed to register guest' });
+  }
+});
+
+// Host-only registrant export for scheduled/on-air style studios.
+roomRouter.get('/:id/registrants', (req, res) => {
+  try {
+    const hostToken = req.headers['x-host-token'];
+    const result = getRoomRegistrantList(req.params.id, Array.isArray(hostToken) ? hostToken[0] : hostToken);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof RoomRegistrationError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: 'Failed to get registrants' });
+  }
+});
+
 // Get room info (requires knowing the room ID)
 roomRouter.get('/:id', (req, res) => {
   try {
@@ -184,6 +232,7 @@ roomRouter.get('/:id', (req, res) => {
       hostName: roomState.room.hostName,
       scheduledFor: roomState.room.scheduledFor,
       settings: roomState.room.settings,
+      registration: roomState.room.registration,
       participants,
       participantCount: participants.length,
     });
@@ -212,6 +261,7 @@ roomRouter.get('/:id/exists', (req, res) => {
       hostName: roomState.room.hostName,
       scheduledFor: roomState.room.scheduledFor,
       passwordProtected: roomState.room.settings.passwordProtected,
+      registration: roomState.room.registration,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to check room' });
