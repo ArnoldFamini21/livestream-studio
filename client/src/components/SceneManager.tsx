@@ -119,6 +119,9 @@ export function SceneManager({
 
   const atLimit = scenes.length >= MAX_SCENES;
   const scenePackSlots = Math.max(0, Math.min(PRODUCTION_SCENE_PACK_TEMPLATE_IDS.length, MAX_SCENES - scenes.length));
+  const activeScene = scenes.find((scene) => scene.id === activeSceneId) || null;
+  const activeOverlayCount = activeScene?.visibleOverlayIds.length || 0;
+  const transitionLabel = SCENE_TRANSITION_PRESETS.find((preset) => preset.id === sceneTransitionPreset)?.label || 'Crossfade';
 
   const handleSave = () => {
     const trimmed = newName.trim();
@@ -243,6 +246,61 @@ export function SceneManager({
       <div style={styles.header}>
         <span style={styles.title}>Scenes</span>
         <span style={styles.count}>{scenes.length}/{MAX_SCENES}</span>
+      </div>
+
+      <div style={styles.directorBoard}>
+        <div style={styles.directorPreview}>
+          {activeScene ? (
+            <ScenePreviewThumbnail scene={activeScene} />
+          ) : (
+            <>
+              <span style={styles.directorPreviewEmptyTile} />
+              <span style={{ ...styles.directorPreviewEmptyTile, left: '53%' }} />
+              <span style={styles.directorPreviewLower} />
+            </>
+          )}
+        </div>
+        <div style={styles.directorContent}>
+          <span style={styles.directorEyebrow}>{activeScene ? 'On air scene' : 'Scene control'}</span>
+          <span style={styles.directorTitle}>{activeScene?.name || 'No active scene'}</span>
+          <div style={styles.directorMetaRow}>
+            <span style={styles.directorMeta}>{activeScene ? STUDIO_LAYOUT_LABELS[activeScene.layout] : 'Current stage'}</span>
+            <span style={styles.directorMeta}>{transitionLabel}</span>
+            <span style={styles.directorMeta}>{activeOverlayCount} overlay{activeOverlayCount === 1 ? '' : 's'}</span>
+          </div>
+          <div style={styles.directorActions}>
+            <button
+              type="button"
+              style={styles.directorActionBtn}
+              onClick={() => setIsCreating(true)}
+              disabled={atLimit}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              style={{
+                ...styles.directorActionBtn,
+                ...(!activeScene ? styles.directorActionBtnDisabled : {}),
+              }}
+              onClick={() => activeScene && startUpdate(activeScene.id)}
+              disabled={!activeScene}
+            >
+              Update
+            </button>
+            <button
+              type="button"
+              style={{
+                ...styles.directorActionBtn,
+                ...(!activeScene || atLimit ? styles.directorActionBtnDisabled : {}),
+              }}
+              onClick={() => activeScene && startDuplicate(activeScene.id)}
+              disabled={!activeScene || atLimit}
+            >
+              Duplicate
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Save button / inline input */}
@@ -754,6 +812,103 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     fontWeight: 500,
     color: 'var(--text-muted)',
+  },
+  directorBoard: {
+    display: 'grid',
+    gridTemplateColumns: '116px minmax(0, 1fr)',
+    gap: 10,
+    padding: 9,
+    borderRadius: 10,
+    border: '1px solid rgba(167, 139, 250, 0.24)',
+    background: 'rgba(15, 23, 42, 0.42)',
+  },
+  directorPreview: {
+    position: 'relative',
+    aspectRatio: '16 / 9',
+    borderRadius: 8,
+    overflow: 'hidden',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(51, 65, 85, 0.72))',
+  },
+  directorPreviewEmptyTile: {
+    position: 'absolute',
+    left: '12%',
+    top: '21%',
+    width: '35%',
+    height: '46%',
+    borderRadius: 7,
+    border: '1px solid rgba(255, 255, 255, 0.18)',
+    background: 'rgba(2, 6, 23, 0.54)',
+  },
+  directorPreviewLower: {
+    position: 'absolute',
+    left: '12%',
+    bottom: '14%',
+    width: '46%',
+    height: 9,
+    borderRadius: 999,
+    background: 'rgba(167, 139, 250, 0.54)',
+  },
+  directorContent: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  directorEyebrow: {
+    fontSize: 9,
+    fontWeight: 900,
+    color: '#a5f3fc',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+  },
+  directorTitle: {
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: 900,
+    color: 'var(--text-primary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  directorMetaRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  directorMeta: {
+    minWidth: 0,
+    padding: '2px 6px',
+    borderRadius: 999,
+    background: 'rgba(255, 255, 255, 0.06)',
+    color: 'var(--text-muted)',
+    fontSize: 9,
+    fontWeight: 800,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  directorActions: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(72px, 1fr))',
+    gap: 4,
+    marginTop: 1,
+  },
+  directorActionBtn: {
+    minWidth: 0,
+    height: 26,
+    borderRadius: 6,
+    border: '1px solid rgba(167, 139, 250, 0.32)',
+    background: 'rgba(167, 139, 250, 0.11)',
+    color: '#ddd6fe',
+    fontSize: 9,
+    fontWeight: 900,
+    cursor: 'pointer',
+  },
+  directorActionBtnDisabled: {
+    opacity: 0.42,
+    cursor: 'not-allowed',
   },
   createRow: {
     display: 'flex',

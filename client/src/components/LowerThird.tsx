@@ -81,6 +81,9 @@ export function LowerThirdManager({
   const [animationDirection, setAnimationDirection] = useState<LowerThirdAnimationDirection>(DEFAULT_LOWER_THIRD_ANIMATION_DIRECTION);
   const [fontFamily, setFontFamily] = useState<LowerThirdFont>(DEFAULT_LOWER_THIRD_FONT);
   const onStageParticipants = participants.filter((participant) => participant.status === 'on-stage');
+  const previewAccent = normalizeLowerThirdAccentColor(accentColor) || 'var(--accent)';
+  const previewName = name.trim() || 'Guest Name';
+  const previewTitle = title.trim() || 'Title or role';
 
   const handleAdd = () => {
     if (!name.trim()) return;
@@ -331,6 +334,24 @@ export function LowerThirdManager({
                 title={color}
               />
             ))}
+          </div>
+        </div>
+        <div style={styles.previewCard} aria-label="Lower third preview">
+          <div style={styles.previewStage}>
+            <span style={{ ...styles.previewTile, borderRadius: style === 'glass' ? 14 : 8 }} />
+            <div
+              style={{
+                ...styles.previewLowerThird,
+                ...(style === 'gradient' ? { background: `linear-gradient(135deg, ${previewAccent}, #db2777)` } : {}),
+                ...(style === 'glass' ? { background: 'rgba(255,255,255,0.12)', borderColor: `${previewAccent}99` } : {}),
+              }}
+            >
+              <span style={{ ...styles.previewAccent, background: style === 'bold' ? previewAccent : `${previewAccent}cc` }} />
+              <span style={styles.previewTextStack}>
+                <span style={{ ...styles.previewName, fontFamily: getLowerThirdFontCssFamily(fontFamily) }}>{previewName}</span>
+                <span style={styles.previewTitle}>{previewTitle}</span>
+              </span>
+            </div>
           </div>
         </div>
         <button
@@ -798,6 +819,71 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     cursor: 'pointer',
     flexShrink: 0,
+  },
+  previewCard: {
+    borderRadius: 9,
+    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'rgba(15, 23, 42, 0.45)',
+    overflow: 'hidden',
+  },
+  previewStage: {
+    position: 'relative',
+    aspectRatio: '16 / 9',
+    background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(51, 65, 85, 0.78))',
+  },
+  previewTile: {
+    position: 'absolute',
+    left: '18%',
+    right: '18%',
+    top: '22%',
+    bottom: '24%',
+    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'rgba(2, 6, 23, 0.56)',
+    boxShadow: '0 14px 26px rgba(0,0,0,0.28)',
+  },
+  previewLowerThird: {
+    position: 'absolute',
+    left: 14,
+    bottom: 13,
+    minWidth: 126,
+    maxWidth: '74%',
+    minHeight: 36,
+    display: 'grid',
+    gridTemplateColumns: '5px 1fr',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(2, 6, 23, 0.82)',
+    overflow: 'hidden',
+    boxShadow: '0 10px 20px rgba(0,0,0,0.3)',
+  },
+  previewAccent: {
+    width: 5,
+  },
+  previewTextStack: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    gap: 1,
+    padding: '6px 10px',
+  },
+  previewName: {
+    minWidth: 0,
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 900,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  previewTitle: {
+    minWidth: 0,
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 9,
+    fontWeight: 700,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   },
   addBtn: {
     fontSize: 12,

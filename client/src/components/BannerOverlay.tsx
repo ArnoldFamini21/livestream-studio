@@ -55,6 +55,8 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
   const [position, setPosition] = useState<'top' | 'bottom'>('bottom');
   const [durationSeconds, setDurationSeconds] = useState(0);
   const textLimit = isTicker ? 1000 : 200;
+  const previewColor = getStyleColor(style, customColor);
+  const previewText = text.trim() || (isTicker ? 'Welcome to the live stream' : 'Banner text');
 
   const handleAdd = () => {
     if (!text.trim()) return;
@@ -236,6 +238,24 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
                 {option.label}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div style={styles.previewCard} aria-label="Banner preview">
+          <div style={styles.previewStage}>
+            <span style={styles.previewTile} />
+            <div
+              style={{
+                ...styles.previewBanner,
+                ...(position === 'top' ? { top: 0 } : { bottom: 0 }),
+                background: previewColor,
+              }}
+            >
+              {(style === 'breaking' || style === 'alert') && <span style={styles.previewBannerLabel}>{STYLE_PRESETS[style].label}</span>}
+              <span style={{ ...styles.previewBannerText, ...(isTicker ? styles.previewTickerText : {}) }}>
+                {previewText}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -652,6 +672,64 @@ const styles: Record<string, React.CSSProperties> = {
     borderStyle: 'solid',
     borderColor: 'var(--border)',
     cursor: 'pointer',
+  },
+  previewCard: {
+    borderRadius: 9,
+    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'rgba(15, 23, 42, 0.45)',
+    overflow: 'hidden',
+  },
+  previewStage: {
+    position: 'relative',
+    aspectRatio: '16 / 9',
+    background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(51, 65, 85, 0.78))',
+    overflow: 'hidden',
+  },
+  previewTile: {
+    position: 'absolute',
+    left: '20%',
+    right: '20%',
+    top: '22%',
+    bottom: '23%',
+    borderRadius: 9,
+    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'rgba(2, 6, 23, 0.56)',
+    boxShadow: '0 14px 26px rgba(0,0,0,0.28)',
+  },
+  previewBanner: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    minHeight: 24,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 7,
+    padding: '5px 10px',
+    color: '#fff',
+    boxShadow: '0 8px 18px rgba(0,0,0,0.3)',
+  },
+  previewBannerLabel: {
+    flexShrink: 0,
+    padding: '2px 6px',
+    borderRadius: 5,
+    background: 'rgba(0,0,0,0.26)',
+    color: '#fff',
+    fontSize: 8,
+    fontWeight: 900,
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+  },
+  previewBannerText: {
+    minWidth: 0,
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 800,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  previewTickerText: {
+    paddingLeft: 22,
   },
   addBtn: {
     fontSize: 12,

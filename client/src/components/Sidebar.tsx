@@ -262,6 +262,23 @@ function loadSavedBrandKits(): SavedBrandKit[] {
   }
 }
 
+function getBackgroundStyleValue(background: StageBackground, fallbackColor: string): string {
+  if (background.type === 'image' && background.value) {
+    return `url(${background.value}) center / cover no-repeat`;
+  }
+  if (background.type === 'gradient' || background.type === 'color') {
+    return background.value || fallbackColor;
+  }
+  return `linear-gradient(135deg, #0f172a 0%, ${fallbackColor} 100%)`;
+}
+
+function getCameraShapeRadius(shape: CameraShape): number | string {
+  if (shape === 'circle') return '50%';
+  if (shape === 'rounded') return 10;
+  if (shape === 'square') return 6;
+  return 3;
+}
+
 type BrandKitPreset = Omit<BrandKitVisuals, 'logoUrl' | 'logoPlacement' | 'logoPosition'> & {
   name: string;
   logoUrl?: string | null;
@@ -506,6 +523,19 @@ export function Sidebar(props: SidebarProps) {
             <div style={st.scrollContent}>
               <div style={st.section}>
                 <h4 style={st.sectionTitle}>Brand Kit</h4>
+                <BrandPreview
+                  studioTheme={props.studioTheme}
+                  brandColor={props.brandColor}
+                  stageBackground={props.stageBackground}
+                  logoUrl={props.logoUrl}
+                  logoPlacement={props.logoPlacement}
+                  logoPosition={props.logoPosition}
+                  logoSize={props.logoSize}
+                  logoOpacity={props.logoOpacity}
+                  cameraShape={props.cameraShape}
+                  nameTagStyle={props.nameTagStyle}
+                  waitingRoomBranding={props.waitingRoomBranding}
+                />
                 <div style={st.brandGroup}>
                   <span style={st.brandLabel}>Studio Theme</span>
                   <div style={st.themeGrid}>
@@ -1757,6 +1787,78 @@ function ChatContent({
   );
 }
 
+function BrandPreview({
+  studioTheme,
+  brandColor,
+  stageBackground,
+  logoUrl,
+  logoPlacement,
+  logoPosition,
+  logoSize,
+  logoOpacity,
+  cameraShape,
+  nameTagStyle,
+  waitingRoomBranding,
+}: {
+  studioTheme: StudioThemeId;
+  brandColor: string;
+  stageBackground: StageBackground;
+  logoUrl: string | null;
+  logoPlacement: LogoPlacement;
+  logoPosition: LogoPosition | null;
+  logoSize: LogoSize;
+  logoOpacity: number;
+  cameraShape: CameraShape;
+  nameTagStyle: NameTagStyle;
+  waitingRoomBranding: WaitingRoomBranding;
+}) {
+  const background = getBackgroundStyleValue(stageBackground, brandColor);
+  const cameraRadius = getCameraShapeRadius(cameraShape);
+  const logoStyle = logoPosition
+    ? {
+        left: `${Math.round(logoPosition.x * 100)}%`,
+        top: `${Math.round(logoPosition.y * 100)}%`,
+        transform: 'translate(-50%, -50%)',
+      }
+    : getPositionDotStyle(logoPlacement);
+  const logoDimension = logoSize === 'large' ? 34 : logoSize === 'small' ? 20 : 26;
+
+  return (
+    <div style={st.brandPreviewCard}>
+      <div style={st.brandPreviewStage}>
+        <div style={{ ...st.brandPreviewBackdrop, background }} />
+        <div style={{ ...st.brandPreviewCamera, borderColor: brandColor, borderRadius: cameraRadius }}>
+          <span style={{ ...st.brandPreviewFace, background: `${brandColor}33` }} />
+          <span style={{ ...st.brandPreviewNameTag, ...(nameTagStyle === 'block' ? { background: brandColor, color: '#fff' } : {}) }}>
+            {nameTagStyle}
+          </span>
+        </div>
+        <div style={{ ...st.brandPreviewLowerThird, borderColor: brandColor }}>
+          <span style={{ ...st.brandPreviewLowerAccent, background: brandColor }} />
+          <span style={st.brandPreviewLowerLine} />
+        </div>
+        <div
+          style={{
+            ...st.brandPreviewLogo,
+            ...logoStyle,
+            width: logoDimension,
+            height: logoDimension,
+            opacity: logoUrl ? logoOpacity : 0.75,
+          }}
+        >
+          {logoUrl ? <img src={logoUrl} alt="" style={st.brandPreviewLogoImage} /> : <span style={{ ...st.brandPreviewLogoFallback, background: brandColor }} />}
+        </div>
+      </div>
+      <div style={st.brandPreviewMeta}>
+        <span style={st.brandPreviewTitle}>Broadcast Preview</span>
+        <span style={st.brandPreviewSub}>
+          {getStudioThemeLabel(studioTheme)} / {cameraShape} cameras / {waitingRoomBranding.backgroundMode === 'studio' ? 'stage green room' : 'brand green room'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function OverlayQuickActions({
   hostName,
   brandColor,
@@ -1808,8 +1910,17 @@ function OverlayQuickActions({
   };
 
   const addLiveShowPack = () => {
-    onAddLowerThird({ name: hostName || 'Host', title: 'Live Host', style: 'bold', visible: true });
-    onAddBanner({ text: 'We are live', style: 'info', isTicker: false, position: 'top', visible: true });
+    onAddLowerThird({
+      name: hostName || 'Host',
+      title: 'Live Host',
+      style: 'bold',
+      durationSeconds: 20,
+      accentColor: brandColor,
+      animation: 'slide',
+      animationDirection: 'left',
+      visible: true,
+    });
+    onAddBanner({ text: 'We are live', style: 'info', isTicker: false, position: 'top', durationSeconds: 20, visible: true });
   };
 
   const addWebinarPack = () => {
@@ -1826,11 +1937,39 @@ function OverlayQuickActions({
     onAddTicker({ text: 'Welcome to the live stream', speed: 'normal', backgroundColor: brandColor, textColor: '#ffffff', separator: '\u2022', visible: true });
   };
 
+  const addOfferPack = () => {
+    onAddBanner({
+      text: 'Limited offer - check the link in chat',
+      style: 'custom',
+      customColor: '#059669',
+      isTicker: false,
+      position: 'bottom',
+      durationSeconds: 60,
+      visible: true,
+    });
+    onAddTicker({
+      text: 'Subscribe for updates and replay links',
+      speed: 'slow',
+      backgroundColor: '#111827',
+      textColor: '#ffffff',
+      separator: '\u2022',
+      visible: true,
+    });
+  };
+
   const packs = [
-    { label: 'Live Show', action: addLiveShowPack },
-    { label: 'Webinar Q&A', action: addWebinarPack },
-    { label: 'Countdown', action: addCountdownPack },
-    { label: 'Ticker', action: addTickerPack },
+    { label: 'Live Show', meta: 'Host ID + live bug', color: brandColor, action: addLiveShowPack },
+    { label: 'Webinar Q&A', meta: 'Questions + timer', color: '#2563eb', action: addWebinarPack },
+    { label: 'Countdown', meta: 'Starting soon', color: '#f59e0b', action: addCountdownPack },
+    { label: 'Ticker', meta: 'Scrolling message', color: '#06b6d4', action: addTickerPack },
+    { label: 'Offer CTA', meta: 'Banner + ticker', color: '#059669', action: addOfferPack },
+  ];
+  const overlayStats = [
+    { label: 'Lower', count: lowerThirds.length, live: lowerThirds.filter((item) => item.visible).length },
+    { label: 'Banner', count: banners.length, live: banners.filter((item) => item.visible).length },
+    { label: 'Timer', count: timers.length, live: timers.filter((item) => item.visible).length },
+    { label: 'Ticker', count: tickers.length, live: tickers.filter((item) => item.visible).length },
+    { label: 'Widget', count: widgets.length, live: widgets.filter((item) => item.visible).length },
   ];
 
   return (
@@ -1844,10 +1983,30 @@ function OverlayQuickActions({
           Clear
         </button>
       </div>
+      <div style={st.overlayLivePreview}>
+        <div style={st.overlayPreviewStage}>
+          <span style={{ ...st.overlayPreviewBug, background: brandColor }}>LIVE</span>
+          <span style={{ ...st.overlayPreviewLower, borderColor: brandColor }} />
+          <span style={{ ...st.overlayPreviewBanner, background: brandColor }} />
+          <span style={st.overlayPreviewTicker} />
+        </div>
+        <div style={st.overlayStatGrid}>
+          {overlayStats.map((stat) => (
+            <div key={stat.label} style={{ ...st.overlayStat, ...(stat.live > 0 ? st.overlayStatLive : {}) }}>
+              <span style={st.overlayStatValue}>{stat.live}/{stat.count}</span>
+              <span style={st.overlayStatLabel}>{stat.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
       <div style={st.overlayPackGrid}>
         {packs.map((pack) => (
           <button key={pack.label} type="button" style={st.overlayPackBtn} onClick={pack.action}>
-            {pack.label}
+            <span style={{ ...st.overlayPackAccent, background: pack.color }} />
+            <span style={st.overlayPackText}>
+              <span style={st.overlayPackLabel}>{pack.label}</span>
+              <span style={st.overlayPackMeta}>{pack.meta}</span>
+            </span>
           </button>
         ))}
       </div>
@@ -1869,7 +2028,7 @@ function getPositionDotStyle(placement: LogoPlacement): React.CSSProperties {
 // ---------------------------------------------------------------------------
 const st: Record<string, React.CSSProperties> = {
   wrapper: { display: 'flex', height: '100%', flexShrink: 0 },
-  contentPanel: { width: 280, display: 'flex', flexDirection: 'column', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border)', height: '100%', overflow: 'hidden', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)' },
+  contentPanel: { width: 340, display: 'flex', flexDirection: 'column', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border)', height: '100%', overflow: 'hidden', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)' },
   scrollContent: { flex: 1, overflowY: 'auto' },
   iconStrip: { width: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, gap: 2, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%', flexShrink: 0 },
   iconBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, width: 48, height: 48, borderRadius: 10, background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.15s ease' },
@@ -1879,6 +2038,21 @@ const st: Record<string, React.CSSProperties> = {
   sectionTitle: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 },
   sectionTitleInline: { fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: 0 },
   divider: { height: 1, background: 'var(--border)', margin: '4px 16px 8px' },
+  brandPreviewCard: { marginBottom: 16, overflow: 'hidden', borderRadius: 10, border: '1px solid rgba(167, 139, 250, 0.26)', background: 'rgba(15, 23, 42, 0.42)' },
+  brandPreviewStage: { position: 'relative', aspectRatio: '16 / 9', overflow: 'hidden', background: '#0f172a' },
+  brandPreviewBackdrop: { position: 'absolute', inset: 0, opacity: 0.98 },
+  brandPreviewCamera: { position: 'absolute', left: '18%', right: '18%', top: '23%', bottom: '22%', display: 'flex', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderStyle: 'solid', background: 'rgba(2, 6, 23, 0.58)', overflow: 'hidden', boxShadow: '0 16px 34px rgba(0, 0, 0, 0.34)' },
+  brandPreviewFace: { width: 44, height: 44, borderRadius: '50%', boxShadow: '0 0 0 18px rgba(255, 255, 255, 0.035)' },
+  brandPreviewNameTag: { position: 'absolute', left: 12, bottom: 10, minWidth: 54, maxWidth: '70%', height: 19, padding: '0 8px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(2, 6, 23, 0.82)', border: '1px solid rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.86)', fontSize: 9, fontWeight: 800, textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  brandPreviewLowerThird: { position: 'absolute', left: 18, bottom: 18, width: 126, height: 30, borderRadius: 8, borderWidth: 1, borderStyle: 'solid', background: 'rgba(2, 6, 23, 0.72)', boxShadow: '0 10px 22px rgba(0, 0, 0, 0.26)', overflow: 'hidden' },
+  brandPreviewLowerAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 5 },
+  brandPreviewLowerLine: { position: 'absolute', left: 15, right: 14, top: 12, height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.58)' },
+  brandPreviewLogo: { position: 'absolute', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: 'rgba(2, 6, 23, 0.48)', border: '1px solid rgba(255,255,255,0.16)', overflow: 'hidden', boxShadow: '0 8px 18px rgba(0,0,0,0.25)' },
+  brandPreviewLogoImage: { width: '100%', height: '100%', objectFit: 'contain', padding: 4 },
+  brandPreviewLogoFallback: { width: '54%', height: '54%', borderRadius: 4 },
+  brandPreviewMeta: { display: 'flex', flexDirection: 'column', gap: 2, padding: '9px 10px' },
+  brandPreviewTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
+  brandPreviewSub: { fontSize: 10, lineHeight: 1.35, color: 'var(--text-muted)', textTransform: 'capitalize' },
   brandGroup: { marginBottom: 16 },
   brandLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 8 },
   brandLabelRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 },
@@ -1994,8 +2168,23 @@ const st: Record<string, React.CSSProperties> = {
   overlayQuick: { padding: 12, display: 'flex', flexDirection: 'column', gap: 10 },
   overlayQuickHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   clearBtn: { border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.1)', color: '#fca5a5', borderRadius: 7, height: 28, padding: '0 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
-  overlayPackGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 },
-  overlayPackBtn: { minHeight: 34, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer' },
+  overlayLivePreview: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr)', gap: 8, alignItems: 'stretch' },
+  overlayPreviewStage: { position: 'relative', minHeight: 92, borderRadius: 9, border: '1px solid rgba(255,255,255,0.08)', background: 'linear-gradient(135deg, rgba(15,23,42,0.96), rgba(30,41,59,0.82))', overflow: 'hidden' },
+  overlayPreviewBug: { position: 'absolute', top: 9, right: 9, height: 18, padding: '0 7px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 8, fontWeight: 900, letterSpacing: '0.05em' },
+  overlayPreviewLower: { position: 'absolute', left: 12, bottom: 24, width: 86, height: 18, borderRadius: 7, borderWidth: 1, borderStyle: 'solid', background: 'rgba(2, 6, 23, 0.8)' },
+  overlayPreviewBanner: { position: 'absolute', left: 0, right: 0, top: 0, height: 9, opacity: 0.9 },
+  overlayPreviewTicker: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 12, background: 'rgba(2, 6, 23, 0.9)', borderTop: '1px solid rgba(255,255,255,0.08)' },
+  overlayStatGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 5 },
+  overlayStat: { minWidth: 0, padding: '6px 7px', borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.035)', display: 'flex', flexDirection: 'column', gap: 2 },
+  overlayStatLive: { borderColor: 'rgba(34, 197, 94, 0.32)', background: 'rgba(34, 197, 94, 0.08)' },
+  overlayStatValue: { fontSize: 12, fontWeight: 900, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' },
+  overlayStatLabel: { fontSize: 9, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  overlayPackGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 },
+  overlayPackBtn: { minHeight: 48, minWidth: 0, display: 'grid', gridTemplateColumns: '5px minmax(0, 1fr)', alignItems: 'stretch', gap: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: 0, overflow: 'hidden', textAlign: 'left' },
+  overlayPackAccent: { display: 'block', width: 5 },
+  overlayPackText: { minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2, padding: '7px 8px 7px 0' },
+  overlayPackLabel: { minWidth: 0, color: 'var(--text-primary)', fontSize: 11, fontWeight: 900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  overlayPackMeta: { minWidth: 0, color: 'var(--text-muted)', fontSize: 9, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   // Chat
   chatTabs: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 4, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
   chatHeaderActions: { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },
