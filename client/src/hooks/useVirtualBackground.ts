@@ -11,11 +11,8 @@ import {
 import {
   buildFallbackBackgroundFilter,
   buildReplacementBackgroundFilter,
-  DEFAULT_SEGMENTATION_MASK_REFINEMENT,
   getExpandedDrawRect,
   getVirtualBackgroundRefinementSettings,
-  refineSegmentationMaskAlpha,
-  shouldInvertSegmentationMask,
 } from '../utils/virtualBackgroundRefinement.ts';
 
 declare global {
@@ -83,11 +80,6 @@ function loadMediaPipeScript(): Promise<void> {
 // Reasonable target FPS for the compositor. Lowering this saves CPU while still
 // looking smooth for talking-head video. Most webcams cap around 30 anyway.
 const TARGET_FPS = 30;
-
-// Internal mask refinement resolution. Downscaling keeps per-frame alpha
-// cleanup affordable and the refined mask is upscaled back to canvas size.
-const SEGMENTATION_WIDTH = 256;
-const SEGMENTATION_HEIGHT = 256;
 
 /**
  * Apply a virtual background to a webcam stream. Blur and image replacement use
@@ -310,17 +302,10 @@ export function useVirtualBackground({
       return;
     }
 
-    // Downscaled mask canvas to keep per-frame alpha refinement fast.
-    const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = SEGMENTATION_WIDTH;
-    maskCanvas.height = SEGMENTATION_HEIGHT;
-    const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
-    const refinedMaskCanvas = document.createElement('canvas');
-    const refinedMaskCtx = refinedMaskCanvas.getContext('2d');
     const foregroundCanvas = document.createElement('canvas');
     const foregroundCtx = foregroundCanvas.getContext('2d');
-    if (!maskCtx || !refinedMaskCtx || !foregroundCtx) {
-      setError('Canvas 2D context unavailable; cannot refine virtual background edges.');
+    if (!foregroundCtx) {
+      setError('Canvas 2D context unavailable; cannot apply virtual background foreground.');
       setOutputStream(inputStream);
       return;
     }
@@ -344,8 +329,6 @@ export function useVirtualBackground({
       if (outputCanvas.width !== w || outputCanvas.height !== h) {
         outputCanvas.width = w;
         outputCanvas.height = h;
-        refinedMaskCanvas.width = w;
-        refinedMaskCanvas.height = h;
         foregroundCanvas.width = w;
         foregroundCanvas.height = h;
       }
@@ -393,63 +376,38 @@ export function useVirtualBackground({
       }
     };
 
-    const drawRefinedMask = (
-      segmentationMask: CanvasImageSource,
-      cw: number,
-      ch: number
-    ) => {
-      const refinement = getVirtualBackgroundRefinementSettings(cw, ch);
-
-      maskCtx.save();
-      maskCtx.clearRect(0, 0, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT);
-      maskCtx.imageSmoothingEnabled = true;
-      maskCtx.imageSmoothingQuality = 'high';
-      maskCtx.drawImage(segmentationMask, 0, 0, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT);
-      const maskFrame = maskCtx.getImageData(0, 0, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT);
-      refineSegmentationMaskAlpha(maskFrame.data, {
-        ...DEFAULT_SEGMENTATION_MASK_REFINEMENT,
-        invert: shouldInvertSegmentationMask(maskFrame.data, SEGMENTATION_WIDTH, SEGMENTATION_HEIGHT),
-      });
-      maskCtx.putImageData(maskFrame, 0, 0);
-      maskCtx.restore();
-
-      refinedMaskCtx.save();
-      refinedMaskCtx.clearRect(0, 0, cw, ch);
-      refinedMaskCtx.imageSmoothingEnabled = true;
-      refinedMaskCtx.imageSmoothingQuality = 'high';
-      refinedMaskCtx.filter = `blur(${refinement.edgeBlurPx}px)`;
-      refinedMaskCtx.globalAlpha = 0.82;
-      refinedMaskCtx.drawImage(
-        maskCanvas,
-        -refinement.maskExpansionPx,
-        -refinement.maskExpansionPx,
-        cw + refinement.maskExpansionPx * 2,
-        ch + refinement.maskExpansionPx * 2
-      );
-      refinedMaskCtx.filter = 'none';
-      refinedMaskCtx.globalAlpha = refinement.coreMaskOpacity;
-      refinedMaskCtx.drawImage(maskCanvas, 0, 0, cw, ch);
-      refinedMaskCtx.restore();
-    };
-
-    const drawRefinedForeground = (
+    const drawForeground = (
       ctx: CanvasRenderingContext2D,
       image: CanvasImageSource,
       segmentationMask: CanvasImageSource,
       cw: number,
       ch: number
     ) => {
-      drawRefinedMask(segmentationMask, cw, ch);
+      const refinement = getVirtualBackgroundRefinementSettings(cw, ch);
 
       foregroundCtx.save();
       foregroundCtx.clearRect(0, 0, cw, ch);
       foregroundCtx.imageSmoothingEnabled = true;
       foregroundCtx.imageSmoothingQuality = 'high';
+      // Preserve MediaPipe's native mask semantics. Reinterpreting the mask
+      // pixels can produce hollow silhouettes in Safari/WebKit.
+      foregroundCtx.drawImage(segmentationMask, 0, 0, cw, ch);
+      foregroundCtx.globalCompositeOperation = 'source-in';
       foregroundCtx.drawImage(image, 0, 0, cw, ch);
-      foregroundCtx.globalCompositeOperation = 'destination-in';
-      foregroundCtx.drawImage(refinedMaskCanvas, 0, 0, cw, ch);
       foregroundCtx.globalCompositeOperation = 'source-over';
       foregroundCtx.restore();
+
+      ctx.save();
+      ctx.globalAlpha = 0.42;
+      ctx.filter = `blur(${Math.max(0.8, refinement.edgeBlurPx * 0.45)}px)`;
+      ctx.drawImage(
+        foregroundCanvas,
+        -refinement.maskExpansionPx,
+        -refinement.maskExpansionPx,
+        cw + refinement.maskExpansionPx * 2,
+        ch + refinement.maskExpansionPx * 2
+      );
+      ctx.restore();
 
       ctx.drawImage(foregroundCanvas, 0, 0, cw, ch);
     };
@@ -467,7 +425,7 @@ export function useVirtualBackground({
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
       drawReplacementBackground(ctx, image, cw, ch, mode);
-      drawRefinedForeground(ctx, image, segmentationMask, cw, ch);
+      drawForeground(ctx, image, segmentationMask, cw, ch);
       ctx.restore();
     };
 
