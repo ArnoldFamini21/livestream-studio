@@ -882,6 +882,12 @@ export interface Scene {
   pipCorner?: 'TL' | 'TR' | 'BL' | 'BR';
   focusedVideoItemId?: string | null;
   stageItemOrder?: string[];
+  activeMedia?: SceneActiveMedia | null;
   // Which overlay IDs should be visible when this scene is active
   visibleOverlayIds: string[];
+}
+
+export interface SceneActiveMedia {
+  assetId: string;
+  slideIndex?: number;
 }

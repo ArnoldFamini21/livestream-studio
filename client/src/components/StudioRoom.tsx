@@ -127,7 +127,13 @@ import {
   downloadRtmpBackupRecording,
   pollRtmpBackupRecording,
 } from '../utils/rtmpBackupRecording.ts';
-import { getScenePipCornerForApply, getSceneStageItemOrderForApply } from '../utils/sceneApplication.ts';
+import {
+  getSceneActiveMediaForApply,
+  getSceneActiveMediaSnapshot,
+  getScenePipCornerForApply,
+  getSceneStageItemOrderForApply,
+  normalizeSceneActiveMediaSnapshot,
+} from '../utils/sceneApplication.ts';
 import {
   createScreenPictureInPictureStream,
 } from '../utils/screenPictureInPicture.ts';
@@ -767,7 +773,13 @@ function PresentationDeckStage({
   );
 }
 
-function getPersistableScenes(scenes: Scene[]): Scene[] {
+function getPersistableScenes(scenes: Scene[], mediaAssets: StudioMediaAsset[] = []): Scene[] {
+  const persistableMediaIds = new Set(
+    mediaAssets
+      .filter((asset) => asset.source === 'url')
+      .map((asset) => asset.id)
+  );
+
   return scenes.map((scene) => {
     const persistableScene: Scene = {
       ...scene,
@@ -783,6 +795,10 @@ function getPersistableScenes(scenes: Scene[]): Scene[] {
     if (Array.isArray(scene.stageItemOrder)) {
       persistableScene.stageItemOrder = scene.stageItemOrder.filter((id): id is string => typeof id === 'string');
     }
+    const activeMediaSnapshot = normalizeSceneActiveMediaSnapshot(scene.activeMedia);
+    persistableScene.activeMedia = activeMediaSnapshot && persistableMediaIds.has(activeMediaSnapshot.assetId)
+      ? activeMediaSnapshot
+      : null;
 
     return persistableScene;
   });
@@ -1760,7 +1776,7 @@ export function StudioRoom() {
         pipCorner,
         stageItemOrder,
         mediaAssets: mediaAssets.filter((asset) => asset.source === 'url'),
-        scenes: getPersistableScenes(scenes),
+        scenes: getPersistableScenes(scenes, mediaAssets),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
         sceneTransitionPreset,
         sceneStingerClip: isPersistableSceneStingerClip(sceneStingerClip) ? sceneStingerClip : null,
@@ -3332,6 +3348,7 @@ export function StudioRoom() {
       pipCorner,
       focusedVideoItemId,
       stageItemOrder: normalizeStageItemOrder(stageItemOrder, availableStageItemIds),
+      activeMedia: getSceneActiveMediaSnapshot(activeMedia, activeMediaSlideIndex),
       visibleOverlayIds: [
         ...lowerThirds.filter(o => o.visible).map(o => o.id),
         ...banners.filter(b => b.visible).map(b => b.id),
@@ -3389,6 +3406,7 @@ export function StudioRoom() {
       pipCorner: 'BR',
       focusedVideoItemId: null,
       stageItemOrder: [],
+      activeMedia: null,
       visibleOverlayIds,
     };
 
@@ -3426,6 +3444,8 @@ export function StudioRoom() {
     setPipCorner('BR');
     setFocusedVideoItemId(null);
     setStageItemOrder([]);
+    setActiveMedia(null);
+    setActiveMediaSlideIndex(0);
     setLowerThirds(prev => prev.map(o => ({ ...o, visible: false })));
     setBanners(prev => [...prev.map(b => ({ ...b, visible: false })), ...nextBanners]);
     setTimers(prev => [...prev.map(t => ({ ...t, visible: false, isRunning: false })), ...nextTimers]);
@@ -3481,6 +3501,9 @@ export function StudioRoom() {
         ? scene.focusedVideoItemId
         : null
     );
+    const nextSceneMedia = getSceneActiveMediaForApply(scene, mediaAssets);
+    setActiveMedia(nextSceneMedia.activeMedia);
+    setActiveMediaSlideIndex(nextSceneMedia.slideIndex);
     // Restore overlay visibility from saved scene
     const visibleIds = new Set(scene.visibleOverlayIds);
     setLowerThirds(prev => prev.map(o => ({ ...o, visible: visibleIds.has(o.id) })));
@@ -3527,7 +3550,7 @@ export function StudioRoom() {
     }
 
     const pack = buildScenePack({
-      scenes: getPersistableScenes(scenes),
+      scenes: getPersistableScenes(scenes, mediaAssets),
       lowerThirds,
       banners,
       timers,

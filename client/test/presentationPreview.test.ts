@@ -5,10 +5,14 @@ import JSZip from 'jszip';
 import {
   applyRenderedSlideImages,
   buildPresentationPreview,
+  buildServerRenderedPresentationPreview,
   extractPptxSlideImageTargets,
   extractPptxSlideText,
+  isLegacyPowerPointFile,
   isPdfFile,
+  isPowerPointFile,
   isPptxFile,
+  mergeRenderedPresentationPreview,
 } from '../src/utils/presentationPreview.ts';
 
 const onePixelPng = Buffer.from(
@@ -40,6 +44,8 @@ describe('PowerPoint preview extraction', () => {
       true
     );
     assert.equal(isPptxFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), false);
+    assert.equal(isLegacyPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
+    assert.equal(isPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
   });
 
   it('extracts readable slide text from PPTX XML', () => {
@@ -138,5 +144,92 @@ describe('PowerPoint preview extraction', () => {
       applyRenderedSlideImages(slides, ['data:image/png;base64,one']).map((slide) => slide.imageUrl),
       ['data:image/png;base64,one', undefined]
     );
+  });
+
+  it('normalizes server-rendered slide previews', async () => {
+    const file = new File(
+      [Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF')],
+      'handout.pdf',
+      { type: 'application/pdf' }
+    );
+    const preview = await buildServerRenderedPresentationPreview(file, {
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async (url, init) => {
+        assert.equal(String(url), 'https://media.example.test/presentation-preview');
+        assert.equal(init?.method, 'POST');
+        assert.equal((init?.headers as Record<string, string>)['X-File-Name'], 'handout.pdf');
+        return new Response(JSON.stringify({
+          kind: 'presentation-slides',
+          sourceFormat: 'pdf',
+          slides: [
+            { id: 'page-1', title: 'Page 1', lines: [], imageUrl: 'data:image/png;base64,page' },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+
+    assert.equal(preview?.sourceFormat, 'pdf');
+    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,page');
+  });
+
+  it('merges server-rendered PowerPoint images with extracted slide text', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'Discipleship-Via-Triads.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'rendered-1', title: 'Slide 1', lines: [], imageUrl: 'data:image/png;base64,rendered' },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    assert.equal(preview?.sourceFormat, 'pptx');
+    assert.equal(preview?.slides[0].title, 'TRIAD FORMATION');
+    assert.deepEqual(preview?.slides[0].lines, ['Discipleship']);
+    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
+  });
+
+  it('builds legacy PowerPoint previews from the media server renderer', async () => {
+    const file = new File(
+      [Buffer.from('legacy-binary-powerpoint')],
+      'legacy-sermon.ppt',
+      { type: 'application/vnd.ms-powerpoint' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'rendered-1', title: 'Slide 1', lines: [], imageUrl: 'data:image/png;base64,legacy' },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,legacy');
+  });
+
+  it('merges rendered previews when extracted slide data is missing', () => {
+    const preview = mergeRenderedPresentationPreview([], {
+      kind: 'presentation-slides',
+      sourceFormat: 'pptx',
+      slides: [
+        { id: 'rendered-1', title: 'Rendered', lines: [], imageUrl: 'data:image/png;base64,rendered' },
+      ],
+    }, 'pptx');
+
+    assert.equal(preview?.slides[0].title, 'Rendered');
+    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
   });
 });

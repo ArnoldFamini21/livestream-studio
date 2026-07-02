@@ -142,6 +142,7 @@ describe('scene packs', () => {
     assert.equal(imported.scenes[0].id, 'scene-imported-0');
     assert.equal(imported.scenes[0].name, 'Main Copy');
     assert.equal(imported.scenes[0].logoOpacity, 0.45);
+    assert.equal(imported.scenes[0].activeMedia, null);
     assert.deepEqual(imported.scenes[0].visibleOverlayIds, [
       'lowerThird-imported-0',
       'banner-imported-0',
@@ -245,6 +246,22 @@ describe('scene packs', () => {
 
     assert.deepEqual(parsed.scenes[0].background, { type: 'video', value: 'https://cdn.example.test/loop.mp4' });
     assert.deepEqual(parsed.scenes[1].background, { type: 'none', value: '' });
+  });
+
+  it('sanitizes scene active media snapshots in packs', () => {
+    const parsed = parseScenePackJson(JSON.stringify({
+      version: 1,
+      source: 'livestream-studio',
+      exportedAt: '2026-06-24T00:00:00.000Z',
+      scenes: [
+        makeScene({ activeMedia: { assetId: ' media-url-1 ', slideIndex: 2.4 } }),
+        makeScene({ id: 'scene-bad-media', activeMedia: { assetId: '' } }),
+      ],
+      overlays: { lowerThirds: [], banners: [], timers: [], tickers: [] },
+    }));
+
+    assert.deepEqual(parsed.scenes[0].activeMedia, { assetId: 'media-url-1', slideIndex: 2 });
+    assert.equal(parsed.scenes[1].activeMedia, null);
   });
 
   it('round trips valid JSON packs and builds readable filenames', () => {

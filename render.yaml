@@ -41,10 +41,10 @@ services:
 
   - type: web
     name: livestream-studio-media-server
-    runtime: node
+    runtime: docker
     plan: free
-    buildCommand: npm install && npm run -w shared build && npm run -w media-server build
-    startCommand: npm run -w media-server start
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     envVars:
       - key: NODE_ENV
         value: production
