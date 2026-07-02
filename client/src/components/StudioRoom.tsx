@@ -109,7 +109,9 @@ import { buildLocalRecordingSources } from '../utils/localRecordingSources.ts';
 import {
   downloadRecordingExportArtifact,
   uploadRecordingToMediaServer,
+  type RecordingUploadFileInput,
 } from '../utils/recordingUpload.ts';
+import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 import {
   downloadRtmpBackupRecording,
   pollRtmpBackupRecording,
@@ -906,6 +908,59 @@ function downloadBlobFile(blob: Blob, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+function sanitizeRecordingFileNamePart(value: string, fallback: string): string {
+  const cleaned = value
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
+function formatRecordingTimestamp(date: Date): string {
+  return date.toISOString().slice(0, 19).replace(/[:T]/g, '-');
+}
+
+function makeToolbarRecordingFileName(name: string, blob: Blob, timestamp: string): string {
+  const label = sanitizeRecordingFileNamePart(name, 'recording');
+  return `${label}_${timestamp}.${getRecordingFileExtension(blob.type)}`;
+}
+
+function buildToolbarRecordingUploadFiles(
+  recordings: Map<string, { name: string; blob: Blob }>,
+  timestamp: string
+): RecordingUploadFileInput[] {
+  return Array.from(recordings.values())
+    .filter(({ blob }) => blob.size > 0)
+    .map(({ name, blob }) => ({
+      label: name.trim() || 'Recording',
+      blob,
+      fileName: makeToolbarRecordingFileName(name, blob, timestamp),
+      kind: blob.type.toLowerCase().startsWith('audio/') ? 'audio' : 'iso',
+    }));
+}
+
+async function downloadToolbarRecordingFallback(
+  recordings: Map<string, { name: string; blob: Blob }>,
+  timestamp: string
+) {
+  const files = buildToolbarRecordingUploadFiles(recordings, timestamp);
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    downloadBlobFile(file.blob, file.fileName || makeToolbarRecordingFileName(file.label, file.blob, timestamp));
+    if (index < files.length - 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+  }
+}
+
+function getReadyMp4Artifact(exportJob: Awaited<ReturnType<typeof uploadRecordingToMediaServer>>['exportJob']) {
+  return exportJob?.artifacts.find((artifact) => artifact.status === 'ready' && artifact.id === 'final-mp4') ||
+    exportJob?.artifacts.find((artifact) => artifact.status === 'ready' && artifact.format === 'mp4') ||
+    null;
+}
+
 function getMaxNumericSuffix(items: Array<{ id: string }> | undefined, prefix: string): number {
   if (!items) return 0;
   return items.reduce((max, item) => {
@@ -1215,7 +1270,7 @@ export function StudioRoom() {
     return streams;
   }, [participants, remoteStreams]);
 
-  const { isRecording, formattedTime, startRecording, downloadRecordings } = useRecording();
+  const { isRecording, formattedTime, startRecording, stopRecording } = useRecording();
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
   const {
     isRecording: isLocalRecording,
@@ -2602,15 +2657,63 @@ export function StudioRoom() {
   const onToggleRecording = async () => {
     if (!myParticipant || !canControlRecording) return;
     if (isRecording) {
-      await downloadRecordings();
-      send({
-        type: 'recording-state-changed',
-        payload: {
-          recording: false,
-          performedBy: myParticipant.id,
-        },
-      });
-      setSessionRecordingStartedAt(null);
+      const stoppedAt = new Date();
+      const timestamp = formatRecordingTimestamp(stoppedAt);
+      try {
+        const recordings = await stopRecording();
+        if (recordings.size > 0) {
+          const files = buildToolbarRecordingUploadFiles(recordings, timestamp);
+          if (files.length === 0) {
+            throw new Error('No finished recording tracks were available to export.');
+          }
+
+          try {
+            addToast('Finalizing MP4 recording export...', 'info');
+            const token = await requestLiveStreamToken();
+            const exportBasename = `${room?.name || 'Studio'} Recording ${timestamp}`;
+            const upload = await uploadRecordingToMediaServer({
+              token,
+              roomId: roomId || '',
+              sessionId: `toolbar-${stoppedAt.getTime()}`,
+              files,
+              exportBasename,
+              exportVideoCodec: 'h264',
+              includeAudioStems: false,
+              exportPollTimeoutMs: 120_000,
+            });
+            const mp4Artifact = getReadyMp4Artifact(upload.exportJob);
+            if (!upload.exportJob || !mp4Artifact) {
+              throw new Error(upload.exportError || upload.exportJob?.error || 'MP4 export did not finish.');
+            }
+            const download = await downloadRecordingExportArtifact({
+              token,
+              uploadId: upload.uploadId,
+              exportId: upload.exportJob.exportId,
+              artifactId: mp4Artifact.id,
+              artifactLabel: mp4Artifact.label,
+              format: mp4Artifact.format,
+            });
+            downloadBlobFile(download.blob, download.fileName);
+            addToast('MP4 recording export downloaded.', 'success');
+          } catch (err) {
+            console.warn('MP4 recording export failed, saving original tracks:', err);
+            await downloadToolbarRecordingFallback(recordings, timestamp);
+            addToast('MP4 export was unavailable. Saved original recording tracks instead.', 'warning');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to stop recording:', err);
+        addToast(err instanceof Error ? err.message : 'Failed to stop recording.', 'error');
+      } finally {
+        send({
+          type: 'recording-state-changed',
+          payload: {
+            recording: false,
+            performedBy: myParticipant.id,
+          },
+        });
+        setSessionRecordingStartedAt(null);
+      }
     } else {
       const streams = new Map<string, { stream: MediaStream; name: string; isLocal: boolean }>();
       if (localStream && myParticipant.status === 'on-stage') {

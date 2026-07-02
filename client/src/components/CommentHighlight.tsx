@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { ChatMessage } from '@studio/shared';
+import type { ChatMessage, ExternalChatPlatform } from '@studio/shared';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -11,6 +11,7 @@ export interface HighlightedComment {
   senderName: string;
   content: string;
   avatarColor?: string;
+  sourcePlatform?: ExternalChatPlatform;
   displayMode?: CommentDisplayMode;
   durationMs?: number;
 }
@@ -68,6 +69,8 @@ function getCommentSearchText(message: ChatMessage): string {
   return [
     message.senderName,
     message.content,
+    message.source?.platform || '',
+    message.source?.externalId || '',
     message.pinned ? 'pinned' : '',
     message.starred ? 'starred ready' : '',
     new Date(message.timestamp).toLocaleString(),
@@ -90,6 +93,7 @@ export function createHighlightedCommentFromChatMessage(
     sourceMessageId: message.id,
     senderName: message.senderName,
     content: message.content,
+    sourcePlatform: message.source?.platform,
     displayMode: options.displayMode || 'featured',
     durationMs: options.durationMs || FEATURED_COMMENT_DURATION_MS,
   };
@@ -97,6 +101,12 @@ export function createHighlightedCommentFromChatMessage(
 
 export function isHighlightedCommentSource(comment: HighlightedComment | null, messageId: string): boolean {
   return Boolean(comment && (comment.id === messageId || comment.sourceMessageId === messageId));
+}
+
+export function getCommentSourceLabel(platform: ExternalChatPlatform | undefined): string {
+  if (platform === 'youtube') return 'YouTube';
+  if (platform === 'facebook') return 'Facebook';
+  return '';
 }
 
 export function getHighlightableChatMessages(
@@ -180,6 +190,7 @@ export function CommentHighlightOverlay({ comment, onExpired }: CommentHighlight
   const color = current.avatarColor || getAvatarColor(current.senderName);
   const initial = current.senderName.charAt(0).toUpperCase();
   const isFlash = current.displayMode === 'flash';
+  const sourceLabel = getCommentSourceLabel(current.sourcePlatform);
 
   return (
     <div
@@ -214,6 +225,14 @@ export function CommentHighlightOverlay({ comment, onExpired }: CommentHighlight
           <span style={{ ...overlayPill, ...(isFlash ? overlayPillFlash : {}) }}>
             {isFlash ? 'Audience flash' : 'Featured comment'}
           </span>
+          {sourceLabel && (
+            <span style={{
+              ...overlaySourcePill,
+              ...(current.sourcePlatform === 'facebook' ? overlaySourcePillFacebook : {}),
+            }}>
+              {sourceLabel}
+            </span>
+          )}
         </div>
 
         <div style={overlayBody}>
@@ -402,6 +421,14 @@ export function CommentHighlightManager({
               <div style={styles.chatRowInfo}>
                 <span style={styles.chatRowName}>
                   {msg.senderName}
+                  {msg.source?.platform && (
+                    <span style={{
+                      ...styles.chatSourceBadge,
+                      ...(msg.source.platform === 'facebook' ? styles.chatSourceBadgeFacebook : {}),
+                    }}>
+                      {getCommentSourceLabel(msg.source.platform)}
+                    </span>
+                  )}
                   {msg.pinned && <span style={styles.chatPinBadge}>Pinned</span>}
                   {msg.starred && <span style={styles.chatStarBadge}>Starred</span>}
                 </span>
@@ -588,6 +615,29 @@ const overlayPillFlash: React.CSSProperties = {
   background: 'rgba(251, 191, 36, 0.17)',
   border: '1px solid rgba(251, 191, 36, 0.34)',
   color: '#fef3c7',
+};
+
+const overlaySourcePill: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  alignSelf: 'flex-start',
+  minHeight: 18,
+  padding: '2px 8px',
+  borderRadius: 999,
+  background: 'rgba(239, 68, 68, 0.14)',
+  border: '1px solid rgba(248, 113, 113, 0.26)',
+  color: '#fecaca',
+  fontSize: 10,
+  fontWeight: 800,
+  lineHeight: 1,
+  letterSpacing: 0,
+  textTransform: 'uppercase',
+};
+
+const overlaySourcePillFacebook: React.CSSProperties = {
+  background: 'rgba(59, 130, 246, 0.15)',
+  border: '1px solid rgba(96, 165, 250, 0.28)',
+  color: '#dbeafe',
 };
 
 const overlayBody: React.CSSProperties = {
@@ -884,6 +934,20 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#fbbf24',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
+  },
+  chatSourceBadge: {
+    fontSize: 8,
+    fontWeight: 800,
+    padding: '1px 4px',
+    borderRadius: 4,
+    background: 'rgba(239, 68, 68, 0.14)',
+    color: '#fca5a5',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  chatSourceBadgeFacebook: {
+    background: 'rgba(59, 130, 246, 0.14)',
+    color: '#bfdbfe',
   },
   chatPinBadge: {
     fontSize: 8,
