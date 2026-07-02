@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   SUPPORTED_MEDIA_ACCEPT,
+  canPlayMediaAsset,
   detectMediaType,
   getMediaTabForType,
 } from '../src/components/MediaLibrary.tsx';
@@ -32,5 +33,46 @@ describe('media library upload support', () => {
     assert.equal(getMediaTabForType('video'), 'videos');
     assert.equal(getMediaTabForType('image'), 'images');
     assert.equal(getMediaTabForType('file'), 'files');
+  });
+
+  it('requires uploaded decks to have rendered slide previews before playback', () => {
+    assert.equal(canPlayMediaAsset({
+      id: 'deck-1',
+      name: 'Discipleship-Via-Triads.pptx',
+      url: 'blob:deck',
+      type: 'presentation',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      source: 'upload',
+      createdAt: '2026-07-02T05:56:32.000Z',
+    }), false);
+
+    assert.equal(canPlayMediaAsset({
+      id: 'deck-2',
+      name: 'Distinct But Not Distant.pptx',
+      url: 'blob:deck',
+      type: 'presentation',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      source: 'upload',
+      createdAt: '2026-07-02T05:56:32.000Z',
+      preview: {
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'slide-1', title: 'Slide 1', lines: [], imageUrl: 'data:image/png;base64,rendered' },
+        ],
+      },
+    }), true);
+
+    assert.equal(canPlayMediaAsset({
+      id: 'deck-3',
+      name: 'Failed deck.pptx',
+      url: 'blob:deck',
+      type: 'presentation',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      source: 'upload',
+      createdAt: '2026-07-02T05:56:32.000Z',
+      processingStatus: 'error',
+      processingMessage: 'PowerPoint design could not be rendered.',
+    }), false);
   });
 });

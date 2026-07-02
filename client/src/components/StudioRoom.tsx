@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -39,7 +39,7 @@ import { DeviceSelector } from './DeviceSelector.tsx';
 import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
-import { detectMediaType } from './MediaLibrary.tsx';
+import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
 import { buildPresentationPreview } from '../utils/presentationPreview.ts';
 import {
   clampPresentationSlideIndex,
@@ -697,6 +697,12 @@ function MediaDocumentCard({ media }: { media: ActiveMedia }) {
       <div style={styles.mediaDocumentType}>{media.type === 'presentation' ? 'Presentation deck' : 'Shared file'}</div>
     </div>
   );
+}
+
+function getDeckRenderFailureMessage(type: StudioMediaType): string {
+  return type === 'pdf'
+    ? 'PDF could not be rendered into broadcast slides. Try uploading it again.'
+    : 'PowerPoint design could not be rendered. Try uploading again, or export the deck to PDF and upload that.';
 }
 
 function PresentationDeckStage({
@@ -3238,6 +3244,11 @@ export function StudioRoom() {
   const onUploadMedia = async (files: FileList | File[]) => {
     const nextAssets = await Promise.all(Array.from(files).map(async (file): Promise<StudioMediaAsset> => {
       const type = detectMediaType(file);
+      const isDeck = type === 'presentation' || type === 'pdf';
+      const preview = isDeck
+        ? await buildPresentationPreview(file, { requireRenderedSlides: true })
+        : undefined;
+      const renderFailed = isDeck && !preview;
       return {
         id: `media-${++idCounters.current.media}`,
         name: file.name,
@@ -3247,7 +3258,11 @@ export function StudioRoom() {
         sizeBytes: file.size,
         createdAt: new Date().toISOString(),
         source: 'upload' as const,
-        ...(type === 'presentation' || type === 'pdf' ? { preview: await buildPresentationPreview(file) } : {}),
+        ...(preview ? { preview } : {}),
+        ...(renderFailed ? {
+          processingStatus: 'error' as const,
+          processingMessage: getDeckRenderFailureMessage(type),
+        } : {}),
       };
     }));
     if (nextAssets.length > 0) {
@@ -3271,6 +3286,18 @@ export function StudioRoom() {
   };
 
   const onPlayMediaAsset = (asset: StudioMediaAsset) => {
+    if (!canPlayMediaAsset(asset)) {
+      setMediaAssets((prev) => prev.map((item) => (
+        item.id === asset.id
+          ? {
+              ...item,
+              processingStatus: 'error',
+              processingMessage: item.processingMessage || getDeckRenderFailureMessage(item.type),
+            }
+          : item
+      )));
+      return;
+    }
     setActiveMedia({
       assetId: asset.id,
       type: asset.type,

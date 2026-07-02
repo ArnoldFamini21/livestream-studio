@@ -8,6 +8,7 @@ import {
   buildServerRenderedPresentationPreview,
   extractPptxSlideImageTargets,
   extractPptxSlideText,
+  hasRenderedPresentationSlides,
   isLegacyPowerPointFile,
   isPdfFile,
   isPowerPointFile,
@@ -146,6 +147,26 @@ describe('PowerPoint preview extraction', () => {
     );
   });
 
+  it('detects whether every deck slide has a rendered visual', () => {
+    assert.equal(hasRenderedPresentationSlides({
+      kind: 'presentation-slides',
+      sourceFormat: 'pptx',
+      slides: [
+        { id: 'slide-1', title: 'Opening', lines: [], imageUrl: 'data:image/png;base64,one' },
+        { id: 'slide-2', title: 'Second', lines: [], imageUrl: 'data:image/webp;base64,two' },
+      ],
+    }), true);
+
+    assert.equal(hasRenderedPresentationSlides({
+      kind: 'presentation-slides',
+      sourceFormat: 'pptx',
+      slides: [
+        { id: 'slide-1', title: 'Opening', lines: [], imageUrl: 'data:image/png;base64,one' },
+        { id: 'slide-2', title: 'Second', lines: [] },
+      ],
+    }), false);
+  });
+
   it('normalizes server-rendered slide previews', async () => {
     const file = new File(
       [Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF')],
@@ -197,6 +218,28 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].title, 'TRIAD FORMATION');
     assert.deepEqual(preview?.slides[0].lines, ['Discipleship']);
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
+  });
+
+  it('does not accept text-only PowerPoint extraction when rendered slides are required', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'Discipleship-Via-Triads.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      requireRenderedSlides: true,
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: 'renderer unavailable',
+        code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    assert.equal(preview, undefined);
   });
 
   it('builds legacy PowerPoint previews from the media server renderer', async () => {
