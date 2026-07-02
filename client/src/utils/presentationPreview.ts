@@ -11,6 +11,7 @@ const RENDERED_SLIDE_WIDTH = 1280;
 const RENDERED_SLIDE_HEIGHT = 720;
 const RENDER_SETTLE_FRAMES = 2;
 const RENDER_SETTLE_TIMEOUT_MS = 40;
+const PDF_RENDER_SCALE_LIMIT = 2;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
@@ -20,6 +21,8 @@ const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   svg: 'image/svg+xml',
   webp: 'image/webp',
 };
+
+let pdfWorkerConfigured = false;
 
 function decodeXmlText(value: string): string {
   return value
@@ -101,6 +104,10 @@ export function isPptxFile(file: Pick<File, 'name' | 'type'>): boolean {
     file.type === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' ||
     file.type === 'application/vnd.openxmlformats-officedocument.presentationml.template'
   );
+}
+
+export function isPdfFile(file: Pick<File, 'name' | 'type'>): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 }
 
 export function extractPptxSlideText(xml: string): string[] {
@@ -189,6 +196,19 @@ function canUseDomPresentationRenderer(): boolean {
     typeof window !== 'undefined' &&
     typeof window.requestAnimationFrame === 'function'
   );
+}
+
+function canUseCanvasPdfRenderer(): boolean {
+  if (
+    typeof document === 'undefined' ||
+    typeof document.createElement !== 'function' ||
+    typeof window === 'undefined'
+  ) {
+    return false;
+  }
+
+  const canvas = document.createElement('canvas');
+  return typeof canvas.getContext === 'function' && typeof canvas.toDataURL === 'function';
 }
 
 function waitForAnimationFrame(): Promise<void> {
@@ -292,6 +312,85 @@ async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideC
   }
 }
 
+function buildPdfPagePreview(pageNumber: number, imageUrl: string): PresentationSlidePreview {
+  return {
+    id: `pdf-page-${pageNumber}`,
+    title: `Page ${pageNumber}`,
+    lines: [],
+    imageUrl,
+  };
+}
+
+function configurePdfWorker(pdfjs: typeof import('pdfjs-dist')) {
+  if (pdfWorkerConfigured || typeof window === 'undefined') return;
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
+  pdfWorkerConfigured = true;
+}
+
+async function renderPdfPagesToImages(arrayBuffer: ArrayBuffer): Promise<PresentationSlidePreview[]> {
+  if (!canUseCanvasPdfRenderer()) return [];
+
+  try {
+    const pdfjs = await import('pdfjs-dist');
+    configurePdfWorker(pdfjs);
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(arrayBuffer.slice(0)),
+      disableAutoFetch: true,
+      disableStream: true,
+    });
+    try {
+      const pdf = await loadingTask.promise;
+      const pageCount = Math.min(pdf.numPages, MAX_PREVIEW_SLIDES);
+      const slides: PresentationSlidePreview[] = [];
+
+      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1 });
+        const scale = Math.min(
+          PDF_RENDER_SCALE_LIMIT,
+          RENDERED_SLIDE_WIDTH / viewport.width,
+          RENDERED_SLIDE_HEIGHT / viewport.height
+        );
+        const renderViewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(renderViewport.width);
+        canvas.height = Math.ceil(renderViewport.height);
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!ctx) {
+          page.cleanup();
+          continue;
+        }
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({
+          canvas,
+          viewport: renderViewport,
+          background: '#ffffff',
+        }).promise;
+        slides.push(buildPdfPagePreview(pageNumber, canvas.toDataURL('image/png')));
+        page.cleanup();
+      }
+
+      return slides;
+    } finally {
+      await loadingTask.destroy().catch(() => undefined);
+    }
+  } catch (err) {
+    console.warn('Failed to render PDF page visuals:', err);
+    return [];
+  }
+}
+
+async function buildPdfPresentationPreview(file: File): Promise<StudioMediaAssetPreview | undefined> {
+  if (!isPdfFile(file) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
+
+  const slides = await renderPdfPagesToImages(await file.arrayBuffer());
+  return slides.length > 0
+    ? { kind: 'presentation-slides', sourceFormat: 'pdf', slides }
+    : undefined;
+}
+
 function getSortedSlidePaths(zip: JSZip): string[] {
   return Object.keys(zip.files)
     .filter((path) => /^ppt\/slides\/slide\d+\.xml$/i.test(path))
@@ -304,6 +403,10 @@ function getSortedSlidePaths(zip: JSZip): string[] {
 }
 
 export async function buildPresentationPreview(file: File): Promise<StudioMediaAssetPreview | undefined> {
+  if (isPdfFile(file)) {
+    return buildPdfPresentationPreview(file);
+  }
+
   if (!isPptxFile(file) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
 
   try {

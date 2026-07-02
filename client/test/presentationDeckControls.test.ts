@@ -4,6 +4,8 @@ import type { ActiveMedia } from '@studio/shared';
 
 import {
   clampPresentationSlideIndex,
+  getPresentationDeckUnitLabel,
+  getPresentationItemDisplayTitle,
   getNextPresentationSlideIndex,
   getPresentationDeckStatus,
   getPresentationSlidePickerItems,
@@ -50,6 +52,8 @@ describe('presentation deck controls', () => {
     const status = getPresentationDeckStatus(deck, 1);
 
     assert.equal(status.hasDeck, true);
+    assert.equal(status.sourceFormat, 'pptx');
+    assert.equal(status.unitLabel, 'Slide');
     assert.equal(status.total, 3);
     assert.equal(status.currentIndex, 1);
     assert.equal(status.currentSlide?.title, 'Agenda');
@@ -57,6 +61,29 @@ describe('presentation deck controls', () => {
     assert.equal(status.nextSlide?.title, 'Close');
     assert.equal(status.canGoPrevious, true);
     assert.equal(status.canGoNext, true);
+  });
+
+  it('uses page labels for PDF-backed deck previews', () => {
+    const pdfDeck: ActiveMedia = {
+      ...deck,
+      type: 'pdf',
+      preview: {
+        kind: 'presentation-slides',
+        sourceFormat: 'pdf',
+        slides: [
+          { id: 'page-1', title: '', lines: [], imageUrl: 'data:image/png;base64,page' },
+          { id: 'page-2', title: 'Handout details', lines: [] },
+        ],
+      },
+    };
+    const status = getPresentationDeckStatus(pdfDeck, 0);
+    const items = getPresentationSlidePickerItems(status.slides, status.currentIndex, status.unitLabel);
+
+    assert.equal(getPresentationDeckUnitLabel(status.sourceFormat), 'Page');
+    assert.equal(status.unitLabel, 'Page');
+    assert.equal(getPresentationItemDisplayTitle(status.currentSlide, status.currentIndex, status.unitLabel), 'Page 1');
+    assert.deepEqual(items.map((item) => item.label), ['Page 1', 'Page 2']);
+    assert.equal(items[0].imageUrl, 'data:image/png;base64,page');
   });
 
   it('builds slide picker items with fallback titles and current state', () => {

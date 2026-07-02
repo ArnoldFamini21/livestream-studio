@@ -7,6 +7,7 @@ import {
   buildPresentationPreview,
   extractPptxSlideImageTargets,
   extractPptxSlideText,
+  isPdfFile,
   isPptxFile,
 } from '../src/utils/presentationPreview.ts';
 
@@ -16,6 +17,12 @@ const onePixelPng = Buffer.from(
 );
 
 describe('PowerPoint preview extraction', () => {
+  it('detects PDF deck files', () => {
+    assert.equal(isPdfFile({ name: 'lesson.pdf', type: '' } as File), true);
+    assert.equal(isPdfFile({ name: 'upload.bin', type: 'application/pdf' } as File), true);
+    assert.equal(isPdfFile({ name: 'lesson.pptx', type: '' } as File), false);
+  });
+
   it('detects modern PowerPoint files', () => {
     assert.equal(isPptxFile({ name: 'sermon.pptx', type: '' } as File), true);
     assert.equal(
@@ -84,6 +91,18 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.sourceFormat, 'pptx');
     assert.deepEqual(preview?.slides.map((slide) => slide.title), ['First', 'Second']);
     assert.deepEqual(preview?.slides[0].lines, ['Main point']);
+  });
+
+  it('does not fail PDF uploads when browser canvas rendering is unavailable', async () => {
+    const file = new File(
+      [Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF')],
+      'handout.pdf',
+      { type: 'application/pdf' }
+    );
+
+    const preview = await buildPresentationPreview(file);
+
+    assert.equal(preview, undefined);
   });
 
   it('attaches an embedded slide image preview when a PPTX slide references one', async () => {

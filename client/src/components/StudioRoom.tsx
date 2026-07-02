@@ -43,6 +43,7 @@ import { detectMediaType } from './MediaLibrary.tsx';
 import { buildPresentationPreview } from '../utils/presentationPreview.ts';
 import {
   clampPresentationSlideIndex,
+  getPresentationDeckUnitLabel,
   getNextPresentationSlideIndex,
   getPresentationSlides,
 } from '../utils/presentationDeckControls.ts';
@@ -702,6 +703,8 @@ function PresentationDeckStage({
   onSlideIndexChange: (index: number) => void;
 }) {
   const slides = media.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
+  const unitLabel = getPresentationDeckUnitLabel(media.preview?.kind === 'presentation-slides' ? media.preview.sourceFormat : null);
+  const sourceLabel = media.preview?.sourceFormat === 'pdf' ? 'PDF' : 'PowerPoint';
   const currentIndex = clampPresentationSlideIndex(slideIndex, slides.length);
   const slide = slides[currentIndex];
 
@@ -713,17 +716,17 @@ function PresentationDeckStage({
         <div style={styles.presentationSlideVisualFrame}>
           <img
             src={slide.imageUrl}
-            alt={`${media.name} slide ${currentIndex + 1}`}
+            alt={`${media.name} ${unitLabel.toLowerCase()} ${currentIndex + 1}`}
             style={styles.presentationSlideImage}
           />
-          <div style={styles.presentationSlideBadge}>Slide {currentIndex + 1} / {slides.length}</div>
+          <div style={styles.presentationSlideBadge}>{unitLabel} {currentIndex + 1} / {slides.length}</div>
           <div style={styles.presentationFilePill}>{media.name}</div>
         </div>
       ) : (
         <div style={styles.presentationSlide}>
           <div style={styles.presentationSlideHeader}>
-            <span style={styles.presentationDeckLabel}>PowerPoint</span>
-            <span style={styles.presentationSlideCount}>Slide {currentIndex + 1} / {slides.length}</span>
+            <span style={styles.presentationDeckLabel}>{sourceLabel}</span>
+            <span style={styles.presentationSlideCount}>{unitLabel} {currentIndex + 1} / {slides.length}</span>
           </div>
           <div style={styles.presentationSlideBody}>
             <h2 style={styles.presentationTitle}>{slide.title}</h2>
@@ -3228,7 +3231,7 @@ export function StudioRoom() {
         sizeBytes: file.size,
         createdAt: new Date().toISOString(),
         source: 'upload' as const,
-        ...(type === 'presentation' ? { preview: await buildPresentationPreview(file) } : {}),
+        ...(type === 'presentation' || type === 'pdf' ? { preview: await buildPresentationPreview(file) } : {}),
       };
     }));
     if (nextAssets.length > 0) {
@@ -4902,7 +4905,13 @@ export function StudioRoom() {
                       ...(mediaShareLayoutResult?.mediaStyle || {}),
                     }}
                   >
-                    {activeMedia.type === 'video' ? (
+                    {activeMedia.preview?.kind === 'presentation-slides' ? (
+                      <PresentationDeckStage
+                        media={activeMedia}
+                        slideIndex={activeMediaSlideIndex}
+                        onSlideIndexChange={setActiveMediaSlideIndex}
+                      />
+                    ) : activeMedia.type === 'video' ? (
                       <video src={activeMedia.url} style={styles.mediaContent} autoPlay controls />
                     ) : activeMedia.type === 'image' ? (
                       <img src={activeMedia.url} alt={activeMedia.name} style={styles.mediaContent} />
@@ -4910,12 +4919,6 @@ export function StudioRoom() {
                       <object data={`${activeMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
                         <iframe src={`${activeMedia.url}#view=FitH`} style={styles.mediaContent} title={activeMedia.name} />
                       </object>
-                    ) : activeMedia.type === 'presentation' ? (
-                      <PresentationDeckStage
-                        media={activeMedia}
-                        slideIndex={activeMediaSlideIndex}
-                        onSlideIndexChange={setActiveMediaSlideIndex}
-                      />
                     ) : (
                       <MediaDocumentCard media={activeMedia} />
                     )}

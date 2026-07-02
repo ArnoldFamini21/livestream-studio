@@ -1,10 +1,13 @@
-import type { ActiveMedia, PresentationSlidePreview } from '@studio/shared';
+import type { ActiveMedia, PresentationSlidePreview, StudioMediaAssetPreview } from '@studio/shared';
 
 export type PresentationSlideDirection = 'previous' | 'next';
+export type PresentationDeckSourceFormat = StudioMediaAssetPreview['sourceFormat'];
 
 export interface PresentationDeckStatus {
   hasDeck: boolean;
   slides: PresentationSlidePreview[];
+  sourceFormat: PresentationDeckSourceFormat | null;
+  unitLabel: string;
   total: number;
   currentIndex: number;
   currentSlide: PresentationSlidePreview | null;
@@ -23,8 +26,18 @@ export interface PresentationSlidePickerItem {
 }
 
 export function getPresentationSlides(media: ActiveMedia | null | undefined): PresentationSlidePreview[] {
-  if (media?.type !== 'presentation' || media.preview?.kind !== 'presentation-slides') return [];
+  if (media?.type !== 'presentation' && media?.type !== 'pdf') return [];
+  if (media?.preview?.kind !== 'presentation-slides') return [];
   return media.preview.slides;
+}
+
+export function getPresentationSourceFormat(media: ActiveMedia | null | undefined): PresentationDeckSourceFormat | null {
+  if (media?.type !== 'presentation' && media?.type !== 'pdf') return null;
+  return media?.preview?.kind === 'presentation-slides' ? media.preview.sourceFormat : null;
+}
+
+export function getPresentationDeckUnitLabel(sourceFormat: PresentationDeckSourceFormat | null | undefined): string {
+  return sourceFormat === 'pdf' ? 'Page' : 'Slide';
 }
 
 export function clampPresentationSlideIndex(index: number, total: number): number {
@@ -47,15 +60,25 @@ export function getPresentationSlideDisplayTitle(slide: PresentationSlidePreview
   return title || `Slide ${Math.max(0, index) + 1}`;
 }
 
+export function getPresentationItemDisplayTitle(
+  slide: PresentationSlidePreview | null | undefined,
+  index: number,
+  unitLabel = 'Slide'
+): string {
+  const title = slide?.title?.trim();
+  return title || `${unitLabel} ${Math.max(0, index) + 1}`;
+}
+
 export function getPresentationSlidePickerItems(
   slides: PresentationSlidePreview[],
-  currentIndex: number
+  currentIndex: number,
+  unitLabel = 'Slide'
 ): PresentationSlidePickerItem[] {
   const normalizedIndex = clampPresentationSlideIndex(currentIndex, slides.length);
   return slides.map((slide, index) => ({
     index,
-    label: `Slide ${index + 1}`,
-    title: getPresentationSlideDisplayTitle(slide, index),
+    label: `${unitLabel} ${index + 1}`,
+    title: getPresentationItemDisplayTitle(slide, index, unitLabel),
     imageUrl: slide.imageUrl,
     isCurrent: index === normalizedIndex,
   }));
@@ -66,12 +89,16 @@ export function getPresentationDeckStatus(
   slideIndex: number
 ): PresentationDeckStatus {
   const slides = getPresentationSlides(media);
+  const sourceFormat = getPresentationSourceFormat(media);
+  const unitLabel = getPresentationDeckUnitLabel(sourceFormat);
   const total = slides.length;
   const currentIndex = clampPresentationSlideIndex(slideIndex, total);
 
   return {
     hasDeck: total > 0,
     slides,
+    sourceFormat,
+    unitLabel,
     total,
     currentIndex,
     currentSlide: slides[currentIndex] || null,

@@ -15,6 +15,7 @@
     "@studio/shared": "*",
     "html-to-image": "^1.11.13",
     "jszip": "^3.10.1",
+    "pdfjs-dist": "^6.1.200",
     "pptx-preview": "^1.0.7",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",

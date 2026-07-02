@@ -597,7 +597,7 @@ export interface PresentationSlidePreview {
 
 export interface StudioMediaAssetPreview {
   kind: 'presentation-slides';
-  sourceFormat: 'pptx';
+  sourceFormat: 'pptx' | 'pdf';
   slides: PresentationSlidePreview[];
 }
 
