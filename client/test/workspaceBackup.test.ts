@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { LocalRecordingSession } from '../src/hooks/useRecordingLibrary.ts';
 import type { SavedBrandKit } from '../src/utils/brandKits.ts';
 import type { SavedHostStudio } from '../src/utils/hostSession.ts';
+import type { SavedWorkspaceTeamMember } from '../src/utils/workspaceTeam.ts';
 import {
   buildWorkspaceBackup,
   mergeWorkspaceBackup,
@@ -58,11 +59,20 @@ const recording: LocalRecordingSession = {
   },
 };
 
+const teamMember: SavedWorkspaceTeamMember = {
+  id: 'producer-1',
+  name: 'Producer One',
+  email: 'producer@example.com',
+  role: 'producer',
+  createdAt: '2026-07-02T15:00:00.000Z',
+};
+
 describe('workspace backup files', () => {
   it('builds a portable workspace backup with private host access and recording catalog metadata', () => {
     const backup = buildWorkspaceBackup({
       studios: [studio],
       brandKits: [brandKit],
+      teamMembers: [teamMember],
       recordings: [recording],
     }, '2026-07-03T00:00:00.000Z');
 
@@ -71,6 +81,7 @@ describe('workspace backup files', () => {
     assert.equal(backup.exportedAt, '2026-07-03T00:00:00.000Z');
     assert.deepEqual(backup.studios, [studio]);
     assert.deepEqual(backup.brandKits, [brandKit]);
+    assert.deepEqual(backup.teamMembers, [teamMember]);
     assert.deepEqual(backup.recordingCatalog, [{
       id: 'recording-1',
       roomName: 'Launch Recording',
@@ -100,6 +111,7 @@ describe('workspace backup files', () => {
         { ...studio, id: 'bad-name', hostName: '' },
       ],
       brandKits: [brandKit, { ...brandKit, id: '', name: '' }],
+      teamMembers: [teamMember, { ...teamMember, id: '', name: '' }],
       recordingCatalog: [
         {
           id: 'recording-1',
@@ -117,6 +129,7 @@ describe('workspace backup files', () => {
 
     assert.deepEqual(backup.studios, [studio]);
     assert.deepEqual(backup.brandKits, [brandKit]);
+    assert.deepEqual(backup.teamMembers, [teamMember]);
     assert.equal(backup.recordingCatalog.length, 1);
     assert.throws(() => parseWorkspaceBackupJson('not json'), /valid JSON/);
     assert.throws(
@@ -129,6 +142,7 @@ describe('workspace backup files', () => {
     const backup = buildWorkspaceBackup({
       studios: [studio],
       brandKits: [brandKit],
+      teamMembers: [teamMember],
       recordings: [recording],
     }, '2026-07-03T00:00:00.000Z');
 
@@ -136,6 +150,7 @@ describe('workspace backup files', () => {
 
     assert.deepEqual(roundTrip.studios, [studio]);
     assert.deepEqual(roundTrip.brandKits, [brandKit]);
+    assert.deepEqual(roundTrip.teamMembers, [teamMember]);
     assert.equal(roundTrip.recordingCatalog.length, 1);
     assert.equal(roundTrip.recordingCatalog[0]?.cloud?.folderId, 'drive-folder-1');
   });
@@ -150,20 +165,28 @@ describe('workspace backup files', () => {
       ...brandKit,
       name: 'Old kit',
     };
+    const existingTeamMember: SavedWorkspaceTeamMember = {
+      ...teamMember,
+      name: 'Old producer',
+    };
     const backup = buildWorkspaceBackup({
       studios: [studio],
       brandKits: [brandKit],
+      teamMembers: [teamMember],
       recordings: [recording],
     }, '2026-07-03T00:00:00.000Z');
 
-    const result = mergeWorkspaceBackup([existingStudio], [existingKit], backup);
+    const result = mergeWorkspaceBackup([existingStudio], [existingKit], backup, [existingTeamMember]);
 
     assert.equal(result.importedStudios, 1);
     assert.equal(result.importedBrandKits, 1);
+    assert.equal(result.importedTeamMembers, 1);
     assert.equal(result.catalogRecordings, 1);
     assert.equal(result.studios.length, 1);
     assert.equal(result.studios[0]?.name, 'Launch Studio');
     assert.equal(result.brandKits.length, 1);
     assert.equal(result.brandKits[0]?.name, 'Launch Brand');
+    assert.equal(result.teamMembers.length, 1);
+    assert.equal(result.teamMembers[0]?.name, 'Producer One');
   });
 });

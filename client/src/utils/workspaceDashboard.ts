@@ -1,6 +1,7 @@
 import type { LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import type { SavedBrandKit } from './brandKits.ts';
 import type { SavedHostStudio } from './hostSession.ts';
+import type { SavedWorkspaceTeamMember } from './workspaceTeam.ts';
 
 export interface WorkspaceDashboardSummary {
   totalStudios: number;
@@ -15,9 +16,12 @@ export interface WorkspaceDashboardSummary {
   totalBrandKits: number;
   brandKitsWithLogo: number;
   brandKitsWithBackground: number;
+  totalTeamMembers: number;
+  productionTeamMembers: number;
   latestStudio: Pick<SavedHostStudio, 'id' | 'name' | 'hostName' | 'createdAt' | 'scheduledFor'> | null;
   latestRecording: Pick<LocalRecordingSession, 'id' | 'roomName' | 'createdAt'> | null;
   latestBrandKit: Pick<SavedBrandKit, 'id' | 'name' | 'createdAt'> | null;
+  latestTeamMember: Pick<SavedWorkspaceTeamMember, 'id' | 'name' | 'role' | 'createdAt'> | null;
 }
 
 function getStudioTime(studio: SavedHostStudio): number {
@@ -36,8 +40,11 @@ export function buildWorkspaceDashboardSummary(
   studios: SavedHostStudio[],
   recordings: LocalRecordingSession[],
   brandKits: SavedBrandKit[],
-  nowMs = Date.now()
+  teamMembersOrNowMs: SavedWorkspaceTeamMember[] | number = [],
+  maybeNowMs = Date.now()
 ): WorkspaceDashboardSummary {
+  const teamMembers = Array.isArray(teamMembersOrNowMs) ? teamMembersOrNowMs : [];
+  const nowMs = typeof teamMembersOrNowMs === 'number' ? teamMembersOrNowMs : maybeNowMs;
   const latestStudio = studios.reduce<SavedHostStudio | null>((latest, studio) => {
     if (!latest) return studio;
     return getStudioTime(studio) > getStudioTime(latest) ? studio : latest;
@@ -49,6 +56,10 @@ export function buildWorkspaceDashboardSummary(
   const latestBrandKit = brandKits.reduce<SavedBrandKit | null>((latest, kit) => {
     if (!latest) return kit;
     return getCreatedAtTime(kit) > getCreatedAtTime(latest) ? kit : latest;
+  }, null);
+  const latestTeamMember = teamMembers.reduce<SavedWorkspaceTeamMember | null>((latest, member) => {
+    if (!latest) return member;
+    return getCreatedAtTime(member) > getCreatedAtTime(latest) ? member : latest;
   }, null);
 
   return {
@@ -73,6 +84,8 @@ export function buildWorkspaceDashboardSummary(
     totalBrandKits: brandKits.length,
     brandKitsWithLogo: brandKits.filter((kit) => Boolean(kit.logoUrl)).length,
     brandKitsWithBackground: brandKits.filter((kit) => kit.stageBackground.type !== 'none' && Boolean(kit.stageBackground.value)).length,
+    totalTeamMembers: teamMembers.length,
+    productionTeamMembers: teamMembers.filter((member) => member.role === 'owner' || member.role === 'producer').length,
     latestStudio: latestStudio
       ? {
           id: latestStudio.id,
@@ -94,6 +107,14 @@ export function buildWorkspaceDashboardSummary(
           id: latestBrandKit.id,
           name: latestBrandKit.name,
           createdAt: latestBrandKit.createdAt,
+        }
+      : null,
+    latestTeamMember: latestTeamMember
+      ? {
+          id: latestTeamMember.id,
+          name: latestTeamMember.name,
+          role: latestTeamMember.role,
+          createdAt: latestTeamMember.createdAt,
         }
       : null,
   };

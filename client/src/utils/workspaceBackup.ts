@@ -7,6 +7,10 @@ import {
   getValidHostToken,
   type SavedHostStudio,
 } from './hostSession.ts';
+import {
+  normalizeWorkspaceTeamMembers,
+  type SavedWorkspaceTeamMember,
+} from './workspaceTeam.ts';
 
 const WORKSPACE_BACKUP_TYPE = 'livestream-studio-workspace-backup';
 const WORKSPACE_BACKUP_VERSION = 1;
@@ -35,14 +39,17 @@ export interface WorkspaceBackupFile {
   exportedAt: string;
   studios: SavedHostStudio[];
   brandKits: SavedBrandKit[];
+  teamMembers: SavedWorkspaceTeamMember[];
   recordingCatalog: WorkspaceRecordingCatalogItem[];
 }
 
 export interface WorkspaceImportResult {
   studios: SavedHostStudio[];
   brandKits: SavedBrandKit[];
+  teamMembers: SavedWorkspaceTeamMember[];
   importedStudios: number;
   importedBrandKits: number;
+  importedTeamMembers: number;
   catalogRecordings: number;
 }
 
@@ -193,6 +200,7 @@ function recordingToCatalogItem(session: LocalRecordingSession): WorkspaceRecord
 export function buildWorkspaceBackup(input: {
   studios: SavedHostStudio[];
   brandKits: SavedBrandKit[];
+  teamMembers?: SavedWorkspaceTeamMember[];
   recordings?: LocalRecordingSession[];
 }, exportedAt = new Date().toISOString()): WorkspaceBackupFile {
   return {
@@ -201,6 +209,7 @@ export function buildWorkspaceBackup(input: {
     exportedAt: readIsoDate(exportedAt, new Date().toISOString()),
     studios: sanitizeStudios(input.studios),
     brandKits: sanitizeBrandKits(input.brandKits),
+    teamMembers: normalizeWorkspaceTeamMembers(input.teamMembers || []),
     recordingCatalog: (input.recordings || []).map(recordingToCatalogItem).slice(0, 100),
   };
 }
@@ -212,6 +221,7 @@ export function serializeWorkspaceBackup(backup: WorkspaceBackupFile): string {
     exportedAt: readIsoDate(backup.exportedAt, new Date().toISOString()),
     studios: sanitizeStudios(backup.studios),
     brandKits: sanitizeBrandKits(backup.brandKits),
+    teamMembers: normalizeWorkspaceTeamMembers(backup.teamMembers),
     recordingCatalog: sanitizeRecordingCatalog(backup.recordingCatalog),
   }, null, 2);
 }
@@ -234,6 +244,7 @@ export function parseWorkspaceBackupJson(json: string): WorkspaceBackupFile {
     exportedAt: readIsoDate(parsed.exportedAt, new Date().toISOString()),
     studios: sanitizeStudios(parsed.studios),
     brandKits: sanitizeBrandKits(parsed.brandKits),
+    teamMembers: normalizeWorkspaceTeamMembers(parsed.teamMembers),
     recordingCatalog: sanitizeRecordingCatalog(parsed.recordingCatalog),
   };
 }
@@ -241,7 +252,8 @@ export function parseWorkspaceBackupJson(json: string): WorkspaceBackupFile {
 export function mergeWorkspaceBackup(
   currentStudios: SavedHostStudio[],
   currentBrandKits: SavedBrandKit[],
-  backup: WorkspaceBackupFile
+  backup: WorkspaceBackupFile,
+  currentTeamMembers: SavedWorkspaceTeamMember[] = []
 ): WorkspaceImportResult {
   const studioMap = new Map<string, SavedHostStudio>();
   for (const studio of sanitizeStudios(currentStudios)) studioMap.set(studio.id, studio);
@@ -251,11 +263,17 @@ export function mergeWorkspaceBackup(
   for (const kit of sanitizeBrandKits(currentBrandKits)) brandKitMap.set(kit.id, kit);
   for (const kit of backup.brandKits) brandKitMap.set(kit.id, kit);
 
+  const teamMap = new Map<string, SavedWorkspaceTeamMember>();
+  for (const member of normalizeWorkspaceTeamMembers(currentTeamMembers)) teamMap.set(member.id, member);
+  for (const member of backup.teamMembers) teamMap.set(member.id, member);
+
   return {
     studios: sortStudios(Array.from(studioMap.values())).slice(0, MAX_BACKUP_STUDIOS),
     brandKits: Array.from(brandKitMap.values()).slice(0, 8),
+    teamMembers: normalizeWorkspaceTeamMembers(Array.from(teamMap.values())),
     importedStudios: backup.studios.length,
     importedBrandKits: backup.brandKits.length,
+    importedTeamMembers: backup.teamMembers.length,
     catalogRecordings: backup.recordingCatalog.length,
   };
 }

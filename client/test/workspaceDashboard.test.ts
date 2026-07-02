@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { LocalRecordingSession } from '../src/hooks/useRecordingLibrary.ts';
 import type { SavedBrandKit } from '../src/utils/brandKits.ts';
 import type { SavedHostStudio } from '../src/utils/hostSession.ts';
+import type { SavedWorkspaceTeamMember } from '../src/utils/workspaceTeam.ts';
 import {
   buildWorkspaceDashboardSummary,
   formatWorkspaceDuration,
@@ -94,12 +95,30 @@ const brandKits: SavedBrandKit[] = [
   },
 ];
 
+const teamMembers: SavedWorkspaceTeamMember[] = [
+  {
+    id: 'team-owner',
+    name: 'Arnold',
+    email: 'arnold@example.com',
+    role: 'owner',
+    createdAt: '2026-07-01T12:00:00.000Z',
+  },
+  {
+    id: 'team-editor',
+    name: 'Editor',
+    email: 'editor@example.com',
+    role: 'editor',
+    createdAt: '2026-07-02T12:00:00.000Z',
+  },
+];
+
 describe('workspace dashboard summary', () => {
   it('summarizes saved studios, local recordings, and brand kits', () => {
     const summary = buildWorkspaceDashboardSummary(
       studios,
       recordings,
       brandKits,
+      teamMembers,
       Date.parse('2026-07-01T00:00:00.000Z')
     );
 
@@ -116,6 +135,8 @@ describe('workspace dashboard summary', () => {
       totalBrandKits: 2,
       brandKitsWithLogo: 1,
       brandKitsWithBackground: 1,
+      totalTeamMembers: 2,
+      productionTeamMembers: 1,
       latestStudio: {
         id: 'studio-upcoming',
         name: 'Upcoming Studio',
@@ -133,7 +154,26 @@ describe('workspace dashboard summary', () => {
         name: 'Clean Brand',
         createdAt: '2026-07-02T12:00:00.000Z',
       },
+      latestTeamMember: {
+        id: 'team-editor',
+        name: 'Editor',
+        role: 'editor',
+        createdAt: '2026-07-02T12:00:00.000Z',
+      },
     });
+  });
+
+  it('keeps the legacy nowMs fourth argument for existing callers', () => {
+    const summary = buildWorkspaceDashboardSummary(
+      studios,
+      recordings,
+      brandKits,
+      Date.parse('2026-07-01T00:00:00.000Z')
+    );
+
+    assert.equal(summary.upcomingStudios, 1);
+    assert.equal(summary.totalTeamMembers, 0);
+    assert.equal(summary.latestTeamMember, null);
   });
 
   it('formats compact dashboard file sizes and durations', () => {

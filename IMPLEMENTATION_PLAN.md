@@ -220,6 +220,7 @@
 - [ ] PostgreSQL: users, rooms, recordings, sessions
 - [ ] Auth: email/password registration, magic links for guests
 - [x] Local user dashboard: manage saved studios, local recordings, and brand assets in-browser
+- [x] Local workspace team roster with role labels and portable backup/import
 - [x] Portable workspace backup/import for saved studios, brand kits, and recording catalog metadata
 - [ ] Account-backed user dashboard: manage studios, recordings, and brand assets across devices
 - [ ] Team/organization support

@@ -39,6 +39,17 @@ import {
   parseWorkspaceBackupJson,
   serializeWorkspaceBackup,
 } from '../utils/workspaceBackup.ts';
+import {
+  WORKSPACE_TEAM_STORAGE_KEY,
+  createWorkspaceTeamMember,
+  getWorkspaceTeamRoleLabel,
+  parseSavedWorkspaceTeamMembers,
+  removeWorkspaceTeamMember,
+  serializeWorkspaceTeamMembers,
+  upsertWorkspaceTeamMember,
+  type SavedWorkspaceTeamMember,
+  type WorkspaceTeamRole,
+} from '../utils/workspaceTeam.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
 const CREATE_STUDIO_TIMEOUT_MS = 90_000;
@@ -90,6 +101,23 @@ function readSavedBrandKitLibrary(): SavedBrandKit[] {
 function writeSavedBrandKitLibrary(kits: SavedBrandKit[]) {
   try {
     localStorage.setItem(BRAND_KIT_STORAGE_KEY, serializeSavedBrandKits(kits));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readSavedWorkspaceTeamLibrary(): SavedWorkspaceTeamMember[] {
+  try {
+    return parseSavedWorkspaceTeamMembers(localStorage.getItem(WORKSPACE_TEAM_STORAGE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedWorkspaceTeamLibrary(members: SavedWorkspaceTeamMember[]) {
+  try {
+    localStorage.setItem(WORKSPACE_TEAM_STORAGE_KEY, serializeWorkspaceTeamMembers(members));
     return true;
   } catch {
     return false;
@@ -210,6 +238,10 @@ export function HomePage() {
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [savedScheduledRooms, setSavedScheduledRooms] = useState<SavedScheduledStudio[]>(() => readSavedScheduledStudios());
   const [savedBrandKits, setSavedBrandKits] = useState<SavedBrandKit[]>(() => readSavedBrandKitLibrary());
+  const [savedTeamMembers, setSavedTeamMembers] = useState<SavedWorkspaceTeamMember[]>(() => readSavedWorkspaceTeamLibrary());
+  const [teamMemberName, setTeamMemberName] = useState('');
+  const [teamMemberEmail, setTeamMemberEmail] = useState('');
+  const [teamMemberRole, setTeamMemberRole] = useState<WorkspaceTeamRole>('producer');
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [dashboardNotice, setDashboardNotice] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -325,11 +357,12 @@ export function HomePage() {
   const buildInviteLink = (room: SavedScheduledStudio) => buildGuestInviteUrl(INVITE_BASE_URL, room.id, room.name);
   const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
   const workspaceDashboard = useMemo(
-    () => buildWorkspaceDashboardSummary(savedScheduledRooms, recordingLibrary.sessions, savedBrandKits),
-    [savedScheduledRooms, recordingLibrary.sessions, savedBrandKits]
+    () => buildWorkspaceDashboardSummary(savedScheduledRooms, recordingLibrary.sessions, savedBrandKits, savedTeamMembers),
+    [savedScheduledRooms, recordingLibrary.sessions, savedBrandKits, savedTeamMembers]
   );
   const recentRecordings = recordingLibrary.sessions.slice(0, 3);
   const recentBrandKits = savedBrandKits.slice(0, 4);
+  const recentTeamMembers = savedTeamMembers.slice(0, 5);
 
   useEffect(() => {
     if (!scheduledRoom || !inviteLink) {
@@ -475,6 +508,43 @@ export function HomePage() {
     setSavedBrandKits(next);
   };
 
+  const addTeamMember = () => {
+    setDashboardError(null);
+    setDashboardNotice(null);
+    const member = createWorkspaceTeamMember({
+      name: teamMemberName,
+      email: teamMemberEmail,
+      role: teamMemberRole,
+    });
+    if (!member) {
+      setDashboardError('Enter a team member name.');
+      return;
+    }
+    const next = upsertWorkspaceTeamMember(savedTeamMembers, member);
+    if (!writeSavedWorkspaceTeamLibrary(next)) {
+      setDashboardError('Could not update the workspace team in this browser.');
+      return;
+    }
+    setSavedTeamMembers(next);
+    setTeamMemberName('');
+    setTeamMemberEmail('');
+    setTeamMemberRole('producer');
+    setDashboardNotice('Team member saved.');
+  };
+
+  const deleteTeamMember = (member: SavedWorkspaceTeamMember) => {
+    if (!window.confirm(`Remove "${member.name}" from this workspace roster?`)) return;
+    setDashboardError(null);
+    setDashboardNotice(null);
+    const next = removeWorkspaceTeamMember(savedTeamMembers, member.id);
+    if (!writeSavedWorkspaceTeamLibrary(next)) {
+      setDashboardError('Could not update the workspace team in this browser.');
+      return;
+    }
+    setSavedTeamMembers(next);
+    setDashboardNotice('Team member removed.');
+  };
+
   const exportWorkspaceBackup = () => {
     if (savedScheduledRooms.length > 0 && !window.confirm('Workspace backups include private host links for saved studios. Keep the exported file private.')) {
       return;
@@ -482,6 +552,7 @@ export function HomePage() {
     const backup = buildWorkspaceBackup({
       studios: savedScheduledRooms,
       brandKits: savedBrandKits,
+      teamMembers: savedTeamMembers,
       recordings: recordingLibrary.sessions,
     });
     downloadTextFile(
@@ -506,13 +577,20 @@ export function HomePage() {
     setDashboardNotice(null);
     try {
       const backup = parseWorkspaceBackupJson(await file.text());
-      const result = mergeWorkspaceBackup(readSavedHostStudios(), savedBrandKits, backup);
-      if (!writeSavedHostStudioLibrary(result.studios) || !writeSavedBrandKitLibrary(result.brandKits)) {
+      const result = mergeWorkspaceBackup(readSavedHostStudios(), savedBrandKits, backup, savedTeamMembers);
+      if (
+        !writeSavedHostStudioLibrary(result.studios) ||
+        !writeSavedBrandKitLibrary(result.brandKits) ||
+        !writeSavedWorkspaceTeamLibrary(result.teamMembers)
+      ) {
         throw new Error('Could not save imported workspace in this browser.');
       }
       setSavedScheduledRooms(readSavedScheduledStudios());
       setSavedBrandKits(result.brandKits);
-      setDashboardNotice(`Imported ${result.importedStudios} studios and ${result.importedBrandKits} brand kits.`);
+      setSavedTeamMembers(result.teamMembers);
+      setDashboardNotice(
+        `Imported ${result.importedStudios} studios, ${result.importedBrandKits} brand kits, and ${result.importedTeamMembers} team members.`
+      );
     } catch (err) {
       setDashboardError(err instanceof Error ? err.message : 'Could not import that workspace backup.');
     }
@@ -692,7 +770,7 @@ export function HomePage() {
               <div style={styles.workspaceHeader}>
                 <div style={styles.workspaceHeaderCopy}>
                   <h2 style={styles.workspaceTitle}>Workspace</h2>
-                  <p style={styles.workspaceSubtitle}>Saved studios, recordings, and brand assets</p>
+                  <p style={styles.workspaceSubtitle}>Saved studios, team, recordings, and brand assets</p>
                 </div>
                 <div style={styles.workspaceHeaderActions}>
                   <button
@@ -708,7 +786,7 @@ export function HomePage() {
                     Import
                   </button>
                   <span style={styles.workspaceBadge}>
-                    {workspaceDashboard.totalStudios + workspaceDashboard.totalRecordings + workspaceDashboard.totalBrandKits}
+                    {workspaceDashboard.totalStudios + workspaceDashboard.totalRecordings + workspaceDashboard.totalBrandKits + workspaceDashboard.totalTeamMembers}
                   </span>
                 </div>
                 <input
@@ -739,6 +817,12 @@ export function HomePage() {
                     {workspaceDashboard.brandKitsWithLogo} logo | {workspaceDashboard.brandKitsWithBackground} background
                   </span>
                 </div>
+                <div style={styles.workspaceStat}>
+                  <span style={styles.workspaceStatValue}>{workspaceDashboard.totalTeamMembers}</span>
+                  <span style={styles.workspaceStatLabel}>
+                    {workspaceDashboard.productionTeamMembers} production | roster
+                  </span>
+                </div>
               </div>
 
               <div style={styles.workspaceMetaGrid}>
@@ -763,6 +847,13 @@ export function HomePage() {
                     <span style={styles.workspaceMetaSub}>{formatDashboardDate(workspaceDashboard.latestBrandKit.createdAt)}</span>
                   </div>
                 )}
+                {workspaceDashboard.latestTeamMember && (
+                  <div style={styles.workspaceMetaItem}>
+                    <span style={styles.workspaceMetaLabel}>Latest team</span>
+                    <span style={styles.workspaceMetaValue}>{workspaceDashboard.latestTeamMember.name}</span>
+                    <span style={styles.workspaceMetaSub}>{getWorkspaceTeamRoleLabel(workspaceDashboard.latestTeamMember.role)}</span>
+                  </div>
+                )}
               </div>
 
               {(dashboardError || recordingLibrary.error) && (
@@ -771,6 +862,68 @@ export function HomePage() {
               {dashboardNotice && !dashboardError && !recordingLibrary.error && (
                 <p style={styles.workspaceNotice}>{dashboardNotice}</p>
               )}
+
+              <div style={styles.workspaceSection}>
+                <div style={styles.workspaceSectionHeader}>
+                  <span style={styles.workspaceSectionTitle}>Team roster</span>
+                  <span style={styles.workspaceSectionCount}>{workspaceDashboard.totalTeamMembers}/12</span>
+                </div>
+                <div style={styles.workspaceTeamForm}>
+                  <input
+                    style={styles.workspaceInput}
+                    value={teamMemberName}
+                    onChange={(event) => setTeamMemberName(event.target.value)}
+                    placeholder="Name"
+                    maxLength={80}
+                  />
+                  <input
+                    style={styles.workspaceInput}
+                    value={teamMemberEmail}
+                    onChange={(event) => setTeamMemberEmail(event.target.value)}
+                    placeholder="Email"
+                    maxLength={160}
+                    type="email"
+                  />
+                  <select
+                    style={styles.workspaceSelect}
+                    value={teamMemberRole}
+                    onChange={(event) => setTeamMemberRole(event.target.value as WorkspaceTeamRole)}
+                  >
+                    <option value="producer">Producer</option>
+                    <option value="owner">Owner</option>
+                    <option value="editor">Editor</option>
+                    <option value="guest-manager">Guest Manager</option>
+                  </select>
+                  <button
+                    style={styles.workspaceAddButton}
+                    onClick={addTeamMember}
+                    disabled={!teamMemberName.trim()}
+                  >
+                    Add
+                  </button>
+                </div>
+                {recentTeamMembers.length > 0 && (
+                  <div style={styles.workspaceRows}>
+                    {recentTeamMembers.map((member) => (
+                      <div key={member.id} style={styles.workspaceRow}>
+                        <span style={styles.workspaceRoleBadge}>{getWorkspaceTeamRoleLabel(member.role).slice(0, 1)}</span>
+                        <div style={styles.workspaceRowCopy}>
+                          <span style={styles.workspaceRowTitle}>{member.name}</span>
+                          <span style={styles.workspaceRowMeta}>
+                            {getWorkspaceTeamRoleLabel(member.role)}{member.email ? ` | ${member.email}` : ''}
+                          </span>
+                        </div>
+                        <button
+                          style={styles.workspaceRowAction}
+                          onClick={() => deleteTeamMember(member)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {(recordingLibrary.isLoading || recentRecordings.length > 0) && (
                 <div style={styles.workspaceSection}>
@@ -1417,6 +1570,46 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 8,
   },
+  workspaceTeamForm: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+    gap: 8,
+    marginBottom: 10,
+  },
+  workspaceInput: {
+    minWidth: 0,
+    minHeight: 34,
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.09)',
+    background: 'rgba(15, 23, 42, 0.42)',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    fontWeight: 650,
+    padding: '0 10px',
+    outline: 'none',
+  },
+  workspaceSelect: {
+    minWidth: 0,
+    minHeight: 34,
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.09)',
+    background: 'rgba(15, 23, 42, 0.42)',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    fontWeight: 700,
+    padding: '0 10px',
+    outline: 'none',
+  },
+  workspaceAddButton: {
+    minHeight: 34,
+    borderRadius: 8,
+    border: '1px solid rgba(34, 197, 94, 0.22)',
+    background: 'rgba(34, 197, 94, 0.1)',
+    color: '#bbf7d0',
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
   workspaceRow: {
     display: 'flex',
     alignItems: 'center',
@@ -1464,6 +1657,20 @@ const styles: Record<string, React.CSSProperties> = {
     height: 18,
     borderRadius: 999,
     border: '1px solid rgba(255, 255, 255, 0.18)',
+  },
+  workspaceRoleBadge: {
+    flex: '0 0 24px',
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid rgba(103, 232, 249, 0.2)',
+    background: 'rgba(103, 232, 249, 0.08)',
+    color: '#a5f3fc',
+    fontSize: 11,
+    fontWeight: 900,
   },
   schedulePanel: {
     width: '100%',
