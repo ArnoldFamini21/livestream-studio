@@ -92,8 +92,19 @@ function normalizeMimeType(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
-function isSupportedWebmMimeType(value: string): boolean {
-  return /^video\/webm(?:\s*;.*)?$/.test(value) || /^audio\/webm(?:\s*;.*)?$/.test(value);
+function isSupportedRecordingMimeType(value: string): boolean {
+  return (
+    /^video\/webm(?:\s*;.*)?$/.test(value) ||
+    /^audio\/webm(?:\s*;.*)?$/.test(value) ||
+    /^video\/mp4(?:\s*;.*)?$/.test(value) ||
+    /^audio\/mp4(?:\s*;.*)?$/.test(value)
+  );
+}
+
+function getRecordingTrackExtension(mimeType: string): string {
+  if (mimeType.startsWith('audio/mp4')) return 'm4a';
+  if (mimeType.startsWith('video/mp4')) return 'mp4';
+  return 'webm';
 }
 
 function normalizeOptionalSize(value: unknown, label: string): number | undefined {
@@ -126,8 +137,8 @@ function normalizeTrack(input: unknown): RecordingUploadTrackManifest {
     throw new RecordingUploadError(400, 'INVALID_RECORDING_TRACK', `${input.id}: invalid recording track kind`);
   }
   const mimeType = normalizeMimeType(input.mimeType);
-  if (!isSupportedWebmMimeType(mimeType)) {
-    throw new RecordingUploadError(400, 'INVALID_RECORDING_TRACK', `${input.id}: recording track must be WebM`);
+  if (!isSupportedRecordingMimeType(mimeType)) {
+    throw new RecordingUploadError(400, 'INVALID_RECORDING_TRACK', `${input.id}: recording track must be MP4 or WebM`);
   }
   const expectedBytes = normalizeOptionalSize(input.expectedBytes, `${input.id} expectedBytes`);
   const durationMs = normalizeOptionalSize(input.durationMs, `${input.id} durationMs`);
@@ -233,7 +244,7 @@ export class RecordingUploadStore {
     for (const track of normalized.tracks) {
       tracks.set(track.id, {
         ...track,
-        filePath: path.join(rootDir, `${track.id}.webm`),
+        filePath: path.join(rootDir, `${track.id}.${getRecordingTrackExtension(track.mimeType)}`),
         bytesReceived: 0,
         chunksReceived: 0,
         complete: false,

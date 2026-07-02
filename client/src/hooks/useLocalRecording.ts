@@ -12,6 +12,11 @@ import {
   type WebCodecsVideoRecorderConfig,
   type WebCodecsVideoTrackRecorder,
 } from '../utils/webCodecsRecording.ts';
+import {
+  getPreferredAudioRecordingMimeType,
+  getPreferredVideoRecordingMimeType,
+  getRecordingFileExtension,
+} from '../utils/recordingMimeTypes.ts';
 
 export interface RecordingResult {
   audio: Blob;
@@ -79,32 +84,11 @@ export function useLocalRecording() {
   // Guard against double-stop
   const stoppingRef = useRef<boolean>(false);
 
-  const getAudioMimeType = (): string => {
-    const types = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/ogg;codecs=opus',
-    ];
-    return types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
-  };
+  const getAudioMimeType = (): string => getPreferredAudioRecordingMimeType();
 
-  const getVideoMimeType = (): string => {
-    const types = [
-      'video/webm;codecs=vp9',
-      'video/webm;codecs=vp8',
-      'video/webm',
-    ];
-    return types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
-  };
+  const getVideoMimeType = (): string => getPreferredVideoRecordingMimeType();
 
-  const getScreenMimeType = (): string => {
-    const types = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm',
-    ];
-    return types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
-  };
+  const getScreenMimeType = (): string => getPreferredVideoRecordingMimeType();
 
   const getMimeTypeForSource = (source: LocalRecordingSource): string => {
     if (source.kind === 'audio') return getAudioMimeType();
@@ -130,7 +114,16 @@ export function useLocalRecording() {
     webCodecsSidecarActive = false
   ): RecordingCaptureEncoderMetadata => {
     const hasVideo = stream.getVideoTracks().some((track) => track.readyState === 'live');
-    const container = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('webm') ? 'webm' : 'browser';
+    const normalizedMimeType = mimeType.toLowerCase();
+    const container = normalizedMimeType.includes('ogg')
+      ? 'ogg'
+      : normalizedMimeType.includes('audio/mp4')
+        ? 'm4a'
+        : normalizedMimeType.includes('mp4')
+          ? 'mp4'
+          : normalizedMimeType.includes('webm')
+            ? 'webm'
+            : 'browser';
     if (!hasVideo) {
       return {
         pipeline: 'media-recorder',
@@ -150,7 +143,7 @@ export function useLocalRecording() {
         container,
         codec: webCodecsConfig.config.codec,
         hardwareAcceleration: webCodecsConfig.config.hardwareAcceleration,
-        fallbackReason: 'Playable WebM primary captured with MediaRecorder; WebCodecs raw video sidecar captured for hardware-accelerated review.',
+        fallbackReason: 'Playable browser primary captured with MediaRecorder; WebCodecs raw video sidecar captured for hardware-accelerated review.',
       };
     }
 
@@ -317,7 +310,7 @@ export function useLocalRecording() {
 
     if (dirHandle) {
       try {
-        const ext = mimeType.includes('ogg') ? 'ogg' : 'webm';
+        const ext = getRecordingFileExtension(mimeType);
         fileHandle = await dirHandle.getFileHandle(`${source.id}-${Date.now()}.${ext}`, { create: true });
         activeWritable = await fileHandle.createWritable();
       } catch (err) {

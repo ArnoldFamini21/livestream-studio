@@ -24,7 +24,7 @@ export interface RecordingCaptureTrackMetadata {
 
 export interface RecordingCaptureEncoderMetadata {
   pipeline: 'media-recorder' | 'webcodecs';
-  container: 'webm' | 'ogg' | 'raw-bitstream' | 'browser';
+  container: 'mp4' | 'm4a' | 'webm' | 'ogg' | 'raw-bitstream' | 'browser';
   codec?: string;
   hardwareAcceleration?: 'no-preference' | 'prefer-hardware' | 'prefer-software';
   fallbackReason?: string;
@@ -96,7 +96,7 @@ function normalizeEncoderMetadata(value: unknown): RecordingCaptureEncoderMetada
   const input = value as Partial<RecordingCaptureEncoderMetadata>;
   const pipeline = input.pipeline === 'webcodecs' ? 'webcodecs' : input.pipeline === 'media-recorder' ? 'media-recorder' : undefined;
   if (!pipeline) return undefined;
-  const container = input.container === 'webm' || input.container === 'ogg' || input.container === 'raw-bitstream' || input.container === 'browser'
+  const container = input.container === 'mp4' || input.container === 'm4a' || input.container === 'webm' || input.container === 'ogg' || input.container === 'raw-bitstream' || input.container === 'browser'
     ? input.container
     : 'browser';
   const hardwareAcceleration = input.hardwareAcceleration === 'no-preference' || input.hardwareAcceleration === 'prefer-hardware' || input.hardwareAcceleration === 'prefer-software'

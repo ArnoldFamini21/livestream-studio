@@ -123,11 +123,15 @@ function normalizeTrackKind(kind: RecordingUploadFileInput['kind'], mimeType: st
   return mimeType.startsWith('audio/') ? 'audio' : 'video';
 }
 
-function getWebmMimeType(file: RecordingUploadFileInput): string | null {
+function getUploadableRecordingMimeType(file: RecordingUploadFileInput): string | null {
   const mimeType = file.blob.type.trim().toLowerCase();
   if (mimeType.startsWith('audio/webm') || mimeType.startsWith('video/webm')) return mimeType;
-  if (!file.fileName || !/\.webm$/i.test(file.fileName)) return null;
-  return file.kind === 'audio' ? 'audio/webm' : 'video/webm';
+  if (mimeType.startsWith('audio/mp4') || mimeType.startsWith('video/mp4')) return mimeType;
+  if (!file.fileName) return null;
+  if (/\.webm$/i.test(file.fileName)) return file.kind === 'audio' ? 'audio/webm' : 'video/webm';
+  if (/\.m4a$/i.test(file.fileName)) return 'audio/mp4';
+  if (/\.mp4$/i.test(file.fileName)) return file.kind === 'audio' ? 'audio/mp4' : 'video/mp4';
+  return null;
 }
 
 export function buildRecordingUploadTracks(files: RecordingUploadFileInput[]): {
@@ -143,7 +147,7 @@ export function buildRecordingUploadTracks(files: RecordingUploadFileInput[]): {
       skippedTracks += 1;
       return;
     }
-    const mimeType = getWebmMimeType(file);
+    const mimeType = getUploadableRecordingMimeType(file);
     if (!mimeType) {
       skippedTracks += 1;
       return;
@@ -351,7 +355,7 @@ export async function uploadRecordingToMediaServer(
   const mediaHttpUrl = assertNonEmpty(input.mediaHttpUrl || resolveMediaHttpUrl(), 'Media server URL');
   const { tracks, skippedTracks } = buildRecordingUploadTracks(input.files);
   if (tracks.length === 0) {
-    throw new Error('No WebM recording tracks are available for media-server upload');
+    throw new Error('No uploadable MP4 or WebM recording tracks are available for media-server upload');
   }
 
   const totalBytes = tracks.reduce((sum, track) => sum + track.file.blob.size, 0);

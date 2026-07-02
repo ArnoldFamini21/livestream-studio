@@ -25,7 +25,7 @@ function makeBlob(size: number, type: string): Blob {
 }
 
 describe('recording media-server upload helper', () => {
-  it('builds WebM-only track manifests with safe unique ids', () => {
+  it('builds MP4 and WebM track manifests with safe unique ids', () => {
     const { tracks, skippedTracks } = buildRecordingUploadTracks([
       {
         label: 'Program Mix',
@@ -65,16 +65,19 @@ describe('recording media-server upload helper', () => {
       },
     ]);
 
-    assert.equal(skippedTracks, 2);
-    assert.equal(tracks.length, 2);
+    assert.equal(skippedTracks, 1);
+    assert.equal(tracks.length, 3);
     assert.equal(tracks[0].manifest.id, 'Show-Program');
     assert.equal(tracks[1].manifest.id, 'Show-Program-2');
+    assert.equal(tracks[2].manifest.id, 'export');
     assert.equal(tracks[0].manifest.kind, 'program');
+    assert.equal(tracks[2].manifest.kind, 'video');
+    assert.equal(tracks[2].manifest.mimeType, 'video/mp4');
     assert.equal(tracks[0].manifest.expectedBytes, 8);
     assert.equal(tracks[0].manifest.durationMs, 5_000);
   });
 
-  it('uploads WebM tracks as bounded chunks and finalizes the session', async () => {
+  it('uploads recording tracks as bounded chunks and finalizes the session', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     globalThis.fetch = async (url, init) => {
       calls.push({ url: String(url), init });
@@ -397,15 +400,15 @@ describe('recording media-server upload helper', () => {
     ]);
   });
 
-  it('rejects uploads when no WebM tracks are available', async () => {
+  it('rejects uploads when no MP4 or WebM tracks are available', async () => {
     await assert.rejects(
       () => uploadRecordingToMediaServer({
         token: 'token-123',
         roomId: 'room-1',
         mediaHttpUrl: 'https://media.example.com',
-        files: [{ label: 'Video', fileName: 'video.mp4', kind: 'video', blob: makeBlob(4, 'video/mp4') }],
+        files: [{ label: 'Video bitstream', fileName: 'video.vp9', kind: 'video', blob: makeBlob(4, 'video/x-vp9') }],
       }),
-      /No WebM recording tracks/
+      /No uploadable MP4 or WebM recording tracks/
     );
   });
 });
