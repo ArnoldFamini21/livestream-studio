@@ -5,6 +5,7 @@ import {
   SUPPORTED_MEDIA_ACCEPT,
   canPlayMediaAsset,
   detectMediaType,
+  getMediaAssetStatusLabel,
   getMediaTabForType,
 } from '../src/components/MediaLibrary.tsx';
 
@@ -91,5 +92,25 @@ describe('media library upload support', () => {
       processingStatus: 'error',
       processingMessage: 'PowerPoint design could not be rendered.',
     }), false);
+  });
+
+  it('shows deck rendering status until exact slide images are ready', () => {
+    const processingDeck = {
+      id: 'deck-4',
+      name: 'Preparing deck.pptx',
+      url: 'blob:deck',
+      type: 'presentation' as const,
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      source: 'upload' as const,
+      createdAt: '2026-07-02T05:56:32.000Z',
+      processingStatus: 'processing' as const,
+      processingMessage: 'Rendering PowerPoint design with the media server...',
+    };
+
+    assert.equal(canPlayMediaAsset(processingDeck), false);
+    assert.equal(
+      getMediaAssetStatusLabel(processingDeck),
+      'Rendering PowerPoint design with the media server...'
+    );
   });
 });

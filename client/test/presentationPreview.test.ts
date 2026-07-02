@@ -356,6 +356,31 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
   });
 
+  it('rejects browser-rendered PowerPoint fallback when exact server visuals are required', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'Discipleship-Via-Triads.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      requireRenderedSlides: true,
+      requireServerRenderedPowerPoint: true,
+      allowBrowserPowerPointRenderFallback: false,
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: 'renderer unavailable',
+        code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+      pptxSlideImageRenderer: async () => ['data:image/png;base64,browser-rendered'],
+    });
+
+    assert.equal(preview, undefined);
+  });
+
   it('rejects incomplete browser-rendered PowerPoint fallbacks', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide1.xml', '<a:t>First</a:t>');
