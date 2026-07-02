@@ -63,7 +63,7 @@ jobs:
           cat changed-files.txt
           node scripts/classify-production-changes.mjs --files-from changed-files.txt --github-output "$GITHUB_OUTPUT"
 
-      - name: Validate Render deploy hook secrets
+      - name: Report Render deploy hook availability
         env:
           RENDER_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_SERVER_DEPLOY_HOOK_URL }}
           RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL }}
@@ -76,15 +76,23 @@ jobs:
 
           if [ "$SIGNALING_CHANGED" = "true" ] || [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
             if [ -z "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
-              missing=true
-              echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this run deploys the signaling server."
+              if [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
+                missing=true
+                echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this manual run deploys the signaling server."
+              else
+                echo "::warning::RENDER_SERVER_DEPLOY_HOOK_URL is not configured; skipping automatic signaling server deploy trigger."
+              fi
             fi
           fi
 
           if [ "$MEDIA_CHANGED" = "true" ] || [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
             if [ -z "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
-              missing=true
-              echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this run deploys the media server."
+              if [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
+                missing=true
+                echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this manual run deploys the media server."
+              else
+                echo "::warning::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is not configured; skipping automatic media-server deploy trigger."
+              fi
             fi
           fi
 
@@ -140,7 +148,11 @@ jobs:
               curl --fail --silent --show-error --request POST "$RENDER_SERVER_DEPLOY_HOOK_URL"
             else
               hooks_configured=false
-              echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this run deploys the signaling server."
+              if [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
+                echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this manual run deploys the signaling server."
+              else
+                echo "::warning::RENDER_SERVER_DEPLOY_HOOK_URL is not configured; signaling server deploy trigger skipped."
+              fi
             fi
           else
             echo "::notice::No signaling-server changes detected; skipping signaling server deploy trigger."
@@ -152,7 +164,11 @@ jobs:
               curl --fail --silent --show-error --request POST "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL"
             else
               hooks_configured=false
-              echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this run deploys the media server."
+              if [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
+                echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this manual run deploys the media server."
+              else
+                echo "::warning::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is not configured; media-server deploy trigger skipped."
+              fi
             fi
           else
             echo "::notice::No media-server changes detected; skipping media-server deploy trigger."
@@ -161,7 +177,7 @@ jobs:
           echo "hooks_configured=$hooks_configured" >> "$GITHUB_OUTPUT"
           echo "services_changed=$services_changed" >> "$GITHUB_OUTPUT"
 
-          if [ "$services_changed" = "true" ] && [ "$hooks_configured" != "true" ]; then
+          if { [ "$FORCE_SIGNALING_DEPLOY" = "true" ] || [ "$FORCE_MEDIA_DEPLOY" = "true" ]; } && [ "$hooks_configured" != "true" ]; then
             exit 1
           fi
 
