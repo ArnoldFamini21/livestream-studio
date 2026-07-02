@@ -40,7 +40,7 @@ import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
-import { buildPresentationPreview, hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
+import { buildPresentationPreview, hasRenderedPresentationSlides, type PresentationServerRenderFailure } from '../utils/presentationPreview.ts';
 import {
   clampPresentationSlideIndex,
   getPresentationDeckUnitLabel,
@@ -700,7 +700,24 @@ function MediaDocumentCard({ media }: { media: ActiveMedia }) {
   );
 }
 
-function getDeckRenderFailureMessage(type: StudioMediaType): string {
+function getDeckRenderFailureMessage(type: StudioMediaType, failure?: PresentationServerRenderFailure): string {
+  const routing = failure?.renderRouting?.toLowerCase();
+  const code = failure?.code?.toUpperCase();
+
+  if (routing === 'no-server' || code === 'MEDIA_SERVER_NO_SERVER') {
+    return 'Presentation render service is not deployed yet. Ask the workspace owner to sync the Render media-server, then upload this deck again.';
+  }
+  if (failure?.timedOut || code === 'PRESENTATION_RENDER_TIMEOUT') {
+    return type === 'pdf'
+      ? 'PDF rendering timed out. Try a smaller PDF or upload it again.'
+      : 'PowerPoint rendering timed out. Try a smaller deck, or export it to PDF and upload that.';
+  }
+  if (code === 'PRESENTATION_TOO_LARGE') {
+    return 'This presentation is too large to prepare for broadcast. Export a compressed PDF or split the deck.';
+  }
+  if (code === 'PRESENTATION_RENDERER_UNAVAILABLE') {
+    return 'Presentation render service is missing LibreOffice or Poppler. Redeploy the Docker media-server, then upload this deck again.';
+  }
   return type === 'pdf'
     ? 'PDF could not be rendered into broadcast slides. Try uploading it again.'
     : 'PowerPoint design could not be rendered exactly. Try uploading again, or export the deck to PDF and upload that.';
@@ -3307,10 +3324,14 @@ export function StudioRoom() {
       if (!isDeck) return;
 
       try {
+        let serverRenderFailure: PresentationServerRenderFailure | undefined;
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
           requireServerRenderedPowerPoint: type === 'presentation',
           allowBrowserPowerPointRenderFallback: false,
+          onServerRenderFailure: (failure) => {
+            serverRenderFailure = failure;
+          },
         });
         const nextState = preview
           ? {
@@ -3320,7 +3341,7 @@ export function StudioRoom() {
             }
           : {
               processingStatus: 'error' as const,
-              processingMessage: getDeckRenderFailureMessage(type),
+              processingMessage: getDeckRenderFailureMessage(type, serverRenderFailure),
             };
 
         setMediaAssets((prev) => prev.map((item) => (

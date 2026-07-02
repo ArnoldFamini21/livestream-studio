@@ -219,6 +219,59 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,page');
   });
 
+  it('reports Render no-server presentation render failures', async () => {
+    const file = new File(
+      [Buffer.from('pptx-bytes')],
+      'message.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+    const failures: unknown[] = [];
+
+    const preview = await buildServerRenderedPresentationPreview(file, {
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response('Not Found', {
+        status: 404,
+        headers: {
+          'x-render-routing': 'no-server',
+        },
+      }),
+      onServerRenderFailure: (failure) => failures.push(failure),
+    });
+
+    assert.equal(preview, undefined);
+    assert.deepEqual(failures, [{
+      status: 404,
+      code: 'MEDIA_SERVER_NO_SERVER',
+      message: 'Media server is not provisioned on Render.',
+      renderRouting: 'no-server',
+    }]);
+  });
+
+  it('reports media-server presentation renderer error codes', async () => {
+    const file = new File(
+      [Buffer.from('pptx-bytes')],
+      'message.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+    const failures: unknown[] = [];
+
+    const preview = await buildServerRenderedPresentationPreview(file, {
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: 'Presentation renderer is unavailable',
+        code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+      onServerRenderFailure: (failure) => failures.push(failure),
+    });
+
+    assert.equal(preview, undefined);
+    assert.deepEqual(failures, [{
+      status: 503,
+      code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      message: 'Presentation renderer is unavailable',
+    }]);
+  });
+
   it('merges server-rendered PowerPoint images with extracted slide text', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');

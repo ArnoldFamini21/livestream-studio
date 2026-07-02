@@ -144,6 +144,9 @@ async function fetchHeaders(url) {
 
 async function fetchJson(url) {
   const { response, text } = await fetchText(url);
+  if (!response.ok) {
+    return { response, json: null, text };
+  }
   let json = null;
   try {
     json = JSON.parse(text);
@@ -153,19 +156,42 @@ async function fetchJson(url) {
   return { response, json, text };
 }
 
+export function describeHttpFailure(response, label, text = '') {
+  const body = String(text || '').slice(0, 120);
+  const status = response?.status || 0;
+  const renderRouting = response?.headers?.get?.('x-render-routing') || '';
+
+  if (renderRouting.toLowerCase() === 'no-server') {
+    return `${label} is not provisioned on Render (x-render-routing: no-server). ` +
+      'Create or sync the Render service from render.yaml, add the matching deploy hook secret, and redeploy.';
+  }
+
+  return `${label} returned HTTP ${status}: ${body}`;
+}
+
 function requireOk(response, label, text) {
   if (!response.ok) {
-    throw new Error(`${label} returned HTTP ${response.status}: ${text.slice(0, 120)}`);
+    throw new Error(describeHttpFailure(response, label, text));
   }
 }
 
-function requireServiceHealth(label, json, expectedService) {
+export function describeServiceHealthMetadataFailure(label, json, expectedService) {
   if (json?.status !== 'ok') {
-    throw new Error(`${label} health did not report status ok`);
+    return `${label} health did not report status ok`;
+  }
+  if (json.service === undefined) {
+    return `${label} health is from an older Render deployment and does not include service metadata. ` +
+      'Configure the matching Render deploy hook secret and redeploy this service.';
   }
   if (json.service !== expectedService) {
-    throw new Error(`${label} health reported service ${JSON.stringify(json.service)}, expected ${expectedService}`);
+    return `${label} health reported service ${JSON.stringify(json.service)}, expected ${expectedService}`;
   }
+  return '';
+}
+
+function requireServiceHealth(label, json, expectedService) {
+  const metadataFailure = describeServiceHealthMetadataFailure(label, json, expectedService);
+  if (metadataFailure) throw new Error(metadataFailure);
   if (expectedCommit) {
     const actual = normalizeSha(json.commit);
     if (!actual || !expectedCommit.startsWith(actual.slice(0, 7))) {
@@ -290,6 +316,29 @@ async function checkHealth(label, url, expectedService) {
   return json;
 }
 
+async function checkProductionServices() {
+  const [signalingResult, mediaResult] = await Promise.allSettled([
+    checkHealth('Signaling server', apiUrl, 'signaling-server'),
+    checkHealth('Media server', mediaHttpUrl, 'media-server'),
+  ]);
+  const errors = [];
+
+  if (signalingResult.status === 'rejected') {
+    errors.push(signalingResult.reason instanceof Error ? signalingResult.reason.message : String(signalingResult.reason));
+  }
+  if (mediaResult.status === 'rejected') {
+    errors.push(mediaResult.reason instanceof Error ? mediaResult.reason.message : String(mediaResult.reason));
+  }
+  if (errors.length > 0) {
+    throw new Error(`Production service checks failed:\n- ${errors.join('\n- ')}`);
+  }
+
+  return {
+    signaling: signalingResult.value,
+    media: mediaResult.value,
+  };
+}
+
 async function checkHostAccessContract() {
   const response = await fetch(`${apiUrl}/api/rooms`, {
     method: 'POST',
@@ -351,8 +400,7 @@ async function runOnce() {
   }
 
   if (checkScope === 'all' || checkScope === 'services') {
-    const signaling = await checkHealth('Signaling server', apiUrl, 'signaling-server');
-    const media = await checkHealth('Media server', mediaHttpUrl, 'media-server');
+    const { signaling, media } = await checkProductionServices();
     if (requireProductionTurn) requireProductionTurnReady(signaling);
     const hostAccess = requireHostAccessContract ? await checkHostAccessContract() : null;
 

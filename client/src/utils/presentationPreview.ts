@@ -35,12 +35,21 @@ interface PresentationPreviewOptions {
   requireServerRenderedPowerPoint?: boolean;
   allowBrowserPowerPointRenderFallback?: boolean;
   pptxSlideImageRenderer?: (arrayBuffer: ArrayBuffer, expectedSlideCount: number) => Promise<string[]>;
+  onServerRenderFailure?: (failure: PresentationServerRenderFailure) => void;
 }
 
 interface ServerPresentationPreviewResponse {
   kind?: unknown;
   sourceFormat?: unknown;
   slides?: unknown;
+}
+
+export interface PresentationServerRenderFailure {
+  status?: number;
+  code?: string;
+  message: string;
+  renderRouting?: string;
+  timedOut?: boolean;
 }
 
 function decodeXmlText(value: string): string {
@@ -335,6 +344,38 @@ function canTryServerRender(options: PresentationPreviewOptions): boolean {
   return typeof window !== 'undefined' && typeof fetch === 'function';
 }
 
+async function readServerRenderFailure(response: Response): Promise<PresentationServerRenderFailure> {
+  const renderRouting = response.headers.get('x-render-routing') || undefined;
+  const text = await response.text().catch(() => '');
+  let code: string | undefined;
+  let message = text.trim();
+
+  if (text) {
+    try {
+      const json = JSON.parse(text) as { error?: unknown; code?: unknown; message?: unknown };
+      if (typeof json.code === 'string') code = json.code;
+      if (typeof json.error === 'string') message = json.error;
+      else if (typeof json.message === 'string') message = json.message;
+    } catch {
+      // Keep the plain text body.
+    }
+  }
+
+  if (renderRouting?.toLowerCase() === 'no-server') {
+    message = 'Media server is not provisioned on Render.';
+    code = code || 'MEDIA_SERVER_NO_SERVER';
+  } else if (!message) {
+    message = `Media server returned HTTP ${response.status}.`;
+  }
+
+  return {
+    status: response.status,
+    ...(code ? { code } : {}),
+    message,
+    ...(renderRouting ? { renderRouting } : {}),
+  };
+}
+
 export async function buildServerRenderedPresentationPreview(
   file: File,
   options: PresentationPreviewOptions = {}
@@ -362,11 +403,24 @@ export async function buildServerRenderedPresentationPreview(
       signal: controller.signal,
     });
 
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      options.onServerRenderFailure?.(await readServerRenderFailure(response));
+      return undefined;
+    }
     return normalizeServerPreview(await response.json() as ServerPresentationPreviewResponse);
   } catch (err) {
-    if ((err as { name?: string })?.name !== 'AbortError') {
+    if ((err as { name?: string })?.name === 'AbortError') {
+      options.onServerRenderFailure?.({
+        message: 'Media server presentation rendering timed out.',
+        code: 'PRESENTATION_RENDER_TIMEOUT',
+        timedOut: true,
+      });
+    } else {
       console.warn('Media server presentation render unavailable:', err);
+      options.onServerRenderFailure?.({
+        message: err instanceof Error ? err.message : 'Media server presentation render is unavailable.',
+        code: 'PRESENTATION_RENDER_UNAVAILABLE',
+      });
     }
     return undefined;
   } finally {
