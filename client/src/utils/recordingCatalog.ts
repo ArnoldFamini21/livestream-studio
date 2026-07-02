@@ -28,17 +28,32 @@ function getReadyFinalMp4Artifact(
     null;
 }
 
+function getSafeHttpUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function buildMediaExportSummary(
   session: LocalRecordingSession
 ): RecordingCatalogMediaExportSummary | undefined {
   if (!session.mediaExport) return undefined;
   const artifacts = session.mediaExport.artifacts || [];
+  const readyMp4 = getReadyFinalMp4Artifact(artifacts);
+  const mp4ShareUrl = getSafeHttpUrl(readyMp4?.storage?.url);
   return {
     status: session.mediaExport.status,
     uploadId: session.mediaExport.uploadId,
     exportId: session.mediaExport.exportId,
     updatedAt: session.mediaExport.updatedAt,
-    readyMp4: Boolean(getReadyFinalMp4Artifact(artifacts)),
+    readyMp4: Boolean(readyMp4),
+    ...(mp4ShareUrl ? { mp4ShareUrl } : {}),
     artifactCount: artifacts.length,
     readyArtifactCount: artifacts.filter((artifact) => artifact.status === 'ready').length,
   };

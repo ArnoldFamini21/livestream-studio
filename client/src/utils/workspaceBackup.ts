@@ -42,6 +42,7 @@ export interface WorkspaceRecordingCatalogItem {
     updatedAt: string;
     savedAt?: string;
     readyMp4: boolean;
+    mp4ShareUrl?: string;
     artifactCount: number;
     readyArtifactCount: number;
   };
@@ -97,6 +98,17 @@ function readMediaExportStatus(value: unknown): WorkspaceRecordingMediaExportSta
   return value === 'queued' || value === 'running' || value === 'ready' || value === 'error'
     ? value
     : null;
+}
+
+function readSafeHttpUrl(value: unknown, maxLength = 2048): string {
+  const text = readString(value, maxLength);
+  if (!text) return '';
+  try {
+    const url = new URL(text);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString().slice(0, maxLength) : '';
+  } catch {
+    return '';
+  }
 }
 
 function sanitizeStudio(value: unknown): SavedHostStudio | null {
@@ -188,6 +200,7 @@ function sanitizeRecordingCatalogItem(value: unknown): WorkspaceRecordingCatalog
     if (status && uploadId && exportId && roomId) {
       const sessionId = readString(value.mediaExport.sessionId, 128);
       const savedAt = readOptionalIsoDate(value.mediaExport.savedAt);
+      const mp4ShareUrl = readSafeHttpUrl(value.mediaExport.mp4ShareUrl);
       item.mediaExport = {
         status,
         uploadId,
@@ -197,6 +210,7 @@ function sanitizeRecordingCatalogItem(value: unknown): WorkspaceRecordingCatalog
         updatedAt: readIsoDate(value.mediaExport.updatedAt),
         ...(savedAt ? { savedAt } : {}),
         readyMp4: Boolean(value.mediaExport.readyMp4),
+        ...(mp4ShareUrl ? { mp4ShareUrl } : {}),
         artifactCount: readNonNegativeInteger(value.mediaExport.artifactCount),
         readyArtifactCount: readNonNegativeInteger(value.mediaExport.readyArtifactCount),
       };
@@ -239,9 +253,12 @@ function recordingToCatalogItem(session: LocalRecordingSession): WorkspaceRecord
 
   if (session.mediaExport) {
     const readyArtifactCount = session.mediaExport.artifacts.filter((artifact) => artifact.status === 'ready').length;
-    const readyMp4 = session.mediaExport.artifacts.some((artifact) => (
+    const readyMp4Artifact = session.mediaExport.artifacts.find((artifact) => (
+      artifact.status === 'ready' && artifact.id === 'final-mp4'
+    )) || session.mediaExport.artifacts.find((artifact) => (
       artifact.status === 'ready' && (artifact.id === 'final-mp4' || artifact.format === 'mp4')
     ));
+    const mp4ShareUrl = readSafeHttpUrl(readyMp4Artifact?.storage?.url);
     item.mediaExport = {
       status: session.mediaExport.status,
       uploadId: session.mediaExport.uploadId,
@@ -250,7 +267,8 @@ function recordingToCatalogItem(session: LocalRecordingSession): WorkspaceRecord
       ...(session.mediaExport.sessionId ? { sessionId: session.mediaExport.sessionId } : {}),
       updatedAt: session.mediaExport.updatedAt,
       savedAt: session.mediaExport.savedAt,
-      readyMp4,
+      readyMp4: Boolean(readyMp4Artifact),
+      ...(mp4ShareUrl ? { mp4ShareUrl } : {}),
       artifactCount: session.mediaExport.artifacts.length,
       readyArtifactCount,
     };

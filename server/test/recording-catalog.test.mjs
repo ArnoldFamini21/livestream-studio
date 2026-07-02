@@ -35,6 +35,7 @@ function catalogEntry(overrides = {}) {
       exportId: 'export-1',
       updatedAt: '2026-07-02T10:40:00.000Z',
       readyMp4: true,
+      mp4ShareUrl: 'https://cdn.example.com/recordings/session-1.mp4',
       artifactCount: 2,
       readyArtifactCount: 2,
     },
@@ -125,6 +126,19 @@ describe('recording catalog normalization', () => {
     assert.equal(normalized.markerCount, 5000);
     assert.equal(normalized.cloud?.provider, 'google-drive');
     assert.equal(normalized.mediaExport?.readyMp4, true);
+    assert.equal(normalized.mediaExport?.mp4ShareUrl, 'https://cdn.example.com/recordings/session-1.mp4');
+  });
+
+  it('drops unsafe MP4 share URLs from catalog metadata', () => {
+    const normalized = normalizeRecordingCatalogEntry(ROOM_ID, ROOM_NAME, catalogEntry({
+      mediaExport: {
+        ...catalogEntry().mediaExport,
+        mp4ShareUrl: 'javascript:alert(1)',
+      },
+    }));
+
+    assert.equal(normalized.mediaExport?.readyMp4, true);
+    assert.equal(normalized.mediaExport?.mp4ShareUrl, undefined);
   });
 
   it('rejects entries without stable identity and timestamps', () => {
@@ -171,6 +185,7 @@ describe('PostgresRecordingCatalogStore', () => {
     assert.equal(listed.length, 1);
     assert.equal(listed[0].id, entry.id);
     assert.equal(listed[0].mediaExport?.uploadId, 'upload-1');
+    assert.equal(listed[0].mediaExport?.mp4ShareUrl, 'https://cdn.example.com/recordings/session-1.mp4');
 
     await store.deleteRecording(ROOM_ID, entry.id);
     assert.deepEqual(await store.listRoomRecordings(ROOM_ID), []);
