@@ -561,6 +561,18 @@ export interface LogoPosition {
 
 export type StudioMediaType = 'video' | 'image' | 'pdf' | 'presentation' | 'file';
 
+export interface PresentationSlidePreview {
+  id: string;
+  title: string;
+  lines: string[];
+}
+
+export interface StudioMediaAssetPreview {
+  kind: 'presentation-slides';
+  sourceFormat: 'pptx';
+  slides: PresentationSlidePreview[];
+}
+
 export interface StudioMediaAsset {
   id: string;
   name: string;
@@ -570,6 +582,7 @@ export interface StudioMediaAsset {
   sizeBytes?: number;
   createdAt: string;
   source: 'upload' | 'url';
+  preview?: StudioMediaAssetPreview;
 }
 
 export interface ActiveMedia {
@@ -577,6 +590,7 @@ export interface ActiveMedia {
   type: StudioMediaType;
   url: string;
   name: string;
+  preview?: StudioMediaAssetPreview;
 }
 
 // ============ Stream Destination Types ============

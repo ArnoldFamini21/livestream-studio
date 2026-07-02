@@ -23,6 +23,7 @@ interface CompositorProps {
   tickers: TickerData[];
   widgets?: WidgetOverlayData[];
   activeMedia?: ActiveMedia | null;
+  activeMediaSlideIndex?: number;
   highlightedComment?: HighlightedComment | null;
   highlightedQA?: QAQuestion | null;
   highlightedPoll?: LivePoll | null;
@@ -449,6 +450,90 @@ function drawMediaFallbackCard(
   ctx.restore();
 }
 
+function clampMediaSlideIndex(index: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.min(total - 1, Math.max(0, index));
+}
+
+function drawPresentationMediaPreview(
+  ctx: CanvasRenderingContext2D,
+  media: ActiveMedia,
+  slideIndex: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  brandColor: string
+): boolean {
+  const slides = media.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
+  if (slides.length === 0) return false;
+
+  const currentIndex = clampMediaSlideIndex(slideIndex, slides.length);
+  const slide = slides[currentIndex];
+  const slideWidth = Math.min(width * 0.86, 1460);
+  const slideHeight = slideWidth * 9 / 16;
+  const finalHeight = Math.min(slideHeight, height * 0.86);
+  const finalWidth = finalHeight * 16 / 9;
+  const slideX = x + (width - finalWidth) / 2;
+  const slideY = y + (height - finalHeight) / 2;
+  const headerHeight = Math.max(58, finalHeight * 0.085);
+  const footerHeight = Math.max(46, finalHeight * 0.07);
+  const paddingX = finalWidth * 0.065;
+
+  ctx.save();
+  ctx.fillStyle = '#f8fafc';
+  ctx.beginPath();
+  ctx.roundRect(slideX, slideY, finalWidth, finalHeight, 24);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(slideX, slideY, finalWidth, headerHeight);
+  ctx.fillStyle = brandColor;
+  ctx.fillRect(slideX, slideY, finalWidth, 8);
+  ctx.fillStyle = '#4338ca';
+  ctx.font = '900 24px Inter, Arial, sans-serif';
+  ctx.fillText('POWERPOINT', slideX + paddingX, slideY + headerHeight / 2 + 9);
+  ctx.fillStyle = '#64748b';
+  ctx.font = '800 22px Inter, Arial, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(`Slide ${currentIndex + 1} / ${slides.length}`, slideX + finalWidth - paddingX, slideY + headerHeight / 2 + 8);
+  ctx.textAlign = 'left';
+
+  const bodyX = slideX + paddingX;
+  const bodyY = slideY + headerHeight + finalHeight * 0.12;
+  const bodyWidth = finalWidth - paddingX * 2;
+  ctx.fillStyle = '#0f172a';
+  ctx.font = '900 58px Inter, Arial, sans-serif';
+  const titleLines = wrapCanvasText(ctx, slide.title, bodyWidth, 2);
+  titleLines.forEach((line, index) => {
+    ctx.fillText(line, bodyX, bodyY + index * 68);
+  });
+
+  const linesStartY = bodyY + Math.max(112, titleLines.length * 68 + 44);
+  ctx.fillStyle = '#334155';
+  ctx.font = '700 32px Inter, Arial, sans-serif';
+  slide.lines.slice(0, 6).forEach((line, index) => {
+    const yPosition = linesStartY + index * 48;
+    ctx.fillStyle = brandColor;
+    ctx.beginPath();
+    ctx.arc(bodyX + 10, yPosition - 10, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#334155';
+    ctx.fillText(truncateCanvasText(ctx, line, bodyWidth - 42), bodyX + 32, yPosition);
+  });
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(slideX, slideY + finalHeight - footerHeight, finalWidth, footerHeight);
+  ctx.fillStyle = '#64748b';
+  ctx.font = '800 20px Inter, Arial, sans-serif';
+  ctx.fillText(truncateCanvasText(ctx, media.name, finalWidth - paddingX * 2), slideX + paddingX, slideY + finalHeight - footerHeight / 2 + 8);
+  ctx.restore();
+  return true;
+}
+
 function drawActiveMediaOverlay(
   ctx: CanvasRenderingContext2D,
   media: ActiveMedia,
@@ -457,7 +542,8 @@ function drawActiveMediaOverlay(
   scaleX: number,
   scaleY: number,
   image: HTMLImageElement | null,
-  brandColor: string
+  brandColor: string,
+  slideIndex: number
 ) {
   const rect = getScaledNodeRect(mediaNode, containerBounds, scaleX, scaleY);
   const radius = Math.max(12, 16 * Math.min(scaleX, scaleY));
@@ -488,6 +574,11 @@ function drawActiveMediaOverlay(
         // Fall through to a safe card instead of risking a broken compositor.
       }
     }
+  }
+
+  if (media.type === 'presentation' && drawPresentationMediaPreview(ctx, media, slideIndex, rect.x, rect.y, rect.width, rect.height, brandColor)) {
+    ctx.restore();
+    return;
   }
 
   const label = media.type === 'presentation'
@@ -1110,6 +1201,7 @@ export function useCompositor({
   tickers,
   widgets = [],
   activeMedia,
+  activeMediaSlideIndex = 0,
   highlightedComment,
   highlightedQA,
   highlightedPoll,
@@ -1287,7 +1379,8 @@ export function useCompositor({
         scaleX,
         scaleY,
         activeMediaImageRef.current,
-        brandColor
+        brandColor,
+        activeMediaSlideIndex
       );
     }
 
@@ -1391,7 +1484,7 @@ export function useCompositor({
 
     // Loop
     rAF.current = requestAnimationFrame(drawLoop);
-  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen]);
 
   useEffect(() => {
     if (isLive) {
