@@ -219,6 +219,27 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,page');
   });
 
+  it('rejects server presentation previews without rendered slide images', async () => {
+    const file = new File(
+      [Buffer.from('pptx-bytes')],
+      'message.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildServerRenderedPresentationPreview(file, {
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'slide-1', title: 'TRIAD FORMATION', lines: ['Discipleship'] },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    assert.equal(preview, undefined);
+  });
+
   it('reports Render no-server presentation render failures', async () => {
     const file = new File(
       [Buffer.from('pptx-bytes')],
@@ -406,6 +427,35 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.sourceFormat, 'pptx');
     assert.equal(preview?.slides[0].title, 'TRIAD FORMATION');
     assert.deepEqual(preview?.slides[0].lines, ['Discipleship']);
+    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
+  });
+
+  it('uses browser-rendered PowerPoint images when a stale server response has no slide artwork', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'Discipleship-Via-Triads.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      requireRenderedSlides: true,
+      requireServerRenderedPowerPoint: true,
+      allowBrowserPowerPointRenderFallback: true,
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'text-only-1', title: 'TRIAD FORMATION', lines: ['Discipleship'] },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      pptxSlideImageRenderer: async () => ['data:image/png;base64,browser-rendered'],
+    });
+
+    assert.equal(preview?.sourceFormat, 'pptx');
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
   });
 

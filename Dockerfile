@@ -47,15 +47,25 @@ ENV NODE_ENV=production
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
+    libreoffice-draw \
     libreoffice-impress \
     poppler-utils \
     fonts-crosextra-caladea \
     fonts-crosextra-carlito \
+    fonts-croscore \
     fonts-dejavu \
+    fonts-freefont-ttf \
     fonts-liberation \
+    fonts-liberation2 \
+    fonts-noto-cjk \
     fonts-noto-core \
     fonts-noto-color-emoji \
+    fonts-noto-extra \
+    fonts-noto-ui-core \
+    fonts-noto-ui-extra \
+    fonts-opensymbol \
     fontconfig \
+  && fc-cache -f \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./

@@ -300,10 +300,8 @@ function isValidRenderedSlide(value: unknown): value is PresentationSlidePreview
       Array.isArray(candidate.notes) &&
       candidate.notes.every((note) => typeof note === 'string')
     )) &&
-    (candidate.imageUrl === undefined || (
-      typeof candidate.imageUrl === 'string' &&
-      isRenderedSlideImageUrl(candidate.imageUrl)
-    ))
+    typeof candidate.imageUrl === 'string' &&
+    isRenderedSlideImageUrl(candidate.imageUrl)
   );
 }
 
