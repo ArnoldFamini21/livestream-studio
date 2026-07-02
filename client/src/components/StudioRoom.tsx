@@ -238,6 +238,7 @@ const ProducerPanel = lazy(() => import('./ProducerPanel.tsx').then((module) => 
 interface ProductionSceneDraft {
   scene: Scene;
   config: ProductionSceneTemplateConfig;
+  lowerThird: LowerThirdData | null;
   banner: BannerData | null;
   ticker: TickerData | null;
   timer: TimerData | null;
@@ -3279,6 +3280,7 @@ export function StudioRoom() {
         ? await buildPresentationPreview(file, {
             requireRenderedSlides: true,
             requireServerRenderedPowerPoint: type === 'presentation',
+            allowBrowserPowerPointRenderFallback: type === 'presentation',
           })
         : undefined;
       const renderFailed = isDeck && !preview;
@@ -3433,21 +3435,26 @@ export function StudioRoom() {
   const buildProductionSceneDraft = (template: ProductionSceneTemplate): ProductionSceneDraft => {
     const config = getProductionSceneTemplateConfig(template);
     const visibleOverlayIds: string[] = [];
+    let lowerThird: LowerThirdData | null = null;
     let banner: BannerData | null = null;
     let ticker: TickerData | null = null;
     let timer: TimerData | null = null;
 
+    if (config.lowerThird) {
+      lowerThird = { ...config.lowerThird, id: `lt-${++idCounters.current.lt}` };
+      if (lowerThird.visible) visibleOverlayIds.push(lowerThird.id);
+    }
     if (config.banner) {
       banner = { ...config.banner, id: `banner-${++idCounters.current.banner}` };
-      visibleOverlayIds.push(banner.id);
+      if (banner.visible) visibleOverlayIds.push(banner.id);
     }
     if (config.ticker) {
       ticker = { ...config.ticker, id: `ticker-${++idCounters.current.ticker}` };
-      visibleOverlayIds.push(ticker.id);
+      if (ticker.visible) visibleOverlayIds.push(ticker.id);
     }
     if (config.timer) {
       timer = { ...config.timer, id: `timer-${++idCounters.current.timer}` };
-      visibleOverlayIds.push(timer.id);
+      if (timer.visible) visibleOverlayIds.push(timer.id);
     }
 
     const scene: Scene = {
@@ -3470,11 +3477,14 @@ export function StudioRoom() {
       visibleOverlayIds,
     };
 
-    return { scene, config, banner, ticker, timer };
+    return { scene, config, lowerThird, banner, ticker, timer };
   };
 
   const applyProductionSceneDrafts = (drafts: ProductionSceneDraft[], activeDraft: ProductionSceneDraft) => {
     const activeVisibleIds = new Set(activeDraft.scene.visibleOverlayIds);
+    const nextLowerThirds = drafts.flatMap((draft) => (
+      draft.lowerThird ? [{ ...draft.lowerThird, visible: activeVisibleIds.has(draft.lowerThird.id) }] : []
+    ));
     const nextBanners = drafts.flatMap((draft) => (
       draft.banner ? [{ ...draft.banner, visible: activeVisibleIds.has(draft.banner.id) }] : []
     ));
@@ -3506,7 +3516,7 @@ export function StudioRoom() {
     setStageItemOrder([]);
     setActiveMedia(null);
     setActiveMediaSlideIndex(0);
-    setLowerThirds(prev => prev.map(o => ({ ...o, visible: false })));
+    setLowerThirds(prev => [...prev.map(o => ({ ...o, visible: false })), ...nextLowerThirds]);
     setBanners(prev => [...prev.map(b => ({ ...b, visible: false })), ...nextBanners]);
     setTimers(prev => [...prev.map(t => ({ ...t, visible: false, isRunning: false })), ...nextTimers]);
     setTickers(prev => [...prev.map(t => ({ ...t, visible: false })), ...nextTickers]);
