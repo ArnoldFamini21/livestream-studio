@@ -29,7 +29,7 @@ DATABASE_URL=<Render PostgreSQL internal database URL for livestream-studio-serv
 PGSSLMODE=require
 ```
 
-The signaling server uses `DATABASE_URL` for PostgreSQL room snapshots. This keeps scheduled and newly created studios recoverable across Render restarts, while live participants still reconnect through the normal WebSocket flow. If `DATABASE_URL` is not set, the server logs that room snapshot persistence is disabled and continues with memory-only rooms.
+The signaling server uses `DATABASE_URL` for PostgreSQL room snapshots and host-scoped recording catalog metadata. This keeps scheduled and newly created studios recoverable across Render restarts and lets hosts sync recording dashboard summaries across browser sessions. Recording blobs and export artifacts are not stored in this database; they stay in browser storage, media-server export storage, Google Drive handoffs, or S3-compatible artifact storage when configured. If `DATABASE_URL` is not set, the server logs that room snapshot persistence is disabled and continues with memory-only rooms and recording catalog metadata.
 
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.
 

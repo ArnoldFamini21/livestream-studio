@@ -811,6 +811,59 @@ export interface RecordingExportJobResponse {
   error?: string;
 }
 
+// ============ Recording Catalog Protocol Types ============
+
+export interface RecordingCatalogCloudSummary {
+  provider: 'google-drive';
+  fileCount: number;
+  totalBytes: number;
+  uploadedAt: string;
+  expiresAt: string | null;
+  permanent: boolean;
+}
+
+export interface RecordingCatalogMediaExportSummary {
+  status: RecordingExportJobStatusValue;
+  uploadId: string;
+  exportId: string;
+  updatedAt: string;
+  readyMp4: boolean;
+  artifactCount: number;
+  readyArtifactCount: number;
+}
+
+export interface RecordingCatalogEntry {
+  id: string;
+  roomId: string;
+  roomName: string;
+  createdAt: string;
+  updatedAt: string;
+  durationSeconds: number | null;
+  trackCount: number;
+  totalBytes: number;
+  markerCount: number;
+  cloud?: RecordingCatalogCloudSummary;
+  mediaExport?: RecordingCatalogMediaExportSummary;
+}
+
+export interface RecordingCatalogUpsertRequest {
+  id: string;
+  roomName?: string;
+  createdAt: string;
+  durationSeconds?: number | null;
+  trackCount?: number;
+  totalBytes?: number;
+  markerCount?: number;
+  cloud?: RecordingCatalogCloudSummary;
+  mediaExport?: RecordingCatalogMediaExportSummary;
+}
+
+export interface RecordingCatalogListResponse {
+  roomId: string;
+  exportedAt: string;
+  recordings: RecordingCatalogEntry[];
+}
+
 // ============ Scene Types ============
 
 export interface Scene {
