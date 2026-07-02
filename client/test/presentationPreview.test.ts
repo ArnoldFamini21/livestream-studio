@@ -53,8 +53,8 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(isPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
   });
 
-  it('allows browser visual fallback only as rendered images, not text-only playback', () => {
-    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, true);
+  it('disables browser PowerPoint fallback for broadcast uploads by default', () => {
+    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, false);
     assert.equal(isRecoverablePowerPointServerRenderFailure({
       status: 404,
       code: 'MEDIA_SERVER_NO_SERVER',
@@ -403,6 +403,30 @@ describe('PowerPoint preview extraction', () => {
         error: 'renderer unavailable',
         code: 'PRESENTATION_RENDERER_UNAVAILABLE',
       }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    assert.equal(preview, undefined);
+  });
+
+  it('does not use approximate browser PowerPoint rendering unless explicitly enabled', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'Discipleship-Via-Triads.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      requireRenderedSlides: true,
+      requireServerRenderedPowerPoint: true,
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: 'renderer unavailable',
+        code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+      pptxSlideImageRenderer: async () => ['data:image/png;base64,browser-rendered'],
     });
 
     assert.equal(preview, undefined);
