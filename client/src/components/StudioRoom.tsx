@@ -21,6 +21,7 @@ import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
+import { useMediaServerHealth } from '../hooks/useMediaServerHealth.ts';
 import type { SessionPeerHealthParticipant } from '../utils/sessionPeerHealth.ts';
 import {
   clearUrlHostToken,
@@ -1251,6 +1252,7 @@ export function StudioRoom() {
       health: peerBandwidthHealth.get(id) || null,
     }))
   ), [participants, peerBandwidthHealth]);
+  const { health: mediaServerHealth } = useMediaServerHealth();
   const sessionHealth = useSessionHealth({
     localStream,
     connected,
@@ -1259,6 +1261,7 @@ export function StudioRoom() {
     videoDeviceCount: videoDevices.length,
     participantCount: participants.size + (myParticipant ? 1 : 0),
     peerConnectionParticipants: sessionPeerConnectionParticipants,
+    mediaServerHealth,
     isRecording: isRecording || isLocalRecording || Boolean(sessionRecordingStartedAt),
     isLive,
   });
