@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import JSZip from 'jszip';
 
 import {
+  ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
   applyRenderedSlideImages,
   buildPresentationPreview,
   buildServerRenderedPresentationPreview,
@@ -11,6 +12,7 @@ import {
   extractPptxSpeakerNotes,
   extractPptxSlideText,
   hasRenderedPresentationSlides,
+  isRecoverablePowerPointServerRenderFailure,
   isLegacyPowerPointFile,
   isPdfFile,
   isPowerPointFile,
@@ -49,6 +51,26 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(isPptxFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), false);
     assert.equal(isLegacyPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
     assert.equal(isPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
+  });
+
+  it('allows browser visual fallback only as rendered images, not text-only playback', () => {
+    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, true);
+    assert.equal(isRecoverablePowerPointServerRenderFailure({
+      status: 404,
+      code: 'MEDIA_SERVER_NO_SERVER',
+      message: 'Media server is not provisioned on Render.',
+      renderRouting: 'no-server',
+    }), true);
+    assert.equal(isRecoverablePowerPointServerRenderFailure({
+      status: 503,
+      code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      message: 'Presentation renderer is unavailable.',
+    }), true);
+    assert.equal(isRecoverablePowerPointServerRenderFailure({
+      status: 415,
+      code: 'PRESENTATION_UNSUPPORTED',
+      message: 'Only PDF and PowerPoint files can be rendered.',
+    }), false);
   });
 
   it('extracts readable slide text from PPTX XML', () => {

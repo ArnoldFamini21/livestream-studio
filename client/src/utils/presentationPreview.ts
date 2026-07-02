@@ -11,10 +11,12 @@ const MAX_SLIDE_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_SLIDE_IMAGE_CANDIDATES = 12;
 const RENDERED_SLIDE_WIDTH = 1280;
 const RENDERED_SLIDE_HEIGHT = 720;
-const RENDER_SETTLE_FRAMES = 2;
-const RENDER_SETTLE_TIMEOUT_MS = 40;
+const RENDER_SETTLE_FRAMES = 3;
+const RENDER_SETTLE_TIMEOUT_MS = 120;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
+
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
@@ -50,6 +52,21 @@ export interface PresentationServerRenderFailure {
   message: string;
   renderRouting?: string;
   timedOut?: boolean;
+}
+
+export function isRecoverablePowerPointServerRenderFailure(failure: PresentationServerRenderFailure | undefined): boolean {
+  const code = failure?.code?.toUpperCase();
+  const routing = failure?.renderRouting?.toLowerCase();
+  return Boolean(
+    routing === 'no-server' ||
+    failure?.timedOut ||
+    code === 'MEDIA_SERVER_NO_SERVER' ||
+    code === 'PRESENTATION_RENDER_TIMEOUT' ||
+    code === 'PRESENTATION_RENDER_UNAVAILABLE' ||
+    code === 'PRESENTATION_RENDERER_UNAVAILABLE' ||
+    code === 'PRESENTATION_RENDER_FAILED' ||
+    code === 'PRESENTATION_RENDER_EMPTY'
+  );
 }
 
 function decodeXmlText(value: string): string {
@@ -494,10 +511,15 @@ function waitForPresentationTimeout(): Promise<void> {
   });
 }
 
+async function waitForDocumentFonts(): Promise<void> {
+  await document.fonts?.ready.catch(() => undefined);
+}
+
 async function waitForPresentationRender(node: HTMLElement): Promise<void> {
   for (let index = 0; index < RENDER_SETTLE_FRAMES; index += 1) {
     await waitForAnimationFrame();
   }
+  await waitForDocumentFonts();
   await waitForPresentationTimeout();
 
   const images = Array.from(node.querySelectorAll('img'));

@@ -40,7 +40,13 @@ import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
-import { buildPresentationPreview, hasRenderedPresentationSlides, type PresentationServerRenderFailure } from '../utils/presentationPreview.ts';
+import {
+  ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
+  buildPresentationPreview,
+  hasRenderedPresentationSlides,
+  isRecoverablePowerPointServerRenderFailure,
+  type PresentationServerRenderFailure,
+} from '../utils/presentationPreview.ts';
 import {
   clampPresentationSlideIndex,
   getPresentationDeckUnitLabel,
@@ -3328,9 +3334,21 @@ export function StudioRoom() {
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
           requireServerRenderedPowerPoint: type === 'presentation',
-          allowBrowserPowerPointRenderFallback: false,
+          allowBrowserPowerPointRenderFallback: type === 'presentation'
+            ? ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK
+            : false,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
+            if (type === 'presentation' && isRecoverablePowerPointServerRenderFailure(failure)) {
+              setMediaAssets((prev) => prev.map((item) => (
+                item.id === asset.id
+                  ? {
+                      ...item,
+                      processingMessage: 'Media server unavailable; rendering PowerPoint design in this browser...',
+                    }
+                  : item
+              )));
+            }
           },
         });
         const nextState = preview
