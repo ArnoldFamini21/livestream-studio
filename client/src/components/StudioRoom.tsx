@@ -726,7 +726,7 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
 function getDeckPreparationMessage(type: StudioMediaType): string {
   return type === 'pdf'
     ? 'Rendering PDF pages for broadcast...'
-    : 'Rendering PowerPoint design with the media server...';
+    : 'Rendering PowerPoint design for broadcast...';
 }
 
 function PresentationRenderMissingCard({ media }: { media: ActiveMedia }) {
@@ -3328,7 +3328,7 @@ export function StudioRoom() {
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
           requireServerRenderedPowerPoint: type === 'presentation',
-          allowBrowserPowerPointRenderFallback: false,
+          allowBrowserPowerPointRenderFallback: type === 'presentation',
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
           },
