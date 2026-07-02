@@ -20,6 +20,8 @@ const healthySession: LivePreflightSessionHealth = {
     { id: 'encoding', label: 'Browser encoder', status: 'good', detail: '1080p encoder ready.' },
     { id: 'audio', label: 'Microphone', status: 'good', detail: 'Microphone ready.' },
     { id: 'video', label: 'Camera', status: 'good', detail: 'Camera ready.' },
+    { id: 'turn-relay', label: 'TURN relay', status: 'good', detail: 'Production TURN relay configured.' },
+    { id: 'participant-connections', label: 'Guest connections', status: 'good', detail: 'No remote guests are currently on stage or backstage.' },
     { id: 'storage', label: 'Recording storage', status: 'good', detail: 'Storage ready.' },
   ],
 };
@@ -38,6 +40,8 @@ describe('live preflight checklist', () => {
     assert.equal(checklist.blockingIssue, null);
     assert.equal(checklist.warningCount, 0);
     assert.equal(checklist.items.find((item) => item.id === 'encoding')?.status, 'good');
+    assert.equal(checklist.items.find((item) => item.id === 'turn-relay')?.blocksStart, false);
+    assert.equal(checklist.items.find((item) => item.id === 'participant-connections')?.blocksStart, false);
   });
 
   it('blocks live when no destination is enabled', () => {
@@ -151,6 +155,53 @@ describe('live preflight checklist', () => {
     assert.equal(checklist.blockingIssue, null);
     assert.equal(output?.status, 'warning');
     assert.equal(output?.blocksStart, false);
+  });
+
+  it('warns without blocking when production TURN is not configured', () => {
+    const checklist = buildLivePreflightChecklist({
+      destinations: [destination],
+      relayReadiness: { status: 'ready', message: 'Media relay is ready.' },
+      sessionHealth: {
+        checks: healthySession.checks.map((check) => check.id === 'turn-relay'
+          ? {
+              ...check,
+              status: 'bad',
+              detail: 'Using fallback TURN relays.',
+            }
+          : check),
+      },
+      sceneCount: 1,
+      outputSummary: 'Landscape 720p30',
+    });
+
+    const relay = checklist.items.find((item) => item.id === 'turn-relay');
+    assert.equal(checklist.status, 'warning');
+    assert.equal(checklist.blockingIssue, null);
+    assert.equal(relay?.status, 'warning');
+    assert.equal(relay?.blocksStart, false);
+  });
+
+  it('blocks live when a remote guest connection is poor', () => {
+    const checklist = buildLivePreflightChecklist({
+      destinations: [destination],
+      relayReadiness: { status: 'ready', message: 'Media relay is ready.' },
+      sessionHealth: {
+        checks: healthySession.checks.map((check) => check.id === 'participant-connections'
+          ? {
+              ...check,
+              status: 'bad',
+              detail: 'Poor guest connection detected for Blake.',
+            }
+          : check),
+      },
+      sceneCount: 1,
+      outputSummary: 'Landscape 720p30',
+    });
+
+    const guests = checklist.items.find((item) => item.id === 'participant-connections');
+    assert.equal(checklist.status, 'bad');
+    assert.equal(checklist.blockingIssue, 'Poor guest connection detected for Blake.');
+    assert.equal(guests?.blocksStart, true);
   });
 
   it('blocks live when browser encoding is unsupported', () => {

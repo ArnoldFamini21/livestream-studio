@@ -84,6 +84,7 @@
 - [x] Stream canvas frames + mixed audio to server via WebSocket
 - [x] Server-side FFmpeg transcodes and pushes RTMP to destinations
 - [x] Go Live preflight warns or blocks based on browser encoder readiness
+- [x] Go Live preflight includes TURN relay and remote guest connection readiness
 - [x] Authoritative live elapsed timer in the studio header
 - [x] Configurable output: 720p/1080p/1080p60/4K30 bitrate presets with preflight warnings and FFmpeg relay bounds
 
