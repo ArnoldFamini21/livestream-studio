@@ -13,6 +13,7 @@ import {
   type RecordingCloudRetentionPolicyId,
   type LocalRecordingFileRecord,
   type LocalRecordingSession,
+  type RecordingMediaExportHandoff,
 } from '../hooks/useRecordingLibrary';
 import type { RecordingReadinessStatus, RecordingReadinessSummary } from '../utils/recordingReadiness';
 import {
@@ -208,7 +209,7 @@ interface AudioStemBuildResult {
   candidateCount: number;
 }
 
-export type RecordingLibraryFilter = 'all' | 'audio' | 'video' | 'screen' | 'program' | 'iso' | 'markers' | 'cloud';
+export type RecordingLibraryFilter = 'all' | 'audio' | 'video' | 'screen' | 'program' | 'iso' | 'markers' | 'cloud' | 'mp4';
 
 const RECORDING_LIBRARY_FILTERS: Array<{ value: RecordingLibraryFilter; label: string }> = [
   { value: 'all', label: 'All' },
@@ -219,6 +220,7 @@ const RECORDING_LIBRARY_FILTERS: Array<{ value: RecordingLibraryFilter; label: s
   { value: 'iso', label: 'ISO' },
   { value: 'markers', label: 'Marked' },
   { value: 'cloud', label: 'Cloud' },
+  { value: 'mp4', label: 'MP4' },
 ];
 
 export interface RecordingLibraryDashboardSummary {
@@ -229,6 +231,8 @@ export interface RecordingLibraryDashboardSummary {
   totalDurationSeconds: number;
   markerCount: number;
   cloudSessionCount: number;
+  mediaExportSessionCount: number;
+  readyMp4ExportSessionCount: number;
   expiringCloudSessionCount: number;
   permanentCloudSessionCount: number;
   latestSession: Pick<LocalRecordingSession, 'id' | 'roomName' | 'createdAt'> | null;
@@ -411,6 +415,26 @@ function getMediaExportDownloadLabel(artifact: RecordingExportArtifactStatus): s
   return `Download ${artifact.format.toUpperCase()}`;
 }
 
+export function getReadyFinalMp4Artifact(
+  exportJob: { artifacts: RecordingExportArtifactStatus[] } | null | undefined
+): RecordingExportArtifactStatus | null {
+  return exportJob?.artifacts.find((artifact) => artifact.status === 'ready' && artifact.id === 'final-mp4') ||
+    exportJob?.artifacts.find((artifact) => artifact.status === 'ready' && artifact.format === 'mp4') ||
+    null;
+}
+
+export function hasReadyFinalMp4Export(session: Pick<LocalRecordingSession, 'mediaExport'>): boolean {
+  return Boolean(getReadyFinalMp4Artifact(session.mediaExport));
+}
+
+function getRecordingMediaExportLabel(exportJob: RecordingMediaExportHandoff | undefined): string {
+  if (!exportJob) return '';
+  const readyMp4 = getReadyFinalMp4Artifact(exportJob);
+  const readyCount = exportJob.artifacts.filter((artifact) => artifact.status === 'ready').length;
+  if (readyMp4) return `Media export | MP4 ready | ${readyCount} artifact${readyCount === 1 ? '' : 's'}`;
+  return `Media export | ${exportJob.status} | ${readyCount} artifact${readyCount === 1 ? '' : 's'} ready`;
+}
+
 function createCrc32Table(): Uint32Array {
   const table = new Uint32Array(256);
   for (let i = 0; i < table.length; i++) {
@@ -575,6 +599,20 @@ function getRecordingSessionSearchText(session: LocalRecordingSession): string {
     session.cloud?.expiresAt || '',
     session.cloud ? getRecordingCloudRetentionPolicy(session.cloud.retentionPolicyId).label : '',
     session.cloud ? getRecordingCloudRetentionLabel(session.cloud) : '',
+    session.mediaExport?.uploadId || '',
+    session.mediaExport?.exportId || '',
+    session.mediaExport?.status || '',
+    session.mediaExport ? getRecordingMediaExportLabel(session.mediaExport) : '',
+    ...(session.mediaExport?.artifacts || []).flatMap((artifact) => [
+      artifact.id,
+      artifact.label,
+      artifact.format,
+      artifact.status,
+      artifact.storage?.provider || '',
+      artifact.storage?.bucket || '',
+      artifact.storage?.key || '',
+      artifact.storage?.url || '',
+    ]),
     ...session.files.flatMap((file) => [
       file.label,
       file.fileName,
@@ -592,6 +630,7 @@ function sessionMatchesRecordingFilter(session: LocalRecordingSession, filter: R
   if (filter === 'all') return true;
   if (filter === 'markers') return Boolean(session.markers?.length);
   if (filter === 'cloud') return Boolean(session.cloud);
+  if (filter === 'mp4') return hasReadyFinalMp4Export(session);
   if (filter === 'video') return session.files.some((file) => file.kind === 'video' || file.kind === 'program' || file.kind === 'iso');
   return session.files.some((file) => file.kind === filter);
 }
@@ -644,6 +683,8 @@ export function buildRecordingLibraryDashboardSummary(
     }, 0)),
     markerCount: sessions.reduce((total, session) => total + (session.markers?.length || 0), 0),
     cloudSessionCount: sessions.reduce((total, session) => total + (session.cloud ? 1 : 0), 0),
+    mediaExportSessionCount: sessions.reduce((total, session) => total + (session.mediaExport ? 1 : 0), 0),
+    readyMp4ExportSessionCount: sessions.reduce((total, session) => total + (hasReadyFinalMp4Export(session) ? 1 : 0), 0),
     expiringCloudSessionCount: sessions.reduce((total, session) => total + (session.cloud && !session.cloud.permanent ? 1 : 0), 0),
     permanentCloudSessionCount: sessions.reduce((total, session) => total + (session.cloud?.permanent ? 1 : 0), 0),
     latestSession: latestSession
@@ -949,6 +990,11 @@ export function buildRecordingLibraryCatalogCsv(sessions: LocalRecordingSession[
     'cloudRetentionPolicy',
     'cloudExpiresAt',
     'cloudPermanent',
+    'mediaExportStatus',
+    'mediaUploadId',
+    'mediaExportId',
+    'mediaMp4Ready',
+    'mediaArtifactCount',
     'trackIndex',
     'trackLabel',
     'trackKind',
@@ -975,6 +1021,11 @@ export function buildRecordingLibraryCatalogCsv(sessions: LocalRecordingSession[
       session.cloud ? getRecordingCloudRetentionPolicy(session.cloud.retentionPolicyId).label : '',
       session.cloud?.expiresAt ? formatIsoTimestamp(session.cloud.expiresAt) : '',
       session.cloud ? String(session.cloud.permanent) : '',
+      session.mediaExport?.status || '',
+      session.mediaExport?.uploadId || '',
+      session.mediaExport?.exportId || '',
+      String(hasReadyFinalMp4Export(session)),
+      session.mediaExport?.artifacts.length || '',
     ];
     if (session.files.length === 0) return [[...base, '', '', '', '', '', '']];
     return session.files.map((file, index) => [
@@ -2266,6 +2317,7 @@ export function RecordingPanel({
   const [markerImportError, setMarkerImportError] = useState<string | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryFilter, setLibraryFilter] = useState<RecordingLibraryFilter>('all');
+  const [libraryActionError, setLibraryActionError] = useState<string | null>(null);
   const [driveShareLink, setDriveShareLink] = useState<string | null>(null);
   const [driveUploadMessage, setDriveUploadMessage] = useState<string | null>(null);
   const [driveUploadError, setDriveUploadError] = useState<string | null>(null);
@@ -2300,6 +2352,7 @@ export function RecordingPanel({
     deleteSession,
     loadFiles,
     updateSessionCloudHandoff,
+    updateSessionMediaExport,
   } = useRecordingLibrary();
   const visibleTrackLabels = recordingTrackLabels.length > 0
     ? recordingTrackLabels
@@ -2411,6 +2464,13 @@ export function RecordingPanel({
             setMediaExportJob(upload.exportJob || null);
             setMediaExportDownloadError(null);
             setMediaUploadError(null);
+            if (upload.exportJob) {
+              try {
+                await updateSessionMediaExport(session.id, upload.exportJob);
+              } catch (err) {
+                console.warn('Failed to save media export metadata:', err);
+              }
+            }
           } catch (err) {
             console.warn('Media-server recording upload failed:', err);
             setMediaUploadMessage(null);
@@ -2424,7 +2484,7 @@ export function RecordingPanel({
     } finally {
       setIsStopping(false);
     }
-  }, [formattedTime, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers]);
+  }, [formattedTime, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, updateSessionMediaExport]);
 
   const readyMediaExportArtifacts = useMemo(() => (
     mediaExportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || []
@@ -2764,6 +2824,7 @@ export function RecordingPanel({
 
   const handleLoadSession = useCallback(async (session: LocalRecordingSession) => {
     setLibraryBusyId(session.id);
+    setLibraryActionError(null);
     try {
       const files = await loadFiles(session.id);
       const mappedFiles = mapRecordingLibraryFiles(files);
@@ -2788,9 +2849,34 @@ export function RecordingPanel({
     }
   }, [loadFiles, onClearRecordingMarkers, onReplaceRecordingMarkers]);
 
+  const handleDownloadSessionMp4Export = useCallback(async (session: LocalRecordingSession) => {
+    if (!session.mediaExport || !onDownloadRecordingExportArtifact) return;
+    const artifact = getReadyFinalMp4Artifact(session.mediaExport);
+    if (!artifact) return;
+
+    setLibraryBusyId(session.id);
+    setLibraryActionError(null);
+    try {
+      const download = await onDownloadRecordingExportArtifact({
+        uploadId: session.mediaExport.uploadId,
+        exportId: session.mediaExport.exportId,
+        artifact,
+      });
+      downloadBlob(download.blob, download.fileName);
+    } catch (err) {
+      const message = err instanceof Error && err.message
+        ? err.message
+        : 'Media-server MP4 export download failed.';
+      setLibraryActionError(message);
+    } finally {
+      setLibraryBusyId(null);
+    }
+  }, [onDownloadRecordingExportArtifact]);
+
   const handleDownloadSessionBundle = useCallback(async (session: LocalRecordingSession) => {
     setLibraryBusyId(session.id);
     setBundleError(null);
+    setLibraryActionError(null);
     try {
       const files = await loadFiles(session.id);
       const source: RecordingBundleSource = {
@@ -2821,6 +2907,7 @@ export function RecordingPanel({
   const handleDownloadSessionPodcastBundle = useCallback(async (session: LocalRecordingSession) => {
     setLibraryBusyId(session.id);
     setBundleError(null);
+    setLibraryActionError(null);
     try {
       const files = await loadFiles(session.id);
       const source: RecordingBundleSource = {
@@ -2850,6 +2937,7 @@ export function RecordingPanel({
 
   const handleDeleteSession = useCallback(async (sessionId: string) => {
     setLibraryBusyId(sessionId);
+    setLibraryActionError(null);
     try {
       await deleteSession(sessionId);
       if (activeSessionId === sessionId) {
@@ -3464,6 +3552,10 @@ export function RecordingPanel({
                 <span style={styles.libraryStatLabel}>Cloud</span>
                 <span style={styles.libraryStatValue}>{libraryDashboard.cloudSessionCount}</span>
               </div>
+              <div style={styles.libraryStat}>
+                <span style={styles.libraryStatLabel}>MP4</span>
+                <span style={styles.libraryStatValue}>{libraryDashboard.readyMp4ExportSessionCount}/{libraryDashboard.mediaExportSessionCount}</span>
+              </div>
               <div style={styles.libraryDashboardFooter}>
                 <span style={styles.libraryLatestLabel}>Latest</span>
                 <span style={styles.libraryLatestValue}>
@@ -3513,6 +3605,7 @@ export function RecordingPanel({
           )}
 
           {libraryError && <div style={styles.errorBadge}>{libraryError}</div>}
+          {libraryActionError && <div style={styles.errorBadge}>{libraryActionError}</div>}
           {libraryLoading && <div style={styles.libraryEmpty}>Loading saved recordings...</div>}
           {!libraryLoading && sessions.length === 0 && (
             <div style={styles.libraryEmpty}>Saved sessions will appear here after you stop a recording.</div>
@@ -3528,6 +3621,8 @@ export function RecordingPanel({
             const isTrackExpanded = expandedSessionId === session.id;
             const sessionTracks = libraryTrackFiles[session.id];
             const trackError = libraryTrackError?.sessionId === session.id ? libraryTrackError.message : null;
+            const sessionMp4Artifact = getReadyFinalMp4Artifact(session.mediaExport);
+            const canDownloadSessionMp4 = Boolean(sessionMp4Artifact && onDownloadRecordingExportArtifact);
             return (
                 <div key={session.id} style={{ ...styles.sessionCard, ...(isActive ? styles.sessionCardActive : {}) }}>
                   <div style={styles.sessionTop}>
@@ -3541,6 +3636,11 @@ export function RecordingPanel({
                           Google Drive | {getRecordingCloudRetentionLabel(session.cloud)} | {session.cloud.fileCount} file{session.cloud.fileCount === 1 ? '' : 's'}
                         </span>
                       )}
+                      {session.mediaExport && (
+                        <span style={styles.sessionCloudMeta}>
+                          {getRecordingMediaExportLabel(session.mediaExport)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div style={styles.sessionActions}>
@@ -3552,6 +3652,19 @@ export function RecordingPanel({
                         title="Open Google Drive handoff"
                       >
                         Cloud
+                      </button>
+                    )}
+                    {session.mediaExport && (
+                      <button
+                        style={{
+                          ...styles.sessionBtn,
+                          ...(!canDownloadSessionMp4 ? styles.sessionBtnDisabled : {}),
+                        }}
+                        onClick={() => handleDownloadSessionMp4Export(session)}
+                        disabled={isBusy || !canDownloadSessionMp4}
+                        title={canDownloadSessionMp4 ? 'Download the media-server MP4 export' : 'MP4 export is not ready'}
+                      >
+                        {isBusy && canDownloadSessionMp4 ? 'Working...' : 'MP4'}
                       </button>
                     )}
                     <button

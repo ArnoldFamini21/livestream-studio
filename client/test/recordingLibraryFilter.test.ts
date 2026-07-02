@@ -6,7 +6,9 @@ import {
   buildRecordingLibraryCatalogCsv,
   buildRecordingLibraryCatalogFilename,
   filterRecordingLibrarySessions,
+  getReadyFinalMp4Artifact,
   getRecordingCloudRetentionLabel,
+  hasReadyFinalMp4Export,
   isRawWebCodecsBitstreamFile,
   isPreviewableRecordingFile,
 } from '../src/components/RecordingPanel.tsx';
@@ -120,6 +122,32 @@ const sessions: LocalRecordingSession[] = [
         kind: 'program',
       },
     ],
+    mediaExport: {
+      uploadId: 'upload-town-hall',
+      exportId: 'export-town-hall',
+      roomId: 'room-town-hall',
+      sessionId: 'recording-4',
+      status: 'ready',
+      createdAt: '2026-06-04T10:21:00.000Z',
+      updatedAt: '2026-06-04T10:22:00.000Z',
+      savedAt: '2026-06-04T10:22:10.000Z',
+      artifacts: [
+        {
+          id: 'final-mp4',
+          label: 'Town Hall.mp4',
+          format: 'mp4',
+          status: 'ready',
+          bytes: 4096,
+        },
+        {
+          id: 'export-manifest',
+          label: 'Export manifest',
+          format: 'json',
+          status: 'ready',
+          bytes: 512,
+        },
+      ],
+    },
   },
   {
     id: 'recording-5',
@@ -200,6 +228,20 @@ describe('recording library filters', () => {
     assert.match(getRecordingCloudRetentionLabel(sessions[1].cloud), /^Expires /);
   });
 
+  it('filters and searches media-server MP4 exports', () => {
+    assert.deepEqual(
+      filterRecordingLibrarySessions(sessions, '', 'mp4').map((session) => session.id),
+      ['recording-4']
+    );
+    assert.deepEqual(
+      filterRecordingLibrarySessions(sessions, 'mp4 ready town hall', 'all').map((session) => session.id),
+      ['recording-4']
+    );
+    assert.equal(hasReadyFinalMp4Export(sessions[3]), true);
+    assert.equal(getReadyFinalMp4Artifact(sessions[3].mediaExport)?.id, 'final-mp4');
+    assert.equal(hasReadyFinalMp4Export(sessions[0]), false);
+  });
+
   it('summarizes the saved recording dashboard totals', () => {
     const filtered = filterRecordingLibrarySessions(sessions, '', 'screen');
     const summary = buildRecordingLibraryDashboardSummary(sessions, filtered);
@@ -212,6 +254,8 @@ describe('recording library filters', () => {
       totalDurationSeconds: 7800,
       markerCount: 1,
       cloudSessionCount: 1,
+      mediaExportSessionCount: 1,
+      readyMp4ExportSessionCount: 1,
       expiringCloudSessionCount: 1,
       permanentCloudSessionCount: 0,
       latestSession: {
@@ -244,8 +288,17 @@ describe('recording library filters', () => {
     assert.equal(lines.length, 4);
     assert.match(lines[0], /sessionId,roomName,createdAt,durationTimecode/);
     assert.match(lines[0], /cloudProvider,cloudFolderId,cloudShareLink,cloudUploadedAt,cloudRetentionPolicy,cloudExpiresAt,cloudPermanent/);
-    assert.match(lines[1], /recording-1,Weekly Launch Show,2026-06-01T12:00:00\.000Z,30:00,1800,3,1024,1,7:00 Product demo,,,,,,,,1,Host audio,audio,weekly_launch_host_audio\.webm,audio\/webm,256/);
+    assert.match(lines[0], /mediaExportStatus,mediaUploadId,mediaExportId,mediaMp4Ready,mediaArtifactCount/);
+    assert.match(lines[1], /recording-1,Weekly Launch Show,2026-06-01T12:00:00\.000Z,30:00,1800,3,1024,1,7:00 Product demo/);
+    assert.match(lines[1], /Host audio,audio,weekly_launch_host_audio\.webm,audio\/webm,256/);
     assert.match(lines[3], /Deck screen,screen,weekly_launch_deck_screen\.webm/);
+  });
+
+  it('exports media-server MP4 metadata in the recording library catalog', () => {
+    const csv = buildRecordingLibraryCatalogCsv([sessions[3]]);
+
+    assert.match(csv, /ready,upload-town-hall,export-town-hall,true,2/);
+    assert.match(csv, /Program mix,program,town_hall_program_mix\.webm/);
   });
 
   it('exports cloud retention metadata in the recording library catalog', () => {
