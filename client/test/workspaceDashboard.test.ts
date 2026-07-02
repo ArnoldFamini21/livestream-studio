@@ -274,4 +274,49 @@ describe('workspace dashboard summary', () => {
     assert.equal(summary.readyMp4RecordingCount, 2);
     assert.equal(summary.latestRecording?.roomName, 'Sermon Archive');
   });
+
+  it('deduplicates local and server recordings by media export identity', () => {
+    const dashboardRecordings = buildWorkspaceRecordingDashboardItems([recordings[0]], [
+      {
+        id: 'server-recording-copy',
+        roomId: 'room-launch',
+        roomName: 'Launch Show',
+        createdAt: '2026-07-01T10:00:00.000Z',
+        updatedAt: '2026-07-01T11:12:00.000Z',
+        durationSeconds: 3605,
+        trackCount: 3,
+        totalBytes: 1024 * 1024 * 3,
+        markerCount: 1,
+        mediaExport: {
+          status: 'ready',
+          uploadId: 'upload-launch',
+          exportId: 'export-launch',
+          updatedAt: '2026-07-01T11:12:00.000Z',
+          readyMp4: true,
+          mp4ShareUrl: 'https://cdn.example.com/launch-from-server.mp4',
+          artifactCount: 2,
+          readyArtifactCount: 2,
+        },
+      },
+    ]);
+
+    assert.equal(dashboardRecordings.length, 1);
+    assert.equal(dashboardRecordings[0]?.id, 'recording-1');
+    assert.equal(dashboardRecordings[0]?.source, 'local-and-server');
+    assert.equal(dashboardRecordings[0]?.mediaExport?.mp4ShareUrl, 'https://cdn.example.com/launch-from-server.mp4');
+    assert.equal(dashboardRecordings[0]?.mediaExport?.artifactCount, 2);
+    assert.equal(dashboardRecordings[0]?.mediaExport?.readyArtifactCount, 2);
+
+    const summary = buildWorkspaceDashboardSummary(
+      [],
+      dashboardRecordings,
+      [],
+      [],
+      Date.parse('2026-07-01T00:00:00.000Z')
+    );
+
+    assert.equal(summary.totalRecordings, 1);
+    assert.equal(summary.mediaExportRecordingCount, 1);
+    assert.equal(summary.readyMp4RecordingCount, 1);
+  });
 });
