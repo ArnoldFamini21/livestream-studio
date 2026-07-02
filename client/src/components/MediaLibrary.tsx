@@ -6,7 +6,7 @@ type MediaTab = 'videos' | 'slides' | 'images' | 'files';
 interface MediaLibraryProps {
   assets: StudioMediaAsset[];
   activeMedia: ActiveMedia | null;
-  onUpload: (files: FileList | File[]) => void;
+  onUpload: (files: FileList | File[]) => void | Promise<void>;
   onAddUrl: (url: string, type: 'video' | 'image') => void;
   onPlay: (asset: StudioMediaAsset) => void;
   onRemove: (assetId: string) => void;
@@ -15,10 +15,26 @@ interface MediaLibraryProps {
 
 const tabDefs: Array<{ id: MediaTab; label: string; accepts: string; title: string }> = [
   { id: 'videos', label: 'Videos', accepts: 'video/*', title: 'Video Clips' },
-  { id: 'slides', label: 'Slides', accepts: '.pdf,.ppt,.pptx,.key,image/*', title: 'Slides & Decks' },
+  { id: 'slides', label: 'Slides', accepts: '.pdf,.ppt,.pptx,.pps,.ppsx,.key,image/*', title: 'Slides & Decks' },
   { id: 'images', label: 'Images', accepts: 'image/*', title: 'Images' },
-  { id: 'files', label: 'Files', accepts: '.pdf,.ppt,.pptx,.key,.doc,.docx,.xls,.xlsx,.txt,image/*,video/*', title: 'Files' },
+  { id: 'files', label: 'Files', accepts: '.pdf,.ppt,.pptx,.pps,.ppsx,.key,.doc,.docx,.xls,.xlsx,.txt,image/*,video/*', title: 'Files' },
 ];
+
+export const SUPPORTED_MEDIA_ACCEPT = [
+  'video/*',
+  'image/*',
+  '.pdf',
+  '.ppt',
+  '.pptx',
+  '.pps',
+  '.ppsx',
+  '.key',
+  '.doc',
+  '.docx',
+  '.xls',
+  '.xlsx',
+  '.txt',
+].join(',');
 
 export function MediaLibrary({
   assets,
@@ -59,6 +75,15 @@ export function MediaLibrary({
     onAddUrl(value, type);
     if (type === 'video') setVideoUrl('');
     else setImageUrl('');
+  };
+
+  const handleUpload = (fileList: FileList | null) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setActiveTab(getMediaTabForType(detectMediaType(files[0])));
+    void Promise.resolve(onUpload(files)).catch((error) => {
+      console.error('Failed to upload media:', error);
+    });
   };
 
   const counts = {
@@ -102,17 +127,18 @@ export function MediaLibrary({
           <input
             ref={inputRefs[activeTab]}
             type="file"
-            accept={activeDef.accepts}
+            accept={SUPPORTED_MEDIA_ACCEPT}
             multiple
             style={{ display: 'none' }}
             onChange={(e) => {
-              if (e.target.files) onUpload(e.target.files);
+              handleUpload(e.target.files);
               e.target.value = '';
             }}
           />
           <div>
             <h4 style={styles.sectionTitle}>{activeDef.title}</h4>
             <p style={styles.uploadMeta}>{getUploadMeta(activeTab)}</p>
+            <p style={styles.uploadHint}>PDF and PowerPoint files are accepted from any tab.</p>
           </div>
           <button type="button" style={styles.uploadBtn} onClick={() => inputRefs[activeTab].current?.click()}>
             <UploadIcon />
@@ -210,8 +236,24 @@ export function detectMediaType(file: File): StudioMediaType {
   if (file.type.startsWith('video/')) return 'video';
   if (file.type.startsWith('image/')) return 'image';
   if (file.type === 'application/pdf' || lower.endsWith('.pdf')) return 'pdf';
-  if (lower.endsWith('.ppt') || lower.endsWith('.pptx') || lower.endsWith('.key')) return 'presentation';
+  if (
+    lower.endsWith('.ppt') ||
+    lower.endsWith('.pptx') ||
+    lower.endsWith('.pps') ||
+    lower.endsWith('.ppsx') ||
+    lower.endsWith('.key') ||
+    file.type === 'application/vnd.ms-powerpoint' ||
+    file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    file.type === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow'
+  ) return 'presentation';
   return 'file';
+}
+
+export function getMediaTabForType(type: StudioMediaType): MediaTab {
+  if (type === 'video') return 'videos';
+  if (type === 'image') return 'images';
+  if (type === 'pdf' || type === 'presentation') return 'slides';
+  return 'files';
 }
 
 function getUploadMeta(tab: MediaTab): string {
@@ -317,6 +359,7 @@ const styles: Record<string, React.CSSProperties> = {
   uploadCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: 12, background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8 },
   sectionTitle: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', margin: 0 },
   uploadMeta: { margin: '3px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.25 },
+  uploadHint: { margin: '3px 0 0', fontSize: 9, color: 'var(--text-muted)', lineHeight: 1.25 },
   uploadBtn: { height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 7, border: '1px solid var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)', fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: '0 10px', flexShrink: 0 },
   urlBox: { display: 'flex', gap: 6 },
   urlInput: { minWidth: 0, flex: 1, height: 34, padding: '0 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', outline: 'none', fontSize: 12 },

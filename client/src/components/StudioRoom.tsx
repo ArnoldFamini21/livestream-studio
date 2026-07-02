@@ -39,6 +39,7 @@ import { Sidebar, type SidebarTab } from './Sidebar.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { detectMediaType } from './MediaLibrary.tsx';
+import { buildPresentationPreview } from '../utils/presentationPreview.ts';
 import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
@@ -768,6 +769,87 @@ function getWaitingRoomBackgroundStyle(
   };
 }
 
+function clampSlideIndex(index: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.min(total - 1, Math.max(0, index));
+}
+
+function MediaDocumentCard({ media }: { media: ActiveMedia }) {
+  return (
+    <div style={styles.mediaDocumentCard}>
+      <div style={styles.mediaDocumentIcon}>
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 3h20v14H2z" />
+          <path d="M8 21h8" />
+          <path d="M12 17v4" />
+        </svg>
+      </div>
+      <div style={styles.mediaDocumentTitle}>{media.name}</div>
+      <div style={styles.mediaDocumentType}>{media.type === 'presentation' ? 'Presentation deck' : 'Shared file'}</div>
+    </div>
+  );
+}
+
+function PresentationDeckStage({
+  media,
+  slideIndex,
+  onSlideIndexChange,
+}: {
+  media: ActiveMedia;
+  slideIndex: number;
+  onSlideIndexChange: (index: number) => void;
+}) {
+  const slides = media.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
+  const currentIndex = clampSlideIndex(slideIndex, slides.length);
+  const slide = slides[currentIndex];
+
+  if (!slide) return <MediaDocumentCard media={media} />;
+
+  return (
+    <div style={styles.presentationStage}>
+      <div style={styles.presentationSlide}>
+        <div style={styles.presentationSlideHeader}>
+          <span style={styles.presentationDeckLabel}>PowerPoint</span>
+          <span style={styles.presentationSlideCount}>Slide {currentIndex + 1} / {slides.length}</span>
+        </div>
+        <div style={styles.presentationSlideBody}>
+          <h2 style={styles.presentationTitle}>{slide.title}</h2>
+          {slide.lines.length > 0 ? (
+            <ul style={styles.presentationLines}>
+              {slide.lines.map((line, index) => (
+                <li key={`${slide.id}-${index}`} style={styles.presentationLine}>{line}</li>
+              ))}
+            </ul>
+          ) : (
+            <p style={styles.presentationEmptyLine}>No readable slide text found.</p>
+          )}
+        </div>
+        <div style={styles.presentationFileName}>{media.name}</div>
+      </div>
+      {slides.length > 1 && (
+        <div style={styles.presentationControls}>
+          <button
+            type="button"
+            style={{ ...styles.presentationControlBtn, ...(currentIndex <= 0 ? styles.presentationControlBtnDisabled : {}) }}
+            disabled={currentIndex <= 0}
+            onClick={() => onSlideIndexChange(currentIndex - 1)}
+          >
+            Prev
+          </button>
+          <button
+            type="button"
+            style={{ ...styles.presentationControlBtn, ...(currentIndex >= slides.length - 1 ? styles.presentationControlBtnDisabled : {}) }}
+            disabled={currentIndex >= slides.length - 1}
+            onClick={() => onSlideIndexChange(currentIndex + 1)}
+          >
+            Next
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function getPersistableScenes(scenes: Scene[]): Scene[] {
   return scenes.map((scene) => {
     const persistableScene: Scene = {
@@ -937,6 +1019,7 @@ export function StudioRoom() {
 
   // Media overlay
   const [activeMedia, setActiveMedia] = useState<ActiveMedia | null>(null);
+  const [activeMediaSlideIndex, setActiveMediaSlideIndex] = useState(0);
   const [mediaAssets, setMediaAssets] = useState<StudioMediaAsset[]>([]);
 
   const [stageBackground, setStageBackground] = useState<StageBackground>({ type: 'none', value: '' });
@@ -1297,6 +1380,7 @@ export function StudioRoom() {
     tickers,
     widgets,
     activeMedia,
+    activeMediaSlideIndex,
     highlightedComment,
     highlightedQA: qaQuestions.find((question) => question.highlighted) || null,
     highlightedPoll: polls.find((poll) => poll.highlighted) || null,
@@ -3054,16 +3138,20 @@ export function StudioRoom() {
   };
 
   // Media library
-  const onUploadMedia = (files: FileList | File[]) => {
-    const nextAssets = Array.from(files).map((file) => ({
-      id: `media-${++idCounters.current.media}`,
-      name: file.name,
-      url: URL.createObjectURL(file),
-      type: detectMediaType(file),
-      mimeType: file.type || 'application/octet-stream',
-      sizeBytes: file.size,
-      createdAt: new Date().toISOString(),
-      source: 'upload' as const,
+  const onUploadMedia = async (files: FileList | File[]) => {
+    const nextAssets = await Promise.all(Array.from(files).map(async (file): Promise<StudioMediaAsset> => {
+      const type = detectMediaType(file);
+      return {
+        id: `media-${++idCounters.current.media}`,
+        name: file.name,
+        url: URL.createObjectURL(file),
+        type,
+        mimeType: file.type || 'application/octet-stream',
+        sizeBytes: file.size,
+        createdAt: new Date().toISOString(),
+        source: 'upload' as const,
+        ...(type === 'presentation' ? { preview: await buildPresentationPreview(file) } : {}),
+      };
     }));
     if (nextAssets.length > 0) {
       setMediaAssets((prev) => [...nextAssets, ...prev].slice(0, 80));
@@ -3091,19 +3179,26 @@ export function StudioRoom() {
       type: asset.type,
       url: asset.url,
       name: asset.name,
+      preview: asset.preview,
     });
+    setActiveMediaSlideIndex(0);
   };
 
   const onRemoveMediaAsset = (assetId: string) => {
+    const removedActiveMedia = activeMedia?.assetId === assetId;
     setMediaAssets((prev) => {
       const asset = prev.find((item) => item.id === assetId);
       if (asset?.url.startsWith('blob:')) URL.revokeObjectURL(asset.url);
       return prev.filter((item) => item.id !== assetId);
     });
     setActiveMedia((current) => current?.assetId === assetId ? null : current);
+    if (removedActiveMedia) setActiveMediaSlideIndex(0);
   };
 
-  const onStopMedia = () => setActiveMedia(null);
+  const onStopMedia = () => {
+    setActiveMedia(null);
+    setActiveMediaSlideIndex(0);
+  };
 
   // Helper to convert blob URL to data URL
   const blobToDataUrl = async (blobUrl: string, maxBytes = MAX_PERSISTED_IMAGE_BYTES): Promise<string> => {
@@ -4633,19 +4728,17 @@ export function StudioRoom() {
                     ) : activeMedia.type === 'image' ? (
                       <img src={activeMedia.url} alt={activeMedia.name} style={styles.mediaContent} />
                     ) : activeMedia.type === 'pdf' ? (
-                      <iframe src={activeMedia.url} style={styles.mediaContent} title="PDF" />
+                      <object data={`${activeMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
+                        <iframe src={`${activeMedia.url}#view=FitH`} style={styles.mediaContent} title={activeMedia.name} />
+                      </object>
+                    ) : activeMedia.type === 'presentation' ? (
+                      <PresentationDeckStage
+                        media={activeMedia}
+                        slideIndex={activeMediaSlideIndex}
+                        onSlideIndexChange={setActiveMediaSlideIndex}
+                      />
                     ) : (
-                      <div style={styles.mediaDocumentCard}>
-                        <div style={styles.mediaDocumentIcon}>
-                          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M2 3h20v14H2z" />
-                            <path d="M8 21h8" />
-                            <path d="M12 17v4" />
-                          </svg>
-                        </div>
-                        <div style={styles.mediaDocumentTitle}>{activeMedia.name}</div>
-                        <div style={styles.mediaDocumentType}>{activeMedia.type === 'presentation' ? 'Presentation deck' : 'Shared file'}</div>
-                      </div>
+                      <MediaDocumentCard media={activeMedia} />
                     )}
                     <button className="panel-close-btn" style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close media overlay">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -5894,6 +5987,130 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'rgba(255,255,255,0.62)',
     textTransform: 'uppercase',
     letterSpacing: '0.08em',
+  },
+  presentationStage: {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '4%',
+    background: 'linear-gradient(135deg, #0f172a 0%, #020617 100%)',
+  },
+  presentationSlide: {
+    width: 'min(86%, 980px)',
+    aspectRatio: '16 / 9',
+    display: 'flex',
+    flexDirection: 'column',
+    borderRadius: 18,
+    background: '#f8fafc',
+    color: '#0f172a',
+    border: '1px solid rgba(255,255,255,0.24)',
+    boxShadow: '0 28px 80px rgba(0,0,0,0.42)',
+    overflow: 'hidden',
+  },
+  presentationSlideHeader: {
+    height: 52,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 14,
+    padding: '0 28px',
+    borderBottom: '1px solid #e2e8f0',
+    background: '#ffffff',
+  },
+  presentationDeckLabel: {
+    minWidth: 0,
+    color: '#4338ca',
+    fontSize: 13,
+    fontWeight: 900,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+  },
+  presentationSlideCount: {
+    color: '#64748b',
+    fontSize: 12,
+    fontWeight: 800,
+    whiteSpace: 'nowrap',
+  },
+  presentationSlideBody: {
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    gap: 20,
+    padding: '34px 56px',
+  },
+  presentationTitle: {
+    margin: 0,
+    color: '#0f172a',
+    fontSize: 34,
+    lineHeight: 1.12,
+    fontWeight: 900,
+  },
+  presentationLines: {
+    margin: 0,
+    paddingLeft: 24,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+    color: '#334155',
+    fontSize: 18,
+    lineHeight: 1.35,
+    fontWeight: 650,
+  },
+  presentationLine: {
+    paddingLeft: 4,
+  },
+  presentationEmptyLine: {
+    margin: 0,
+    color: '#64748b',
+    fontSize: 17,
+    fontWeight: 700,
+  },
+  presentationFileName: {
+    height: 42,
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0 28px',
+    borderTop: '1px solid #e2e8f0',
+    color: '#64748b',
+    fontSize: 12,
+    fontWeight: 800,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  presentationControls: {
+    position: 'absolute',
+    left: '50%',
+    bottom: 18,
+    transform: 'translateX(-50%)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: 5,
+    borderRadius: 999,
+    background: 'rgba(2,6,23,0.82)',
+    border: '1px solid rgba(255,255,255,0.14)',
+    boxShadow: '0 14px 34px rgba(0,0,0,0.28)',
+  },
+  presentationControlBtn: {
+    minWidth: 58,
+    height: 28,
+    borderRadius: 999,
+    border: '1px solid rgba(167,139,250,0.48)',
+    background: 'rgba(167,139,250,0.18)',
+    color: '#ede9fe',
+    fontSize: 11,
+    fontWeight: 900,
+    cursor: 'pointer',
+  },
+  presentationControlBtnDisabled: {
+    opacity: 0.42,
+    cursor: 'not-allowed',
   },
   mediaCloseBtn: {
     position: 'absolute',
