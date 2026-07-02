@@ -104,6 +104,8 @@ PRODUCTION_REQUIRE_CLIENT_CACHE=true \
 npm run production:check
 ```
 
+Because exact PowerPoint/PDF rendering, MP4 export, backup recordings, and RTMP relay all depend on `livestream-studio-media-server`, the GitHub client deploy also sets `PRODUCTION_REQUIRE_MEDIA_SERVER=true`. That makes a static deploy fail loudly if Render returns `x-render-routing: no-server` for the media-server health endpoint instead of shipping a client that cannot preserve uploaded deck design.
+
 ## GitHub Deploy Hooks
 
 The Hostinger workflow builds all workspaces and deploys the client to the `deploy` branch. To make the same merge trigger Render deploys, create deploy hooks in Render for both web services and add these GitHub repository secrets:
@@ -115,7 +117,7 @@ RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL=<deploy hook URL for livestream-studio-media
 
 Client-only merges can still deploy the static Hostinger bundle without Render hooks. If a merge changes `server/`, `media-server/`, `shared/`, root package files, or `render.yaml`, the workflow now requires the matching Render deploy hook secret and fails before publishing when it is missing. This prevents backend fixes from appearing green while Render is still serving an older build.
 
-Every deploy verifies the static client cache headers after publishing to Hostinger. When service files changed and the required deploy hook secrets are present, the workflow also waits for Render service verification after the Hostinger deploy. It runs `npm run production:check` with the pushed commit SHA and polls for up to 15 minutes until the changed Render services report the new commit in `/health`.
+Every deploy verifies the static client cache headers and media-server availability after publishing to Hostinger. When service files changed and the required deploy hook secrets are present, the workflow also waits for Render service verification after the Hostinger deploy. It runs `npm run production:check` with the pushed commit SHA and polls for up to 15 minutes until the changed Render services report the new commit in `/health`.
 
 The Render service verification also creates a disposable studio and requires the signaling API to return a valid private `hostToken`. This catches the production failure where the home page reports that a studio was created but host access was not returned.
 
