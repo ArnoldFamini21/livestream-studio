@@ -74,7 +74,12 @@ import {
   parseVirtualBackgroundConfig,
   serializeVirtualBackgroundConfig,
 } from '../utils/virtualBackgrounds.ts';
-import { getMediaShareLayoutPlan, type MediaShareParticipantPlacement } from '../utils/mediaShareLayouts.ts';
+import {
+  getMediaShareLayoutPlan,
+  mergeSharedMediaParticipantItems,
+  selectVisibleStageItems,
+  type MediaShareParticipantPlacement,
+} from '../utils/mediaShareLayouts.ts';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
@@ -3819,6 +3824,34 @@ export function StudioRoom() {
     return items;
   }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream, participantVolumes, peerBandwidthHealth]);
 
+  const localPresenterCameraItem = useMemo((): StageVideoItem | null => {
+    if (!myParticipant || !isStudioOperator(myParticipant) || myParticipant.status === 'green-room') return null;
+    return {
+      id: myParticipant.id,
+      name: myParticipant.name,
+      stream: localStream,
+      isLocal: true,
+      audioEnabled: effectiveAudioEnabled,
+      videoEnabled: effectiveVideoEnabled,
+      volume: participantVolumes[myParticipant.id] ?? 1,
+    };
+  }, [myParticipant, localStream, effectiveAudioEnabled, effectiveVideoEnabled, participantVolumes]);
+
+  const localPresenterScreenItem = useMemo((): StageVideoItem | null => {
+    if (!myParticipant || !isStudioOperator(myParticipant) || myParticipant.status === 'green-room') return null;
+    if (!isScreenSharing || !screenStream) return null;
+    return {
+      id: `${myParticipant.id}-screen`,
+      name: `${myParticipant.name}'s Screen`,
+      stream: screenStream,
+      isLocal: true,
+      audioEnabled: false,
+      videoEnabled: true,
+      volume: 1,
+      isScreenShare: true,
+    };
+  }, [myParticipant, isScreenSharing, screenStream]);
+
   const backstagePrivateItems = useMemo(() => {
     if (!myParticipant || myParticipant.status === 'green-room') return [];
 
@@ -3881,20 +3914,35 @@ export function StudioRoom() {
     applyStageItemOrder(videoItems, stageItemOrder, focusedVideoItemId)
   ), [videoItems, stageItemOrder, focusedVideoItemId]);
 
+  const displayedStageVideoItems = useMemo(() => {
+    if (activeMedia && localPresenterCameraItem) {
+      return mergeSharedMediaParticipantItems(orderedVideoItems, [localPresenterCameraItem], 1);
+    }
+
+    if (isScreenSharing) {
+      const fallbackItems = [localPresenterCameraItem, localPresenterScreenItem].filter(
+        (item): item is StageVideoItem => Boolean(item)
+      );
+      return mergeSharedMediaParticipantItems(orderedVideoItems, fallbackItems, 2);
+    }
+
+    return orderedVideoItems;
+  }, [activeMedia, orderedVideoItems, localPresenterCameraItem, isScreenSharing, localPresenterScreenItem]);
+
   const [stagePresenceItems, setStagePresenceItems] = useState<Array<StagePresenceTrackedItem<StageVideoItem>>>([]);
-  const orderedVideoItemsRef = useRef<StageVideoItem[]>([]);
+  const displayedStageVideoItemsRef = useRef<StageVideoItem[]>([]);
 
   useEffect(() => {
-    orderedVideoItemsRef.current = orderedVideoItems;
-    setStagePresenceItems((current) => reconcileStagePresenceItems(orderedVideoItems, current, Date.now()));
-  }, [orderedVideoItems]);
+    displayedStageVideoItemsRef.current = displayedStageVideoItems;
+    setStagePresenceItems((current) => reconcileStagePresenceItems(displayedStageVideoItems, current, Date.now()));
+  }, [displayedStageVideoItems]);
 
   useEffect(() => {
     const delayMs = getStagePresenceTransitionDelayMs(stagePresenceItems, Date.now());
     if (!delayMs) return;
 
     const timer = window.setTimeout(() => {
-      setStagePresenceItems((current) => reconcileStagePresenceItems(orderedVideoItemsRef.current, current, Date.now()));
+      setStagePresenceItems((current) => reconcileStagePresenceItems(displayedStageVideoItemsRef.current, current, Date.now()));
     }, delayMs);
 
     return () => window.clearTimeout(timer);
@@ -3978,16 +4026,16 @@ export function StudioRoom() {
 
   // Auto-switch layout when participant count changes
   useEffect(() => {
-    const count = videoItems.length + (activeMedia ? 1 : 0);
+    const count = displayedStageVideoItems.length + (activeMedia ? 1 : 0);
     // Layouts requiring >= 2 participants
     if (count < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
       applyLayout(count === 1 ? 'single' : 'grid');
     }
     // Single layout with multiple participants should switch to grid
-    if (!activeMedia && videoItems.length > 1 && layout === 'single') {
+    if (!activeMedia && displayedStageVideoItems.length > 1 && layout === 'single') {
       applyLayout('grid');
     }
-  }, [activeMedia, applyLayout, videoItems.length, layout]);
+  }, [activeMedia, applyLayout, displayedStageVideoItems.length, layout]);
 
   // All participants for the manager - memoized
   const allParticipantsMap = useMemo(() => {
@@ -4353,12 +4401,14 @@ export function StudioRoom() {
   }, [pipCorner]);
 
   // Final computed layout
+  const hasRenderedScreenShare = useMemo(() => (
+    renderedVideoItems.some(v => v.isScreenShare)
+  ), [renderedVideoItems]);
+
   const layoutResult = useMemo((): LayoutResult => {
     const count = renderedVideoItems.length;
-    const hasScreenShare = renderedVideoItems.some(v => v.isScreenShare);
-
     // Screen share layout takes priority across all layout modes
-    if (hasScreenShare) {
+    if (hasRenderedScreenShare) {
       return getScreenShareLayout(renderedVideoItems);
     }
 
@@ -4424,7 +4474,7 @@ export function StudioRoom() {
       default:
         return assertNever(layout);
     }
-  }, [layout, renderedVideoItems, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
+  }, [layout, renderedVideoItems, hasRenderedScreenShare, getAutoGridLayout, getScreenShareLayout, getSpotlightLayout, getFeaturedLayout]);
 
   const mediaShareLayoutResult = useMemo(() => (
     activeMedia ? getMediaShareLayout(renderedVideoItems.length, layout) : null
@@ -4973,16 +5023,10 @@ export function StudioRoom() {
 
                 {/* Render tiles based on layout engine */}
                 {(() => {
-                  // Determine which items to render based on layout
-                  const itemsToRender = mediaShareLayoutResult
-                    ? stagePresenceItems.slice(0, mediaShareLayoutResult.visibleParticipantCount)
-                    : layout === 'side-by-side'
-                      ? stagePresenceItems.slice(0, 2)
-                      : layout === 'single'
-                        ? stagePresenceItems.slice(0, 1)
-                        : layout === 'pip'
-                          ? stagePresenceItems.slice(0, 2)
-                          : stagePresenceItems;
+                  const itemsToRender = selectVisibleStageItems(stagePresenceItems, layout, {
+                    mediaVisibleParticipantCount: mediaShareLayoutResult?.visibleParticipantCount,
+                    hasScreenShare: hasRenderedScreenShare,
+                  });
 
                   return itemsToRender.map((presence, i) => {
                     const item = presence.item;
@@ -5245,7 +5289,7 @@ export function StudioRoom() {
               <LayoutSwitcher
                 currentLayout={layout}
                 onLayoutChange={applyLayout}
-                participantCount={orderedVideoItems.length + (activeMedia ? 1 : 0)}
+                participantCount={displayedStageVideoItems.length + (activeMedia ? 1 : 0)}
               />
             </div>
           )}
