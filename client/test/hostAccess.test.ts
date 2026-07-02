@@ -101,6 +101,33 @@ describe('created room host access resolution', () => {
     assert.equal(result.room.hostToken, VALID_HOST_TOKEN);
   });
 
+  it('can enter same-tab legacy host mode immediately for create-room responses', async () => {
+    let called = false;
+    globalThis.fetch = async () => {
+      called = true;
+      throw new Error('recovery should not be called');
+    };
+
+    const room: CreatedRoomResponse = {
+      id: 'legacy-immediate-entry-room',
+      name: 'Legacy immediate entry room',
+      hostId: '',
+      coHostIds: [],
+      hostName: 'Arnold',
+    };
+
+    assert.equal(hasCreatedRoomDetails(room), true);
+    const result = await resolveCreatedRoomHostAccess(room, {
+      preferLegacyFallback: true,
+      recoverBeforeLegacyFallback: false,
+    });
+
+    assert.equal(called, false);
+    assert.equal(result.legacyHostless, true);
+    assert.equal(result.room.id, 'legacy-immediate-entry-room');
+    assert.equal(result.room.hostToken, undefined);
+  });
+
   it('falls back to same-tab legacy host mode when old servers have no recovery route', async () => {
     let requestedUrl = '';
     console.warn = () => {};
