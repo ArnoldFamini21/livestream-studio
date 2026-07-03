@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  getBrowserRecordingFormatSummary,
   getPreferredAudioRecordingMimeType,
   getPreferredVideoRecordingMimeType,
   getRecordingFileExtension,
@@ -45,5 +46,43 @@ describe('recording MIME type helpers', () => {
     assert.equal(getRecordingFileExtension('audio/mp4;codecs=mp4a.40.2'), 'm4a');
     assert.equal(getRecordingFileExtension('video/mp4;codecs=avc1.42E01E,mp4a.40.2'), 'mp4');
     assert.equal(getRecordingFileExtension('video/webm;codecs=vp9,opus'), 'webm');
+  });
+
+  it('summarizes browser local recording as MP4 plus M4A when both are supported', () => {
+    const summary = getBrowserRecordingFormatSummary(mediaRecorderSupporting(new Set([
+      'video/mp4',
+      'audio/mp4',
+      'video/webm',
+    ])));
+
+    assert.equal(summary.supportsVideoMp4, true);
+    assert.equal(summary.supportsAudioMp4, true);
+    assert.equal(summary.videoExtension, 'mp4');
+    assert.equal(summary.audioExtension, 'm4a');
+    assert.match(summary.label, /MP4/);
+    assert.match(summary.detail, /program tracks as MP4/);
+  });
+
+  it('summarizes browser local recording fallback containers when MP4 is unavailable', () => {
+    const summary = getBrowserRecordingFormatSummary(mediaRecorderSupporting(new Set([
+      'video/webm;codecs=vp8,opus',
+      'audio/webm',
+    ])));
+
+    assert.equal(summary.supportsVideoMp4, false);
+    assert.equal(summary.supportsAudioMp4, false);
+    assert.equal(summary.videoExtension, 'webm');
+    assert.equal(summary.audioExtension, 'webm');
+    assert.match(summary.label, /WEBM/);
+    assert.match(summary.detail, /media-server export/);
+  });
+
+  it('summarizes unsupported local recording when MediaRecorder has no usable containers', () => {
+    const summary = getBrowserRecordingFormatSummary(mediaRecorderSupporting(new Set()));
+
+    assert.equal(summary.videoMimeType, '');
+    assert.equal(summary.audioMimeType, '');
+    assert.equal(summary.label, 'Local save unsupported');
+    assert.match(summary.detail, /does not expose/);
   });
 });
