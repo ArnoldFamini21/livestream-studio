@@ -1,6 +1,8 @@
+import type { WorkspaceTeamCatalogRole } from '@studio/shared';
+
 export const WORKSPACE_TEAM_STORAGE_KEY = 'livestream_studio_workspace_team_v1';
 
-export type WorkspaceTeamRole = 'owner' | 'producer' | 'editor' | 'guest-manager';
+export type WorkspaceTeamRole = WorkspaceTeamCatalogRole;
 
 export interface SavedWorkspaceTeamMember {
   id: string;

@@ -11,12 +11,14 @@ import {
 import { roomRouter } from './routes/rooms.js';
 import { configureRecordingCatalogStore, recordingRouter } from './routes/recordings.js';
 import { brandKitRouter, configureBrandKitCatalogStore } from './routes/brandKits.js';
+import { configureWorkspaceTeamCatalogStore, workspaceTeamRouter } from './routes/workspaceTeam.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
 import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { createRoomSnapshotStoreFromEnv } from './services/roomPersistence.js';
 import { createRecordingCatalogStoreFromEnv } from './services/recordingCatalog.js';
 import { createBrandKitCatalogStoreFromEnv } from './services/brandKitCatalog.js';
+import { createWorkspaceTeamCatalogStoreFromEnv } from './services/workspaceTeamCatalog.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -192,6 +194,7 @@ app.use('/api/rooms', (req, res, next) => {
 
 app.use('/api/recordings', recordingRouter);
 app.use('/api/brand-kits', brandKitRouter);
+app.use('/api/workspace-team', workspaceTeamRouter);
 
 app.use(
   '/api/transcriptions',
@@ -251,6 +254,7 @@ setupSignalingServer(wss);
 const roomSnapshotStore = createRoomSnapshotStoreFromEnv(process.env);
 const recordingCatalogStore = createRecordingCatalogStoreFromEnv(process.env);
 const brandKitCatalogStore = createBrandKitCatalogStoreFromEnv(process.env);
+const workspaceTeamCatalogStore = createWorkspaceTeamCatalogStoreFromEnv(process.env);
 
 async function initializeRoomPersistence() {
   if (!roomSnapshotStore) {
@@ -313,9 +317,30 @@ async function initializeBrandKitCatalogPersistence() {
   }
 }
 
+async function initializeWorkspaceTeamCatalogPersistence() {
+  if (!workspaceTeamCatalogStore) {
+    configureWorkspaceTeamCatalogStore(null);
+    console.log('Workspace team catalog persistence disabled; using in-memory catalog.');
+    return;
+  }
+
+  try {
+    await workspaceTeamCatalogStore.init();
+    configureWorkspaceTeamCatalogStore(workspaceTeamCatalogStore);
+    console.log('Workspace team catalog persistence enabled.');
+  } catch (err) {
+    configureWorkspaceTeamCatalogStore(null);
+    console.warn(
+      'Workspace team catalog persistence disabled:',
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
 await initializeRoomPersistence();
 await initializeRecordingCatalogPersistence();
 await initializeBrandKitCatalogPersistence();
+await initializeWorkspaceTeamCatalogPersistence();
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
@@ -348,6 +373,9 @@ function gracefulShutdown(signal: string) {
       });
       await brandKitCatalogStore?.close().catch((err) => {
         console.error('Brand kit catalog store close failed:', err instanceof Error ? err.message : err);
+      });
+      await workspaceTeamCatalogStore?.close().catch((err) => {
+        console.error('Workspace team catalog store close failed:', err instanceof Error ? err.message : err);
       });
       process.exit(0);
     });
