@@ -55,7 +55,7 @@ describe('PowerPoint preview extraction', () => {
   });
 
   it('keeps the normal PowerPoint upload path visual-render only', () => {
-    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, false);
+    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, true);
     assert.equal(canBrowserRenderPowerPointFile({ name: 'sermon.pptx', type: '' } as File), true);
     assert.equal(canBrowserRenderPowerPointFile({ name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File), false);
     assert.equal(isRecoverablePowerPointServerRenderFailure({
@@ -492,7 +492,7 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].rendered, true);
   });
 
-  it('keeps normal PowerPoint uploads exact-only when media-server rendering is unavailable', async () => {
+  it('uses configured browser-rendered PowerPoint fallback when the media-server is not provisioned', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
     const bytes = await zip.generateAsync({ type: 'uint8array' });
@@ -513,7 +513,9 @@ describe('PowerPoint preview extraction', () => {
       pptxSlideImageRenderer: async () => ['data:image/png;base64,browser-rendered'],
     });
 
-    assert.equal(preview, undefined);
+    assert.equal(preview?.slides[0].title, 'TRIAD FORMATION');
+    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 
   it('can skip the server render attempt and go straight to browser-rendered PowerPoint images', async () => {

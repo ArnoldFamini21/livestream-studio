@@ -3339,7 +3339,7 @@ export function StudioRoom() {
           ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK;
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation',
+          requireServerRenderedPowerPoint: type === 'presentation' && !allowBrowserPowerPointRenderFallback,
           allowBrowserPowerPointRenderFallback,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;

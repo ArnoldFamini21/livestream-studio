@@ -16,11 +16,11 @@ const RENDER_SETTLE_TIMEOUT_MS = 120;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
-// PowerPoint needs the media-server exact renderer for broadcast-quality output.
-// Browser rendering remains testable as an explicit fallback, but the studio
-// upload path keeps it disabled so original themes, images, and formatting are
-// not replaced by approximate or text-only previews.
-export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
+// The media-server renderer remains the first choice for PowerPoint because it
+// uses LibreOffice and Poppler. Modern PPTX files can still render visually in
+// the browser when the Render media-server is not provisioned, which is much
+// closer to the original deck than a text-only reconstruction.
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
