@@ -717,7 +717,7 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
   const code = failure?.code?.toUpperCase();
 
   if (routing === 'no-server' || code === 'MEDIA_SERVER_NO_SERVER') {
-    return 'PowerPoint formatting could not be preserved because the exact render service is not deployed and browser slide rendering did not finish. Sync the Render media-server, then upload this deck again.';
+    return 'PowerPoint formatting could not be preserved because the exact render service is not deployed. Sync the Render media-server, then upload this deck again.';
   }
   if (failure?.timedOut || code === 'PRESENTATION_RENDER_TIMEOUT') {
     return type === 'pdf'
@@ -731,7 +731,7 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
     return 'Presentation render service is missing LibreOffice or Poppler. Redeploy the Docker media-server, then upload this deck again.';
   }
   if (code === 'PRESENTATION_RENDER_UNAVAILABLE') {
-    return 'PowerPoint exact render service is unreachable and the browser fallback could not produce slide images. Check the Render media-server, then upload this deck again.';
+    return 'PowerPoint exact render service is unreachable. Check the Render media-server, then upload this deck again.';
   }
   if (code === 'PRESENTATION_RENDER_INCOMPLETE') {
     return 'PowerPoint renderer returned a text-only preview. Redeploy the Render media-server, then upload this deck again so the original slide design is preserved.';
@@ -3343,7 +3343,7 @@ export function StudioRoom() {
         );
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation' && !allowBrowserPowerPointRenderFallback,
+          requireServerRenderedPowerPoint: type === 'presentation',
           allowBrowserPowerPointRenderFallback,
           skipServerRender: skipUnavailableServerRender,
           onServerRenderFailure: (failure) => {
