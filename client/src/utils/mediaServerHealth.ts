@@ -4,6 +4,12 @@ const DEFAULT_MEDIA_SERVER_HEALTH_TIMEOUT_MS = 4_000;
 
 export type MediaServerHealthStatus = 'checking' | 'ready' | 'unavailable';
 
+export interface MediaServerCapabilityHealth {
+  ready: boolean;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
 export interface MediaServerHealth {
   status: MediaServerHealthStatus;
   mediaHttpUrl: string;
@@ -15,6 +21,7 @@ export interface MediaServerHealth {
   environment?: string;
   httpStatus?: number;
   renderRouting?: string;
+  presentationRenderer?: MediaServerCapabilityHealth;
 }
 
 interface MediaServerHealthPayload {
@@ -23,6 +30,7 @@ interface MediaServerHealthPayload {
   version?: unknown;
   commit?: unknown;
   environment?: unknown;
+  capabilities?: unknown;
 }
 
 interface CheckMediaServerHealthOptions {
@@ -44,6 +52,26 @@ function buildMediaServerUrl(baseUrl: string, path: string): string {
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function normalizeCapability(value: unknown): MediaServerCapabilityHealth | undefined {
+  if (!isRecord(value) || typeof value.ready !== 'boolean') return undefined;
+  const message = readString(value.message) || (value.ready ? 'Capability ready.' : 'Capability unavailable.');
+  const details = isRecord(value.details) ? value.details : undefined;
+  return {
+    ready: value.ready,
+    message,
+    ...(details ? { details } : {}),
+  };
+}
+
+function getCapability(payload: MediaServerHealthPayload, key: string): MediaServerCapabilityHealth | undefined {
+  if (!isRecord(payload.capabilities)) return undefined;
+  return normalizeCapability(payload.capabilities[key]);
 }
 
 function failure(
@@ -110,6 +138,7 @@ export function normalizeMediaServerHealthPayload(
   const version = readString(value.version);
   const commit = readString(value.commit);
   const environment = readString(value.environment);
+  const reportedPresentationRenderer = getCapability(value, 'presentationRenderer');
 
   if (value.status !== 'ok') {
     return failure('Media server health did not report ready status.', input);
@@ -120,17 +149,24 @@ export function normalizeMediaServerHealthPayload(
   if (service !== 'media-server') {
     return failure(`Health endpoint reported ${service}; expected media-server.`, input);
   }
+  const presentationRenderer = reportedPresentationRenderer || {
+    ready: false,
+    message: 'Media server is an older deployment and does not report exact deck-renderer capability metadata. Redeploy the Render media-server before uploading PowerPoint or PDF decks.',
+  };
 
   return {
     status: 'ready',
     mediaHttpUrl: input.mediaHttpUrl,
-    message: 'Media server ready for RTMP relay, exact deck rendering, MP4 export, and backup recordings.',
+    message: presentationRenderer && !presentationRenderer.ready
+      ? 'Media server reachable. Exact deck rendering is unavailable until the presentation renderer dependencies are fixed.'
+      : 'Media server ready for RTMP relay, exact deck rendering, MP4 export, and backup recordings.',
     checkedAt: input.checkedAt,
     ...(input.httpStatus !== undefined ? { httpStatus: input.httpStatus } : {}),
     service,
     ...(version ? { version } : {}),
     ...(commit ? { commit } : {}),
     ...(environment ? { environment } : {}),
+    ...(presentationRenderer ? { presentationRenderer } : {}),
   };
 }
 

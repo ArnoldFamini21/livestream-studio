@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   describeHttpFailure,
+  describeServiceCapabilityFailure,
   describeServiceHealthMetadataFailure,
   evaluateClientCacheHeaders,
   evaluateHostAccessCreateResponse,
@@ -95,6 +96,56 @@ test('explains old Render health payloads as stale deployments', () => {
 
   assert.match(message, /older Render deployment/);
   assert.match(message, /deploy hook secret/);
+});
+
+test('requires media-server exact deck renderer capability metadata', () => {
+  const missing = describeServiceCapabilityFailure(
+    'Media server',
+    { status: 'ok', service: 'media-server' },
+    'presentationRenderer',
+    'exact deck renderer'
+  );
+
+  assert.match(missing, /does not include exact deck renderer capability metadata/);
+  assert.match(missing, /Redeploy the service/);
+
+  const degraded = describeServiceCapabilityFailure(
+    'Media server',
+    {
+      status: 'ok',
+      service: 'media-server',
+      capabilities: {
+        presentationRenderer: {
+          ready: false,
+          message: 'Exact deck renderer unavailable: LibreOffice is not ready.',
+        },
+      },
+    },
+    'presentationRenderer',
+    'exact deck renderer'
+  );
+
+  assert.match(degraded, /exact deck renderer capability is not ready/);
+  assert.match(degraded, /LibreOffice is not ready/);
+
+  assert.equal(
+    describeServiceCapabilityFailure(
+      'Media server',
+      {
+        status: 'ok',
+        service: 'media-server',
+        capabilities: {
+          presentationRenderer: {
+            ready: true,
+            message: 'Exact deck renderer ready.',
+          },
+        },
+      },
+      'presentationRenderer',
+      'exact deck renderer'
+    ),
+    ''
+  );
 });
 
 test('accepts create studio responses with private host access', () => {

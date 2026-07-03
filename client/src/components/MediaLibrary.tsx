@@ -497,8 +497,18 @@ export function hasDeckFiles(files: File[]): boolean {
   return files.some((file) => isDeckMediaType(detectMediaType(file)));
 }
 
-export function getDeckUploadBlockMessage(health?: Pick<MediaServerHealth, 'status' | 'message'> | null): string {
-  if (!health || health.status === 'ready') return '';
+export function getDeckUploadBlockMessage(
+  health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
+): string {
+  if (!health) return '';
+  if (health.status === 'ready') {
+    if (!health.presentationRenderer) {
+      return 'Exact deck renderer is unavailable until the media-server reports presentation renderer readiness.';
+    }
+    return health.presentationRenderer.ready
+      ? ''
+      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. Check the media-server presentation renderer before uploading PowerPoint or PDF files.';
+  }
   if (health.status === 'checking') {
     return 'Checking the media-server before accepting PowerPoint or PDF uploads.';
   }
