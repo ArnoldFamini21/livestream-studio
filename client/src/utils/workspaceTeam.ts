@@ -22,6 +22,10 @@ export interface WorkspaceTeamStudioInviteInput {
   members: SavedWorkspaceTeamMember[];
 }
 
+export interface WorkspaceTeamStudioCallSheetInput extends WorkspaceTeamStudioInviteInput {
+  generatedAt?: string | null;
+}
+
 const MAX_TEAM_MEMBERS = 12;
 const TEAM_ROLE_LABELS: Record<WorkspaceTeamRole, string> = {
   owner: 'Owner',
@@ -207,4 +211,41 @@ export function buildWorkspaceTeamStudioInviteEmailHref(input: WorkspaceTeamStud
   const body = encodeURIComponent(buildWorkspaceTeamStudioInviteDetails(input));
 
   return `mailto:${recipients}?subject=${subject}&body=${body}`;
+}
+
+export function buildWorkspaceTeamStudioCallSheet(input: WorkspaceTeamStudioCallSheetInput): string {
+  const roomName = normalizeInviteText(input.roomName, 100) || 'Studio';
+  const hostName = normalizeInviteText(input.hostName, 80);
+  const scheduledLabel = normalizeInviteText(input.scheduledLabel, 120);
+  const generatedAt = normalizeInviteText(input.generatedAt, 120);
+  const guestInviteUrl = normalizeInviteUrl(input.guestInviteUrl);
+  const hostEntryUrl = normalizeInviteUrl(input.hostEntryUrl);
+  const members = normalizeWorkspaceTeamMembers(input.members);
+  const rosterLines = members.map((member, index) => {
+    const roleLabel = getWorkspaceTeamRoleLabel(member.role);
+    const accessType = canUseWorkspaceOperatorLink(member.role) && hostEntryUrl ? 'Operator link' : 'Guest link';
+    const inviteUrl = accessType === 'Operator link' ? hostEntryUrl : guestInviteUrl;
+    const email = member.email ? ` | ${member.email}` : '';
+    return `${index + 1}. ${member.name} - ${roleLabel}${email}\n   ${accessType}: ${inviteUrl || 'Not configured'}`;
+  });
+
+  return [
+    `Production call sheet: ${roomName}`,
+    hostName ? `Host: ${hostName}` : null,
+    scheduledLabel ? `Time: ${scheduledLabel}` : null,
+    generatedAt ? `Generated: ${generatedAt}` : null,
+    input.passwordProtected ? 'Guest entry: password protected' : 'Guest entry: open link',
+    '',
+    'Team roster',
+    ...rosterLines,
+    '',
+    'Links',
+    guestInviteUrl ? `Guest link: ${guestInviteUrl}` : 'Guest link: Not configured',
+    hostEntryUrl ? `Private host link: ${hostEntryUrl}` : 'Private host link: Not configured',
+    '',
+    'Access rules',
+    'Owners and Producers use the private host link for operator controls.',
+    'Editors and Guest Managers use the guest link unless the host promotes them in the studio.',
+    'Keep private host links inside the production team.',
+  ].filter((line) => line !== null).join('\n').trim();
 }

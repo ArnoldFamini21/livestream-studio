@@ -70,6 +70,7 @@ import {
 } from '../utils/workspaceBackup.ts';
 import {
   WORKSPACE_TEAM_STORAGE_KEY,
+  buildWorkspaceTeamStudioCallSheet,
   buildWorkspaceTeamStudioInviteEmailHref,
   createWorkspaceTeamMember,
   getWorkspaceTeamRoleLabel,
@@ -877,6 +878,16 @@ export function HomePage() {
     });
   };
 
+  const buildTeamInviteInput = (room: SavedScheduledStudio) => ({
+    roomName: room.name,
+    hostName: room.hostName,
+    scheduledLabel: room.scheduledFor ? formatScheduledDate(room.scheduledFor) : null,
+    guestInviteUrl: buildInviteLink(room),
+    hostEntryUrl: buildHostLink(room),
+    passwordProtected: room.passwordProtected,
+    members: dashboardTeamMembers,
+  });
+
   const emailTeamInvite = (room: SavedScheduledStudio) => {
     if (!hasTeamInviteRecipients) {
       setDashboardError('Add at least one team member email before sending a team invite.');
@@ -884,15 +895,25 @@ export function HomePage() {
     }
 
     setDashboardError(null);
-    window.location.href = buildWorkspaceTeamStudioInviteEmailHref({
-      roomName: room.name,
-      hostName: room.hostName,
-      scheduledLabel: room.scheduledFor ? formatScheduledDate(room.scheduledFor) : null,
-      guestInviteUrl: buildInviteLink(room),
-      hostEntryUrl: buildHostLink(room),
-      passwordProtected: room.passwordProtected,
-      members: dashboardTeamMembers,
-    });
+    window.location.href = buildWorkspaceTeamStudioInviteEmailHref(buildTeamInviteInput(room));
+  };
+
+  const downloadTeamCallSheet = (room: SavedScheduledStudio) => {
+    if (dashboardTeamMembers.length === 0) {
+      setDashboardError('Add at least one team member before exporting a team call sheet.');
+      return;
+    }
+
+    setDashboardError(null);
+    downloadTextFile(
+      buildWorkspaceTeamStudioCallSheet({
+        ...buildTeamInviteInput(room),
+        generatedAt: formatDashboardDate(new Date().toISOString()),
+      }),
+      `${safeFileName(room.name)}_team_call_sheet.txt`,
+      'text/plain;charset=utf-8'
+    );
+    setDashboardNotice('Team call sheet downloaded.');
   };
 
   const emailScheduledGuestInvite = () => {
@@ -1834,14 +1855,22 @@ export function HomePage() {
                         >
                           Email
                         </button>
-                        {savedTeamMembers.length > 0 && (
-                          <button
-                            style={styles.savedRoomAction}
-                            onClick={() => emailTeamInvite(room)}
-                            disabled={!hasTeamInviteRecipients}
-                          >
-                            Team
-                          </button>
+                        {dashboardTeamMembers.length > 0 && (
+                          <>
+                            <button
+                              style={styles.savedRoomAction}
+                              onClick={() => emailTeamInvite(room)}
+                              disabled={!hasTeamInviteRecipients}
+                            >
+                              Team Email
+                            </button>
+                            <button
+                              style={styles.savedRoomAction}
+                              onClick={() => downloadTeamCallSheet(room)}
+                            >
+                              Team Sheet
+                            </button>
+                          </>
                         )}
                         <button
                           style={styles.savedRoomAction}
