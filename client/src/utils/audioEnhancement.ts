@@ -8,6 +8,20 @@ export interface VoiceGateState {
   open: boolean;
 }
 
+export interface VoiceEnhancementProfile {
+  minFloor: number;
+  maxFloor: number;
+  openOffset: number;
+  holdGain: number;
+  closedGain: number;
+  highPassHz: number;
+  lowPassHz: number;
+  compressorThreshold: number;
+  compressorRatio: number;
+  gateOpenTimeConstant: number;
+  gateCloseTimeConstant: number;
+}
+
 export interface EnhancedAudioStream {
   stream: MediaStream;
   sourceTrack: MediaStreamTrack | null;
@@ -16,11 +30,39 @@ export interface EnhancedAudioStream {
   cleanup: (options?: { stopSource?: boolean }) => void;
 }
 
-const VOICE_GATE_MIN_FLOOR = 0.006;
-const VOICE_GATE_MAX_FLOOR = 0.08;
-const VOICE_GATE_OPEN_OFFSET = 0.018;
-const VOICE_GATE_CLOSED_GAIN = 0.24;
-const VOICE_GATE_HOLD_GAIN = 0.52;
+export const STANDARD_VOICE_ENHANCEMENT_PROFILE: VoiceEnhancementProfile = {
+  minFloor: 0.006,
+  maxFloor: 0.08,
+  openOffset: 0.018,
+  holdGain: 0.52,
+  closedGain: 0.24,
+  highPassHz: 90,
+  lowPassHz: 14_500,
+  compressorThreshold: -32,
+  compressorRatio: 2.8,
+  gateOpenTimeConstant: 0.018,
+  gateCloseTimeConstant: 0.055,
+};
+
+export const STUDIO_VOICE_ENHANCEMENT_PROFILE: VoiceEnhancementProfile = {
+  minFloor: 0.005,
+  maxFloor: 0.075,
+  openOffset: 0.015,
+  holdGain: 0.42,
+  closedGain: 0.12,
+  highPassHz: 110,
+  lowPassHz: 12_500,
+  compressorThreshold: -34,
+  compressorRatio: 3.6,
+  gateOpenTimeConstant: 0.014,
+  gateCloseTimeConstant: 0.075,
+};
+
+export function getVoiceEnhancementProfile(preferences: AudioProcessingPreferences): VoiceEnhancementProfile {
+  return preferences.voiceIsolation
+    ? STUDIO_VOICE_ENHANCEMENT_PROFILE
+    : STANDARD_VOICE_ENHANCEMENT_PROFILE;
+}
 
 function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
   if (typeof window === 'undefined') return null;
@@ -48,23 +90,27 @@ function getTimeDomainRms(analyser: AnalyserNode, samples: Float32Array<ArrayBuf
   return Math.sqrt(sum / Math.max(1, samples.length));
 }
 
-export function getVoiceGateState(inputRms: number, previousNoiseFloor = VOICE_GATE_MIN_FLOOR): VoiceGateState {
+export function getVoiceGateState(
+  inputRms: number,
+  previousNoiseFloor = STANDARD_VOICE_ENHANCEMENT_PROFILE.minFloor,
+  profile: VoiceEnhancementProfile = STANDARD_VOICE_ENHANCEMENT_PROFILE
+): VoiceGateState {
   const boundedRms = Math.max(0, Math.min(1, Number.isFinite(inputRms) ? inputRms : 0));
   const boundedFloor = Math.max(
-    VOICE_GATE_MIN_FLOOR,
-    Math.min(VOICE_GATE_MAX_FLOOR, Number.isFinite(previousNoiseFloor) ? previousNoiseFloor : VOICE_GATE_MIN_FLOOR)
+    profile.minFloor,
+    Math.min(profile.maxFloor, Number.isFinite(previousNoiseFloor) ? previousNoiseFloor : profile.minFloor)
   );
   const floorCandidate = Math.min(boundedRms, boundedFloor + 0.012);
   const noiseFloor = boundedRms < boundedFloor
     ? boundedFloor * 0.82 + boundedRms * 0.18
     : boundedFloor * 0.97 + floorCandidate * 0.03;
-  const openThreshold = Math.max(VOICE_GATE_MIN_FLOOR + VOICE_GATE_OPEN_OFFSET, noiseFloor + VOICE_GATE_OPEN_OFFSET);
+  const openThreshold = Math.max(profile.minFloor + profile.openOffset, noiseFloor + profile.openOffset);
   const open = boundedRms >= openThreshold;
   const targetGain = open
     ? 1
-    : boundedRms >= noiseFloor + VOICE_GATE_OPEN_OFFSET * 0.45
-      ? VOICE_GATE_HOLD_GAIN
-      : VOICE_GATE_CLOSED_GAIN;
+    : boundedRms >= noiseFloor + profile.openOffset * 0.45
+      ? profile.holdGain
+      : profile.closedGain;
 
   return {
     noiseFloor,
@@ -88,12 +134,13 @@ export function createEnhancedAudioStream(
     },
   });
 
-  if (!sourceTrack || !preferences.noiseSuppression) return passthrough();
+  if (!sourceTrack || (!preferences.noiseSuppression && !preferences.voiceIsolation)) return passthrough();
 
   const AudioContextConstructor = getAudioContextConstructor();
   if (!AudioContextConstructor) return passthrough();
 
   try {
+    const profile = getVoiceEnhancementProfile(preferences);
     const audioContext = createVoiceAudioContext(AudioContextConstructor);
     const source = audioContext.createMediaStreamSource(new MediaStream([sourceTrack]));
     const analyser = audioContext.createAnalyser();
@@ -102,7 +149,7 @@ export function createEnhancedAudioStream(
 
     const highPass = audioContext.createBiquadFilter();
     highPass.type = 'highpass';
-    highPass.frequency.value = 90;
+    highPass.frequency.value = profile.highPassHz;
     highPass.Q.value = 0.7;
 
     const gateGain = audioContext.createGain();
@@ -110,13 +157,13 @@ export function createEnhancedAudioStream(
 
     const lowPass = audioContext.createBiquadFilter();
     lowPass.type = 'lowpass';
-    lowPass.frequency.value = 14_500;
+    lowPass.frequency.value = profile.lowPassHz;
     lowPass.Q.value = 0.5;
 
     const compressor = audioContext.createDynamicsCompressor();
-    compressor.threshold.value = -32;
+    compressor.threshold.value = profile.compressorThreshold;
     compressor.knee.value = 18;
-    compressor.ratio.value = 2.8;
+    compressor.ratio.value = profile.compressorRatio;
     compressor.attack.value = 0.004;
     compressor.release.value = 0.18;
 
@@ -129,11 +176,15 @@ export function createEnhancedAudioStream(
     compressor.connect(destination);
 
     const samples = new Float32Array(new ArrayBuffer(analyser.fftSize * Float32Array.BYTES_PER_ELEMENT));
-    let gateState = getVoiceGateState(VOICE_GATE_MIN_FLOOR);
+    let gateState = getVoiceGateState(profile.minFloor, profile.minFloor, profile);
     const gateTimer = window.setInterval(() => {
       const rms = getTimeDomainRms(analyser, samples);
-      gateState = getVoiceGateState(rms, gateState.noiseFloor);
-      gateGain.gain.setTargetAtTime(gateState.targetGain, audioContext.currentTime, gateState.open ? 0.018 : 0.055);
+      gateState = getVoiceGateState(rms, gateState.noiseFloor, profile);
+      gateGain.gain.setTargetAtTime(
+        gateState.targetGain,
+        audioContext.currentTime,
+        gateState.open ? profile.gateOpenTimeConstant : profile.gateCloseTimeConstant
+      );
     }, 40);
 
     const outputTrack = destination.stream.getAudioTracks()[0] || null;

@@ -9,6 +9,19 @@ export function normalizeAudioProcessingPreferences(
   return {
     echoCancellation: preferences.echoCancellation ?? DEFAULT_AUDIO_PROCESSING_PREFERENCES.echoCancellation,
     noiseSuppression: preferences.noiseSuppression ?? DEFAULT_AUDIO_PROCESSING_PREFERENCES.noiseSuppression,
+    voiceIsolation: preferences.voiceIsolation ?? DEFAULT_AUDIO_PROCESSING_PREFERENCES.voiceIsolation,
+  };
+}
+
+function getAdvancedVoiceConstraints(preferences: AudioProcessingPreferences): Record<string, unknown> {
+  if (!preferences.voiceIsolation) return {};
+  return {
+    voiceIsolation: { ideal: true },
+    suppressLocalAudioPlayback: { ideal: true },
+    googEchoCancellation: preferences.echoCancellation,
+    googAutoGainControl: true,
+    googNoiseSuppression: preferences.noiseSuppression,
+    googHighpassFilter: true,
   };
 }
 
@@ -28,6 +41,7 @@ export function createAudioTrackConstraints(
   };
   return {
     ...constraints,
+    ...getAdvancedVoiceConstraints(normalized),
     latency: { ideal: 0.02 },
   } as MediaTrackConstraints;
 }
