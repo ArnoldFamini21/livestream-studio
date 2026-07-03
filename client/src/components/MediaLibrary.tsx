@@ -4,6 +4,7 @@ import {
   getNextPresentationSlideIndex,
   getPresentationDeckStatus,
   getPresentationItemDisplayTitle,
+  getPresentationPresenterCards,
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
 import { canBrowserRenderPowerPointFile, hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
@@ -330,7 +331,9 @@ function ActiveDeckControls({
     onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'));
   };
   const slideItems = getPresentationSlidePickerItems(status.slides, status.currentIndex, status.unitLabel);
-  const currentNotes = status.currentSlide?.notes || [];
+  const presenterCards = getPresentationPresenterCards(status);
+  const currentCard = presenterCards.find((card) => card.kind === 'current') || presenterCards[0];
+  const currentNotes = currentCard.notes;
 
   return (
     <div style={styles.deckControl}>
@@ -339,13 +342,28 @@ function ActiveDeckControls({
         <span style={styles.deckCount}>{status.unitLabel} {status.currentIndex + 1} / {status.total}</span>
       </div>
       <div style={styles.deckName}>{mediaName}</div>
-      <div style={styles.deckCurrentTitle}>
-        {getPresentationItemDisplayTitle(status.currentSlide, status.currentIndex, status.unitLabel)}
-      </div>
-      <div style={styles.deckNextTitle}>
-        {status.nextSlide
-          ? `Next: ${getPresentationItemDisplayTitle(status.nextSlide, status.currentIndex + 1, status.unitLabel)}`
-          : 'End of deck'}
+      <div style={styles.deckPresenterGrid}>
+        {presenterCards.map((card) => (
+          <div
+            key={card.kind}
+            style={{
+              ...styles.deckPresenterCard,
+              ...(card.kind === 'current' ? styles.deckPresenterCardCurrent : {}),
+            }}
+          >
+            <div style={styles.deckPresenterFrame}>
+              {card.imageUrl ? (
+                <img src={card.imageUrl} alt="" style={styles.deckPresenterImage} />
+              ) : (
+                <span style={styles.deckPresenterFallback}>{card.isEnd ? 'End' : card.index !== null ? card.index + 1 : '-'}</span>
+              )}
+            </div>
+            <div style={styles.deckPresenterMeta}>
+              <span style={styles.deckPresenterLabel}>{card.label}</span>
+              <span style={styles.deckPresenterTitle}>{card.title}</span>
+            </div>
+          </div>
+        ))}
       </div>
       {currentNotes.length > 0 && (
         <div style={styles.deckNotes}>
@@ -639,8 +657,15 @@ const styles: Record<string, React.CSSProperties> = {
   deckEyebrow: { fontSize: 10, fontWeight: 800, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0 },
   deckCount: { fontSize: 10, fontWeight: 800, color: 'var(--text-muted)' },
   deckName: { fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 5 },
-  deckCurrentTitle: { fontSize: 13, fontWeight: 800, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  deckNextTitle: { marginTop: 4, minHeight: 15, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  deckPresenterGrid: { display: 'grid', gridTemplateColumns: '1.16fr 0.84fr', gap: 8, marginTop: 8 },
+  deckPresenterCard: { minWidth: 0, padding: 6, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(15,23,42,0.48)', display: 'flex', flexDirection: 'column', gap: 5 },
+  deckPresenterCardCurrent: { border: '1px solid rgba(103,232,249,0.34)', background: 'rgba(8,47,73,0.28)' },
+  deckPresenterFrame: { width: '100%', aspectRatio: '16 / 9', borderRadius: 6, overflow: 'hidden', background: 'rgba(2,6,23,0.78)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.1)' },
+  deckPresenterImage: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
+  deckPresenterFallback: { fontSize: 11, fontWeight: 900, color: 'var(--text-muted)' },
+  deckPresenterMeta: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
+  deckPresenterLabel: { fontSize: 8, fontWeight: 900, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0 },
+  deckPresenterTitle: { minHeight: 24, fontSize: 10, lineHeight: 1.2, fontWeight: 800, color: 'var(--text-primary)', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' },
   deckNotes: { marginTop: 9, padding: '8px 9px', borderRadius: 7, border: '1px solid rgba(103,232,249,0.18)', background: 'rgba(2,6,23,0.28)' },
   deckNotesHeader: { fontSize: 9, fontWeight: 900, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0, marginBottom: 5 },
   deckNotesList: { margin: 0, paddingLeft: 15, display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 96, overflowY: 'auto' },

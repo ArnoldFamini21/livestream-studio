@@ -26,6 +26,16 @@ export interface PresentationSlidePickerItem {
   isCurrent: boolean;
 }
 
+export interface PresentationPresenterCard {
+  kind: 'current' | 'next';
+  label: string;
+  index: number | null;
+  title: string;
+  imageUrl?: string;
+  notes: string[];
+  isEnd: boolean;
+}
+
 export function getPresentationSlides(media: ActiveMedia | null | undefined): PresentationSlidePreview[] {
   if (media?.type !== 'presentation' && media?.type !== 'pdf') return [];
   if (media?.preview?.kind !== 'presentation-slides') return [];
@@ -110,4 +120,41 @@ export function getPresentationDeckStatus(
     canGoPrevious: currentIndex > 0,
     canGoNext: currentIndex < total - 1,
   };
+}
+
+export function getPresentationPresenterCards(status: PresentationDeckStatus): PresentationPresenterCard[] {
+  const currentTitle = status.currentSlide
+    ? getPresentationItemDisplayTitle(status.currentSlide, status.currentIndex, status.unitLabel)
+    : `No ${status.unitLabel.toLowerCase()}`;
+  const nextIndex = status.currentIndex + 1;
+
+  return [
+    {
+      kind: 'current',
+      label: `Current ${status.unitLabel}`,
+      index: status.currentSlide ? status.currentIndex : null,
+      title: currentTitle,
+      imageUrl: status.currentSlide?.imageUrl,
+      notes: status.currentSlide?.notes || [],
+      isEnd: false,
+    },
+    status.nextSlide
+      ? {
+          kind: 'next',
+          label: `Next ${status.unitLabel}`,
+          index: nextIndex,
+          title: getPresentationItemDisplayTitle(status.nextSlide, nextIndex, status.unitLabel),
+          imageUrl: status.nextSlide.imageUrl,
+          notes: status.nextSlide.notes || [],
+          isEnd: false,
+        }
+      : {
+          kind: 'next',
+          label: 'Up Next',
+          index: null,
+          title: 'End of deck',
+          notes: [],
+          isEnd: true,
+        },
+  ];
 }
