@@ -1,4 +1,5 @@
 import type { ActiveMedia, PresentationSlidePreview, StudioMediaAssetPreview } from '@studio/shared';
+import { hasRenderedPresentationSlides } from './presentationPreview.ts';
 
 export type PresentationSlideDirection = 'previous' | 'next';
 export type PresentationDeckSourceFormat = StudioMediaAssetPreview['sourceFormat'];
@@ -28,11 +29,13 @@ export interface PresentationSlidePickerItem {
 export function getPresentationSlides(media: ActiveMedia | null | undefined): PresentationSlidePreview[] {
   if (media?.type !== 'presentation' && media?.type !== 'pdf') return [];
   if (media?.preview?.kind !== 'presentation-slides') return [];
+  if (!hasRenderedPresentationSlides(media.preview)) return [];
   return media.preview.slides;
 }
 
 export function getPresentationSourceFormat(media: ActiveMedia | null | undefined): PresentationDeckSourceFormat | null {
   if (media?.type !== 'presentation' && media?.type !== 'pdf') return null;
+  if (!hasRenderedPresentationSlides(media?.preview)) return null;
   return media?.preview?.kind === 'presentation-slides' ? media.preview.sourceFormat : null;
 }
 

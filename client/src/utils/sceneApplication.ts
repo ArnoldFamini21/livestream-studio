@@ -1,12 +1,20 @@
 import type { ActiveMedia, Scene, SceneActiveMedia, StudioMediaAsset } from '@studio/shared';
 import { normalizeStageItemOrder } from './stageItemOrder.ts';
-import { clampPresentationSlideIndex } from './presentationDeckControls.ts';
+import { clampPresentationSlideIndex, getPresentationSlides } from './presentationDeckControls.ts';
 
 export type ScenePipCorner = NonNullable<Scene['pipCorner']>;
 
 export const DEFAULT_SCENE_PIP_CORNER: ScenePipCorner = 'BR';
 
 const SCENE_PIP_CORNERS = new Set<ScenePipCorner>(['TL', 'TR', 'BL', 'BR']);
+
+function hasUnrenderedDeckPreview(media: ActiveMedia | StudioMediaAsset): boolean {
+  return (
+    (media.type === 'presentation' || media.type === 'pdf') &&
+    media.preview?.kind === 'presentation-slides' &&
+    getPresentationSlides(media).length === 0
+  );
+}
 
 export function getScenePipCornerForApply(scene: Pick<Partial<Scene>, 'pipCorner'>): ScenePipCorner {
   return SCENE_PIP_CORNERS.has(scene.pipCorner as ScenePipCorner)
@@ -46,7 +54,8 @@ export function getSceneActiveMediaSnapshot(
   const media = activeMedia;
   const assetId = media?.assetId?.trim();
   if (!media || !assetId) return null;
-  const slides = media.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
+  if (hasUnrenderedDeckPreview(media)) return null;
+  const slides = getPresentationSlides(media);
   const normalizedSlideIndex = slides.length > 0
     ? clampPresentationSlideIndex(slideIndex, slides.length)
     : 0;
@@ -66,20 +75,22 @@ export function getSceneActiveMediaForApply(
 
   const asset = mediaAssets.find((item) => item.id === snapshot.assetId);
   if (!asset) return { activeMedia: null, slideIndex: 0 };
+  if (hasUnrenderedDeckPreview(asset)) return { activeMedia: null, slideIndex: 0 };
 
-  const slides = asset.preview?.kind === 'presentation-slides' ? asset.preview.slides : [];
+  const activeMedia = {
+    assetId: asset.id,
+    type: asset.type,
+    url: asset.url,
+    name: asset.name,
+    preview: asset.preview,
+  };
+  const slides = getPresentationSlides(activeMedia);
   const slideIndex = slides.length > 0
     ? clampPresentationSlideIndex(snapshot.slideIndex ?? 0, slides.length)
     : 0;
 
   return {
-    activeMedia: {
-      assetId: asset.id,
-      type: asset.type,
-      url: asset.url,
-      name: asset.name,
-      preview: asset.preview,
-    },
+    activeMedia,
     slideIndex,
   };
 }

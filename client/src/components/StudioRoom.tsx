@@ -760,16 +760,12 @@ function PresentationDeckStage({
   slideIndex: number;
   onSlideIndexChange: (index: number) => void;
 }) {
-  const slides = media.preview?.kind === 'presentation-slides' ? media.preview.slides : [];
-  const unitLabel = getPresentationDeckUnitLabel(media.preview?.kind === 'presentation-slides' ? media.preview.sourceFormat : null);
+  const slides = getPresentationSlides(media);
+  const unitLabel = getPresentationDeckUnitLabel(slides.length > 0 && media.preview?.kind === 'presentation-slides' ? media.preview.sourceFormat : null);
   const currentIndex = clampPresentationSlideIndex(slideIndex, slides.length);
   const slide = slides[currentIndex];
 
   if (!slide) return <PresentationRenderMissingCard media={media} />;
-
-  if (!hasRenderedPresentationSlides(media.preview)) {
-    return <PresentationRenderMissingCard media={media} />;
-  }
 
   return (
     <div style={styles.presentationStage}>

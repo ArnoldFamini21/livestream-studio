@@ -37,14 +37,32 @@ describe('scene application defaults', () => {
         kind: 'presentation-slides',
         sourceFormat: 'pptx',
         slides: [
-          { id: 'slide-1', title: 'One', lines: [] },
-          { id: 'slide-2', title: 'Two', lines: [] },
+          { id: 'slide-1', title: 'One', lines: [], imageUrl: 'data:image/png;base64,one', rendered: true },
+          { id: 'slide-2', title: 'Two', lines: [], imageUrl: 'data:image/png;base64,two', rendered: true },
         ],
       },
     }, 99);
 
     assert.deepEqual(snapshot, { assetId: 'deck-1', slideIndex: 1 });
     assert.equal(getSceneActiveMediaSnapshot(null, 0), null);
+  });
+
+  it('does not save a scene snapshot for a text-only PowerPoint preview', () => {
+    const snapshot = getSceneActiveMediaSnapshot({
+      assetId: 'deck-1',
+      type: 'presentation',
+      url: 'blob:deck',
+      name: 'Deck',
+      preview: {
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'slide-1', title: 'TRIAD FORMATION', lines: ['Discipleship'] },
+        ],
+      },
+    }, 0);
+
+    assert.equal(snapshot, null);
   });
 
   it('normalizes imported active media scene snapshots defensively', () => {
@@ -70,8 +88,8 @@ describe('scene application defaults', () => {
           kind: 'presentation-slides' as const,
           sourceFormat: 'pdf' as const,
           slides: [
-            { id: 'page-1', title: 'Page 1', lines: [] },
-            { id: 'page-2', title: 'Page 2', lines: [] },
+            { id: 'page-1', title: 'Page 1', lines: [], imageUrl: 'data:image/png;base64,page-one', rendered: true },
+            { id: 'page-2', title: 'Page 2', lines: [], imageUrl: 'data:image/png;base64,page-two', rendered: true },
           ],
         },
       },
@@ -83,6 +101,32 @@ describe('scene application defaults', () => {
     assert.equal(resolved.activeMedia?.type, 'pdf');
     assert.equal(resolved.slideIndex, 1);
     assert.deepEqual(getSceneActiveMediaForApply({ activeMedia: { assetId: 'missing' } }, mediaAssets), {
+      activeMedia: null,
+      slideIndex: 0,
+    });
+  });
+
+  it('does not apply a saved scene with a text-only deck preview', () => {
+    const mediaAssets = [
+      {
+        id: 'deck-1',
+        name: 'Text Only.pptx',
+        url: 'blob:deck',
+        type: 'presentation' as const,
+        mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        createdAt: '2026-07-02T00:00:00.000Z',
+        source: 'upload' as const,
+        preview: {
+          kind: 'presentation-slides' as const,
+          sourceFormat: 'pptx' as const,
+          slides: [
+            { id: 'slide-1', title: 'TRIAD FORMATION', lines: ['Discipleship'] },
+          ],
+        },
+      },
+    ];
+
+    assert.deepEqual(getSceneActiveMediaForApply({ activeMedia: { assetId: 'deck-1', slideIndex: 0 } }, mediaAssets), {
       activeMedia: null,
       slideIndex: 0,
     });
