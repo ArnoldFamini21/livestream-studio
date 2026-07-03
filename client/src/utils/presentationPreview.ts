@@ -16,9 +16,10 @@ const RENDER_SETTLE_TIMEOUT_MS = 120;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
-// Browser PPTX rendering is a best-effort fallback for modern decks when the
-// exact media-server renderer is unavailable. Text-only fallbacks remain off.
-export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
+// Browser PPTX rendering is intentionally not used for normal uploads because
+// it can flatten or miss PowerPoint theme styling. Production uploads require
+// the media-server renderer so the original slide design is preserved.
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',

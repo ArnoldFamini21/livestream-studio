@@ -3335,15 +3335,11 @@ export function StudioRoom() {
 
       try {
         let serverRenderFailure: PresentationServerRenderFailure | undefined;
-        const exactPowerPointRendererReady =
-          type === 'presentation' &&
-          mediaServerHealth.status === 'ready' &&
-          mediaServerHealth.presentationRenderer?.ready === true;
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: exactPowerPointRendererReady,
+          requireServerRenderedPowerPoint: type === 'presentation',
           allowBrowserPowerPointRenderFallback: type === 'presentation'
-            ? ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK && !exactPowerPointRendererReady
+            ? ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK
             : false,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;

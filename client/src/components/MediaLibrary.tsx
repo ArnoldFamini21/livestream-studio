@@ -502,11 +502,17 @@ export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
     const lower = file.name.toLowerCase();
     if (detectMediaType(file) !== 'presentation') return false;
     return (
+      lower.endsWith('.pptx') ||
       lower.endsWith('.ppt') ||
+      lower.endsWith('.ppsx') ||
       lower.endsWith('.pps') ||
+      lower.endsWith('.potx') ||
       lower.endsWith('.pot') ||
       lower.endsWith('.key') ||
-      file.type === 'application/vnd.ms-powerpoint'
+      file.type === 'application/vnd.ms-powerpoint' ||
+      file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+      file.type === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' ||
+      file.type === 'application/vnd.openxmlformats-officedocument.presentationml.template'
     );
   });
 }
@@ -514,19 +520,19 @@ export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  if (!health) return 'Checking the exact deck renderer. Modern PPTX and PDF uploads can still use browser rendering.';
+  if (!health) return 'Checking the exact deck renderer. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
-      return 'Exact deck renderer is unavailable. Modern PPTX and PDF uploads can still use browser rendering; legacy PowerPoint needs the media-server.';
+      return 'Exact deck renderer is unavailable. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
     }
     return health.presentationRenderer.ready
       ? ''
-      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. Modern PPTX and PDF uploads can still use browser rendering; legacy PowerPoint needs the media-server.';
+      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
   }
   if (health.status === 'checking') {
-    return 'Checking the exact deck renderer. Modern PPTX and PDF uploads can still use browser rendering.';
+    return 'Checking the exact deck renderer. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
   }
-  return health.message || 'Media server is unavailable. Modern PPTX and PDF uploads can still use browser rendering; legacy PowerPoint needs the media-server.';
+  return health.message || 'Media server is unavailable. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
 }
 
 export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {
