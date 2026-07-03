@@ -54,8 +54,8 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(isPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
   });
 
-  it('keeps the normal PowerPoint upload path exact-render only', () => {
-    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, false);
+  it('keeps PowerPoint uploads visual while falling back only for modern PPTX files', () => {
+    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, true);
     assert.equal(canBrowserRenderPowerPointFile({ name: 'sermon.pptx', type: '' } as File), true);
     assert.equal(canBrowserRenderPowerPointFile({ name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File), false);
     assert.equal(isRecoverablePowerPointServerRenderFailure({

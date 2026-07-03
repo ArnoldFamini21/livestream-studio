@@ -1,5 +1,6 @@
 import type { CameraShape, LayoutMode, NameTagStyle, StageBackground } from '@studio/shared';
 import type { LowerThirdAnimation, LowerThirdAnimationDirection, LowerThirdFont } from './lowerThirds.ts';
+import { normalizeBrandColor } from './brandTheme.ts';
 
 export type ProductionSceneTemplate =
   | 'starting-soon'
@@ -72,6 +73,11 @@ export interface ProductionSceneTemplateConfig {
   banner?: ProductionSceneBanner;
   ticker?: ProductionSceneTicker;
   timer?: ProductionSceneTimer;
+}
+
+export interface ProductionSceneBrandProfile {
+  brandColor?: string | null;
+  background?: StageBackground | null;
 }
 
 export const PRODUCTION_SCENE_TEMPLATE_CARDS: ProductionSceneTemplateCard[] = [
@@ -173,7 +179,41 @@ export function getBackgroundPreview(bg: StageBackground): string {
   }
 }
 
-export function getProductionSceneTemplateConfig(template: ProductionSceneTemplate): ProductionSceneTemplateConfig {
+function hasUsableBrandBackground(background: StageBackground | null | undefined): background is StageBackground {
+  return Boolean(
+    background &&
+    background.type !== 'none' &&
+    typeof background.value === 'string' &&
+    background.value.trim()
+  );
+}
+
+export function applyProductionSceneBrandProfile(
+  config: ProductionSceneTemplateConfig,
+  profile: ProductionSceneBrandProfile = {}
+): ProductionSceneTemplateConfig {
+  const brandColor = normalizeBrandColor(profile.brandColor, config.brandColor);
+  const background = hasUsableBrandBackground(profile.background)
+    ? profile.background
+    : config.background;
+
+  return {
+    ...config,
+    background,
+    brandColor,
+    lowerThird: config.lowerThird
+      ? { ...config.lowerThird, accentColor: brandColor }
+      : undefined,
+    banner: config.banner
+      ? {
+          ...config.banner,
+          ...(config.banner.style === 'custom' ? { customColor: brandColor } : {}),
+        }
+      : undefined,
+  };
+}
+
+function getBaseProductionSceneTemplateConfig(template: ProductionSceneTemplate): ProductionSceneTemplateConfig {
   switch (template) {
     case 'starting-soon':
       return {
@@ -432,4 +472,11 @@ export function getProductionSceneTemplateConfig(template: ProductionSceneTempla
         },
       };
   }
+}
+
+export function getProductionSceneTemplateConfig(
+  template: ProductionSceneTemplate,
+  profile: ProductionSceneBrandProfile = {}
+): ProductionSceneTemplateConfig {
+  return applyProductionSceneBrandProfile(getBaseProductionSceneTemplateConfig(template), profile);
 }

@@ -3343,7 +3343,7 @@ export function StudioRoom() {
         );
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation',
+          requireServerRenderedPowerPoint: type === 'presentation' && !allowBrowserPowerPointRenderFallback,
           allowBrowserPowerPointRenderFallback,
           skipServerRender: skipUnavailableServerRender,
           onServerRenderFailure: (failure) => {
@@ -3453,25 +3453,32 @@ export function StudioRoom() {
     });
   };
 
-  // Scenes
-  const buildCurrentSceneSnapshot = async (id: string, name: string): Promise<Scene> => {
-    // Convert blob URL to data URL so the scene survives blob revocation
-    let persistedLogoUrl = logoUrl;
-    if (logoUrl && logoUrl.startsWith('blob:')) {
-      try {
-        persistedLogoUrl = await blobToDataUrl(logoUrl);
-      } catch {
-        // Keep original URL if conversion fails
-      }
+  const getPersistedSceneLogoUrl = async (): Promise<string | null> => {
+    if (!logoUrl) return null;
+    if (!logoUrl.startsWith('blob:')) return logoUrl;
+
+    try {
+      return await blobToDataUrl(logoUrl);
+    } catch {
+      return logoUrl;
     }
-    let persistedBackground = stageBackground;
+  };
+
+  const getPersistedSceneBackground = async (): Promise<StageBackground> => {
     if (stageBackground.type === 'image' && stageBackground.value.startsWith('blob:')) {
       try {
-        persistedBackground = { ...stageBackground, value: await blobToDataUrl(stageBackground.value) };
+        return { ...stageBackground, value: await blobToDataUrl(stageBackground.value) };
       } catch {
-        // Keep original URL for this session if conversion fails
+        return stageBackground;
       }
     }
+    return stageBackground;
+  };
+
+  // Scenes
+  const buildCurrentSceneSnapshot = async (id: string, name: string): Promise<Scene> => {
+    const persistedLogoUrl = await getPersistedSceneLogoUrl();
+    const persistedBackground = await getPersistedSceneBackground();
 
     return {
       id,
@@ -3511,8 +3518,15 @@ export function StudioRoom() {
     setActiveSceneId(newScene.id);
   };
 
-  const buildProductionSceneDraft = (template: ProductionSceneTemplate): ProductionSceneDraft => {
-    const config = getProductionSceneTemplateConfig(template);
+  const buildProductionSceneDraft = async (template: ProductionSceneTemplate): Promise<ProductionSceneDraft> => {
+    const [persistedLogoUrl, persistedBackground] = await Promise.all([
+      getPersistedSceneLogoUrl(),
+      getPersistedSceneBackground(),
+    ]);
+    const config = getProductionSceneTemplateConfig(template, {
+      brandColor,
+      background: persistedBackground,
+    });
     const visibleOverlayIds: string[] = [];
     let lowerThird: LowerThirdData | null = null;
     let banner: BannerData | null = null;
@@ -3542,13 +3556,13 @@ export function StudioRoom() {
       layout: config.layout,
       background: config.background,
       brandColor: config.brandColor,
-      logoUrl: null,
+      logoUrl: persistedLogoUrl,
       cameraShape: config.cameraShape,
       nameTagStyle: config.nameTagStyle,
-      logoPlacement: 'top-right',
-      logoPosition: null,
-      logoSize: 'medium',
-      logoOpacity: DEFAULT_LOGO_OPACITY,
+      logoPlacement,
+      logoPosition: normalizeLogoPosition(logoPosition),
+      logoSize,
+      logoOpacity,
       pipCorner: 'BR',
       focusedVideoItemId: null,
       stageItemOrder: [],
@@ -3581,15 +3595,15 @@ export function StudioRoom() {
     ));
 
     applyLayout(activeDraft.config.layout);
-    setStageBackground(activeDraft.config.background);
-    setBrandColor(activeDraft.config.brandColor);
-    setLogoUrl(null);
+    setStageBackground(activeDraft.scene.background);
+    setBrandColor(activeDraft.scene.brandColor || activeDraft.config.brandColor);
+    setLogoUrl(activeDraft.scene.logoUrl || null);
     setCameraShape(activeDraft.config.cameraShape);
     setNameTagStyle(activeDraft.config.nameTagStyle);
-    setLogoPlacement('top-right');
-    setLogoPosition(null);
-    setLogoSize('medium');
-    setLogoOpacity(DEFAULT_LOGO_OPACITY);
+    setLogoPlacement(activeDraft.scene.logoPlacement || 'top-right');
+    setLogoPosition(normalizeLogoPosition(activeDraft.scene.logoPosition));
+    setLogoSize(activeDraft.scene.logoSize || 'medium');
+    setLogoOpacity(normalizeLogoOpacity(activeDraft.scene.logoOpacity));
     setPipCorner('BR');
     setFocusedVideoItemId(null);
     setStageItemOrder([]);
@@ -3604,23 +3618,23 @@ export function StudioRoom() {
     triggerSceneTransition(activeDraft.scene);
   };
 
-  const onCreateTemplateScene = (template: ProductionSceneTemplate) => {
+  const onCreateTemplateScene = async (template: ProductionSceneTemplate) => {
     if (scenes.length >= MAX_STUDIO_SCENES) return;
-    const draft = buildProductionSceneDraft(template);
+    const draft = await buildProductionSceneDraft(template);
 
     setScenes(prev => prev.length >= MAX_STUDIO_SCENES ? prev : [...prev, draft.scene]);
     applyProductionSceneDrafts([draft], draft);
     setScenePackMessage(null);
   };
 
-  const onCreateProductionScenePack = () => {
+  const onCreateProductionScenePack = async () => {
     const templateIds = getProductionScenePackTemplateIds(MAX_STUDIO_SCENES - scenes.length);
     if (templateIds.length === 0) {
       setScenePackMessage('Maximum scenes reached.');
       return;
     }
 
-    const drafts = templateIds.map((template) => buildProductionSceneDraft(template));
+    const drafts = await Promise.all(templateIds.map((template) => buildProductionSceneDraft(template)));
     const activeDraft = drafts[0];
     setScenes(prev => {
       const slots = Math.max(0, MAX_STUDIO_SCENES - prev.length);
