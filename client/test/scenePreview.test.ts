@@ -36,6 +36,58 @@ describe('scene preview thumbnails', () => {
     assert.equal(getScenePreviewTiles('pip')[1].floating, true);
   });
 
+  it('uses shared-media geometry when a saved scene contains active media', () => {
+    const tiles = getScenePreviewTiles('grid', { mediaActive: true });
+
+    assert.equal(tiles.length, 4);
+    assert.equal(tiles[0].media, true);
+    assert.equal(tiles[0].primary, true);
+    assert.equal(tiles[0].width, '65%');
+    assert.ok(tiles.slice(1).every((tile) => tile.left === '77%'));
+  });
+
+  it('shows shared media as the dominant tile for strip and split scene previews', () => {
+    const spotlightTiles = getScenePreviewTiles('spotlight', { mediaActive: true });
+    const splitTiles = getScenePreviewTiles('side-by-side', { mediaActive: true });
+
+    assert.equal(spotlightTiles[0].media, true);
+    assert.equal(spotlightTiles[0].height, '55%');
+    assert.ok(spotlightTiles.slice(1).every((tile) => tile.top === '70%'));
+
+    assert.equal(splitTiles[0].media, true);
+    assert.equal(splitTiles[0].width, '57%');
+    assert.ok(splitTiles.slice(1).every((tile) => tile.left === '70%'));
+  });
+
+  it('preserves saved PiP corners in shared-media scene previews', () => {
+    const tiles = getScenePreviewTiles('pip', {
+      mediaActive: true,
+      mediaParticipantCount: 2,
+      pipCorner: 'TL',
+    });
+
+    assert.equal(tiles.length, 3);
+    assert.equal(tiles[0].media, true);
+    assert.deepEqual(
+      tiles.slice(1).map(({ left, top, floating }) => ({ left, top, floating })),
+      [
+        { left: '10%', top: '14%', floating: true },
+        { left: '10%', top: '33%', floating: true },
+      ]
+    );
+  });
+
+  it('renders a media-only scene preview without inventing participant tiles', () => {
+    const tiles = getScenePreviewTiles('featured', {
+      mediaActive: true,
+      mediaParticipantCount: 0,
+    });
+
+    assert.deepEqual(tiles, [
+      { left: '7%', top: '8%', width: '86%', height: '72%', primary: true, media: true },
+    ]);
+  });
+
   it('positions PiP preview tiles from saved scene corners', () => {
     assert.deepEqual(getScenePreviewPipTilePosition('TL'), { left: '10%', top: '14%' });
     assert.deepEqual(getScenePreviewPipTilePosition('TR'), { left: '63%', top: '14%' });
