@@ -633,6 +633,34 @@ export interface BrandKitCatalogListResponse {
   brandKits: BrandKitCatalogEntry[];
 }
 
+// ============ Workspace Team Catalog Types ============
+
+export type WorkspaceTeamCatalogRole = 'owner' | 'producer' | 'editor' | 'guest-manager';
+
+export interface WorkspaceTeamCatalogMember {
+  id: string;
+  roomId: string;
+  name: string;
+  email: string;
+  role: WorkspaceTeamCatalogRole;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceTeamCatalogUpsertRequest {
+  id: string;
+  name: string;
+  email?: string;
+  role: WorkspaceTeamCatalogRole;
+  createdAt: string;
+}
+
+export interface WorkspaceTeamCatalogListResponse {
+  roomId: string;
+  exportedAt: string;
+  members: WorkspaceTeamCatalogMember[];
+}
+
 // ============ Studio Media Types ============
 
 export type StudioMediaType = 'video' | 'image' | 'pdf' | 'presentation' | 'file';

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { buildStudioCalendarInvite, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse } from '@studio/shared';
+import { buildStudioCalendarInvite, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse, type WorkspaceTeamCatalogMember } from '@studio/shared';
 import {
   buildHostEntryPath,
   buildHostEntryUrl,
@@ -41,6 +41,12 @@ import {
   catalogEntryToSavedBrandKit,
   fetchBrandKitCatalog,
 } from '../utils/brandKitCatalog.ts';
+import {
+  deleteWorkspaceTeamCatalogMember,
+  fetchWorkspaceTeamCatalog,
+  mergeWorkspaceTeamCatalogMembers,
+  syncWorkspaceTeamCatalogMember,
+} from '../utils/workspaceTeamCatalog.ts';
 import {
   buildWorkspaceBackup,
   mergeWorkspaceBackup,
@@ -263,6 +269,9 @@ export function HomePage() {
   const [serverBrandKitCatalog, setServerBrandKitCatalog] = useState<BrandKitCatalogEntry[]>([]);
   const [serverBrandKitCatalogLoading, setServerBrandKitCatalogLoading] = useState(false);
   const [serverBrandKitCatalogError, setServerBrandKitCatalogError] = useState<string | null>(null);
+  const [serverWorkspaceTeamCatalog, setServerWorkspaceTeamCatalog] = useState<WorkspaceTeamCatalogMember[]>([]);
+  const [serverWorkspaceTeamCatalogLoading, setServerWorkspaceTeamCatalogLoading] = useState(false);
+  const [serverWorkspaceTeamCatalogError, setServerWorkspaceTeamCatalogError] = useState<string | null>(null);
   const navigate = useNavigate();
   const recordingLibrary = useRecordingLibrary();
   const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -390,9 +399,13 @@ export function HomePage() {
     }
     return Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   }, [savedBrandKits, serverBrandKitCatalog]);
+  const dashboardTeamMembers = useMemo(
+    () => mergeWorkspaceTeamCatalogMembers(savedTeamMembers, serverWorkspaceTeamCatalog),
+    [savedTeamMembers, serverWorkspaceTeamCatalog]
+  );
   const workspaceDashboard = useMemo(
-    () => buildWorkspaceDashboardSummary(savedScheduledRooms, dashboardRecordings, dashboardBrandKits, savedTeamMembers),
-    [savedScheduledRooms, dashboardRecordings, dashboardBrandKits, savedTeamMembers]
+    () => buildWorkspaceDashboardSummary(savedScheduledRooms, dashboardRecordings, dashboardBrandKits, dashboardTeamMembers),
+    [savedScheduledRooms, dashboardRecordings, dashboardBrandKits, dashboardTeamMembers]
   );
   const recentRecordings = dashboardRecordings.slice(0, 3);
   const localRecordingIds = useMemo(
@@ -403,14 +416,19 @@ export function HomePage() {
     () => new Set(savedBrandKits.map((kit) => kit.id)),
     [savedBrandKits]
   );
-  const hasTeamInviteRecipients = savedTeamMembers.some((member) => member.email);
+  const hasTeamInviteRecipients = dashboardTeamMembers.some((member) => member.email);
   const recentBrandKits = dashboardBrandKits.slice(0, 4);
-  const recentTeamMembers = savedTeamMembers.slice(0, 5);
+  const recentTeamMembers = dashboardTeamMembers
+    .slice()
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .slice(0, 5);
   const workspaceSyncNotice = dashboardNotice ||
     (serverRecordingCatalogLoading ? 'Refreshing cloud recording catalog...' : null) ||
     (serverBrandKitCatalogLoading ? 'Refreshing cloud brand kit catalog...' : null) ||
+    (serverWorkspaceTeamCatalogLoading ? 'Refreshing cloud team roster...' : null) ||
     serverRecordingCatalogError ||
-    serverBrandKitCatalogError;
+    serverBrandKitCatalogError ||
+    serverWorkspaceTeamCatalogError;
 
   useEffect(() => {
     if (!scheduledRoom || !inviteLink) {
@@ -533,6 +551,55 @@ export function HomePage() {
     };
   }, [savedScheduledRooms]);
 
+  useEffect(() => {
+    const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
+    if (hostAccessibleStudios.length === 0) {
+      setServerWorkspaceTeamCatalog([]);
+      setServerWorkspaceTeamCatalogError(null);
+      setServerWorkspaceTeamCatalogLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setServerWorkspaceTeamCatalogLoading(true);
+    setServerWorkspaceTeamCatalogError(null);
+
+    Promise.allSettled(
+      hostAccessibleStudios.map((room) => fetchWorkspaceTeamCatalog(room.id, room.hostToken))
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const byId = new Map<string, WorkspaceTeamCatalogMember>();
+        for (const result of results) {
+          if (result.status !== 'fulfilled') continue;
+          for (const member of result.value.members) {
+            byId.set(member.id, member);
+          }
+        }
+        setServerWorkspaceTeamCatalog(
+          Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        );
+        const failedCount = results.filter((result) => result.status === 'rejected').length;
+        setServerWorkspaceTeamCatalogError(failedCount > 0
+          ? `Could not refresh cloud team roster for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
+          : null
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setServerWorkspaceTeamCatalog([]);
+          setServerWorkspaceTeamCatalogError('Could not refresh cloud team roster.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setServerWorkspaceTeamCatalogLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [savedScheduledRooms]);
+
   const copyToClipboard = async () => {
     await writeClipboardText(inviteLink);
     setCopied(true);
@@ -643,7 +710,7 @@ export function HomePage() {
       guestInviteUrl: buildInviteLink(room),
       hostEntryUrl: buildHostLink(room),
       passwordProtected: room.passwordProtected,
-      members: savedTeamMembers,
+      members: dashboardTeamMembers,
     });
   };
 
@@ -721,6 +788,60 @@ export function HomePage() {
     setSavedBrandKits(next);
   };
 
+  const mergeSyncedWorkspaceTeamMembers = (members: WorkspaceTeamCatalogMember[]) => {
+    if (members.length === 0) return;
+    setServerWorkspaceTeamCatalog((current) => {
+      const byId = new Map<string, WorkspaceTeamCatalogMember>();
+      for (const member of current) byId.set(member.id, member);
+      for (const member of members) byId.set(member.id, member);
+      return Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    });
+  };
+
+  const syncWorkspaceTeamMembersToSavedStudios = async (
+    members: SavedWorkspaceTeamMember[],
+    studios: SavedScheduledStudio[] = savedScheduledRooms
+  ) => {
+    const hostAccessibleStudios = studios.filter((room) => getValidHostToken(room.hostToken));
+    if (hostAccessibleStudios.length === 0 || members.length === 0) return;
+
+    const results = await Promise.allSettled(
+      hostAccessibleStudios.flatMap((room) => (
+        members.map((member) => syncWorkspaceTeamCatalogMember({
+          roomId: room.id,
+          hostToken: room.hostToken,
+          member,
+        }))
+      ))
+    );
+
+    const synced = results
+      .filter((result): result is PromiseFulfilledResult<WorkspaceTeamCatalogMember> => result.status === 'fulfilled')
+      .map((result) => result.value);
+    mergeSyncedWorkspaceTeamMembers(synced);
+
+    const failedCount = results.filter((result) => result.status === 'rejected').length;
+    setServerWorkspaceTeamCatalogError(failedCount > 0
+      ? `Saved locally, but ${failedCount} cloud roster sync ${failedCount === 1 ? 'request' : 'requests'} failed.`
+      : null
+    );
+  };
+
+  const deleteWorkspaceTeamMemberFromSavedStudios = async (memberId: string) => {
+    const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
+    if (hostAccessibleStudios.length === 0) return;
+
+    setServerWorkspaceTeamCatalog((current) => current.filter((member) => member.id !== memberId));
+    const results = await Promise.allSettled(
+      hostAccessibleStudios.map((room) => deleteWorkspaceTeamCatalogMember(room.id, room.hostToken, memberId))
+    );
+    const failedCount = results.filter((result) => result.status === 'rejected').length;
+    setServerWorkspaceTeamCatalogError(failedCount > 0
+      ? `Removed locally, but cloud roster removal failed for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
+      : null
+    );
+  };
+
   const addTeamMember = () => {
     setDashboardError(null);
     setDashboardNotice(null);
@@ -743,6 +864,7 @@ export function HomePage() {
     setTeamMemberEmail('');
     setTeamMemberRole('producer');
     setDashboardNotice('Team member saved.');
+    void syncWorkspaceTeamMembersToSavedStudios([member]);
   };
 
   const deleteTeamMember = (member: SavedWorkspaceTeamMember) => {
@@ -756,6 +878,7 @@ export function HomePage() {
     }
     setSavedTeamMembers(next);
     setDashboardNotice('Team member removed.');
+    void deleteWorkspaceTeamMemberFromSavedStudios(member.id);
   };
 
   const exportWorkspaceBackup = () => {
@@ -765,7 +888,7 @@ export function HomePage() {
     const backup = buildWorkspaceBackup({
       studios: savedScheduledRooms,
       brandKits: savedBrandKits,
-      teamMembers: savedTeamMembers,
+      teamMembers: dashboardTeamMembers,
       recordings: recordingLibrary.sessions,
     });
     downloadTextFile(
@@ -798,9 +921,11 @@ export function HomePage() {
       ) {
         throw new Error('Could not save imported workspace in this browser.');
       }
-      setSavedScheduledRooms(readSavedScheduledStudios());
+      const importedStudios = readSavedScheduledStudios();
+      setSavedScheduledRooms(importedStudios);
       setSavedBrandKits(result.brandKits);
       setSavedTeamMembers(result.teamMembers);
+      void syncWorkspaceTeamMembersToSavedStudios(result.teamMembers, importedStudios);
       setDashboardNotice(
         `Imported ${result.importedStudios} studios, ${result.importedBrandKits} brand kits, and ${result.importedTeamMembers} team members.`
       );
