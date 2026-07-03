@@ -9,6 +9,7 @@ export interface VirtualBackgroundRefinementSettings {
   edgeBlurPx: number;
   maskExpansionPx: number;
   coreMaskOpacity: number;
+  edgeFeatherOpacity: number;
   replacementBackgroundBlurPx: number;
   replacementBackgroundBrightness: number;
   replacementBackgroundSaturation: number;
@@ -26,6 +27,7 @@ const DEFAULT_REFINEMENT_SETTINGS: VirtualBackgroundRefinementSettings = {
   edgeBlurPx: 2.25,
   maskExpansionPx: 1.5,
   coreMaskOpacity: 1,
+  edgeFeatherOpacity: 0.32,
   replacementBackgroundBlurPx: 1.2,
   replacementBackgroundBrightness: 0.92,
   replacementBackgroundSaturation: 0.92,
@@ -130,6 +132,17 @@ export function refineSegmentationMaskAlpha(
     data[i + 2] = 255;
     data[i + 3] = Math.round(alpha * 255);
   }
+}
+
+export function prepareSegmentationMaskAlpha(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  options: SegmentationMaskRefinementOptions = DEFAULT_SEGMENTATION_MASK_REFINEMENT
+): { inverted: boolean } {
+  const inverted = shouldInvertSegmentationMask(data, width, height);
+  refineSegmentationMaskAlpha(data, { ...options, invert: inverted });
+  return { inverted };
 }
 
 export function getVirtualBackgroundRefinementSettings(

@@ -13,6 +13,7 @@ import {
   buildReplacementBackgroundFilter,
   getExpandedDrawRect,
   getVirtualBackgroundRefinementSettings,
+  prepareSegmentationMaskAlpha,
 } from '../utils/virtualBackgroundRefinement.ts';
 
 declare global {
@@ -304,7 +305,9 @@ export function useVirtualBackground({
 
     const foregroundCanvas = document.createElement('canvas');
     const foregroundCtx = foregroundCanvas.getContext('2d');
-    if (!foregroundCtx) {
+    const maskCanvas = document.createElement('canvas');
+    const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+    if (!foregroundCtx || !maskCtx) {
       setError('Canvas 2D context unavailable; cannot apply virtual background foreground.');
       setOutputStream(inputStream);
       return;
@@ -331,6 +334,8 @@ export function useVirtualBackground({
         outputCanvas.height = h;
         foregroundCanvas.width = w;
         foregroundCanvas.height = h;
+        maskCanvas.width = w;
+        maskCanvas.height = h;
       }
     };
 
@@ -376,6 +381,35 @@ export function useVirtualBackground({
       }
     };
 
+    const drawNativeForegroundMask = (
+      segmentationMask: CanvasImageSource,
+      cw: number,
+      ch: number
+    ) => {
+      maskCtx.save();
+      maskCtx.clearRect(0, 0, cw, ch);
+      maskCtx.imageSmoothingEnabled = true;
+      maskCtx.imageSmoothingQuality = 'high';
+      maskCtx.drawImage(segmentationMask, 0, 0, cw, ch);
+      maskCtx.restore();
+    };
+
+    const drawRefinedForegroundMask = (
+      segmentationMask: CanvasImageSource,
+      cw: number,
+      ch: number
+    ): boolean => {
+      try {
+        drawNativeForegroundMask(segmentationMask, cw, ch);
+        const maskFrame = maskCtx.getImageData(0, 0, cw, ch);
+        prepareSegmentationMaskAlpha(maskFrame.data, cw, ch);
+        maskCtx.putImageData(maskFrame, 0, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     const drawForeground = (
       ctx: CanvasRenderingContext2D,
       image: CanvasImageSource,
@@ -384,22 +418,22 @@ export function useVirtualBackground({
       ch: number
     ) => {
       const refinement = getVirtualBackgroundRefinementSettings(cw, ch);
+      const refinedMask = drawRefinedForegroundMask(segmentationMask, cw, ch);
+      if (!refinedMask) drawNativeForegroundMask(segmentationMask, cw, ch);
 
       foregroundCtx.save();
       foregroundCtx.clearRect(0, 0, cw, ch);
       foregroundCtx.imageSmoothingEnabled = true;
       foregroundCtx.imageSmoothingQuality = 'high';
-      // Preserve MediaPipe's native mask semantics. Reinterpreting the mask
-      // pixels can produce hollow silhouettes in Safari/WebKit.
-      foregroundCtx.drawImage(segmentationMask, 0, 0, cw, ch);
-      foregroundCtx.globalCompositeOperation = 'source-in';
       foregroundCtx.drawImage(image, 0, 0, cw, ch);
+      foregroundCtx.globalCompositeOperation = 'destination-in';
+      foregroundCtx.drawImage(maskCanvas, 0, 0, cw, ch);
       foregroundCtx.globalCompositeOperation = 'source-over';
       foregroundCtx.restore();
 
       ctx.save();
-      ctx.globalAlpha = 0.42;
-      ctx.filter = `blur(${Math.max(0.8, refinement.edgeBlurPx * 0.45)}px)`;
+      ctx.globalAlpha = refinement.edgeFeatherOpacity;
+      ctx.filter = `blur(${Math.max(1, refinement.edgeBlurPx * 0.72)}px)`;
       ctx.drawImage(
         foregroundCanvas,
         -refinement.maskExpansionPx,
