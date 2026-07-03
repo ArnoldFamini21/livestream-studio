@@ -104,7 +104,7 @@ PRODUCTION_REQUIRE_CLIENT_CACHE=true \
 npm run production:check
 ```
 
-The static Hostinger deploy verifies client cache headers without requiring the Render media-server. Modern PPTX and PDF uploads can still use browser-rendered slide images when Render is unavailable, while exact PowerPoint/PDF rendering, MP4 export, backup recordings, and RTMP relay remain media-server features.
+The static Hostinger deploy verifies client cache headers without requiring the Render media-server. PDF uploads can still render in the browser when Render is unavailable, but PowerPoint uploads require the media-server exact renderer so original themes, layouts, images, and fonts are preserved. MP4 export, backup recordings, RTMP relay, and durable recording handoff also remain media-server features.
 
 ## GitHub Deploy Hooks
 
