@@ -21,7 +21,7 @@ describe('media share layouts', () => {
 
   it('uses StreamYard-style participant placements for shared media formats', () => {
     assert.equal(getMediaShareLayoutPlan('grid', 3).placement, 'side-rail');
-    assert.equal(getMediaShareLayoutPlan('featured', 3).placement, 'side-rail');
+    assert.equal(getMediaShareLayoutPlan('featured', 3).placement, 'floating-stack');
     assert.equal(getMediaShareLayoutPlan('spotlight', 3).placement, 'bottom-strip');
     assert.equal(getMediaShareLayoutPlan('side-by-side', 3).placement, 'side-by-side');
     assert.equal(getMediaShareLayoutPlan('pip', 3).placement, 'pip');
@@ -33,13 +33,15 @@ describe('media share layouts', () => {
     assert.equal(getMediaShareLayoutPlan('featured', 12).visibleParticipantCount, 4);
     assert.equal(getMediaShareLayoutPlan('spotlight', 12).visibleParticipantCount, 6);
     assert.equal(getMediaShareLayoutPlan('side-by-side', 12).visibleParticipantCount, 2);
-    assert.equal(getMediaShareLayoutPlan('pip', 12).visibleParticipantCount, 2);
+    assert.equal(getMediaShareLayoutPlan('pip', 12).visibleParticipantCount, 4);
     assert.equal(getMediaShareLayoutPlan('single', 12).visibleParticipantCount, 1);
   });
 
   it('keeps multiple participants visible in split and floating media share formats', () => {
     assert.equal(getMediaShareLayoutPlan('side-by-side', 2).visibleParticipantCount, 2);
     assert.equal(getMediaShareLayoutPlan('pip', 2).visibleParticipantCount, 2);
+    assert.equal(getMediaShareLayoutPlan('pip', 4).visibleParticipantCount, 4);
+    assert.equal(getMediaShareLayoutPlan('featured', 4).visibleParticipantCount, 4);
     assert.equal(getMediaShareLayoutPlan('side-by-side', 1).visibleParticipantCount, 1);
     assert.equal(getMediaShareLayoutPlan('pip', 1).visibleParticipantCount, 1);
   });

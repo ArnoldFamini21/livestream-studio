@@ -4321,18 +4321,24 @@ export function StudioRoom() {
 
     if (plan.placement === 'pip') {
       const getPipPosition = (index: number): React.CSSProperties => {
-        const offset = `calc(20px + ${index * 25}%)`;
+        const tileOffset = visibleCount >= 3 ? '18%' : visibleCount === 2 ? '21%' : '24%';
+        const clusterGap = '12px';
+        const column = visibleCount >= 3 ? index % 2 : 0;
+        const row = visibleCount >= 3 ? Math.floor(index / 2) : index;
+        const inlineOffset = column === 0 ? 20 : `calc(20px + ${tileOffset} + ${clusterGap})`;
+        const blockOffset = row === 0 ? 20 : `calc(20px + ${tileOffset} + ${clusterGap})`;
         switch (pipCorner) {
           case 'TL':
-            return { top: offset, left: 20 };
+            return { top: blockOffset, left: inlineOffset };
           case 'TR':
-            return { top: offset, right: 20 };
+            return { top: blockOffset, right: inlineOffset };
           case 'BL':
-            return { bottom: offset, left: 20 };
+            return { bottom: blockOffset, left: inlineOffset };
           case 'BR':
-            return { bottom: offset, right: 20 };
+            return { bottom: blockOffset, right: inlineOffset };
         }
       };
+      const tileWidth = visibleCount >= 3 ? '18%' : visibleCount > 1 ? '21%' : '24%';
 
       return {
         containerStyle: {
@@ -4354,7 +4360,7 @@ export function StudioRoom() {
         participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
           position: 'absolute' as const,
           ...getPipPosition(i),
-          width: visibleCount > 1 ? '22%' : '24%',
+          width: tileWidth,
           aspectRatio: '16 / 9',
           borderRadius: 12,
           overflow: 'hidden',
@@ -4365,6 +4371,49 @@ export function StudioRoom() {
           flexGrow: 0,
           cursor: 'pointer',
           transition: 'top 0.3s ease, bottom 0.3s ease, left 0.3s ease, right 0.3s ease',
+        })),
+        visibleParticipantCount: visibleCount,
+        placement: plan.placement,
+        usesFloatingParticipant: true,
+      };
+    }
+
+    if (plan.placement === 'floating-stack') {
+      const spacing = visibleCount <= 1 ? 0 : Math.min(19, 64 / visibleCount);
+      const start = 50 - ((visibleCount - 1) * spacing) / 2;
+      return {
+        containerStyle: {
+          ...containerBase,
+          display: 'grid',
+          gridTemplateColumns: '1fr',
+          gridTemplateRows: '1fr',
+          gap: GAP,
+          position: 'relative' as const,
+          overflow: 'hidden',
+          alignItems: 'stretch',
+          justifyItems: 'stretch',
+        },
+        mediaStyle: {
+          ...fullMediaStyle,
+          gridColumn: '1',
+          gridRow: '1',
+        },
+        participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
+          position: 'absolute' as const,
+          right: 22,
+          top: `${start + i * spacing}%`,
+          transform: 'translateY(-50%)',
+          width: visibleCount > 2 ? '18%' : '22%',
+          aspectRatio: '16 / 9',
+          borderRadius: 12,
+          overflow: 'hidden',
+          boxShadow: '0 6px 28px rgba(0, 0, 0, 0.52)',
+          border: '2px solid rgba(255, 255, 255, 0.16)',
+          zIndex: 6,
+          flexShrink: 0,
+          flexGrow: 0,
+          cursor: 'pointer',
+          transition: 'top 0.3s ease, right 0.3s ease, transform 0.3s ease',
         })),
         visibleParticipantCount: visibleCount,
         placement: plan.placement,
