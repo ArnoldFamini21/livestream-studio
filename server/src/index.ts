@@ -8,6 +8,7 @@ import {
   restoreRoomSnapshots,
   setupSignalingServer,
 } from './services/signaling.js';
+import { authRouter, configureAccountAuthStore } from './routes/auth.js';
 import { roomRouter } from './routes/rooms.js';
 import { configureRecordingCatalogStore, recordingRouter } from './routes/recordings.js';
 import { brandKitRouter, configureBrandKitCatalogStore } from './routes/brandKits.js';
@@ -16,6 +17,7 @@ import { configureWorkspaceTeamCatalogStore, workspaceTeamRouter } from './route
 import { transcriptionRouter } from './routes/transcriptions.js';
 import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
+import { createAccountAuthStoreFromEnv } from './services/accountAuth.js';
 import { createRoomSnapshotStoreFromEnv } from './services/roomPersistence.js';
 import { createRecordingCatalogStoreFromEnv } from './services/recordingCatalog.js';
 import { createBrandKitCatalogStoreFromEnv } from './services/brandKitCatalog.js';
@@ -186,6 +188,8 @@ const rateLimitSweepTimer = setInterval(() => {
 }, 5 * 60_000);
 
 // REST API routes — room creation gets its own tighter cap.
+app.use('/api/auth', authRouter);
+
 app.use('/api/rooms', (req, res, next) => {
   if (req.method === 'POST') {
     roomCreateLimiter.middleware(req, res, next);
@@ -254,6 +258,7 @@ const wss = new WebSocketServer({
 
 setupSignalingServer(wss);
 
+const accountAuthStore = createAccountAuthStoreFromEnv(process.env);
 const roomSnapshotStore = createRoomSnapshotStoreFromEnv(process.env);
 const recordingCatalogStore = createRecordingCatalogStoreFromEnv(process.env);
 const brandKitCatalogStore = createBrandKitCatalogStoreFromEnv(process.env);
@@ -276,6 +281,26 @@ async function initializeRoomPersistence() {
     configureRoomSnapshotStore(null);
     console.warn(
       'Room snapshot persistence disabled:',
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+async function initializeAccountAuthPersistence() {
+  if (!accountAuthStore) {
+    configureAccountAuthStore(null);
+    console.log('Account auth persistence disabled; using in-memory accounts.');
+    return;
+  }
+
+  try {
+    await accountAuthStore.init();
+    configureAccountAuthStore(accountAuthStore);
+    console.log('Account auth persistence enabled.');
+  } catch (err) {
+    configureAccountAuthStore(null);
+    console.warn(
+      'Account auth persistence disabled:',
       err instanceof Error ? err.message : err
     );
   }
@@ -361,6 +386,7 @@ async function initializeWorkspaceTeamCatalogPersistence() {
   }
 }
 
+await initializeAccountAuthPersistence();
 await initializeRoomPersistence();
 await initializeRecordingCatalogPersistence();
 await initializeBrandKitCatalogPersistence();
@@ -392,6 +418,9 @@ function gracefulShutdown(signal: string) {
       console.log('HTTP server closed.');
       await roomSnapshotStore?.close().catch((err) => {
         console.error('Room snapshot store close failed:', err instanceof Error ? err.message : err);
+      });
+      await accountAuthStore?.close().catch((err) => {
+        console.error('Account auth store close failed:', err instanceof Error ? err.message : err);
       });
       await recordingCatalogStore?.close().catch((err) => {
         console.error('Recording catalog store close failed:', err instanceof Error ? err.message : err);

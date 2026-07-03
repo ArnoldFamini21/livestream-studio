@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
   createLibreOfficePdfArgs,
-  createPdfToPngArgs,
+  createPdfToRasterArgs,
   getPresentationRenderSourceFormat,
   getPresentationRendererHealth,
   PresentationRenderError,
@@ -39,8 +39,10 @@ describe('presentation rendering', () => {
       ['-env:UserInstallation=file:///tmp/lo-profile', '--headless']
     );
 
-    assert.deepEqual(createPdfToPngArgs('/tmp/source.pdf', '/tmp/slide'), [
-      '-png',
+    assert.deepEqual(createPdfToRasterArgs('/tmp/source.pdf', '/tmp/slide'), [
+      '-jpeg',
+      '-jpegopt',
+      'quality=92,progressive=y,optimize=y',
       '-f',
       '1',
       '-l',
@@ -117,8 +119,8 @@ describe('presentation rendering', () => {
         }
         if (command === 'pdftoppm-test') {
           const outputPrefix = args[args.length - 1];
-          await writeFile(`${outputPrefix}-1.png`, Buffer.from('png-one'));
-          await writeFile(`${outputPrefix}-2.png`, Buffer.from('png-two'));
+          await writeFile(`${outputPrefix}-1.jpg`, Buffer.from('jpg-one'));
+          await writeFile(`${outputPrefix}-2.jpg`, Buffer.from('jpg-two'));
         }
       },
     });
@@ -130,7 +132,7 @@ describe('presentation rendering', () => {
     assert.equal(preview.sourceFormat, 'pptx');
     assert.equal(preview.slides.length, 2);
     assert.equal(preview.slides[0].title, 'Slide 1');
-    assert.equal(preview.slides[0].imageUrl, `data:image/png;base64,${Buffer.from('png-one').toString('base64')}`);
+    assert.equal(preview.slides[0].imageUrl, `data:image/jpeg;base64,${Buffer.from('jpg-one').toString('base64')}`);
     assert.equal(preview.slides[0].rendered, true);
   });
 

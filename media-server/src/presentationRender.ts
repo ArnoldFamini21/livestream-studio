@@ -8,7 +8,9 @@ import type { StudioMediaAssetPreview } from '@studio/shared';
 export const MAX_PRESENTATION_RENDER_BYTES = 50 * 1024 * 1024;
 export const MAX_PRESENTATION_RENDER_SLIDES = 60;
 export const PRESENTATION_RENDER_WIDTH = 1920;
-const COMMAND_TIMEOUT_MS = 45_000;
+export const PRESENTATION_RENDER_IMAGE_MIME_TYPE = 'image/jpeg';
+const PRESENTATION_RENDER_JPEG_QUALITY = 92;
+const COMMAND_TIMEOUT_MS = 120_000;
 const DEPENDENCY_PROBE_TIMEOUT_MS = 3_000;
 
 export class PresentationRenderError extends Error {
@@ -118,9 +120,11 @@ export function createLibreOfficePdfArgs(
   ];
 }
 
-export function createPdfToPngArgs(pdfPath: string, outputPrefix: string): string[] {
+export function createPdfToRasterArgs(pdfPath: string, outputPrefix: string): string[] {
   return [
-    '-png',
+    '-jpeg',
+    '-jpegopt',
+    `quality=${PRESENTATION_RENDER_JPEG_QUALITY},progressive=y,optimize=y`,
     '-f',
     '1',
     '-l',
@@ -133,6 +137,8 @@ export function createPdfToPngArgs(pdfPath: string, outputPrefix: string): strin
     outputPrefix,
   ];
 }
+
+export const createPdfToPngArgs = createPdfToRasterArgs;
 
 function getLibreOfficePath(): string {
   return process.env.SOFFICE_PATH || process.env.LIBREOFFICE_PATH || 'soffice';
@@ -322,24 +328,28 @@ async function defaultCommandRunner(command: string, args: string[], options: { 
 }
 
 function getRenderedSlideNumber(fileName: string): number {
-  return Number(fileName.match(/-(\d+)\.png$/i)?.[1] || 0);
+  return Number(fileName.match(/-(\d+)\.(?:png|jpe?g)$/i)?.[1] || 0);
 }
 
-async function getRenderedPngPaths(outputDir: string): Promise<string[]> {
+async function getRenderedRasterPaths(outputDir: string): Promise<string[]> {
   const fileNames = await readdir(outputDir);
   return fileNames
-    .filter((fileName) => /^slide-\d+\.png$/i.test(fileName))
+    .filter((fileName) => /^slide-\d+\.(?:png|jpe?g)$/i.test(fileName))
     .sort((a, b) => getRenderedSlideNumber(a) - getRenderedSlideNumber(b))
     .slice(0, MAX_PRESENTATION_RENDER_SLIDES)
     .map((fileName) => path.join(outputDir, fileName));
 }
 
-async function buildPreviewFromPngs(pngPaths: string[], sourceFormat: PresentationRenderSourceFormat): Promise<StudioMediaAssetPreview> {
-  const slides = await Promise.all(pngPaths.map(async (pngPath, index) => ({
+function getRenderedImageMimeType(filePath: string): string {
+  return path.extname(filePath).toLowerCase() === '.png' ? 'image/png' : PRESENTATION_RENDER_IMAGE_MIME_TYPE;
+}
+
+async function buildPreviewFromRasterImages(imagePaths: string[], sourceFormat: PresentationRenderSourceFormat): Promise<StudioMediaAssetPreview> {
+  const slides = await Promise.all(imagePaths.map(async (imagePath, index) => ({
     id: `${sourceFormat}-rendered-slide-${index + 1}`,
     title: sourceFormat === 'pdf' ? `Page ${index + 1}` : `Slide ${index + 1}`,
     lines: [],
-    imageUrl: `data:image/png;base64,${(await readFile(pngPath)).toString('base64')}`,
+    imageUrl: `data:${getRenderedImageMimeType(imagePath)};base64,${(await readFile(imagePath)).toString('base64')}`,
     rendered: true,
   })));
 
@@ -389,14 +399,14 @@ export async function renderPresentationPreview(
     }
 
     const pdftoppmPath = options.pdftoppmPath || getPdftoppmPath();
-    await commandRunner(pdftoppmPath, createPdfToPngArgs(pdfPath, path.join(outputDir, 'slide')), { timeoutMs: COMMAND_TIMEOUT_MS });
-    const pngPaths = await getRenderedPngPaths(outputDir);
+    await commandRunner(pdftoppmPath, createPdfToRasterArgs(pdfPath, path.join(outputDir, 'slide')), { timeoutMs: COMMAND_TIMEOUT_MS });
+    const imagePaths = await getRenderedRasterPaths(outputDir);
 
-    if (pngPaths.length === 0) {
+    if (imagePaths.length === 0) {
       throw new PresentationRenderError(422, 'PRESENTATION_RENDER_EMPTY', 'No slides were rendered from this file');
     }
 
-    return buildPreviewFromPngs(pngPaths, sourceFormat);
+    return buildPreviewFromRasterImages(imagePaths, sourceFormat);
   } finally {
     await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
   }
