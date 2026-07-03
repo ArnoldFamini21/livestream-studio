@@ -135,6 +135,7 @@ export function JoinRoom() {
   // Advanced Audio Settings
   const [echoCancellation, setEchoCancellation] = useState(() => readPreferredAudioProcessing().echoCancellation);
   const [noiseSuppression, setNoiseSuppression] = useState(() => readPreferredAudioProcessing().noiseSuppression);
+  const [voiceIsolation, setVoiceIsolation] = useState(() => readPreferredAudioProcessing().voiceIsolation);
 
   // Media preview
   const {
@@ -184,6 +185,7 @@ export function JoinRoom() {
     startMedia(undefined, undefined, {
       echoCancellation,
       noiseSuppression,
+      voiceIsolation,
       videoQuality: readPreferredVideoQuality(),
       audioEnabled: audioEnabledRef.current,
       videoEnabled: videoEnabledRef.current,
@@ -191,7 +193,7 @@ export function JoinRoom() {
     return () => {
       stopMedia();
     };
-  }, [startMedia, stopMedia, echoCancellation, noiseSuppression]);
+  }, [startMedia, stopMedia, echoCancellation, noiseSuppression, voiceIsolation]);
 
   // Attach local stream to preview video
   useEffect(() => {
@@ -389,7 +391,7 @@ export function JoinRoom() {
     sessionStorage.setItem('userName', guestName);
     sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
     sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
-    writePreferredAudioProcessing({ echoCancellation, noiseSuppression });
+    writePreferredAudioProcessing({ echoCancellation, noiseSuppression, voiceIsolation });
     writePreferredVideoQuality(videoQuality);
     if (roomId && needsRoomPassword) {
       sessionStorage.setItem(`roomPassword:${roomId}`, roomPassword);
@@ -424,7 +426,7 @@ export function JoinRoom() {
 
   const onAudioDeviceChange = async (deviceId: string) => {
     try {
-      await switchAudioDevice(deviceId, { echoCancellation, noiseSuppression });
+      await switchAudioDevice(deviceId, { echoCancellation, noiseSuppression, voiceIsolation });
     } catch (err) {
       // Device switch failed
     }
@@ -772,6 +774,10 @@ export function JoinRoom() {
             <label style={styles.checkboxLabel}>
               <input type="checkbox" checked={noiseSuppression} onChange={(e) => setNoiseSuppression(e.target.checked)} />
               Noise Suppression
+            </label>
+            <label style={styles.checkboxLabel}>
+              <input type="checkbox" checked={voiceIsolation} onChange={(e) => setVoiceIsolation(e.target.checked)} />
+              Studio Voice Cleanup
             </label>
           </div>
         </div>

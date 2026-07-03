@@ -1,6 +1,7 @@
 export interface AudioProcessingPreferences {
   echoCancellation: boolean;
   noiseSuppression: boolean;
+  voiceIsolation: boolean;
 }
 
 export type VideoQualityPresetId = '720p' | '1080p' | '4k';
@@ -28,11 +29,13 @@ export interface VideoQualityRecommendation {
 
 const PREFERRED_ECHO_CANCELLATION_KEY = 'preferredEchoCancellation';
 const PREFERRED_NOISE_SUPPRESSION_KEY = 'preferredNoiseSuppression';
+const PREFERRED_VOICE_ISOLATION_KEY = 'preferredVoiceIsolation';
 const PREFERRED_VIDEO_QUALITY_KEY = 'preferredVideoQuality';
 
 export const DEFAULT_AUDIO_PROCESSING_PREFERENCES: AudioProcessingPreferences = {
   echoCancellation: true,
   noiseSuppression: true,
+  voiceIsolation: true,
 };
 
 export const DEFAULT_VIDEO_QUALITY_PRESET_ID: VideoQualityPresetId = '1080p';
@@ -127,12 +130,22 @@ export function readPreferredAudioProcessing(): AudioProcessingPreferences {
       PREFERRED_NOISE_SUPPRESSION_KEY,
       DEFAULT_AUDIO_PROCESSING_PREFERENCES.noiseSuppression
     ),
+    voiceIsolation: readSessionBoolean(
+      PREFERRED_VOICE_ISOLATION_KEY,
+      DEFAULT_AUDIO_PROCESSING_PREFERENCES.voiceIsolation
+    ),
   };
 }
 
-export function writePreferredAudioProcessing(preferences: AudioProcessingPreferences) {
-  writeSessionBoolean(PREFERRED_ECHO_CANCELLATION_KEY, preferences.echoCancellation);
-  writeSessionBoolean(PREFERRED_NOISE_SUPPRESSION_KEY, preferences.noiseSuppression);
+export function writePreferredAudioProcessing(preferences: Partial<AudioProcessingPreferences>) {
+  const normalized = {
+    echoCancellation: preferences.echoCancellation ?? DEFAULT_AUDIO_PROCESSING_PREFERENCES.echoCancellation,
+    noiseSuppression: preferences.noiseSuppression ?? DEFAULT_AUDIO_PROCESSING_PREFERENCES.noiseSuppression,
+    voiceIsolation: preferences.voiceIsolation ?? DEFAULT_AUDIO_PROCESSING_PREFERENCES.voiceIsolation,
+  };
+  writeSessionBoolean(PREFERRED_ECHO_CANCELLATION_KEY, normalized.echoCancellation);
+  writeSessionBoolean(PREFERRED_NOISE_SUPPRESSION_KEY, normalized.noiseSuppression);
+  writeSessionBoolean(PREFERRED_VOICE_ISOLATION_KEY, normalized.voiceIsolation);
 }
 
 export function normalizeVideoQualityPresetId(value: unknown): VideoQualityPresetId {

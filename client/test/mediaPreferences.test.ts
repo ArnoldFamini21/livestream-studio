@@ -48,17 +48,29 @@ describe('audio processing preferences', () => {
   });
 
   it('round trips explicit join-screen audio processing choices through session storage', () => {
-    writePreferredAudioProcessing({ echoCancellation: false, noiseSuppression: true });
+    writePreferredAudioProcessing({ echoCancellation: false, noiseSuppression: true, voiceIsolation: false });
 
     assert.deepEqual(readPreferredAudioProcessing(), {
       echoCancellation: false,
       noiseSuppression: true,
+      voiceIsolation: false,
+    });
+  });
+
+  it('preserves voice cleanup by default for legacy two-flag audio preferences', () => {
+    writePreferredAudioProcessing({ echoCancellation: false, noiseSuppression: false });
+
+    assert.deepEqual(readPreferredAudioProcessing(), {
+      echoCancellation: false,
+      noiseSuppression: false,
+      voiceIsolation: true,
     });
   });
 
   it('falls back to defaults when session storage values are not booleans', () => {
     sessionStorage.setItem('preferredEchoCancellation', 'yes');
     sessionStorage.setItem('preferredNoiseSuppression', '');
+    sessionStorage.setItem('preferredVoiceIsolation', 'maybe');
 
     assert.deepEqual(readPreferredAudioProcessing(), DEFAULT_AUDIO_PROCESSING_PREFERENCES);
   });

@@ -210,6 +210,17 @@ export function DeviceSelector({
                     style={styles.processingCheckbox}
                   />
                 </label>
+                <label style={styles.processingOption}>
+                  <span style={styles.processingLabel}>Studio voice cleanup</span>
+                  <span style={styles.processingState}>{audioProcessing.voiceIsolation ? 'On' : 'Off'}</span>
+                  <input
+                    type="checkbox"
+                    checked={audioProcessing.voiceIsolation}
+                    onChange={(e) => updateAudioProcessing('voiceIsolation', e.target.checked)}
+                    aria-label="Toggle studio voice cleanup"
+                    style={styles.processingCheckbox}
+                  />
+                </label>
               </div>
             </div>
           )}
