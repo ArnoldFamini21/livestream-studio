@@ -500,7 +500,7 @@ export function hasDeckFiles(files: File[]): boolean {
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  if (!health) return '';
+  if (!health) return 'Checking the media-server before accepting PowerPoint or PDF uploads.';
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
       return 'Exact deck renderer is unavailable until the media-server reports presentation renderer readiness.';

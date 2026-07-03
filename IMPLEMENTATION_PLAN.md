@@ -234,8 +234,10 @@
   - [x] Workspace dashboard reads host-scoped server recording catalogs and exposes synced MP4 share links
   - [x] Workspace dashboard reads host-scoped server brand kit catalogs and merges cloud-synced kits
   - [x] Workspace dashboard reads host-scoped server saved studio catalogs and merges cloud-synced private host links
+  - [x] Signed-in account saved studio catalog restores private host links across devices
   - [x] Workspace dashboard reads host-scoped server workspace team catalogs and merges cloud-synced roster members
   - [x] Workspace dashboard exposes account registration, login, session restore, and sign-out
+  - [x] PowerPoint uploads fail closed until exact media-server rendering is ready, preventing text-only deck fallbacks
 - [ ] Team/organization support
   - [x] Local roster can compose role-aware production team invites for saved studios
   - [x] Host-scoped server workspace team roster catalog with optional PostgreSQL persistence

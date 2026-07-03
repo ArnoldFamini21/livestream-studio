@@ -71,6 +71,10 @@ function readAccountSessionToken(req: Request): string {
   return getValidAccountSessionToken(bearer) || getValidAccountSessionToken(readCookie(req, ACCOUNT_SESSION_COOKIE));
 }
 
+export function getAccountSessionForRequest(req: Request): Promise<AccountSessionResponse> {
+  return getAccountSession(accountAuthStore, readAccountSessionToken(req));
+}
+
 function sendAccountAuthError(res: Response, err: unknown) {
   if (err instanceof AccountAuthError) {
     res.status(err.statusCode).json({ error: err.message, code: err.code });

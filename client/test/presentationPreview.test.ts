@@ -460,7 +460,7 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview, undefined);
   });
 
-  it('uses a browser-rendered visual fallback when the media server cannot render PowerPoint', async () => {
+  it('does not use browser-rendered fallback when server-rendered PowerPoint is required', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
     const bytes = await zip.generateAsync({ type: 'uint8array' });
@@ -482,14 +482,10 @@ describe('PowerPoint preview extraction', () => {
       pptxSlideImageRenderer: async () => ['data:image/png;base64,browser-rendered'],
     });
 
-    assert.equal(preview?.sourceFormat, 'pptx');
-    assert.equal(preview?.slides[0].title, 'TRIAD FORMATION');
-    assert.deepEqual(preview?.slides[0].lines, ['Discipleship']);
-    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
-    assert.equal(preview?.slides[0].rendered, true);
+    assert.equal(preview, undefined);
   });
 
-  it('uses browser-rendered PowerPoint images when a stale server response has no slide artwork', async () => {
+  it('rejects stale server responses without slide artwork when exact PowerPoint rendering is required', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
     const bytes = await zip.generateAsync({ type: 'uint8array' });
@@ -514,9 +510,7 @@ describe('PowerPoint preview extraction', () => {
       pptxSlideImageRenderer: async () => ['data:image/png;base64,browser-rendered'],
     });
 
-    assert.equal(preview?.sourceFormat, 'pptx');
-    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
-    assert.equal(preview?.slides[0].rendered, true);
+    assert.equal(preview, undefined);
   });
 
   it('rejects browser-rendered PowerPoint fallback when exact server visuals are required', async () => {

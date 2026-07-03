@@ -37,9 +37,10 @@ class FakeDb {
     const normalizedSql = sql.trim().replace(/\s+/g, ' ').toUpperCase();
 
     if (normalizedSql.startsWith('SELECT')) {
+      const isAccountCatalog = normalizedSql.includes('STUDIO_ACCOUNT_WORKSPACE_STUDIO_CATALOG');
       return {
         rows: Array.from(this.rows.values())
-          .filter((row) => row.room_id === params[0])
+          .filter((row) => isAccountCatalog ? row.account_id === params[0] : row.room_id === params[0])
           .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
           .slice(0, params[1])
           .map((row) => ({ studio: row.studio })),
@@ -47,9 +48,10 @@ class FakeDb {
     }
 
     if (normalizedSql.startsWith('INSERT')) {
+      const isAccountCatalog = normalizedSql.includes('STUDIO_ACCOUNT_WORKSPACE_STUDIO_CATALOG');
       const [roomId, studioId, studioJson, createdAt, updatedAt] = params;
-      this.rows.set(`${roomId}:${studioId}`, {
-        room_id: roomId,
+      this.rows.set(`${isAccountCatalog ? 'account' : 'room'}:${roomId}:${studioId}`, {
+        ...(isAccountCatalog ? { account_id: roomId } : { room_id: roomId }),
         studio_id: studioId,
         studio: JSON.parse(studioJson),
         created_at: createdAt,
@@ -58,7 +60,8 @@ class FakeDb {
     }
 
     if (normalizedSql.startsWith('DELETE')) {
-      this.rows.delete(`${params[0]}:${params[1]}`);
+      const isAccountCatalog = normalizedSql.includes('STUDIO_ACCOUNT_WORKSPACE_STUDIO_CATALOG');
+      this.rows.delete(`${isAccountCatalog ? 'account' : 'room'}:${params[0]}:${params[1]}`);
     }
 
     return { rows: [] };
@@ -141,6 +144,22 @@ describe('InMemoryWorkspaceStudioCatalogStore', () => {
     await store.deleteStudio(ROOM_ID, 'studio-2');
     assert.deepEqual((await store.listRoomStudios(ROOM_ID)).map((entry) => entry.id), ['studio-1']);
   });
+
+  it('stores account-scoped saved studios separately from room catalogs', async () => {
+    const store = new InMemoryWorkspaceStudioCatalogStore();
+    const accountEntry = normalizeWorkspaceStudioCatalogEntry(studio({ id: 'account-studio' }));
+    const roomEntry = normalizeWorkspaceStudioCatalogEntry(studio({ id: 'room-studio' }));
+
+    await store.upsertAccountStudio('account-1', accountEntry);
+    await store.upsertStudio(ROOM_ID, roomEntry);
+
+    assert.deepEqual((await store.listAccountStudios('account-1')).map((entry) => entry.id), ['account-studio']);
+    assert.deepEqual((await store.listRoomStudios(ROOM_ID)).map((entry) => entry.id), ['room-studio']);
+
+    await store.deleteAccountStudio('account-1', 'account-studio');
+    assert.deepEqual(await store.listAccountStudios('account-1'), []);
+    assert.deepEqual((await store.listRoomStudios(ROOM_ID)).map((entry) => entry.id), ['room-studio']);
+  });
 });
 
 describe('PostgresWorkspaceStudioCatalogStore', () => {
@@ -151,17 +170,26 @@ describe('PostgresWorkspaceStudioCatalogStore', () => {
 
     await store.init();
     await store.upsertStudio(ROOM_ID, entry);
+    await store.upsertAccountStudio('account-1', normalizeWorkspaceStudioCatalogEntry(studio({ id: 'account-studio' })));
 
     assert.ok(fakeDb.queries.some((query) => query.sql.includes('CREATE TABLE IF NOT EXISTS studio_workspace_studio_catalog')));
+    assert.ok(fakeDb.queries.some((query) => query.sql.includes('CREATE TABLE IF NOT EXISTS studio_account_workspace_studio_catalog')));
     assert.ok(fakeDb.queries.some((query) => query.sql.includes('ON CONFLICT (room_id, studio_id) DO UPDATE')));
+    assert.ok(fakeDb.queries.some((query) => query.sql.includes('ON CONFLICT (account_id, studio_id) DO UPDATE')));
 
     const listed = await store.listRoomStudios(ROOM_ID);
     assert.equal(listed.length, 1);
     assert.equal(listed[0].id, entry.id);
     assert.equal(listed[0].hostToken, HOST_TOKEN);
 
+    const accountListed = await store.listAccountStudios('account-1');
+    assert.equal(accountListed.length, 1);
+    assert.equal(accountListed[0].id, 'account-studio');
+
     await store.deleteStudio(ROOM_ID, entry.id);
     assert.deepEqual(await store.listRoomStudios(ROOM_ID), []);
+    await store.deleteAccountStudio('account-1', 'account-studio');
+    assert.deepEqual(await store.listAccountStudios('account-1'), []);
 
     await store.close();
     assert.equal(fakeDb.closed, true);

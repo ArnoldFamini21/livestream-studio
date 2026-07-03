@@ -55,7 +55,7 @@ describe('media library upload support', () => {
   });
 
   it('blocks deck uploads only while the exact renderer is not ready', () => {
-    assert.equal(getDeckUploadBlockMessage(null), '');
+    assert.match(getDeckUploadBlockMessage(null), /Checking the media-server/);
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
       /Exact deck renderer is unavailable/

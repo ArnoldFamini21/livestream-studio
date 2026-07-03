@@ -4,6 +4,7 @@ import type {
   WorkspaceStudioCatalogUpsertRequest,
 } from '@studio/shared';
 import { ApiRequestError, buildApiUrl, getJson, postJson } from './apiClient.ts';
+import { accountHeaders } from './accountAuth.ts';
 import { getValidHostToken, type SavedHostStudio } from './hostSession.ts';
 
 export interface SyncWorkspaceStudioCatalogInput {
@@ -99,6 +100,16 @@ export function fetchWorkspaceStudioCatalog(
   );
 }
 
+export function fetchAccountWorkspaceStudioCatalog(): Promise<WorkspaceStudioCatalogListResponse> {
+  return getJson<WorkspaceStudioCatalogListResponse>(
+    '/api/workspace-studios/account/catalog',
+    {
+      credentials: 'include',
+      headers: accountHeaders(),
+    }
+  );
+}
+
 export function syncWorkspaceStudioCatalogEntry({
   roomId,
   hostToken,
@@ -108,6 +119,19 @@ export function syncWorkspaceStudioCatalogEntry({
     `/api/workspace-studios/rooms/${encodeURIComponent(roomId)}/catalog`,
     buildWorkspaceStudioCatalogUpsertRequest(studio),
     { headers: catalogHeaders(hostToken) }
+  );
+}
+
+export function syncAccountWorkspaceStudioCatalogEntry(
+  studio: SavedHostStudio
+): Promise<WorkspaceStudioCatalogEntry> {
+  return postJson<WorkspaceStudioCatalogEntry>(
+    '/api/workspace-studios/account/catalog',
+    buildWorkspaceStudioCatalogUpsertRequest(studio),
+    {
+      credentials: 'include',
+      headers: accountHeaders(),
+    }
   );
 }
 
@@ -121,6 +145,23 @@ export async function deleteWorkspaceStudioCatalogEntry(
   ), {
     method: 'DELETE',
     headers: catalogHeaders(hostToken),
+  });
+
+  if (!response.ok) {
+    throw new ApiRequestError(
+      `Studio server returned ${response.status}. Please try again.`,
+      { status: response.status, responseText: await response.text().catch(() => '') }
+    );
+  }
+}
+
+export async function deleteAccountWorkspaceStudioCatalogEntry(studioId: string): Promise<void> {
+  const response = await fetch(buildApiUrl(
+    `/api/workspace-studios/account/catalog/${encodeURIComponent(studioId)}`
+  ), {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: accountHeaders(),
   });
 
   if (!response.ok) {
