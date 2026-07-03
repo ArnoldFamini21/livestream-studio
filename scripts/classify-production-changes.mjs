@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 const SIGNALING_PREFIXES = ['server/', 'shared/'];
 const MEDIA_PREFIXES = ['media-server/', 'shared/'];
-const SERVICE_FILES = new Set(['package.json', 'package-lock.json', 'render.yaml']);
+const GLOBAL_SERVICE_FILES = new Set(['package.json', 'render.yaml']);
 
 function normalizePath(value) {
   return String(value || '').trim().replace(/\\/g, '/').replace(/^\.\/+/, '');
@@ -17,12 +17,24 @@ export function classifyProductionChanges(files = []) {
 
   const signalingFiles = [];
   const mediaFiles = [];
+  const hasSignalingWorkspaceDependencyChange = normalizedFiles.some((file) => (
+    file === 'server/package.json' ||
+    file === 'shared/package.json'
+  ));
+  const hasMediaWorkspaceDependencyChange = normalizedFiles.some((file) => (
+    file === 'media-server/package.json' ||
+    file === 'shared/package.json'
+  ));
 
   for (const file of normalizedFiles) {
-    if (SERVICE_FILES.has(file) || SIGNALING_PREFIXES.some((prefix) => file.startsWith(prefix))) {
+    const isPackageLock = file === 'package-lock.json';
+    const packageLockMatchesSignaling = isPackageLock && (hasSignalingWorkspaceDependencyChange || !hasMediaWorkspaceDependencyChange);
+    const packageLockMatchesMedia = isPackageLock && (hasMediaWorkspaceDependencyChange || !hasSignalingWorkspaceDependencyChange);
+
+    if (GLOBAL_SERVICE_FILES.has(file) || packageLockMatchesSignaling || SIGNALING_PREFIXES.some((prefix) => file.startsWith(prefix))) {
       signalingFiles.push(file);
     }
-    if (SERVICE_FILES.has(file) || MEDIA_PREFIXES.some((prefix) => file.startsWith(prefix))) {
+    if (GLOBAL_SERVICE_FILES.has(file) || packageLockMatchesMedia || MEDIA_PREFIXES.some((prefix) => file.startsWith(prefix))) {
       mediaFiles.push(file);
     }
   }
