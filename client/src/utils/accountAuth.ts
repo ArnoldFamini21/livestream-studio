@@ -51,7 +51,7 @@ export function clearAccountSessionToken() {
   removeLocalItem(ACCOUNT_SESSION_STORAGE_KEY);
 }
 
-function accountHeaders(): Headers {
+export function accountHeaders(): Headers {
   const headers = new Headers();
   const token = readAccountSessionToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);

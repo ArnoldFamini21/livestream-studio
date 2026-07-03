@@ -762,7 +762,7 @@ export async function buildPresentationPreview(
       }
     }
 
-    if (requireServerRenderedPowerPoint && !options.allowBrowserPowerPointRenderFallback) return undefined;
+    if (requireServerRenderedPowerPoint) return undefined;
 
     const renderedImageUrls = await renderPptxSlidesWithConfiguredRenderer(arrayBuffer, slides.length, options);
     const finalSlides = applyRenderedSlideImages(slides, renderedImageUrls);

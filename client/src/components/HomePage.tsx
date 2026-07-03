@@ -48,9 +48,12 @@ import {
   fetchBrandKitCatalog,
 } from '../utils/brandKitCatalog.ts';
 import {
+  deleteAccountWorkspaceStudioCatalogEntry,
   deleteWorkspaceStudioCatalogEntry,
+  fetchAccountWorkspaceStudioCatalog,
   fetchWorkspaceStudioCatalog,
   mergeWorkspaceStudioCatalogEntries,
+  syncAccountWorkspaceStudioCatalogEntry,
   syncWorkspaceStudioCatalogEntry,
 } from '../utils/workspaceStudioCatalog.ts';
 import {
@@ -290,6 +293,9 @@ export function HomePage() {
   const [serverWorkspaceStudioCatalog, setServerWorkspaceStudioCatalog] = useState<WorkspaceStudioCatalogEntry[]>([]);
   const [serverWorkspaceStudioCatalogLoading, setServerWorkspaceStudioCatalogLoading] = useState(false);
   const [serverWorkspaceStudioCatalogError, setServerWorkspaceStudioCatalogError] = useState<string | null>(null);
+  const [accountWorkspaceStudioCatalog, setAccountWorkspaceStudioCatalog] = useState<WorkspaceStudioCatalogEntry[]>([]);
+  const [accountWorkspaceStudioCatalogLoading, setAccountWorkspaceStudioCatalogLoading] = useState(false);
+  const [accountWorkspaceStudioCatalogError, setAccountWorkspaceStudioCatalogError] = useState<string | null>(null);
   const [serverRecordingCatalog, setServerRecordingCatalog] = useState<RecordingCatalogEntry[]>([]);
   const [serverRecordingCatalogLoading, setServerRecordingCatalogLoading] = useState(false);
   const [serverRecordingCatalogError, setServerRecordingCatalogError] = useState<string | null>(null);
@@ -303,6 +309,7 @@ export function HomePage() {
   const recordingLibrary = useRecordingLibrary();
   const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
   const lastWorkspaceStudioCatalogSyncKey = useRef('');
+  const lastAccountWorkspaceStudioCatalogSyncKey = useRef('');
 
   const [error, setError] = useState<string | null>(null);
 
@@ -420,9 +427,16 @@ export function HomePage() {
   const hostEntryLink = scheduledRoom ? buildHostEntryUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.hostToken) : '';
   const buildInviteLink = (room: SavedScheduledStudio) => buildGuestInviteUrl(INVITE_BASE_URL, room.id, room.name);
   const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
+  const cloudWorkspaceStudioCatalog = useMemo(() => {
+    const byId = new Map<string, WorkspaceStudioCatalogEntry>();
+    for (const studio of serverWorkspaceStudioCatalog) byId.set(studio.id, studio);
+    for (const studio of accountWorkspaceStudioCatalog) byId.set(studio.id, studio);
+    return Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  }, [accountWorkspaceStudioCatalog, serverWorkspaceStudioCatalog]);
+
   const dashboardStudios = useMemo(
-    () => toSavedScheduledStudios(mergeWorkspaceStudioCatalogEntries(savedScheduledRooms, serverWorkspaceStudioCatalog)),
-    [savedScheduledRooms, serverWorkspaceStudioCatalog]
+    () => toSavedScheduledStudios(mergeWorkspaceStudioCatalogEntries(savedScheduledRooms, cloudWorkspaceStudioCatalog)),
+    [cloudWorkspaceStudioCatalog, savedScheduledRooms]
   );
   const dashboardRecordings = useMemo(
     () => buildWorkspaceRecordingDashboardItems(recordingLibrary.sessions, serverRecordingCatalog),
@@ -461,10 +475,12 @@ export function HomePage() {
     .slice(0, 5);
   const workspaceSyncNotice = dashboardNotice ||
     (serverWorkspaceStudioCatalogLoading ? 'Refreshing cloud studios...' : null) ||
+    (accountWorkspaceStudioCatalogLoading ? 'Refreshing account studios...' : null) ||
     (serverRecordingCatalogLoading ? 'Refreshing cloud recording catalog...' : null) ||
     (serverBrandKitCatalogLoading ? 'Refreshing cloud brand kit catalog...' : null) ||
     (serverWorkspaceTeamCatalogLoading ? 'Refreshing cloud team roster...' : null) ||
     serverWorkspaceStudioCatalogError ||
+    accountWorkspaceStudioCatalogError ||
     serverRecordingCatalogError ||
     serverBrandKitCatalogError ||
     serverWorkspaceTeamCatalogError;
@@ -560,6 +576,41 @@ export function HomePage() {
   }, [savedScheduledRooms]);
 
   useEffect(() => {
+    if (!accountUser) {
+      setAccountWorkspaceStudioCatalog([]);
+      setAccountWorkspaceStudioCatalogError(null);
+      setAccountWorkspaceStudioCatalogLoading(false);
+      lastAccountWorkspaceStudioCatalogSyncKey.current = '';
+      return;
+    }
+
+    let cancelled = false;
+    setAccountWorkspaceStudioCatalogLoading(true);
+    setAccountWorkspaceStudioCatalogError(null);
+
+    fetchAccountWorkspaceStudioCatalog()
+      .then((response) => {
+        if (cancelled) return;
+        setAccountWorkspaceStudioCatalog(
+          response.studios.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAccountWorkspaceStudioCatalog([]);
+          setAccountWorkspaceStudioCatalogError('Could not refresh account studios.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAccountWorkspaceStudioCatalogLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accountUser]);
+
+  useEffect(() => {
     const syncKey = savedScheduledRooms
       .filter((room) => getValidHostToken(room.hostToken))
       .map((room) => `${room.id}:${room.hostToken}:${room.createdAt}:${room.scheduledFor || ''}`)
@@ -568,6 +619,20 @@ export function HomePage() {
     lastWorkspaceStudioCatalogSyncKey.current = syncKey;
     void syncWorkspaceStudiosToSavedStudios(savedScheduledRooms, savedScheduledRooms, false);
   }, [savedScheduledRooms]);
+
+  useEffect(() => {
+    const syncKey = accountUser
+      ? [
+          accountUser.id,
+          ...savedScheduledRooms
+            .filter((room) => getValidHostToken(room.hostToken))
+            .map((room) => `${room.id}:${room.hostToken}:${room.createdAt}:${room.scheduledFor || ''}`),
+        ].join('|')
+      : '';
+    if (!syncKey || syncKey === lastAccountWorkspaceStudioCatalogSyncKey.current) return;
+    lastAccountWorkspaceStudioCatalogSyncKey.current = syncKey;
+    void syncAccountWorkspaceStudios(savedScheduledRooms, false);
+  }, [accountUser, savedScheduledRooms]);
 
   useEffect(() => {
     const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
@@ -857,6 +922,7 @@ export function HomePage() {
     const currentDashboardStudios = dashboardStudios;
     setSavedScheduledRooms(removeSavedScheduledStudio(roomId));
     void deleteWorkspaceStudioFromSavedStudios(roomId, currentDashboardStudios);
+    void deleteAccountWorkspaceStudio(roomId);
   };
 
   const deleteRecordingSession = async (session: LocalRecordingSession) => {
@@ -916,6 +982,16 @@ export function HomePage() {
     });
   };
 
+  const mergeSyncedAccountWorkspaceStudios = (studios: WorkspaceStudioCatalogEntry[]) => {
+    if (studios.length === 0) return;
+    setAccountWorkspaceStudioCatalog((current) => {
+      const byId = new Map<string, WorkspaceStudioCatalogEntry>();
+      for (const studio of current) byId.set(studio.id, studio);
+      for (const studio of studios) byId.set(studio.id, studio);
+      return Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    });
+  };
+
   const syncWorkspaceStudiosToSavedStudios = async (
     studios: SavedScheduledStudio[],
     catalogStudios: SavedScheduledStudio[] = dashboardStudios,
@@ -949,6 +1025,31 @@ export function HomePage() {
     }
   };
 
+  const syncAccountWorkspaceStudios = async (
+    studios: SavedScheduledStudio[],
+    showErrors = true
+  ) => {
+    if (!accountUser) return;
+    const syncableStudios = studios.filter((room) => getValidHostToken(room.hostToken));
+    if (syncableStudios.length === 0) return;
+
+    const results = await Promise.allSettled(
+      syncableStudios.map((studio) => syncAccountWorkspaceStudioCatalogEntry(studio))
+    );
+    const synced = results
+      .filter((result): result is PromiseFulfilledResult<WorkspaceStudioCatalogEntry> => result.status === 'fulfilled')
+      .map((result) => result.value);
+    mergeSyncedAccountWorkspaceStudios(synced);
+
+    const failedCount = results.filter((result) => result.status === 'rejected').length;
+    if (showErrors) {
+      setAccountWorkspaceStudioCatalogError(failedCount > 0
+        ? `Saved locally, but ${failedCount} account studio sync ${failedCount === 1 ? 'request' : 'requests'} failed.`
+        : null
+      );
+    }
+  };
+
   const deleteWorkspaceStudioFromSavedStudios = async (
     studioId: string,
     catalogStudios: SavedScheduledStudio[] = dashboardStudios
@@ -965,6 +1066,17 @@ export function HomePage() {
       ? `Removed locally, but cloud studio removal failed for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
       : null
     );
+  };
+
+  const deleteAccountWorkspaceStudio = async (studioId: string) => {
+    if (!accountUser) return;
+    setAccountWorkspaceStudioCatalog((current) => current.filter((studio) => studio.id !== studioId));
+    try {
+      await deleteAccountWorkspaceStudioCatalogEntry(studioId);
+      setAccountWorkspaceStudioCatalogError(null);
+    } catch {
+      setAccountWorkspaceStudioCatalogError('Removed locally, but account studio removal failed.');
+    }
   };
 
   const mergeSyncedWorkspaceTeamMembers = (members: WorkspaceTeamCatalogMember[]) => {
@@ -1105,6 +1217,7 @@ export function HomePage() {
       setSavedBrandKits(result.brandKits);
       setSavedTeamMembers(result.teamMembers);
       void syncWorkspaceStudiosToSavedStudios(importedStudios, importedStudios);
+      void syncAccountWorkspaceStudios(importedStudios);
       void syncWorkspaceTeamMembersToSavedStudios(result.teamMembers, importedStudios);
       setDashboardNotice(
         `Imported ${result.importedStudios} studios, ${result.importedBrandKits} brand kits, and ${result.importedTeamMembers} team members.`
@@ -1151,6 +1264,9 @@ export function HomePage() {
       await logoutAccount();
       setAccountUser(null);
       setAccountSessionExpiresAt('');
+      setAccountWorkspaceStudioCatalog([]);
+      setAccountWorkspaceStudioCatalogError(null);
+      lastAccountWorkspaceStudioCatalogSyncKey.current = '';
       setAccountPassword('');
       setDashboardNotice('Signed out.');
     } catch (err) {

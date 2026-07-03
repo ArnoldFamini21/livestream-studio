@@ -29,6 +29,9 @@ export interface WorkspaceStudioCatalogStore {
   upsertStudio(roomId: string, entry: WorkspaceStudioCatalogEntry): Promise<WorkspaceStudioCatalogEntry>;
   listRoomStudios(roomId: string): Promise<WorkspaceStudioCatalogEntry[]>;
   deleteStudio(roomId: string, studioId: string): Promise<void>;
+  upsertAccountStudio(accountId: string, entry: WorkspaceStudioCatalogEntry): Promise<WorkspaceStudioCatalogEntry>;
+  listAccountStudios(accountId: string): Promise<WorkspaceStudioCatalogEntry[]>;
+  deleteAccountStudio(accountId: string, studioId: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -147,6 +150,7 @@ export function buildWorkspaceStudioCatalogListResponse(
 
 export class InMemoryWorkspaceStudioCatalogStore implements WorkspaceStudioCatalogStore {
   private readonly studiosByRoom = new Map<string, Map<string, WorkspaceStudioCatalogEntry>>();
+  private readonly studiosByAccount = new Map<string, Map<string, WorkspaceStudioCatalogEntry>>();
 
   async init(): Promise<void> {}
 
@@ -174,6 +178,30 @@ export class InMemoryWorkspaceStudioCatalogStore implements WorkspaceStudioCatal
     this.studiosByRoom.get(roomId)?.delete(studioId);
   }
 
+  async upsertAccountStudio(accountId: string, entry: WorkspaceStudioCatalogEntry): Promise<WorkspaceStudioCatalogEntry> {
+    let accountStudios = this.studiosByAccount.get(accountId);
+    if (!accountStudios) {
+      accountStudios = new Map();
+      this.studiosByAccount.set(accountId, accountStudios);
+    }
+    accountStudios.set(entry.id, entry);
+    if (accountStudios.size > MAX_STUDIOS_PER_ROOM) {
+      const oldest = Array.from(accountStudios.values()).sort((a, b) => getStudioSortTime(a) - getStudioSortTime(b))[0];
+      if (oldest) accountStudios.delete(oldest.id);
+    }
+    return entry;
+  }
+
+  async listAccountStudios(accountId: string): Promise<WorkspaceStudioCatalogEntry[]> {
+    return Array.from(this.studiosByAccount.get(accountId)?.values() || [])
+      .sort((a, b) => getStudioSortTime(b) - getStudioSortTime(a))
+      .slice(0, MAX_STUDIOS_PER_ROOM);
+  }
+
+  async deleteAccountStudio(accountId: string, studioId: string): Promise<void> {
+    this.studiosByAccount.get(accountId)?.delete(studioId);
+  }
+
   async close(): Promise<void> {}
 }
 
@@ -194,6 +222,20 @@ export class PostgresWorkspaceStudioCatalogStore implements WorkspaceStudioCatal
     await this.db.query(`
       CREATE INDEX IF NOT EXISTS studio_workspace_studio_catalog_room_updated_at_idx
         ON studio_workspace_studio_catalog (room_id, updated_at DESC)
+    `);
+    await this.db.query(`
+      CREATE TABLE IF NOT EXISTS studio_account_workspace_studio_catalog (
+        account_id text NOT NULL,
+        studio_id text NOT NULL,
+        studio jsonb NOT NULL,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id, studio_id)
+      )
+    `);
+    await this.db.query(`
+      CREATE INDEX IF NOT EXISTS studio_account_workspace_studio_catalog_account_updated_at_idx
+        ON studio_account_workspace_studio_catalog (account_id, updated_at DESC)
     `);
   }
 
@@ -238,6 +280,50 @@ export class PostgresWorkspaceStudioCatalogStore implements WorkspaceStudioCatal
     await this.db.query(
       'DELETE FROM studio_workspace_studio_catalog WHERE room_id = $1 AND studio_id = $2',
       [roomId, studioId]
+    );
+  }
+
+  async upsertAccountStudio(accountId: string, entry: WorkspaceStudioCatalogEntry): Promise<WorkspaceStudioCatalogEntry> {
+    await this.db.query(`
+      INSERT INTO studio_account_workspace_studio_catalog (
+        account_id,
+        studio_id,
+        studio,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz)
+      ON CONFLICT (account_id, studio_id) DO UPDATE SET
+        studio = EXCLUDED.studio,
+        updated_at = EXCLUDED.updated_at
+    `, [
+      accountId,
+      entry.id,
+      JSON.stringify(entry),
+      entry.scheduledFor || entry.createdAt,
+      entry.updatedAt,
+    ]);
+    return entry;
+  }
+
+  async listAccountStudios(accountId: string): Promise<WorkspaceStudioCatalogEntry[]> {
+    const result = await this.db.query(`
+      SELECT studio
+      FROM studio_account_workspace_studio_catalog
+      WHERE account_id = $1
+      ORDER BY created_at DESC
+      LIMIT $2
+    `, [accountId, MAX_STUDIOS_PER_ROOM]);
+
+    return result.rows
+      .map((row) => normalizeStoredStudio(row.studio))
+      .filter((entry): entry is WorkspaceStudioCatalogEntry => Boolean(entry));
+  }
+
+  async deleteAccountStudio(accountId: string, studioId: string): Promise<void> {
+    await this.db.query(
+      'DELETE FROM studio_account_workspace_studio_catalog WHERE account_id = $1 AND studio_id = $2',
+      [accountId, studioId]
     );
   }
 
