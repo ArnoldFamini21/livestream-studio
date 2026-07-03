@@ -6,6 +6,7 @@ import {
   getExpandedDrawRect,
   getSegmentationConfidence,
   getVirtualBackgroundRefinementSettings,
+  prepareSegmentationMaskAlpha,
   refineSegmentationMaskAlpha,
   shouldInvertSegmentationMask,
   smoothStep,
@@ -74,6 +75,32 @@ describe('virtual background refinement', () => {
     assert.equal(inverted[3], 0);
   });
 
+  it('prepares inverted masks into solid subject alpha without hollow silhouettes', () => {
+    const width = 8;
+    const height = 8;
+    const mask = new Uint8ClampedArray(width * height * 4);
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = (y * width + x) * 4;
+        const inSubject = x >= 2 && x <= 5 && y >= 1 && y <= 6;
+        const value = inSubject ? 0 : 255;
+        mask[index] = value;
+        mask[index + 1] = value;
+        mask[index + 2] = value;
+        mask[index + 3] = 255;
+      }
+    }
+
+    const result = prepareSegmentationMaskAlpha(mask, width, height);
+    const subjectAlpha = mask[(3 * width + 3) * 4 + 3];
+    const backgroundAlpha = mask[3];
+
+    assert.equal(result.inverted, true);
+    assert.equal(subjectAlpha, 255);
+    assert.equal(backgroundAlpha, 0);
+  });
+
   it('scales edge and background refinement by output size', () => {
     const small = getVirtualBackgroundRefinementSettings(640, 360);
     const large = getVirtualBackgroundRefinementSettings(1920, 1080);
@@ -81,6 +108,7 @@ describe('virtual background refinement', () => {
     assert.ok(small.edgeBlurPx >= 2.5);
     assert.ok(large.edgeBlurPx > small.edgeBlurPx);
     assert.ok(large.maskExpansionPx >= small.maskExpansionPx);
+    assert.ok(small.edgeFeatherOpacity > 0 && small.edgeFeatherOpacity < 0.5);
     assert.ok(large.replacementBackgroundBlurPx >= small.replacementBackgroundBlurPx);
   });
 
