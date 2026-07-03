@@ -9,6 +9,12 @@ export interface MediaShareLayoutPlan {
   usesFloatingParticipant: boolean;
 }
 
+export interface MediaShareLayoutVisibilitySummary {
+  totalParticipantCount: number;
+  visibleParticipantCount: number;
+  hiddenParticipantCount: number;
+}
+
 export interface SharedMediaParticipantItem {
   id: string;
 }
@@ -94,6 +100,19 @@ export function getMediaShareLayoutPlan(layout: LayoutMode, participantCount: nu
         usesFloatingParticipant: false,
       };
   }
+}
+
+export function getMediaShareLayoutVisibilitySummary(
+  layout: LayoutMode,
+  participantCount: number
+): MediaShareLayoutVisibilitySummary {
+  const totalParticipantCount = normalizeParticipantCount(participantCount);
+  const visibleParticipantCount = getMediaShareLayoutPlan(layout, totalParticipantCount).visibleParticipantCount;
+  return {
+    totalParticipantCount,
+    visibleParticipantCount,
+    hiddenParticipantCount: Math.max(0, totalParticipantCount - visibleParticipantCount),
+  };
 }
 
 export function mergeSharedMediaParticipantItems<T extends SharedMediaParticipantItem>(

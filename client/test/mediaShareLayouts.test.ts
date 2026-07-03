@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { LayoutMode } from '@studio/shared';
 import {
   getMediaShareLayoutPlan,
+  getMediaShareLayoutVisibilitySummary,
   mergeSharedMediaParticipantItems,
   selectVisibleStageItems,
   splitScreenShareStageItems,
@@ -35,6 +36,32 @@ describe('media share layouts', () => {
     assert.equal(getMediaShareLayoutPlan('side-by-side', 12).visibleParticipantCount, 2);
     assert.equal(getMediaShareLayoutPlan('pip', 12).visibleParticipantCount, 4);
     assert.equal(getMediaShareLayoutPlan('single', 12).visibleParticipantCount, 1);
+  });
+
+  it('summarizes visible and hidden participants for host-facing media layout controls', () => {
+    assert.deepEqual(getMediaShareLayoutVisibilitySummary('grid', 7), {
+      totalParticipantCount: 7,
+      visibleParticipantCount: 4,
+      hiddenParticipantCount: 3,
+    });
+    assert.deepEqual(getMediaShareLayoutVisibilitySummary('spotlight', 7), {
+      totalParticipantCount: 7,
+      visibleParticipantCount: 6,
+      hiddenParticipantCount: 1,
+    });
+    assert.deepEqual(getMediaShareLayoutVisibilitySummary('single', 7), {
+      totalParticipantCount: 7,
+      visibleParticipantCount: 1,
+      hiddenParticipantCount: 6,
+    });
+  });
+
+  it('reports media-only shared content without hidden participants', () => {
+    assert.deepEqual(getMediaShareLayoutVisibilitySummary('pip', 0), {
+      totalParticipantCount: 0,
+      visibleParticipantCount: 0,
+      hiddenParticipantCount: 0,
+    });
   });
 
   it('keeps multiple participants visible in split and floating media share formats', () => {
