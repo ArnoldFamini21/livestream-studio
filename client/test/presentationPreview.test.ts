@@ -53,8 +53,8 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(isPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
   });
 
-  it('keeps browser PowerPoint fallback image-based and recoverable', () => {
-    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, true);
+  it('keeps the normal PowerPoint upload path exact-render only', () => {
+    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, false);
     assert.equal(isRecoverablePowerPointServerRenderFailure({
       status: 404,
       code: 'MEDIA_SERVER_NO_SERVER',
