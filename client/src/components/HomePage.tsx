@@ -27,7 +27,7 @@ import {
   type CreatedRoomResponse,
 } from '../utils/hostAccess.ts';
 import { buildRegistrantsCsv } from '../utils/webinarRegistration.ts';
-import { buildGuestInviteEmailHref, buildGuestInviteUrl } from '../utils/inviteLinks.ts';
+import { buildGuestInviteEmailHref, buildGuestInviteUrl, buildGuestPreparationSheet } from '../utils/inviteLinks.ts';
 import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import {
   BRAND_KIT_STORAGE_KEY,
@@ -876,6 +876,25 @@ export function HomePage() {
       inviteUrl: buildInviteLink(room),
       passwordProtected: room.passwordProtected,
     });
+  };
+
+  const downloadGuestPreparationSheet = (room: SavedScheduledStudio) => {
+    downloadTextFile(
+      buildGuestPreparationSheet({
+        roomName: room.name,
+        hostName: room.hostName,
+        status: getScheduleState(room),
+        scheduledLabel: room.scheduledFor ? formatScheduledDate(room.scheduledFor) : null,
+        generatedAt: formatDashboardDate(new Date().toISOString()),
+        inviteUrl: buildInviteLink(room),
+        passwordProtected: room.passwordProtected,
+        registrationEnabled: room.registrationEnabled,
+      }),
+      `${safeFileName(room.name)}_guest_prep.txt`,
+      'text/plain;charset=utf-8'
+    );
+    setDashboardError(null);
+    setDashboardNotice('Guest preparation sheet downloaded.');
   };
 
   const buildTeamInviteInput = (room: SavedScheduledStudio) => ({
@@ -1854,6 +1873,12 @@ export function HomePage() {
                           onClick={() => emailGuestInvite(room)}
                         >
                           Email
+                        </button>
+                        <button
+                          style={styles.savedRoomAction}
+                          onClick={() => downloadGuestPreparationSheet(room)}
+                        >
+                          Guest Prep
                         </button>
                         {dashboardTeamMembers.length > 0 && (
                           <>
