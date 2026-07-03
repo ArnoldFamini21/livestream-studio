@@ -46,7 +46,9 @@ describe('studio layout presets', () => {
     assert.equal(getMediaShareLayoutLabel('grid'), 'Media Rail');
     assert.equal(getMediaShareLayoutLabel('spotlight'), 'Speaker Strip');
     assert.equal(getMediaShareLayoutLabel('side-by-side'), 'Split Stage');
+    assert.equal(getMediaShareLayoutLabel('featured'), 'Presenter Stack');
     assert.match(getMediaShareLayoutDescription('side-by-side'), /up to 2 participant videos/);
-    assert.match(getMediaShareLayoutDescription('pip'), /up to 2 floating participant videos/);
+    assert.match(getMediaShareLayoutDescription('featured'), /stacked floating participant videos/);
+    assert.match(getMediaShareLayoutDescription('pip'), /up to 4 floating participant videos/);
   });
 });

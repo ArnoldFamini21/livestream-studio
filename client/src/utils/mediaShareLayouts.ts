@@ -1,6 +1,6 @@
 import type { LayoutMode } from '@studio/shared';
 
-export type MediaShareParticipantPlacement = 'side-rail' | 'bottom-strip' | 'side-by-side' | 'pip';
+export type MediaShareParticipantPlacement = 'side-rail' | 'bottom-strip' | 'side-by-side' | 'floating-stack' | 'pip';
 
 export interface MediaShareLayoutPlan {
   placement: MediaShareParticipantPlacement;
@@ -30,7 +30,8 @@ export interface VisibleStageItemSelectionOptions {
 const MAX_SIDE_RAIL_PARTICIPANTS = 4;
 const MAX_BOTTOM_STRIP_PARTICIPANTS = 6;
 const MAX_SPLIT_PARTICIPANTS = 2;
-const MAX_FLOATING_PIP_PARTICIPANTS = 2;
+const MAX_FLOATING_PIP_PARTICIPANTS = 4;
+const MAX_FLOATING_STACK_PARTICIPANTS = 4;
 
 function normalizeParticipantCount(count: number): number {
   if (!Number.isFinite(count)) return 0;
@@ -78,8 +79,14 @@ export function getMediaShareLayoutPlan(layout: LayoutMode, participantCount: nu
         mediaIsDominant: true,
         usesFloatingParticipant: false,
       };
-    case 'grid':
     case 'featured':
+      return {
+        placement: 'floating-stack',
+        visibleParticipantCount: Math.min(count, MAX_FLOATING_STACK_PARTICIPANTS),
+        mediaIsDominant: true,
+        usesFloatingParticipant: true,
+      };
+    case 'grid':
       return {
         placement: 'side-rail',
         visibleParticipantCount: Math.min(count, MAX_SIDE_RAIL_PARTICIPANTS),
