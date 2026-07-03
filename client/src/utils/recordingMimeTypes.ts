@@ -33,6 +33,17 @@ export const AUDIO_WEBM_MEDIA_RECORDER_TYPES = [
 
 type MediaRecorderSupport = Pick<typeof MediaRecorder, 'isTypeSupported'> | undefined;
 
+export interface BrowserRecordingFormatSummary {
+  videoMimeType: string;
+  audioMimeType: string;
+  videoExtension: string;
+  audioExtension: string;
+  supportsVideoMp4: boolean;
+  supportsAudioMp4: boolean;
+  label: string;
+  detail: string;
+}
+
 export function getSupportedMediaRecorderMimeType(
   candidates: readonly string[],
   mediaRecorder: MediaRecorderSupport = typeof MediaRecorder === 'undefined' ? undefined : MediaRecorder
@@ -76,4 +87,65 @@ export function getRecordingFileExtension(mimeType: string | undefined): string 
   if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'mp3';
   if (normalized.includes('wav')) return 'wav';
   return 'webm';
+}
+
+export function getBrowserRecordingFormatSummary(
+  mediaRecorder: MediaRecorderSupport = typeof MediaRecorder === 'undefined' ? undefined : MediaRecorder
+): BrowserRecordingFormatSummary {
+  const videoMimeType = getPreferredVideoRecordingMimeType(mediaRecorder);
+  const audioMimeType = getPreferredAudioRecordingMimeType(mediaRecorder);
+  const videoExtension = videoMimeType ? getRecordingFileExtension(videoMimeType) : '';
+  const audioExtension = audioMimeType ? getRecordingFileExtension(audioMimeType) : '';
+  const supportsVideoMp4 = videoExtension === 'mp4';
+  const supportsAudioMp4 = audioExtension === 'm4a';
+
+  if (!videoMimeType && !audioMimeType) {
+    return {
+      videoMimeType,
+      audioMimeType,
+      videoExtension,
+      audioExtension,
+      supportsVideoMp4,
+      supportsAudioMp4,
+      label: 'Local save unsupported',
+      detail: 'This browser does not expose a usable MediaRecorder container for local recording.',
+    };
+  }
+
+  if (supportsVideoMp4 && supportsAudioMp4) {
+    return {
+      videoMimeType,
+      audioMimeType,
+      videoExtension,
+      audioExtension,
+      supportsVideoMp4,
+      supportsAudioMp4,
+      label: 'Local save: MP4 + M4A',
+      detail: 'This browser can save local camera, screen, and program tracks as MP4, with audio-only tracks as M4A.',
+    };
+  }
+
+  if (supportsVideoMp4) {
+    return {
+      videoMimeType,
+      audioMimeType,
+      videoExtension,
+      audioExtension,
+      supportsVideoMp4,
+      supportsAudioMp4,
+      label: 'Local save: MP4 video',
+      detail: 'This browser can save local video tracks as MP4. Audio-only tracks may use the browser fallback container.',
+    };
+  }
+
+  return {
+    videoMimeType,
+    audioMimeType,
+    videoExtension,
+    audioExtension,
+    supportsVideoMp4,
+    supportsAudioMp4,
+    label: videoExtension ? `Local save: ${videoExtension.toUpperCase()}` : 'Local save: browser fallback',
+    detail: 'This browser will save local video tracks in its fallback container. Use media-server export for final MP4 delivery.',
+  };
 }

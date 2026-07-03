@@ -24,7 +24,7 @@ import {
 import type { RecordingUploadSummary } from '../utils/recordingUpload.ts';
 import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
 import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
-import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
+import { getBrowserRecordingFormatSummary, getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 interface RecordingPanelProps {
@@ -2465,6 +2465,14 @@ export function RecordingPanel({
   );
   const mediaServerExportBlockMessage = getRecordingMediaExportBlockMessage(mediaServerHealth);
   const mediaServerExportStatusLabel = getRecordingMediaExportStatusLabel(mediaServerHealth, Boolean(onUploadRecording));
+  const browserRecordingFormat = useMemo(() => getBrowserRecordingFormatSummary(), []);
+  const browserRecordingFallbackMessage = useMemo(() => {
+    if (browserRecordingFormat.supportsVideoMp4) {
+      return 'Local recording is saved in this browser as MP4 where available.';
+    }
+    const extension = browserRecordingFormat.videoExtension || 'the browser fallback format';
+    return `Local recording is saved in this browser as ${extension.toUpperCase()}; final MP4 requires the media-server.`;
+  }, [browserRecordingFormat]);
   const syncRecordingCatalog = useCallback(async (session: LocalRecordingSession) => {
     if (!onSyncRecordingCatalog) return;
     try {
@@ -2583,7 +2591,7 @@ export function RecordingPanel({
         if (onUploadRecording) {
           if (mediaServerExportBlockMessage) {
             setMediaUploadMessage(null);
-            setMediaUploadError(`MP4 export unavailable: ${mediaServerExportBlockMessage} Local recording is saved in this browser.`);
+            setMediaUploadError(`MP4 export unavailable: ${mediaServerExportBlockMessage} ${browserRecordingFallbackMessage}`);
             setMediaExportJob(null);
             return;
           }
@@ -2622,7 +2630,7 @@ export function RecordingPanel({
           } catch (err) {
             console.warn('Media-server recording upload failed:', err);
             setMediaUploadMessage(null);
-            setMediaUploadError('Media server upload unavailable. Local recording is saved in this browser.');
+            setMediaUploadError(`Media server upload unavailable. ${browserRecordingFallbackMessage}`);
             setMediaExportJob(null);
           }
         }
@@ -2633,7 +2641,7 @@ export function RecordingPanel({
       setIsStopping(false);
       setRecordingControlAction(null);
     }
-  }, [formattedTime, mediaServerExportBlockMessage, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
+  }, [browserRecordingFallbackMessage, formattedTime, mediaServerExportBlockMessage, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
 
   const confirmDiscardActiveRecording = useCallback((action: 'cancel' | 'restart'): boolean => {
     if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
@@ -3398,6 +3406,20 @@ export function RecordingPanel({
                   Check
                 </button>
               )}
+            </div>
+            <div style={styles.browserRecordingFormatCard}>
+              <div style={styles.browserRecordingFormatCopy}>
+                <span style={styles.browserRecordingFormatTitle}>{browserRecordingFormat.label}</span>
+                <span style={styles.browserRecordingFormatText}>{browserRecordingFormat.detail}</span>
+              </div>
+              <span
+                style={{
+                  ...styles.browserRecordingFormatBadge,
+                  ...(browserRecordingFormat.supportsVideoMp4 ? styles.browserRecordingFormatBadgeReady : {}),
+                }}
+              >
+                {browserRecordingFormat.supportsVideoMp4 ? 'MP4' : (browserRecordingFormat.videoExtension || 'N/A').toUpperCase()}
+              </span>
             </div>
             <div style={styles.exportCodecToggle} role="group" aria-label="Media server MP4 codec">
               {(['h264', 'h265'] as const).map((codec) => {
@@ -4786,6 +4808,52 @@ const styles: Record<string, React.CSSProperties> = {
   mediaServerReadinessButtonDisabled: {
     opacity: 0.5,
     cursor: 'wait',
+  },
+  browserRecordingFormatCard: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 9px',
+    borderRadius: 7,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    background: 'rgba(15, 23, 42, 0.42)',
+  },
+  browserRecordingFormatCopy: {
+    minWidth: 0,
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  },
+  browserRecordingFormatTitle: {
+    color: 'var(--text-secondary)',
+    fontSize: 10,
+    fontWeight: 900,
+    textTransform: 'uppercase' as const,
+  },
+  browserRecordingFormatText: {
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    lineHeight: 1.32,
+  },
+  browserRecordingFormatBadge: {
+    minWidth: 38,
+    height: 24,
+    borderRadius: 7,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid rgba(148, 163, 184, 0.26)',
+    background: 'rgba(51, 65, 85, 0.28)',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 900,
+    flexShrink: 0,
+  },
+  browserRecordingFormatBadgeReady: {
+    borderColor: 'rgba(34, 197, 94, 0.34)',
+    background: 'rgba(22, 163, 74, 0.16)',
+    color: '#bbf7d0',
   },
   exportCodecCard: {
     display: 'flex',
