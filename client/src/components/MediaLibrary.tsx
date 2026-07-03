@@ -507,19 +507,20 @@ export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  if (!health) return 'Checking the exact deck renderer. Modern PPTX decks can render locally; legacy PowerPoint and Keynote need the media-server.';
+  const browserFallbackMessage = 'Modern PPTX decks can use a browser visual fallback, but exact PowerPoint formatting, legacy PowerPoint, and Keynote need the media-server.';
+  if (!health) return `Checking the exact deck renderer. ${browserFallbackMessage}`;
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
-      return 'Exact deck renderer is unavailable. Modern PPTX decks can render locally; legacy PowerPoint and Keynote need the media-server.';
+      return `Exact deck renderer is unavailable. ${browserFallbackMessage}`;
     }
     return health.presentationRenderer.ready
       ? ''
-      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. Modern PPTX decks can render locally; legacy PowerPoint and Keynote need the media-server.';
+      : health.presentationRenderer.message || `Exact deck renderer is unavailable. ${browserFallbackMessage}`;
   }
   if (health.status === 'checking') {
-    return 'Checking the exact deck renderer. Modern PPTX decks can render locally; legacy PowerPoint and Keynote need the media-server.';
+    return `Checking the exact deck renderer. ${browserFallbackMessage}`;
   }
-  return health.message || 'Media server is unavailable. Modern PPTX decks can render locally; legacy PowerPoint and Keynote need the media-server.';
+  return health.message || `Media server is unavailable. ${browserFallbackMessage}`;
 }
 
 export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {

@@ -78,10 +78,10 @@ describe('media library upload support', () => {
   });
 
   it('warns when exact deck rendering is not ready and explains which deck formats need the media-server', () => {
-    assert.match(getDeckUploadBlockMessage(null), /Modern PPTX decks can render locally/);
+    assert.match(getDeckUploadBlockMessage(null), /browser visual fallback/);
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /legacy PowerPoint and Keynote need the media-server/
+      /legacy PowerPoint, and Keynote need the media-server/
     );
     assert.equal(
       getDeckUploadBlockMessage({
@@ -107,7 +107,7 @@ describe('media library upload support', () => {
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'checking', message: 'Checking media-server readiness...' }),
-      /legacy PowerPoint and Keynote need the media-server/
+      /legacy PowerPoint, and Keynote need the media-server/
     );
     assert.equal(
       getDeckUploadBlockMessage({ status: 'unavailable', message: 'Media server is not provisioned on Render.' }),

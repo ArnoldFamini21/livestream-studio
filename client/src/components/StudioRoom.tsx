@@ -711,7 +711,7 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
   const code = failure?.code?.toUpperCase();
 
   if (routing === 'no-server' || code === 'MEDIA_SERVER_NO_SERVER') {
-    return 'Presentation render service is not deployed yet. Ask the workspace owner to sync the Render media-server, then upload this deck again.';
+    return 'PowerPoint formatting could not be preserved because the exact render service is not deployed yet. Sync the Render media-server, then upload this deck again.';
   }
   if (failure?.timedOut || code === 'PRESENTATION_RENDER_TIMEOUT') {
     return type === 'pdf'
@@ -725,14 +725,14 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
     return 'Presentation render service is missing LibreOffice or Poppler. Redeploy the Docker media-server, then upload this deck again.';
   }
   if (code === 'PRESENTATION_RENDER_UNAVAILABLE') {
-    return 'PowerPoint exact render service is unreachable. Check the Render media-server, then upload this deck again.';
+    return 'PowerPoint exact render service is unreachable and the browser fallback could not produce slide images. Check the Render media-server, then upload this deck again.';
   }
   if (code === 'PRESENTATION_RENDER_INCOMPLETE') {
     return 'PowerPoint renderer returned a text-only preview. Redeploy the Render media-server, then upload this deck again so the original slide design is preserved.';
   }
   return type === 'pdf'
     ? 'PDF could not be rendered into broadcast slides. Try uploading it again.'
-    : 'PowerPoint design could not be rendered exactly. Try uploading again, or export the deck to PDF and upload that.';
+    : 'PowerPoint design could not be preserved. Try uploading again, or export the deck to PDF and upload that.';
 }
 
 function getDeckPreparationMessage(type: StudioMediaType): string {
