@@ -1,14 +1,32 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import type { RecordingUploadTrackKind } from '@studio/shared';
 import {
   getPreferredVideoRecordingMimeType,
   getRecordingFileExtension,
 } from '../utils/recordingMimeTypes.ts';
 
+export interface RecordingStreamInput {
+  stream: MediaStream;
+  name: string;
+  isLocal: boolean;
+  kind?: RecordingUploadTrackKind;
+  cleanup?: () => void;
+}
+
+export interface RecordingTrackResult {
+  name: string;
+  blob: Blob;
+  kind?: RecordingUploadTrackKind;
+}
+
 interface RecordingTrack {
   participantId: string;
   name: string;
+  kind?: RecordingUploadTrackKind;
   recorder: MediaRecorder;
   chunks: Blob[];
+  cleanup?: () => void;
+  cleanedUp?: boolean;
 }
 
 export function useRecording() {
@@ -26,6 +44,16 @@ export function useRecording() {
 
   const getMimeType = () => getPreferredVideoRecordingMimeType();
 
+  const cleanupTrack = (track: RecordingTrack) => {
+    if (track.cleanedUp) return;
+    track.cleanedUp = true;
+    try {
+      track.cleanup?.();
+    } catch (err) {
+      console.warn(`Failed to clean up recording source for ${track.name}:`, err);
+    }
+  };
+
   const getElapsedSeconds = useCallback(() => {
     if (!startTimeRef.current) return 0;
     const endTime = pausedAtRef.current || Date.now();
@@ -33,26 +61,38 @@ export function useRecording() {
   }, []);
 
   const startRecording = useCallback(
-    (streams: Map<string, { stream: MediaStream; name: string; isLocal: boolean }>) => {
+    (streams: Map<string, RecordingStreamInput>) => {
       // Bug fix #10: Guard against double-start
-      if (isRecording) return;
+      if (isRecording) {
+        streams.forEach((input) => input.cleanup?.());
+        return false;
+      }
 
       const mimeType = getMimeType();
       if (!mimeType) {
         console.error('No supported recording MIME type found');
-        return;
+        streams.forEach((input) => input.cleanup?.());
+        return false;
       }
 
       // Clear previous tracks
+      tracksRef.current.forEach(cleanupTrack);
       tracksRef.current.clear();
 
-      for (const [id, { stream, name }] of streams) {
+      for (const [id, { stream, name, kind, cleanup }] of streams) {
         const chunks: Blob[] = [];
-        const recorder = new MediaRecorder(stream, {
-          mimeType,
-          videoBitsPerSecond: 20_000_000, // 20 Mbps for professional studio quality
-          audioBitsPerSecond: 256_000,    // 256 kbps audio
-        });
+        let recorder: MediaRecorder;
+        try {
+          recorder = new MediaRecorder(stream, {
+            mimeType,
+            videoBitsPerSecond: 20_000_000, // 20 Mbps for professional studio quality
+            audioBitsPerSecond: 256_000,    // 256 kbps audio
+          });
+        } catch (err) {
+          console.error(`Failed to start recorder for ${name}:`, err);
+          cleanup?.();
+          continue;
+        }
 
         recorder.ondataavailable = (e) => {
           if (e.data.size > 0) {
@@ -64,8 +104,20 @@ export function useRecording() {
           console.error(`Recording error for ${name}:`, e);
         };
 
-        tracksRef.current.set(id, { participantId: id, name, recorder, chunks });
-        recorder.start(1000); // Capture in 1-second chunks
+        const track: RecordingTrack = { participantId: id, name, kind, recorder, chunks, cleanup };
+        tracksRef.current.set(id, track);
+        try {
+          recorder.start(1000); // Capture in 1-second chunks
+        } catch (err) {
+          console.error(`Failed to start recording for ${name}:`, err);
+          tracksRef.current.delete(id);
+          cleanupTrack(track);
+        }
+      }
+
+      if (tracksRef.current.size === 0) {
+        streams.forEach((input) => input.cleanup?.());
+        return false;
       }
 
       startTimeRef.current = Date.now();
@@ -78,6 +130,7 @@ export function useRecording() {
       setIsRecording(true);
       setIsPaused(false);
       console.log(`Recording started: ${streams.size} track(s)`);
+      return true;
     },
     [getElapsedSeconds, isRecording]
   );
@@ -126,7 +179,7 @@ export function useRecording() {
     setIsPaused(false);
   }, [getElapsedSeconds, isPaused, isRecording]);
 
-  const stopRecording = useCallback((): Promise<Map<string, { name: string; blob: Blob }>> => {
+  const stopRecording = useCallback((): Promise<Map<string, RecordingTrackResult>> => {
     // Bug fix #11: Guard against double-stop
     if (stoppingRef.current) {
       return Promise.resolve(new Map());
@@ -141,7 +194,7 @@ export function useRecording() {
       pausedAtRef.current = null;
       accumulatedPausedMsRef.current = 0;
 
-      const results = new Map<string, { name: string; blob: Blob }>();
+      const results = new Map<string, RecordingTrackResult>();
       let pending = tracksRef.current.size;
 
       if (pending === 0) {
@@ -158,7 +211,8 @@ export function useRecording() {
         if (track.recorder.state === 'inactive') {
           // Recorder already inactive - collect existing chunks directly
           const blob = new Blob(track.chunks, { type: track.recorder.mimeType });
-          results.set(id, { name: track.name, blob });
+          results.set(id, { name: track.name, blob, ...(track.kind ? { kind: track.kind } : {}) });
+          cleanupTrack(track);
           pending--;
           if (pending === 0) {
             setIsRecording(false);
@@ -171,7 +225,8 @@ export function useRecording() {
         } else {
           track.recorder.onstop = () => {
             const blob = new Blob(track.chunks, { type: track.recorder.mimeType });
-            results.set(id, { name: track.name, blob });
+            results.set(id, { name: track.name, blob, ...(track.kind ? { kind: track.kind } : {}) });
+            cleanupTrack(track);
             pending--;
             if (pending === 0) {
               setIsRecording(false);
@@ -227,6 +282,7 @@ export function useRecording() {
             // Recorder may already be in an invalid state
           }
         }
+        cleanupTrack(track);
       }
       tracksRef.current.clear();
     };
