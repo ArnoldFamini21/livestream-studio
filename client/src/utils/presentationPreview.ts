@@ -574,6 +574,26 @@ function createHiddenPresentationRenderHost(): HTMLElement {
   return host;
 }
 
+function getVisibleSlideNode(host: HTMLElement, slideIndex: number): HTMLElement | null {
+  const indexedSlide = host.querySelector(`.pptx-preview-slide-wrapper-${slideIndex}`);
+  if (indexedSlide instanceof HTMLElement) return indexedSlide;
+
+  const renderedSlides = Array.from(host.querySelectorAll('.pptx-preview-slide-wrapper'))
+    .filter((node): node is HTMLElement => node instanceof HTMLElement);
+  return renderedSlides[renderedSlides.length - 1] || null;
+}
+
+function prepareSlideNodeForCapture(slideNode: HTMLElement): { width: number; height: number } | null {
+  slideNode.style.margin = '0';
+  slideNode.style.boxSizing = 'border-box';
+
+  const bounds = slideNode.getBoundingClientRect();
+  const width = Math.round(bounds.width);
+  const height = Math.round(bounds.height);
+  if (width <= 0 || height <= 0 || slideNode.childElementCount === 0) return null;
+  return { width, height };
+}
+
 async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideCount: number): Promise<string[]> {
   if (!canUseDomPresentationRenderer() || expectedSlideCount <= 0) return [];
 
@@ -588,7 +608,7 @@ async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideC
     previewer = init(host, {
       width: RENDERED_SLIDE_WIDTH,
       height: RENDERED_SLIDE_HEIGHT,
-      mode: 'list',
+      mode: 'slide',
     });
     const previewCapable = previewer as typeof previewer & { preview?: (file: ArrayBuffer) => Promise<unknown> };
     if (typeof previewCapable?.preview === 'function') {
@@ -605,20 +625,26 @@ async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideC
     const imageUrls: string[] = [];
 
     for (let index = 0; index < slideCount; index += 1) {
-      let slideNode = host.querySelector(`.pptx-preview-slide-wrapper-${index}`) as HTMLElement | null;
-      if (!slideNode) {
+      if (index > 0) {
         previewer.renderSingleSlide(index);
-        slideNode = host.querySelector(`.pptx-preview-slide-wrapper-${index}`) as HTMLElement | null;
+        await waitForAnimationFrame();
       }
+      const slideNode = getVisibleSlideNode(host, index);
       if (!slideNode) {
+        imageUrls.push('');
+        continue;
+      }
+
+      const dimensions = prepareSlideNodeForCapture(slideNode);
+      if (!dimensions) {
         imageUrls.push('');
         continue;
       }
 
       await waitForPresentationRender(slideNode);
       const captureOptions = {
-        width: RENDERED_SLIDE_WIDTH,
-        height: RENDERED_SLIDE_HEIGHT,
+        width: dimensions.width,
+        height: dimensions.height,
         pixelRatio: 1,
         backgroundColor: '#ffffff',
       };

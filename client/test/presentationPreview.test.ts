@@ -543,6 +543,38 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].rendered, true);
   });
 
+  it('keeps browser-rendered PowerPoint previews visual for every slide', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>Opening</a:t><a:t>Welcome</a:t>');
+    zip.file('ppt/slides/slide2.xml', '<a:t>Closing</a:t><a:t>Next steps</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'visual-fallback.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      requireRenderedSlides: true,
+      allowBrowserPowerPointRenderFallback: true,
+      skipServerRender: true,
+      pptxSlideImageRenderer: async () => [
+        'data:image/png;base64,opening-artwork',
+        'data:image/png;base64,closing-artwork',
+      ],
+    });
+
+    assert.equal(preview?.slides.length, 2);
+    assert.equal(hasRenderedPresentationSlides(preview), true);
+    assert.deepEqual(
+      preview?.slides.map((slide) => [slide.title, slide.rendered, slide.imageUrl]),
+      [
+        ['Opening', true, 'data:image/png;base64,opening-artwork'],
+        ['Closing', true, 'data:image/png;base64,closing-artwork'],
+      ]
+    );
+  });
+
   it('requires server-rendered PowerPoint images when exact deck visuals are required', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide1.xml', '<p:sld><p:cSld><p:spTree /></p:cSld></p:sld>');

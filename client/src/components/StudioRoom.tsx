@@ -779,8 +779,6 @@ function PresentationDeckStage({
           alt={`${media.name} ${unitLabel.toLowerCase()} ${currentIndex + 1}`}
           style={styles.presentationSlideImage}
         />
-        <div style={styles.presentationSlideBadge}>{unitLabel} {currentIndex + 1} / {slides.length}</div>
-        <div style={styles.presentationFilePill}>{media.name}</div>
       </div>
       {slides.length > 1 && (
         <div style={styles.presentationControls}>

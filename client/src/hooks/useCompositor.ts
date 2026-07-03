@@ -455,10 +455,6 @@ function clampMediaSlideIndex(index: number, total: number): number {
   return Math.min(total - 1, Math.max(0, index));
 }
 
-function getDeckUnitLabel(media: ActiveMedia): string {
-  return media.preview?.sourceFormat === 'pdf' ? 'Page' : 'Slide';
-}
-
 function getDeckSourceLabel(media: ActiveMedia): string {
   return media.preview?.sourceFormat === 'pdf' ? 'PDF' : 'PowerPoint';
 }
@@ -485,7 +481,6 @@ function drawPresentationMediaPreview(
   if (slides.length === 0) return false;
 
   const currentIndex = clampMediaSlideIndex(slideIndex, slides.length);
-  const unitLabel = getDeckUnitLabel(media);
   const sourceLabel = getDeckSourceLabel(media);
   const slide = slides[currentIndex];
   const slideWidth = Math.min(width * 0.86, 1460);
@@ -511,22 +506,6 @@ function drawPresentationMediaPreview(
     ctx.beginPath();
     ctx.roundRect(slideX, slideY, finalWidth, finalHeight, 24);
     ctx.stroke();
-
-    const badgeText = `${unitLabel} ${currentIndex + 1} / ${slides.length}`;
-    ctx.font = '800 20px Inter, Arial, sans-serif';
-    const badgeWidth = Math.max(140, ctx.measureText(badgeText).width + 42);
-    const badgeHeight = 42;
-    const badgeX = slideX + finalWidth - badgeWidth - 22;
-    const badgeY = slideY + 22;
-    ctx.fillStyle = 'rgba(2, 6, 23, 0.74)';
-    drawRoundedRect(ctx, badgeX, badgeY, badgeWidth, badgeHeight, 21);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = '#f8fafc';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(badgeText, badgeX + badgeWidth / 2, badgeY + badgeHeight / 2 + 1);
     ctx.restore();
     return true;
   }
