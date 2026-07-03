@@ -34,6 +34,49 @@ export interface ServiceHealthCapability {
   details?: Record<string, unknown>;
 }
 
+// ============ Account Types ============
+
+export interface AccountUser {
+  id: string;
+  email: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountSessionInfo {
+  expiresAt: string;
+}
+
+export interface AccountAuthSession extends AccountSessionInfo {
+  token: string;
+}
+
+export interface AccountAuthResponse {
+  user: AccountUser;
+  session: AccountAuthSession;
+}
+
+export interface AccountSessionResponse {
+  user: AccountUser | null;
+  session?: AccountSessionInfo;
+}
+
+export interface AccountLogoutResponse {
+  ok: true;
+}
+
+export interface AccountRegisterRequest {
+  email: string;
+  name: string;
+  password: string;
+}
+
+export interface AccountLoginRequest {
+  email: string;
+  password: string;
+}
+
 function firstNonEmptyEnv(env: Record<string, string | undefined>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = env[key]?.trim();

@@ -223,7 +223,10 @@
   - [x] Optional PostgreSQL recording catalog metadata for host-scoped recording dashboards
   - [x] Optional PostgreSQL brand kit catalog metadata for host-scoped workspace dashboards
   - [x] Optional PostgreSQL saved studio catalog metadata for host-scoped workspace dashboards
+  - [x] Optional PostgreSQL account users and session metadata for authenticated dashboards
 - [ ] Auth: email/password registration, magic links for guests
+  - [x] Email/password account registration and login with scrypt-hashed passwords
+  - [x] Server-issued account session tokens with bearer restore and HttpOnly cookie support
 - [x] Local user dashboard: manage saved studios, local recordings, and brand assets in-browser
 - [x] Local workspace team roster with role labels and portable backup/import
 - [x] Portable workspace backup/import for saved studios, brand kits, and recording catalog metadata
@@ -232,6 +235,7 @@
   - [x] Workspace dashboard reads host-scoped server brand kit catalogs and merges cloud-synced kits
   - [x] Workspace dashboard reads host-scoped server saved studio catalogs and merges cloud-synced private host links
   - [x] Workspace dashboard reads host-scoped server workspace team catalogs and merges cloud-synced roster members
+  - [x] Workspace dashboard exposes account registration, login, session restore, and sign-out
 - [ ] Team/organization support
   - [x] Local roster can compose role-aware production team invites for saved studios
   - [x] Host-scoped server workspace team roster catalog with optional PostgreSQL persistence

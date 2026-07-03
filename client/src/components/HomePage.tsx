@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { buildStudioCalendarInvite, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse, type WorkspaceStudioCatalogEntry, type WorkspaceTeamCatalogMember } from '@studio/shared';
+import { buildStudioCalendarInvite, type AccountUser, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse, type WorkspaceStudioCatalogEntry, type WorkspaceTeamCatalogMember } from '@studio/shared';
 import {
   buildHostEntryPath,
   buildHostEntryUrl,
@@ -15,6 +15,12 @@ import {
   type SavedHostStudio,
 } from '../utils/hostSession.ts';
 import { getApiErrorMessage, getJson, postJson } from '../utils/apiClient.ts';
+import {
+  fetchAccountSession,
+  loginAccount,
+  logoutAccount,
+  registerAccount,
+} from '../utils/accountAuth.ts';
 import {
   hasCreatedRoomDetails,
   resolveCreatedRoomHostAccess,
@@ -273,6 +279,14 @@ export function HomePage() {
   const [teamMemberRole, setTeamMemberRole] = useState<WorkspaceTeamRole>('producer');
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [dashboardNotice, setDashboardNotice] = useState<string | null>(null);
+  const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
+  const [accountSessionExpiresAt, setAccountSessionExpiresAt] = useState('');
+  const [accountMode, setAccountMode] = useState<'login' | 'register'>('register');
+  const [accountName, setAccountName] = useState('');
+  const [accountEmail, setAccountEmail] = useState('');
+  const [accountPassword, setAccountPassword] = useState('');
+  const [accountLoading, setAccountLoading] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
   const [serverWorkspaceStudioCatalog, setServerWorkspaceStudioCatalog] = useState<WorkspaceStudioCatalogEntry[]>([]);
   const [serverWorkspaceStudioCatalogLoading, setServerWorkspaceStudioCatalogLoading] = useState(false);
   const [serverWorkspaceStudioCatalogError, setServerWorkspaceStudioCatalogError] = useState<string | null>(null);
@@ -477,6 +491,24 @@ export function HomePage() {
       cancelled = true;
     };
   }, [inviteLink, scheduledRoom]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAccountSession()
+      .then((response) => {
+        if (cancelled) return;
+        setAccountUser(response.user);
+        setAccountSessionExpiresAt(response.session?.expiresAt || '');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAccountUser(null);
+        setAccountSessionExpiresAt('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
@@ -1082,6 +1114,52 @@ export function HomePage() {
     }
   };
 
+  const submitAccountAuth = async () => {
+    setAccountError(null);
+    setDashboardNotice(null);
+    const email = accountEmail.trim();
+    const password = accountPassword;
+    const name = accountName.trim() || hostName.trim() || 'Studio Host';
+    if (!email || !password || (accountMode === 'register' && !name)) {
+      setAccountError('Enter account details to continue.');
+      return;
+    }
+
+    setAccountLoading(true);
+    try {
+      const result = accountMode === 'register'
+        ? await registerAccount({ email, name, password })
+        : await loginAccount({ email, password });
+      setAccountUser(result.user);
+      setAccountSessionExpiresAt(result.session.expiresAt);
+      setAccountName(result.user.name);
+      setAccountEmail(result.user.email);
+      setAccountPassword('');
+      setDashboardNotice(accountMode === 'register' ? 'Account created.' : 'Signed in.');
+    } catch (err) {
+      setAccountError(getApiErrorMessage(err, 'Account request failed. Please try again.'));
+    } finally {
+      setAccountLoading(false);
+    }
+  };
+
+  const signOutAccount = async () => {
+    setAccountError(null);
+    setDashboardNotice(null);
+    setAccountLoading(true);
+    try {
+      await logoutAccount();
+      setAccountUser(null);
+      setAccountSessionExpiresAt('');
+      setAccountPassword('');
+      setDashboardNotice('Signed out.');
+    } catch (err) {
+      setAccountError(getApiErrorMessage(err, 'Could not sign out. Please try again.'));
+    } finally {
+      setAccountLoading(false);
+    }
+  };
+
   const goToStudioAsHost = () => {
     if (!scheduledRoom) return;
     const savedHostName = scheduledRoom.hostName || hostName || 'Host';
@@ -1295,6 +1373,99 @@ export function HomePage() {
                   style={styles.workspaceImportInput}
                   onChange={(event) => void importWorkspaceBackup(event)}
                 />
+              </div>
+
+              <div style={styles.accountPanel}>
+                <div style={styles.accountHeader}>
+                  <div style={styles.accountHeaderCopy}>
+                    <span style={styles.workspaceSectionTitle}>Account</span>
+                    {accountUser ? (
+                      <span style={styles.workspaceRowMeta}>
+                        {accountUser.name} | {accountUser.email}
+                      </span>
+                    ) : (
+                      <span style={styles.workspaceRowMeta}>Not signed in</span>
+                    )}
+                  </div>
+                  {accountUser ? (
+                    <button
+                      style={styles.workspaceRowAction}
+                      onClick={() => void signOutAccount()}
+                      disabled={accountLoading}
+                    >
+                      {accountLoading ? 'Signing out...' : 'Sign out'}
+                    </button>
+                  ) : (
+                    <div style={styles.accountModeToggle}>
+                      <button
+                        style={{
+                          ...styles.accountModeButton,
+                          ...(accountMode === 'register' ? styles.accountModeButtonActive : {}),
+                        }}
+                        onClick={() => setAccountMode('register')}
+                      >
+                        Register
+                      </button>
+                      <button
+                        style={{
+                          ...styles.accountModeButton,
+                          ...(accountMode === 'login' ? styles.accountModeButtonActive : {}),
+                        }}
+                        onClick={() => setAccountMode('login')}
+                      >
+                        Log in
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {accountUser ? (
+                  <div style={styles.accountSignedInRow}>
+                    <span style={styles.accountStatusDot} />
+                    <span style={styles.workspaceRowMeta}>
+                      Session active{accountSessionExpiresAt ? ` until ${formatDashboardDate(accountSessionExpiresAt)}` : ''}
+                    </span>
+                  </div>
+                ) : (
+                  <div style={styles.accountFormGrid}>
+                    {accountMode === 'register' && (
+                      <input
+                        style={styles.accountInput}
+                        placeholder="Name"
+                        value={accountName}
+                        onChange={(event) => setAccountName(event.target.value)}
+                        onKeyDown={(event) => event.key === 'Enter' && void submitAccountAuth()}
+                        maxLength={80}
+                      />
+                    )}
+                    <input
+                      style={styles.accountInput}
+                      placeholder="Email"
+                      type="email"
+                      value={accountEmail}
+                      onChange={(event) => setAccountEmail(event.target.value)}
+                      onKeyDown={(event) => event.key === 'Enter' && void submitAccountAuth()}
+                      autoComplete="email"
+                    />
+                    <input
+                      style={styles.accountInput}
+                      placeholder="Password"
+                      type="password"
+                      value={accountPassword}
+                      onChange={(event) => setAccountPassword(event.target.value)}
+                      onKeyDown={(event) => event.key === 'Enter' && void submitAccountAuth()}
+                      autoComplete={accountMode === 'register' ? 'new-password' : 'current-password'}
+                    />
+                    <button
+                      style={styles.accountSubmitButton}
+                      onClick={() => void submitAccountAuth()}
+                      disabled={accountLoading}
+                    >
+                      {accountLoading ? 'Working...' : accountMode === 'register' ? 'Create Account' : 'Log in'}
+                    </button>
+                  </div>
+                )}
+                {accountError && <p style={styles.workspaceError}>{accountError}</p>}
               </div>
 
               <div style={styles.workspaceStats}>
@@ -2027,6 +2198,89 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#bbf7d0',
     background: 'rgba(34, 197, 94, 0.1)',
     border: '1px solid rgba(34, 197, 94, 0.18)',
+  },
+  accountPanel: {
+    borderRadius: 12,
+    border: '1px solid rgba(167, 139, 250, 0.14)',
+    background: 'rgba(167, 139, 250, 0.06)',
+    padding: 12,
+    marginBottom: 12,
+  },
+  accountHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 10,
+  },
+  accountHeaderCopy: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  accountModeToggle: {
+    flexShrink: 0,
+    display: 'inline-grid',
+    gridTemplateColumns: '1fr 1fr',
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    overflow: 'hidden',
+  },
+  accountModeButton: {
+    minHeight: 28,
+    border: 0,
+    background: 'rgba(15, 23, 42, 0.38)',
+    color: 'var(--text-muted)',
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: 'pointer',
+    padding: '0 10px',
+  },
+  accountModeButtonActive: {
+    background: 'rgba(167, 139, 250, 0.28)',
+    color: '#ddd6fe',
+  },
+  accountFormGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+    gap: 8,
+  },
+  accountInput: {
+    minWidth: 0,
+    minHeight: 34,
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.09)',
+    background: 'rgba(15, 23, 42, 0.42)',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    fontWeight: 650,
+    padding: '0 10px',
+    outline: 'none',
+  },
+  accountSubmitButton: {
+    minHeight: 34,
+    borderRadius: 8,
+    border: '1px solid rgba(167, 139, 250, 0.24)',
+    background: 'rgba(167, 139, 250, 0.22)',
+    color: '#ddd6fe',
+    fontSize: 12,
+    fontWeight: 900,
+    cursor: 'pointer',
+    padding: '0 10px',
+  },
+  accountSignedInRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 26,
+  },
+  accountStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    background: '#34d399',
+    boxShadow: '0 0 0 4px rgba(52, 211, 153, 0.08)',
   },
   workspaceStats: {
     display: 'grid',
