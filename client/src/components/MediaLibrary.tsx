@@ -6,7 +6,7 @@ import {
   getPresentationItemDisplayTitle,
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
-import { canBrowserRenderPowerPointFile, hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
+import { hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
@@ -498,29 +498,26 @@ export function hasDeckFiles(files: File[]): boolean {
 }
 
 export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
-  return files.some((file) => {
-    if (detectMediaType(file) !== 'presentation') return false;
-    return !canBrowserRenderPowerPointFile(file);
-  });
+  return files.some((file) => detectMediaType(file) === 'presentation');
 }
 
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  const browserFallbackMessage = 'Modern PPTX decks can use a browser visual fallback, but exact PowerPoint formatting, legacy PowerPoint, and Keynote need the media-server.';
-  if (!health) return `Checking the exact deck renderer. ${browserFallbackMessage}`;
+  const exactRendererMessage = 'PowerPoint and Keynote decks need the exact media-server renderer to preserve the original design, formatting, fonts, backgrounds, and layout. PDFs can still render in the browser.';
+  if (!health) return `Checking the exact deck renderer. ${exactRendererMessage}`;
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
-      return `Exact deck renderer is unavailable. ${browserFallbackMessage}`;
+      return `Exact deck renderer is unavailable. ${exactRendererMessage}`;
     }
     return health.presentationRenderer.ready
       ? ''
-      : health.presentationRenderer.message || `Exact deck renderer is unavailable. ${browserFallbackMessage}`;
+      : health.presentationRenderer.message || `Exact deck renderer is unavailable. ${exactRendererMessage}`;
   }
   if (health.status === 'checking') {
-    return `Checking the exact deck renderer. ${browserFallbackMessage}`;
+    return `Checking the exact deck renderer. ${exactRendererMessage}`;
   }
-  return health.message || `Media server is unavailable. ${browserFallbackMessage}`;
+  return health.message || `Media server is unavailable. ${exactRendererMessage}`;
 }
 
 export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {

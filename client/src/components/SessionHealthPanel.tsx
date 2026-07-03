@@ -1,4 +1,6 @@
 import type { SessionHealthCheck, SessionHealthSummary, HealthStatus } from '../hooks/useSessionHealth.ts';
+import { buildMediaServerParityDiagnostics } from '../utils/mediaServerHealth.ts';
+import type { MediaServerParityFeatureStatus, MediaServerParityDiagnostics } from '../utils/mediaServerHealth.ts';
 
 interface SessionHealthPanelProps {
   summary: SessionHealthSummary;
@@ -63,6 +65,42 @@ function formatMediaServerMetric(summary: SessionHealthSummary): string {
   }
 }
 
+function diagnosticStatusColor(status: MediaServerParityDiagnostics['status']): string {
+  switch (status) {
+    case 'ready': return 'var(--success)';
+    case 'checking': return 'var(--warning)';
+    case 'degraded': return 'var(--warning)';
+    case 'blocked': return 'var(--danger)';
+  }
+}
+
+function diagnosticStatusLabel(status: MediaServerParityDiagnostics['status']): string {
+  switch (status) {
+    case 'ready': return 'Ready';
+    case 'checking': return 'Checking';
+    case 'degraded': return 'Review';
+    case 'blocked': return 'Blocked';
+  }
+}
+
+function featureStatusColor(status: MediaServerParityFeatureStatus): string {
+  switch (status) {
+    case 'ready': return 'var(--success)';
+    case 'checking': return 'var(--warning)';
+    case 'degraded': return 'var(--warning)';
+    case 'blocked': return 'var(--danger)';
+  }
+}
+
+function featureStatusLabel(status: MediaServerParityFeatureStatus): string {
+  switch (status) {
+    case 'ready': return 'Ready';
+    case 'checking': return 'Checking';
+    case 'degraded': return 'Review';
+    case 'blocked': return 'Blocked';
+  }
+}
+
 function CheckRow({ check }: { check: SessionHealthCheck }) {
   const color = statusColor(check.status);
   return (
@@ -79,7 +117,52 @@ function CheckRow({ check }: { check: SessionHealthCheck }) {
   );
 }
 
+function MediaServerDiagnosticsCard({ diagnostics }: { diagnostics: MediaServerParityDiagnostics }) {
+  const statusColorValue = diagnosticStatusColor(diagnostics.status);
+  return (
+    <div style={styles.diagnosticCard}>
+      <div style={styles.diagnosticTop}>
+        <div style={styles.diagnosticTitle}>Media-Server Features</div>
+        <span style={{ ...styles.diagnosticBadge, color: statusColorValue, borderColor: statusColorValue }}>
+          {diagnosticStatusLabel(diagnostics.status)}
+        </span>
+      </div>
+      <p style={styles.diagnosticHeadline}>{diagnostics.headline}</p>
+      <p style={styles.diagnosticDetail}>{diagnostics.detail}</p>
+
+      <div style={styles.featureList}>
+        {diagnostics.features.map((feature) => {
+          const color = featureStatusColor(feature.status);
+          return (
+            <div key={feature.id} style={styles.featureRow}>
+              <span style={{ ...styles.featureDot, background: color }} />
+              <div style={styles.featureBody}>
+                <div style={styles.featureTop}>
+                  <span style={styles.featureLabel}>{feature.label}</span>
+                  <span style={{ ...styles.featureStatus, color }}>{featureStatusLabel(feature.status)}</span>
+                </div>
+                <p style={styles.featureDetail}>{feature.detail}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {diagnostics.actions.length > 0 && (
+        <div style={styles.actionList}>
+          <div style={styles.actionTitle}>Next Actions</div>
+          {diagnostics.actions.map((action) => (
+            <div key={action.id} style={styles.actionItem}>{action.label}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SessionHealthPanel({ summary, onClose }: SessionHealthPanelProps) {
+  const mediaServerDiagnostics = buildMediaServerParityDiagnostics(summary.mediaServer);
+
   return (
     <div style={styles.overlay} role="dialog" aria-modal="true" aria-label="Session health">
       <div style={styles.panel}>
@@ -149,6 +232,10 @@ export function SessionHealthPanel({ summary, onClose }: SessionHealthPanelProps
             <span style={styles.metricLabel}>Remote Links</span>
             <span style={styles.metricValue}>{formatRemoteLinkMetric(summary)}</span>
           </div>
+        </div>
+
+        <div style={styles.diagnosticWrap}>
+          <MediaServerDiagnosticsCard diagnostics={mediaServerDiagnostics} />
         </div>
 
         <div style={styles.list}>
@@ -269,6 +356,62 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
+  },
+  diagnosticWrap: {
+    padding: '0 18px 14px',
+    borderBottom: '1px solid var(--border)',
+  },
+  diagnosticCard: {
+    background: 'rgba(255, 255, 255, 0.035)',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    padding: '12px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 9,
+  },
+  diagnosticTop: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
+  diagnosticTitle: {
+    color: 'var(--text-primary)',
+    fontSize: 13,
+    fontWeight: 800,
+    minWidth: 0,
+  },
+  diagnosticBadge: {
+    flexShrink: 0,
+    fontSize: 10,
+    fontWeight: 900,
+    textTransform: 'uppercase',
+    borderRadius: 999,
+    border: '1px solid',
+    padding: '3px 7px',
+    letterSpacing: 0,
+  },
+  diagnosticHeadline: { margin: 0, color: 'var(--text-primary)', fontSize: 12, fontWeight: 750, lineHeight: 1.35 },
+  diagnosticDetail: { margin: '-4px 0 0', color: 'var(--text-secondary)', fontSize: 11, lineHeight: 1.35 },
+  featureList: { display: 'flex', flexDirection: 'column', gap: 7 },
+  featureRow: { display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0 },
+  featureDot: { width: 8, height: 8, borderRadius: '50%', marginTop: 5, flexShrink: 0 },
+  featureBody: { flex: 1, minWidth: 0 },
+  featureTop: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 },
+  featureLabel: { color: 'var(--text-primary)', fontSize: 11, fontWeight: 750, minWidth: 0 },
+  featureStatus: { fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0, flexShrink: 0 },
+  featureDetail: { margin: '2px 0 0', color: 'var(--text-muted)', fontSize: 10, lineHeight: 1.3 },
+  actionList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    paddingTop: 8,
+    borderTop: '1px solid var(--border)',
+  },
+  actionTitle: { fontSize: 10, fontWeight: 900, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: 0 },
+  actionItem: {
+    color: 'var(--text-secondary)',
+    fontSize: 10,
+    lineHeight: 1.35,
+    padding: '6px 7px',
+    borderRadius: 7,
+    background: 'rgba(0,0,0,0.15)',
   },
   list: {
     overflowY: 'auto',
