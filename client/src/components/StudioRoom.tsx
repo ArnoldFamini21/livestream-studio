@@ -727,6 +727,9 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
   if (code === 'PRESENTATION_RENDER_UNAVAILABLE') {
     return 'PowerPoint exact render service is unreachable. Check the Render media-server, then upload this deck again.';
   }
+  if (code === 'PRESENTATION_RENDER_INCOMPLETE') {
+    return 'PowerPoint renderer returned a text-only preview. Redeploy the Render media-server, then upload this deck again so the original slide design is preserved.';
+  }
   return type === 'pdf'
     ? 'PDF could not be rendered into broadcast slides. Try uploading it again.'
     : 'PowerPoint design could not be rendered exactly. Try uploading again, or export the deck to PDF and upload that.';
@@ -3332,11 +3335,15 @@ export function StudioRoom() {
 
       try {
         let serverRenderFailure: PresentationServerRenderFailure | undefined;
+        const exactPowerPointRendererReady =
+          type === 'presentation' &&
+          mediaServerHealth.status === 'ready' &&
+          mediaServerHealth.presentationRenderer?.ready === true;
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation',
+          requireServerRenderedPowerPoint: exactPowerPointRendererReady,
           allowBrowserPowerPointRenderFallback: type === 'presentation'
-            ? ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK
+            ? ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK && !exactPowerPointRendererReady
             : false,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;

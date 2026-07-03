@@ -53,8 +53,8 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(isPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
   });
 
-  it('disables browser PowerPoint fallback for broadcast uploads by default', () => {
-    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, false);
+  it('keeps browser PowerPoint fallback image-based and recoverable', () => {
+    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, true);
     assert.equal(isRecoverablePowerPointServerRenderFailure({
       status: 404,
       code: 'MEDIA_SERVER_NO_SERVER',
@@ -122,7 +122,7 @@ describe('PowerPoint preview extraction', () => {
     );
   });
 
-  it('builds bounded slide previews from a PPTX zip', async () => {
+  it('builds bounded slide metadata from a PPTX zip only when text fallback is explicitly allowed', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide2.xml', '<a:t>Second</a:t><a:t>Another point</a:t>');
     zip.file('ppt/slides/slide1.xml', '<a:t>First</a:t><a:t>Main point</a:t>');
@@ -139,7 +139,9 @@ describe('PowerPoint preview extraction', () => {
       { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
     );
 
-    const preview = await buildPresentationPreview(file);
+    const preview = await buildPresentationPreview(file, {
+      allowTextPowerPointFallback: true,
+    });
 
     assert.equal(preview?.kind, 'presentation-slides');
     assert.equal(preview?.sourceFormat, 'pptx');
@@ -160,7 +162,28 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview, undefined);
   });
 
-  it('attaches an embedded slide image preview when a PPTX slide references one', async () => {
+  it('does not return text-only PowerPoint previews by default', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'message.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: 'renderer unavailable',
+        code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    assert.equal(preview, undefined);
+  });
+
+  it('attaches an embedded slide image preview when a PPTX slide references one and text fallback is explicitly allowed', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide1.xml', '<p:sld><p:cSld><p:spTree /></p:cSld></p:sld>');
     zip.file('ppt/slides/_rels/slide1.xml.rels', `
@@ -176,7 +199,9 @@ describe('PowerPoint preview extraction', () => {
       { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
     );
 
-    const preview = await buildPresentationPreview(file);
+    const preview = await buildPresentationPreview(file, {
+      allowTextPowerPointFallback: true,
+    });
 
     assert.equal(preview?.slides[0].title, 'Slide 1');
     assert.equal(preview?.slides[0].lines.length, 0);
@@ -257,6 +282,7 @@ describe('PowerPoint preview extraction', () => {
       'message.pptx',
       { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
     );
+    const failures: unknown[] = [];
 
     const preview = await buildServerRenderedPresentationPreview(file, {
       mediaHttpUrl: 'https://media.example.test',
@@ -267,9 +293,15 @@ describe('PowerPoint preview extraction', () => {
           { id: 'slide-1', title: 'TRIAD FORMATION', lines: ['Discipleship'] },
         ],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      onServerRenderFailure: (failure) => failures.push(failure),
     });
 
     assert.equal(preview, undefined);
+    assert.deepEqual(failures, [{
+      status: 200,
+      code: 'PRESENTATION_RENDER_INCOMPLETE',
+      message: 'Media server returned a presentation preview without rendered slide artwork.',
+    }]);
   });
 
   it('reports Render no-server presentation render failures', async () => {
@@ -420,7 +452,6 @@ describe('PowerPoint preview extraction', () => {
 
     const preview = await buildPresentationPreview(file, {
       requireRenderedSlides: true,
-      requireServerRenderedPowerPoint: true,
       mediaHttpUrl: 'https://media.example.test',
       fetchImpl: async () => new Response(JSON.stringify({
         error: 'renderer unavailable',
@@ -430,6 +461,32 @@ describe('PowerPoint preview extraction', () => {
     });
 
     assert.equal(preview, undefined);
+  });
+
+  it('uses browser-rendered PowerPoint images when fallback is explicitly enabled', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'Discipleship-Via-Triads.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      requireRenderedSlides: true,
+      allowBrowserPowerPointRenderFallback: true,
+      mediaHttpUrl: 'https://media.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: 'renderer unavailable',
+        code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+      pptxSlideImageRenderer: async () => ['data:image/png;base64,browser-rendered'],
+    });
+
+    assert.equal(preview?.slides[0].title, 'TRIAD FORMATION');
+    assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser-rendered');
+    assert.equal(preview?.slides[0].rendered, true);
   });
 
   it('requires server-rendered PowerPoint images when exact deck visuals are required', async () => {
@@ -551,7 +608,6 @@ describe('PowerPoint preview extraction', () => {
 
     const preview = await buildPresentationPreview(file, {
       requireRenderedSlides: true,
-      requireServerRenderedPowerPoint: true,
       allowBrowserPowerPointRenderFallback: true,
       mediaHttpUrl: 'https://media.example.test',
       fetchImpl: async () => new Response(JSON.stringify({
