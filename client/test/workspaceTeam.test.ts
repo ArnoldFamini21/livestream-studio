@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  buildWorkspaceTeamStudioCallSheet,
   buildWorkspaceTeamStudioInviteDetails,
   buildWorkspaceTeamStudioInviteEmailHref,
   canUseWorkspaceOperatorLink,
@@ -150,6 +151,43 @@ describe('workspace team roster', () => {
     assert.match(href, /^mailto:owner%40example\.com,editor%40example\.com,guest%40example\.com\?/);
     assert.match(decodeURIComponent(href), /subject=Production team invite: Launch Studio/);
     assert.match(decodeURIComponent(href), /Owner \(Owner\): https:\/\/studio\.example\.com\/join\/room-1\?role=host#hostToken=private-token/);
+  });
+
+  it('builds a role-aware production call sheet for the team', () => {
+    const owner = createWorkspaceTeamMember({
+      id: 'owner-1',
+      name: 'Owner',
+      email: 'owner@example.com',
+      role: 'owner',
+      createdAt: '2026-07-02T10:00:00.000Z',
+    });
+    const guestManager = createWorkspaceTeamMember({
+      id: 'guest-manager-1',
+      name: 'Guest Manager',
+      role: 'guest-manager',
+      createdAt: '2026-07-02T11:00:00.000Z',
+    });
+    assert.ok(owner);
+    assert.ok(guestManager);
+
+    const callSheet = buildWorkspaceTeamStudioCallSheet({
+      roomName: 'Launch Studio',
+      hostName: 'Arnold',
+      scheduledLabel: 'July 5, 2026, 6:00 PM',
+      generatedAt: 'July 4, 2026, 12:00 PM',
+      passwordProtected: true,
+      guestInviteUrl: 'https://studio.example.com/join/room-1',
+      hostEntryUrl: 'https://studio.example.com/join/room-1?role=host#hostToken=private-token',
+      members: [guestManager, owner],
+    });
+
+    assert.match(callSheet, /Production call sheet: Launch Studio/);
+    assert.match(callSheet, /Generated: July 4, 2026, 12:00 PM/);
+    assert.match(callSheet, /Guest entry: password protected/);
+    assert.match(callSheet, /Owner - Owner \| owner@example\.com\n   Operator link: https:\/\/studio\.example\.com\/join\/room-1\?role=host#hostToken=private-token/);
+    assert.match(callSheet, /Guest Manager - Guest Manager\n   Guest link: https:\/\/studio\.example\.com\/join\/room-1/);
+    assert.match(callSheet, /Owners and Producers use the private host link/);
+    assert.match(callSheet, /Keep private host links inside the production team/);
   });
 
   it('drops unsafe team invite urls before composing details', () => {
