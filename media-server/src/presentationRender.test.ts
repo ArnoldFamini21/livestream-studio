@@ -6,6 +6,7 @@ import {
   createLibreOfficePdfArgs,
   createPdfToPngArgs,
   getPresentationRenderSourceFormat,
+  getPresentationRendererHealth,
   PresentationRenderError,
   renderPresentationPreview,
 } from './presentationRender.js';
@@ -51,6 +52,52 @@ describe('presentation rendering', () => {
       '/tmp/source.pdf',
       '/tmp/slide',
     ]);
+  });
+
+  it('reports presentation renderer health when LibreOffice and Poppler probes pass', async () => {
+    const commands: Array<{ command: string; args: string[]; timeoutMs?: number }> = [];
+    const health = await getPresentationRendererHealth({
+      sofficePath: 'soffice-test',
+      pdftoppmPath: 'pdftoppm-test',
+      probeRunner: async (command, args, options) => {
+        commands.push({ command, args, timeoutMs: options?.timeoutMs });
+        return {
+          exitCode: 0,
+          stdout: command === 'soffice-test' ? 'LibreOffice 24.2\n' : '',
+          stderr: command === 'pdftoppm-test' ? 'pdftoppm version 24.02.0\n' : '',
+        };
+      },
+    });
+
+    assert.equal(health.ready, true);
+    assert.match(health.message, /Exact deck renderer ready/);
+    assert.deepEqual(commands.map((command) => [command.command, command.args]), [
+      ['soffice-test', ['--version']],
+      ['pdftoppm-test', ['-v']],
+    ]);
+    assert.equal(commands[0].timeoutMs, 3000);
+    assert.equal(health.dependencies[0].ready, true);
+    assert.equal(health.dependencies[0].version, 'LibreOffice 24.2');
+    assert.equal(health.dependencies[1].version, 'pdftoppm version 24.02.0');
+  });
+
+  it('reports presentation renderer health failures with dependency details', async () => {
+    const health = await getPresentationRendererHealth({
+      sofficePath: 'missing-soffice',
+      pdftoppmPath: 'pdftoppm-test',
+      probeRunner: async (command) => ({
+        exitCode: command === 'missing-soffice' ? null : 0,
+        stdout: command === 'pdftoppm-test' ? 'pdftoppm version 24.02.0\n' : '',
+        stderr: command === 'missing-soffice' ? 'spawn missing-soffice ENOENT' : '',
+      }),
+    });
+
+    assert.equal(health.ready, false);
+    assert.match(health.message, /LibreOffice/);
+    assert.equal(health.dependencies[0].ready, false);
+    assert.equal(health.dependencies[0].command, 'missing-soffice');
+    assert.match(health.dependencies[0].message || '', /ENOENT/);
+    assert.equal(health.dependencies[1].ready, true);
   });
 
   it('renders PowerPoint previews through LibreOffice and PDF rasterization', async () => {

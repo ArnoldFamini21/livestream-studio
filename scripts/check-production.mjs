@@ -205,6 +205,28 @@ function requireServiceHealth(label, json, expectedService) {
   }
 }
 
+export function describeServiceCapabilityFailure(label, json, capabilityKey, capabilityLabel) {
+  const capability = json?.capabilities?.[capabilityKey];
+  const readableLabel = capabilityLabel || capabilityKey;
+
+  if (capability === undefined) {
+    return `${label} health does not include ${readableLabel} capability metadata. ` +
+      'Redeploy the service from the current Render configuration before accepting production deck uploads.';
+  }
+  if (capability?.ready !== true) {
+    const message = typeof capability?.message === 'string' && capability.message.trim()
+      ? ` ${capability.message.trim()}`
+      : '';
+    return `${label} ${readableLabel} capability is not ready.${message}`;
+  }
+  return '';
+}
+
+function requireServiceCapability(label, json, capabilityKey, capabilityLabel) {
+  const capabilityFailure = describeServiceCapabilityFailure(label, json, capabilityKey, capabilityLabel);
+  if (capabilityFailure) throw new Error(capabilityFailure);
+}
+
 function requireProductionTurnReady(signaling) {
   const ice = signaling?.ice;
   if (
@@ -327,11 +349,19 @@ function formatMediaHealthResult(media) {
     version: media.version || null,
     commit: media.commit || null,
     environment: media.environment || null,
+    presentationRenderer: media.capabilities?.presentationRenderer
+      ? {
+          ready: media.capabilities.presentationRenderer.ready === true,
+          message: media.capabilities.presentationRenderer.message || null,
+        }
+      : null,
   };
 }
 
 async function checkMediaServer() {
-  return checkHealth('Media server', mediaHttpUrl, 'media-server');
+  const media = await checkHealth('Media server', mediaHttpUrl, 'media-server');
+  requireServiceCapability('Media server', media, 'presentationRenderer', 'exact deck renderer');
+  return media;
 }
 
 async function checkProductionServices() {

@@ -56,7 +56,32 @@ describe('media library upload support', () => {
 
   it('blocks deck uploads only while the exact renderer is not ready', () => {
     assert.equal(getDeckUploadBlockMessage(null), '');
-    assert.equal(getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }), '');
+    assert.match(
+      getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
+      /Exact deck renderer is unavailable/
+    );
+    assert.equal(
+      getDeckUploadBlockMessage({
+        status: 'ready',
+        message: 'Ready',
+        presentationRenderer: {
+          ready: true,
+          message: 'Exact deck renderer ready.',
+        },
+      }),
+      ''
+    );
+    assert.equal(
+      getDeckUploadBlockMessage({
+        status: 'ready',
+        message: 'Media server reachable.',
+        presentationRenderer: {
+          ready: false,
+          message: 'Exact deck renderer unavailable: LibreOffice is not ready.',
+        },
+      }),
+      'Exact deck renderer unavailable: LibreOffice is not ready.'
+    );
     assert.match(
       getDeckUploadBlockMessage({ status: 'checking', message: 'Checking media-server readiness...' }),
       /Checking the media-server/

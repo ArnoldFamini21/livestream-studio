@@ -9,6 +9,7 @@ export const MAX_PRESENTATION_RENDER_BYTES = 50 * 1024 * 1024;
 export const MAX_PRESENTATION_RENDER_SLIDES = 60;
 export const PRESENTATION_RENDER_WIDTH = 1920;
 const COMMAND_TIMEOUT_MS = 45_000;
+const DEPENDENCY_PROBE_TIMEOUT_MS = 3_000;
 
 export class PresentationRenderError extends Error {
   readonly statusCode: number;
@@ -36,6 +37,36 @@ interface CommandRunner {
 
 interface RenderOptions {
   commandRunner?: CommandRunner;
+  sofficePath?: string;
+  pdftoppmPath?: string;
+}
+
+export interface PresentationRendererDependency {
+  name: 'LibreOffice' | 'Poppler pdftoppm';
+  command: string;
+  ready: boolean;
+  version?: string;
+  message?: string;
+}
+
+export interface PresentationRendererHealth {
+  ready: boolean;
+  message: string;
+  dependencies: PresentationRendererDependency[];
+}
+
+interface CommandProbeResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+interface CommandProbeRunner {
+  (command: string, args: string[], options?: { timeoutMs?: number }): Promise<CommandProbeResult>;
+}
+
+interface RendererHealthOptions {
+  probeRunner?: CommandProbeRunner;
   sofficePath?: string;
   pdftoppmPath?: string;
 }
@@ -109,6 +140,145 @@ function getLibreOfficePath(): string {
 
 function getPdftoppmPath(): string {
   return process.env.PDFTOPPM_PATH || 'pdftoppm';
+}
+
+function normalizeProbeOutput(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+function extractVersionLine(stdout: string, stderr: string): string | undefined {
+  const line = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .find(Boolean);
+  return line ? normalizeProbeOutput(line) : undefined;
+}
+
+async function defaultCommandProbeRunner(
+  command: string,
+  args: string[],
+  options: { timeoutMs?: number } = {}
+): Promise<CommandProbeResult> {
+  const timeoutMs = Math.max(500, options.timeoutMs || DEPENDENCY_PROBE_TIMEOUT_MS);
+
+  return new Promise<CommandProbeResult>((resolve) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (result: CommandProbeResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve({
+        exitCode: result.exitCode,
+        stdout: normalizeProbeOutput(result.stdout),
+        stderr: normalizeProbeOutput(result.stderr),
+      });
+    };
+
+    timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish({
+        exitCode: null,
+        stdout,
+        stderr: `${stderr}\nProbe timed out after ${timeoutMs}ms`,
+      });
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+      if (stdout.length > 4096) stdout = stdout.slice(-4096);
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+      if (stderr.length > 4096) stderr = stderr.slice(-4096);
+    });
+
+    child.on('error', (err) => {
+      finish({
+        exitCode: null,
+        stdout,
+        stderr: err.message,
+      });
+    });
+
+    child.on('close', (code) => {
+      finish({
+        exitCode: code,
+        stdout,
+        stderr,
+      });
+    });
+  });
+}
+
+async function probeDependency(
+  input: Omit<PresentationRendererDependency, 'ready' | 'version' | 'message'> & { args: string[] },
+  probeRunner: CommandProbeRunner
+): Promise<PresentationRendererDependency> {
+  const result = await probeRunner(input.command, input.args, { timeoutMs: DEPENDENCY_PROBE_TIMEOUT_MS });
+  const version = extractVersionLine(result.stdout, result.stderr);
+
+  if (result.exitCode === 0) {
+    return {
+      name: input.name,
+      command: input.command,
+      ready: true,
+      ...(version ? { version } : {}),
+    };
+  }
+
+  const message = result.exitCode === null
+    ? result.stderr || 'Command could not be started.'
+    : result.stderr || result.stdout || `Command exited with code ${result.exitCode}.`;
+
+  return {
+    name: input.name,
+    command: input.command,
+    ready: false,
+    ...(version ? { version } : {}),
+    message: normalizeProbeOutput(message),
+  };
+}
+
+export async function getPresentationRendererHealth(
+  options: RendererHealthOptions = {}
+): Promise<PresentationRendererHealth> {
+  const sofficePath = options.sofficePath || getLibreOfficePath();
+  const pdftoppmPath = options.pdftoppmPath || getPdftoppmPath();
+  const probeRunner = options.probeRunner || defaultCommandProbeRunner;
+
+  const dependencies = await Promise.all([
+    probeDependency({
+      name: 'LibreOffice',
+      command: sofficePath,
+      args: ['--version'],
+    }, probeRunner),
+    probeDependency({
+      name: 'Poppler pdftoppm',
+      command: pdftoppmPath,
+      args: ['-v'],
+    }, probeRunner),
+  ]);
+
+  const missing = dependencies.filter((dependency) => !dependency.ready);
+  if (missing.length > 0) {
+    return {
+      ready: false,
+      message: `Exact deck renderer unavailable: ${missing.map((dependency) => dependency.name).join(', ')} ${missing.length === 1 ? 'is' : 'are'} not ready.`,
+      dependencies,
+    };
+  }
+
+  return {
+    ready: true,
+    message: 'Exact deck renderer ready: LibreOffice and Poppler are available for PowerPoint and PDF rendering.',
+    dependencies,
+  };
 }
 
 async function defaultCommandRunner(command: string, args: string[], options: { timeoutMs?: number } = {}): Promise<void> {

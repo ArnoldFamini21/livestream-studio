@@ -45,7 +45,9 @@ import {
 import {
   MAX_PRESENTATION_RENDER_BYTES,
   PresentationRenderError,
+  getPresentationRendererHealth,
   renderPresentationPreview,
+  type PresentationRendererHealth,
 } from './presentationRender.js';
 import {
   createFfmpegArgs,
@@ -62,8 +64,8 @@ const MAX_WS_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 const MAX_DESTINATION_RESTARTS = 2;
 const DESTINATION_RESTART_DELAY_MS = 1_500;
+const MEDIA_HEALTH_CAPABILITY_CACHE_MS = 60_000;
 const isProduction = process.env.NODE_ENV === 'production';
-const healthPayload = () => buildServiceHealthPayload('media-server', process.env);
 
 interface RelayProcess {
   destination: RtmpRelayDestination;
@@ -98,6 +100,10 @@ const recordingUploads = new RecordingUploadStore();
 let recordingExports: RecordingExportJobStore | null = null;
 let recordingExportsFfmpegPath = '';
 let recordingExportsStorageFingerprint = '';
+let presentationRendererHealthCache: {
+  expiresAt: number;
+  value: PresentationRendererHealth;
+} | null = null;
 
 function sendJson(ws: WebSocket, message: RtmpRelayServerMessage) {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -110,6 +116,36 @@ function sendError(ws: WebSocket, code: string, message: string, destinationId?:
 
 function getFfmpegPath(): string | null {
   return process.env.FFMPEG_PATH || ffmpegStaticPath || null;
+}
+
+async function getCachedPresentationRendererHealth(): Promise<PresentationRendererHealth> {
+  const now = Date.now();
+  if (presentationRendererHealthCache && presentationRendererHealthCache.expiresAt > now) {
+    return presentationRendererHealthCache.value;
+  }
+
+  const value = await getPresentationRendererHealth();
+  presentationRendererHealthCache = {
+    expiresAt: now + MEDIA_HEALTH_CAPABILITY_CACHE_MS,
+    value,
+  };
+  return value;
+}
+
+async function healthPayload() {
+  const presentationRenderer = await getCachedPresentationRendererHealth();
+  return {
+    ...buildServiceHealthPayload('media-server', process.env),
+    capabilities: {
+      presentationRenderer: {
+        ready: presentationRenderer.ready,
+        message: presentationRenderer.message,
+        details: {
+          dependencies: presentationRenderer.dependencies,
+        },
+      },
+    },
+  };
 }
 
 function getStorageFingerprint(config: ObjectStorageConfig | null): string {
@@ -919,7 +955,7 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
 async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(healthPayload()));
+    res.end(JSON.stringify(await healthPayload()));
     return;
   }
 

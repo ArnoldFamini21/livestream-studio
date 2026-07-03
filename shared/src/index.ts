@@ -25,6 +25,13 @@ export interface ServiceHealthPayload {
   version?: string;
   commit?: string;
   environment?: string;
+  capabilities?: Record<string, ServiceHealthCapability>;
+}
+
+export interface ServiceHealthCapability {
+  ready: boolean;
+  message: string;
+  details?: Record<string, unknown>;
 }
 
 function firstNonEmptyEnv(env: Record<string, string | undefined>, keys: string[]): string | undefined {

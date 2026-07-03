@@ -26,6 +26,18 @@ describe('media-server health readiness', () => {
       version: '1.0.0',
       commit: '99f15fb',
       environment: 'production',
+      capabilities: {
+        presentationRenderer: {
+          ready: true,
+          message: 'Exact deck renderer ready.',
+          details: {
+            dependencies: [
+              { name: 'LibreOffice', ready: true },
+              { name: 'Poppler pdftoppm', ready: true },
+            ],
+          },
+        },
+      },
     }, {
       mediaHttpUrl: 'https://media.example.test',
       checkedAt: 123,
@@ -39,7 +51,45 @@ describe('media-server health readiness', () => {
     assert.equal(health.commit, '99f15fb');
     assert.equal(health.environment, 'production');
     assert.equal(health.httpStatus, 200);
+    assert.equal(health.presentationRenderer?.ready, true);
+    assert.equal(health.presentationRenderer?.message, 'Exact deck renderer ready.');
     assert.match(health.message, /RTMP relay/);
+  });
+
+  it('keeps the media server ready while surfacing degraded exact deck rendering', () => {
+    const health = normalizeMediaServerHealthPayload({
+      status: 'ok',
+      service: 'media-server',
+      capabilities: {
+        presentationRenderer: {
+          ready: false,
+          message: 'Exact deck renderer unavailable: LibreOffice is not ready.',
+        },
+      },
+    }, {
+      mediaHttpUrl: 'https://media.example.test',
+      checkedAt: 321,
+      httpStatus: 200,
+    });
+
+    assert.equal(health.status, 'ready');
+    assert.equal(health.presentationRenderer?.ready, false);
+    assert.match(health.message, /Exact deck rendering is unavailable/);
+  });
+
+  it('treats media-server health without renderer capability metadata as deck-render degraded', () => {
+    const health = normalizeMediaServerHealthPayload({
+      status: 'ok',
+      service: 'media-server',
+    }, {
+      mediaHttpUrl: 'https://media.example.test',
+      checkedAt: 654,
+      httpStatus: 200,
+    });
+
+    assert.equal(health.status, 'ready');
+    assert.equal(health.presentationRenderer?.ready, false);
+    assert.match(health.presentationRenderer?.message || '', /older deployment/);
   });
 
   it('rejects stale health responses without service metadata', () => {

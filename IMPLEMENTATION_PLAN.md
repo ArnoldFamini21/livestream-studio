@@ -250,6 +250,7 @@
 - [x] Optional GitHub Actions deploy hooks for Render signaling and media-server services
 - [x] Production smoke command verifies Hostinger client plus Render service health metadata
 - [x] GitHub Actions waits for Render service health metadata when deploy hooks are configured
+- [x] Media-server health advertises exact deck-renderer readiness for LibreOffice + Poppler, and production checks require it before deck uploads are trusted
 - [x] Configurable STUN/TURN ICE config endpoint for WebRTC connectivity
 - [x] Host-visible TURN relay readiness in Session Health
 - [ ] Global TURN servers for reliable connectivity (production provider credentials)
