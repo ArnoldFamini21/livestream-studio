@@ -12,7 +12,7 @@ import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
 import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
 import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
-import { useRecording } from '../hooks/useRecording.ts';
+import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
 import type { LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
@@ -129,11 +129,16 @@ import {
   type RecordingUploadFileInput,
 } from '../utils/recordingUpload.ts';
 import { syncRecordingCatalogEntry } from '../utils/recordingCatalog.ts';
-import { getRecordingFileExtension, summarizeRecordingFileFormats } from '../utils/recordingMimeTypes.ts';
 import {
   downloadRtmpBackupRecording,
   pollRtmpBackupRecording,
 } from '../utils/rtmpBackupRecording.ts';
+import {
+  buildToolbarRecordingUploadFiles,
+  formatRecordingTimestamp,
+  getToolbarRecordingFallbackToast,
+  makeToolbarRecordingFileName,
+} from '../utils/toolbarRecording.ts';
 import {
   getSceneActiveMediaForApply,
   getSceneActiveMediaSnapshot,
@@ -852,39 +857,6 @@ function downloadBlobFile(blob: Blob, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-function sanitizeRecordingFileNamePart(value: string, fallback: string): string {
-  const cleaned = value
-    .trim()
-    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
-    .replace(/\s+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 80);
-  return cleaned || fallback;
-}
-
-function formatRecordingTimestamp(date: Date): string {
-  return date.toISOString().slice(0, 19).replace(/[:T]/g, '-');
-}
-
-function makeToolbarRecordingFileName(name: string, blob: Blob, timestamp: string): string {
-  const label = sanitizeRecordingFileNamePart(name, 'recording');
-  return `${label}_${timestamp}.${getRecordingFileExtension(blob.type)}`;
-}
-
-function buildToolbarRecordingUploadFiles(
-  recordings: Map<string, { name: string; blob: Blob }>,
-  timestamp: string
-): RecordingUploadFileInput[] {
-  return Array.from(recordings.values())
-    .filter(({ blob }) => blob.size > 0)
-    .map(({ name, blob }) => ({
-      label: name.trim() || 'Recording',
-      blob,
-      fileName: makeToolbarRecordingFileName(name, blob, timestamp),
-      kind: blob.type.toLowerCase().startsWith('audio/') ? 'audio' : 'iso',
-    }));
-}
-
 async function downloadToolbarRecordingFallbackFiles(
   files: RecordingUploadFileInput[],
   timestamp: string
@@ -896,17 +868,6 @@ async function downloadToolbarRecordingFallbackFiles(
       await new Promise((resolve) => window.setTimeout(resolve, 350));
     }
   }
-}
-
-function getToolbarRecordingFallbackToast(files: RecordingUploadFileInput[]): string {
-  const summary = summarizeRecordingFileFormats(files);
-  if (summary.allBrowserMp4Compatible) {
-    return 'Media-server final MP4 mix unavailable. Saved browser-native MP4/M4A recording tracks.';
-  }
-  if (summary.hasBrowserMp4CompatibleFiles) {
-    return 'Media-server final MP4 mix unavailable. Saved MP4/M4A and browser fallback tracks separately.';
-  }
-  return 'MP4 export was unavailable. Saved original recording tracks instead.';
 }
 
 function getReadyMp4Artifact(exportJob: Awaited<ReturnType<typeof uploadRecordingToMediaServer>>['exportJob']) {
@@ -2719,17 +2680,41 @@ export function StudioRoom() {
         setSessionRecordingStartedAt(null);
       }
     } else {
-      const streams = new Map<string, { stream: MediaStream; name: string; isLocal: boolean }>();
-      if (localStream && myParticipant.status === 'on-stage') {
-        streams.set(myParticipant.id, { stream: localStream, name: myParticipant.name, isLocal: true });
-      }
-      for (const [id, participant] of participants) {
-        if (participant.status !== 'on-stage') continue;
-        const rs = remoteStreams.get(id);
-        if (rs) streams.set(id, { stream: rs, name: participant.name, isLocal: false });
+      const streams = new Map<string, RecordingStreamInput>();
+      const programSource = createProgramRecordingSource({
+        compositeStream: compositeStreamRef.current,
+        localStream,
+        localParticipant: myParticipant,
+        participants,
+        remoteStreams,
+        screenStream,
+        auxiliaryAudioStream: broadcastAudioBus.ensureStream() ?? broadcastAudioBus.stream,
+        participantVolumes,
+        participantAudioLevels: stageAudioLevels,
+        audioDuckingEnabled,
+      });
+
+      if (programSource) {
+        streams.set(programSource.id, {
+          stream: programSource.stream,
+          name: programSource.label,
+          isLocal: true,
+          kind: programSource.kind,
+          cleanup: programSource.cleanup,
+        });
+      } else {
+        if (localStream && myParticipant.status === 'on-stage') {
+          streams.set(myParticipant.id, { stream: localStream, name: myParticipant.name, isLocal: true, kind: 'iso' });
+        }
+        for (const [id, participant] of participants) {
+          if (participant.status !== 'on-stage') continue;
+          const rs = remoteStreams.get(id);
+          if (rs) streams.set(id, { stream: rs, name: participant.name, isLocal: false, kind: 'iso' });
+        }
       }
       if (streams.size === 0) return;
-      startRecording(streams);
+      const started = startRecording(streams);
+      if (!started) return;
       const startedAt = new Date().toISOString();
       setSessionRecordingStartedAt(startedAt);
       send({
