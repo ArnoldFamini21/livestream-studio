@@ -12,7 +12,7 @@ const MAX_SLIDE_IMAGE_CANDIDATES = 12;
 const RENDERED_SLIDE_WIDTH = 1280;
 const RENDERED_SLIDE_HEIGHT = 720;
 const RENDER_SETTLE_FRAMES = 3;
-const RENDER_SETTLE_TIMEOUT_MS = 120;
+const RENDER_SETTLE_TIMEOUT_MS = 320;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
@@ -562,13 +562,14 @@ function createHiddenPresentationRenderHost(): HTMLElement {
   const host = document.createElement('div');
   host.setAttribute('aria-hidden', 'true');
   host.style.position = 'fixed';
-  host.style.left = '-100000px';
+  host.style.left = '0';
   host.style.top = '0';
   host.style.width = `${RENDERED_SLIDE_WIDTH}px`;
   host.style.height = `${RENDERED_SLIDE_HEIGHT}px`;
   host.style.overflow = 'hidden';
   host.style.pointerEvents = 'none';
   host.style.zIndex = '-1';
+  host.style.transform = 'translate3d(-150vw, -150vh, 0)';
   document.body.appendChild(host);
   return host;
 }
@@ -580,7 +581,7 @@ async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideC
   let previewer: { load: (file: ArrayBuffer) => Promise<unknown>; renderSingleSlide: (slideIndex: number) => void; destroy: () => void; slideCount?: number } | null = null;
 
   try {
-    const [{ init }, { toPng }] = await Promise.all([
+    const [{ init }, { toJpeg, toPng }] = await Promise.all([
       import('pptx-preview'),
       import('html-to-image'),
     ]);
@@ -589,7 +590,12 @@ async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideC
       height: RENDERED_SLIDE_HEIGHT,
       mode: 'list',
     });
-    await previewer.load(arrayBuffer.slice(0));
+    const previewCapable = previewer as typeof previewer & { preview?: (file: ArrayBuffer) => Promise<unknown> };
+    if (typeof previewCapable?.preview === 'function') {
+      await previewCapable.preview(arrayBuffer.slice(0));
+    } else {
+      await previewer.load(arrayBuffer.slice(0));
+    }
 
     const slideCount = Math.min(
       expectedSlideCount,
@@ -599,20 +605,26 @@ async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideC
     const imageUrls: string[] = [];
 
     for (let index = 0; index < slideCount; index += 1) {
-      previewer.renderSingleSlide(index);
-      const slideNode = host.querySelector(`.pptx-preview-slide-wrapper-${index}`) as HTMLElement | null;
+      let slideNode = host.querySelector(`.pptx-preview-slide-wrapper-${index}`) as HTMLElement | null;
+      if (!slideNode) {
+        previewer.renderSingleSlide(index);
+        slideNode = host.querySelector(`.pptx-preview-slide-wrapper-${index}`) as HTMLElement | null;
+      }
       if (!slideNode) {
         imageUrls.push('');
         continue;
       }
 
       await waitForPresentationRender(slideNode);
-      imageUrls.push(await toPng(slideNode, {
+      const captureOptions = {
         width: RENDERED_SLIDE_WIDTH,
         height: RENDERED_SLIDE_HEIGHT,
         pixelRatio: 1,
         backgroundColor: '#ffffff',
-      }));
+      };
+      const imageUrl = await toPng(slideNode, captureOptions)
+        .catch(() => toJpeg(slideNode, { ...captureOptions, quality: 0.94 }));
+      imageUrls.push(isRenderedSlideImageUrl(imageUrl) ? imageUrl : '');
     }
 
     return imageUrls;
