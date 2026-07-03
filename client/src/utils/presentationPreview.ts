@@ -16,11 +16,11 @@ const RENDER_SETTLE_TIMEOUT_MS = 320;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
-// The media-server renderer remains the first choice for PowerPoint because it
-// uses LibreOffice and Poppler. Modern PPTX files can still render visually in
-// the browser when the Render media-server is not provisioned, which is much
-// closer to the original deck than a text-only reconstruction.
-export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
+// The media-server renderer is required for normal PowerPoint playback because
+// it uses LibreOffice and Poppler to preserve the original slide design. The
+// browser renderer remains available only to explicit callers for development
+// and degraded diagnostics; it is not used by the studio upload flow.
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',

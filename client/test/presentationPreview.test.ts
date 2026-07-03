@@ -54,8 +54,8 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(isPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
   });
 
-  it('keeps the normal PowerPoint upload path visual-render only', () => {
-    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, true);
+  it('keeps the normal PowerPoint upload path exact-render only', () => {
+    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, false);
     assert.equal(canBrowserRenderPowerPointFile({ name: 'sermon.pptx', type: '' } as File), true);
     assert.equal(canBrowserRenderPowerPointFile({ name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File), false);
     assert.equal(isRecoverablePowerPointServerRenderFailure({
@@ -492,7 +492,7 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].rendered, true);
   });
 
-  it('uses configured browser-rendered PowerPoint fallback when the media-server is not provisioned', async () => {
+  it('can use configured browser-rendered PowerPoint fallback only when explicitly enabled', async () => {
     const zip = new JSZip();
     zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
     const bytes = await zip.generateAsync({ type: 'uint8array' });
@@ -504,7 +504,7 @@ describe('PowerPoint preview extraction', () => {
 
     const preview = await buildPresentationPreview(file, {
       requireRenderedSlides: true,
-      allowBrowserPowerPointRenderFallback: ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
+      allowBrowserPowerPointRenderFallback: true,
       mediaHttpUrl: 'https://media.example.test',
       fetchImpl: async () => new Response('Not Found', {
         status: 404,
