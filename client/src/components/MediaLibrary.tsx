@@ -6,10 +6,7 @@ import {
   getPresentationItemDisplayTitle,
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
-import {
-  canBrowserRenderPowerPointFile,
-  hasRenderedPresentationSlides,
-} from '../utils/presentationPreview.ts';
+import { hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
@@ -502,36 +499,27 @@ export function hasDeckFiles(files: File[]): boolean {
 
 export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
   return files.some((file) => {
-    const lower = file.name.toLowerCase();
     if (detectMediaType(file) !== 'presentation') return false;
-    if (canBrowserRenderPowerPointFile(file)) return false;
-    return (
-      lower.endsWith('.ppt') ||
-      lower.endsWith('.ppsx') ||
-      lower.endsWith('.pps') ||
-      lower.endsWith('.pot') ||
-      lower.endsWith('.key') ||
-      file.type === 'application/vnd.ms-powerpoint'
-    );
+    return true;
   });
 }
 
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  if (!health) return 'Checking the exact deck renderer. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
+  if (!health) return 'Checking the exact deck renderer. PDFs can render in the browser; PowerPoint and Keynote need the media-server to preserve the original design.';
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
-      return 'Exact deck renderer is unavailable. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
+      return 'Exact deck renderer is unavailable. PDFs can render in the browser; PowerPoint and Keynote need the media-server to preserve the original design.';
     }
     return health.presentationRenderer.ready
       ? ''
-      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
+      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. PDFs can render in the browser; PowerPoint and Keynote need the media-server to preserve the original design.';
   }
   if (health.status === 'checking') {
-    return 'Checking the exact deck renderer. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
+    return 'Checking the exact deck renderer. PDFs can render in the browser; PowerPoint and Keynote need the media-server to preserve the original design.';
   }
-  return health.message || 'Media server is unavailable. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
+  return health.message || 'Media server is unavailable. PDFs can render in the browser; PowerPoint and Keynote need the media-server to preserve the original design.';
 }
 
 export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {

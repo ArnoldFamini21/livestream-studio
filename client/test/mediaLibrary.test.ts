@@ -56,16 +56,16 @@ describe('media library upload support', () => {
     ]), true);
   });
 
-  it('uses browser rendering for modern PowerPoint and requires the media-server for legacy deck formats', () => {
+  it('requires the media-server for PowerPoint and Keynote deck formats', () => {
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'Distinct But Not Distant.pdf', type: 'application/pdf' } as File,
     ]), false);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'Discipleship-Via-Triads.pptx', type: '' } as File,
-    ]), false);
+    ]), true);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'slides.ppsx', type: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' } as File,
-    ]), false);
+    ]), true);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File,
     ]), true);
@@ -78,10 +78,10 @@ describe('media library upload support', () => {
   });
 
   it('warns when exact deck rendering is not ready and explains which deck formats need the media-server', () => {
-    assert.match(getDeckUploadBlockMessage(null), /PPTX and PDF can still render in the browser/);
+    assert.match(getDeckUploadBlockMessage(null), /PDFs can render in the browser/);
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /legacy PPT and Keynote need the media-server/
+      /PowerPoint and Keynote need the media-server/
     );
     assert.equal(
       getDeckUploadBlockMessage({
@@ -107,7 +107,7 @@ describe('media library upload support', () => {
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'checking', message: 'Checking media-server readiness...' }),
-      /PPTX and PDF can still render in the browser/
+      /PowerPoint and Keynote need the media-server/
     );
     assert.equal(
       getDeckUploadBlockMessage({ status: 'unavailable', message: 'Media server is not provisioned on Render.' }),
