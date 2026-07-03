@@ -1517,6 +1517,8 @@ export function StudioRoom() {
       stoppedAt: options.stoppedAt,
       destinationCount: enabledDestinations.length,
       errorCount,
+      relayError: options.relayError,
+      destinations: enabledDestinations,
     }));
   }, []);
 
@@ -5037,6 +5039,35 @@ export function StudioRoom() {
               <span style={styles.waitingNoticeCopy}>
                 <strong style={styles.waitingNoticeTitle}>{liveSessionSummary.title}</strong>
                 <span style={styles.waitingNoticeText}>{liveSessionSummary.message}</span>
+                {liveSessionSummary.destinationOutcomes.length > 0 && (
+                  <span style={styles.liveSummaryDestinations}>
+                    {liveSessionSummary.destinationOutcomes.map((outcome) => (
+                      <span key={outcome.id} style={styles.liveSummaryDestinationRow}>
+                        <span
+                          style={{
+                            ...styles.liveSummaryDestinationDot,
+                            ...(outcome.status === 'success'
+                              ? styles.liveSummaryDestinationDotSuccess
+                              : outcome.status === 'error'
+                                ? styles.liveSummaryDestinationDotError
+                                : styles.liveSummaryDestinationDotWarning),
+                          }}
+                        />
+                        <span style={styles.liveSummaryDestinationName}>{outcome.name}</span>
+                        <span style={{
+                          ...styles.liveSummaryDestinationStatus,
+                          ...(outcome.status === 'success'
+                            ? styles.liveSummaryDestinationStatusSuccess
+                            : outcome.status === 'error'
+                              ? styles.liveSummaryDestinationStatusError
+                              : styles.liveSummaryDestinationStatusWarning),
+                        }}>
+                          {outcome.label}
+                        </span>
+                      </span>
+                    ))}
+                  </span>
+                )}
                 {liveBackupRecording && (
                   <span style={styles.waitingNoticeText}>{getLiveBackupNoticeText(liveBackupRecording)}</span>
                 )}
@@ -6200,6 +6231,63 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     lineHeight: 1.4,
     color: 'var(--text-secondary)',
+  },
+  liveSummaryDestinations: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    marginTop: 5,
+    maxHeight: 104,
+    overflowY: 'auto',
+  },
+  liveSummaryDestinationRow: {
+    display: 'grid',
+    gridTemplateColumns: '8px minmax(0, 1fr) auto',
+    alignItems: 'center',
+    gap: 7,
+    minHeight: 24,
+    padding: '4px 6px',
+    borderRadius: 7,
+    background: 'rgba(15, 23, 42, 0.56)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+  },
+  liveSummaryDestinationDot: {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+  },
+  liveSummaryDestinationDotSuccess: {
+    background: '#22c55e',
+  },
+  liveSummaryDestinationDotWarning: {
+    background: '#f59e0b',
+  },
+  liveSummaryDestinationDotError: {
+    background: '#ef4444',
+  },
+  liveSummaryDestinationName: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: 'var(--text-primary)',
+    fontSize: 11,
+    fontWeight: 800,
+  },
+  liveSummaryDestinationStatus: {
+    fontSize: 10,
+    fontWeight: 900,
+    textTransform: 'uppercase',
+    letterSpacing: 0,
+  },
+  liveSummaryDestinationStatusSuccess: {
+    color: '#86efac',
+  },
+  liveSummaryDestinationStatusWarning: {
+    color: '#fbbf24',
+  },
+  liveSummaryDestinationStatusError: {
+    color: '#fca5a5',
   },
   noticeActionBtn: {
     borderRadius: 6,

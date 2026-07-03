@@ -58,6 +58,7 @@ describe('live stream status', () => {
       tone: 'success',
       formattedDuration: '12:30',
       destinationLabel: '2 destinations',
+      destinationOutcomes: [],
     });
   });
 
@@ -73,7 +74,74 @@ describe('live stream status', () => {
       tone: 'warning',
       formattedDuration: '0:45',
       destinationLabel: '3 destinations',
+      destinationOutcomes: [],
     });
+  });
+
+  it('builds per-destination post-live outcomes from the enabled destination snapshot', () => {
+    const summary = buildLiveSessionSummary({
+      startedAt: '2026-06-11T12:00:00.000Z',
+      stoppedAt: '2026-06-11T12:05:00.000Z',
+      destinationCount: 0,
+      destinations: [
+        { id: 'yt', name: 'YouTube', enabled: true, status: 'live', statusMessage: 'Connected' },
+        { id: 'fb', name: 'Facebook', enabled: true, status: 'error', statusMessage: 'Stream key rejected' },
+        { id: 'tw', name: 'Twitch', enabled: false, status: 'idle' },
+      ],
+    });
+
+    assert.equal(summary.tone, 'warning');
+    assert.equal(summary.destinationLabel, '2 destinations');
+    assert.equal(summary.message, 'Stream ran for 5:00. 1/2 destinations reported an error.');
+    assert.deepEqual(summary.destinationOutcomes, [
+      {
+        id: 'yt',
+        name: 'YouTube',
+        status: 'success',
+        label: 'Live',
+        detail: 'Connected',
+      },
+      {
+        id: 'fb',
+        name: 'Facebook',
+        status: 'error',
+        label: 'Issue',
+        detail: 'Stream key rejected',
+      },
+    ]);
+  });
+
+  it('warns when destination delivery was not confirmed before the stream ended', () => {
+    const summary = buildLiveSessionSummary({
+      startedAt: '2026-06-11T12:00:00.000Z',
+      stoppedAt: '2026-06-11T12:02:00.000Z',
+      destinationCount: 1,
+      destinations: [
+        { id: 'custom', name: 'Custom RTMP', enabled: true, status: 'connecting' },
+      ],
+    });
+
+    assert.equal(summary.title, 'Stream ended; review destinations');
+    assert.equal(summary.tone, 'warning');
+    assert.equal(summary.message, 'Stream ran for 2:00. 1/1 destination did not confirm live delivery.');
+    assert.equal(summary.destinationOutcomes[0].status, 'warning');
+    assert.equal(summary.destinationOutcomes[0].label, 'Connecting');
+  });
+
+  it('marks destination outcomes as errors when the relay stops unexpectedly', () => {
+    const summary = buildLiveSessionSummary({
+      startedAt: '2026-06-11T12:00:00.000Z',
+      stoppedAt: '2026-06-11T12:00:10.000Z',
+      destinationCount: 1,
+      relayError: true,
+      destinations: [
+        { id: 'yt', name: 'YouTube', enabled: true, status: 'live' },
+      ],
+    });
+
+    assert.equal(summary.tone, 'warning');
+    assert.equal(summary.destinationOutcomes[0].status, 'error');
+    assert.equal(summary.destinationOutcomes[0].detail, 'Relay ended before this destination confirmed a clean stop.');
   });
 
   it('bounds invalid destination counts in post-live summaries', () => {
@@ -86,5 +154,6 @@ describe('live stream status', () => {
 
     assert.equal(summary.destinationLabel, '0 destinations');
     assert.equal(summary.message, 'Stream ran for 0:00. No destinations were enabled.');
+    assert.deepEqual(summary.destinationOutcomes, []);
   });
 });
