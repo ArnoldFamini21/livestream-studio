@@ -42,7 +42,6 @@ import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
 import {
-  ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
   buildPresentationPreview,
   hasRenderedPresentationSlides,
   type PresentationServerRenderFailure,
@@ -3335,12 +3334,10 @@ export function StudioRoom() {
 
       try {
         let serverRenderFailure: PresentationServerRenderFailure | undefined;
-        const allowBrowserPowerPointRenderFallback = type === 'presentation' &&
-          ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK;
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation' && !allowBrowserPowerPointRenderFallback,
-          allowBrowserPowerPointRenderFallback,
+          requireServerRenderedPowerPoint: type === 'presentation',
+          allowBrowserPowerPointRenderFallback: false,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
           },

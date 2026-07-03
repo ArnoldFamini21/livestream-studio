@@ -24,6 +24,28 @@ export interface MediaServerHealth {
   presentationRenderer?: MediaServerCapabilityHealth;
 }
 
+export type MediaServerParityFeatureStatus = 'ready' | 'checking' | 'degraded' | 'blocked';
+
+export interface MediaServerParityFeature {
+  id: 'rtmp-relay' | 'mp4-export' | 'live-backup' | 'exact-deck-rendering';
+  label: string;
+  status: MediaServerParityFeatureStatus;
+  detail: string;
+}
+
+export interface MediaServerRecoveryAction {
+  id: string;
+  label: string;
+}
+
+export interface MediaServerParityDiagnostics {
+  status: 'ready' | 'checking' | 'degraded' | 'blocked';
+  headline: string;
+  detail: string;
+  features: MediaServerParityFeature[];
+  actions: MediaServerRecoveryAction[];
+}
+
 interface MediaServerHealthPayload {
   status?: unknown;
   service?: unknown;
@@ -100,6 +122,107 @@ function isAbortLike(error: unknown): boolean {
     'name' in error &&
     (error as { name?: unknown }).name === 'AbortError'
   );
+}
+
+function createMediaServerFeature(
+  id: MediaServerParityFeature['id'],
+  label: string,
+  status: MediaServerParityFeatureStatus,
+  detail: string
+): MediaServerParityFeature {
+  return { id, label, status, detail };
+}
+
+function getUnavailableRecoveryActions(health: MediaServerHealth): MediaServerRecoveryAction[] {
+  if (!health.mediaHttpUrl) {
+    return [
+      { id: 'configure-http-url', label: 'Set VITE_MEDIA_HTTP_URL to the Render media-server base URL.' },
+      { id: 'configure-ws-url', label: 'Set VITE_MEDIA_WS_URL to the same service /rtmp WebSocket endpoint.' },
+      { id: 'redeploy-client', label: 'Redeploy the Hostinger client after updating environment variables.' },
+    ];
+  }
+
+  if (health.renderRouting?.toLowerCase() === 'no-server') {
+    return [
+      { id: 'sync-render-service', label: 'Create or sync livestream-studio-media-server from render.yaml in Render.' },
+      { id: 'share-token-secret', label: 'Set the same LIVE_STREAM_TOKEN_SECRET on both Render services.' },
+      { id: 'add-deploy-hook', label: 'Add RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL to GitHub Actions secrets.' },
+      { id: 'redeploy-media-server', label: 'Run the deploy workflow with deploy_media enabled, or merge a media-server change after the hook is set.' },
+    ];
+  }
+
+  if (/older deployment|redeploy/i.test(health.message)) {
+    return [
+      { id: 'redeploy-media-server', label: 'Redeploy the Render media-server from the current main branch.' },
+      { id: 'verify-health', label: 'Confirm /health reports service: media-server and the current commit.' },
+    ];
+  }
+
+  return [
+    { id: 'verify-render-service', label: 'Confirm the media-server Render service is running and reachable at the configured URL.' },
+    { id: 'check-cors', label: 'Confirm CLIENT_URLS includes the studio origin for health, upload, and relay requests.' },
+  ];
+}
+
+export function buildMediaServerParityDiagnostics(health: MediaServerHealth | null | undefined): MediaServerParityDiagnostics {
+  if (!health || health.status === 'checking') {
+    const detail = health?.message || 'Media-server readiness has not been checked yet.';
+    return {
+      status: 'checking',
+      headline: 'Media-server readiness pending',
+      detail,
+      features: [
+        createMediaServerFeature('rtmp-relay', 'RTMP multistreaming', 'checking', detail),
+        createMediaServerFeature('mp4-export', 'Final MP4 export', 'checking', detail),
+        createMediaServerFeature('live-backup', 'Live backup recording', 'checking', detail),
+        createMediaServerFeature('exact-deck-rendering', 'Exact deck rendering', 'checking', detail),
+      ],
+      actions: [],
+    };
+  }
+
+  if (health.status === 'unavailable') {
+    return {
+      status: 'blocked',
+      headline: 'Media-server features blocked',
+      detail: health.message,
+      features: [
+        createMediaServerFeature('rtmp-relay', 'RTMP multistreaming', 'blocked', 'Go Live relay cannot start without the media-server WebSocket endpoint.'),
+        createMediaServerFeature('mp4-export', 'Final MP4 export', 'blocked', 'Browser recordings can save locally, but server-side final MP4 export is unavailable.'),
+        createMediaServerFeature('live-backup', 'Live backup recording', 'blocked', 'The automatic server backup recording is unavailable until the media-server runs.'),
+        createMediaServerFeature('exact-deck-rendering', 'Exact deck rendering', 'blocked', 'PDF, legacy PowerPoint, Keynote, and exact PPTX rendering need the media-server renderer.'),
+      ],
+      actions: getUnavailableRecoveryActions(health),
+    };
+  }
+
+  const deckReady = health.presentationRenderer?.ready === true;
+  const deckDetail = health.presentationRenderer?.message || 'Exact deck-renderer capability metadata is missing.';
+
+  return {
+    status: deckReady ? 'ready' : 'degraded',
+    headline: deckReady ? 'Media-server features ready' : 'Media-server partially ready',
+    detail: deckReady
+      ? health.message
+      : 'RTMP relay and MP4 export are reachable, but exact deck rendering still needs attention.',
+    features: [
+      createMediaServerFeature('rtmp-relay', 'RTMP multistreaming', 'ready', 'Go Live relay endpoint is reachable.'),
+      createMediaServerFeature('mp4-export', 'Final MP4 export', 'ready', 'Recording upload and MP4 export endpoint is reachable.'),
+      createMediaServerFeature('live-backup', 'Live backup recording', 'ready', 'Server-side live backup status and download routes are reachable.'),
+      createMediaServerFeature(
+        'exact-deck-rendering',
+        'Exact deck rendering',
+        deckReady ? 'ready' : 'degraded',
+        deckReady ? deckDetail : `${deckDetail} Redeploy the Docker media-server with LibreOffice and Poppler available.`
+      ),
+    ],
+    actions: deckReady
+      ? []
+      : [
+          { id: 'install-renderer-deps', label: 'Redeploy the Docker media-server with LibreOffice and Poppler installed.' },
+          { id: 'verify-deck-capability', label: 'Confirm /health reports presentationRenderer.ready: true.' },
+        ],
+  };
 }
 
 async function readFailureMessage(response: Response): Promise<string> {
