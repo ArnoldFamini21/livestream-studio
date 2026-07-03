@@ -16,6 +16,7 @@ export interface SavedHostStudio {
   createdAt?: string;
   scheduledFor?: string;
   passwordProtected?: boolean;
+  registrationEnabled?: boolean;
   status?: string;
 }
 

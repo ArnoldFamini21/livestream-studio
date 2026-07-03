@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { buildStudioCalendarInvite, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse, type WorkspaceTeamCatalogMember } from '@studio/shared';
+import { buildStudioCalendarInvite, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse, type WorkspaceStudioCatalogEntry, type WorkspaceTeamCatalogMember } from '@studio/shared';
 import {
   buildHostEntryPath,
   buildHostEntryUrl,
@@ -41,6 +41,12 @@ import {
   catalogEntryToSavedBrandKit,
   fetchBrandKitCatalog,
 } from '../utils/brandKitCatalog.ts';
+import {
+  deleteWorkspaceStudioCatalogEntry,
+  fetchWorkspaceStudioCatalog,
+  mergeWorkspaceStudioCatalogEntries,
+  syncWorkspaceStudioCatalogEntry,
+} from '../utils/workspaceStudioCatalog.ts';
 import {
   deleteWorkspaceTeamCatalogMember,
   fetchWorkspaceTeamCatalog,
@@ -94,8 +100,8 @@ function toDateTimeLocalValue(date: Date): string {
   return new Date(date.getTime() - timezoneOffsetMs).toISOString().slice(0, 16);
 }
 
-function readSavedScheduledStudios(): SavedScheduledStudio[] {
-  return readSavedHostStudios()
+function toSavedScheduledStudios(studios: SavedHostStudio[]): SavedScheduledStudio[] {
+  return studios
     .filter((item): item is SavedScheduledStudio => (
       typeof item.name === 'string' &&
       typeof item.createdAt === 'string'
@@ -105,6 +111,10 @@ function readSavedScheduledStudios(): SavedScheduledStudio[] {
       passwordProtected: Boolean(item.passwordProtected),
       registrationEnabled: Boolean(item.registrationEnabled),
     }));
+}
+
+function readSavedScheduledStudios(): SavedScheduledStudio[] {
+  return toSavedScheduledStudios(readSavedHostStudios());
 }
 
 function readSavedBrandKitLibrary(): SavedBrandKit[] {
@@ -263,6 +273,9 @@ export function HomePage() {
   const [teamMemberRole, setTeamMemberRole] = useState<WorkspaceTeamRole>('producer');
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [dashboardNotice, setDashboardNotice] = useState<string | null>(null);
+  const [serverWorkspaceStudioCatalog, setServerWorkspaceStudioCatalog] = useState<WorkspaceStudioCatalogEntry[]>([]);
+  const [serverWorkspaceStudioCatalogLoading, setServerWorkspaceStudioCatalogLoading] = useState(false);
+  const [serverWorkspaceStudioCatalogError, setServerWorkspaceStudioCatalogError] = useState<string | null>(null);
   const [serverRecordingCatalog, setServerRecordingCatalog] = useState<RecordingCatalogEntry[]>([]);
   const [serverRecordingCatalogLoading, setServerRecordingCatalogLoading] = useState(false);
   const [serverRecordingCatalogError, setServerRecordingCatalogError] = useState<string | null>(null);
@@ -275,6 +288,7 @@ export function HomePage() {
   const navigate = useNavigate();
   const recordingLibrary = useRecordingLibrary();
   const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
+  const lastWorkspaceStudioCatalogSyncKey = useRef('');
 
   const [error, setError] = useState<string | null>(null);
 
@@ -324,7 +338,10 @@ export function HomePage() {
       }
       // Scoped per room so old tokens don't leak across rooms.
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
-      setSavedScheduledRooms(upsertSavedScheduledStudio(toSavedScheduledRoom(room, savedHostName, hostToken)));
+      const savedRoom = toSavedScheduledRoom(room, savedHostName, hostToken);
+      const nextStudios = upsertSavedScheduledStudio(savedRoom);
+      setSavedScheduledRooms(nextStudios);
+      void syncWorkspaceStudiosToSavedStudios(nextStudios, nextStudios);
       navigate(buildHostEntryPath(room.id, hostToken));
     } catch (err) {
       console.error('Failed to create room:', err);
@@ -369,7 +386,9 @@ export function HomePage() {
       }
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
       const savedRoom = toSavedScheduledRoom(room, savedHostName, hostToken);
-      setSavedScheduledRooms(upsertSavedScheduledStudio(savedRoom));
+      const nextStudios = upsertSavedScheduledStudio(savedRoom);
+      setSavedScheduledRooms(nextStudios);
+      void syncWorkspaceStudiosToSavedStudios(nextStudios, nextStudios);
       setScheduledRoom(savedRoom);
       setCopied(false);
       setHostCopied(false);
@@ -387,6 +406,10 @@ export function HomePage() {
   const hostEntryLink = scheduledRoom ? buildHostEntryUrl(INVITE_BASE_URL, scheduledRoom.id, scheduledRoom.hostToken) : '';
   const buildInviteLink = (room: SavedScheduledStudio) => buildGuestInviteUrl(INVITE_BASE_URL, room.id, room.name);
   const buildHostLink = (room: SavedScheduledStudio) => buildHostEntryUrl(INVITE_BASE_URL, room.id, room.hostToken);
+  const dashboardStudios = useMemo(
+    () => toSavedScheduledStudios(mergeWorkspaceStudioCatalogEntries(savedScheduledRooms, serverWorkspaceStudioCatalog)),
+    [savedScheduledRooms, serverWorkspaceStudioCatalog]
+  );
   const dashboardRecordings = useMemo(
     () => buildWorkspaceRecordingDashboardItems(recordingLibrary.sessions, serverRecordingCatalog),
     [recordingLibrary.sessions, serverRecordingCatalog]
@@ -404,8 +427,8 @@ export function HomePage() {
     [savedTeamMembers, serverWorkspaceTeamCatalog]
   );
   const workspaceDashboard = useMemo(
-    () => buildWorkspaceDashboardSummary(savedScheduledRooms, dashboardRecordings, dashboardBrandKits, dashboardTeamMembers),
-    [savedScheduledRooms, dashboardRecordings, dashboardBrandKits, dashboardTeamMembers]
+    () => buildWorkspaceDashboardSummary(dashboardStudios, dashboardRecordings, dashboardBrandKits, dashboardTeamMembers),
+    [dashboardStudios, dashboardRecordings, dashboardBrandKits, dashboardTeamMembers]
   );
   const recentRecordings = dashboardRecordings.slice(0, 3);
   const localRecordingIds = useMemo(
@@ -423,9 +446,11 @@ export function HomePage() {
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
     .slice(0, 5);
   const workspaceSyncNotice = dashboardNotice ||
+    (serverWorkspaceStudioCatalogLoading ? 'Refreshing cloud studios...' : null) ||
     (serverRecordingCatalogLoading ? 'Refreshing cloud recording catalog...' : null) ||
     (serverBrandKitCatalogLoading ? 'Refreshing cloud brand kit catalog...' : null) ||
     (serverWorkspaceTeamCatalogLoading ? 'Refreshing cloud team roster...' : null) ||
+    serverWorkspaceStudioCatalogError ||
     serverRecordingCatalogError ||
     serverBrandKitCatalogError ||
     serverWorkspaceTeamCatalogError;
@@ -455,6 +480,65 @@ export function HomePage() {
 
   useEffect(() => {
     const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
+    if (hostAccessibleStudios.length === 0) {
+      setServerWorkspaceStudioCatalog([]);
+      setServerWorkspaceStudioCatalogError(null);
+      setServerWorkspaceStudioCatalogLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setServerWorkspaceStudioCatalogLoading(true);
+    setServerWorkspaceStudioCatalogError(null);
+
+    Promise.allSettled(
+      hostAccessibleStudios.map((room) => fetchWorkspaceStudioCatalog(room.id, room.hostToken))
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const byId = new Map<string, WorkspaceStudioCatalogEntry>();
+        for (const result of results) {
+          if (result.status !== 'fulfilled') continue;
+          for (const studio of result.value.studios) {
+            byId.set(studio.id, studio);
+          }
+        }
+        setServerWorkspaceStudioCatalog(
+          Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        );
+        const failedCount = results.filter((result) => result.status === 'rejected').length;
+        setServerWorkspaceStudioCatalogError(failedCount > 0
+          ? `Could not refresh cloud studios for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
+          : null
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setServerWorkspaceStudioCatalog([]);
+          setServerWorkspaceStudioCatalogError('Could not refresh cloud studios.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setServerWorkspaceStudioCatalogLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [savedScheduledRooms]);
+
+  useEffect(() => {
+    const syncKey = savedScheduledRooms
+      .filter((room) => getValidHostToken(room.hostToken))
+      .map((room) => `${room.id}:${room.hostToken}:${room.createdAt}:${room.scheduledFor || ''}`)
+      .join('|');
+    if (!syncKey || syncKey === lastWorkspaceStudioCatalogSyncKey.current) return;
+    lastWorkspaceStudioCatalogSyncKey.current = syncKey;
+    void syncWorkspaceStudiosToSavedStudios(savedScheduledRooms, savedScheduledRooms, false);
+  }, [savedScheduledRooms]);
+
+  useEffect(() => {
+    const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleStudios.length === 0) {
       setServerRecordingCatalog([]);
       setServerRecordingCatalogError(null);
@@ -500,10 +584,10 @@ export function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [savedScheduledRooms]);
+  }, [dashboardStudios]);
 
   useEffect(() => {
-    const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
+    const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleStudios.length === 0) {
       setServerBrandKitCatalog([]);
       setServerBrandKitCatalogError(null);
@@ -549,10 +633,10 @@ export function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [savedScheduledRooms]);
+  }, [dashboardStudios]);
 
   useEffect(() => {
-    const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
+    const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleStudios.length === 0) {
       setServerWorkspaceTeamCatalog([]);
       setServerWorkspaceTeamCatalogError(null);
@@ -598,7 +682,7 @@ export function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [savedScheduledRooms]);
+  }, [dashboardStudios]);
 
   const copyToClipboard = async () => {
     await writeClipboardText(inviteLink);
@@ -738,7 +822,9 @@ export function HomePage() {
   };
 
   const forgetScheduledRoom = (roomId: string) => {
+    const currentDashboardStudios = dashboardStudios;
     setSavedScheduledRooms(removeSavedScheduledStudio(roomId));
+    void deleteWorkspaceStudioFromSavedStudios(roomId, currentDashboardStudios);
   };
 
   const deleteRecordingSession = async (session: LocalRecordingSession) => {
@@ -788,6 +874,67 @@ export function HomePage() {
     setSavedBrandKits(next);
   };
 
+  const mergeSyncedWorkspaceStudios = (studios: WorkspaceStudioCatalogEntry[]) => {
+    if (studios.length === 0) return;
+    setServerWorkspaceStudioCatalog((current) => {
+      const byId = new Map<string, WorkspaceStudioCatalogEntry>();
+      for (const studio of current) byId.set(studio.id, studio);
+      for (const studio of studios) byId.set(studio.id, studio);
+      return Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    });
+  };
+
+  const syncWorkspaceStudiosToSavedStudios = async (
+    studios: SavedScheduledStudio[],
+    catalogStudios: SavedScheduledStudio[] = dashboardStudios,
+    showErrors = true
+  ) => {
+    const hostAccessibleCatalogs = catalogStudios.filter((room) => getValidHostToken(room.hostToken));
+    const syncableStudios = studios.filter((room) => getValidHostToken(room.hostToken));
+    if (hostAccessibleCatalogs.length === 0 || syncableStudios.length === 0) return;
+
+    const results = await Promise.allSettled(
+      hostAccessibleCatalogs.flatMap((room) => (
+        syncableStudios.map((studio) => syncWorkspaceStudioCatalogEntry({
+          roomId: room.id,
+          hostToken: room.hostToken,
+          studio,
+        }))
+      ))
+    );
+
+    const synced = results
+      .filter((result): result is PromiseFulfilledResult<WorkspaceStudioCatalogEntry> => result.status === 'fulfilled')
+      .map((result) => result.value);
+    mergeSyncedWorkspaceStudios(synced);
+
+    const failedCount = results.filter((result) => result.status === 'rejected').length;
+    if (showErrors) {
+      setServerWorkspaceStudioCatalogError(failedCount > 0
+        ? `Saved locally, but ${failedCount} cloud studio sync ${failedCount === 1 ? 'request' : 'requests'} failed.`
+        : null
+      );
+    }
+  };
+
+  const deleteWorkspaceStudioFromSavedStudios = async (
+    studioId: string,
+    catalogStudios: SavedScheduledStudio[] = dashboardStudios
+  ) => {
+    const hostAccessibleCatalogs = catalogStudios.filter((room) => getValidHostToken(room.hostToken));
+    if (hostAccessibleCatalogs.length === 0) return;
+
+    setServerWorkspaceStudioCatalog((current) => current.filter((studio) => studio.id !== studioId));
+    const results = await Promise.allSettled(
+      hostAccessibleCatalogs.map((room) => deleteWorkspaceStudioCatalogEntry(room.id, room.hostToken, studioId))
+    );
+    const failedCount = results.filter((result) => result.status === 'rejected').length;
+    setServerWorkspaceStudioCatalogError(failedCount > 0
+      ? `Removed locally, but cloud studio removal failed for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
+      : null
+    );
+  };
+
   const mergeSyncedWorkspaceTeamMembers = (members: WorkspaceTeamCatalogMember[]) => {
     if (members.length === 0) return;
     setServerWorkspaceTeamCatalog((current) => {
@@ -800,7 +947,7 @@ export function HomePage() {
 
   const syncWorkspaceTeamMembersToSavedStudios = async (
     members: SavedWorkspaceTeamMember[],
-    studios: SavedScheduledStudio[] = savedScheduledRooms
+    studios: SavedScheduledStudio[] = dashboardStudios
   ) => {
     const hostAccessibleStudios = studios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleStudios.length === 0 || members.length === 0) return;
@@ -828,7 +975,7 @@ export function HomePage() {
   };
 
   const deleteWorkspaceTeamMemberFromSavedStudios = async (memberId: string) => {
-    const hostAccessibleStudios = savedScheduledRooms.filter((room) => getValidHostToken(room.hostToken));
+    const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleStudios.length === 0) return;
 
     setServerWorkspaceTeamCatalog((current) => current.filter((member) => member.id !== memberId));
@@ -882,11 +1029,11 @@ export function HomePage() {
   };
 
   const exportWorkspaceBackup = () => {
-    if (savedScheduledRooms.length > 0 && !window.confirm('Workspace backups include private host links for saved studios. Keep the exported file private.')) {
+    if (dashboardStudios.length > 0 && !window.confirm('Workspace backups include private host links for saved studios. Keep the exported file private.')) {
       return;
     }
     const backup = buildWorkspaceBackup({
-      studios: savedScheduledRooms,
+      studios: dashboardStudios,
       brandKits: savedBrandKits,
       teamMembers: dashboardTeamMembers,
       recordings: recordingLibrary.sessions,
@@ -925,6 +1072,7 @@ export function HomePage() {
       setSavedScheduledRooms(importedStudios);
       setSavedBrandKits(result.brandKits);
       setSavedTeamMembers(result.teamMembers);
+      void syncWorkspaceStudiosToSavedStudios(importedStudios, importedStudios);
       void syncWorkspaceTeamMembersToSavedStudios(result.teamMembers, importedStudios);
       setDashboardNotice(
         `Imported ${result.importedStudios} studios, ${result.importedBrandKits} brand kits, and ${result.importedTeamMembers} team members.`
@@ -1359,14 +1507,14 @@ export function HomePage() {
               )}
             </section>
 
-          {savedScheduledRooms.length > 0 && (
+          {dashboardStudios.length > 0 && (
             <section style={styles.schedulePanel}>
               <div style={styles.schedulePanelHeader}>
                 <h2 style={styles.schedulePanelTitle}>Your Studios</h2>
-                <span style={styles.schedulePanelCount}>{savedScheduledRooms.length}</span>
+                <span style={styles.schedulePanelCount}>{dashboardStudios.length}</span>
               </div>
               <div style={styles.savedRoomList}>
-                {savedScheduledRooms.map((room) => {
+                {dashboardStudios.map((room) => {
                   const roomInviteLink = buildInviteLink(room);
                   const scheduleState = getScheduleState(room);
                   return (
