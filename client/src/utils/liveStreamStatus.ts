@@ -17,6 +17,24 @@ export interface LiveSessionSummaryInput {
   stoppedAt?: string | null;
   destinationCount: number;
   errorCount?: number;
+  relayError?: boolean;
+  destinations?: LiveSessionDestinationInput[];
+}
+
+export interface LiveSessionDestinationInput {
+  id?: string;
+  name: string;
+  enabled?: boolean;
+  status?: 'idle' | 'connecting' | 'live' | 'error';
+  statusMessage?: string;
+}
+
+export interface LiveSessionDestinationOutcome {
+  id: string;
+  name: string;
+  status: 'success' | 'warning' | 'error';
+  label: string;
+  detail?: string;
 }
 
 export interface LiveSessionSummary {
@@ -25,6 +43,7 @@ export interface LiveSessionSummary {
   tone: 'success' | 'warning';
   formattedDuration: string;
   destinationLabel: string;
+  destinationOutcomes: LiveSessionDestinationOutcome[];
 }
 
 export function getLiveStreamElapsedSeconds(startedAt: string | null, nowMs = Date.now()): number {
@@ -54,9 +73,61 @@ function pluralizeDestinations(count: number): string {
   return `${count} destination${count === 1 ? '' : 's'}`;
 }
 
+function buildDestinationOutcome(
+  destination: LiveSessionDestinationInput,
+  index: number,
+  relayError: boolean
+): LiveSessionDestinationOutcome {
+  const id = destination.id || `destination-${index + 1}`;
+  const name = destination.name.trim() || `Destination ${index + 1}`;
+  if (relayError || destination.status === 'error') {
+    return {
+      id,
+      name,
+      status: 'error',
+      label: 'Issue',
+      detail: destination.statusMessage || 'Relay ended before this destination confirmed a clean stop.',
+    };
+  }
+  if (destination.status === 'live') {
+    return {
+      id,
+      name,
+      status: 'success',
+      label: 'Live',
+      detail: destination.statusMessage || 'Destination reported live before the stream stopped.',
+    };
+  }
+  if (destination.status === 'connecting') {
+    return {
+      id,
+      name,
+      status: 'warning',
+      label: 'Connecting',
+      detail: destination.statusMessage || 'Destination was still connecting when the stream ended.',
+    };
+  }
+  return {
+    id,
+    name,
+    status: 'warning',
+    label: 'Not confirmed',
+    detail: destination.statusMessage || 'No live confirmation was received before the stream ended.',
+  };
+}
+
 export function buildLiveSessionSummary(input: LiveSessionSummaryInput): LiveSessionSummary {
-  const destinationCount = Number.isFinite(input.destinationCount) ? Math.floor(input.destinationCount) : 0;
-  const errorCount = Number.isFinite(input.errorCount) ? Math.floor(input.errorCount || 0) : 0;
+  const destinationOutcomes = (input.destinations || [])
+    .filter((destination) => destination.enabled !== false)
+    .map((destination, index) => buildDestinationOutcome(destination, index, input.relayError === true));
+  const destinationCount = destinationOutcomes.length > 0
+    ? destinationOutcomes.length
+    : Number.isFinite(input.destinationCount) ? Math.floor(input.destinationCount) : 0;
+  const outcomeErrorCount = destinationOutcomes.filter((outcome) => outcome.status === 'error').length;
+  const outcomeWarningCount = destinationOutcomes.filter((outcome) => outcome.status === 'warning').length;
+  const errorCount = Number.isFinite(input.errorCount)
+    ? Math.max(outcomeErrorCount, Math.floor(input.errorCount || 0))
+    : outcomeErrorCount;
   const safeDestinationCount = Math.max(0, destinationCount);
   const safeErrorCount = Math.max(0, Math.min(safeDestinationCount, errorCount));
   const stoppedAtMs = input.stoppedAt ? Date.parse(input.stoppedAt) : Date.now();
@@ -74,6 +145,18 @@ export function buildLiveSessionSummary(input: LiveSessionSummaryInput): LiveSes
       tone: 'warning',
       formattedDuration,
       destinationLabel,
+      destinationOutcomes,
+    };
+  }
+
+  if (outcomeWarningCount > 0) {
+    return {
+      title: 'Stream ended; review destinations',
+      message: `Stream ran for ${formattedDuration}. ${outcomeWarningCount}/${safeDestinationCount} destination${safeDestinationCount === 1 ? '' : 's'} did not confirm live delivery.`,
+      tone: 'warning',
+      formattedDuration,
+      destinationLabel,
+      destinationOutcomes,
     };
   }
 
@@ -85,5 +168,6 @@ export function buildLiveSessionSummary(input: LiveSessionSummaryInput): LiveSes
     tone: 'success',
     formattedDuration,
     destinationLabel,
+    destinationOutcomes,
   };
 }
