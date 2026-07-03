@@ -42,7 +42,9 @@ import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
 import {
+  ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
   buildPresentationPreview,
+  canBrowserRenderPowerPointFile,
   hasRenderedPresentationSlides,
   type PresentationServerRenderFailure,
 } from '../utils/presentationPreview.ts';
@@ -710,7 +712,7 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
   const code = failure?.code?.toUpperCase();
 
   if (routing === 'no-server' || code === 'MEDIA_SERVER_NO_SERVER') {
-    return 'PowerPoint formatting could not be preserved because the exact render service is not deployed yet. Sync the Render media-server, then upload this deck again.';
+    return 'PowerPoint formatting could not be preserved because the exact render service is not deployed and browser slide rendering did not finish. Sync the Render media-server, then upload this deck again.';
   }
   if (failure?.timedOut || code === 'PRESENTATION_RENDER_TIMEOUT') {
     return type === 'pdf'
@@ -3347,10 +3349,18 @@ export function StudioRoom() {
 
       try {
         let serverRenderFailure: PresentationServerRenderFailure | undefined;
+        const allowBrowserPowerPointRenderFallback = type === 'presentation' &&
+          ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK &&
+          canBrowserRenderPowerPointFile(file);
+        const skipUnavailableServerRender = allowBrowserPowerPointRenderFallback && (
+          mediaServerHealth.status === 'unavailable' ||
+          mediaServerHealth.presentationRenderer?.ready === false
+        );
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation',
-          allowBrowserPowerPointRenderFallback: false,
+          requireServerRenderedPowerPoint: type === 'presentation' && !allowBrowserPowerPointRenderFallback,
+          allowBrowserPowerPointRenderFallback,
+          skipServerRender: skipUnavailableServerRender,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
           },
