@@ -2,9 +2,14 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import JSZip from 'jszip';
 import {
   createLibreOfficePdfArgs,
   createPdfToRasterArgs,
+  extractPptxSlideMetadata,
+  extractPptxSlideNotesTarget,
+  extractPptxSpeakerNotes,
+  extractPptxSlideText,
   getPresentationRenderSourceFormat,
   getPresentationRendererHealth,
   PresentationRenderError,
@@ -17,6 +22,42 @@ describe('presentation rendering', () => {
     assert.equal(getPresentationRenderSourceFormat('slides.pptx', ''), 'pptx');
     assert.equal(getPresentationRenderSourceFormat('sermon.ppt', 'application/vnd.ms-powerpoint'), 'pptx');
     assert.equal(getPresentationRenderSourceFormat('notes.txt', 'text/plain'), null);
+  });
+
+  it('extracts PowerPoint slide text and speaker notes for presenter controls', async () => {
+    assert.deepEqual(
+      extractPptxSlideText('<a:t>TRIAD FORMATION</a:t><a:t>Discipleship &amp; Mission</a:t>'),
+      ['TRIAD FORMATION', 'Discipleship & Mission']
+    );
+    assert.equal(
+      extractPptxSlideNotesTarget(`
+        <Relationships>
+          <Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+        </Relationships>
+      `),
+      'ppt/notesSlides/notesSlide1.xml'
+    );
+    assert.deepEqual(
+      extractPptxSpeakerNotes('<a:t>TRIAD FORMATION</a:t><a:t>Click to add notes</a:t><a:t>Ask for responses</a:t>', ['TRIAD FORMATION']),
+      ['Ask for responses']
+    );
+
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide2.xml', '<a:t>SECOND</a:t><a:t>Closing point</a:t>');
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t><a:t>Via Triads</a:t>');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+      </Relationships>
+    `);
+    zip.file('ppt/notesSlides/notesSlide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Mention covenant story</a:t>');
+
+    const metadata = await extractPptxSlideMetadata(Buffer.from(await zip.generateAsync({ type: 'uint8array' })));
+
+    assert.deepEqual(metadata.map((slide) => slide.title), ['TRIAD FORMATION', 'SECOND']);
+    assert.deepEqual(metadata[0].lines, ['Discipleship', 'Via Triads']);
+    assert.deepEqual(metadata[0].notes, ['Mention covenant story']);
+    assert.deepEqual(metadata[1].lines, ['Closing point']);
   });
 
   it('constructs bounded LibreOffice and Poppler commands', () => {
@@ -132,6 +173,43 @@ describe('presentation rendering', () => {
     assert.equal(preview.sourceFormat, 'pptx');
     assert.equal(preview.slides.length, 2);
     assert.equal(preview.slides[0].title, 'Slide 1');
+    assert.equal(preview.slides[0].imageUrl, `data:image/jpeg;base64,${Buffer.from('jpg-one').toString('base64')}`);
+    assert.equal(preview.slides[0].rendered, true);
+  });
+
+  it('merges server-rendered slide images with extracted PowerPoint metadata', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Discipleship</a:t>');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+      </Relationships>
+    `);
+    zip.file('ppt/notesSlides/notesSlide1.xml', '<a:t>TRIAD FORMATION</a:t><a:t>Mention covenant story</a:t>');
+    const data = Buffer.from(await zip.generateAsync({ type: 'uint8array' }));
+
+    const preview = await renderPresentationPreview({
+      fileName: 'message.pptx',
+      contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      data,
+    }, {
+      sofficePath: 'soffice-test',
+      pdftoppmPath: 'pdftoppm-test',
+      commandRunner: async (command, args) => {
+        if (command === 'soffice-test') {
+          const outDir = args[args.indexOf('--outdir') + 1];
+          await writeFile(path.join(outDir, 'source.pdf'), Buffer.from('%PDF-1.7'));
+        }
+        if (command === 'pdftoppm-test') {
+          const outputPrefix = args[args.length - 1];
+          await writeFile(`${outputPrefix}-1.jpg`, Buffer.from('jpg-one'));
+        }
+      },
+    });
+
+    assert.equal(preview.slides[0].title, 'TRIAD FORMATION');
+    assert.deepEqual(preview.slides[0].lines, ['Discipleship']);
+    assert.deepEqual(preview.slides[0].notes, ['Mention covenant story']);
     assert.equal(preview.slides[0].imageUrl, `data:image/jpeg;base64,${Buffer.from('jpg-one').toString('base64')}`);
     assert.equal(preview.slides[0].rendered, true);
   });

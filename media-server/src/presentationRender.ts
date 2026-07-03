@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { StudioMediaAssetPreview } from '@studio/shared';
+import JSZip from 'jszip';
+import type { PresentationSlidePreview, StudioMediaAssetPreview } from '@studio/shared';
 
 export const MAX_PRESENTATION_RENDER_BYTES = 50 * 1024 * 1024;
 export const MAX_PRESENTATION_RENDER_SLIDES = 60;
@@ -12,6 +13,9 @@ export const PRESENTATION_RENDER_IMAGE_MIME_TYPE = 'image/jpeg';
 const PRESENTATION_RENDER_JPEG_QUALITY = 92;
 const COMMAND_TIMEOUT_MS = 120_000;
 const DEPENDENCY_PROBE_TIMEOUT_MS = 3_000;
+const MAX_PREVIEW_LINES_PER_SLIDE = 10;
+const MAX_PREVIEW_NOTES_PER_SLIDE = 8;
+const MAX_PREVIEW_TEXT_LENGTH = 180;
 
 export class PresentationRenderError extends Error {
   readonly statusCode: number;
@@ -344,14 +348,171 @@ function getRenderedImageMimeType(filePath: string): string {
   return path.extname(filePath).toLowerCase() === '.png' ? 'image/png' : PRESENTATION_RENDER_IMAGE_MIME_TYPE;
 }
 
-async function buildPreviewFromRasterImages(imagePaths: string[], sourceFormat: PresentationRenderSourceFormat): Promise<StudioMediaAssetPreview> {
-  const slides = await Promise.all(imagePaths.map(async (imagePath, index) => ({
-    id: `${sourceFormat}-rendered-slide-${index + 1}`,
-    title: sourceFormat === 'pdf' ? `Page ${index + 1}` : `Slide ${index + 1}`,
-    lines: [],
-    imageUrl: `data:${getRenderedImageMimeType(imagePath)};base64,${(await readFile(imagePath)).toString('base64')}`,
-    rendered: true,
-  })));
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function cleanPreviewText(value: string): string {
+  return decodeXmlText(value)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_PREVIEW_TEXT_LENGTH);
+}
+
+function getXmlAttribute(tag: string, attributeName: string): string | null {
+  const escapedName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = tag.match(new RegExp(`\\s${escapedName}=(["'])([\\s\\S]*?)\\1`, 'i'));
+  return match?.[2] ? decodeXmlText(match[2]) : null;
+}
+
+function normalizeZipPath(zipPath: string): string {
+  const normalizedParts: string[] = [];
+  zipPath.replace(/\\/g, '/').split('/').forEach((part) => {
+    if (!part || part === '.') return;
+    if (part === '..') {
+      normalizedParts.pop();
+      return;
+    }
+    normalizedParts.push(part);
+  });
+  return normalizedParts.join('/');
+}
+
+function getSlideNumber(filePath: string): number {
+  return Number(filePath.match(/slide(\d+)\.xml$/i)?.[1] || 0);
+}
+
+function getPptxSlideXmlPaths(zip: JSZip): string[] {
+  return Object.keys(zip.files)
+    .filter((filePath) => /^ppt\/slides\/slide\d+\.xml$/i.test(filePath))
+    .sort((a, b) => getSlideNumber(a) - getSlideNumber(b))
+    .slice(0, MAX_PRESENTATION_RENDER_SLIDES);
+}
+
+function getSlideRelationshipPath(slidePath: string): string {
+  const fileName = slidePath.split('/').pop() || slidePath;
+  return `ppt/slides/_rels/${fileName}.rels`;
+}
+
+function resolveSlideRelationshipTarget(target: string): string | null {
+  const cleanTarget = decodeXmlText(target).trim().replace(/\\/g, '/');
+  if (!cleanTarget || /^[a-z][a-z\d+.-]*:/i.test(cleanTarget)) return null;
+  if (cleanTarget.startsWith('/')) return normalizeZipPath(cleanTarget.slice(1));
+  return normalizeZipPath(`ppt/slides/${cleanTarget}`);
+}
+
+export function extractPptxSlideText(xml: string): string[] {
+  const matches = xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g);
+  const values: string[] = [];
+
+  for (const match of matches) {
+    const value = cleanPreviewText(match[1] || '');
+    if (value) values.push(value);
+  }
+
+  return values;
+}
+
+export function extractPptxSlideNotesTarget(relsXml: string): string | null {
+  const relationships = relsXml.matchAll(/<Relationship\b[^>]*>/gi);
+
+  for (const relationship of relationships) {
+    const tag = relationship[0];
+    const type = getXmlAttribute(tag, 'Type');
+    const target = getXmlAttribute(tag, 'Target');
+    const targetMode = getXmlAttribute(tag, 'TargetMode');
+    if (!type?.toLowerCase().endsWith('/notesslide') || !target || targetMode?.toLowerCase() === 'external') continue;
+
+    const resolvedTarget = resolveSlideRelationshipTarget(target);
+    if (resolvedTarget && /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(resolvedTarget)) return resolvedTarget;
+  }
+
+  return null;
+}
+
+export function extractPptxSpeakerNotes(notesXml: string, slideTextRuns: string[] = []): string[] {
+  const slideText = new Set(slideTextRuns.map((line) => line.toLowerCase()));
+  const placeholderText = new Set(['click to add notes', 'click to add text', 'notes']);
+  const notes: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of extractPptxSlideText(notesXml)) {
+    const key = value.toLowerCase();
+    if (slideText.has(key) || placeholderText.has(key) || seen.has(key)) continue;
+    notes.push(value);
+    seen.add(key);
+    if (notes.length >= MAX_PREVIEW_NOTES_PER_SLIDE) break;
+  }
+
+  return notes;
+}
+
+function buildMetadataSlide(
+  slidePath: string,
+  textRuns: string[],
+  index: number,
+  notes: string[]
+): PresentationSlidePreview {
+  const fallbackTitle = `Slide ${index + 1}`;
+  const title = textRuns[0] || fallbackTitle;
+  const lines = textRuns
+    .slice(textRuns[0] ? 1 : 0)
+    .filter((line, lineIndex, allLines) => allLines.indexOf(line) === lineIndex)
+    .slice(0, MAX_PREVIEW_LINES_PER_SLIDE);
+
+  return {
+    id: slidePath,
+    title,
+    lines,
+    ...(notes.length > 0 ? { notes } : {}),
+  };
+}
+
+export async function extractPptxSlideMetadata(data: Buffer): Promise<PresentationSlidePreview[]> {
+  const zip = await JSZip.loadAsync(data);
+  const slidePaths = getPptxSlideXmlPaths(zip);
+  const slides: PresentationSlidePreview[] = [];
+
+  for (let index = 0; index < slidePaths.length; index += 1) {
+    const slidePath = slidePaths[index];
+    const slideXml = await zip.file(slidePath)?.async('string');
+    if (!slideXml) continue;
+
+    const textRuns = extractPptxSlideText(slideXml);
+    let notes: string[] = [];
+    const relsXml = await zip.file(getSlideRelationshipPath(slidePath))?.async('string');
+    const notesPath = relsXml ? extractPptxSlideNotesTarget(relsXml) : null;
+    const notesXml = notesPath ? await zip.file(notesPath)?.async('string') : null;
+    if (notesXml) notes = extractPptxSpeakerNotes(notesXml, textRuns);
+
+    slides.push(buildMetadataSlide(slidePath, textRuns, index, notes));
+  }
+
+  return slides;
+}
+
+async function buildPreviewFromRasterImages(
+  imagePaths: string[],
+  sourceFormat: PresentationRenderSourceFormat,
+  metadataSlides: PresentationSlidePreview[] = []
+): Promise<StudioMediaAssetPreview> {
+  const slides = await Promise.all(imagePaths.map(async (imagePath, index) => {
+    const metadata = metadataSlides[index];
+    const fallbackTitle = sourceFormat === 'pdf' ? `Page ${index + 1}` : `Slide ${index + 1}`;
+    return {
+      id: metadata?.id || `${sourceFormat}-rendered-slide-${index + 1}`,
+      title: metadata?.title || fallbackTitle,
+      lines: metadata?.lines || [],
+      ...(metadata?.notes?.length ? { notes: metadata.notes } : {}),
+      imageUrl: `data:${getRenderedImageMimeType(imagePath)};base64,${(await readFile(imagePath)).toString('base64')}`,
+      rendered: true,
+    };
+  }));
 
   return {
     kind: 'presentation-slides',
@@ -379,6 +540,7 @@ export async function renderPresentationPreview(
   const workspace = await mkdtemp(path.join(tmpdir(), 'studio-presentation-'));
   const outputDir = path.join(workspace, 'output');
   const commandRunner = options.commandRunner || defaultCommandRunner;
+  let metadataSlides: PresentationSlidePreview[] = [];
 
   try {
     await mkdir(outputDir, { recursive: true });
@@ -387,6 +549,7 @@ export async function renderPresentationPreview(
 
     let pdfPath = inputPath;
     if (sourceFormat === 'pptx') {
+      metadataSlides = await extractPptxSlideMetadata(input.data).catch(() => []);
       const sofficePath = options.sofficePath || getLibreOfficePath();
       const libreOfficeProfileDir = path.join(workspace, 'lo-profile');
       await mkdir(libreOfficeProfileDir, { recursive: true });
@@ -406,7 +569,7 @@ export async function renderPresentationPreview(
       throw new PresentationRenderError(422, 'PRESENTATION_RENDER_EMPTY', 'No slides were rendered from this file');
     }
 
-    return buildPreviewFromRasterImages(imagePaths, sourceFormat);
+    return buildPreviewFromRasterImages(imagePaths, sourceFormat, metadataSlides);
   } finally {
     await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
   }
