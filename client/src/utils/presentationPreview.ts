@@ -16,10 +16,11 @@ const RENDER_SETTLE_TIMEOUT_MS = 120;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
-// Prefer the media-server exact renderer, but keep a browser visual fallback
-// for modern OOXML decks so uploads still preserve slide artwork when Render is
-// not provisioned. Text-only PowerPoint previews remain disabled for broadcast.
-export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
+// PowerPoint needs the media-server exact renderer for broadcast-quality output.
+// Browser rendering remains testable as an explicit fallback, but the studio
+// upload path keeps it disabled so original themes, images, and formatting are
+// not replaced by approximate or text-only previews.
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
