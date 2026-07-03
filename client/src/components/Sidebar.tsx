@@ -55,6 +55,10 @@ import {
 } from '../utils/peerBandwidthDisplay.ts';
 import type { PeerBandwidthHealth, PeerBandwidthQuality } from '../utils/webrtcBandwidthAdaptation.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
+import {
+  getExternalChatPlatformMetrics,
+  type ExternalChatPlatformMetrics,
+} from '../utils/externalChatMetrics.ts';
 
 // ---------------------------------------------------------------------------
 // Tab type — matches StreamYard / Riverside vertical icon pattern
@@ -1378,6 +1382,8 @@ function ChatContent({
   const canSend = input.trim().length > 0 && mode !== 'social' && (mode !== 'direct' || Boolean(selectedRecipient));
   const youtubeStatus = externalChatStatuses.youtube || null;
   const facebookStatus = externalChatStatuses.facebook || null;
+  const youtubeMetrics = getExternalChatPlatformMetrics(messages, 'youtube', youtubeStatus);
+  const facebookMetrics = getExternalChatPlatformMetrics(messages, 'facebook', facebookStatus);
   const youtubeBusy = youtubeStatus?.status === 'connecting';
   const youtubeConnected = youtubeStatus?.status === 'connected' || youtubeStatus?.status === 'connecting';
   const facebookBusy = facebookStatus?.status === 'connecting';
@@ -1535,6 +1541,25 @@ function ChatContent({
     onConnectExternalChat('facebook', liveVideoId);
   };
 
+  const renderExternalChatMetrics = (metrics: ExternalChatPlatformMetrics) => (
+    <div style={st.externalChatMetrics} aria-label={`${metrics.platform} import metrics`}>
+      <div style={st.externalChatMetric}>
+        <span style={st.externalChatMetricValue}>{metrics.importedLabel}</span>
+        <span style={st.externalChatMetricLabel}>Comments</span>
+      </div>
+      <div style={st.externalChatMetric}>
+        <span style={st.externalChatMetricValue}>{metrics.activityLabel}</span>
+        <span style={st.externalChatMetricLabel}>Activity</span>
+      </div>
+      {metrics.nextPollLabel && (
+        <div style={st.externalChatMetric}>
+          <span style={st.externalChatMetricValue}>{metrics.nextPollLabel}</span>
+          <span style={st.externalChatMetricLabel}>Sync</span>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div style={st.panelFull}>
       <div style={st.panelHeader}>
@@ -1664,6 +1689,7 @@ function ChatContent({
             ? 'Hosts and co-hosts can connect platform comments.'
             : youtubeStatus?.message || 'Paste a YouTube live chat id to import comments into Public chat.'}
         </p>
+        {renderExternalChatMetrics(youtubeMetrics)}
         <div style={st.externalChatDivider} />
         <div style={st.externalChatTopRow}>
           <span style={st.externalChatLabel}>Facebook Live Comments</span>
@@ -1715,6 +1741,7 @@ function ChatContent({
             ? 'Hosts and co-hosts can connect platform comments.'
             : facebookStatus?.message || 'Paste a Facebook live video id to import comments into Public chat.'}
         </p>
+        {renderExternalChatMetrics(facebookMetrics)}
       </div>
       <div ref={containerRef} style={st.chatMessages} onScroll={handleScroll}>
         {pinnedMessage && (mode === 'public' || mode === 'starred') && (
@@ -2264,6 +2291,10 @@ const st: Record<string, React.CSSProperties> = {
   externalChatDisconnectBtn: { borderColor: 'rgba(148, 163, 184, 0.24)', background: 'rgba(148, 163, 184, 0.08)', color: '#cbd5e1' },
   externalChatBtnDisabled: { opacity: 0.48, cursor: 'not-allowed' },
   externalChatHint: { margin: 0, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.35 },
+  externalChatMetrics: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 5 },
+  externalChatMetric: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2, padding: '6px 7px', borderRadius: 7, border: '1px solid rgba(148, 163, 184, 0.16)', background: 'rgba(255, 255, 255, 0.035)' },
+  externalChatMetricValue: { minWidth: 0, color: 'var(--text-primary)', fontSize: 10, fontWeight: 850, fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  externalChatMetricLabel: { color: 'var(--text-muted)', fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0 },
   externalChatDivider: { height: 1, background: 'var(--border)', opacity: 0.7 },
   chatMessages: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 },
   chatPinnedBanner: { display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 8, border: '1px solid rgba(34, 211, 238, 0.28)', background: 'rgba(34, 211, 238, 0.08)' },
