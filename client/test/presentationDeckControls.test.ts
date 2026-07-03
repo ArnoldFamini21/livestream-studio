@@ -21,9 +21,16 @@ const deck: ActiveMedia = {
     kind: 'presentation-slides',
     sourceFormat: 'pptx',
     slides: [
-      { id: 'slide-1', title: 'Opening', lines: ['Welcome'] },
-      { id: 'slide-2', title: 'Agenda', lines: ['Plan'], notes: ['Ask the guest to introduce the next segment'] },
-      { id: 'slide-3', title: 'Close', lines: [] },
+      { id: 'slide-1', title: 'Opening', lines: ['Welcome'], imageUrl: 'data:image/png;base64,one', rendered: true },
+      {
+        id: 'slide-2',
+        title: 'Agenda',
+        lines: ['Plan'],
+        imageUrl: 'data:image/png;base64,two',
+        rendered: true,
+        notes: ['Ask the guest to introduce the next segment'],
+      },
+      { id: 'slide-3', title: 'Close', lines: [], imageUrl: 'data:image/png;base64,three', rendered: true },
     ],
   },
 };
@@ -33,6 +40,22 @@ describe('presentation deck controls', () => {
     assert.equal(getPresentationSlides(deck).length, 3);
     assert.deepEqual(getPresentationSlides({ ...deck, type: 'image' }), []);
     assert.deepEqual(getPresentationSlides(null), []);
+  });
+
+  it('ignores text-only PowerPoint previews because they do not preserve the original design', () => {
+    const textOnlyDeck: ActiveMedia = {
+      ...deck,
+      preview: {
+        kind: 'presentation-slides',
+        sourceFormat: 'pptx',
+        slides: [
+          { id: 'slide-1', title: 'TRIAD FORMATION', lines: ['Discipleship'] },
+        ],
+      },
+    };
+
+    assert.deepEqual(getPresentationSlides(textOnlyDeck), []);
+    assert.equal(getPresentationDeckStatus(textOnlyDeck, 0).hasDeck, false);
   });
 
   it('clamps requested slide indexes inside deck bounds', () => {
@@ -72,8 +95,8 @@ describe('presentation deck controls', () => {
         kind: 'presentation-slides',
         sourceFormat: 'pdf',
         slides: [
-          { id: 'page-1', title: '', lines: [], imageUrl: 'data:image/png;base64,page' },
-          { id: 'page-2', title: 'Handout details', lines: [] },
+          { id: 'page-1', title: '', lines: [], imageUrl: 'data:image/png;base64,page-one', rendered: true },
+          { id: 'page-2', title: 'Handout details', lines: [], imageUrl: 'data:image/png;base64,page-two', rendered: true },
         ],
       },
     };
@@ -84,7 +107,7 @@ describe('presentation deck controls', () => {
     assert.equal(status.unitLabel, 'Page');
     assert.equal(getPresentationItemDisplayTitle(status.currentSlide, status.currentIndex, status.unitLabel), 'Page 1');
     assert.deepEqual(items.map((item) => item.label), ['Page 1', 'Page 2']);
-    assert.equal(items[0].imageUrl, 'data:image/png;base64,page');
+    assert.equal(items[0].imageUrl, 'data:image/png;base64,page-one');
   });
 
   it('builds slide picker items with fallback titles and current state', () => {
