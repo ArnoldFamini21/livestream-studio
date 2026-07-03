@@ -569,7 +569,8 @@ function createHiddenPresentationRenderHost(): HTMLElement {
   host.style.overflow = 'hidden';
   host.style.pointerEvents = 'none';
   host.style.zIndex = '-1';
-  host.style.transform = 'translate3d(-150vw, -150vh, 0)';
+  host.style.contain = 'layout paint style';
+  host.style.background = '#ffffff';
   document.body.appendChild(host);
   return host;
 }
