@@ -22,6 +22,15 @@ describe('recording MIME type helpers', () => {
     assert.equal(mimeType, 'video/mp4');
   });
 
+  it('recognizes H.264 MP4 variants reported by Safari and Chromium builds', () => {
+    const mimeType = getPreferredVideoRecordingMimeType(mediaRecorderSupporting(new Set([
+      'video/webm;codecs=vp9,opus',
+      'video/mp4;codecs=avc1.640028,mp4a.40.2',
+    ])));
+
+    assert.equal(mimeType, 'video/mp4;codecs=avc1.640028,mp4a.40.2');
+  });
+
   it('falls back to WebM video recording when MP4 is unavailable', () => {
     const mimeType = getPreferredVideoRecordingMimeType(mediaRecorderSupporting(new Set([
       'video/webm;codecs=vp8,opus',

@@ -166,7 +166,7 @@ describe('recording readiness summary', () => {
       ...readyOptions,
       encodingReadiness: {
         status: 'ready',
-        detail: '1080p/30 WebM encoding is advertised as smooth and power efficient.',
+        detail: '1080p/30 browser recording is advertised as smooth and power efficient.',
       },
     });
 
@@ -176,7 +176,7 @@ describe('recording readiness summary', () => {
       id: 'encoding-quality',
       label: 'Encoding quality',
       status: 'good',
-      detail: '1080p/30 WebM encoding is advertised as smooth and power efficient.',
+      detail: '1080p/30 browser recording is advertised as smooth and power efficient.',
       blocksStart: false,
     });
   });
@@ -196,12 +196,12 @@ describe('recording readiness summary', () => {
     assert.equal(summary.items.find((item) => item.id === 'encoding-quality')?.status, 'warning');
   });
 
-  it('reports hardware WebCodecs pipeline availability without replacing playable WebM output', () => {
+  it('reports hardware WebCodecs pipeline availability without replacing playable MediaRecorder output', () => {
     const summary = buildRecordingReadinessSummary({
       ...readyOptions,
       encodingReadiness: {
         status: 'ready',
-        detail: '1080p/30 WebM encoding is smooth with WebCodecs hardware acceleration.',
+        detail: '1080p/30 browser recording is smooth with WebCodecs hardware acceleration.',
         apiSupport: { webCodecs: true },
         presets: [
           {
@@ -219,6 +219,7 @@ describe('recording readiness summary', () => {
     assert.equal(summary.status, 'good');
     assert.equal(item?.status, 'good');
     assert.match(item?.detail || '', /Hardware VideoEncoder/);
+    assert.match(item?.detail || '', /MP4\/WebM/);
     assert.match(item?.detail || '', /MediaRecorder/);
   });
 
@@ -227,7 +228,7 @@ describe('recording readiness summary', () => {
       ...readyOptions,
       encodingReadiness: {
         status: 'ready',
-        detail: '1080p/30 WebM encoding is advertised as smooth.',
+        detail: '1080p/30 browser recording is advertised as smooth.',
         apiSupport: { webCodecs: false },
       },
     });
@@ -244,13 +245,13 @@ describe('recording readiness summary', () => {
       ...readyOptions,
       encodingReadiness: {
         status: 'unsupported',
-        detail: 'This browser cannot record or relay WebM chunks.',
+        detail: 'This browser cannot record local media chunks.',
       },
     });
 
     assert.equal(summary.status, 'bad');
     assert.equal(summary.canStart, false);
-    assert.equal(summary.blockingIssue, 'This browser cannot record or relay WebM chunks.');
+    assert.equal(summary.blockingIssue, 'This browser cannot record local media chunks.');
     assert.equal(summary.items.find((item) => item.id === 'encoding-quality')?.blocksStart, true);
   });
 });

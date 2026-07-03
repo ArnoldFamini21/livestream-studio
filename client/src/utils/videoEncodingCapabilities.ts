@@ -3,6 +3,10 @@ import {
   type VideoQualityPreset,
   type VideoQualityPresetId,
 } from './mediaPreferences.ts';
+import {
+  VIDEO_MP4_MEDIA_RECORDER_TYPES,
+  VIDEO_WEBM_MEDIA_RECORDER_TYPES,
+} from './recordingMimeTypes.ts';
 
 export type VideoEncodingReadinessStatus = 'ready' | 'limited' | 'unsupported';
 
@@ -90,10 +94,9 @@ export interface BrowserVideoEncodingEnvironment {
   videoEncoder?: BrowserVideoEncoderLike | null;
 }
 
-const VIDEO_ENCODING_CONTENT_TYPES = [
-  'video/webm;codecs=vp9',
-  'video/webm;codecs=vp8',
-  'video/webm',
+const VIDEO_RECORDING_CONTENT_TYPES = [
+  ...VIDEO_MP4_MEDIA_RECORDER_TYPES,
+  ...VIDEO_WEBM_MEDIA_RECORDER_TYPES,
 ] as const;
 
 const VIDEO_ENCODING_BITRATES: Record<VideoQualityPresetId, number> = {
@@ -135,21 +138,45 @@ export function getPreferredVideoEncodingContentType(
   environment: BrowserVideoEncodingEnvironment = getCurrentBrowserVideoEncodingEnvironment()
 ): string {
   const isTypeSupported = getMediaRecorderTypeSupport(environment.mediaRecorder);
-  if (!isTypeSupported) return VIDEO_ENCODING_CONTENT_TYPES[0];
+  if (!isTypeSupported) return getVideoOnlyEncodingContentType(VIDEO_RECORDING_CONTENT_TYPES[0]);
 
-  return VIDEO_ENCODING_CONTENT_TYPES.find((contentType) => {
+  const recordingContentType = VIDEO_RECORDING_CONTENT_TYPES.find((contentType) => {
     try {
       return isTypeSupported(contentType);
     } catch {
       return false;
     }
-  }) || VIDEO_ENCODING_CONTENT_TYPES[0];
+  }) || VIDEO_RECORDING_CONTENT_TYPES[0];
+  return getVideoOnlyEncodingContentType(recordingContentType);
 }
 
-export function getPreferredWebCodecsCodec(contentType: string = VIDEO_ENCODING_CONTENT_TYPES[0]): string {
+export function getVideoOnlyEncodingContentType(contentType: string): string {
+  const normalized = contentType.trim();
+  if (!normalized) return 'video/mp4;codecs=avc1.42E01E';
+  if (!/;\s*codecs=/i.test(normalized)) return normalized;
+  const [container, codecsPart] = normalized.split(/;\s*codecs=/i);
+  const codecs = codecsPart
+    .replace(/^["']|["']$/g, '')
+    .split(',')
+    .map((codec) => codec.trim())
+    .filter((codec) => (
+      codec &&
+      !/^opus$/i.test(codec) &&
+      !/^mp4a(?:\.|$)/i.test(codec) &&
+      !/^aac$/i.test(codec)
+    ));
+  return codecs.length > 0 ? `${container};codecs=${codecs.join(',')}` : container;
+}
+
+export function getPreferredWebCodecsCodec(contentType = getVideoOnlyEncodingContentType(VIDEO_RECORDING_CONTENT_TYPES[0])): string {
   const normalized = contentType.toLowerCase();
   if (normalized.includes('vp9')) return 'vp09.00.10.08';
   if (normalized.includes('vp8')) return 'vp8';
+  const avcMatch = contentType.match(/avc1\.[0-9a-f]+/i);
+  if (avcMatch?.[0]) return avcMatch[0];
+  if (normalized.includes('avc1') || normalized.includes('h264') || normalized.includes('video/mp4')) {
+    return 'avc1.42E01E';
+  }
   return 'vp8';
 }
 
@@ -181,7 +208,7 @@ function findPreset(
 
 export function buildVideoEncodingConfigs(
   presets: readonly VideoQualityPreset[] = VIDEO_QUALITY_PRESETS,
-  contentType: string = VIDEO_ENCODING_CONTENT_TYPES[0]
+  contentType: string = getVideoOnlyEncodingContentType(VIDEO_RECORDING_CONTENT_TYPES[0])
 ): VideoEncodingPresetConfig[] {
   return presets.map((preset) => ({
     presetId: preset.id,
@@ -201,7 +228,7 @@ export function buildVideoEncodingConfigs(
 
 export function buildWebCodecsEncodingConfigs(
   presets: readonly VideoQualityPreset[] = VIDEO_QUALITY_PRESETS,
-  contentType: string = VIDEO_ENCODING_CONTENT_TYPES[0],
+  contentType: string = getVideoOnlyEncodingContentType(VIDEO_RECORDING_CONTENT_TYPES[0]),
   hardwareAcceleration: BrowserVideoEncoderHardwareAcceleration = 'prefer-hardware'
 ): Array<{ presetId: VideoQualityPresetId; label: string; configuration: BrowserVideoEncoderConfigLike }> {
   const codec = getPreferredWebCodecsCodec(contentType);
@@ -237,7 +264,7 @@ export function evaluateVideoEncodingReadiness(
     return {
       status: 'unsupported',
       label: 'Encoder unavailable',
-      detail: 'This browser cannot record or relay WebM chunks. Use a modern Chromium, Safari, or Firefox build over HTTPS.',
+      detail: 'This browser cannot record local media chunks. Use a modern Chromium, Safari, or Firefox build over HTTPS.',
       apiSupport,
       presets: [...presets],
     };
@@ -267,11 +294,11 @@ export function evaluateVideoEncodingReadiness(
       label: hdHardwareAccelerated ? 'Hardware-ready encoder' : 'Efficient encoder',
       detail: hdHardwareAccelerated
         ? ultraHd?.supported === true && ultraHd.smooth !== false
-          ? `1080p/30 WebM encoding is smooth with WebCodecs hardware acceleration${ultraHdHardwareAccelerated ? '; 4K/30 hardware acceleration is also available.' : '; 4K/30 should be tested before long sessions.'}`
-          : '1080p/30 WebM encoding is smooth with WebCodecs hardware acceleration.'
+          ? `1080p/30 browser recording is smooth with WebCodecs hardware acceleration${ultraHdHardwareAccelerated ? '; 4K/30 hardware acceleration is also available.' : '; 4K/30 should be tested before long sessions.'}`
+          : '1080p/30 browser recording is smooth with WebCodecs hardware acceleration.'
         : ultraHd?.supported === true && ultraHd.smooth !== false
-          ? '1080p/30 and 4K/30 WebM encoding are advertised as smooth; 1080p is power efficient.'
-          : '1080p/30 WebM encoding is advertised as smooth and power efficient.',
+          ? '1080p/30 and 4K/30 browser recording are advertised as smooth; 1080p is power efficient.'
+          : '1080p/30 browser recording is advertised as smooth and power efficient.',
       apiSupport,
       presets: [...presets],
     };
@@ -281,7 +308,7 @@ export function evaluateVideoEncodingReadiness(
     return {
       status: 'ready',
       label: '1080p encoder ready',
-      detail: '1080p/30 WebM encoding is advertised as smooth; power efficiency is not confirmed.',
+      detail: '1080p/30 browser recording is advertised as smooth; power efficiency is not confirmed.',
       apiSupport,
       presets: [...presets],
     };
@@ -301,7 +328,7 @@ export function evaluateVideoEncodingReadiness(
   return {
     status: 'limited',
     label: 'Encoder check limited',
-    detail: 'The browser recorder is available, but 1080p/30 encoding was not advertised as smooth.',
+    detail: 'The browser recorder is available, but 1080p/30 recording was not advertised as smooth.',
     apiSupport,
     presets: [...presets],
   };
@@ -317,7 +344,7 @@ export function getInitialVideoEncodingReadiness(
   return {
     status: 'limited',
     label: 'Checking encoder',
-    detail: 'Checking browser support for 720p, 1080p, and 4K WebM encoding.',
+    detail: 'Checking browser support for 720p, 1080p, and 4K recording.',
     apiSupport,
     presets: VIDEO_QUALITY_PRESETS.map((preset) => getPresetSupportFromConfig(preset)),
   };

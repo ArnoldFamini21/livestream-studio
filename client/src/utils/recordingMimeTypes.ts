@@ -1,7 +1,14 @@
 export const VIDEO_MP4_MEDIA_RECORDER_TYPES = [
   'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-  'video/mp4;codecs=avc1.42E01E',
+  'video/mp4;codecs=avc1.4D401E,mp4a.40.2',
+  'video/mp4;codecs=avc1.640028,mp4a.40.2',
+  'video/mp4;codecs=avc1,mp4a.40.2',
   'video/mp4;codecs=h264,aac',
+  'video/mp4;codecs=avc1.42E01E',
+  'video/mp4;codecs=avc1.4D401E',
+  'video/mp4;codecs=avc1.640028',
+  'video/mp4;codecs=avc1',
+  'video/mp4;codecs=h264',
   'video/mp4',
 ] as const;
 

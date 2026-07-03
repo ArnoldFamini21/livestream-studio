@@ -44,6 +44,7 @@ import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
 import {
   ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
   buildPresentationPreview,
+  canBrowserRenderPowerPointFile,
   hasRenderedPresentationSlides,
   type PresentationServerRenderFailure,
 } from '../utils/presentationPreview.ts';
@@ -3335,12 +3336,20 @@ export function StudioRoom() {
 
       try {
         let serverRenderFailure: PresentationServerRenderFailure | undefined;
+        const allowBrowserPowerPointRenderFallback = type === 'presentation' &&
+          ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK &&
+          canBrowserRenderPowerPointFile(file);
+        const skipPowerPointServerRender = allowBrowserPowerPointRenderFallback && Boolean(
+          mediaServerHealth && (
+            mediaServerHealth.status === 'unavailable' ||
+            (mediaServerHealth.status === 'ready' && mediaServerHealth.presentationRenderer?.ready !== true)
+          )
+        );
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation',
-          allowBrowserPowerPointRenderFallback: type === 'presentation'
-            ? ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK
-            : false,
+          requireServerRenderedPowerPoint: type === 'presentation' && !allowBrowserPowerPointRenderFallback,
+          allowBrowserPowerPointRenderFallback,
+          skipServerRender: skipPowerPointServerRender,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
           },
