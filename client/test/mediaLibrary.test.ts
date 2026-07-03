@@ -56,19 +56,19 @@ describe('media library upload support', () => {
     ]), true);
   });
 
-  it('requires the media-server only for deck formats that cannot render visually in the browser', () => {
+  it('requires the media-server for presentation decks so original formatting is preserved', () => {
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'Distinct But Not Distant.pdf', type: 'application/pdf' } as File,
     ]), false);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'Discipleship-Via-Triads.pptx', type: '' } as File,
-    ]), false);
+    ]), true);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'slides.ppsx', type: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' } as File,
-    ]), false);
+    ]), true);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'template.potx', type: 'application/vnd.openxmlformats-officedocument.presentationml.template' } as File,
-    ]), false);
+    ]), true);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File,
     ]), true);
@@ -81,14 +81,14 @@ describe('media library upload support', () => {
   });
 
   it('warns when exact deck rendering is not ready and explains which decks need the media-server', () => {
-    assert.match(getDeckUploadBlockMessage(null), /preserve the original design/);
+    assert.match(getDeckUploadBlockMessage(null), /original design/);
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /Legacy PowerPoint and Keynote decks need/
+      /PowerPoint and Keynote uploads wait for the exact media-server renderer/
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /Modern PPTX and PDFs can still render visually in the browser/
+      /PDFs can still render visually in the browser/
     );
     assert.equal(
       getDeckUploadBlockMessage({
@@ -114,7 +114,7 @@ describe('media library upload support', () => {
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'checking', message: 'Checking media-server readiness...' }),
-      /Legacy PowerPoint and Keynote decks need/
+      /PowerPoint and Keynote uploads wait/
     );
     assert.equal(
       getDeckUploadBlockMessage({ status: 'unavailable', message: 'Media server is not provisioned on Render.' }),
