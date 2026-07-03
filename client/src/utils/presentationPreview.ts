@@ -16,9 +16,9 @@ const RENDER_SETTLE_TIMEOUT_MS = 120;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
-// Browser PPTX renderers can strip theme/layout fidelity. Broadcast PowerPoint
-// uploads should use the media-server renderer so the original design survives.
-export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
+// Browser PPTX rendering is a best-effort fallback for modern decks when the
+// exact media-server renderer is unavailable. Text-only fallbacks remain off.
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
@@ -38,6 +38,7 @@ interface PresentationPreviewOptions {
   requireRenderedSlides?: boolean;
   requireServerRenderedPowerPoint?: boolean;
   allowBrowserPowerPointRenderFallback?: boolean;
+  allowTextPowerPointFallback?: boolean;
   pptxSlideImageRenderer?: (arrayBuffer: ArrayBuffer, expectedSlideCount: number) => Promise<string[]>;
   onServerRenderFailure?: (failure: PresentationServerRenderFailure) => void;
 }
@@ -66,6 +67,7 @@ export function isRecoverablePowerPointServerRenderFailure(failure: Presentation
     code === 'PRESENTATION_RENDER_TIMEOUT' ||
     code === 'PRESENTATION_RENDER_UNAVAILABLE' ||
     code === 'PRESENTATION_RENDERER_UNAVAILABLE' ||
+    code === 'PRESENTATION_RENDER_INCOMPLETE' ||
     code === 'PRESENTATION_RENDER_FAILED' ||
     code === 'PRESENTATION_RENDER_EMPTY'
   );
@@ -425,7 +427,15 @@ export async function buildServerRenderedPresentationPreview(
       options.onServerRenderFailure?.(await readServerRenderFailure(response));
       return undefined;
     }
-    return normalizeServerPreview(await response.json() as ServerPresentationPreviewResponse);
+    const preview = normalizeServerPreview(await response.json() as ServerPresentationPreviewResponse);
+    if (!preview) {
+      options.onServerRenderFailure?.({
+        status: response.status,
+        code: 'PRESENTATION_RENDER_INCOMPLETE',
+        message: 'Media server returned a presentation preview without rendered slide artwork.',
+      });
+    }
+    return preview;
   } catch (err) {
     if ((err as { name?: string })?.name === 'AbortError') {
       options.onServerRenderFailure?.({
@@ -724,7 +734,10 @@ export async function buildPresentationPreview(
 
   if (!isPowerPointFile(file) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
 
-  const requireServerRenderedPowerPoint = options.requireServerRenderedPowerPoint || options.requireRenderedSlides;
+  const allowBrowserPowerPointRenderFallback = options.allowBrowserPowerPointRenderFallback === true;
+  const requireRenderedSlides = options.requireRenderedSlides === true;
+  const requireServerRenderedPowerPoint = options.requireServerRenderedPowerPoint === true ||
+    (requireRenderedSlides && !allowBrowserPowerPointRenderFallback);
   const serverPreviewPromise = buildServerRenderedPresentationPreview(file, options).catch(() => undefined);
 
   if (isLegacyPowerPointFile(file)) {
@@ -764,11 +777,18 @@ export async function buildPresentationPreview(
 
     if (requireServerRenderedPowerPoint) return undefined;
 
-    const renderedImageUrls = await renderPptxSlidesWithConfiguredRenderer(arrayBuffer, slides.length, options);
-    const finalSlides = applyRenderedSlideImages(slides, renderedImageUrls);
+    if (allowBrowserPowerPointRenderFallback) {
+      const renderedImageUrls = await renderPptxSlidesWithConfiguredRenderer(arrayBuffer, slides.length, options);
+      const browserRenderedSlides = applyRenderedSlideImages(slides, renderedImageUrls);
+      const browserRenderedPreview: StudioMediaAssetPreview | undefined = browserRenderedSlides.length > 0
+        ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides: browserRenderedSlides }
+        : undefined;
+      if (hasRenderedPresentationSlides(browserRenderedPreview)) return browserRenderedPreview;
+      if (options.requireRenderedSlides) return undefined;
+    }
 
-    const preview: StudioMediaAssetPreview | undefined = finalSlides.length > 0
-      ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides: finalSlides }
+    const preview: StudioMediaAssetPreview | undefined = options.allowTextPowerPointFallback && slides.length > 0
+      ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides }
       : undefined;
     return (options.requireRenderedSlides || requireServerRenderedPowerPoint) && !hasRenderedPresentationSlides(preview)
       ? undefined

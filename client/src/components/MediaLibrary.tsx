@@ -105,7 +105,7 @@ export function MediaLibrary({
     setActiveTab(getMediaTabForType(detectMediaType(files[0])));
     setUploadError('');
 
-    if (deckUploadBlockMessage && hasDeckFiles(files)) {
+    if (deckUploadBlockMessage && hasDeckFilesRequiringMediaServer(files)) {
       setActiveTab('slides');
       setUploadError(deckUploadBlockMessage);
       return;
@@ -497,22 +497,36 @@ export function hasDeckFiles(files: File[]): boolean {
   return files.some((file) => isDeckMediaType(detectMediaType(file)));
 }
 
+export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
+  return files.some((file) => {
+    const lower = file.name.toLowerCase();
+    if (detectMediaType(file) !== 'presentation') return false;
+    return (
+      lower.endsWith('.ppt') ||
+      lower.endsWith('.pps') ||
+      lower.endsWith('.pot') ||
+      lower.endsWith('.key') ||
+      file.type === 'application/vnd.ms-powerpoint'
+    );
+  });
+}
+
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  if (!health) return 'Checking the media-server before accepting PowerPoint or PDF uploads.';
+  if (!health) return 'Checking the exact deck renderer. Modern PPTX and PDF uploads can still use browser rendering.';
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
-      return 'Exact deck renderer is unavailable until the media-server reports presentation renderer readiness.';
+      return 'Exact deck renderer is unavailable. Modern PPTX and PDF uploads can still use browser rendering; legacy PowerPoint needs the media-server.';
     }
     return health.presentationRenderer.ready
       ? ''
-      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. Check the media-server presentation renderer before uploading PowerPoint or PDF files.';
+      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. Modern PPTX and PDF uploads can still use browser rendering; legacy PowerPoint needs the media-server.';
   }
   if (health.status === 'checking') {
-    return 'Checking the media-server before accepting PowerPoint or PDF uploads.';
+    return 'Checking the exact deck renderer. Modern PPTX and PDF uploads can still use browser rendering.';
   }
-  return health.message || 'Media server is unavailable. Check it before uploading PowerPoint or PDF files.';
+  return health.message || 'Media server is unavailable. Modern PPTX and PDF uploads can still use browser rendering; legacy PowerPoint needs the media-server.';
 }
 
 export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {
