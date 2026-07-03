@@ -18,7 +18,7 @@ import {
   type SceneStingerClip,
   type SceneTransitionPresetId,
 } from '../utils/sceneTransitions.ts';
-import { STUDIO_LAYOUT_LABELS } from '../utils/layoutPresets.ts';
+import { getMediaShareLayoutLabel, STUDIO_LAYOUT_LABELS } from '../utils/layoutPresets.ts';
 
 export type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.ts';
 
@@ -44,6 +44,10 @@ interface SceneManagerProps {
 }
 
 const MAX_SCENES = 12;
+
+function getSceneLayoutLabel(scene: Pick<Scene, 'activeMedia' | 'layout'>): string {
+  return scene.activeMedia?.assetId ? getMediaShareLayoutLabel(scene.layout) : STUDIO_LAYOUT_LABELS[scene.layout];
+}
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
   grid: (
@@ -264,7 +268,7 @@ export function SceneManager({
           <span style={styles.directorEyebrow}>{activeScene ? 'On air scene' : 'Scene control'}</span>
           <span style={styles.directorTitle}>{activeScene?.name || 'No active scene'}</span>
           <div style={styles.directorMetaRow}>
-            <span style={styles.directorMeta}>{activeScene ? STUDIO_LAYOUT_LABELS[activeScene.layout] : 'Current stage'}</span>
+            <span style={styles.directorMeta}>{activeScene ? getSceneLayoutLabel(activeScene) : 'Current stage'}</span>
             <span style={styles.directorMeta}>{transitionLabel}</span>
             <span style={styles.directorMeta}>{activeOverlayCount} overlay{activeOverlayCount === 1 ? '' : 's'}</span>
           </div>
@@ -586,7 +590,7 @@ export function SceneManager({
                   <ScenePreviewThumbnail scene={scene} />
                   {/* Layout badge */}
                   <span style={styles.layoutBadge}>
-                    {STUDIO_LAYOUT_LABELS[scene.layout]}
+                    {getSceneLayoutLabel(scene)}
                   </span>
                 </div>
 
@@ -735,8 +739,12 @@ export function SceneManager({
 }
 
 function ScenePreviewThumbnail({ scene }: { scene: Scene }) {
-  const tiles = getScenePreviewTiles(scene.layout, { pipCorner: scene.pipCorner });
+  const tiles = getScenePreviewTiles(scene.layout, {
+    pipCorner: scene.pipCorner,
+    mediaActive: Boolean(scene.activeMedia?.assetId),
+  });
   const overlays = getScenePreviewOverlays(scene);
+  const hasMediaTile = tiles.some((tile) => tile.media);
   const cameraRadius = scene.cameraShape === 'circle'
     ? 999
     : scene.cameraShape === 'square'
@@ -755,21 +763,31 @@ function ScenePreviewThumbnail({ scene }: { scene: Scene }) {
             ...styles.scenePreviewTile,
             ...(tile.primary ? styles.scenePreviewTilePrimary : {}),
             ...(tile.floating ? styles.scenePreviewTileFloating : {}),
+            ...(tile.media ? styles.scenePreviewMediaTile : {}),
             left: tile.left,
             top: tile.top,
             width: tile.width,
             height: tile.height,
-            borderRadius: cameraRadius,
-            borderColor: tile.primary ? scene.brandColor : 'rgba(255, 255, 255, 0.24)',
+            borderRadius: tile.media ? 6 : cameraRadius,
+            borderColor: tile.media || tile.primary ? scene.brandColor : 'rgba(255, 255, 255, 0.24)',
           }}
         >
-          <span
-            style={{
-              ...styles.scenePreviewTileAccent,
-              background: scene.brandColor,
-              opacity: tile.primary ? 0.82 : 0.44,
-            }}
-          />
+          {tile.media ? (
+            <>
+              <span style={{ ...styles.scenePreviewMediaDeckHeader, background: scene.brandColor }} />
+              <span style={styles.scenePreviewMediaDeckLine} />
+              <span style={{ ...styles.scenePreviewMediaDeckLine, width: '48%', top: '45%' }} />
+              <span style={{ ...styles.scenePreviewMediaDeckLine, width: '34%', top: '58%', opacity: 0.32 }} />
+            </>
+          ) : (
+            <span
+              style={{
+                ...styles.scenePreviewTileAccent,
+                background: scene.brandColor,
+                opacity: tile.primary ? 0.82 : 0.44,
+              }}
+            />
+          )}
         </span>
       ))}
 
@@ -777,7 +795,7 @@ function ScenePreviewThumbnail({ scene }: { scene: Scene }) {
       {overlays.timer && <span style={styles.scenePreviewTimer} />}
       {overlays.lowerThird && <span style={{ ...styles.scenePreviewLowerThird, borderColor: scene.brandColor }} />}
       {overlays.ticker && <span style={styles.scenePreviewTicker} />}
-      {overlays.media && <span style={{ ...styles.scenePreviewMedia, borderColor: scene.brandColor }} />}
+      {overlays.media && !hasMediaTile && <span style={{ ...styles.scenePreviewMedia, borderColor: scene.brandColor }} />}
       {overlays.widget && <span style={styles.scenePreviewWidget} />}
       {overlays.logo && (
         <span
@@ -1315,6 +1333,10 @@ const styles: Record<string, React.CSSProperties> = {
   scenePreviewTileFloating: {
     boxShadow: '0 7px 16px rgba(0, 0, 0, 0.32), inset 0 0 0 1px rgba(255, 255, 255, 0.07)',
   },
+  scenePreviewMediaTile: {
+    background: 'linear-gradient(135deg, rgba(248, 250, 252, 0.9), rgba(226, 232, 240, 0.74))',
+    boxShadow: '0 7px 18px rgba(0, 0, 0, 0.22), inset 0 0 0 1px rgba(15, 23, 42, 0.08)',
+  },
   scenePreviewTileAccent: {
     position: 'absolute',
     left: '18%',
@@ -1322,6 +1344,23 @@ const styles: Record<string, React.CSSProperties> = {
     bottom: '17%',
     height: 3,
     borderRadius: 999,
+  },
+  scenePreviewMediaDeckHeader: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    height: 4,
+    opacity: 0.78,
+  },
+  scenePreviewMediaDeckLine: {
+    position: 'absolute',
+    left: '16%',
+    top: '32%',
+    width: '58%',
+    height: 3,
+    borderRadius: 999,
+    background: 'rgba(15, 23, 42, 0.52)',
   },
   scenePreviewBanner: {
     position: 'absolute',
