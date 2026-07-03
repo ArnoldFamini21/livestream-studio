@@ -30,8 +30,8 @@ interface SceneManagerProps {
   onSceneTransitionPresetChange: (presetId: SceneTransitionPresetId) => void;
   onSceneStingerClipChange: (clip: SceneStingerClip | null) => void;
   onSaveScene: (name: string) => void | Promise<void>;
-  onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
-  onCreateProductionScenePack: () => void;
+  onCreateTemplateScene: (template: ProductionSceneTemplate) => void | Promise<void>;
+  onCreateProductionScenePack: () => void | Promise<void>;
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
@@ -505,7 +505,7 @@ export function SceneManager({
             ...styles.templatePackBtn,
             ...(scenePackSlots === 0 ? styles.templatePackBtnDisabled : {}),
           }}
-          onClick={() => scenePackSlots > 0 && onCreateProductionScenePack()}
+          onClick={() => { if (scenePackSlots > 0) void onCreateProductionScenePack(); }}
           disabled={scenePackSlots === 0}
           title={scenePackSlots === 0 ? `Maximum of ${MAX_SCENES} scenes reached` : `Add ${scenePackSlots} production scenes`}
         >
@@ -529,7 +529,7 @@ export function SceneManager({
                 ...styles.templateCard,
                 ...(atLimit ? styles.templateCardDisabled : {}),
               }}
-              onClick={() => !atLimit && onCreateTemplateScene(template.id)}
+              onClick={() => { if (!atLimit) void onCreateTemplateScene(template.id); }}
               disabled={atLimit}
               title={atLimit ? `Maximum of ${MAX_SCENES} scenes reached` : `Add ${template.name} scene`}
             >

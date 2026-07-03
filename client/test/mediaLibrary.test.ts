@@ -56,19 +56,19 @@ describe('media library upload support', () => {
     ]), true);
   });
 
-  it('requires the media-server for presentation decks while allowing PDF browser rendering', () => {
+  it('allows modern PPTX visual fallback while requiring the media-server for legacy decks', () => {
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'Distinct But Not Distant.pdf', type: 'application/pdf' } as File,
     ]), false);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'Discipleship-Via-Triads.pptx', type: '' } as File,
-    ]), true);
+    ]), false);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'slides.ppsx', type: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' } as File,
-    ]), true);
+    ]), false);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'template.potx', type: 'application/vnd.openxmlformats-officedocument.presentationml.template' } as File,
-    ]), true);
+    ]), false);
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File,
     ]), true);
@@ -81,14 +81,14 @@ describe('media library upload support', () => {
   });
 
   it('warns when exact deck rendering is not ready and explains which decks need the media-server', () => {
-    assert.match(getDeckUploadBlockMessage(null), /PowerPoint and Keynote design preservation requires/);
+    assert.match(getDeckUploadBlockMessage(null), /Modern PPTX files can render visual slides in this browser/);
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /PowerPoint and Keynote design preservation requires/
+      /Modern PPTX files can render visual slides in this browser/
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /Render media-server renderer/
+      /Render media-server for exact deck output/
     );
     assert.equal(
       getDeckUploadBlockMessage({
@@ -114,11 +114,11 @@ describe('media library upload support', () => {
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'checking', message: 'Checking media-server readiness...' }),
-      /PowerPoint and Keynote design preservation requires/
+      /Modern PPTX files can render visual slides in this browser/
     );
-    assert.equal(
+    assert.match(
       getDeckUploadBlockMessage({ status: 'unavailable', message: 'Media server is not provisioned on Render.' }),
-      'Media server is not provisioned on Render.'
+      /Media server is not provisioned on Render\. Modern PPTX files can render visual slides in this browser/
     );
   });
 

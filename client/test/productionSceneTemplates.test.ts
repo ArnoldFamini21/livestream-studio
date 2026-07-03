@@ -98,6 +98,26 @@ test('production scene pack references valid template configs', () => {
   }
 });
 
+test('production scene templates can inherit the active brand profile', () => {
+  const branded = getProductionSceneTemplateConfig('main-stage', {
+    brandColor: '#14b8a6',
+    background: { type: 'image', value: 'data:image/png;base64,stage' },
+  });
+
+  assert.equal(branded.brandColor, '#14b8a6');
+  assert.deepEqual(branded.background, { type: 'image', value: 'data:image/png;base64,stage' });
+  assert.equal(branded.lowerThird?.accentColor, '#14b8a6');
+  assert.equal(branded.banner?.customColor, '#14b8a6');
+
+  const fallback = getProductionSceneTemplateConfig('panel', {
+    brandColor: 'not-a-color',
+    background: { type: 'none', value: '' },
+  });
+
+  assert.equal(fallback.brandColor, '#f472b6');
+  assert.equal(fallback.background.value, 'linear-gradient(135deg, #111827 0%, #581c87 52%, #be185d 100%)');
+});
+
 test('background previews return renderable css values', () => {
   assert.equal(getBackgroundPreview({ type: 'none', value: '' }), '#09090b');
   assert.equal(getBackgroundPreview({ type: 'color', value: '#111827' }), '#111827');

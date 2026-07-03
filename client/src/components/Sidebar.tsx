@@ -147,8 +147,8 @@ interface SidebarProps {
   onSceneTransitionPresetChange: (presetId: SceneTransitionPresetId) => void;
   onSceneStingerClipChange: (clip: SceneStingerClip | null) => void;
   onSaveScene: (name: string) => void | Promise<void>;
-  onCreateTemplateScene: (template: ProductionSceneTemplate) => void;
-  onCreateProductionScenePack: () => void;
+  onCreateTemplateScene: (template: ProductionSceneTemplate) => void | Promise<void>;
+  onCreateProductionScenePack: () => void | Promise<void>;
   onApplyScene: (sceneId: string) => void;
   onDeleteScene: (sceneId: string) => void;
   onRenameScene: (sceneId: string, newName: string) => void;
