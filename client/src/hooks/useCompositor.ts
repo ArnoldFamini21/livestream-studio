@@ -9,6 +9,11 @@ import type { TickerData } from '../components/TickerOverlay.tsx';
 import type { WidgetOverlayData } from '../components/WidgetOverlay.tsx';
 import { buildLowerThirdCanvasFont, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 import { createCompositorFrameTarget, type CompositorFrameTarget } from '../utils/compositorFrameTarget.ts';
+import {
+  getCompositorVideoDrawPlan,
+  getCompositorVideoObjectFit,
+  isCompositorVideoHorizontallyMirrored,
+} from '../utils/compositorVideo.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { getLogoCanvasRect } from '../utils/logoPosition.ts';
 import type { ActiveStreamScreen } from '../utils/streamScreens.ts';
@@ -582,6 +587,66 @@ function drawActiveMediaOverlay(
           : 'Shared file';
   drawMediaFallbackCard(ctx, media, rect.x, rect.y, rect.width, rect.height, brandColor, label);
   ctx.restore();
+}
+
+function drawVideoElementFrame(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): boolean {
+  if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0 || width <= 0 || height <= 0) {
+    return false;
+  }
+
+  const objectFit = getCompositorVideoObjectFit(video);
+  const plan = getCompositorVideoDrawPlan(video.videoWidth, video.videoHeight, width, height, objectFit);
+  if (!plan) return false;
+
+  const mirrored = isCompositorVideoHorizontallyMirrored(video);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, width, height);
+  ctx.clip();
+
+  if (objectFit === 'contain') {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(x, y, width, height);
+  }
+
+  if (mirrored) {
+    ctx.translate(x + width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(
+      video,
+      plan.sourceX,
+      plan.sourceY,
+      plan.sourceWidth,
+      plan.sourceHeight,
+      width - plan.destX - plan.destWidth,
+      y + plan.destY,
+      plan.destWidth,
+      plan.destHeight
+    );
+  } else {
+    ctx.drawImage(
+      video,
+      plan.sourceX,
+      plan.sourceY,
+      plan.sourceWidth,
+      plan.sourceHeight,
+      x + plan.destX,
+      y + plan.destY,
+      plan.destWidth,
+      plan.destHeight
+    );
+  }
+
+  ctx.restore();
+  return true;
 }
 
 function formatTimerTime(totalSeconds: number): string {
@@ -1364,7 +1429,7 @@ export function useCompositor({
     const videos = containerRef.current.querySelectorAll('video');
     videos.forEach((video) => {
       if (video.classList.contains('studio-stage-background-video')) return;
-      if (video.closest('.studio-active-media')) return;
+      if (activeMedia && video.closest('.studio-active-media')) return;
 
       const rect = video.getBoundingClientRect();
       const x = (rect.left - containerBounds.left) * scaleX;
@@ -1372,10 +1437,7 @@ export function useCompositor({
       const w = rect.width * scaleX;
       const h = rect.height * scaleY;
 
-      if (video.readyState >= 2) {
-        // Draw the local/remote video frame
-        ctx.drawImage(video, x, y, w, h);
-      }
+      drawVideoElementFrame(ctx, video, x, y, w, h);
       
       // Attempt to draw name tags for each participant tile
       const tileNode = video.closest('.participant-tile');
