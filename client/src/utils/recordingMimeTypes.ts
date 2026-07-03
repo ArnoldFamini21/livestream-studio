@@ -44,6 +44,21 @@ export interface BrowserRecordingFormatSummary {
   detail: string;
 }
 
+export type RecordingFileFormatKind = 'mp4-video' | 'm4a-audio' | 'webm' | 'other';
+
+export interface RecordingFileFormatSummary {
+  totalFiles: number;
+  mp4VideoCount: number;
+  m4aAudioCount: number;
+  webmCount: number;
+  otherCount: number;
+  hasFiles: boolean;
+  allBrowserMp4Compatible: boolean;
+  hasBrowserMp4CompatibleFiles: boolean;
+  label: string;
+  detail: string;
+}
+
 export function getSupportedMediaRecorderMimeType(
   candidates: readonly string[],
   mediaRecorder: MediaRecorderSupport = typeof MediaRecorder === 'undefined' ? undefined : MediaRecorder
@@ -87,6 +102,88 @@ export function getRecordingFileExtension(mimeType: string | undefined): string 
   if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'mp3';
   if (normalized.includes('wav')) return 'wav';
   return 'webm';
+}
+
+export function getRecordingBlobFormatKind(blobOrMimeType: Blob | string | undefined): RecordingFileFormatKind {
+  const mimeType = typeof blobOrMimeType === 'string' ? blobOrMimeType : blobOrMimeType?.type;
+  const normalized = (mimeType || '').toLowerCase();
+  const extension = getRecordingFileExtension(mimeType);
+  if (extension === 'mp4') return 'mp4-video';
+  if (extension === 'm4a') return 'm4a-audio';
+  if (extension === 'webm' && normalized.includes('webm')) return 'webm';
+  return 'other';
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function getRecordingBlob(input: Blob | { blob: Blob }): Blob {
+  return 'blob' in input ? input.blob : input;
+}
+
+export function summarizeRecordingFileFormats(files: Array<Blob | { blob: Blob }>): RecordingFileFormatSummary {
+  const counts = files.reduce(
+    (next, file) => {
+      const kind = getRecordingBlobFormatKind(getRecordingBlob(file));
+      if (kind === 'mp4-video') next.mp4VideoCount += 1;
+      if (kind === 'm4a-audio') next.m4aAudioCount += 1;
+      if (kind === 'webm') next.webmCount += 1;
+      if (kind === 'other') next.otherCount += 1;
+      return next;
+    },
+    {
+      mp4VideoCount: 0,
+      m4aAudioCount: 0,
+      webmCount: 0,
+      otherCount: 0,
+    }
+  );
+  const totalFiles = files.length;
+  const browserMp4CompatibleCount = counts.mp4VideoCount + counts.m4aAudioCount;
+  const hasFiles = totalFiles > 0;
+  const hasBrowserMp4CompatibleFiles = browserMp4CompatibleCount > 0;
+  const allBrowserMp4Compatible = hasFiles && browserMp4CompatibleCount === totalFiles;
+  const countLabels = [
+    counts.mp4VideoCount ? pluralize(counts.mp4VideoCount, 'MP4 video track') : '',
+    counts.m4aAudioCount ? pluralize(counts.m4aAudioCount, 'M4A audio track') : '',
+    counts.webmCount ? pluralize(counts.webmCount, 'WebM track') : '',
+    counts.otherCount ? pluralize(counts.otherCount, 'browser fallback track') : '',
+  ].filter(Boolean);
+
+  if (!hasFiles) {
+    return {
+      totalFiles,
+      ...counts,
+      hasFiles,
+      allBrowserMp4Compatible,
+      hasBrowserMp4CompatibleFiles,
+      label: 'No local recording files',
+      detail: 'No finished recording tracks were available to save.',
+    };
+  }
+
+  if (allBrowserMp4Compatible) {
+    return {
+      totalFiles,
+      ...counts,
+      hasFiles,
+      allBrowserMp4Compatible,
+      hasBrowserMp4CompatibleFiles,
+      label: 'Browser-native MP4/M4A tracks',
+      detail: `This browser produced ${countLabels.join(' and ')} that can be saved locally without WebM fallback.`,
+    };
+  }
+
+  return {
+    totalFiles,
+    ...counts,
+    hasFiles,
+    allBrowserMp4Compatible,
+    hasBrowserMp4CompatibleFiles,
+    label: hasBrowserMp4CompatibleFiles ? 'Mixed MP4/WebM local tracks' : 'Browser fallback local tracks',
+    detail: `This browser produced ${countLabels.join(', ')}. A single final MP4 mix still requires the media-server.`,
+  };
 }
 
 export function getBrowserRecordingFormatSummary(

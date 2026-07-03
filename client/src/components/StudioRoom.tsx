@@ -127,7 +127,7 @@ import {
   type RecordingUploadFileInput,
 } from '../utils/recordingUpload.ts';
 import { syncRecordingCatalogEntry } from '../utils/recordingCatalog.ts';
-import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
+import { getRecordingFileExtension, summarizeRecordingFileFormats } from '../utils/recordingMimeTypes.ts';
 import {
   downloadRtmpBackupRecording,
   pollRtmpBackupRecording,
@@ -885,11 +885,10 @@ function buildToolbarRecordingUploadFiles(
     }));
 }
 
-async function downloadToolbarRecordingFallback(
-  recordings: Map<string, { name: string; blob: Blob }>,
+async function downloadToolbarRecordingFallbackFiles(
+  files: RecordingUploadFileInput[],
   timestamp: string
 ) {
-  const files = buildToolbarRecordingUploadFiles(recordings, timestamp);
   for (let index = 0; index < files.length; index++) {
     const file = files[index];
     downloadBlobFile(file.blob, file.fileName || makeToolbarRecordingFileName(file.label, file.blob, timestamp));
@@ -897,6 +896,17 @@ async function downloadToolbarRecordingFallback(
       await new Promise((resolve) => window.setTimeout(resolve, 350));
     }
   }
+}
+
+function getToolbarRecordingFallbackToast(files: RecordingUploadFileInput[]): string {
+  const summary = summarizeRecordingFileFormats(files);
+  if (summary.allBrowserMp4Compatible) {
+    return 'Media-server final MP4 mix unavailable. Saved browser-native MP4/M4A recording tracks.';
+  }
+  if (summary.hasBrowserMp4CompatibleFiles) {
+    return 'Media-server final MP4 mix unavailable. Saved MP4/M4A and browser fallback tracks separately.';
+  }
+  return 'MP4 export was unavailable. Saved original recording tracks instead.';
 }
 
 function getReadyMp4Artifact(exportJob: Awaited<ReturnType<typeof uploadRecordingToMediaServer>>['exportJob']) {
@@ -2657,6 +2667,9 @@ export function StudioRoom() {
           }
 
           try {
+            if (mediaServerHealth.status === 'unavailable') {
+              throw new Error(mediaServerHealth.message || 'Media-server is unavailable.');
+            }
             addToast('Finalizing MP4 recording export...', 'info');
             const token = await requestLiveStreamToken();
             const exportBasename = `${room?.name || 'Studio'} Recording ${timestamp}`;
@@ -2686,8 +2699,8 @@ export function StudioRoom() {
             addToast('MP4 recording export downloaded.', 'success');
           } catch (err) {
             console.warn('MP4 recording export failed, saving original tracks:', err);
-            await downloadToolbarRecordingFallback(recordings, timestamp);
-            addToast('MP4 export was unavailable. Saved original recording tracks instead.', 'warning');
+            await downloadToolbarRecordingFallbackFiles(files, timestamp);
+            addToast(getToolbarRecordingFallbackToast(files), 'warning');
           }
         }
       } catch (err) {

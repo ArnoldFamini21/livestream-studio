@@ -2467,8 +2467,11 @@ export function RecordingPanel({
   const mediaServerExportStatusLabel = getRecordingMediaExportStatusLabel(mediaServerHealth, Boolean(onUploadRecording));
   const browserRecordingFormat = useMemo(() => getBrowserRecordingFormatSummary(), []);
   const browserRecordingFallbackMessage = useMemo(() => {
+    if (browserRecordingFormat.supportsVideoMp4 && browserRecordingFormat.supportsAudioMp4) {
+      return 'This browser saves local video tracks as MP4 and audio-only tracks as M4A. A single final MP4 mix still requires the media-server.';
+    }
     if (browserRecordingFormat.supportsVideoMp4) {
-      return 'Local recording is saved in this browser as MP4 where available.';
+      return 'This browser saves local video tracks as MP4. Audio-only tracks may use the browser fallback container, and a single final MP4 mix still requires the media-server.';
     }
     const extension = browserRecordingFormat.videoExtension || 'the browser fallback format';
     return `Local recording is saved in this browser as ${extension.toUpperCase()}; final MP4 requires the media-server.`;
