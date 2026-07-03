@@ -6,7 +6,7 @@ import {
   getPresentationItemDisplayTitle,
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
-import { hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
+import { canBrowserRenderPowerPointFile, hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
@@ -498,13 +498,13 @@ export function hasDeckFiles(files: File[]): boolean {
 }
 
 export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
-  return files.some((file) => detectMediaType(file) === 'presentation');
+  return files.some((file) => detectMediaType(file) === 'presentation' && !canBrowserRenderPowerPointFile(file));
 }
 
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  const exactRendererMessage = 'PowerPoint and Keynote decks need the exact media-server renderer to preserve the original design, formatting, fonts, backgrounds, and layout. PDFs can still render in the browser.';
+  const exactRendererMessage = 'Legacy PowerPoint and Keynote decks need the exact media-server renderer to preserve the original design, formatting, fonts, backgrounds, and layout. Modern PPTX and PDFs can still render visually in the browser.';
   if (!health) return `Checking the exact deck renderer. ${exactRendererMessage}`;
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
