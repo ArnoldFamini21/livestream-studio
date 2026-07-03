@@ -8,6 +8,7 @@ import {
   getPresentationItemDisplayTitle,
   getNextPresentationSlideIndex,
   getPresentationDeckStatus,
+  getPresentationPresenterCards,
   getPresentationSlidePickerItems,
   getPresentationSlides,
 } from '../src/utils/presentationDeckControls.ts';
@@ -87,6 +88,46 @@ describe('presentation deck controls', () => {
     assert.equal(status.canGoNext, true);
   });
 
+  it('builds presenter monitor cards for current and next slides', () => {
+    const status = getPresentationDeckStatus(deck, 1);
+    const cards = getPresentationPresenterCards(status);
+
+    assert.deepEqual(cards, [
+      {
+        kind: 'current',
+        label: 'Current Slide',
+        index: 1,
+        title: 'Agenda',
+        imageUrl: 'data:image/png;base64,two',
+        notes: ['Ask the guest to introduce the next segment'],
+        isEnd: false,
+      },
+      {
+        kind: 'next',
+        label: 'Next Slide',
+        index: 2,
+        title: 'Close',
+        imageUrl: 'data:image/png;base64,three',
+        notes: [],
+        isEnd: false,
+      },
+    ]);
+  });
+
+  it('marks the presenter monitor next card as end of deck', () => {
+    const status = getPresentationDeckStatus(deck, 2);
+    const cards = getPresentationPresenterCards(status);
+
+    assert.deepEqual(cards[1], {
+      kind: 'next',
+      label: 'Up Next',
+      index: null,
+      title: 'End of deck',
+      notes: [],
+      isEnd: true,
+    });
+  });
+
   it('uses page labels for PDF-backed deck previews', () => {
     const pdfDeck: ActiveMedia = {
       ...deck,
@@ -106,6 +147,7 @@ describe('presentation deck controls', () => {
     assert.equal(getPresentationDeckUnitLabel(status.sourceFormat), 'Page');
     assert.equal(status.unitLabel, 'Page');
     assert.equal(getPresentationItemDisplayTitle(status.currentSlide, status.currentIndex, status.unitLabel), 'Page 1');
+    assert.deepEqual(getPresentationPresenterCards(status).map((card) => card.label), ['Current Page', 'Next Page']);
     assert.deepEqual(items.map((item) => item.label), ['Page 1', 'Page 2']);
     assert.equal(items[0].imageUrl, 'data:image/png;base64,page-one');
   });
