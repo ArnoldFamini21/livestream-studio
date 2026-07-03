@@ -7,12 +7,14 @@ import {
   isMultiParticipantLayout,
   STUDIO_LAYOUT_PRESET_ORDER,
 } from '../utils/layoutPresets.ts';
+import { getMediaShareLayoutVisibilitySummary } from '../utils/mediaShareLayouts.ts';
 
 interface LayoutSwitcherProps {
   currentLayout: LayoutMode;
   onLayoutChange: (layout: LayoutMode) => void;
   participantCount: number;
   isMediaActive?: boolean;
+  mediaParticipantCount?: number;
 }
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
@@ -57,9 +59,52 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
   ),
 };
 
-export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount, isMediaActive = false }: LayoutSwitcherProps) {
+function normalizeCount(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function formatPersonCount(count: number): string {
+  return `${count} ${count === 1 ? 'person' : 'people'}`;
+}
+
+function formatMediaVisibilityLabel(
+  layout: LayoutMode,
+  mediaParticipantCount: number
+): string {
+  const summary = getMediaShareLayoutVisibilitySummary(layout, mediaParticipantCount);
+  if (summary.totalParticipantCount === 0) return 'Media only';
+  if (summary.hiddenParticipantCount > 0) {
+    return `${summary.visibleParticipantCount}/${summary.totalParticipantCount} people visible`;
+  }
+  return `${formatPersonCount(summary.visibleParticipantCount)} visible`;
+}
+
+function formatMediaVisibilityTitle(
+  layout: LayoutMode,
+  mediaParticipantCount: number
+): string {
+  const summary = getMediaShareLayoutVisibilitySummary(layout, mediaParticipantCount);
+  if (summary.totalParticipantCount === 0) return 'No participant cameras are visible with the shared media.';
+  if (summary.hiddenParticipantCount > 0) {
+    return `Shows ${formatPersonCount(summary.visibleParticipantCount)} and hides ${formatPersonCount(summary.hiddenParticipantCount)}.`;
+  }
+  return `Shows all ${formatPersonCount(summary.totalParticipantCount)}.`;
+}
+
+export function LayoutSwitcher({
+  currentLayout,
+  onLayoutChange,
+  participantCount,
+  isMediaActive = false,
+  mediaParticipantCount,
+}: LayoutSwitcherProps) {
+  const activeMediaParticipantCount = normalizeCount(mediaParticipantCount ?? Math.max(0, participantCount - 1));
+  const selectedMediaVisibilityLabel = isMediaActive
+    ? formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)
+    : '';
+
   return (
-    <div style={styles.bar} role="radiogroup" aria-label={isMediaActive ? 'Shared media layout switcher' : 'Layout switcher'}>
+    <div style={styles.wrap}>
       <style>{`
         .ls-btn:hover:not(:disabled) {
           color: white !important;
@@ -78,35 +123,90 @@ export function LayoutSwitcher({ currentLayout, onLayoutChange, participantCount
           transform: none;
         }
       `}</style>
-      {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
-        const label = isMediaActive ? getMediaShareLayoutLabel(mode) : getStudioLayoutLabel(mode);
-        const description = isMediaActive ? getMediaShareLayoutDescription(mode) : getStudioLayoutDescription(mode);
-        const isActive = currentLayout === mode;
-        const isDisabled = participantCount < 2 && isMultiParticipantLayout(mode);
-        return (
-          <button
-            key={mode}
-            className={`ls-btn ${isActive ? 'active' : ''}`}
-            role="radio"
-            aria-checked={isActive}
-            aria-label={`${label} layout - ${description}`}
-            onClick={() => onLayoutChange(mode)}
-            disabled={isDisabled}
-            title={isDisabled ? `${label} (Requires 2+ people)` : `${label} - ${description}`}
-            style={{
-              ...styles.btn,
-              ...(isDisabled ? styles.btnDisabled : {}),
-            }}
-          >
-            {layoutIcons[mode]}
-          </button>
-        );
-      })}
+      {isMediaActive && (
+        <div style={styles.mediaStatus} aria-live="polite">
+          <span style={styles.mediaStatusLabel}>{getMediaShareLayoutLabel(currentLayout)}</span>
+          <span style={styles.mediaStatusMeta}>{selectedMediaVisibilityLabel}</span>
+        </div>
+      )}
+      <div style={styles.bar} role="radiogroup" aria-label={isMediaActive ? 'Shared media layout switcher' : 'Layout switcher'}>
+        {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
+          const label = isMediaActive ? getMediaShareLayoutLabel(mode) : getStudioLayoutLabel(mode);
+          const description = isMediaActive ? getMediaShareLayoutDescription(mode) : getStudioLayoutDescription(mode);
+          const isActive = currentLayout === mode;
+          const isDisabled = isMediaActive
+            ? activeMediaParticipantCount < 1 && isMultiParticipantLayout(mode)
+            : participantCount < 2 && isMultiParticipantLayout(mode);
+          const mediaVisibilityTitle = isMediaActive
+            ? ` ${formatMediaVisibilityTitle(mode, activeMediaParticipantCount)}`
+            : '';
+          const disabledTitle = isMediaActive
+            ? `${label} (Requires at least one person on stage)`
+            : `${label} (Requires 2+ people)`;
+          return (
+            <button
+              key={mode}
+              className={`ls-btn ${isActive ? 'active' : ''}`}
+              role="radio"
+              aria-checked={isActive}
+              aria-label={`${label} layout - ${description}${mediaVisibilityTitle}`}
+              onClick={() => onLayoutChange(mode)}
+              disabled={isDisabled}
+              title={isDisabled ? disabledTitle : `${label} - ${description}.${mediaVisibilityTitle}`}
+              style={{
+                ...styles.btn,
+                ...(isDisabled ? styles.btnDisabled : {}),
+              }}
+            >
+              {layoutIcons[mode]}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  wrap: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 5,
+    maxWidth: 'min(100%, 420px)',
+  },
+  mediaStatus: {
+    maxWidth: '100%',
+    minHeight: 24,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    padding: '4px 9px',
+    borderRadius: 999,
+    border: '1px solid rgba(255, 255, 255, 0.10)',
+    background: 'rgba(15, 23, 42, 0.66)',
+    color: 'rgba(255, 255, 255, 0.84)',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
+  },
+  mediaStatusLabel: {
+    minWidth: 0,
+    color: 'white',
+    fontSize: 11,
+    fontWeight: 800,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  mediaStatusMeta: {
+    flexShrink: 0,
+    color: 'rgba(255, 255, 255, 0.66)',
+    fontSize: 10,
+    fontWeight: 700,
+    fontVariantNumeric: 'tabular-nums',
+  },
   bar: {
     display: 'inline-flex',
     gap: 2,

@@ -5416,6 +5416,7 @@ export function StudioRoom() {
                 onLayoutChange={applyLayout}
                 participantCount={sharedContentIsActive ? sharedContentStageItemCount : displayedStageVideoItems.length}
                 isMediaActive={sharedContentIsActive}
+                mediaParticipantCount={sharedContentIsActive ? sharedContentParticipantPresenceItems.length : undefined}
               />
             </div>
           )}
