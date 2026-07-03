@@ -16,10 +16,10 @@ const RENDER_SETTLE_TIMEOUT_MS = 120;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
-// Browser PPTX rendering is intentionally not used for normal uploads because
-// it can flatten or miss PowerPoint theme styling. Production uploads require
-// the media-server renderer so the original slide design is preserved.
-export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
+// Prefer the media-server exact renderer, but keep a browser visual fallback
+// for modern OOXML decks so uploads still preserve slide artwork when Render is
+// not provisioned. Text-only PowerPoint previews remain disabled for broadcast.
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
@@ -36,6 +36,7 @@ interface PresentationPreviewOptions {
   mediaHttpUrl?: string;
   fetchImpl?: typeof fetch;
   serverRenderTimeoutMs?: number;
+  skipServerRender?: boolean;
   requireRenderedSlides?: boolean;
   requireServerRenderedPowerPoint?: boolean;
   allowBrowserPowerPointRenderFallback?: boolean;
@@ -154,6 +155,10 @@ export function isPptxFile(file: Pick<File, 'name' | 'type'>): boolean {
     file.type === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' ||
     file.type === 'application/vnd.openxmlformats-officedocument.presentationml.template'
   );
+}
+
+export function canBrowserRenderPowerPointFile(file: Pick<File, 'name' | 'type'>): boolean {
+  return isPptxFile(file);
 }
 
 export function isLegacyPowerPointFile(file: Pick<File, 'name' | 'type'>): boolean {
@@ -401,6 +406,7 @@ export async function buildServerRenderedPresentationPreview(
   file: File,
   options: PresentationPreviewOptions = {}
 ): Promise<StudioMediaAssetPreview | undefined> {
+  if (options.skipServerRender) return undefined;
   if (!canTryServerRender(options) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
 
   const mediaHttpUrl = (options.mediaHttpUrl || resolveMediaHttpUrl()).trim();

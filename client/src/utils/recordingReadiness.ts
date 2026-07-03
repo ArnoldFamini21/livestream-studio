@@ -120,7 +120,7 @@ function buildWebCodecsPipelineItem(encodingReadiness: RecordingEncodingReadines
       id: 'webcodecs-pipeline',
       label: 'WebCodecs pipeline',
       status: 'good',
-      detail: `Hardware VideoEncoder is available for ${hardwarePreset.label || hardwarePreset.presetId || 'video'} tracks; playable WebM files continue to use MediaRecorder until muxing is enabled.`,
+      detail: `Hardware VideoEncoder is available for ${hardwarePreset.label || hardwarePreset.presetId || 'video'} tracks; playable MP4/WebM files continue to use MediaRecorder while WebCodecs sidecars support review workflows.`,
       blocksStart: false,
     };
   }
@@ -130,7 +130,7 @@ function buildWebCodecsPipelineItem(encodingReadiness: RecordingEncodingReadines
       id: 'webcodecs-pipeline',
       label: 'WebCodecs pipeline',
       status: 'warning',
-      detail: 'VideoEncoder is available, but hardware acceleration was not confirmed; playable WebM files continue to use MediaRecorder.',
+      detail: 'VideoEncoder is available, but hardware acceleration was not confirmed; playable MP4/WebM files continue to use MediaRecorder.',
       blocksStart: false,
     };
   }

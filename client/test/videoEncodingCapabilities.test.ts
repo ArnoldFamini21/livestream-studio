@@ -9,6 +9,7 @@ import {
   getInitialVideoEncodingReadiness,
   getPreferredVideoEncodingContentType,
   getPreferredWebCodecsCodec,
+  getVideoOnlyEncodingContentType,
   type BrowserVideoEncodingConfiguration,
   type BrowserVideoEncodingEnvironment,
 } from '../src/utils/videoEncodingCapabilities.ts';
@@ -36,23 +37,36 @@ describe('video encoding capability detection', () => {
     assert.deepEqual(configs.map((config) => config.configuration.video.framerate), [30, 30, 30]);
     assert.deepEqual(configs.map((config) => config.configuration.video.bitrate), [4_000_000, 8_000_000, 24_000_000]);
     assert.equal(configs[1].configuration.type, 'record');
-    assert.equal(configs[1].configuration.video.contentType, 'video/webm;codecs=vp9');
+    assert.equal(configs[1].configuration.video.contentType, 'video/mp4;codecs=avc1.42E01E');
   });
 
-  it('builds WebCodecs hardware-preference configs from the selected WebM codec', () => {
+  it('builds WebCodecs hardware-preference configs from the selected recording codec', () => {
+    assert.equal(getPreferredWebCodecsCodec('video/mp4;codecs=avc1.640028'), 'avc1.640028');
+    assert.equal(getPreferredWebCodecsCodec('video/mp4'), 'avc1.42E01E');
     assert.equal(getPreferredWebCodecsCodec('video/webm;codecs=vp9'), 'vp09.00.10.08');
     assert.equal(getPreferredWebCodecsCodec('video/webm;codecs=vp8'), 'vp8');
 
-    const configs = buildWebCodecsEncodingConfigs(undefined, 'video/webm;codecs=vp8');
+    const configs = buildWebCodecsEncodingConfigs(undefined, 'video/mp4;codecs=avc1.640028');
 
     assert.deepEqual(configs.map((config) => config.presetId), ['720p', '1080p', '4k']);
-    assert.equal(configs[1].configuration.codec, 'vp8');
+    assert.equal(configs[1].configuration.codec, 'avc1.640028');
     assert.equal(configs[1].configuration.hardwareAcceleration, 'prefer-hardware');
     assert.equal(configs[2].configuration.width, 3840);
     assert.equal(configs[2].configuration.bitrate, 24_000_000);
   });
 
-  it('uses the first MediaRecorder-supported WebM content type for capability probes', async () => {
+  it('strips audio codecs before sending content types to video capability probes', () => {
+    assert.equal(
+      getVideoOnlyEncodingContentType('video/mp4;codecs=avc1.640028,mp4a.40.2'),
+      'video/mp4;codecs=avc1.640028'
+    );
+    assert.equal(
+      getVideoOnlyEncodingContentType('video/webm;codecs=vp9,opus'),
+      'video/webm;codecs=vp9'
+    );
+  });
+
+  it('uses the first MediaRecorder-supported MP4 content type for capability probes', async () => {
     const contentTypes: string[] = [];
     const webCodecsCodecs: string[] = [];
     const env = createEnvironment(async (configuration) => {
@@ -60,7 +74,7 @@ describe('video encoding capability detection', () => {
       return { supported: true, smooth: true, powerEfficient: true };
     }, {
       mediaRecorder: {
-        isTypeSupported: (contentType: string) => contentType === 'video/webm;codecs=vp8',
+        isTypeSupported: (contentType: string) => contentType === 'video/mp4;codecs=avc1.640028,mp4a.40.2',
       },
       videoEncoder: {
         isConfigSupported: async (configuration) => {
@@ -70,12 +84,30 @@ describe('video encoding capability detection', () => {
       },
     });
 
+    assert.equal(getPreferredVideoEncodingContentType(env), 'video/mp4;codecs=avc1.640028');
+
+    await detectBrowserVideoEncodingReadiness(env);
+
+    assert.deepEqual([...new Set(contentTypes)], ['video/mp4;codecs=avc1.640028']);
+    assert.deepEqual([...new Set(webCodecsCodecs)], ['avc1.640028']);
+  });
+
+  it('falls back to WebM capability probes when MP4 recording is unavailable', async () => {
+    const contentTypes: string[] = [];
+    const env = createEnvironment(async (configuration) => {
+      contentTypes.push(configuration.video.contentType);
+      return { supported: true, smooth: true, powerEfficient: true };
+    }, {
+      mediaRecorder: {
+        isTypeSupported: (contentType: string) => contentType === 'video/webm;codecs=vp8,opus',
+      },
+    });
+
     assert.equal(getPreferredVideoEncodingContentType(env), 'video/webm;codecs=vp8');
 
     await detectBrowserVideoEncodingReadiness(env);
 
     assert.deepEqual([...new Set(contentTypes)], ['video/webm;codecs=vp8']);
-    assert.deepEqual([...new Set(webCodecsCodecs)], ['vp8']);
   });
 
   it('reports unsupported when MediaRecorder is unavailable', async () => {

@@ -6,7 +6,10 @@ import {
   getPresentationItemDisplayTitle,
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
-import { hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
+import {
+  canBrowserRenderPowerPointFile,
+  hasRenderedPresentationSlides,
+} from '../utils/presentationPreview.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
@@ -501,18 +504,14 @@ export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
   return files.some((file) => {
     const lower = file.name.toLowerCase();
     if (detectMediaType(file) !== 'presentation') return false;
+    if (canBrowserRenderPowerPointFile(file)) return false;
     return (
-      lower.endsWith('.pptx') ||
       lower.endsWith('.ppt') ||
       lower.endsWith('.ppsx') ||
       lower.endsWith('.pps') ||
-      lower.endsWith('.potx') ||
       lower.endsWith('.pot') ||
       lower.endsWith('.key') ||
-      file.type === 'application/vnd.ms-powerpoint' ||
-      file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-      file.type === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' ||
-      file.type === 'application/vnd.openxmlformats-officedocument.presentationml.template'
+      file.type === 'application/vnd.ms-powerpoint'
     );
   });
 }
@@ -520,19 +519,19 @@ export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  if (!health) return 'Checking the exact deck renderer. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
+  if (!health) return 'Checking the exact deck renderer. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
-      return 'Exact deck renderer is unavailable. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
+      return 'Exact deck renderer is unavailable. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
     }
     return health.presentationRenderer.ready
       ? ''
-      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
+      : health.presentationRenderer.message || 'Exact deck renderer is unavailable. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
   }
   if (health.status === 'checking') {
-    return 'Checking the exact deck renderer. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
+    return 'Checking the exact deck renderer. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
   }
-  return health.message || 'Media server is unavailable. PDF uploads can still render in the browser; PowerPoint needs the media-server so the original design is preserved.';
+  return health.message || 'Media server is unavailable. PPTX and PDF can still render in the browser; legacy PPT and Keynote need the media-server.';
 }
 
 export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {
