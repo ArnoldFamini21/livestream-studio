@@ -661,6 +661,39 @@ export interface WorkspaceTeamCatalogListResponse {
   members: WorkspaceTeamCatalogMember[];
 }
 
+// ============ Workspace Studio Catalog Types ============
+
+export interface WorkspaceStudioCatalogEntry {
+  id: string;
+  name: string;
+  hostName: string;
+  hostToken: string;
+  createdAt: string;
+  scheduledFor?: string;
+  passwordProtected: boolean;
+  registrationEnabled?: boolean;
+  status?: RoomStatus;
+  updatedAt: string;
+}
+
+export interface WorkspaceStudioCatalogUpsertRequest {
+  id: string;
+  name: string;
+  hostName: string;
+  hostToken: string;
+  createdAt: string;
+  scheduledFor?: string;
+  passwordProtected?: boolean;
+  registrationEnabled?: boolean;
+  status?: RoomStatus;
+}
+
+export interface WorkspaceStudioCatalogListResponse {
+  roomId: string;
+  exportedAt: string;
+  studios: WorkspaceStudioCatalogEntry[];
+}
+
 // ============ Studio Media Types ============
 
 export type StudioMediaType = 'video' | 'image' | 'pdf' | 'presentation' | 'file';
