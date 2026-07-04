@@ -7,7 +7,10 @@ import {
   isMultiParticipantLayout,
   STUDIO_LAYOUT_PRESET_ORDER,
 } from '../utils/layoutPresets.ts';
-import { getMediaShareLayoutVisibilitySummary } from '../utils/mediaShareLayouts.ts';
+import {
+  getMediaShareLayoutVisibilitySummary,
+  getRecommendedMediaShareLayout,
+} from '../utils/mediaShareLayouts.ts';
 
 interface LayoutSwitcherProps {
   currentLayout: LayoutMode;
@@ -99,9 +102,20 @@ export function LayoutSwitcher({
   mediaParticipantCount,
 }: LayoutSwitcherProps) {
   const activeMediaParticipantCount = normalizeCount(mediaParticipantCount ?? Math.max(0, participantCount - 1));
+  const recommendedMediaLayout = isMediaActive ? getRecommendedMediaShareLayout(activeMediaParticipantCount) : null;
+  const selectedMediaSummary = isMediaActive
+    ? getMediaShareLayoutVisibilitySummary(currentLayout, activeMediaParticipantCount)
+    : null;
   const selectedMediaVisibilityLabel = isMediaActive
     ? formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)
     : '';
+  const recommendationLabel = recommendedMediaLayout ? getMediaShareLayoutLabel(recommendedMediaLayout) : '';
+  const canApplyRecommendation = Boolean(
+    isMediaActive &&
+    recommendedMediaLayout &&
+    currentLayout !== recommendedMediaLayout &&
+    (activeMediaParticipantCount > 0 || recommendedMediaLayout === 'grid')
+  );
 
   return (
     <div style={styles.wrap}>
@@ -127,41 +141,71 @@ export function LayoutSwitcher({
         <div style={styles.mediaStatus} aria-live="polite">
           <span style={styles.mediaStatusLabel}>{getMediaShareLayoutLabel(currentLayout)}</span>
           <span style={styles.mediaStatusMeta}>{selectedMediaVisibilityLabel}</span>
+          {selectedMediaSummary && selectedMediaSummary.hiddenParticipantCount > 0 && (
+            <span style={styles.mediaHiddenBadge}>
+              {selectedMediaSummary.hiddenParticipantCount} hidden
+            </span>
+          )}
+          {recommendedMediaLayout && currentLayout === recommendedMediaLayout && (
+            <span style={styles.mediaRecommendedBadge}>Best fit</span>
+          )}
         </div>
       )}
-      <div style={styles.bar} role="radiogroup" aria-label={isMediaActive ? 'Shared media layout switcher' : 'Layout switcher'}>
-        {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
-          const label = isMediaActive ? getMediaShareLayoutLabel(mode) : getStudioLayoutLabel(mode);
-          const description = isMediaActive ? getMediaShareLayoutDescription(mode) : getStudioLayoutDescription(mode);
-          const isActive = currentLayout === mode;
-          const isDisabled = isMediaActive
-            ? activeMediaParticipantCount < 1 && isMultiParticipantLayout(mode)
-            : participantCount < 2 && isMultiParticipantLayout(mode);
-          const mediaVisibilityTitle = isMediaActive
-            ? ` ${formatMediaVisibilityTitle(mode, activeMediaParticipantCount)}`
-            : '';
-          const disabledTitle = isMediaActive
-            ? `${label} (Requires at least one person on stage)`
-            : `${label} (Requires 2+ people)`;
-          return (
-            <button
-              key={mode}
-              className={`ls-btn ${isActive ? 'active' : ''}`}
-              role="radio"
-              aria-checked={isActive}
-              aria-label={`${label} layout - ${description}${mediaVisibilityTitle}`}
-              onClick={() => onLayoutChange(mode)}
-              disabled={isDisabled}
-              title={isDisabled ? disabledTitle : `${label} - ${description}.${mediaVisibilityTitle}`}
-              style={{
-                ...styles.btn,
-                ...(isDisabled ? styles.btnDisabled : {}),
-              }}
-            >
-              {layoutIcons[mode]}
-            </button>
-          );
-        })}
+      <div style={styles.controlRow}>
+        <div style={styles.bar} role="radiogroup" aria-label={isMediaActive ? 'Shared media layout switcher' : 'Layout switcher'}>
+          {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
+            const label = isMediaActive ? getMediaShareLayoutLabel(mode) : getStudioLayoutLabel(mode);
+            const description = isMediaActive ? getMediaShareLayoutDescription(mode) : getStudioLayoutDescription(mode);
+            const isActive = currentLayout === mode;
+            const isRecommended = isMediaActive && recommendedMediaLayout === mode;
+            const isDisabled = isMediaActive
+              ? activeMediaParticipantCount < 1 && isMultiParticipantLayout(mode)
+              : participantCount < 2 && isMultiParticipantLayout(mode);
+            const mediaVisibilityTitle = isMediaActive
+              ? ` ${formatMediaVisibilityTitle(mode, activeMediaParticipantCount)}`
+              : '';
+            const recommendationTitle = isRecommended ? ' Recommended for the current shared media.' : '';
+            const disabledTitle = isMediaActive
+              ? `${label} (Requires at least one person on stage)`
+              : `${label} (Requires 2+ people)`;
+            return (
+              <button
+                key={mode}
+                className={`ls-btn ${isActive ? 'active' : ''}`}
+                role="radio"
+                aria-checked={isActive}
+                aria-label={`${label} layout - ${description}${mediaVisibilityTitle}${recommendationTitle}`}
+                onClick={() => onLayoutChange(mode)}
+                disabled={isDisabled}
+                title={isDisabled ? disabledTitle : `${label} - ${description}.${mediaVisibilityTitle}${recommendationTitle}`}
+                style={{
+                  ...styles.btn,
+                  ...(isDisabled ? styles.btnDisabled : {}),
+                  ...(isRecommended && !isActive ? styles.btnRecommended : {}),
+                }}
+              >
+                {layoutIcons[mode]}
+              </button>
+            );
+          })}
+        </div>
+        {isMediaActive && (
+          <button
+            style={{
+              ...styles.bestFitButton,
+              ...(!canApplyRecommendation ? styles.bestFitButtonDisabled : {}),
+            }}
+            disabled={!canApplyRecommendation}
+            onClick={() => {
+              if (recommendedMediaLayout) onLayoutChange(recommendedMediaLayout);
+            }}
+            title={canApplyRecommendation
+              ? `Switch to ${recommendationLabel}, the recommended shared-media layout.`
+              : `${recommendationLabel || 'Current layout'} is already the best fit.`}
+          >
+            Best fit
+          </button>
+        )}
       </div>
     </div>
   );
@@ -207,6 +251,43 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     fontVariantNumeric: 'tabular-nums',
   },
+  mediaHiddenBadge: {
+    flexShrink: 0,
+    minHeight: 18,
+    display: 'inline-flex',
+    alignItems: 'center',
+    borderRadius: 999,
+    border: '1px solid rgba(251, 191, 36, 0.24)',
+    background: 'rgba(251, 191, 36, 0.10)',
+    color: '#fde68a',
+    padding: '0 6px',
+    fontSize: 9,
+    fontWeight: 900,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  mediaRecommendedBadge: {
+    flexShrink: 0,
+    minHeight: 18,
+    display: 'inline-flex',
+    alignItems: 'center',
+    borderRadius: 999,
+    border: '1px solid rgba(34, 197, 94, 0.24)',
+    background: 'rgba(34, 197, 94, 0.10)',
+    color: '#bbf7d0',
+    padding: '0 6px',
+    fontSize: 9,
+    fontWeight: 900,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  controlRow: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    maxWidth: '100%',
+  },
   bar: {
     display: 'inline-flex',
     gap: 2,
@@ -231,6 +312,10 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 0,
     transition: 'all 0.12s ease',
   },
+  btnRecommended: {
+    color: '#a5f3fc',
+    boxShadow: 'inset 0 0 0 1px rgba(103, 232, 249, 0.38)',
+  },
   btnActive: {
     background: 'var(--accent)',
     color: 'white',
@@ -238,6 +323,22 @@ const styles: Record<string, React.CSSProperties> = {
   },
   btnDisabled: {
     opacity: 0.25,
+    cursor: 'not-allowed',
+  },
+  bestFitButton: {
+    minHeight: 32,
+    borderRadius: 10,
+    border: '1px solid rgba(103, 232, 249, 0.24)',
+    background: 'rgba(103, 232, 249, 0.10)',
+    color: '#a5f3fc',
+    padding: '0 10px',
+    fontSize: 11,
+    fontWeight: 900,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  bestFitButtonDisabled: {
+    opacity: 0.46,
     cursor: 'not-allowed',
   },
 };

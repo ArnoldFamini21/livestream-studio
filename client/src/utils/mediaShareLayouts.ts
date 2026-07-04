@@ -115,6 +115,14 @@ export function getMediaShareLayoutVisibilitySummary(
   };
 }
 
+export function getRecommendedMediaShareLayout(participantCount: number): LayoutMode {
+  const count = normalizeParticipantCount(participantCount);
+  if (count <= 0) return 'grid';
+  if (count === 1) return 'single';
+  if (count <= MAX_SIDE_RAIL_PARTICIPANTS) return 'grid';
+  return 'spotlight';
+}
+
 export function mergeSharedMediaParticipantItems<T extends SharedMediaParticipantItem>(
   stageItems: T[],
   presenterFallbackItems: T[],
