@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { StreamDestination } from '@studio/shared';
 import {
+  getPlatformOrientationWarning,
   getDefaultRtmpUrl,
   getEnabledDestinationPreflightIssue,
+  getStreamPlatformGuide,
   getStreamDestinationIssue,
   isValidRtmpUrl,
   maskStreamKey,
   MAX_ENABLED_DESTINATIONS,
+  STREAM_PLATFORM_GUIDES,
 } from '../src/utils/streamDestinations.ts';
 
 function destination(overrides: Partial<StreamDestination> = {}): StreamDestination {
@@ -28,6 +31,29 @@ describe('stream destination utilities', () => {
     assert.equal(getDefaultRtmpUrl('youtube'), 'rtmp://a.rtmp.youtube.com/live2');
     assert.equal(getDefaultRtmpUrl('facebook'), 'rtmps://live-api-s.facebook.com:443/rtmp/');
     assert.equal(getDefaultRtmpUrl('custom'), '');
+  });
+
+  it('keeps StreamYard-style platform setup guides in a stable order', () => {
+    assert.deepEqual(
+      STREAM_PLATFORM_GUIDES.map((guide) => guide.platform),
+      ['youtube', 'facebook', 'twitch', 'linkedin', 'instagram', 'custom'],
+    );
+    assert.equal(getStreamPlatformGuide('instagram').recommendedOrientation, 'portrait');
+    assert.equal(getStreamPlatformGuide('custom').rtmpUrlEditable, true);
+    assert.equal(getStreamPlatformGuide('youtube').rtmpUrlEditable, false);
+  });
+
+  it('warns when the selected platform orientation does not match the output', () => {
+    assert.match(
+      getPlatformOrientationWarning('instagram', 'landscape') || '',
+      /portrait-first/,
+    );
+    assert.equal(getPlatformOrientationWarning('instagram', 'portrait'), null);
+    assert.match(
+      getPlatformOrientationWarning('youtube', 'portrait') || '',
+      /16:9 landscape/,
+    );
+    assert.equal(getPlatformOrientationWarning('custom', 'portrait'), null);
   });
 
   it('accepts only RTMP and RTMPS server URLs', () => {

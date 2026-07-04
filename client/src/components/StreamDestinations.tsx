@@ -3,11 +3,14 @@ import type { BroadcastOrientation, StreamDestination } from '@studio/shared';
 import type { SessionHealthSummary } from '../hooks/useSessionHealth.ts';
 import type { RtmpRelayReadiness, RtmpRelayStats } from '../hooks/useRtmpRelay.ts';
 import {
+  getPlatformOrientationWarning,
   getDefaultRtmpUrl,
   getEnabledDestinationPreflightIssue,
+  getStreamPlatformGuide,
   getStreamDestinationIssue,
   maskStreamKey,
   MAX_ENABLED_DESTINATIONS,
+  STREAM_PLATFORM_GUIDES,
 } from '../utils/streamDestinations.ts';
 import {
   formatRtmpRelayOutputSummary,
@@ -61,15 +64,6 @@ const ORIENTATION_OPTIONS: Array<{ value: BroadcastOrientation; label: string; d
   { value: 'portrait', label: 'Portrait', detail: '9:16 output' },
 ];
 
-const PLATFORMS: Array<{ value: StreamDestination['platform']; label: string; color: string; dashUrl?: string }> = [
-  { value: 'youtube', label: 'YouTube', color: '#FF0000', dashUrl: 'https://studio.youtube.com/channel/UC/livestreaming' },
-  { value: 'facebook', label: 'Facebook', color: '#1877F2', dashUrl: 'https://www.facebook.com/live/producer' },
-  { value: 'twitch', label: 'Twitch', color: '#9146FF', dashUrl: 'https://dashboard.twitch.tv/broadcast' },
-  { value: 'linkedin', label: 'LinkedIn', color: '#0A66C2', dashUrl: 'https://www.linkedin.com/video/golive/now/' },
-  { value: 'instagram', label: 'Instagram', color: '#E4405F', dashUrl: 'https://www.instagram.com/live/producer/' },
-  { value: 'custom', label: 'Custom RTMP', color: '#71717a' },
-];
-
 export function StreamDestinations({
   destinations,
   onAdd,
@@ -102,6 +96,12 @@ export function StreamDestinations({
   const [streamKey, setStreamKey] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [editingDestinationId, setEditingDestinationId] = useState<string | null>(null);
+  const editingDestination = editingDestinationId
+    ? destinations.find((destination) => destination.id === editingDestinationId)
+    : undefined;
+  const canKeepExistingStreamKey = Boolean(editingDestination && editingDestination.platform === platform);
+  const platformGuide = getStreamPlatformGuide(platform);
+  const platformOrientationWarning = getPlatformOrientationWarning(platform, broadcastOrientation);
 
   const resetForm = () => {
     setShowForm(false);
@@ -134,12 +134,9 @@ export function StreamDestinations({
   };
 
   const handleSave = () => {
-    const platformInfo = PLATFORMS.find((p) => p.value === platform);
-    const existing = editingDestinationId
-      ? destinations.find((destination) => destination.id === editingDestinationId)
-      : undefined;
+    const selectedPlatformGuide = getStreamPlatformGuide(platform);
     const finalRtmp = rtmpUrl.trim() || getDefaultRtmpUrl(platform);
-    const finalStreamKey = streamKey.trim() || existing?.streamKey || '';
+    const finalStreamKey = streamKey.trim() || (canKeepExistingStreamKey ? editingDestination?.streamKey : '') || '';
     const issue = getStreamDestinationIssue({ rtmpUrl: finalRtmp, streamKey: finalStreamKey });
     if (issue) {
       setFormError(issue);
@@ -148,7 +145,7 @@ export function StreamDestinations({
 
     const savedDestination = {
       platform,
-      name: name.trim() || platformInfo?.label || 'Stream',
+      name: name.trim() || selectedPlatformGuide.label || 'Stream',
       rtmpUrl: finalRtmp,
       streamKey: finalStreamKey,
       enabled: true,
@@ -157,7 +154,7 @@ export function StreamDestinations({
     if (editingDestinationId) {
       onUpdate(editingDestinationId, {
         ...savedDestination,
-        enabled: existing?.enabled ?? true,
+        enabled: editingDestination?.enabled ?? true,
       });
     } else {
       onAdd(savedDestination);
@@ -531,15 +528,15 @@ export function StreamDestinations({
 
         {/* Destinations list */}
         {destinations.map((dest) => {
-          const platformInfo = PLATFORMS.find((p) => p.value === dest.platform);
+          const platformInfo = getStreamPlatformGuide(dest.platform);
           const issue = dest.enabled ? getStreamDestinationIssue(dest) : null;
           return (
             <div key={dest.id} className="participant-item" style={styles.destCard}>
               <div style={styles.destHeader}>
-                <div style={{ ...styles.platformDot, background: platformInfo?.color }} />
+                <div style={{ ...styles.platformDot, background: platformInfo.color }} />
                 <div style={styles.destInfo}>
                   <span style={styles.destName}>{dest.name}</span>
-                  <span style={styles.destPlatform}>{platformInfo?.label}</span>
+                  <span style={styles.destPlatform}>{platformInfo.label}</span>
                 </div>
                 <div style={styles.destActions}>
                   <span style={{
@@ -595,66 +592,101 @@ export function StreamDestinations({
               {editingDestinationId && <span style={styles.formMode}>Session only</span>}
             </div>
             <div style={styles.platformGrid}>
-              {PLATFORMS.map((p) => (
+              {STREAM_PLATFORM_GUIDES.map((p) => (
                 <button
                   type="button"
-                  key={p.value}
+                  key={p.platform}
                   className="hover-scale"
                   style={{
                     ...styles.platformBtn,
-                    borderColor: platform === p.value ? p.color : 'var(--border)',
-                    background: platform === p.value ? p.color + '15' : 'var(--bg-tertiary)',
-                    color: platform === p.value ? p.color : 'var(--text-secondary)',
-	                  }}
-	                  onClick={() => {
-	                    setPlatform(p.value);
-	                    setRtmpUrl(getDefaultRtmpUrl(p.value));
-	                    setFormError(null);
-	                  }}
-	                >
+                    borderColor: platform === p.platform ? p.color : 'var(--border)',
+                    background: platform === p.platform ? p.color + '15' : 'var(--bg-tertiary)',
+                    color: platform === p.platform ? p.color : 'var(--text-secondary)',
+                  }}
+                  onClick={() => {
+                    setPlatform(p.platform);
+                    setRtmpUrl(getDefaultRtmpUrl(p.platform));
+                    setFormError(null);
+                  }}
+                >
                   {p.label}
                 </button>
               ))}
             </div>
 
+            <div style={styles.platformGuide}>
+              <div style={styles.platformGuideHeader}>
+                <span style={{ ...styles.platformGuideDot, background: platformGuide.color }} />
+                <div style={styles.platformGuideTitleBlock}>
+                  <span style={styles.platformGuideTitle}>{platformGuide.label} setup</span>
+                  <span style={styles.platformGuideDetail}>
+                    {platformGuide.recommendedOrientation
+                      ? `${platformGuide.recommendedOrientation === 'portrait' ? '9:16 portrait' : '16:9 landscape'} recommended`
+                      : 'Use destination settings'}
+                  </span>
+                </div>
+              </div>
+              <div style={styles.platformSteps}>
+                {platformGuide.setupSteps.map((step, index) => (
+                  <div key={step} style={styles.platformStep}>
+                    <span style={styles.platformStepNumber}>{index + 1}</span>
+                    <span style={styles.platformStepText}>{step}</span>
+                  </div>
+                ))}
+              </div>
+              {platformOrientationWarning && (
+                <div style={styles.orientationWarning}>
+                  <span style={styles.orientationWarningText}>{platformOrientationWarning}</span>
+                  {platformGuide.recommendedOrientation && !isLive && (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={styles.orientationSwitchBtn}
+                      onClick={() => onBroadcastOrientationChange(platformGuide.recommendedOrientation as BroadcastOrientation)}
+                    >
+                      Switch
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div style={styles.inputGroup}>
               <label style={styles.inputLabel}>Name (optional)</label>
-              <input 
-                style={styles.input} 
-                placeholder={`e.g. My ${PLATFORMS.find(p => p.value === platform)?.label} Channel`} 
-                value={name} 
+              <input
+                style={styles.input}
+                placeholder={`e.g. My ${platformGuide.label} Channel`}
+                value={name}
                 onChange={(e) => { setName(e.target.value); setFormError(null); }}
               />
             </div>
 
             <div style={styles.inputGroup}>
               <label style={styles.inputLabel}>RTMP Server URL</label>
-              <input 
-                style={{ 
-                  ...styles.input, 
-                  ...(platform !== 'custom' ? { background: 'rgba(255,255,255,0.03)', color: 'var(--text-muted)' } : {}) 
-                }} 
-                placeholder="rtmp://" 
-                value={rtmpUrl || getDefaultRtmpUrl(platform)} 
+              <input
+                style={{
+                  ...styles.input,
+                  ...(!platformGuide.rtmpUrlEditable ? { background: 'rgba(255,255,255,0.03)', color: 'var(--text-muted)' } : {}),
+                }}
+                placeholder="rtmp://"
+                value={rtmpUrl || getDefaultRtmpUrl(platform)}
                 onChange={(e) => { setRtmpUrl(e.target.value); setFormError(null); }}
-                readOnly={platform !== 'custom'} 
+                readOnly={!platformGuide.rtmpUrlEditable}
               />
-              {platform === 'instagram' && (
-                <span style={styles.inputHint}>Instagram Live expects portrait output.</span>
-              )}
+              <span style={styles.inputHint}>{platformGuide.orientationDetail}</span>
             </div>
 
             <div style={styles.inputGroup}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
-                <label style={{...styles.inputLabel, margin: 0}}>Stream Key</label>
-                {PLATFORMS.find(p => p.value === platform)?.dashUrl && (
-                  <a 
-                    href={PLATFORMS.find(p => p.value === platform)?.dashUrl} 
-                    target="_blank" 
+                <label style={{...styles.inputLabel, margin: 0}}>{platformGuide.streamKeyLabel}</label>
+                {platformGuide.dashUrl && (
+                  <a
+                    href={platformGuide.dashUrl}
+                    target="_blank"
                     rel="noopener noreferrer"
                     style={styles.keyLink}
                   >
-                    Get {PLATFORMS.find(p => p.value === platform)?.label} Key
+                    Open {platformGuide.dashboardLabel}
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginLeft: 4 }}>
                       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                       <polyline points="15 3 21 3 21 9" />
@@ -665,28 +697,34 @@ export function StreamDestinations({
               </div>
               <input
                 style={styles.input}
-                placeholder={editingDestinationId ? 'Leave blank to keep current key' : 'Paste key here'}
+                placeholder={canKeepExistingStreamKey ? 'Leave blank to keep current key' : platformGuide.streamKeyPlaceholder}
                 type="password"
                 autoComplete="off"
                 value={streamKey}
                 onChange={(e) => { setStreamKey(e.target.value); setFormError(null); }}
               />
-              {editingDestinationId && (
+              {canKeepExistingStreamKey && (
                 <span style={styles.inputHint}>Leave blank to keep the current stream key.</span>
               )}
-	            </div>
+              {editingDestinationId && !canKeepExistingStreamKey && (
+                <span style={styles.inputHint}>Paste a new key because the destination platform changed.</span>
+              )}
+              {!editingDestinationId && (
+                <span style={styles.inputHint}>{platformGuide.keyHelp}</span>
+              )}
+            </div>
 
             {formError && <div style={styles.formError}>{formError}</div>}
 
-	            <div style={styles.formActions}>
-	              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={resetForm}>Cancel</button>
-	              <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={(!streamKey.trim() && !editingDestinationId) || isLive}>
-                  {editingDestinationId ? 'Save Destination' : 'Add Destination'}
-                </button>
-	            </div>
-	          </form>
-	        ) : (
-	          <button type="button" className="btn-secondary" style={{ ...styles.addBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={openCreateForm} disabled={isLive}>
+            <div style={styles.formActions}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={resetForm}>Cancel</button>
+              <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={(!streamKey.trim() && !canKeepExistingStreamKey) || isLive}>
+                {editingDestinationId ? 'Save Destination' : 'Add Destination'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <button type="button" className="btn-secondary" style={{ ...styles.addBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={openCreateForm} disabled={isLive}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
             </svg>
@@ -1051,6 +1089,19 @@ const styles: Record<string, React.CSSProperties> = {
   formMode: { fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0 },
   platformGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 },
   platformBtn: { fontSize: 11, fontWeight: 500, padding: '6px 4px', borderRadius: 6, border: '1px solid', cursor: 'pointer', background: 'var(--bg-tertiary)', textAlign: 'center' as const },
+  platformGuide: { display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 10, borderLeft: '2px solid rgba(148, 163, 184, 0.24)' },
+  platformGuideHeader: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
+  platformGuideDot: { width: 8, height: 8, borderRadius: 999, flexShrink: 0 },
+  platformGuideTitleBlock: { display: 'flex', flexDirection: 'column', minWidth: 0, gap: 1 },
+  platformGuideTitle: { fontSize: 11, fontWeight: 800, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  platformGuideDetail: { fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  platformSteps: { display: 'flex', flexDirection: 'column', gap: 5 },
+  platformStep: { display: 'grid', gridTemplateColumns: '16px 1fr', gap: 6, alignItems: 'start' },
+  platformStepNumber: { width: 16, height: 16, borderRadius: 999, background: 'rgba(167, 139, 250, 0.14)', color: '#c4b5fd', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800 },
+  platformStepText: { minWidth: 0, fontSize: 10, lineHeight: 1.35, color: 'var(--text-muted)' },
+  orientationWarning: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingTop: 2 },
+  orientationWarningText: { minWidth: 0, fontSize: 10, lineHeight: 1.35, color: '#fcd34d' },
+  orientationSwitchBtn: { flexShrink: 0, fontSize: 10, padding: '5px 8px', borderRadius: 6 },
   inputGroup: { display: 'flex', flexDirection: 'column', gap: 4 },
   inputLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' },
   inputHint: { fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.3 },
