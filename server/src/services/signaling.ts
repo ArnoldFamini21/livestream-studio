@@ -66,6 +66,7 @@ interface RoomState {
   registrants: Map<string, RoomRegistrant>;
   externalChatConnections: Map<ExternalChatPlatform, ExternalChatConnectionState>;
   studioBranding?: StudioBrandingPayload;
+  guestInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   recordingStartedAt?: string;
   liveStreamStartedAt?: string;
@@ -124,6 +125,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'live-stream-token-request',
   'external-chat-connect',
   'external-chat-disconnect',
+  'guest-invite-token-request',
   'co-host-invite-token-request',
   'end-room',
 ]);
@@ -206,6 +208,8 @@ const MAX_ROOM_REGISTRANTS = 1000;
 const MAX_REGISTRANT_NAME_LENGTH = 80;
 const MAX_REGISTRANT_EMAIL_LENGTH = 254;
 const LIVE_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
+const GUEST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_GUEST_INVITE_TOKENS_PER_ROOM = 40;
 const CO_HOST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_CO_HOST_INVITE_TOKENS_PER_ROOM = 20;
 const HOST_ACCESS_RECOVERY_WINDOW_MS = parseBoundedDurationMs(
@@ -314,6 +318,7 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
     pollVotes: new Map(),
     registrants: new Map((snapshot.registrants || []).map((registrant) => [registrant.email, registrant])),
     externalChatConnections: new Map(),
+    guestInviteTokens: new Map(),
     coHostInviteTokens: new Map(),
     hostToken: snapshot.hostToken,
     creatorIp: snapshot.creatorIp,
@@ -742,6 +747,14 @@ function pruneExpiredCoHostInviteTokens(roomState: RoomState, now = Date.now()) 
   }
 }
 
+function pruneExpiredGuestInviteTokens(roomState: RoomState, now = Date.now()) {
+  for (const [token, invite] of roomState.guestInviteTokens) {
+    if (invite.expiresAt <= now) {
+      roomState.guestInviteTokens.delete(token);
+    }
+  }
+}
+
 function consumeCoHostInviteToken(roomState: RoomState, token: unknown): boolean {
   if (typeof token !== 'string' || token.length < 20 || token.length > 120) return false;
   pruneExpiredCoHostInviteTokens(roomState);
@@ -749,6 +762,19 @@ function consumeCoHostInviteToken(roomState: RoomState, token: unknown): boolean
   for (const [candidateToken] of roomState.coHostInviteTokens) {
     if (safeEqual(candidateToken, token)) {
       roomState.coHostInviteTokens.delete(candidateToken);
+      return true;
+    }
+  }
+  return false;
+}
+
+function consumeGuestInviteToken(roomState: RoomState, token: unknown): boolean {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 120) return false;
+  pruneExpiredGuestInviteTokens(roomState);
+
+  for (const [candidateToken] of roomState.guestInviteTokens) {
+    if (safeEqual(candidateToken, token)) {
+      roomState.guestInviteTokens.delete(candidateToken);
       return true;
     }
   }
@@ -963,6 +989,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'external-chat-disconnect':
       handleExternalChatDisconnect(ws, message.payload);
       break;
+    case 'guest-invite-token-request':
+      handleGuestInviteTokenRequest(ws, message.payload);
+      break;
     case 'co-host-invite-token-request':
       handleCoHostInviteTokenRequest(ws, message.payload);
       break;
@@ -1053,12 +1082,24 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     return;
   }
 
-  if (roomState.room.settings.passwordProtected && effectiveRole === 'guest') {
-    if (typeof payload.roomPassword !== 'string' || payload.roomPassword.trim().length === 0) {
-      sendError(ws, 'This room requires a password', 'ROOM_PASSWORD_REQUIRED');
+  let hasValidGuestInviteToken = false;
+  if (effectiveRole === 'guest' && payload.guestInviteToken) {
+    if (consumeGuestInviteToken(roomState, payload.guestInviteToken)) {
+      hasValidGuestInviteToken = true;
+    } else {
+      sendError(ws, 'Guest invite link is invalid or expired', 'GUEST_INVITE_INVALID');
       return;
     }
-    if (!verifyRoomPassword(roomState, payload.roomPassword)) {
+  }
+
+  if (roomState.room.settings.passwordProtected && effectiveRole === 'guest') {
+    if (hasValidGuestInviteToken) {
+      // Host-issued secure guest links bypass only the room password. Guests still
+      // enter the green room and must be admitted by an operator.
+    } else if (typeof payload.roomPassword !== 'string' || payload.roomPassword.trim().length === 0) {
+      sendError(ws, 'This room requires a password', 'ROOM_PASSWORD_REQUIRED');
+      return;
+    } else if (!verifyRoomPassword(roomState, payload.roomPassword)) {
       sendError(ws, 'Incorrect room password', 'ROOM_PASSWORD_INVALID');
       return;
     }
@@ -1544,6 +1585,59 @@ function handleCoHostInviteTokenRequest(
 
   send(ws, {
     type: 'co-host-invite-token-issued',
+    payload: {
+      requestId: payload.requestId,
+      token,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    },
+  });
+}
+
+function handleGuestInviteTokenRequest(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'guest-invite-token-request' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  if (!isValidRequestId(payload.requestId)) {
+    sendError(ws, 'Invalid guest invite request', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can create guest invites', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before creating guest invites', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  const now = Date.now();
+  pruneExpiredGuestInviteTokens(roomState, now);
+
+  while (roomState.guestInviteTokens.size >= MAX_GUEST_INVITE_TOKENS_PER_ROOM) {
+    const oldestToken = roomState.guestInviteTokens.keys().next().value;
+    if (!oldestToken) break;
+    roomState.guestInviteTokens.delete(oldestToken);
+  }
+
+  const token = nanoid(32);
+  const expiresAtMs = now + GUEST_INVITE_TOKEN_TTL_MS;
+  roomState.guestInviteTokens.set(token, {
+    expiresAt: expiresAtMs,
+    issuedBy: mapping.participantId,
+    createdAt: now,
+  });
+
+  send(ws, {
+    type: 'guest-invite-token-issued',
     payload: {
       requestId: payload.requestId,
       token,

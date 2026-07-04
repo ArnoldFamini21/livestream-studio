@@ -56,7 +56,7 @@ describe('media library upload support', () => {
     ]), true);
   });
 
-  it('allows modern PPTX visual fallback while requiring the media-server for legacy decks', () => {
+  it('lets modern PPTX reach render inspection while requiring the media-server for legacy decks', () => {
     assert.equal(hasDeckFilesRequiringMediaServer([
       { name: 'Distinct But Not Distant.pdf', type: 'application/pdf' } as File,
     ]), false);
@@ -81,14 +81,14 @@ describe('media library upload support', () => {
   });
 
   it('warns when exact deck rendering is not ready and explains which decks need the media-server', () => {
-    assert.match(getDeckUploadBlockMessage(null), /Modern PPTX files can render visual slides in this browser/);
+    assert.match(getDeckUploadBlockMessage(null), /Exact PowerPoint design preservation requires the Render media-server/);
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /Modern PPTX files can render visual slides in this browser/
+      /Modern PPTX files can still work without it only when the deck already contains full-slide image artwork/
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /Render media-server for exact deck output/
+      /PDF files can render in this browser/
     );
     assert.equal(
       getDeckUploadBlockMessage({
@@ -114,11 +114,11 @@ describe('media library upload support', () => {
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'checking', message: 'Checking media-server readiness...' }),
-      /Modern PPTX files can render visual slides in this browser/
+      /Exact PowerPoint design preservation requires the Render media-server/
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'unavailable', message: 'Media server is not provisioned on Render.' }),
-      /Media server is not provisioned on Render\. Modern PPTX files can render visual slides in this browser/
+      /Media server is not provisioned on Render\. Exact PowerPoint design preservation requires the Render media-server/
     );
   });
 

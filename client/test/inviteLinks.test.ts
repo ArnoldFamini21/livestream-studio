@@ -5,6 +5,8 @@ import {
   buildGuestInviteEmailHref,
   buildGuestPreparationSheet,
   buildGuestInviteUrl,
+  buildSecureGuestInviteUrl,
+  getGuestInviteToken,
   getInviteStudioName,
   normalizeInviteEmailRecipient,
   normalizeInviteStudioName,
@@ -35,6 +37,19 @@ describe('guest invite links', () => {
     });
 
     assert.equal(getInviteStudioName(params), 'A'.repeat(80));
+  });
+
+  it('builds and reads secure guest invite tokens without dropping existing params', () => {
+    const inviteUrl = buildSecureGuestInviteUrl(
+      'https://studio.example.com/join/abc123?studio=Launch%20Show',
+      'secure_guest_token_1234567890'
+    );
+    const params = new URL(inviteUrl).searchParams;
+
+    assert.equal(new URL(inviteUrl).pathname, '/join/abc123');
+    assert.equal(params.get('studio'), 'Launch Show');
+    assert.equal(getGuestInviteToken(params), 'secure_guest_token_1234567890');
+    assert.equal(getGuestInviteToken(new URLSearchParams({ guestInvite: 'short' })), '');
   });
 
   it('builds reusable guest invite email details', () => {

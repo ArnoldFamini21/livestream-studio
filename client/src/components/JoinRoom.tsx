@@ -28,7 +28,7 @@ import {
   upsertSavedHostStudio,
 } from '../utils/hostSession.ts';
 import { getApiErrorMessage, getJson, isAbortError, postJson } from '../utils/apiClient.ts';
-import { getInviteStudioName } from '../utils/inviteLinks.ts';
+import { getGuestInviteToken, getInviteStudioName } from '../utils/inviteLinks.ts';
 import {
   GUEST_REGISTRATION_EMAIL_STORAGE_KEY,
   getRegistrationSessionKey,
@@ -88,6 +88,8 @@ export function JoinRoom() {
   const isHostEntryRequested = searchParams.get('role') === 'host';
   const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
   const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
+  const guestInviteToken = getGuestInviteToken(searchParams);
+  const isSecureGuestInvite = !isCoHostInvite && guestInviteToken.length > 0;
   const inviteStudioName = getInviteStudioName(searchParams);
   const isHostSession = Boolean(hostSession);
   const hostEntryMode = isHostSession || isHostEntryRequested;
@@ -108,7 +110,7 @@ export function JoinRoom() {
   const [registrationSubmitted, setRegistrationSubmitted] = useState(() => hasStoredRegistration(roomId));
   const [registrationError, setRegistrationError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const needsRoomPassword = Boolean(roomInfo?.passwordProtected && !hostEntryMode && !isCoHostInvite);
+  const needsRoomPassword = Boolean(roomInfo?.passwordProtected && !hostEntryMode && !isCoHostInvite && !isSecureGuestInvite);
   const guestOpenAtMs = getScheduledGuestOpenAtMs(roomInfo?.scheduledFor);
   const scheduledGuestBlocked = Boolean(
     !hostEntryMode &&
@@ -386,7 +388,14 @@ export function JoinRoom() {
       sessionStorage.setItem(`coHostInviteToken:${roomId}`, coHostInviteToken);
     } else {
       sessionStorage.setItem('userRole', 'guest');
-      if (roomId) sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
+      if (roomId) {
+        sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
+        if (isSecureGuestInvite) {
+          sessionStorage.setItem(`guestInviteToken:${roomId}`, guestInviteToken);
+        } else {
+          sessionStorage.removeItem(`guestInviteToken:${roomId}`);
+        }
+      }
     }
     sessionStorage.setItem('userName', guestName);
     sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
@@ -536,6 +545,9 @@ export function JoinRoom() {
           {isCoHostInvite && (
             <span style={styles.scheduledBadge}>Co-host</span>
           )}
+          {isSecureGuestInvite && (
+            <span style={styles.scheduledBadge}>Secure guest</span>
+          )}
         </div>
 
         <h2 style={styles.cardTitle}>You're invited</h2>
@@ -548,6 +560,8 @@ export function JoinRoom() {
             ? `Hosted by ${roomInfo?.hostName || 'the organizer'}. Enter your name to join when the session starts.`
             : isCoHostInvite
               ? 'You were invited as a co-host'
+              : isSecureGuestInvite
+                ? 'You were invited with a secure guest link'
               : roomInfo?.participantCount === 0
               ? 'Be the first to join this studio'
               : `${roomInfo?.participantCount} participant${roomInfo?.participantCount !== 1 ? 's' : ''} already here`}

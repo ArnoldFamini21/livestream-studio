@@ -339,6 +339,95 @@ describe('live stream token authorization', () => {
   });
 });
 
+describe('secure guest invite token authorization', () => {
+  it('lets a password-protected guest join with a one-time secure guest link', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Secure guest invite test', 'Arnold', {
+      creatorIp: `secure-guest-${Date.now()}`,
+      password: 'RoomPassword123',
+    });
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, {
+        roomId: room.id,
+        name: 'Arnold',
+        role: 'host',
+        hostToken,
+      });
+      await hostJoined;
+
+      const issuedInvite = waitForMessage(host, 'guest-invite-token-issued', (message) => (
+        message.payload.requestId === 'guest-invite-1'
+      ));
+      sendSignal(host, {
+        type: 'guest-invite-token-request',
+        payload: { requestId: 'guest-invite-1' },
+      });
+      const invite = await issuedInvite;
+      assert.match(invite.payload.token, /^[A-Za-z0-9_-]{20,120}$/);
+      assert.ok(Date.parse(invite.payload.expiresAt) > Date.now());
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+        guestInviteToken: invite.payload.token,
+      });
+
+      const joined = await guestJoined;
+      assert.equal(joined.payload.participant.role, 'guest');
+      assert.equal(joined.payload.participant.status, 'green-room');
+
+      const secondGuest = await connectClient(harness.url);
+      const invalidInvite = waitForMessage(secondGuest, 'error', (message) => (
+        message.payload.code === 'GUEST_INVITE_INVALID'
+      ));
+      joinRoom(secondGuest, {
+        roomId: room.id,
+        name: 'Replay',
+        role: 'guest',
+        guestInviteToken: invite.payload.token,
+      });
+      await invalidInvite;
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects guest attempts to create secure guest invite links', async () => {
+    const harness = await createSignalingHarness();
+    const { room } = createRoom('Guest invite unauthorized test', 'Arnold', {
+      creatorIp: `guest-invite-unauthorized-${Date.now()}`,
+    });
+
+    try {
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, {
+        roomId: room.id,
+        name: 'Guest',
+        role: 'guest',
+      });
+      await guestJoined;
+
+      const unauthorized = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'guest-invite-token-request',
+        payload: { requestId: 'guest-invite-denied' },
+      });
+
+      const error = await unauthorized;
+      assert.match(error.payload.message, /Only hosts and co-hosts/);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('live stream state synchronization', () => {
   it('broadcasts authoritative live state and replays it to late joiners', async () => {
     const harness = await createSignalingHarness();

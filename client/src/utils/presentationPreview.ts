@@ -11,16 +11,19 @@ const MAX_SLIDE_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_SLIDE_IMAGE_CANDIDATES = 12;
 const RENDERED_SLIDE_WIDTH = 1280;
 const RENDERED_SLIDE_HEIGHT = 720;
+const DEFAULT_PPTX_SLIDE_WIDTH_EMU = 12192000;
+const DEFAULT_PPTX_SLIDE_HEIGHT_EMU = 6858000;
+const FULL_SLIDE_IMAGE_TOLERANCE_EMU = 90_000;
 const RENDER_SETTLE_FRAMES = 3;
 const RENDER_SETTLE_TIMEOUT_MS = 320;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
-// The media-server renderer is still the exact path because it uses
-// LibreOffice and Poppler. Modern PPTX files can fall back to browser-rendered
-// slide artwork when Render is unavailable, but text-only PowerPoint previews
-// are never accepted by the studio upload flow.
-export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = true;
+// The media-server renderer is the exact path because it uses LibreOffice and
+// Poppler. Browser-rendered PPTX output is kept as an explicit test hook only;
+// the studio upload flow should not treat approximate DOM reconstruction as
+// formatting-preserving PowerPoint output.
+export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
   gif: 'image/gif',
@@ -50,6 +53,11 @@ interface ServerPresentationPreviewResponse {
   kind?: unknown;
   sourceFormat?: unknown;
   slides?: unknown;
+}
+
+interface PptxSlideSize {
+  cx: number;
+  cy: number;
 }
 
 export interface PresentationServerRenderFailure {
@@ -96,6 +104,13 @@ function getXmlAttribute(tag: string, attributeName: string): string | null {
   const escapedName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = tag.match(new RegExp(`\\s${escapedName}=(["'])([\\s\\S]*?)\\1`, 'i'));
   return match?.[2] ? decodeXmlText(match[2]) : null;
+}
+
+function getXmlNumberAttribute(tag: string, attributeName: string): number | null {
+  const value = getXmlAttribute(tag, attributeName);
+  if (!value || !/^-?\d+$/.test(value.trim())) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function normalizeZipPath(path: string): string {
@@ -212,6 +227,79 @@ export function extractPptxSlideImageTargets(relsXml: string): string[] {
   return targets;
 }
 
+function getPptxImageRelationshipTargetsById(relsXml: string): Map<string, string> {
+  const targets = new Map<string, string>();
+  const relationships = relsXml.matchAll(/<Relationship\b[^>]*>/gi);
+
+  for (const relationship of relationships) {
+    const tag = relationship[0];
+    const id = getXmlAttribute(tag, 'Id');
+    const type = getXmlAttribute(tag, 'Type');
+    const target = getXmlAttribute(tag, 'Target');
+    const targetMode = getXmlAttribute(tag, 'TargetMode');
+    if (!id || !type?.toLowerCase().endsWith('/image') || !target || targetMode?.toLowerCase() === 'external') continue;
+
+    const resolvedTarget = resolveSlideRelationshipTarget(target);
+    if (resolvedTarget && getImageMimeType(resolvedTarget)) {
+      targets.set(id, resolvedTarget);
+    }
+  }
+
+  return targets;
+}
+
+function extractImageEmbedId(picXml: string): string | null {
+  const blipMatch = picXml.match(/<(?:\w+:)?blip\b[^>]*(?:\br:embed|\bembed)=(["'])([\s\S]*?)\1[^>]*>/i);
+  return blipMatch?.[2] ? decodeXmlText(blipMatch[2]).trim() : null;
+}
+
+function extractXfrmTag(picXml: string, tagName: 'off' | 'ext'): string | null {
+  const match = picXml.match(new RegExp(`<(?:\\w+:)?${tagName}\\b[^>]*>`, 'i'));
+  return match?.[0] || null;
+}
+
+function isFullSlideImageTransform(picXml: string, slideSize: PptxSlideSize): boolean {
+  const offTag = extractXfrmTag(picXml, 'off');
+  const extTag = extractXfrmTag(picXml, 'ext');
+  if (!offTag || !extTag) return false;
+
+  const x = getXmlNumberAttribute(offTag, 'x');
+  const y = getXmlNumberAttribute(offTag, 'y');
+  const cx = getXmlNumberAttribute(extTag, 'cx');
+  const cy = getXmlNumberAttribute(extTag, 'cy');
+  if (x === null || y === null || cx === null || cy === null) return false;
+
+  return (
+    Math.abs(x) <= FULL_SLIDE_IMAGE_TOLERANCE_EMU &&
+    Math.abs(y) <= FULL_SLIDE_IMAGE_TOLERANCE_EMU &&
+    Math.abs(cx - slideSize.cx) <= Math.max(FULL_SLIDE_IMAGE_TOLERANCE_EMU, slideSize.cx * 0.02) &&
+    Math.abs(cy - slideSize.cy) <= Math.max(FULL_SLIDE_IMAGE_TOLERANCE_EMU, slideSize.cy * 0.02)
+  );
+}
+
+function extractPptxPictureBlocks(slideXml: string): string[] {
+  const prefixedBlocks = Array.from(slideXml.matchAll(/<p:pic\b[\s\S]*?<\/p:pic>/gi), (match) => match[0]);
+  if (prefixedBlocks.length > 0) return prefixedBlocks;
+  return Array.from(slideXml.matchAll(/<pic\b[\s\S]*?<\/pic>/gi), (match) => match[0]);
+}
+
+export function extractPptxFullSlideImageTarget(
+  slideXml: string,
+  relsXml: string,
+  slideSize: PptxSlideSize = { cx: DEFAULT_PPTX_SLIDE_WIDTH_EMU, cy: DEFAULT_PPTX_SLIDE_HEIGHT_EMU }
+): string | null {
+  const targetsById = getPptxImageRelationshipTargetsById(relsXml);
+  if (targetsById.size === 0) return null;
+
+  for (const picXml of extractPptxPictureBlocks(slideXml)) {
+    const embedId = extractImageEmbedId(picXml);
+    const target = embedId ? targetsById.get(embedId) : undefined;
+    if (target && isFullSlideImageTransform(picXml, slideSize)) return target;
+  }
+
+  return null;
+}
+
 export function extractPptxSlideNotesTarget(relsXml: string): string | null {
   const relationships = relsXml.matchAll(/<Relationship\b[^>]*>/gi);
 
@@ -249,6 +337,16 @@ export function extractPptxSpeakerNotes(notesXml: string, slideTextRuns: string[
   return notes;
 }
 
+async function buildSlideImageDataUrl(zip: JSZip, imageTarget: string): Promise<string | undefined> {
+  const mimeType = getImageMimeType(imageTarget);
+  const entry = zip.file(imageTarget);
+  if (!mimeType || !entry) return undefined;
+
+  const bytes = await entry.async('uint8array');
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_SLIDE_IMAGE_BYTES) return undefined;
+  return `data:${mimeType};base64,${uint8ArrayToBase64(bytes)}`;
+}
+
 async function buildBestSlideImageDataUrl(zip: JSZip, imageTargets: string[]): Promise<string | undefined> {
   let bestImage: { bytes: Uint8Array; mimeType: string } | null = null;
 
@@ -273,7 +371,8 @@ function buildSlidePreview(
   textRuns: string[],
   index: number,
   imageUrl?: string,
-  notes: string[] = []
+  notes: string[] = [],
+  rendered = false
 ): PresentationSlidePreview {
   const fallbackTitle = `Slide ${index + 1}`;
   const title = textRuns[0] || fallbackTitle;
@@ -287,7 +386,20 @@ function buildSlidePreview(
     title,
     lines,
     ...(imageUrl ? { imageUrl } : {}),
+    ...(rendered && imageUrl ? { rendered: true } : {}),
     ...(notes.length > 0 ? { notes } : {}),
+  };
+}
+
+async function getPptxSlideSize(zip: JSZip): Promise<PptxSlideSize> {
+  const presentationXml = await zip.file('ppt/presentation.xml')?.async('text');
+  const sldSzTag = presentationXml?.match(/<(?:\w+:)?sldSz\b[^>]*>/i)?.[0];
+  const cx = sldSzTag ? getXmlNumberAttribute(sldSzTag, 'cx') : null;
+  const cy = sldSzTag ? getXmlNumberAttribute(sldSzTag, 'cy') : null;
+
+  return {
+    cx: cx && cx > 0 ? cx : DEFAULT_PPTX_SLIDE_WIDTH_EMU,
+    cy: cy && cy > 0 ? cy : DEFAULT_PPTX_SLIDE_HEIGHT_EMU,
   };
 }
 
@@ -796,6 +908,7 @@ export async function buildPresentationPreview(
     const { default: JSZip } = await import('jszip');
     const arrayBuffer = await file.arrayBuffer();
     const zip = await JSZip.loadAsync(arrayBuffer);
+    const slideSize = await getPptxSlideSize(zip);
     const slidePaths = getSortedSlidePaths(zip);
     const slides: PresentationSlidePreview[] = [];
 
@@ -805,14 +918,22 @@ export async function buildPresentationPreview(
       const xml = await entry.async('text');
       const textRuns = extractPptxSlideText(xml);
       const relsXml = await zip.file(getSlideRelationshipPath(path))?.async('text');
-      const imageUrl = relsXml
-        ? await buildBestSlideImageDataUrl(zip, extractPptxSlideImageTargets(relsXml))
-        : undefined;
+      const fullSlideImageTarget = relsXml ? extractPptxFullSlideImageTarget(xml, relsXml, slideSize) : null;
+      const imageUrl = fullSlideImageTarget
+        ? await buildSlideImageDataUrl(zip, fullSlideImageTarget)
+        : (relsXml
+            ? await buildBestSlideImageDataUrl(zip, extractPptxSlideImageTargets(relsXml))
+            : undefined);
       const notesPath = relsXml ? extractPptxSlideNotesTarget(relsXml) : null;
       const notesXml = notesPath ? await zip.file(notesPath)?.async('text') : undefined;
       const notes = notesXml ? extractPptxSpeakerNotes(notesXml, textRuns) : [];
-      slides.push(buildSlidePreview(path, textRuns, index, imageUrl, notes));
+      slides.push(buildSlidePreview(path, textRuns, index, imageUrl, notes, Boolean(fullSlideImageTarget && imageUrl)));
     }
+
+    const extractedRenderedPreview: StudioMediaAssetPreview | undefined = slides.length > 0
+      ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides }
+      : undefined;
+    if (hasRenderedPresentationSlides(extractedRenderedPreview)) return extractedRenderedPreview;
 
     const serverPreview = await serverPreviewPromise;
     if (serverPreview) {

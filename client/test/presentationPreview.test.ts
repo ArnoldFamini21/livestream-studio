@@ -8,6 +8,7 @@ import {
   buildPresentationPreview,
   buildServerRenderedPresentationPreview,
   canBrowserRenderPowerPointFile,
+  extractPptxFullSlideImageTarget,
   extractPptxSlideImageTargets,
   extractPptxSlideNotesTarget,
   extractPptxSpeakerNotes,
@@ -54,8 +55,8 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(isPowerPointFile({ name: 'legacy.ppt', type: 'application/vnd.ms-powerpoint' } as File), true);
   });
 
-  it('keeps PowerPoint uploads visual while falling back only for modern PPTX files', () => {
-    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, true);
+  it('keeps approximate browser PowerPoint rendering disabled by default', () => {
+    assert.equal(ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK, false);
     assert.equal(canBrowserRenderPowerPointFile({ name: 'sermon.pptx', type: '' } as File), true);
     assert.equal(canBrowserRenderPowerPointFile({ name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File), false);
     assert.equal(isRecoverablePowerPointServerRenderFailure({
@@ -106,6 +107,50 @@ describe('PowerPoint preview extraction', () => {
     `);
 
     assert.deepEqual(targets, ['ppt/media/image1.png']);
+  });
+
+  it('detects full-slide PPTX image artwork that can preserve deck formatting offline', () => {
+    const slideXml = `
+      <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+        <p:cSld>
+          <p:spTree>
+            <p:pic>
+              <p:blipFill><a:blip r:embed="rId4"/></p:blipFill>
+              <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="12192000" cy="6858000"/></a:xfrm></p:spPr>
+            </p:pic>
+          </p:spTree>
+        </p:cSld>
+      </p:sld>
+    `;
+    const relsXml = `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/slide1.png"/>
+      </Relationships>
+    `;
+
+    assert.equal(extractPptxFullSlideImageTarget(slideXml, relsXml), 'ppt/media/slide1.png');
+  });
+
+  it('ignores partial PPTX images because they do not preserve full slide formatting', () => {
+    const slideXml = `
+      <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+        <p:cSld>
+          <p:spTree>
+            <p:pic>
+              <p:blipFill><a:blip r:embed="rId4"/></p:blipFill>
+              <p:spPr><a:xfrm><a:off x="100000" y="100000"/><a:ext cx="3000000" cy="2000000"/></a:xfrm></p:spPr>
+            </p:pic>
+          </p:spTree>
+        </p:cSld>
+      </p:sld>
+    `;
+    const relsXml = `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/partial.png"/>
+      </Relationships>
+    `;
+
+    assert.equal(extractPptxFullSlideImageTarget(slideXml, relsXml), null);
   });
 
   it('resolves and cleans speaker notes from PPTX note relationships', () => {
@@ -601,6 +646,46 @@ describe('PowerPoint preview extraction', () => {
     });
 
     assert.equal(preview, undefined);
+  });
+
+  it('accepts full-slide image PPTX artwork when exact server rendering is unavailable', async () => {
+    const zip = new JSZip();
+    zip.file('ppt/presentation.xml', '<p:presentation><p:sldSz cx="12192000" cy="6858000"/></p:presentation>');
+    zip.file('ppt/slides/slide1.xml', `
+      <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+        <p:cSld>
+          <p:spTree>
+            <p:pic>
+              <p:blipFill><a:blip r:embed="rId1"/></p:blipFill>
+              <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="12192000" cy="6858000"/></a:xfrm></p:spPr>
+            </p:pic>
+          </p:spTree>
+        </p:cSld>
+      </p:sld>
+    `);
+    zip.file('ppt/slides/_rels/slide1.xml.rels', `
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/full-slide.png"/>
+      </Relationships>
+    `);
+    zip.file('ppt/media/full-slide.png', onePixelPng);
+    const bytes = await zip.generateAsync({ type: 'uint8array' });
+    const file = new File(
+      [bytes],
+      'image-backed-message.pptx',
+      { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+    );
+
+    const preview = await buildPresentationPreview(file, {
+      requireRenderedSlides: true,
+      requireServerRenderedPowerPoint: true,
+      skipServerRender: true,
+    });
+
+    assert.equal(preview?.sourceFormat, 'pptx');
+    assert.equal(preview?.slides[0].rendered, true);
+    assert.match(preview?.slides[0].imageUrl || '', /^data:image\/png;base64,/);
+    assert.equal(hasRenderedPresentationSlides(preview), true);
   });
 
   it('does not use browser-rendered fallback when server-rendered PowerPoint is required', async () => {
