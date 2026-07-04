@@ -4,6 +4,7 @@ import type { LayoutMode } from '@studio/shared';
 import {
   getMediaShareLayoutPlan,
   getMediaShareLayoutVisibilitySummary,
+  getRecommendedMediaShareLayout,
   mergeSharedMediaParticipantItems,
   selectVisibleStageItems,
   splitScreenShareStageItems,
@@ -54,6 +55,15 @@ describe('media share layouts', () => {
       visibleParticipantCount: 1,
       hiddenParticipantCount: 6,
     });
+  });
+
+  it('recommends readable shared-media layouts based on presenter count', () => {
+    assert.equal(getRecommendedMediaShareLayout(0), 'grid');
+    assert.equal(getRecommendedMediaShareLayout(1), 'single');
+    assert.equal(getRecommendedMediaShareLayout(2), 'grid');
+    assert.equal(getRecommendedMediaShareLayout(4), 'grid');
+    assert.equal(getRecommendedMediaShareLayout(5), 'spotlight');
+    assert.equal(getRecommendedMediaShareLayout(12), 'spotlight');
   });
 
   it('reports media-only shared content without hidden participants', () => {
