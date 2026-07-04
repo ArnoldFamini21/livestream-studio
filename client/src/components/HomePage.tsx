@@ -40,6 +40,8 @@ import {
   buildWorkspaceRecordingDashboardItems,
   formatWorkspaceDuration,
   formatWorkspaceFileSize,
+  getWorkspaceRecordingExportLabel,
+  getWorkspaceRecordingExportState,
   type WorkspaceDashboardRecording,
 } from '../utils/workspaceDashboard.ts';
 import { fetchRecordingCatalog } from '../utils/recordingCatalog.ts';
@@ -990,6 +992,12 @@ export function HomePage() {
     }
   };
 
+  const openRecordingMp4ShareLink = (recording: WorkspaceDashboardRecording) => {
+    const mp4ShareUrl = recording.mediaExport?.mp4ShareUrl;
+    if (!mp4ShareUrl) return;
+    window.open(mp4ShareUrl, '_blank', 'noopener,noreferrer');
+  };
+
   const deleteDashboardRecordingSession = async (recording: WorkspaceDashboardRecording) => {
     const localSession = recordingLibrary.sessions.find((session) => session.id === recording.id);
     if (!localSession) {
@@ -1634,7 +1642,7 @@ export function HomePage() {
                 <div style={styles.workspaceStat}>
                   <span style={styles.workspaceStatValue}>{workspaceDashboard.totalRecordings}</span>
                   <span style={styles.workspaceStatLabel}>
-                    {workspaceDashboard.totalRecordingTracks} tracks | {formatWorkspaceFileSize(workspaceDashboard.totalRecordingBytes)}
+                    {workspaceDashboard.readyMp4RecordingCount} MP4 ready | {formatWorkspaceFileSize(workspaceDashboard.totalRecordingBytes)}
                   </span>
                 </div>
                 <div style={styles.workspaceStat}>
@@ -1650,6 +1658,23 @@ export function HomePage() {
                   </span>
                 </div>
               </div>
+
+              {workspaceDashboard.mediaExportRecordingCount > 0 && (
+                <div style={styles.workspaceExportCard}>
+                  <div style={styles.workspaceExportCopy}>
+                    <span style={styles.workspaceExportTitle}>Recording exports</span>
+                    <span style={styles.workspaceExportText}>
+                      {workspaceDashboard.readyMp4RecordingCount}/{workspaceDashboard.mediaExportRecordingCount} server-mixed MP4 export{workspaceDashboard.mediaExportRecordingCount === 1 ? '' : 's'} ready to share.
+                    </span>
+                  </div>
+                  <span style={{
+                    ...styles.workspaceExportStatus,
+                    ...(workspaceDashboard.readyMp4RecordingCount > 0 ? styles.workspaceExportStatusReady : {}),
+                  }}>
+                    {workspaceDashboard.readyMp4RecordingCount > 0 ? 'Archive ready' : 'Processing'}
+                  </span>
+                </div>
+              )}
 
               <div style={styles.workspaceMetaGrid}>
                 {workspaceDashboard.latestStudio && (
@@ -1765,38 +1790,67 @@ export function HomePage() {
                   </div>
                   {!recordingLibrary.isLoading && !serverRecordingCatalogLoading && (
                     <div style={styles.workspaceRows}>
-                      {recentRecordings.map((session) => (
-                        <div key={session.id} style={styles.workspaceRow}>
-                          <span style={styles.workspaceRecordingSourceBadge}>
-                            {session.source === 'local-and-server' ? 'Both' : session.source === 'server' ? 'Cloud' : 'Local'}
-                          </span>
-                          <div style={styles.workspaceRowCopy}>
-                            <span style={styles.workspaceRowTitle}>{session.roomName}</span>
-                            <span style={styles.workspaceRowMeta}>
-                              {formatDashboardDate(session.createdAt)} | {formatWorkspaceDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'}
-                              {session.mediaExport?.readyMp4 ? ' | MP4 ready' : ''}
+                      {recentRecordings.map((session) => {
+                        const exportState = getWorkspaceRecordingExportState(session);
+                        const exportLabel = getWorkspaceRecordingExportLabel(session);
+                        return (
+                          <div key={session.id} style={styles.workspaceRow}>
+                            <span style={styles.workspaceRecordingSourceBadge}>
+                              {session.source === 'local-and-server' ? 'Both' : session.source === 'server' ? 'Cloud' : 'Local'}
                             </span>
-                          </div>
-                          <div style={styles.workspaceRowActions}>
-                            {session.mediaExport?.mp4ShareUrl && (
-                              <button
-                                style={styles.workspaceRowSecondaryAction}
-                                onClick={() => void copyRecordingMp4ShareLink(session)}
-                              >
-                                MP4
-                              </button>
+                            {session.mediaExport && (
+                              <span style={{
+                                ...styles.workspaceRecordingExportBadge,
+                                ...(exportState === 'ready' ? styles.workspaceRecordingExportBadgeReady : {}),
+                                ...(exportState === 'error' ? styles.workspaceRecordingExportBadgeError : {}),
+                              }}>
+                                {exportState === 'ready' ? 'MP4' : exportState === 'error' ? 'Fix' : 'Mix'}
+                              </span>
                             )}
-                            {localRecordingIds.has(session.id) && (
-                              <button
-                                style={styles.workspaceRowAction}
-                                onClick={() => void deleteDashboardRecordingSession(session)}
-                              >
-                                Delete
-                              </button>
-                            )}
+                            <div style={styles.workspaceRowCopy}>
+                              <span style={styles.workspaceRowTitle}>{session.roomName}</span>
+                              <span style={styles.workspaceRowMeta}>
+                                {formatDashboardDate(session.createdAt)} | {formatWorkspaceDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'}
+                              </span>
+                              {session.mediaExport && (
+                                <span style={{
+                                  ...styles.workspaceRowMeta,
+                                  ...(exportState === 'ready' ? styles.workspaceRowMetaReady : {}),
+                                  ...(exportState === 'error' ? styles.workspaceRowMetaError : {}),
+                                }}>
+                                  {exportLabel}
+                                </span>
+                              )}
+                            </div>
+                            <div style={styles.workspaceRowActions}>
+                              {session.mediaExport?.mp4ShareUrl && (
+                                <>
+                                  <button
+                                    style={styles.workspaceRowSecondaryAction}
+                                    onClick={() => openRecordingMp4ShareLink(session)}
+                                  >
+                                    Open
+                                  </button>
+                                  <button
+                                    style={styles.workspaceRowSecondaryAction}
+                                    onClick={() => void copyRecordingMp4ShareLink(session)}
+                                  >
+                                    Copy
+                                  </button>
+                                </>
+                              )}
+                              {localRecordingIds.has(session.id) && (
+                                <button
+                                  style={styles.workspaceRowAction}
+                                  onClick={() => void deleteDashboardRecordingSession(session)}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -2482,6 +2536,55 @@ const styles: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase' as const,
     letterSpacing: '0.04em',
   },
+  workspaceExportCard: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderRadius: 12,
+    border: '1px solid rgba(103, 232, 249, 0.16)',
+    background: 'rgba(103, 232, 249, 0.055)',
+    padding: '11px 12px',
+    marginBottom: 12,
+  },
+  workspaceExportCopy: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+  },
+  workspaceExportTitle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: '#a5f3fc',
+  },
+  workspaceExportText: {
+    minWidth: 0,
+    fontSize: 11,
+    color: 'var(--text-muted)',
+    lineHeight: 1.35,
+  },
+  workspaceExportStatus: {
+    flex: '0 0 auto',
+    minHeight: 26,
+    borderRadius: 999,
+    border: '1px solid rgba(167, 139, 250, 0.22)',
+    background: 'rgba(167, 139, 250, 0.12)',
+    color: '#ddd6fe',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '0 10px',
+    fontSize: 10,
+    fontWeight: 900,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+  },
+  workspaceExportStatusReady: {
+    borderColor: 'rgba(34, 197, 94, 0.24)',
+    background: 'rgba(34, 197, 94, 0.1)',
+    color: '#bbf7d0',
+  },
   workspaceMetaGrid: {
     display: 'grid',
     gridTemplateColumns: '1fr',
@@ -2623,6 +2726,29 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
   },
+  workspaceRecordingExportBadge: {
+    flex: '0 0 34px',
+    minHeight: 24,
+    borderRadius: 8,
+    border: '1px solid rgba(167, 139, 250, 0.22)',
+    background: 'rgba(167, 139, 250, 0.1)',
+    color: '#ddd6fe',
+    fontSize: 10,
+    fontWeight: 900,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  workspaceRecordingExportBadgeReady: {
+    borderColor: 'rgba(34, 197, 94, 0.24)',
+    background: 'rgba(34, 197, 94, 0.1)',
+    color: '#bbf7d0',
+  },
+  workspaceRecordingExportBadgeError: {
+    borderColor: 'rgba(248, 113, 113, 0.22)',
+    background: 'rgba(248, 113, 113, 0.08)',
+    color: '#fca5a5',
+  },
   workspaceRowCopy: {
     minWidth: 0,
     flex: '1 1 auto',
@@ -2647,12 +2773,19 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: 'var(--text-muted)',
   },
+  workspaceRowMetaReady: {
+    color: '#bbf7d0',
+  },
+  workspaceRowMetaError: {
+    color: '#fca5a5',
+  },
   workspaceRowActions: {
     flex: '0 0 auto',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 6,
+    flexWrap: 'wrap',
   },
   workspaceRowAction: {
     flex: '0 0 68px',
@@ -2666,7 +2799,7 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   workspaceRowSecondaryAction: {
-    flex: '0 0 50px',
+    flex: '0 0 48px',
     minHeight: 30,
     borderRadius: 8,
     border: '1px solid rgba(103, 232, 249, 0.22)',

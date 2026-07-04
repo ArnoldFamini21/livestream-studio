@@ -9,6 +9,8 @@ import {
   buildWorkspaceRecordingDashboardItems,
   formatWorkspaceDuration,
   formatWorkspaceFileSize,
+  getWorkspaceRecordingExportLabel,
+  getWorkspaceRecordingExportState,
 } from '../src/utils/workspaceDashboard.ts';
 
 const studios: SavedHostStudio[] = [
@@ -318,5 +320,85 @@ describe('workspace dashboard summary', () => {
     assert.equal(summary.totalRecordings, 1);
     assert.equal(summary.mediaExportRecordingCount, 1);
     assert.equal(summary.readyMp4RecordingCount, 1);
+  });
+
+  it('labels recording MP4 export states for the workspace archive', () => {
+    const [readyRecording] = buildWorkspaceRecordingDashboardItems(recordings);
+    assert.equal(getWorkspaceRecordingExportState(readyRecording), 'ready');
+    assert.equal(getWorkspaceRecordingExportLabel(readyRecording), 'MP4 ready');
+
+    assert.equal(getWorkspaceRecordingExportState({ mediaExport: undefined }), 'not-started');
+    assert.equal(getWorkspaceRecordingExportLabel({ mediaExport: undefined }), 'No MP4 export yet');
+
+    assert.equal(getWorkspaceRecordingExportState({
+      mediaExport: {
+        status: 'queued',
+        uploadId: 'upload-queued',
+        exportId: 'export-queued',
+        updatedAt: '2026-07-02T09:00:00.000Z',
+        readyMp4: false,
+        artifactCount: 1,
+        readyArtifactCount: 0,
+      },
+    }), 'queued');
+    assert.equal(getWorkspaceRecordingExportLabel({
+      mediaExport: {
+        status: 'queued',
+        uploadId: 'upload-queued',
+        exportId: 'export-queued',
+        updatedAt: '2026-07-02T09:00:00.000Z',
+        readyMp4: false,
+        artifactCount: 1,
+        readyArtifactCount: 0,
+      },
+    }), 'MP4 export queued');
+
+    assert.equal(getWorkspaceRecordingExportState({
+      mediaExport: {
+        status: 'ready',
+        uploadId: 'upload-ready',
+        exportId: 'export-ready',
+        updatedAt: '2026-07-02T09:05:00.000Z',
+        readyMp4: true,
+        mp4ShareUrl: 'https://cdn.example.com/archive.mp4',
+        artifactCount: 1,
+        readyArtifactCount: 1,
+      },
+    }), 'ready');
+    assert.equal(getWorkspaceRecordingExportLabel({
+      mediaExport: {
+        status: 'ready',
+        uploadId: 'upload-ready',
+        exportId: 'export-ready',
+        updatedAt: '2026-07-02T09:05:00.000Z',
+        readyMp4: true,
+        mp4ShareUrl: 'https://cdn.example.com/archive.mp4',
+        artifactCount: 1,
+        readyArtifactCount: 1,
+      },
+    }), 'MP4 ready, share link ready');
+
+    assert.equal(getWorkspaceRecordingExportState({
+      mediaExport: {
+        status: 'error',
+        uploadId: 'upload-error',
+        exportId: 'export-error',
+        updatedAt: '2026-07-02T09:08:00.000Z',
+        readyMp4: false,
+        artifactCount: 1,
+        readyArtifactCount: 0,
+      },
+    }), 'error');
+    assert.equal(getWorkspaceRecordingExportLabel({
+      mediaExport: {
+        status: 'error',
+        uploadId: 'upload-error',
+        exportId: 'export-error',
+        updatedAt: '2026-07-02T09:08:00.000Z',
+        readyMp4: false,
+        artifactCount: 1,
+        readyArtifactCount: 0,
+      },
+    }), 'MP4 export needs attention');
   });
 });

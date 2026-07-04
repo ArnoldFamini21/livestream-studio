@@ -49,6 +49,8 @@ export interface WorkspaceDashboardSummary {
   latestTeamMember: Pick<SavedWorkspaceTeamMember, 'id' | 'name' | 'role' | 'createdAt'> | null;
 }
 
+export type WorkspaceRecordingExportState = 'not-started' | 'queued' | 'running' | 'ready' | 'error';
+
 function getStudioTime(studio: SavedHostStudio): number {
   const scheduledAt = Date.parse(studio.scheduledFor || '');
   if (Number.isFinite(scheduledAt)) return scheduledAt;
@@ -256,6 +258,32 @@ export function buildWorkspaceRecordingDashboardItems(
 
 function hasReadyMp4Export(recording: WorkspaceDashboardRecording): boolean {
   return Boolean(recording.mediaExport?.readyMp4);
+}
+
+export function getWorkspaceRecordingExportState(
+  recording: Pick<WorkspaceDashboardRecording, 'mediaExport'>
+): WorkspaceRecordingExportState {
+  const mediaExport = recording.mediaExport;
+  if (!mediaExport) return 'not-started';
+  if (mediaExport.readyMp4) return 'ready';
+  if (mediaExport.status === 'error') return 'error';
+  if (mediaExport.status === 'queued') return 'queued';
+  if (mediaExport.status === 'running') return 'running';
+  return mediaExport.readyArtifactCount > 0 ? 'ready' : 'running';
+}
+
+export function getWorkspaceRecordingExportLabel(
+  recording: Pick<WorkspaceDashboardRecording, 'mediaExport'>
+): string {
+  const mediaExport = recording.mediaExport;
+  const state = getWorkspaceRecordingExportState(recording);
+  if (!mediaExport) return 'No MP4 export yet';
+  if (state === 'ready') {
+    return mediaExport.mp4ShareUrl ? 'MP4 ready, share link ready' : 'MP4 ready';
+  }
+  if (state === 'error') return 'MP4 export needs attention';
+  if (state === 'queued') return 'MP4 export queued';
+  return 'MP4 export processing';
 }
 
 export function buildWorkspaceDashboardSummary(
