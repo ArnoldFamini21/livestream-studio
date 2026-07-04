@@ -104,7 +104,7 @@ PRODUCTION_REQUIRE_CLIENT_CACHE=true \
 npm run production:check
 ```
 
-The static Hostinger deploy verifies client cache headers without requiring the Render media-server. PDF uploads and modern PowerPoint uploads (`.pptx`, `.ppsx`, `.potx`) can still render visually in the browser when Render is unavailable; the media-server exact renderer remains preferred for the most faithful LibreOffice/Poppler output and is required for legacy PowerPoint/Keynote files. MP4 export, backup recordings, RTMP relay, and durable recording handoff also remain media-server features.
+The static Hostinger deploy verifies client cache headers without requiring the Render media-server. PDF uploads can still render in the browser when Render is unavailable. PowerPoint design preservation requires the media-server exact renderer, except for modern PPTX decks that already contain full-slide image artwork. Legacy PowerPoint/Keynote files always require the media-server. MP4 export, backup recordings, RTMP relay, and durable recording handoff also remain media-server features.
 
 ## GitHub Deploy Hooks
 

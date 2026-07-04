@@ -13,11 +13,12 @@ interface InvitePanelProps {
   participantCount: number;
   waitingCount: number;
   isLive: boolean;
+  onCreateGuestInvite: () => Promise<{ inviteUrl: string; expiresAt: string }>;
   onCreateCoHostInvite: () => Promise<{ inviteUrl: string; expiresAt: string }>;
   onClose: () => void;
 }
 
-type CopyTarget = 'link' | 'details' | 'co-host' | 'qr-image' | null;
+type CopyTarget = 'link' | 'details' | 'guest-secure' | 'co-host' | 'qr-image' | null;
 
 async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
@@ -85,12 +86,16 @@ export function InvitePanel({
   participantCount,
   waitingCount,
   isLive,
+  onCreateGuestInvite,
   onCreateCoHostInvite,
   onClose,
 }: InvitePanelProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
+  const [guestInvite, setGuestInvite] = useState<{ inviteUrl: string; expiresAt: string } | null>(null);
+  const [guestInviteError, setGuestInviteError] = useState<string | null>(null);
+  const [isCreatingGuestInvite, setIsCreatingGuestInvite] = useState(false);
   const [coHostInvite, setCoHostInvite] = useState<{ inviteUrl: string; expiresAt: string } | null>(null);
   const [coHostError, setCoHostError] = useState<string | null>(null);
   const [isCreatingCoHostInvite, setIsCreatingCoHostInvite] = useState(false);
@@ -145,6 +150,29 @@ export function InvitePanel({
       timeStyle: 'short',
     });
   }, [coHostInvite]);
+
+  const guestInviteExpiresLabel = useMemo(() => {
+    if (!guestInvite) return null;
+    return new Date(guestInvite.expiresAt).toLocaleString([], {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+  }, [guestInvite]);
+
+  const guestInviteMailtoHref = useMemo(() => {
+    if (!guestInvite) return '';
+    const details = [
+      `${roomName}`,
+      hostName ? `Host: ${hostName}` : null,
+      'Role: Guest',
+      guestInviteExpiresLabel ? `Expires: ${guestInviteExpiresLabel}` : null,
+      passwordProtected ? 'This secure link bypasses the room password.' : 'This is a one-time secure guest link.',
+      `Join: ${guestInvite.inviteUrl}`,
+    ].filter(Boolean);
+    const subject = encodeURIComponent(`Guest invite for ${roomName}`);
+    const body = encodeURIComponent(details.join('\n'));
+    return `mailto:${guestEmail ? encodeURIComponent(guestEmail) : ''}?subject=${subject}&body=${body}`;
+  }, [guestEmail, guestInvite, guestInviteExpiresLabel, hostName, passwordProtected, roomName]);
 
   const coHostMailtoHref = useMemo(() => {
     if (!coHostInvite) return '';
@@ -233,6 +261,23 @@ export function InvitePanel({
   const handleDownloadCalendar = () => {
     if (!calendarInvite) return;
     downloadTextFile(calendarInvite, `${safeFileName(roomName)}_calendar.ics`, 'text/calendar;charset=utf-8');
+  };
+
+  const handleCreateGuestInvite = async () => {
+    if (isCreatingGuestInvite) return;
+    setIsCreatingGuestInvite(true);
+    setGuestInviteError(null);
+    try {
+      const invite = await onCreateGuestInvite();
+      setGuestInvite(invite);
+      await copyText(invite.inviteUrl);
+      setCopied('guest-secure');
+      setCopyError(null);
+    } catch (err) {
+      setGuestInviteError(err instanceof Error ? err.message : 'Could not create secure guest invite.');
+    } finally {
+      setIsCreatingGuestInvite(false);
+    }
   };
 
   const handleCreateCoHostInvite = async () => {
@@ -358,6 +403,68 @@ export function InvitePanel({
               {copied === 'link' ? 'Copied' : 'Copy'}
             </button>
           </div>
+        </div>
+
+        <div style={styles.coHostBox}>
+          <div style={styles.coHostHeader}>
+            <div>
+              <span style={styles.linkLabel}>Secure Guest Link</span>
+              {guestInviteExpiresLabel && <span style={styles.expiryText}>Expires {guestInviteExpiresLabel}</span>}
+            </div>
+            {!guestInvite && (
+              <button
+                type="button"
+                style={styles.secondaryBtn}
+                onClick={() => void handleCreateGuestInvite()}
+                disabled={isCreatingGuestInvite}
+              >
+                {isCreatingGuestInvite ? 'Creating...' : 'Create'}
+              </button>
+            )}
+          </div>
+          <p style={styles.secureInviteText}>
+            {passwordProtected
+              ? 'One-time guest link that bypasses the room password and still lands in the green room.'
+              : 'One-time private guest link for guests who should not reuse the public invite.'}
+          </p>
+          {guestInvite && (
+            <div style={styles.linkRow}>
+              <input
+                style={styles.linkInput}
+                value={guestInvite.inviteUrl}
+                readOnly
+                onFocus={(event) => event.currentTarget.select()}
+                aria-label="Secure guest invite link"
+              />
+              <button
+                type="button"
+                style={{ ...styles.copyBtn, ...(copied === 'guest-secure' ? styles.copyBtnDone : {}) }}
+                onClick={() => void handleCopy('guest-secure', guestInvite.inviteUrl)}
+              >
+                {copied === 'guest-secure' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          )}
+          {guestInvite && (
+            <div style={styles.coHostActions}>
+              <a style={styles.coHostActionBtn} href={guestInviteMailtoHref}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="m22 7-10 6L2 7" />
+                </svg>
+                Email Guest
+              </a>
+              <a style={styles.coHostActionBtn} href={guestInvite.inviteUrl} target="_blank" rel="noreferrer">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 3h6v6" />
+                  <path d="M10 14 21 3" />
+                  <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+                </svg>
+                Open
+              </a>
+            </div>
+          )}
+          {guestInviteError && <span style={styles.errorText}>{guestInviteError}</span>}
         </div>
 
         <div style={styles.emailBox}>
@@ -737,6 +844,12 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'block',
     marginTop: 3,
     fontSize: 11,
+    color: 'var(--text-muted)',
+  },
+  secureInviteText: {
+    margin: 0,
+    fontSize: 11,
+    lineHeight: 1.35,
     color: 'var(--text-muted)',
   },
   linkRow: {

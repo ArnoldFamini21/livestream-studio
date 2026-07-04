@@ -238,6 +238,7 @@
   - [x] Workspace dashboard reads host-scoped server workspace team catalogs and merges cloud-synced roster members
   - [x] Workspace dashboard exposes account registration, login, session restore, and sign-out
   - [x] PowerPoint uploads fail closed until exact media-server rendering is ready, preventing text-only deck fallbacks
+  - [x] Full-slide image PPTX exports can be shared as exact slide artwork without accepting partial-image or text-only fallbacks
 - [ ] Team/organization support
   - [x] Local roster can compose role-aware production team invites for saved studios
   - [x] Host-scoped server workspace team roster catalog with optional PostgreSQL persistence

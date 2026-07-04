@@ -42,9 +42,7 @@ import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
 import {
-  ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
   buildPresentationPreview,
-  canBrowserRenderPowerPointFile,
   hasRenderedPresentationSlides,
   type PresentationServerRenderFailure,
 } from '../utils/presentationPreview.ts';
@@ -88,7 +86,7 @@ import {
   selectVisibleStageItems,
   type MediaShareParticipantPlacement,
 } from '../utils/mediaShareLayouts.ts';
-import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
+import { buildGuestInviteUrl, buildSecureGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
   buildLiveSessionSummary,
@@ -361,6 +359,12 @@ interface PendingLiveTokenRequest {
 }
 
 interface PendingCoHostInviteRequest {
+  resolve: (payload: { token: string; expiresAt: string }) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingGuestInviteRequest {
   resolve: (payload: { token: string; expiresAt: string }) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -745,6 +749,41 @@ function getDeckPreparationMessage(type: StudioMediaType): string {
   return type === 'pdf'
     ? 'Rendering PDF pages for broadcast...'
     : 'Rendering PowerPoint design for broadcast...';
+}
+
+function getUnavailableMediaServerPresentationFailure(
+  type: StudioMediaType,
+  health: ReturnType<typeof useMediaServerHealth>['health']
+): PresentationServerRenderFailure | undefined {
+  if (type !== 'presentation') return undefined;
+
+  if (health.renderRouting?.toLowerCase() === 'no-server' || /not provisioned/i.test(health.message)) {
+    return {
+      status: health.httpStatus,
+      code: 'MEDIA_SERVER_NO_SERVER',
+      message: health.message,
+      ...(health.renderRouting ? { renderRouting: health.renderRouting } : {}),
+    };
+  }
+
+  if (health.presentationRenderer?.ready === false) {
+    return {
+      status: health.httpStatus,
+      code: 'PRESENTATION_RENDERER_UNAVAILABLE',
+      message: health.presentationRenderer.message || health.message,
+    };
+  }
+
+  if (health.status === 'unavailable') {
+    return {
+      status: health.httpStatus,
+      code: 'PRESENTATION_RENDER_UNAVAILABLE',
+      message: health.message,
+      ...(health.renderRouting ? { renderRouting: health.renderRouting } : {}),
+    };
+  }
+
+  return undefined;
 }
 
 function PresentationRenderMissingCard({ media }: { media: ActiveMedia }) {
@@ -1350,6 +1389,7 @@ export function StudioRoom() {
   const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, widget: 0, qa: 0, poll: 0, media: 0 });
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
+  const guestInviteRequestsRef = useRef<Map<string, PendingGuestInviteRequest>>(new Map());
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
   const popoutChatChannelRef = useRef<BroadcastChannel | null>(null);
   const popoutChatStateRef = useRef<PopoutChatState | null>(null);
@@ -1681,6 +1721,11 @@ export function StudioRoom() {
         request.reject(new Error('Studio closed before live stream authorization completed.'));
       }
       liveTokenRequestsRef.current.clear();
+      for (const request of guestInviteRequestsRef.current.values()) {
+        clearTimeout(request.timer);
+        request.reject(new Error('Studio closed before guest invite authorization completed.'));
+      }
+      guestInviteRequestsRef.current.clear();
       for (const request of coHostInviteRequestsRef.current.values()) {
         clearTimeout(request.timer);
         request.reject(new Error('Studio closed before co-host invite authorization completed.'));
@@ -2118,11 +2163,14 @@ export function StudioRoom() {
       const coHostInviteToken = userRole === 'co-host'
         ? sessionStorage.getItem(`coHostInviteToken:${roomId}`) || undefined
         : undefined;
+      const guestInviteToken = userRole === 'guest'
+        ? sessionStorage.getItem(`guestInviteToken:${roomId}`) || undefined
+        : undefined;
       const roomPassword = userRole === 'host' || coHostInviteToken ? undefined : sessionStorage.getItem(`roomPassword:${roomId}`) || undefined;
       const joinSessionId = userRole === 'host' ? undefined : getGuestJoinSessionId();
       send({
         type: 'join-room',
-        payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, roomPassword, joinSessionId },
+        payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, guestInviteToken, roomPassword, joinSessionId },
       });
     }
   }, [connected, localStream, mediaError, mediaAttemptComplete, missingHostAccess, roomId, roomHostToken, userName, userRole, send]);
@@ -2361,6 +2409,18 @@ export function StudioRoom() {
           }
           break;
         }
+        case 'guest-invite-token-issued': {
+          const pending = guestInviteRequestsRef.current.get(message.payload.requestId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            guestInviteRequestsRef.current.delete(message.payload.requestId);
+            pending.resolve({
+              token: message.payload.token,
+              expiresAt: message.payload.expiresAt,
+            });
+          }
+          break;
+        }
         case 'co-host-invite-token-issued': {
           const pending = coHostInviteRequestsRef.current.get(message.payload.requestId);
           if (pending) {
@@ -2388,10 +2448,16 @@ export function StudioRoom() {
           if (
             message.payload.code === 'ROOM_PASSWORD_REQUIRED' ||
             message.payload.code === 'ROOM_PASSWORD_INVALID' ||
+            message.payload.code === 'GUEST_INVITE_INVALID' ||
             message.payload.code === ROOM_NOT_OPEN_ERROR_CODE ||
             message.payload.code === 'PARTICIPANT_BANNED'
           ) {
-            if (roomId) sessionStorage.removeItem(`roomPassword:${roomId}`);
+            if (roomId) {
+              sessionStorage.removeItem(`roomPassword:${roomId}`);
+              if (message.payload.code === 'GUEST_INVITE_INVALID') {
+                sessionStorage.removeItem(`guestInviteToken:${roomId}`);
+              }
+            }
             cleanupRef.current();
             stopMediaRef.current();
             stopPublishedScreenShareRef.current();
@@ -2441,6 +2507,17 @@ export function StudioRoom() {
               coHostInviteRequestsRef.current.delete(requestId);
             }
           }
+          if (
+            guestInviteRequestsRef.current.size > 0 &&
+            ['UNAUTHORIZED', 'PARTICIPANT_NOT_ADMITTED', 'VALIDATION_ERROR'].includes(message.payload.code)
+          ) {
+            const error = new Error(message.payload.message);
+            for (const [requestId, request] of guestInviteRequestsRef.current) {
+              clearTimeout(request.timer);
+              request.reject(error);
+              guestInviteRequestsRef.current.delete(requestId);
+            }
+          }
           break;
         // Client-to-server messages: not expected here but listed for exhaustive check
         case 'join-room':
@@ -2456,6 +2533,7 @@ export function StudioRoom() {
         case 'live-stream-token-request':
         case 'external-chat-connect':
         case 'external-chat-disconnect':
+        case 'guest-invite-token-request':
         case 'co-host-invite-token-request':
         case 'end-room':
           break;
@@ -3172,6 +3250,27 @@ export function StudioRoom() {
     };
   }, [inviteUrl, send]);
 
+  const requestGuestInvite = useCallback(async (): Promise<{ inviteUrl: string; expiresAt: string }> => {
+    const requestId = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const { token, expiresAt } = await new Promise<{ token: string; expiresAt: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        guestInviteRequestsRef.current.delete(requestId);
+        reject(new Error('Timed out while creating secure guest invite.'));
+      }, 10_000);
+
+      guestInviteRequestsRef.current.set(requestId, { resolve, reject, timer });
+      send({
+        type: 'guest-invite-token-request',
+        payload: { requestId },
+      });
+    });
+
+    return {
+      inviteUrl: buildSecureGuestInviteUrl(inviteUrl, token),
+      expiresAt,
+    };
+  }, [inviteUrl, send]);
+
   // Stream destinations
   const onAddDestination = (dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => {
     setDestinations((prev) => [...prev, { ...dest, id: `dest-${++idCounters.current.dest}`, status: 'idle', statusMessage: undefined }]);
@@ -3334,17 +3433,17 @@ export function StudioRoom() {
 
       try {
         let serverRenderFailure: PresentationServerRenderFailure | undefined;
-        const allowBrowserPowerPointRenderFallback = type === 'presentation' &&
-          ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK &&
-          canBrowserRenderPowerPointFile(file);
-        const skipUnavailableServerRender = allowBrowserPowerPointRenderFallback && (
+        const skipUnavailableServerRender = type === 'presentation' && (
           mediaServerHealth.status === 'unavailable' ||
           mediaServerHealth.presentationRenderer?.ready === false
         );
+        if (skipUnavailableServerRender) {
+          serverRenderFailure = getUnavailableMediaServerPresentationFailure(type, mediaServerHealth);
+        }
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation' && !allowBrowserPowerPointRenderFallback,
-          allowBrowserPowerPointRenderFallback,
+          requireServerRenderedPowerPoint: type === 'presentation',
+          allowBrowserPowerPointRenderFallback: false,
           skipServerRender: skipUnavailableServerRender,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
@@ -4669,7 +4768,11 @@ export function StudioRoom() {
   if (connectionError) {
     const passwordError = connectionError === 'This room requires a password' || connectionError === 'Incorrect room password';
     const hostAccessError = connectionError.includes('Host access is missing or expired');
-    const joinRecoverableError = passwordError || hostAccessError || connectionError === 'Co-host invite link is invalid or expired';
+    const joinRecoverableError =
+      passwordError ||
+      hostAccessError ||
+      connectionError === 'Co-host invite link is invalid or expired' ||
+      connectionError === 'Guest invite link is invalid or expired';
     return (
       <div style={styles.loading}>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round">
@@ -5719,6 +5822,7 @@ export function StudioRoom() {
               participantCount={allParticipantsMap.size}
               waitingCount={waitingCount}
               isLive={isLive}
+              onCreateGuestInvite={requestGuestInvite}
               onCreateCoHostInvite={requestCoHostInvite}
               onClose={() => setShowInvitePanel(false)}
             />

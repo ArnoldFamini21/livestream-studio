@@ -315,6 +315,8 @@ export type SignalMessage =
   | { type: 'external-chat-connect'; payload: ExternalChatConnectPayload }
   | { type: 'external-chat-disconnect'; payload: ExternalChatDisconnectPayload }
   | { type: 'external-chat-status'; payload: ExternalChatStatusPayload }
+  | { type: 'guest-invite-token-request'; payload: GuestInviteTokenRequestPayload }
+  | { type: 'guest-invite-token-issued'; payload: GuestInviteTokenIssuedPayload }
   | { type: 'co-host-invite-token-request'; payload: CoHostInviteTokenRequestPayload }
   | { type: 'co-host-invite-token-issued'; payload: CoHostInviteTokenIssuedPayload }
   | { type: 'participant-updated'; payload: Participant }
@@ -332,6 +334,7 @@ export interface JoinRoomPayload {
   role: ParticipantRole;
   hostToken?: string;
   coHostInviteToken?: string;
+  guestInviteToken?: string;
   roomPassword?: string;
   joinSessionId?: string;
 }
@@ -465,6 +468,16 @@ export interface CoHostInviteTokenRequestPayload {
 }
 
 export interface CoHostInviteTokenIssuedPayload {
+  requestId: string;
+  token: string;
+  expiresAt: string;
+}
+
+export interface GuestInviteTokenRequestPayload {
+  requestId: string;
+}
+
+export interface GuestInviteTokenIssuedPayload {
   requestId: string;
   token: string;
   expiresAt: string;

@@ -1,4 +1,5 @@
 export const GUEST_INVITE_STUDIO_PARAM = 'studio';
+export const GUEST_INVITE_TOKEN_PARAM = 'guestInvite';
 
 export interface GuestInviteEmailInput {
   roomName: string;
@@ -52,8 +53,26 @@ export function buildGuestInviteUrl(baseUrl: string, roomId: string, roomName?: 
   return `${url}?${GUEST_INVITE_STUDIO_PARAM}=${encodeURIComponent(studioName)}`;
 }
 
+export function buildSecureGuestInviteUrl(baseInviteUrl: string, token: string): string {
+  const trimmedToken = typeof token === 'string' ? token.trim() : '';
+  if (!trimmedToken) return baseInviteUrl;
+  try {
+    const url = new URL(baseInviteUrl);
+    url.searchParams.set(GUEST_INVITE_TOKEN_PARAM, trimmedToken);
+    return url.toString();
+  } catch {
+    const separator = baseInviteUrl.includes('?') ? '&' : '?';
+    return `${baseInviteUrl}${separator}${GUEST_INVITE_TOKEN_PARAM}=${encodeURIComponent(trimmedToken)}`;
+  }
+}
+
 export function getInviteStudioName(searchParams: URLSearchParams): string {
   return normalizeInviteStudioName(searchParams.get(GUEST_INVITE_STUDIO_PARAM));
+}
+
+export function getGuestInviteToken(searchParams: URLSearchParams): string {
+  const token = searchParams.get(GUEST_INVITE_TOKEN_PARAM) || '';
+  return /^[A-Za-z0-9_-]{20,120}$/.test(token) ? token : '';
 }
 
 export function buildGuestInviteDetails(input: GuestInviteEmailInput): string {
