@@ -81,10 +81,10 @@ describe('media library upload support', () => {
   });
 
   it('warns when exact deck rendering is not ready and explains which decks need the media-server', () => {
-    assert.match(getDeckUploadBlockMessage(null), /Exact PowerPoint design preservation requires the Render media-server/);
+    assert.match(getDeckUploadBlockMessage(null), /Modern PPTX files will use visual browser rendering/);
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /Modern PPTX files can still work without it only when the deck already contains full-slide image artwork/
+      /Legacy PPT and Keynote files still require the media-server/
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
@@ -114,11 +114,11 @@ describe('media library upload support', () => {
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'checking', message: 'Checking media-server readiness...' }),
-      /Exact PowerPoint design preservation requires the Render media-server/
+      /Modern PPTX files will use visual browser rendering/
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'unavailable', message: 'Media server is not provisioned on Render.' }),
-      /Media server is not provisioned on Render\. Exact PowerPoint design preservation requires the Render media-server/
+      /Media server is not provisioned on Render\. Modern PPTX files will use visual browser rendering/
     );
   });
 
