@@ -1102,7 +1102,7 @@ function PeopleContent({
         {grouped['green-room'].length > 0 && (
           <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
         )}
-        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} participantVolumes={participantVolumes} onParticipantVolumeChange={onParticipantVolumeChange} showVolumeControls actions={(p) => (<>
+        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} count={grouped['on-stage'].length + (myP?.status === 'on-stage' ? 1 : 0)} emptyMessage={myP?.status === 'on-stage' ? 'No other participants' : 'No participants'} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} participantVolumes={participantVolumes} onParticipantVolumeChange={onParticipantVolumeChange} showVolumeControls actions={(p) => (<>
           <SmallBtn label={focusedParticipantId === p.id ? 'Clear' : 'Spotlight'} color={focusedParticipantId === p.id ? 'var(--text-muted)' : 'var(--accent)'} onClick={() => onSpotlightParticipant(focusedParticipantId === p.id ? null : p.id)} />
           {p.audioEnabled && <SmallBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />}
           {!p.audioEnabled && <SmallBtn label="Ask Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />}
@@ -1137,6 +1137,8 @@ function PeopleSection({
   participantVolumes = {},
   onParticipantVolumeChange,
   showVolumeControls = false,
+  count,
+  emptyMessage = 'No participants',
   actions,
 }: {
   title: string; subtitle: string; color: string; participants: Participant[];
@@ -1145,13 +1147,15 @@ function PeopleSection({
   participantVolumes?: Record<string, number>;
   onParticipantVolumeChange?: (participantId: string, volume: number) => void;
   showVolumeControls?: boolean;
+  count?: number;
+  emptyMessage?: string;
   actions: (p: Participant) => React.ReactNode;
 }) {
   return (
     <div style={st.pSection}>
-      <div style={st.pSectionHead}><div style={{ ...st.pDot, background: color }} /><span style={st.pSectionTitle}>{title}</span><span style={st.pSectionCount}>({participants.length})</span></div>
+      <div style={st.pSectionHead}><div style={{ ...st.pDot, background: color }} /><span style={st.pSectionTitle}>{title}</span><span style={st.pSectionCount}>({count ?? participants.length})</span></div>
       <p style={st.pSectionSub}>{subtitle}</p>
-      {participants.length === 0 ? <p style={st.emptyText}>No participants</p> : (
+      {participants.length === 0 ? <p style={st.emptyText}>{emptyMessage}</p> : (
         <div style={st.pList}>
           {participants.map((p) => {
             const canAdjustVolume = isHostOrCoHost && showVolumeControls && Boolean(onParticipantVolumeChange);

@@ -18,6 +18,7 @@ import type {
   RecordingStatePayload,
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
+  RecordingUploadTokenClaims,
   StudioBrandingPayload,
   RoomRegistrant,
   RoomRegistrantListResponse,
@@ -69,6 +70,8 @@ interface RoomState {
   guestInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   recordingStartedAt?: string;
+  recordingSessionId?: string;
+  recordingPaused?: boolean;
   liveStreamStartedAt?: string;
   liveStreamStartedBy?: string;
   // Server-issued secret returned to the room creator and required on host join-room.
@@ -121,6 +124,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'stage-action',
   'studio-branding-updated',
   'recording-state-changed',
+  'recording-upload-token-request',
   'live-stream-state-changed',
   'live-stream-token-request',
   'external-chat-connect',
@@ -208,6 +212,7 @@ const MAX_ROOM_REGISTRANTS = 1000;
 const MAX_REGISTRANT_NAME_LENGTH = 80;
 const MAX_REGISTRANT_EMAIL_LENGTH = 254;
 const LIVE_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
+const RECORDING_UPLOAD_TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
 const GUEST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_GUEST_INVITE_TOKENS_PER_ROOM = 40;
 const CO_HOST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -733,7 +738,7 @@ function getLiveStreamTokenSecret(): string | null {
   return null;
 }
 
-function signLiveStreamToken(claims: LiveStreamTokenClaims, secret: string): string {
+function signMediaToken(claims: LiveStreamTokenClaims | RecordingUploadTokenClaims, secret: string): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
   const signature = createHmac('sha256', secret).update(body).digest('base64url');
   return `${body}.${signature}`;
@@ -783,6 +788,10 @@ function consumeGuestInviteToken(roomState: RoomState, token: unknown): boolean 
 
 function isValidRequestId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
+}
+
+function isValidRecordingSessionId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{8,120}$/.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -976,6 +985,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'recording-state-changed':
       handleRecordingStateChange(ws, message.payload);
+      break;
+    case 'recording-upload-token-request':
+      handleRecordingUploadTokenRequest(ws, message.payload);
       break;
     case 'live-stream-state-changed':
       handleLiveStreamStateChange(ws, message.payload);
@@ -1174,6 +1186,8 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       recordingState: roomState.recordingStartedAt
         ? {
             recording: true,
+            sessionId: roomState.recordingSessionId,
+            paused: Boolean(roomState.recordingPaused),
             startedAt: roomState.recordingStartedAt,
             performedBy: roomState.room.hostId,
           }
@@ -1421,23 +1435,89 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
   }
 
   const now = new Date().toISOString();
-  const authoritativePayload: RecordingStatePayload = {
-    recording: payload.recording,
-    performedBy: mapping.participantId,
-    ...(payload.recording ? { startedAt: now } : { stoppedAt: now }),
-  };
-
   if (payload.recording) {
-    roomState.recordingStartedAt = now;
+    const requestedSessionId = isValidRecordingSessionId(payload.sessionId) ? payload.sessionId : undefined;
+    if (roomState.recordingStartedAt && requestedSessionId && requestedSessionId !== roomState.recordingSessionId) {
+      sendError(ws, 'A different recording session is already active', 'RECORDING_ALREADY_ACTIVE');
+      return;
+    }
+    roomState.recordingSessionId = roomState.recordingSessionId && roomState.recordingStartedAt
+      ? roomState.recordingSessionId
+      : requestedSessionId || `recording-${nanoid(20)}`;
+    roomState.recordingStartedAt = roomState.recordingStartedAt || now;
+    roomState.recordingPaused = Boolean(payload.paused);
   } else {
     roomState.recordingStartedAt = undefined;
+    roomState.recordingPaused = false;
   }
+
+  const authoritativePayload: RecordingStatePayload = {
+    recording: payload.recording,
+    sessionId: roomState.recordingSessionId,
+    paused: payload.recording ? Boolean(roomState.recordingPaused) : false,
+    performedBy: mapping.participantId,
+    ...(payload.recording ? { startedAt: roomState.recordingStartedAt } : { stoppedAt: now }),
+  };
   updateRoomActivityStatus(roomState);
   persistRoomSnapshot(mapping.roomId);
 
   broadcastToRoom(mapping.roomId, {
     type: 'recording-state-changed',
     payload: authoritativePayload,
+  });
+}
+
+function handleRecordingUploadTokenRequest(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'recording-upload-token-request' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  if (!isValidRequestId(payload.requestId) || !isValidRecordingSessionId(payload.sessionId)) {
+    sendError(ws, 'Invalid recording upload token request', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const roomState = rooms.get(mapping.roomId);
+  const participantEntry = roomState?.participants.get(mapping.participantId);
+  if (!roomState || !participantEntry) return;
+  if (participantEntry.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before recording', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+  if (roomState.recordingSessionId !== payload.sessionId) {
+    sendError(ws, 'Recording upload session does not match this studio', 'RECORDING_SESSION_MISMATCH');
+    return;
+  }
+
+  const secret = getLiveStreamTokenSecret();
+  if (!secret) {
+    sendError(ws, 'Recording uploads are not configured on this server', 'LIVE_STREAM_NOT_CONFIGURED');
+    return;
+  }
+
+  const expiresAtMs = Date.now() + RECORDING_UPLOAD_TOKEN_TTL_MS;
+  const claims: RecordingUploadTokenClaims = {
+    v: 1,
+    purpose: 'recording-upload',
+    roomId: mapping.roomId,
+    participantId: mapping.participantId,
+    participantName: participantEntry.participant.name,
+    role: participantEntry.participant.role,
+    sessionId: payload.sessionId,
+    exp: expiresAtMs,
+    nonce: nanoid(16),
+  };
+
+  send(ws, {
+    type: 'recording-upload-token-issued',
+    payload: {
+      requestId: payload.requestId,
+      sessionId: payload.sessionId,
+      token: signMediaToken(claims, secret),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    },
   });
 }
 
@@ -1534,7 +1614,7 @@ function handleLiveStreamTokenRequest(
     type: 'live-stream-token-issued',
     payload: {
       requestId: payload.requestId,
-      token: signLiveStreamToken(claims, secret),
+      token: signMediaToken(claims, secret),
       expiresAt: new Date(expiresAtMs).toISOString(),
     },
   });

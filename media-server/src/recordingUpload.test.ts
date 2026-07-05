@@ -21,6 +21,8 @@ async function createStore() {
 const baseRequest = {
   roomId: 'room-123',
   sessionId: 'session-123',
+  participantId: 'host-1',
+  participantName: 'Host',
   tracks: [
     {
       id: 'program',
@@ -50,6 +52,8 @@ describe('recording upload store', () => {
 
     assert.equal(session.roomId, 'room-123');
     assert.equal(session.sessionId, 'session-123');
+    assert.equal(session.participantId, 'host-1');
+    assert.equal(session.participantName, 'Host');
     assert.equal(session.maxBytes, 32);
     assert.equal(session.bytesReceived, 0);
     assert.equal(session.tracks.length, 2);
@@ -216,6 +220,59 @@ describe('recording upload store', () => {
       }),
       (err) => err instanceof RecordingUploadError && err.statusCode === 413
     );
+  });
+
+  it('groups completed participant uploads into one distributed export source', async () => {
+    const { store } = await createStore();
+    const guest = await store.createSession({
+      roomId: 'room-group',
+      sessionId: 'recording-group-1',
+      participantId: 'guest-1',
+      participantName: 'Guest One',
+      tracks: [{ id: 'guest-iso', label: 'Guest One ISO', kind: 'iso', mimeType: 'video/webm' }],
+    });
+    await store.appendChunk({
+      uploadId: guest.uploadId,
+      trackId: 'guest-iso',
+      sequence: 0,
+      final: true,
+      data: Buffer.from('guest-video'),
+    });
+
+    const host = await store.createSession({
+      roomId: 'room-group',
+      sessionId: 'recording-group-1',
+      participantId: 'host-1',
+      participantName: 'Host program',
+      tracks: [{ id: 'program', label: 'Program mix', kind: 'program', mimeType: 'video/webm' }],
+    });
+    await store.appendChunk({
+      uploadId: host.uploadId,
+      trackId: 'program',
+      sequence: 0,
+      final: true,
+      data: Buffer.from('program-video'),
+    });
+
+    await store.createSession({
+      roomId: 'room-group',
+      sessionId: 'recording-group-1',
+      participantId: 'guest-pending',
+      participantName: 'Pending Guest',
+      tracks: [{ id: 'pending-iso', label: 'Pending ISO', kind: 'iso', mimeType: 'video/webm' }],
+    });
+
+    const summary = store.getDistributedSessionStatus('room-group', 'recording-group-1');
+    const source = store.getDistributedExportSource('room-group', 'recording-group-1');
+
+    assert.equal(summary.uploadCount, 3);
+    assert.equal(summary.completedUploadCount, 2);
+    assert.equal(summary.trackCount, 3);
+    assert.equal(source.uploadId, host.uploadId);
+    assert.equal(source.tracks.length, 2);
+    assert.equal(source.tracks.some((track) => track.kind === 'program'), true);
+    assert.equal(source.tracks.some((track) => track.kind === 'iso'), true);
+    assert.equal(new Set(source.tracks.map((track) => track.id)).size, 2);
   });
 
   it('cleans up session files when an upload is deleted', async () => {

@@ -31,6 +31,8 @@ PGSSLMODE=require
 
 The signaling server uses `DATABASE_URL` for PostgreSQL room snapshots and host-scoped recording catalog metadata. This keeps scheduled and newly created studios recoverable across Render restarts and lets hosts sync recording dashboard summaries across browser sessions. Recording blobs and export artifacts are not stored in this database; they stay in browser storage, media-server export storage, Google Drive handoffs, or S3-compatible artifact storage when configured. If `DATABASE_URL` is not set, the server logs that room snapshot persistence is disabled and continues with memory-only rooms and recording catalog metadata.
 
+Toolbar recording coordinates device-local capture for every on-stage participant. The signaling server signs participant-scoped upload tokens with `LIVE_STREAM_TOKEN_SECRET`; the media-server verifies the same secret, groups completed uploads by room and recording session, and gives only a host/co-host token access to the combined MP4, isolated video, and audio-stem export. The secret must therefore match on both Render services.
+
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.
 
 For server-side platform chat ingestion in the studio Chat panel, set these on `livestream-studio-server` as needed:

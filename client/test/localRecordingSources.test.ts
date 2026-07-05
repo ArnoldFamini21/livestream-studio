@@ -4,6 +4,7 @@ import type { Participant } from '@studio/shared';
 import type { LocalRecordingSource } from '../src/hooks/useLocalRecording.ts';
 import {
   buildLocalRecordingSources,
+  buildParticipantRecordingSources,
   getRecordingSourceId,
 } from '../src/utils/localRecordingSources.ts';
 
@@ -112,6 +113,25 @@ describe('local recording source planner', () => {
     assert.equal(sources.find((source) => source.id === 'guest-alpha-camera')?.stream.getVideoTracks().length, 1);
   });
 
+  it('plans only device-local tracks for coordinated participant recording', () => {
+    const localParticipant = participant({ id: 'guest/local', name: 'Guest Local' });
+    const sources = buildParticipantRecordingSources({
+      localParticipant,
+      localStream: stream(track('local-video', 'video'), track('local-audio', 'audio')),
+      screenStream: stream(track('screen-video', 'video'), track('screen-audio', 'audio')),
+      isScreenSharing: true,
+    });
+
+    assert.deepEqual(
+      sources.map((source) => [source.id, source.kind, source.stream.getTracks().map((item) => item.id)]),
+      [
+        ['guest-local-iso', 'iso', ['local-video', 'local-audio']],
+        ['guest-local-audio', 'audio', ['local-audio']],
+        ['guest-local-screen', 'screen', ['screen-video', 'screen-audio']],
+      ]
+    );
+  });
+
   it('records screen-share participants as screen/video tracks without duplicate ISO', () => {
     const screenParticipant = participant({
       id: 'guest-screen',
@@ -187,4 +207,3 @@ describe('local recording source planner', () => {
     assert.deepEqual(sources, []);
   });
 });
-

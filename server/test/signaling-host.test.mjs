@@ -339,6 +339,85 @@ describe('live stream token authorization', () => {
   });
 });
 
+describe('participant recording upload authorization', () => {
+  it('issues an admitted guest a session-scoped recording upload token', async () => {
+    const previousSecret = process.env.LIVE_STREAM_TOKEN_SECRET;
+    const secret = 'test-recording-upload-token-secret-123456';
+    process.env.LIVE_STREAM_TOKEN_SECRET = secret;
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Participant recording token test', 'Arnold', {
+      creatorIp: `recording-token-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest' });
+      const joinedGuest = await guestJoined;
+
+      const recordingStarted = waitForMessage(guest, 'recording-state-changed', (message) => message.payload.recording);
+      sendSignal(host, {
+        type: 'recording-state-changed',
+        payload: {
+          recording: true,
+          sessionId: 'recording-session-123',
+          paused: false,
+          performedBy: 'client-host',
+        },
+      });
+      const started = await recordingStarted;
+      assert.equal(started.payload.sessionId, 'recording-session-123');
+      assert.equal(started.payload.paused, false);
+
+      const recordingPaused = waitForMessage(guest, 'recording-state-changed', (message) => message.payload.paused === true);
+      sendSignal(host, {
+        type: 'recording-state-changed',
+        payload: {
+          recording: true,
+          sessionId: 'recording-session-123',
+          paused: true,
+          performedBy: 'client-host',
+        },
+      });
+      const paused = await recordingPaused;
+      assert.equal(paused.payload.sessionId, 'recording-session-123');
+      assert.equal(paused.payload.startedAt, started.payload.startedAt);
+
+      const issued = waitForMessage(guest, 'recording-upload-token-issued');
+      sendSignal(guest, {
+        type: 'recording-upload-token-request',
+        payload: { requestId: 'recording-request-1', sessionId: 'recording-session-123' },
+      });
+      const tokenMessage = await issued;
+      const claims = verifySignedLiveToken(tokenMessage.payload.token, secret);
+      assert.equal(claims.purpose, 'recording-upload');
+      assert.equal(claims.roomId, room.id);
+      assert.equal(claims.participantId, joinedGuest.payload.participant.id);
+      assert.equal(claims.role, 'guest');
+      assert.equal(claims.sessionId, 'recording-session-123');
+
+      const mismatch = waitForMessage(guest, 'error', (message) => message.payload.code === 'RECORDING_SESSION_MISMATCH');
+      sendSignal(guest, {
+        type: 'recording-upload-token-request',
+        payload: { requestId: 'recording-request-2', sessionId: 'recording-session-other' },
+      });
+      await mismatch;
+    } finally {
+      if (previousSecret === undefined) delete process.env.LIVE_STREAM_TOKEN_SECRET;
+      else process.env.LIVE_STREAM_TOKEN_SECRET = previousSecret;
+      await harness.close();
+    }
+  });
+});
+
 describe('secure guest invite token authorization', () => {
   it('lets a password-protected guest join with a one-time secure guest link', async () => {
     const harness = await createSignalingHarness();

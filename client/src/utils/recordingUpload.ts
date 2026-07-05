@@ -1,4 +1,5 @@
 import type {
+  DistributedRecordingSessionResponse,
   RecordingExportArtifactFormat,
   RecordingExportJobResponse,
   RecordingExportVideoCodec,
@@ -26,6 +27,8 @@ export interface UploadRecordingToMediaServerInput {
   token: string;
   roomId: string;
   sessionId?: string | null;
+  participantId?: string;
+  participantName?: string;
   files: RecordingUploadFileInput[];
   mediaHttpUrl?: string;
   chunkSizeBytes?: number;
@@ -91,6 +94,27 @@ export interface RecordingUploadSummary {
   tracks: RecordingUploadTrackStatus[];
   exportJob?: RecordingExportJobResponse;
   exportError?: string;
+}
+
+export interface DistributedRecordingSessionInput {
+  token: string;
+  roomId: string;
+  sessionId: string;
+  mediaHttpUrl?: string;
+}
+
+export interface WaitForDistributedRecordingSessionInput extends DistributedRecordingSessionInput {
+  expectedUploads: number;
+  intervalMs?: number;
+  timeoutMs?: number;
+}
+
+export interface ExportDistributedRecordingSessionInput extends DistributedRecordingSessionInput {
+  basename?: string;
+  includeAudioStems?: boolean;
+  exportVideoCodec?: RecordingExportVideoCodec;
+  pollIntervalMs?: number;
+  pollTimeoutMs?: number;
 }
 
 interface UploadableRecordingTrack {
@@ -387,6 +411,8 @@ export async function uploadRecordingToMediaServer(
       {
         roomId,
         sessionId: input.sessionId || undefined,
+        participantId: input.participantId?.trim() || undefined,
+        participantName: input.participantName?.trim() || undefined,
         tracks: tracks.map((track) => track.manifest),
         maxBytes: totalBytes,
       }
@@ -480,4 +506,70 @@ export async function uploadRecordingToMediaServer(
     if (uploadId) await cleanupUpload(mediaHttpUrl, uploadId, token);
     throw err;
   }
+}
+
+export async function getDistributedRecordingSession(
+  input: DistributedRecordingSessionInput
+): Promise<DistributedRecordingSessionResponse> {
+  const token = assertNonEmpty(input.token, 'A host recording token');
+  const roomId = assertNonEmpty(input.roomId, 'Room id');
+  const sessionId = assertNonEmpty(input.sessionId, 'Recording session id');
+  const mediaHttpUrl = assertNonEmpty(input.mediaHttpUrl || resolveMediaHttpUrl(), 'Media server URL');
+  return getJson<DistributedRecordingSessionResponse>(
+    buildMediaUrl(
+      mediaHttpUrl,
+      `/recordings/sessions/${encodeURIComponent(roomId)}/${encodeURIComponent(sessionId)}`
+    ),
+    token
+  );
+}
+
+export async function waitForDistributedRecordingSession(
+  input: WaitForDistributedRecordingSessionInput
+): Promise<DistributedRecordingSessionResponse> {
+  const expectedUploads = Math.max(1, Math.floor(input.expectedUploads));
+  const intervalMs = getPollIntervalMs(input.intervalMs);
+  const timeoutMs = getPollTimeoutMs(input.timeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  let latest = await getDistributedRecordingSession(input);
+
+  while (
+    latest.completedUploadCount < expectedUploads &&
+    Date.now() < deadline
+  ) {
+    await delay(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+    latest = await getDistributedRecordingSession(input);
+  }
+  return latest;
+}
+
+export async function exportDistributedRecordingSession(
+  input: ExportDistributedRecordingSessionInput
+): Promise<RecordingExportJobResponse> {
+  const token = assertNonEmpty(input.token, 'A host recording token');
+  const roomId = assertNonEmpty(input.roomId, 'Room id');
+  const sessionId = assertNonEmpty(input.sessionId, 'Recording session id');
+  const mediaHttpUrl = assertNonEmpty(input.mediaHttpUrl || resolveMediaHttpUrl(), 'Media server URL');
+  let job = await postJson<RecordingExportJobResponse>(
+    buildMediaUrl(
+      mediaHttpUrl,
+      `/recordings/sessions/${encodeURIComponent(roomId)}/${encodeURIComponent(sessionId)}/exports`
+    ),
+    token,
+    {
+      basename: input.basename || sessionId,
+      includeAudioStems: input.includeAudioStems !== false,
+      video: { codec: input.exportVideoCodec || 'h264' },
+    }
+  );
+  job = await pollRecordingExportJob({
+    token,
+    uploadId: job.uploadId,
+    exportId: job.exportId,
+    mediaHttpUrl,
+    intervalMs: input.pollIntervalMs,
+    timeoutMs: input.pollTimeoutMs,
+    initialJob: job,
+  });
+  return job;
 }

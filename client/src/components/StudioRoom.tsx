@@ -15,7 +15,7 @@ import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/use
 import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
-import type { LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
+import { persistRecordingSession, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
@@ -120,13 +120,16 @@ import {
 } from '../utils/recordingReadiness.ts';
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
-import { buildLocalRecordingSources } from '../utils/localRecordingSources.ts';
+import { buildLocalRecordingSources, buildParticipantRecordingSources } from '../utils/localRecordingSources.ts';
 import {
   downloadRecordingExportArtifact,
+  exportDistributedRecordingSession,
   getRecordingExportJob,
   uploadRecordingToMediaServer,
+  waitForDistributedRecordingSession,
   type RecordingUploadFileInput,
 } from '../utils/recordingUpload.ts';
+import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 import { syncRecordingCatalogEntry } from '../utils/recordingCatalog.ts';
 import {
   downloadRtmpBackupRecording,
@@ -357,6 +360,10 @@ interface PendingLiveTokenRequest {
   resolve: (token: string) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingRecordingUploadTokenRequest extends PendingLiveTokenRequest {
+  sessionId: string;
 }
 
 interface PendingCoHostInviteRequest {
@@ -1043,6 +1050,10 @@ export function StudioRoom() {
   const [liveStartedAt, setLiveStartedAt] = useState<string | null>(null);
   const [liveElapsed, setLiveElapsed] = useState(0);
   const [sessionRecordingStartedAt, setSessionRecordingStartedAt] = useState<string | null>(null);
+  const [sessionRecordingSessionId, setSessionRecordingSessionId] = useState<string | null>(null);
+  const [sessionRecordingPaused, setSessionRecordingPaused] = useState(false);
+  const [supportsCoordinatedRecording, setSupportsCoordinatedRecording] = useState(false);
+  const [participantRecordingFinalizing, setParticipantRecordingFinalizing] = useState(false);
   const [sessionRecordingElapsed, setSessionRecordingElapsed] = useState(0);
 
   // Media overlay
@@ -1246,6 +1257,14 @@ export function StudioRoom() {
     stopRecording: stopLocalRecording,
     cancelRecording: cancelLocalRecording,
   } = useLocalRecording();
+  const {
+    isRecording: isParticipantLocalRecording,
+    isPaused: isParticipantLocalRecordingPaused,
+    startRecording: startParticipantLocalRecording,
+    pauseRecording: pauseParticipantLocalRecording,
+    resumeRecording: resumeParticipantLocalRecording,
+    stopRecording: stopParticipantLocalRecording,
+  } = useLocalRecording();
 
   const effectiveAudioEnabled = audioEnabled && Boolean(localStream?.getAudioTracks()[0]?.enabled);
   const effectiveVideoEnabled = videoEnabled && Boolean(localStream?.getVideoTracks()[0]?.enabled);
@@ -1390,6 +1409,9 @@ export function StudioRoom() {
   const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, widget: 0, qa: 0, poll: 0, media: 0 });
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
+  const recordingUploadTokenRequestsRef = useRef<Map<string, PendingRecordingUploadTokenRequest>>(new Map());
+  const recordingUploadTokenRef = useRef<{ sessionId: string; token: string } | null>(null);
+  const expectedDistributedUploadsRef = useRef(1);
   const guestInviteRequestsRef = useRef<Map<string, PendingGuestInviteRequest>>(new Map());
   const coHostInviteRequestsRef = useRef<Map<string, PendingCoHostInviteRequest>>(new Map());
   const popoutChatChannelRef = useRef<BroadcastChannel | null>(null);
@@ -1722,6 +1744,11 @@ export function StudioRoom() {
         request.reject(new Error('Studio closed before live stream authorization completed.'));
       }
       liveTokenRequestsRef.current.clear();
+      for (const request of recordingUploadTokenRequestsRef.current.values()) {
+        clearTimeout(request.timer);
+        request.reject(new Error('Studio closed before recording upload authorization completed.'));
+      }
+      recordingUploadTokenRequestsRef.current.clear();
       for (const request of guestInviteRequestsRef.current.values()) {
         clearTimeout(request.timer);
         request.reject(new Error('Studio closed before guest invite authorization completed.'));
@@ -2198,6 +2225,7 @@ export function StudioRoom() {
           const live = Boolean(liveStreamState?.live || roomData.status === 'live');
           const liveStartedAt = live ? liveStreamState?.startedAt || new Date().toISOString() : null;
           const recordingStartedAt = recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null;
+          const recordingSessionId = recordingState?.recording ? recordingState.sessionId || null : null;
           isLiveRef.current = live;
           liveStartedAtRef.current = liveStartedAt;
           sessionRecordingStartedAtRef.current = recordingStartedAt;
@@ -2213,6 +2241,9 @@ export function StudioRoom() {
           setPolls(existingPolls);
           setRemoteStudioBranding(studioBranding || null);
           setSessionRecordingStartedAt(recordingStartedAt);
+          setSessionRecordingSessionId(recordingSessionId);
+          setSessionRecordingPaused(Boolean(recordingState?.recording && recordingState.paused));
+          setSupportsCoordinatedRecording(Boolean(recordingState?.sessionId));
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
           setParticipants(map);
@@ -2378,6 +2409,11 @@ export function StudioRoom() {
         case 'recording-state-changed':
           sessionRecordingStartedAtRef.current = message.payload.recording ? message.payload.startedAt || new Date().toISOString() : null;
           setSessionRecordingStartedAt(sessionRecordingStartedAtRef.current);
+          if (message.payload.sessionId) {
+            setSessionRecordingSessionId(message.payload.sessionId);
+            setSupportsCoordinatedRecording(true);
+          }
+          setSessionRecordingPaused(Boolean(message.payload.recording && message.payload.paused));
           setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(isLiveRef.current, sessionRecordingStartedAtRef.current) } : prev);
           break;
         case 'live-stream-state-changed': {
@@ -2406,6 +2442,19 @@ export function StudioRoom() {
           if (pending) {
             clearTimeout(pending.timer);
             liveTokenRequestsRef.current.delete(message.payload.requestId);
+            pending.resolve(message.payload.token);
+          }
+          break;
+        }
+        case 'recording-upload-token-issued': {
+          const pending = recordingUploadTokenRequestsRef.current.get(message.payload.requestId);
+          if (pending && pending.sessionId === message.payload.sessionId) {
+            clearTimeout(pending.timer);
+            recordingUploadTokenRequestsRef.current.delete(message.payload.requestId);
+            recordingUploadTokenRef.current = {
+              sessionId: message.payload.sessionId,
+              token: message.payload.token,
+            };
             pending.resolve(message.payload.token);
           }
           break;
@@ -2488,6 +2537,17 @@ export function StudioRoom() {
               liveTokenRequestsRef.current.delete(requestId);
             }
           }
+          if (
+            recordingUploadTokenRequestsRef.current.size > 0 &&
+            ['UNAUTHORIZED', 'LIVE_STREAM_NOT_CONFIGURED', 'PARTICIPANT_NOT_ADMITTED', 'RECORDING_SESSION_MISMATCH', 'VALIDATION_ERROR', 'UNKNOWN_TYPE'].includes(message.payload.code)
+          ) {
+            const error = new Error(message.payload.message);
+            for (const [requestId, request] of recordingUploadTokenRequestsRef.current) {
+              clearTimeout(request.timer);
+              request.reject(error);
+              recordingUploadTokenRequestsRef.current.delete(requestId);
+            }
+          }
           if (message.payload.code === 'CO_HOST_INVITE_INVALID') {
             if (roomId) sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
             sessionStorage.setItem('userRole', 'guest');
@@ -2532,6 +2592,7 @@ export function StudioRoom() {
         case 'poll-vote':
         case 'poll-update':
         case 'live-stream-token-request':
+        case 'recording-upload-token-request':
         case 'external-chat-connect':
         case 'external-chat-disconnect':
         case 'guest-invite-token-request':
@@ -2688,18 +2749,42 @@ export function StudioRoom() {
   // Recording
   const onToggleRecordingPause = useCallback(() => {
     if (!myParticipantRef.current || !canControlRecording || !isRecording) return;
+    const nextPaused = !isRecordingPaused;
     if (isRecordingPaused) {
       resumeRecording();
     } else {
       pauseRecording();
     }
-  }, [canControlRecording, isRecording, isRecordingPaused, pauseRecording, resumeRecording]);
+    setSessionRecordingPaused(nextPaused);
+    send({
+      type: 'recording-state-changed',
+      payload: {
+        recording: true,
+        sessionId: sessionRecordingSessionId || undefined,
+        paused: nextPaused,
+        startedAt: sessionRecordingStartedAt || undefined,
+        performedBy: myParticipantRef.current.id,
+      },
+    });
+  }, [canControlRecording, isRecording, isRecordingPaused, pauseRecording, resumeRecording, send, sessionRecordingSessionId, sessionRecordingStartedAt]);
 
   const onToggleRecording = async () => {
     if (!myParticipant || !canControlRecording) return;
     if (isRecording) {
       const stoppedAt = new Date();
       const timestamp = formatRecordingTimestamp(stoppedAt);
+      const recordingSessionId = sessionRecordingSessionId || `recording-${stoppedAt.getTime()}`;
+      const expectedUploads = supportsCoordinatedRecording ? expectedDistributedUploadsRef.current : 1;
+      send({
+        type: 'recording-state-changed',
+        payload: {
+          recording: false,
+          sessionId: recordingSessionId,
+          performedBy: myParticipant.id,
+        },
+      });
+      setSessionRecordingStartedAt(null);
+      setSessionRecordingPaused(false);
       try {
         const recordings = await stopRecording();
         if (recordings.size > 0) {
@@ -2715,24 +2800,44 @@ export function StudioRoom() {
             addToast('Finalizing MP4 recording export...', 'info');
             const token = await requestLiveStreamToken();
             const exportBasename = `${room?.name || 'Studio'} Recording ${timestamp}`;
-            const upload = await uploadRecordingToMediaServer({
+            await uploadRecordingToMediaServer({
               token,
               roomId: roomId || '',
-              sessionId: `toolbar-${stoppedAt.getTime()}`,
+              sessionId: recordingSessionId,
+              participantId: myParticipant.id,
+              participantName: `${myParticipant.name} program`,
               files,
-              exportBasename,
-              exportVideoCodec: 'h264',
-              includeAudioStems: false,
-              exportPollTimeoutMs: 120_000,
+              startExport: false,
             });
-            const mp4Artifact = getReadyMp4Artifact(upload.exportJob);
-            if (!upload.exportJob || !mp4Artifact) {
-              throw new Error(upload.exportError || upload.exportJob?.error || 'MP4 export did not finish.');
+            const distributed = await waitForDistributedRecordingSession({
+              token,
+              roomId: roomId || '',
+              sessionId: recordingSessionId,
+              expectedUploads,
+              timeoutMs: 120_000,
+              intervalMs: 1_500,
+            });
+            if (distributed.completedUploadCount < expectedUploads) {
+              addToast(
+                `Exporting ${distributed.completedUploadCount}/${expectedUploads} available local recordings.`,
+                'warning'
+              );
             }
+            const exportJob = await exportDistributedRecordingSession({
+              token,
+              roomId: roomId || '',
+              sessionId: recordingSessionId,
+              basename: exportBasename,
+              exportVideoCodec: 'h264',
+              includeAudioStems: true,
+              pollTimeoutMs: 180_000,
+            });
+            const mp4Artifact = getReadyMp4Artifact(exportJob);
+            if (!mp4Artifact) throw new Error(exportJob.error || 'MP4 export did not finish.');
             const download = await downloadRecordingExportArtifact({
               token,
-              uploadId: upload.uploadId,
-              exportId: upload.exportJob.exportId,
+              uploadId: exportJob.uploadId,
+              exportId: exportJob.exportId,
               artifactId: mp4Artifact.id,
               artifactLabel: mp4Artifact.label,
               format: mp4Artifact.format,
@@ -2748,15 +2853,6 @@ export function StudioRoom() {
       } catch (err) {
         console.error('Failed to stop recording:', err);
         addToast(err instanceof Error ? err.message : 'Failed to stop recording.', 'error');
-      } finally {
-        send({
-          type: 'recording-state-changed',
-          payload: {
-            recording: false,
-            performedBy: myParticipant.id,
-          },
-        });
-        setSessionRecordingStartedAt(null);
       }
     } else {
       const streams = new Map<string, RecordingStreamInput>();
@@ -2795,11 +2891,21 @@ export function StudioRoom() {
       const started = startRecording(streams);
       if (!started) return;
       const startedAt = new Date().toISOString();
+      const recordingSessionId = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const localCaptureCount = myParticipant.status === 'on-stage' && (myParticipant.audioEnabled || myParticipant.videoEnabled) ? 1 : 0;
+      const remoteCaptureCount = Array.from(participants.values()).filter((participant) => (
+        participant.status === 'on-stage' && (participant.audioEnabled || participant.videoEnabled)
+      )).length;
+      expectedDistributedUploadsRef.current = Math.max(1, localCaptureCount + remoteCaptureCount + 1);
       setSessionRecordingStartedAt(startedAt);
+      setSessionRecordingSessionId(recordingSessionId);
+      setSessionRecordingPaused(false);
       send({
         type: 'recording-state-changed',
         payload: {
           recording: true,
+          sessionId: recordingSessionId,
+          paused: false,
           startedAt,
           performedBy: myParticipant.id,
         },
@@ -3117,6 +3223,152 @@ export function StudioRoom() {
       });
     });
   }, [send]);
+
+  const requestRecordingUploadToken = useCallback((sessionId: string): Promise<string> => {
+    if (recordingUploadTokenRef.current?.sessionId === sessionId) {
+      return Promise.resolve(recordingUploadTokenRef.current.token);
+    }
+    const requestId = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        recordingUploadTokenRequestsRef.current.delete(requestId);
+        reject(new Error('Timed out while authorizing participant recording upload.'));
+      }, 10_000);
+
+      recordingUploadTokenRequestsRef.current.set(requestId, { resolve, reject, timer, sessionId });
+      send({
+        type: 'recording-upload-token-request',
+        payload: { requestId, sessionId },
+      });
+    });
+  }, [send]);
+
+  useEffect(() => {
+    if (
+      !sessionRecordingStartedAt ||
+      !sessionRecordingSessionId ||
+      !supportsCoordinatedRecording ||
+      !myParticipant ||
+      myParticipant.status !== 'on-stage' ||
+      isParticipantLocalRecording ||
+      participantRecordingFinalizing
+    ) return;
+
+    const sources = buildParticipantRecordingSources({
+      localParticipant: myParticipant,
+      localStream,
+      screenStream,
+      isScreenSharing,
+    });
+    if (sources.length === 0) return;
+
+    void startParticipantLocalRecording(sources)
+      .then(() => requestRecordingUploadToken(sessionRecordingSessionId))
+      .catch((err) => {
+        console.warn('Participant local recording could not start or authorize upload:', err);
+      });
+  }, [
+    isParticipantLocalRecording,
+    isScreenSharing,
+    localStream,
+    myParticipant,
+    participantRecordingFinalizing,
+    requestRecordingUploadToken,
+    screenStream,
+    sessionRecordingSessionId,
+    sessionRecordingStartedAt,
+    startParticipantLocalRecording,
+    supportsCoordinatedRecording,
+  ]);
+
+  useEffect(() => {
+    if (!isParticipantLocalRecording) return;
+    const shouldPause = sessionRecordingPaused || myParticipant?.status !== 'on-stage';
+    if (shouldPause && !isParticipantLocalRecordingPaused) {
+      void pauseParticipantLocalRecording();
+    } else if (!shouldPause && isParticipantLocalRecordingPaused) {
+      void resumeParticipantLocalRecording();
+    }
+  }, [
+    isParticipantLocalRecording,
+    isParticipantLocalRecordingPaused,
+    myParticipant?.status,
+    pauseParticipantLocalRecording,
+    resumeParticipantLocalRecording,
+    sessionRecordingPaused,
+  ]);
+
+  useEffect(() => {
+    if (
+      sessionRecordingStartedAt ||
+      !sessionRecordingSessionId ||
+      !isParticipantLocalRecording ||
+      participantRecordingFinalizing
+    ) return;
+
+    const sessionId = sessionRecordingSessionId;
+    const participant = myParticipant;
+    if (!participant || !roomId) return;
+    setParticipantRecordingFinalizing(true);
+
+    void (async () => {
+      try {
+        const result = await stopParticipantLocalRecording();
+        const timestamp = formatRecordingTimestamp(new Date());
+        const files = result.files
+          .filter((file) => file.blob.size > 0)
+          .map((file, index) => ({
+            label: file.label,
+            blob: file.blob,
+            kind: file.kind,
+            capture: file.capture,
+            fileName: `${participant.name.replace(/[^a-z0-9_-]+/gi, '_') || 'participant'}_${file.kind}_${index + 1}_${timestamp}.${getRecordingFileExtension(file.blob.type)}`,
+          }));
+        if (files.length === 0) return;
+
+        await persistRecordingSession({
+          roomName: `${room?.name || 'Studio'} - ${participant.name}`,
+          durationSeconds: result.files[0]?.capture?.durationMs
+            ? Math.round(result.files[0].capture.durationMs / 1000)
+            : null,
+          files,
+        });
+
+        try {
+          const token = await requestRecordingUploadToken(sessionId);
+          await uploadRecordingToMediaServer({
+            token,
+            roomId,
+            sessionId,
+            participantId: participant.id,
+            participantName: participant.name,
+            files,
+            startExport: false,
+          });
+          addToast(`${participant.name}'s local recording uploaded.`, 'success');
+        } catch (err) {
+          console.warn('Participant local recording upload failed:', err);
+          addToast('Local recording saved in this browser; cloud upload is unavailable.', 'warning');
+        }
+      } catch (err) {
+        console.error('Participant local recording finalization failed:', err);
+        addToast('Participant local recording could not be finalized.', 'error');
+      } finally {
+        setParticipantRecordingFinalizing(false);
+      }
+    })();
+  }, [
+    addToast,
+    isParticipantLocalRecording,
+    myParticipant,
+    participantRecordingFinalizing,
+    requestRecordingUploadToken,
+    room?.name,
+    roomId,
+    sessionRecordingSessionId,
+    sessionRecordingStartedAt,
+    stopParticipantLocalRecording,
+  ]);
 
   const uploadLocalRecordingToMediaServer = useCallback(async (input: RecordingServerUploadInput) => {
     if (!roomId) throw new Error('Room id is required for recording upload.');

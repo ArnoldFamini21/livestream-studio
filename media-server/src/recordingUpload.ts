@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, rm } from 'node:fs/promises';
 import type {
+  DistributedRecordingSessionResponse,
   RecordingUploadChunkResponse,
   RecordingUploadSessionRequest,
   RecordingUploadSessionResponse,
@@ -31,6 +32,8 @@ export interface RecordingUploadSession {
   uploadId: string;
   roomId: string;
   sessionId?: string;
+  participantId?: string;
+  participantName?: string;
   rootDir: string;
   createdAt: string;
   updatedAt: string;
@@ -164,6 +167,15 @@ function normalizeCreateRequest(input: unknown): Omit<RecordingUploadSessionRequ
   if (input.sessionId !== undefined && !isValidId(input.sessionId)) {
     throw new RecordingUploadError(400, 'INVALID_RECORDING_UPLOAD', 'Invalid recording session id');
   }
+  if (input.participantId !== undefined && !isValidId(input.participantId)) {
+    throw new RecordingUploadError(400, 'INVALID_RECORDING_UPLOAD', 'Invalid recording participant id');
+  }
+  if (
+    input.participantName !== undefined &&
+    (typeof input.participantName !== 'string' || input.participantName.trim().length === 0 || input.participantName.length > 80)
+  ) {
+    throw new RecordingUploadError(400, 'INVALID_RECORDING_UPLOAD', 'Invalid recording participant name');
+  }
   if (!Array.isArray(input.tracks) || input.tracks.length === 0) {
     throw new RecordingUploadError(400, 'INVALID_RECORDING_UPLOAD', 'At least one recording track is required');
   }
@@ -193,6 +205,8 @@ function normalizeCreateRequest(input: unknown): Omit<RecordingUploadSessionRequ
   return {
     roomId: input.roomId,
     sessionId: typeof input.sessionId === 'string' ? input.sessionId : undefined,
+    participantId: typeof input.participantId === 'string' ? input.participantId : undefined,
+    participantName: typeof input.participantName === 'string' ? input.participantName.trim() : undefined,
     tracks,
     maxBytes,
   };
@@ -215,6 +229,8 @@ function sessionStatus(session: RecordingUploadSession): RecordingUploadSessionR
     uploadId: session.uploadId,
     roomId: session.roomId,
     sessionId: session.sessionId,
+    participantId: session.participantId,
+    participantName: session.participantName,
     createdAt: session.createdAt,
     expiresAt: session.expiresAt,
     maxBytes: session.maxBytes,
@@ -255,6 +271,8 @@ export class RecordingUploadStore {
       uploadId,
       roomId: normalized.roomId,
       sessionId: normalized.sessionId,
+      participantId: normalized.participantId,
+      participantName: normalized.participantName,
       rootDir,
       createdAt,
       updatedAt: createdAt,
@@ -303,6 +321,74 @@ export class RecordingUploadStore {
         bytesReceived: track.bytesReceived,
         complete: track.complete,
       })),
+    };
+  }
+
+  getDistributedSessionStatus(
+    roomId: string,
+    sessionId: string,
+    nowMs = Date.now()
+  ): DistributedRecordingSessionResponse {
+    if (!isValidId(roomId) || !isValidId(sessionId)) {
+      throw new RecordingUploadError(404, 'RECORDING_SESSION_NOT_FOUND', 'Recording session not found');
+    }
+    const uploads = Array.from(this.sessions.values())
+      .filter((session) => (
+        session.roomId === roomId &&
+        session.sessionId === sessionId &&
+        Date.parse(session.expiresAt) > nowMs
+      ))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const statuses = uploads.map(sessionStatus);
+    return {
+      roomId,
+      sessionId,
+      uploadCount: statuses.length,
+      completedUploadCount: statuses.filter((upload) => upload.tracks.length > 0 && upload.tracks.every((track) => track.complete)).length,
+      trackCount: statuses.reduce((total, upload) => total + upload.tracks.length, 0),
+      bytesReceived: statuses.reduce((total, upload) => total + upload.bytesReceived, 0),
+      uploads: statuses,
+    };
+  }
+
+  getDistributedExportSource(
+    roomId: string,
+    sessionId: string,
+    nowMs = Date.now()
+  ): RecordingUploadExportSource {
+    const summary = this.getDistributedSessionStatus(roomId, sessionId, nowMs);
+    if (summary.uploads.length === 0) {
+      throw new RecordingUploadError(404, 'RECORDING_SESSION_NOT_FOUND', 'Recording session has no uploaded tracks');
+    }
+    const completedUploads = summary.uploads.filter((upload) => (
+      upload.tracks.length > 0 && upload.tracks.every((track) => track.complete && track.bytesReceived > 0)
+    ));
+    if (completedUploads.length === 0) {
+      throw new RecordingUploadError(409, 'RECORDING_SESSION_UPLOADS_PENDING', 'Recording session has no completed uploads yet');
+    }
+
+    const sources = completedUploads.map((upload) => this.getExportSource(upload.uploadId, nowMs));
+    const primary = sources.find((source) => source.tracks.some((track) => track.kind === 'program')) || sources[0];
+    const tracks = sources.flatMap((source, sourceIndex) => source.tracks.map((track) => {
+      const prefix = `upload-${sourceIndex + 1}`;
+      return {
+        ...track,
+        id: `${prefix}-${track.id}`.slice(0, 120),
+      };
+    }));
+    if (tracks.length > MAX_RECORDING_UPLOAD_TRACKS) {
+      throw new RecordingUploadError(
+        409,
+        'RECORDING_SESSION_TOO_MANY_TRACKS',
+        `A combined recording export supports at most ${MAX_RECORDING_UPLOAD_TRACKS} tracks`
+      );
+    }
+    return {
+      uploadId: primary.uploadId,
+      roomId,
+      sessionId,
+      rootDir: primary.rootDir,
+      tracks,
     };
   }
 
