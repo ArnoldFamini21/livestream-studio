@@ -6,7 +6,9 @@
 ## Phase 1: Recording Engine (Priority: Critical)
 ### 1A. Local-First Per-Participant Recording (Riverside approach)
 - [x] MediaRecorder API per participant capturing local camera/mic in high quality
+- [x] Host-coordinated local capture on every on-stage participant, including synchronized pause/resume
 - [x] Record as WebM (VP9/Opus) locally, then upload chunks to server via WebSocket/HTTP
+- [x] Participant-scoped recording upload tokens and grouped host export across device-local tracks
 - [x] Media-server authenticated WebM upload sessions with bounded per-track chunk intake
 - [x] Client-side media-server handoff for completed local WebM tracks via bounded HTTP chunks
 - [x] Separate isolated audio tracks (WAV) + video tracks per participant

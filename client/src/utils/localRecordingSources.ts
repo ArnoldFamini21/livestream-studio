@@ -19,6 +19,13 @@ export interface BuildLocalRecordingSourcesOptions {
   createScreenPictureInPictureSource?: (options: ScreenPictureInPictureRecordingSourceOptions) => LocalRecordingSource | null;
 }
 
+export interface BuildParticipantRecordingSourcesOptions {
+  localParticipant: Participant;
+  localStream: MediaStream | null;
+  screenStream?: MediaStream | null;
+  isScreenSharing?: boolean;
+}
+
 export function getRecordingSourceId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'track';
 }
@@ -29,6 +36,51 @@ function liveTracks(tracks: MediaStreamTrack[]): MediaStreamTrack[] {
 
 function createStream(tracks: MediaStreamTrack[]): MediaStream {
   return new MediaStream(tracks);
+}
+
+export function buildParticipantRecordingSources(
+  options: BuildParticipantRecordingSourcesOptions
+): LocalRecordingSource[] {
+  if (options.localParticipant.status !== 'on-stage') return [];
+  const participantId = getRecordingSourceId(options.localParticipant.id);
+  const audioTracks = liveTracks(options.localStream?.getAudioTracks() || []);
+  const videoTracks = liveTracks(options.localStream?.getVideoTracks() || []);
+  const sources: LocalRecordingSource[] = [];
+
+  if (videoTracks.length > 0) {
+    sources.push({
+      id: `${participantId}-iso`,
+      label: `${options.localParticipant.name} ISO`,
+      kind: 'iso',
+      stream: createStream([...videoTracks, ...audioTracks]),
+      bitsPerSecond: 8_500_000,
+    });
+  }
+  if (audioTracks.length > 0) {
+    sources.push({
+      id: `${participantId}-audio`,
+      label: `${options.localParticipant.name} audio`,
+      kind: 'audio',
+      stream: createStream(audioTracks),
+      bitsPerSecond: 256_000,
+    });
+  }
+
+  if (options.isScreenSharing && options.screenStream) {
+    const screenVideoTracks = liveTracks(options.screenStream.getVideoTracks());
+    const screenAudioTracks = liveTracks(options.screenStream.getAudioTracks());
+    if (screenVideoTracks.length > 0) {
+      sources.push({
+        id: `${participantId}-screen`,
+        label: `${options.localParticipant.name} screen`,
+        kind: 'screen',
+        stream: createStream([...screenVideoTracks, ...screenAudioTracks]),
+        bitsPerSecond: 8_000_000,
+      });
+    }
+  }
+
+  return sources;
 }
 
 export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOptions): LocalRecordingSource[] {
@@ -141,4 +193,3 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
 
   return sources;
 }
-

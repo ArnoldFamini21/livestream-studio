@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { LiveStreamTokenClaims, RtmpRelayDestination } from '@studio/shared';
-import { signLiveStreamToken, verifyLiveStreamToken } from './auth.js';
+import type { LiveStreamTokenClaims, RecordingUploadTokenClaims, RtmpRelayDestination } from '@studio/shared';
+import { signLiveStreamToken, verifyLiveStreamToken, verifyRecordingUploadToken } from './auth.js';
 import {
   buildRtmpOutputUrl,
   createFfmpegArgs,
@@ -66,6 +66,26 @@ describe('RTMP relay utilities', () => {
     assert.deepEqual(verifyLiveStreamToken(token, secret), claims);
     assert.throws(() => verifyLiveStreamToken(token, 'b'.repeat(32)), /signature/);
     assert.throws(() => verifyLiveStreamToken(token, secret, claims.exp + 1), /expired/);
+  });
+
+  it('keeps participant recording tokens scoped away from live streaming', () => {
+    const secret = 'c'.repeat(32);
+    const claims: RecordingUploadTokenClaims = {
+      v: 1,
+      purpose: 'recording-upload',
+      roomId: 'room-1',
+      participantId: 'guest-1',
+      participantName: 'Guest One',
+      role: 'guest',
+      sessionId: 'recording-session-1',
+      exp: Date.now() + 60_000,
+      nonce: 'nonce-recording-1',
+    };
+
+    const token = signLiveStreamToken(claims, secret);
+    assert.deepEqual(verifyRecordingUploadToken(token, secret), claims);
+    assert.throws(() => verifyLiveStreamToken(token, secret), /claims/);
+    assert.throws(() => verifyRecordingUploadToken(token, secret, claims.exp + 1), /expired/);
   });
 
   it('builds FFmpeg args for 1080p RTMP relay', () => {

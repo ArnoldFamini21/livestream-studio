@@ -79,7 +79,7 @@ export interface LocalRecordingSession {
   mediaExport?: RecordingMediaExportHandoff;
 }
 
-interface SaveRecordingSessionInput {
+export interface SaveRecordingSessionInput {
   roomName: string;
   durationSeconds?: number | null;
   files: LocalRecordingFileInput[];
@@ -177,7 +177,7 @@ async function listRecordingSessions(): Promise<LocalRecordingSession[]> {
   }
 }
 
-async function saveRecordingSession(input: SaveRecordingSessionInput): Promise<LocalRecordingSession> {
+export async function persistRecordingSession(input: SaveRecordingSessionInput): Promise<LocalRecordingSession> {
   const db = await openRecordingDb();
   try {
     const sessionId = makeId('recording');
@@ -320,7 +320,7 @@ export function useRecordingLibrary() {
   }, [refresh]);
 
   const saveSession = useCallback(async (input: SaveRecordingSessionInput) => {
-    const session = await saveRecordingSession(input);
+    const session = await persistRecordingSession(input);
     setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
     return session;
   }, []);

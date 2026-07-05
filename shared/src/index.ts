@@ -309,6 +309,8 @@ export type SignalMessage =
   | { type: 'participant-notification'; payload: ParticipantNotificationPayload }
   | { type: 'studio-branding-updated'; payload: StudioBrandingPayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
+  | { type: 'recording-upload-token-request'; payload: RecordingUploadTokenRequestPayload }
+  | { type: 'recording-upload-token-issued'; payload: RecordingUploadTokenIssuedPayload }
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
   | { type: 'live-stream-token-request'; payload: LiveStreamTokenRequestPayload }
   | { type: 'live-stream-token-issued'; payload: LiveStreamTokenIssuedPayload }
@@ -409,9 +411,23 @@ export interface StudioBrandingPayload {
 
 export interface RecordingStatePayload {
   recording: boolean;
+  sessionId?: string;
+  paused?: boolean;
   startedAt?: string;
   stoppedAt?: string;
   performedBy: string;
+}
+
+export interface RecordingUploadTokenRequestPayload {
+  requestId: string;
+  sessionId: string;
+}
+
+export interface RecordingUploadTokenIssuedPayload {
+  requestId: string;
+  sessionId: string;
+  token: string;
+  expiresAt: string;
 }
 
 export interface LiveStreamStatePayload {
@@ -815,6 +831,18 @@ export interface LiveStreamTokenClaims {
   nonce: string;
 }
 
+export interface RecordingUploadTokenClaims {
+  v: 1;
+  purpose: 'recording-upload';
+  roomId: string;
+  participantId: string;
+  participantName: string;
+  role: ParticipantRole;
+  sessionId: string;
+  exp: number;
+  nonce: string;
+}
+
 export interface RtmpRelayDestination {
   id: string;
   name: string;
@@ -893,6 +921,8 @@ export interface RecordingUploadSessionRequest {
   token?: string;
   roomId: string;
   sessionId?: string;
+  participantId?: string;
+  participantName?: string;
   tracks: RecordingUploadTrackManifest[];
   maxBytes?: number;
 }
@@ -911,11 +941,23 @@ export interface RecordingUploadSessionResponse {
   uploadId: string;
   roomId: string;
   sessionId?: string;
+  participantId?: string;
+  participantName?: string;
   createdAt: string;
   expiresAt: string;
   maxBytes: number;
   bytesReceived: number;
   tracks: RecordingUploadTrackStatus[];
+}
+
+export interface DistributedRecordingSessionResponse {
+  roomId: string;
+  sessionId: string;
+  uploadCount: number;
+  completedUploadCount: number;
+  trackCount: number;
+  bytesReceived: number;
+  uploads: RecordingUploadSessionResponse[];
 }
 
 export interface RecordingUploadChunkResponse {

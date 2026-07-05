@@ -3,9 +3,12 @@ import { afterEach, describe, it } from 'node:test';
 import {
   buildRecordingUploadTracks,
   downloadRecordingExportArtifact,
+  exportDistributedRecordingSession,
+  getDistributedRecordingSession,
   getRecordingExportJob,
   pollRecordingExportJob,
   uploadRecordingToMediaServer,
+  waitForDistributedRecordingSession,
 } from '../src/utils/recordingUpload.ts';
 
 const originalFetch = globalThis.fetch;
@@ -160,6 +163,8 @@ describe('recording media-server upload helper', () => {
       token: 'token-123',
       roomId: 'room-1',
       sessionId: 'session-1',
+      participantId: 'host-1',
+      participantName: 'Host program',
       mediaHttpUrl: 'https://media.example.com',
       chunkSizeBytes: 4,
       exportPollIntervalMs: 0,
@@ -197,6 +202,8 @@ describe('recording media-server upload helper', () => {
       },
     });
     assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body)).participantId, 'host-1');
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body)).participantName, 'Host program');
     assert.equal((calls[1].init?.body as Blob).size, 262_144);
     assert.equal((calls[2].init?.body as Blob).size, 37_856);
   });
@@ -273,6 +280,89 @@ describe('recording media-server upload helper', () => {
       'https://media.example.com/recordings/uploads/upload-refresh/exports/export-refresh'
     );
     assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
+  });
+
+  it('waits for participant uploads and starts one combined recording export', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let sessionReads = 0;
+    globalThis.fetch = async (url, init) => {
+      const requestUrl = String(url);
+      calls.push({ url: requestUrl, init });
+      if (requestUrl.endsWith('/recordings/sessions/room-1/recording-1') && (!init?.method || init.method === 'GET')) {
+        sessionReads += 1;
+        const completed = sessionReads >= 2 ? 2 : 1;
+        return jsonResponse({
+          roomId: 'room-1',
+          sessionId: 'recording-1',
+          uploadCount: completed,
+          completedUploadCount: completed,
+          trackCount: completed * 2,
+          bytesReceived: completed * 100,
+          uploads: [],
+        });
+      }
+      if (requestUrl.endsWith('/recordings/sessions/room-1/recording-1/exports')) {
+        return jsonResponse({
+          exportId: 'combined-export',
+          uploadId: 'program-upload',
+          roomId: 'room-1',
+          sessionId: 'recording-1',
+          status: 'queued',
+          createdAt: '2026-07-05T00:00:00.000Z',
+          updatedAt: '2026-07-05T00:00:00.000Z',
+          artifacts: [{ id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'queued' }],
+        }, 202);
+      }
+      if (requestUrl.endsWith('/recordings/uploads/program-upload/exports/combined-export')) {
+        return jsonResponse({
+          exportId: 'combined-export',
+          uploadId: 'program-upload',
+          roomId: 'room-1',
+          sessionId: 'recording-1',
+          status: 'ready',
+          createdAt: '2026-07-05T00:00:00.000Z',
+          updatedAt: '2026-07-05T00:00:01.000Z',
+          artifacts: [{ id: 'final-mp4', label: 'Final MP4', format: 'mp4', status: 'ready' }],
+        });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    };
+
+    const initial = await getDistributedRecordingSession({
+      token: 'host-token',
+      roomId: 'room-1',
+      sessionId: 'recording-1',
+      mediaHttpUrl: 'https://media.example.com',
+    });
+    const ready = await waitForDistributedRecordingSession({
+      token: 'host-token',
+      roomId: 'room-1',
+      sessionId: 'recording-1',
+      expectedUploads: 2,
+      intervalMs: 0,
+      timeoutMs: 1_000,
+      mediaHttpUrl: 'https://media.example.com',
+    });
+    const job = await exportDistributedRecordingSession({
+      token: 'host-token',
+      roomId: 'room-1',
+      sessionId: 'recording-1',
+      basename: 'Combined show',
+      pollIntervalMs: 0,
+      pollTimeoutMs: 1_000,
+      mediaHttpUrl: 'https://media.example.com',
+    });
+
+    assert.equal(initial.completedUploadCount, 1);
+    assert.equal(ready.completedUploadCount, 2);
+    assert.equal(job.status, 'ready');
+    const exportCall = calls.find((call) => call.url.endsWith('/recording-1/exports'));
+    assert.deepEqual(JSON.parse(String(exportCall?.init?.body)), {
+      basename: 'Combined show',
+      includeAudioStems: true,
+      video: { codec: 'h264' },
+    });
+    assert.equal((exportCall?.init?.headers as Record<string, string>).Authorization, 'Bearer host-token');
   });
 
   it('downloads ready export artifacts with bearer auth and safe filenames', async () => {
