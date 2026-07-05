@@ -20,9 +20,8 @@ const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
 
 // The media-server renderer is the exact path because it uses LibreOffice and
-// Poppler. Browser-rendered PPTX output is kept as an explicit test hook only;
-// the studio upload flow should not treat approximate DOM reconstruction as
-// formatting-preserving PowerPoint output.
+// Poppler. Browser-rendered PPTX output remains opt-in so callers can use it as
+// a visual fallback without ever accepting text-only slide reconstruction.
 export const ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK = false;
 
 const PPTX_IMAGE_MIME_TYPES: Record<string, string> = {
@@ -175,6 +174,21 @@ export function isPptxFile(file: Pick<File, 'name' | 'type'>): boolean {
 
 export function canBrowserRenderPowerPointFile(file: Pick<File, 'name' | 'type'>): boolean {
   return isPptxFile(file);
+}
+
+export interface PowerPointRenderStrategy {
+  allowBrowserPowerPointRenderFallback: boolean;
+  requireServerRenderedPowerPoint: boolean;
+}
+
+export function getPowerPointRenderStrategy(
+  file: Pick<File, 'name' | 'type'>
+): PowerPointRenderStrategy {
+  const allowBrowserPowerPointRenderFallback = canBrowserRenderPowerPointFile(file);
+  return {
+    allowBrowserPowerPointRenderFallback,
+    requireServerRenderedPowerPoint: !allowBrowserPowerPointRenderFallback,
+  };
 }
 
 export function isLegacyPowerPointFile(file: Pick<File, 'name' | 'type'>): boolean {
@@ -674,13 +688,13 @@ function createHiddenPresentationRenderHost(): HTMLElement {
   const host = document.createElement('div');
   host.setAttribute('aria-hidden', 'true');
   host.style.position = 'fixed';
-  host.style.left = '0';
+  host.style.left = '-20000px';
   host.style.top = '0';
   host.style.width = `${RENDERED_SLIDE_WIDTH}px`;
   host.style.height = `${RENDERED_SLIDE_HEIGHT}px`;
   host.style.overflow = 'hidden';
   host.style.pointerEvents = 'none';
-  host.style.zIndex = '-1';
+  host.style.zIndex = '0';
   host.style.contain = 'layout paint style';
   host.style.background = '#ffffff';
   document.body.appendChild(host);

@@ -13,6 +13,7 @@ import {
   extractPptxSlideNotesTarget,
   extractPptxSpeakerNotes,
   extractPptxSlideText,
+  getPowerPointRenderStrategy,
   hasRenderedPresentationSlides,
   isRecoverablePowerPointServerRenderFailure,
   isLegacyPowerPointFile,
@@ -75,6 +76,23 @@ describe('PowerPoint preview extraction', () => {
       code: 'PRESENTATION_UNSUPPORTED',
       message: 'Only PDF and PowerPoint files can be rendered.',
     }), false);
+  });
+
+  it('uses exact-first visual fallback for modern PPTX and server-only rendering for legacy PPT', () => {
+    assert.deepEqual(
+      getPowerPointRenderStrategy({ name: 'sermon.pptx', type: '' } as File),
+      {
+        allowBrowserPowerPointRenderFallback: true,
+        requireServerRenderedPowerPoint: false,
+      }
+    );
+    assert.deepEqual(
+      getPowerPointRenderStrategy({ name: 'legacy-sermon.ppt', type: 'application/vnd.ms-powerpoint' } as File),
+      {
+        allowBrowserPowerPointRenderFallback: false,
+        requireServerRenderedPowerPoint: true,
+      }
+    );
   });
 
   it('extracts readable slide text from PPTX XML', () => {

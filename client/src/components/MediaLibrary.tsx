@@ -522,7 +522,7 @@ export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  const exactRendererMessage = 'Exact PowerPoint design preservation requires the Render media-server. Modern PPTX files can still work without it only when the deck already contains full-slide image artwork; PDF files can render in this browser.';
+  const exactRendererMessage = 'Modern PPTX files will use visual browser rendering when the exact Render media-server is unavailable. Legacy PPT and Keynote files still require the media-server; PDF files can render in this browser.';
   if (!health) return `Checking the exact deck renderer. ${exactRendererMessage}`;
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {

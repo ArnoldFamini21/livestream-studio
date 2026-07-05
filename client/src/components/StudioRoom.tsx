@@ -43,6 +43,7 @@ import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
 import {
   buildPresentationPreview,
+  getPowerPointRenderStrategy,
   hasRenderedPresentationSlides,
   type PresentationServerRenderFailure,
 } from '../utils/presentationPreview.ts';
@@ -3433,6 +3434,9 @@ export function StudioRoom() {
 
       try {
         let serverRenderFailure: PresentationServerRenderFailure | undefined;
+        const powerPointRenderStrategy = type === 'presentation'
+          ? getPowerPointRenderStrategy(file)
+          : null;
         const skipUnavailableServerRender = type === 'presentation' && (
           mediaServerHealth.status === 'unavailable' ||
           mediaServerHealth.presentationRenderer?.ready === false
@@ -3442,8 +3446,8 @@ export function StudioRoom() {
         }
         const preview = await buildPresentationPreview(file, {
           requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: type === 'presentation',
-          allowBrowserPowerPointRenderFallback: false,
+          requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
+          allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
           skipServerRender: skipUnavailableServerRender,
           onServerRenderFailure: (failure) => {
             serverRenderFailure = failure;
