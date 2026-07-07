@@ -262,7 +262,8 @@
   - [x] Host-scoped server workspace team roster catalog with optional PostgreSQL persistence
 
 ### 10B. Media Server (SFU)
-- [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants
+- [x] Mesh capacity planner: computes per-sender quality tier + aggregate upload for the current stage size and uplink, surfaced in Session Health, and flags when an SFU is warranted
+- [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants (planner above is the interim mitigation + decision aid)
 - [ ] Simulcast: send multiple quality layers, server selects best for each viewer
 - [x] Client WebRTC sender simulcast encodings for camera/screen mesh connections
 - [x] Bandwidth adaptation per participant for current mesh WebRTC senders

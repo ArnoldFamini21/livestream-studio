@@ -1,10 +1,20 @@
 import type { SessionHealthCheck, SessionHealthSummary, HealthStatus } from '../hooks/useSessionHealth.ts';
 import { buildMediaServerParityDiagnostics } from '../utils/mediaServerHealth.ts';
 import type { MediaServerParityFeatureStatus, MediaServerParityDiagnostics } from '../utils/mediaServerHealth.ts';
+import type { MeshCapacityPlan, MeshCapacityStatus } from '../utils/meshCapacityPlanner.ts';
 
 interface SessionHealthPanelProps {
   summary: SessionHealthSummary;
+  meshCapacity?: MeshCapacityPlan | null;
   onClose: () => void;
+}
+
+function meshStatusColor(status: MeshCapacityStatus): string {
+  switch (status) {
+    case 'comfortable': return 'var(--success)';
+    case 'tight': return 'var(--warning)';
+    case 'over': return 'var(--error)';
+  }
 }
 
 function statusColor(status: HealthStatus): string {
@@ -160,8 +170,9 @@ function MediaServerDiagnosticsCard({ diagnostics }: { diagnostics: MediaServerP
   );
 }
 
-export function SessionHealthPanel({ summary, onClose }: SessionHealthPanelProps) {
+export function SessionHealthPanel({ summary, meshCapacity, onClose }: SessionHealthPanelProps) {
   const mediaServerDiagnostics = buildMediaServerParityDiagnostics(summary.mediaServer);
+  const showMeshCapacity = Boolean(meshCapacity && meshCapacity.outgoingPeerCount > 0);
 
   return (
     <div style={styles.overlay} role="dialog" aria-modal="true" aria-label="Session health">
@@ -196,6 +207,33 @@ export function SessionHealthPanel({ summary, onClose }: SessionHealthPanelProps
             </p>
           </div>
         </div>
+
+        {showMeshCapacity && meshCapacity && (
+          <div
+            style={{
+              ...styles.meshCard,
+              borderColor: meshStatusColor(meshCapacity.status),
+            }}
+          >
+            <div style={styles.meshHeader}>
+              <span style={styles.meshTitle}>Mesh capacity</span>
+              <span style={{ ...styles.meshBadge, color: meshStatusColor(meshCapacity.status), borderColor: meshStatusColor(meshCapacity.status) }}>
+                {meshCapacity.status === 'comfortable' ? 'Comfortable' : meshCapacity.status === 'tight' ? 'Tight' : 'Over budget'}
+              </span>
+            </div>
+            <div style={styles.meshMetrics}>
+              <span>{meshCapacity.outgoingPeerCount} upload{meshCapacity.outgoingPeerCount === 1 ? '' : 's'}</span>
+              <span>·</span>
+              <span>{meshCapacity.recommendedTier} target</span>
+              <span>·</span>
+              <span>~{Math.round(meshCapacity.aggregateUploadKbps / 100) / 10} Mbps up</span>
+            </div>
+            <p style={styles.meshNote}>{meshCapacity.note}</p>
+            {meshCapacity.sfuRecommended && (
+              <p style={styles.meshSfuNote}>An SFU (mediasoup/LiveKit) is recommended for stages this size.</p>
+            )}
+          </div>
+        )}
 
         <div style={styles.metricGrid}>
           <div style={styles.metric}>
@@ -325,6 +363,56 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: 0,
   },
   summaryText: { margin: 0, color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.45 },
+  meshCard: {
+    margin: '0 18px 14px',
+    padding: 12,
+    borderRadius: 10,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  meshHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  meshTitle: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+  },
+  meshBadge: {
+    fontSize: 10,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    border: '1px solid',
+    borderRadius: 999,
+    padding: '2px 8px',
+  },
+  meshMetrics: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6,
+    fontSize: 11,
+    color: 'var(--text-secondary)',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  meshNote: {
+    margin: 0,
+    fontSize: 11,
+    lineHeight: 1.45,
+    color: 'var(--text-muted)',
+  },
+  meshSfuNote: {
+    margin: 0,
+    fontSize: 11,
+    lineHeight: 1.45,
+    color: 'var(--accent)',
+    fontWeight: 600,
+  },
   metricGrid: {
     display: 'grid',
     gridTemplateColumns: '1fr 1fr',

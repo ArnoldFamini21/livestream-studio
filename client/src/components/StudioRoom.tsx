@@ -57,6 +57,7 @@ import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
 import { createActiveSpeakerTracker } from '../utils/activeSpeaker.ts';
+import { planMeshCapacity } from '../utils/meshCapacityPlanner.ts';
 import {
   groupShortcutsByCategory,
   resolveShortcutId,
@@ -1301,6 +1302,20 @@ export function StudioRoom() {
     isRecording: isRecording || isLocalRecording || Boolean(sessionRecordingStartedAt),
     isLive,
   });
+  const meshCapacity = useMemo(() => {
+    const onStageRemote = sessionPeerConnectionParticipants.filter(
+      (participant) => participant.status === 'on-stage' || participant.status === 'backstage'
+    );
+    const onStageCount = onStageRemote.length + (myParticipant ? 1 : 0);
+    let uplinkKbps: number | null = null;
+    for (const participant of onStageRemote) {
+      const available = participant.health?.availableOutgoingBitrateKbps;
+      if (typeof available === 'number' && Number.isFinite(available)) {
+        uplinkKbps = Math.max(uplinkKbps ?? 0, available);
+      }
+    }
+    return planMeshCapacity({ participantCount: onStageCount, uplinkKbps });
+  }, [myParticipant, sessionPeerConnectionParticipants]);
   const recordingReadiness = useMemo(() => {
     const liveTracks = (tracks: MediaStreamTrack[] | undefined) => (
       (tracks || []).filter((track) => track.readyState === 'live')
@@ -5325,6 +5340,7 @@ export function StudioRoom() {
         {showHealthPanel && (
           <SessionHealthPanel
             summary={sessionHealth}
+            meshCapacity={meshCapacity}
             onClose={() => setShowHealthPanel(false)}
           />
         )}
@@ -6338,6 +6354,7 @@ export function StudioRoom() {
       {showHealthPanel && (
         <SessionHealthPanel
           summary={sessionHealth}
+          meshCapacity={meshCapacity}
           onClose={() => setShowHealthPanel(false)}
         />
       )}
