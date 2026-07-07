@@ -38,6 +38,13 @@ import {
 } from '../utils/recordingClips.ts';
 import { buildClipSuggestions, type ClipSuggestion, type ClipSuggestionCaptionSegment } from '../utils/clipSuggestions.ts';
 import { hasEnoughCaptionsForAiHighlights, requestAiHighlights } from '../utils/aiHighlights.ts';
+import {
+  buildEpisodeContentText,
+  buildTranscriptFromCaptions,
+  formatEpisodeChapterTimecode,
+  requestEpisodeContent,
+  type EpisodeContentResult,
+} from '../utils/episodeContent.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -2464,6 +2471,10 @@ export function RecordingPanel({
   const [generatedTranscript, setGeneratedTranscript] = useState<RecordingTranscriptionResult | null>(null);
   const [isGeneratingTranscript, setIsGeneratingTranscript] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [episodeContent, setEpisodeContent] = useState<EpisodeContentResult | null>(null);
+  const [isGeneratingEpisodeContent, setIsGeneratingEpisodeContent] = useState(false);
+  const [episodeContentError, setEpisodeContentError] = useState<string | null>(null);
+  const [episodeContentCopied, setEpisodeContentCopied] = useState(false);
 
   const {
     authorize,
@@ -2566,6 +2577,9 @@ export function RecordingPanel({
     setIsRefreshingMediaExport(false);
     setGeneratedTranscript(null);
     setTranscriptionError(null);
+    setEpisodeContent(null);
+    setEpisodeContentError(null);
+    setEpisodeContentCopied(false);
   }, []);
 
   const handleStart = useCallback(async () => {
@@ -2615,6 +2629,8 @@ export function RecordingPanel({
       setIsRefreshingMediaExport(false);
       setGeneratedTranscript(null);
       setTranscriptionError(null);
+      setEpisodeContent(null);
+      setEpisodeContentError(null);
       const resultFiles = result.files.length > 0
         ? result.files
         : [
@@ -2939,6 +2955,55 @@ export function RecordingPanel({
       setIsGeneratingTranscript(false);
     }
   }, [captionLanguage, transcriptionCandidate]);
+
+  const episodeContentTranscript = useMemo(() => {
+    if (generatedTranscript?.text.trim()) return generatedTranscript.text.trim();
+    return buildTranscriptFromCaptions(getFinalCaptionSegments(captionSegments).map((segment) => ({
+      speakerName: segment.speakerName,
+      text: segment.text,
+      timestamp: segment.timestamp,
+    })));
+  }, [captionSegments, generatedTranscript]);
+
+  const canGenerateEpisodeContent = episodeContentTranscript.trim().length >= 40;
+
+  const handleGenerateEpisodeContent = useCallback(async () => {
+    if (isGeneratingEpisodeContent) return;
+    if (!canGenerateEpisodeContent) {
+      setEpisodeContentError('Generate a transcript or record with captions first.');
+      return;
+    }
+    setIsGeneratingEpisodeContent(true);
+    setEpisodeContentError(null);
+    setEpisodeContentCopied(false);
+    try {
+      const result = await requestEpisodeContent({
+        transcript: episodeContentTranscript,
+        durationSeconds: lastRecordingDurationSeconds,
+      });
+      setEpisodeContent(result);
+    } catch (err) {
+      setEpisodeContentError(err instanceof Error ? err.message : 'Episode content generation failed.');
+    } finally {
+      setIsGeneratingEpisodeContent(false);
+    }
+  }, [canGenerateEpisodeContent, episodeContentTranscript, isGeneratingEpisodeContent, lastRecordingDurationSeconds]);
+
+  const handleCopyEpisodeContent = useCallback(async () => {
+    if (!episodeContent) return;
+    try {
+      await copyTextToClipboard(buildEpisodeContentText(episodeContent));
+      setEpisodeContentCopied(true);
+      globalThis.setTimeout(() => setEpisodeContentCopied(false), 2000);
+    } catch {
+      setEpisodeContentError('Could not copy show notes to the clipboard.');
+    }
+  }, [episodeContent]);
+
+  const handleDownloadEpisodeContent = useCallback(() => {
+    if (!episodeContent) return;
+    downloadTextFile(buildEpisodeContentText(episodeContent), `${roomName || 'episode'}-show-notes.md`, 'text/markdown;charset=utf-8');
+  }, [episodeContent, roomName]);
 
   const handleDownloadGeneratedTranscript = useCallback(() => {
     if (!generatedTranscript) return;
@@ -3436,6 +3501,8 @@ export function RecordingPanel({
       setPreview(null);
       setGeneratedTranscript(null);
       setTranscriptionError(null);
+      setEpisodeContent(null);
+      setEpisodeContentError(null);
       if (onReplaceRecordingMarkers) {
         onReplaceRecordingMarkers(session.markers || []);
       } else {
@@ -4398,6 +4465,75 @@ export function RecordingPanel({
                     </button>
                   </div>
                   <p style={styles.transcriptPreview}>{generatedTranscript.text}</p>
+                </div>
+              )}
+              {canGenerateEpisodeContent && (
+                <button
+                  className="hover-lift"
+                  style={{
+                    ...styles.transcriptBtn,
+                    opacity: isGeneratingEpisodeContent ? 0.6 : 1,
+                  }}
+                  onClick={handleGenerateEpisodeContent}
+                  disabled={isGeneratingEpisodeContent}
+                  title="Generate titles, a description, chapters, and social posts from the transcript"
+                >
+                  {isGeneratingEpisodeContent
+                    ? 'Generating Show Notes...'
+                    : episodeContent
+                      ? 'Regenerate Show Notes'
+                      : 'AI Show Notes'}
+                </button>
+              )}
+              {episodeContentError && <div style={styles.errorBadge}>{episodeContentError}</div>}
+              {episodeContent && (
+                <div style={styles.episodeContentBox}>
+                  <div style={styles.episodeContentHeader}>
+                    <span style={styles.episodeContentTitle}>AI Show Notes</span>
+                    <div style={styles.episodeContentActions}>
+                      <button type="button" style={styles.transcriptDownloadBtn} onClick={handleCopyEpisodeContent}>
+                        {episodeContentCopied ? 'Copied' : 'Copy'}
+                      </button>
+                      <button type="button" style={styles.transcriptDownloadBtn} onClick={handleDownloadEpisodeContent}>
+                        MD
+                      </button>
+                    </div>
+                  </div>
+                  {episodeContent.titles.length > 0 && (
+                    <div style={styles.episodeContentSection}>
+                      <span style={styles.episodeContentSectionTitle}>Title options</span>
+                      {episodeContent.titles.map((title, index) => (
+                        <div key={`title-${index}`} style={styles.episodeContentLine}>{title}</div>
+                      ))}
+                    </div>
+                  )}
+                  {episodeContent.description.trim() && (
+                    <div style={styles.episodeContentSection}>
+                      <span style={styles.episodeContentSectionTitle}>Description</span>
+                      <p style={styles.episodeContentDescription}>{episodeContent.description}</p>
+                    </div>
+                  )}
+                  {episodeContent.chapters.length > 0 && (
+                    <div style={styles.episodeContentSection}>
+                      <span style={styles.episodeContentSectionTitle}>Chapters</span>
+                      {episodeContent.chapters.map((chapter, index) => (
+                        <div key={`chapter-${index}`} style={styles.episodeContentLine}>
+                          <span style={styles.episodeContentChapterTime}>
+                            {formatEpisodeChapterTimecode(chapter.seconds)}
+                          </span>{' '}
+                          {chapter.title}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {episodeContent.socialPosts.length > 0 && (
+                    <div style={styles.episodeContentSection}>
+                      <span style={styles.episodeContentSectionTitle}>Social posts</span>
+                      {episodeContent.socialPosts.map((post, index) => (
+                        <p key={`post-${index}`} style={styles.episodeContentDescription}>{post}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               <button
@@ -5968,6 +6104,59 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
     fontSize: 11,
     lineHeight: 1.4,
+  },
+  episodeContentBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: 10,
+    borderRadius: 10,
+    background: 'var(--bg-tertiary)',
+    border: '1px solid var(--border)',
+  },
+  episodeContentHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  episodeContentTitle: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+  },
+  episodeContentActions: {
+    display: 'flex',
+    gap: 6,
+  },
+  episodeContentSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+  },
+  episodeContentSectionTitle: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.4,
+  },
+  episodeContentLine: {
+    fontSize: 11,
+    color: 'var(--text-secondary)',
+    lineHeight: 1.4,
+  },
+  episodeContentChapterTime: {
+    color: 'var(--accent)',
+    fontVariantNumeric: 'tabular-nums' as const,
+    fontWeight: 600,
+  },
+  episodeContentDescription: {
+    margin: 0,
+    fontSize: 11,
+    color: 'var(--text-secondary)',
+    lineHeight: 1.45,
+    whiteSpace: 'pre-wrap' as const,
   },
   driveBtn: {
     display: 'flex',

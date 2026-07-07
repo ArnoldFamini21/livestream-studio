@@ -182,6 +182,7 @@
 - [x] Separate screen share recording
 - [x] Audio-only export (podcast ZIP with isolated audio tracks, WAV stems when supported, captions, and markers)
 - [x] Transcript generation (speech-to-text via Whisper API)
+- [x] AI show notes: titles, description, timestamped chapters, and social posts from the transcript via `/api/episode-content` (opt-in with OPENAI_API_KEY, copy/download as Markdown)
 
 ### 8B. Clip Creation (StreamYard/Riverside-style clips)
 - [x] In-browser clip trimming on any saved recording track (set start/end in the preview player)
