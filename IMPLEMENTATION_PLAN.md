@@ -191,7 +191,7 @@
 - [x] Studio UI option to request media-server clip exports alongside browser clips (server clip button in the preview player with status refresh and MP4 downloads)
 - [x] Suggested highlight clips from markers and live captions (marker moments, audience questions, highlight phrases, densest speech burst as one-click clip ranges)
 - [x] Vertical 9:16 and square 1:1 clip formats for Shorts/Reels/TikTok (center-crop in browser capture and media-server FFmpeg exports)
-- [ ] LLM-ranked highlight suggestions once a hosted model key is configured
+- [x] LLM-ranked highlight suggestions via `/api/highlights` (OpenAI chat completions; opt-in with OPENAI_API_KEY, degrades gracefully to heuristic suggestions when unset)
 
 ### 8C. Recording Management
 - [x] Recording dashboard: list all past recordings

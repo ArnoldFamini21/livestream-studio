@@ -15,6 +15,7 @@ import { brandKitRouter, configureBrandKitCatalogStore } from './routes/brandKit
 import { configureWorkspaceStudioCatalogStore, workspaceStudioRouter } from './routes/workspaceStudios.js';
 import { configureWorkspaceTeamCatalogStore, workspaceTeamRouter } from './routes/workspaceTeam.js';
 import { transcriptionRouter } from './routes/transcriptions.js';
+import { highlightRouter } from './routes/highlights.js';
 import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { createAccountAuthStoreFromEnv } from './services/accountAuth.js';
@@ -212,6 +213,8 @@ app.use(
   }),
   transcriptionRouter
 );
+
+app.use('/api/highlights', transcriptionLimiter.middleware, highlightRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({

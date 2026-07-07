@@ -12,7 +12,7 @@ export interface ClipSuggestionMarker {
   seconds: number;
 }
 
-export type ClipSuggestionReason = 'marker' | 'question' | 'highlight-phrase' | 'speech-burst';
+export type ClipSuggestionReason = 'marker' | 'question' | 'highlight-phrase' | 'speech-burst' | 'ai';
 
 export interface ClipSuggestion {
   id: string;
@@ -63,7 +63,7 @@ const HIGHLIGHT_PHRASES = [
   'pro tip',
 ];
 
-interface TimedCaptionSegment {
+export interface TimedCaptionSegment {
   seconds: number;
   text: string;
   speakerName: string;
@@ -75,7 +75,7 @@ function truncateQuote(text: string): string {
   return `${cleaned.slice(0, MAX_LABEL_QUOTE_LENGTH - 3).trimEnd()}...`;
 }
 
-function toTimedCaptionSegments(segments: ClipSuggestionCaptionSegment[]): TimedCaptionSegment[] {
+export function toTimedCaptionSegments(segments: ClipSuggestionCaptionSegment[]): TimedCaptionSegment[] {
   const finals = segments
     .filter((segment) => segment && !segment.interim && typeof segment.text === 'string' && segment.text.trim())
     .map((segment) => ({ segment, timeMs: Date.parse(segment.timestamp) }))
@@ -234,5 +234,35 @@ export function buildClipSuggestions(input: ClipSuggestionInput): ClipSuggestion
     if (selected.some((existing) => overlapRatio(existing, candidate) > OVERLAP_MERGE_THRESHOLD)) continue;
     selected.push(candidate);
   }
+  return selected.sort((a, b) => a.startSeconds - b.startSeconds);
+}
+
+export interface AiHighlightSuggestion {
+  startSeconds: number;
+  endSeconds: number;
+  title: string;
+  reason?: string;
+}
+
+export function mapAiHighlightSuggestions(
+  highlights: AiHighlightSuggestion[],
+  durationSeconds?: number | null
+): ClipSuggestion[] {
+  const selected: ClipSuggestion[] = [];
+  highlights.forEach((highlight, index) => {
+    if (!Number.isFinite(highlight.startSeconds) || !Number.isFinite(highlight.endSeconds)) return;
+    const window = clampSuggestionWindow(highlight.startSeconds, highlight.endSeconds, durationSeconds);
+    if (!window) return;
+    const title = highlight.title?.trim() || 'AI highlight';
+    const suggestion: ClipSuggestion = {
+      id: `ai-${index}`,
+      label: truncateQuote(title),
+      reason: 'ai',
+      ...window,
+      score: 100 - index,
+    };
+    if (selected.some((existing) => overlapRatio(existing, suggestion) > OVERLAP_MERGE_THRESHOLD)) return;
+    selected.push(suggestion);
+  });
   return selected.sort((a, b) => a.startSeconds - b.startSeconds);
 }

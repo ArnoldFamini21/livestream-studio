@@ -36,7 +36,8 @@ import {
   roundClipSeconds,
   type ClipAspectPreset,
 } from '../utils/recordingClips.ts';
-import { buildClipSuggestions, type ClipSuggestion } from '../utils/clipSuggestions.ts';
+import { buildClipSuggestions, type ClipSuggestion, type ClipSuggestionCaptionSegment } from '../utils/clipSuggestions.ts';
+import { hasEnoughCaptionsForAiHighlights, requestAiHighlights } from '../utils/aiHighlights.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -2426,6 +2427,10 @@ export function RecordingPanel({
   const [serverClipError, setServerClipError] = useState<string | null>(null);
   const [serverClipDownloadingId, setServerClipDownloadingId] = useState<string | null>(null);
   const [isRefreshingServerClip, setIsRefreshingServerClip] = useState(false);
+  const [aiSuggestions, setAiSuggestions] = useState<ClipSuggestion[]>([]);
+  const [isRequestingAiHighlights, setIsRequestingAiHighlights] = useState(false);
+  const [aiHighlightError, setAiHighlightError] = useState<string | null>(null);
+  const [aiHighlightNotice, setAiHighlightNotice] = useState<string | null>(null);
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [libraryTrackFiles, setLibraryTrackFiles] = useState<Record<string, RecordedFile[]>>({});
@@ -3104,6 +3109,10 @@ export function RecordingPanel({
     setServerClipError(null);
     setServerClipDownloadingId(null);
     setIsRefreshingServerClip(false);
+    setAiSuggestions([]);
+    setIsRequestingAiHighlights(false);
+    setAiHighlightError(null);
+    setAiHighlightNotice(null);
   }, [preview?.url]);
 
   const previewServerClipUploadId = useMemo(() => {
@@ -3115,19 +3124,30 @@ export function RecordingPanel({
     return session?.mediaExport?.uploadId || null;
   }, [activeSessionId, mediaExportJob?.uploadId, onRequestRecordingClipExport, preview?.sessionId, sessions]);
 
-  const clipSuggestions = useMemo(() => {
-    if (!preview) return [];
+  const clipSuggestionContext = useMemo(() => {
+    if (!preview) {
+      return { captionSegments: [] as ClipSuggestionCaptionSegment[], durationSeconds: null as number | null, isActiveSession: false };
+    }
     const isActiveSession = preview.sessionId !== null && preview.sessionId === activeSessionId;
     const previewSession = preview.sessionId
       ? sessions.find((item) => item.id === preview.sessionId)
       : undefined;
-    return buildClipSuggestions({
+    const segments: ClipSuggestionCaptionSegment[] = isActiveSession
+      ? captionSegments.map((segment) => ({
+          speakerName: segment.speakerName,
+          text: segment.text,
+          timestamp: segment.timestamp,
+          interim: segment.interim,
+        }))
+      : [];
+    return {
+      captionSegments: segments,
       markers: isActiveSession ? sortedRecordingMarkers : previewSession?.markers || [],
-      captionSegments: isActiveSession ? captionSegments : [],
       durationSeconds: isActiveSession
         ? lastRecordingDurationSeconds
         : previewSession?.durationSeconds ?? null,
-    });
+      isActiveSession,
+    };
   }, [
     activeSessionId,
     captionSegments,
@@ -3136,6 +3156,49 @@ export function RecordingPanel({
     sessions,
     sortedRecordingMarkers,
   ]);
+
+  const heuristicClipSuggestions = useMemo(() => (
+    preview
+      ? buildClipSuggestions({
+          markers: clipSuggestionContext.markers,
+          captionSegments: clipSuggestionContext.captionSegments,
+          durationSeconds: clipSuggestionContext.durationSeconds,
+        })
+      : []
+  ), [clipSuggestionContext, preview]);
+
+  const clipSuggestions = aiSuggestions.length > 0 ? aiSuggestions : heuristicClipSuggestions;
+
+  const canRequestAiHighlights = useMemo(
+    () => hasEnoughCaptionsForAiHighlights(clipSuggestionContext.captionSegments),
+    [clipSuggestionContext.captionSegments]
+  );
+
+  const handleRequestAiHighlights = useCallback(async () => {
+    if (isRequestingAiHighlights) return;
+    const captureUrl = preview?.url ?? null;
+    setIsRequestingAiHighlights(true);
+    setAiHighlightError(null);
+    setAiHighlightNotice(null);
+    try {
+      const result = await requestAiHighlights({
+        captionSegments: clipSuggestionContext.captionSegments,
+        durationSeconds: clipSuggestionContext.durationSeconds,
+      });
+      if (previewUrlRef.current !== captureUrl) return;
+      if (result.suggestions.length === 0) {
+        setAiHighlightNotice('The model did not find standout highlights in this recording.');
+      } else {
+        setAiSuggestions(result.suggestions);
+      }
+    } catch (err) {
+      if (previewUrlRef.current !== captureUrl) return;
+      const message = err instanceof Error ? err.message : 'AI highlight suggestions failed';
+      setAiHighlightError(message);
+    } finally {
+      if (previewUrlRef.current === captureUrl) setIsRequestingAiHighlights(false);
+    }
+  }, [clipSuggestionContext, isRequestingAiHighlights, preview?.url]);
 
   const handleApplyClipSuggestion = useCallback((suggestion: ClipSuggestion) => {
     setClipStartSeconds(suggestion.startSeconds);
@@ -4112,26 +4175,54 @@ export function RecordingPanel({
                       ))}
                     </div>
                   )}
-                  {clipSuggestions.length > 0 && (
+                  {(clipSuggestions.length > 0 || canRequestAiHighlights) && (
                     <div style={styles.clipSuggestions}>
-                      <span style={styles.clipSuggestionsTitle}>Suggested clips</span>
-                      <div style={styles.clipSuggestionChips}>
-                        {clipSuggestions.map((suggestion) => (
+                      <div style={styles.clipSuggestionsHeader}>
+                        <span style={styles.clipSuggestionsTitle}>
+                          {aiSuggestions.length > 0 ? 'AI-suggested clips' : 'Suggested clips'}
+                        </span>
+                        {canRequestAiHighlights && (
                           <button
-                            key={suggestion.id}
                             type="button"
                             style={{
-                              ...styles.clipSuggestionChip,
-                              ...(isExportingClip ? styles.clipBtnDisabled : {}),
+                              ...styles.clipAiBtn,
+                              ...(isRequestingAiHighlights ? styles.clipBtnDisabled : {}),
                             }}
-                            onClick={() => handleApplyClipSuggestion(suggestion)}
-                            disabled={isExportingClip}
-                            title={`Set the clip range to ${formatClipTimecode(suggestion.startSeconds)} - ${formatClipTimecode(suggestion.endSeconds)}`}
+                            onClick={handleRequestAiHighlights}
+                            disabled={isRequestingAiHighlights}
+                            title="Ask the studio AI to pick the most shareable moments from the captions"
                           >
-                            {formatClipTimecode(suggestion.startSeconds)} · {suggestion.label}
+                            {isRequestingAiHighlights
+                              ? 'Finding highlights...'
+                              : aiSuggestions.length > 0
+                                ? 'Refresh AI picks'
+                                : 'AI highlights'}
                           </button>
-                        ))}
+                        )}
                       </div>
+                      {clipSuggestions.length > 0 && (
+                        <div style={styles.clipSuggestionChips}>
+                          {clipSuggestions.map((suggestion) => (
+                            <button
+                              key={suggestion.id}
+                              type="button"
+                              style={{
+                                ...styles.clipSuggestionChip,
+                                ...(suggestion.reason === 'ai' ? styles.clipSuggestionChipAi : {}),
+                                ...(isExportingClip ? styles.clipBtnDisabled : {}),
+                              }}
+                              onClick={() => handleApplyClipSuggestion(suggestion)}
+                              disabled={isExportingClip}
+                              title={`Set the clip range to ${formatClipTimecode(suggestion.startSeconds)} - ${formatClipTimecode(suggestion.endSeconds)}`}
+                            >
+                              {suggestion.reason === 'ai' ? '✨ ' : ''}
+                              {formatClipTimecode(suggestion.startSeconds)} · {suggestion.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {aiHighlightError && <div style={styles.clipError}>{aiHighlightError}</div>}
+                      {aiHighlightNotice && <div style={styles.clipHint}>{aiHighlightNotice}</div>}
                     </div>
                   )}
                   {isExportingClip && (
@@ -5628,12 +5719,28 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 4,
   },
+  clipSuggestionsHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   clipSuggestionsTitle: {
     fontSize: 10,
     fontWeight: 600,
     color: 'var(--text-muted)',
     textTransform: 'uppercase' as const,
     letterSpacing: 0.4,
+  },
+  clipAiBtn: {
+    padding: '3px 8px',
+    borderRadius: 999,
+    border: '1px solid var(--accent)',
+    background: 'var(--accent-subtle)',
+    color: 'var(--accent)',
+    fontSize: 10,
+    fontWeight: 600,
+    cursor: 'pointer',
   },
   clipSuggestionChips: {
     display: 'flex',
@@ -5653,6 +5760,11 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
+  },
+  clipSuggestionChipAi: {
+    borderColor: 'var(--accent)',
+    color: 'var(--text-primary)',
+    background: 'var(--accent-subtle)',
   },
   clipError: {
     fontSize: 11,
