@@ -26,6 +26,15 @@ import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata
 import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
 import { getBrowserRecordingFormatSummary, getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
+import {
+  buildClipFileName,
+  buildClipLabel,
+  captureRecordingClip,
+  formatClipTimecode,
+  getClipRangeIssue,
+  getClipTrackKind,
+  roundClipSeconds,
+} from '../utils/recordingClips.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -2376,7 +2385,29 @@ export function RecordingPanel({
   const [isStopping, setIsStopping] = useState(false);
   const [recordingControlAction, setRecordingControlAction] = useState<'start' | 'pause' | 'resume' | 'stop' | 'cancel' | 'restart' | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{ url: string; type: string; label: string } | null>(null);
+  const [preview, setPreview] = useState<{
+    url: string;
+    type: string;
+    label: string;
+    file: RecordedFile;
+    sourceName: string;
+  } | null>(null);
+  const previewMediaRef = useRef<HTMLMediaElement | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
+  const [clipStartSeconds, setClipStartSeconds] = useState<number | null>(null);
+  const [clipEndSeconds, setClipEndSeconds] = useState<number | null>(null);
+  const [isExportingClip, setIsExportingClip] = useState(false);
+  const [clipExportProgress, setClipExportProgress] = useState(0);
+  const [clipExportError, setClipExportError] = useState<string | null>(null);
+  const [clipResult, setClipResult] = useState<{
+    blob: Blob;
+    fileName: string;
+    label: string;
+    durationSeconds: number;
+    kind: RecordedFile['kind'];
+  } | null>(null);
+  const [isSavingClip, setIsSavingClip] = useState(false);
+  const [clipSaveMessage, setClipSaveMessage] = useState<string | null>(null);
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [libraryTrackFiles, setLibraryTrackFiles] = useState<Record<string, RecordedFile[]>>({});
@@ -3025,16 +3056,121 @@ export function RecordingPanel({
     onClearRecordingMarkers?.();
   }, [onClearRecordingMarkers, resetCompletedRecordingState]);
 
-  const handlePreviewFile = useCallback((file: RecordedFile) => {
+  const handlePreviewFile = useCallback((file: RecordedFile, sourceName?: string) => {
     setPreview((current) => {
       if (current) URL.revokeObjectURL(current.url);
       return {
         url: URL.createObjectURL(file.blob),
         type: getRecordingFileType(file),
         label: file.label,
+        file,
+        sourceName: sourceName || roomName,
       };
     });
+  }, [roomName]);
+
+  useEffect(() => {
+    previewUrlRef.current = preview?.url ?? null;
+    setClipStartSeconds(null);
+    setClipEndSeconds(null);
+    setIsExportingClip(false);
+    setClipExportProgress(0);
+    setClipExportError(null);
+    setClipResult(null);
+    setIsSavingClip(false);
+    setClipSaveMessage(null);
+  }, [preview?.url]);
+
+  const handleSetClipStart = useCallback(() => {
+    const element = previewMediaRef.current;
+    if (!element) return;
+    const seconds = roundClipSeconds(element.currentTime);
+    setClipStartSeconds(seconds);
+    setClipEndSeconds((current) => (current !== null && current <= seconds ? null : current));
+    setClipExportError(null);
   }, []);
+
+  const handleSetClipEnd = useCallback(() => {
+    const element = previewMediaRef.current;
+    if (!element) return;
+    const seconds = roundClipSeconds(element.currentTime);
+    setClipEndSeconds(seconds);
+    setClipExportError(null);
+  }, []);
+
+  const handleExportClip = useCallback(async () => {
+    if (!preview || isExportingClip) return;
+    const range = {
+      startSeconds: clipStartSeconds ?? Number.NaN,
+      endSeconds: clipEndSeconds ?? Number.NaN,
+    };
+    const issue = getClipRangeIssue(range);
+    if (issue) {
+      setClipExportError(issue);
+      return;
+    }
+
+    const captureUrl = preview.url;
+    const hasVideo = preview.type.startsWith('video/');
+    setIsExportingClip(true);
+    setClipExportProgress(0);
+    setClipExportError(null);
+    setClipResult(null);
+    setClipSaveMessage(null);
+    try {
+      const captured = await captureRecordingClip(
+        { blob: preview.file.blob, hasVideo },
+        range,
+        (fraction) => {
+          if (previewUrlRef.current === captureUrl) setClipExportProgress(fraction);
+        }
+      );
+      if (previewUrlRef.current !== captureUrl) return;
+      setClipResult({
+        blob: captured.blob,
+        fileName: buildClipFileName(preview.sourceName, preview.file.label, range, captured.extension),
+        label: buildClipLabel(preview.file.label, range),
+        durationSeconds: captured.durationSeconds,
+        kind: getClipTrackKind(preview.file.kind, hasVideo),
+      });
+    } catch (err) {
+      if (previewUrlRef.current !== captureUrl) return;
+      const message = err instanceof Error ? err.message : 'Clip export failed';
+      setClipExportError(message);
+    } finally {
+      if (previewUrlRef.current === captureUrl) setIsExportingClip(false);
+    }
+  }, [clipEndSeconds, clipStartSeconds, isExportingClip, preview]);
+
+  const handleDownloadClip = useCallback(() => {
+    if (!clipResult) return;
+    downloadBlob(clipResult.blob, clipResult.fileName);
+  }, [clipResult]);
+
+  const handleSaveClipToLibrary = useCallback(async () => {
+    if (!clipResult || !preview || isSavingClip) return;
+    setIsSavingClip(true);
+    setClipExportError(null);
+    try {
+      const session = await saveSession({
+        roomName: `${preview.sourceName} clip`,
+        durationSeconds: clipResult.durationSeconds,
+        files: [{
+          label: clipResult.label,
+          blob: clipResult.blob,
+          fileName: clipResult.fileName,
+          kind: clipResult.kind,
+        }],
+      });
+      void syncRecordingCatalog(session);
+      setClipSaveMessage('Clip saved to the recording library.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to save the clip to the library';
+      setClipExportError(message);
+    } finally {
+      setIsSavingClip(false);
+    }
+  }, [clipResult, isSavingClip, preview, saveSession, syncRecordingCatalog]);
 
   const handleToggleSessionTracks = useCallback(async (session: LocalRecordingSession) => {
     setLibraryTrackError(null);
@@ -3728,10 +3864,109 @@ export function RecordingPanel({
                   <button style={styles.previewClose} onClick={() => setPreview(null)}>Close</button>
                 </div>
                 {preview.type.startsWith('audio/') ? (
-                  <audio src={preview.url} controls style={styles.previewMedia} />
+                  <audio
+                    ref={(element) => { previewMediaRef.current = element; }}
+                    src={preview.url}
+                    controls
+                    style={styles.previewMedia}
+                  />
                 ) : (
-                  <video src={preview.url} controls style={styles.previewMedia} />
+                  <video
+                    ref={(element) => { previewMediaRef.current = element; }}
+                    src={preview.url}
+                    controls
+                    style={styles.previewMedia}
+                  />
                 )}
+                <div style={styles.clipSection}>
+                  <div style={styles.clipHeader}>
+                    <span style={styles.clipTitle}>Create clip</span>
+                    <span style={styles.clipRangeText}>
+                      {clipStartSeconds !== null ? formatClipTimecode(clipStartSeconds) : '--:--'}
+                      {' -> '}
+                      {clipEndSeconds !== null ? formatClipTimecode(clipEndSeconds) : '--:--'}
+                      {clipStartSeconds !== null && clipEndSeconds !== null && clipEndSeconds > clipStartSeconds
+                        ? ` (${formatClipTimecode(clipEndSeconds - clipStartSeconds)})`
+                        : ''}
+                    </span>
+                  </div>
+                  <div style={styles.clipControls}>
+                    <button
+                      type="button"
+                      style={styles.clipBtn}
+                      onClick={handleSetClipStart}
+                      disabled={isExportingClip}
+                      title="Mark the clip start at the current playback position"
+                    >
+                      Set start
+                    </button>
+                    <button
+                      type="button"
+                      style={styles.clipBtn}
+                      onClick={handleSetClipEnd}
+                      disabled={isExportingClip}
+                      title="Mark the clip end at the current playback position"
+                    >
+                      Set end
+                    </button>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.clipBtn,
+                        ...styles.clipBtnPrimary,
+                        ...(isExportingClip || clipStartSeconds === null || clipEndSeconds === null
+                          ? styles.clipBtnDisabled
+                          : {}),
+                      }}
+                      onClick={handleExportClip}
+                      disabled={isExportingClip || clipStartSeconds === null || clipEndSeconds === null}
+                    >
+                      {isExportingClip ? `Exporting ${Math.round(clipExportProgress * 100)}%` : 'Export clip'}
+                    </button>
+                  </div>
+                  {isExportingClip && (
+                    <div style={styles.progressContainer}>
+                      <div style={styles.progressTrack}>
+                        <div
+                          style={{
+                            ...styles.progressBar,
+                            width: `${Math.round(clipExportProgress * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <span style={styles.progressText}>{Math.round(clipExportProgress * 100)}%</span>
+                    </div>
+                  )}
+                  <div style={styles.clipHint}>
+                    Pause the player where you want the clip to begin and end, then use Set start and Set end.
+                    Clips export in real time, so a 30-second clip takes about 30 seconds.
+                  </div>
+                  {clipExportError && <div style={styles.clipError}>{clipExportError}</div>}
+                  {clipResult && (
+                    <div style={styles.clipResultRow}>
+                      <span style={styles.clipResultLabel}>
+                        {clipResult.fileName} ({formatFileSize(clipResult.blob.size)})
+                      </span>
+                      <div style={styles.clipResultActions}>
+                        <button type="button" style={styles.clipBtn} onClick={handleDownloadClip}>
+                          Download
+                        </button>
+                        <button
+                          type="button"
+                          style={{
+                            ...styles.clipBtn,
+                            ...(isSavingClip || clipSaveMessage ? styles.clipBtnDisabled : {}),
+                          }}
+                          onClick={handleSaveClipToLibrary}
+                          disabled={isSavingClip || Boolean(clipSaveMessage)}
+                        >
+                          {isSavingClip ? 'Saving...' : clipSaveMessage ? 'Saved' : 'Save to library'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {clipSaveMessage && <div style={styles.clipSaveMessage}>{clipSaveMessage}</div>}
+                </div>
               </div>
             )}
 
@@ -4156,7 +4391,7 @@ export function RecordingPanel({
                                 ...styles.sessionTrackBtn,
                                 ...(!previewable ? styles.sessionTrackBtnDisabled : {}),
                               }}
-                              onClick={() => handlePreviewFile(file)}
+                              onClick={() => handlePreviewFile(file, session.roomName)}
                               disabled={!previewable}
                               title={previewable ? `Preview ${file.label}` : 'Preview unavailable for this track'}
                             >
@@ -5031,6 +5266,89 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: 170,
     borderRadius: 8,
     background: 'black',
+  },
+  clipSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    paddingTop: 8,
+    borderTop: '1px solid var(--border)',
+  },
+  clipHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  clipTitle: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.4,
+  },
+  clipRangeText: {
+    fontSize: 11,
+    color: 'var(--text-secondary)',
+    fontVariantNumeric: 'tabular-nums' as const,
+    whiteSpace: 'nowrap' as const,
+  },
+  clipControls: {
+    display: 'flex',
+    gap: 6,
+    flexWrap: 'wrap' as const,
+  },
+  clipBtn: {
+    flex: 1,
+    minWidth: 72,
+    padding: '5px 8px',
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  clipBtnPrimary: {
+    background: 'var(--accent)',
+    borderColor: 'var(--accent)',
+    color: 'white',
+  },
+  clipBtnDisabled: {
+    opacity: 0.55,
+    cursor: 'default',
+  },
+  clipHint: {
+    fontSize: 10,
+    lineHeight: 1.5,
+    color: 'var(--text-muted)',
+  },
+  clipError: {
+    fontSize: 11,
+    color: '#fca5a5',
+  },
+  clipResultRow: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    padding: 8,
+    borderRadius: 8,
+    background: 'var(--bg-surface)',
+    border: '1px solid var(--border)',
+  },
+  clipResultLabel: {
+    fontSize: 11,
+    color: 'var(--text-primary)',
+    wordBreak: 'break-all' as const,
+  },
+  clipResultActions: {
+    display: 'flex',
+    gap: 6,
+  },
+  clipSaveMessage: {
+    fontSize: 11,
+    color: '#86efac',
   },
 
   // Progress

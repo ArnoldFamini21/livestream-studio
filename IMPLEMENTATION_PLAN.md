@@ -183,7 +183,14 @@
 - [x] Audio-only export (podcast ZIP with isolated audio tracks, WAV stems when supported, captions, and markers)
 - [x] Transcript generation (speech-to-text via Whisper API)
 
-### 8B. Recording Management
+### 8B. Clip Creation (StreamYard/Riverside-style clips)
+- [x] In-browser clip trimming on any saved recording track (set start/end in the preview player)
+- [x] Real-time clip export via canvas + WebAudio + MediaRecorder with live progress (no media server required)
+- [x] Download exported clips or save them back into the recording library as new sessions
+- [ ] Frame-accurate media-server FFmpeg clip export for uploaded tracks
+- [ ] AI-suggested highlight clips from transcripts
+
+### 8C. Recording Management
 - [x] Recording dashboard: list all past recordings
 - [x] Playback preview in browser for saved recording tracks
 - [x] Download individual tracks and session ZIP bundles
