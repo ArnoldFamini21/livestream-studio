@@ -1,6 +1,6 @@
 import { getJson } from './apiClient.ts';
 
-export type ClientIceConfigSource = 'ice_servers_json' | 'split_env' | 'default' | 'unknown';
+export type ClientIceConfigSource = 'ice_servers_json' | 'turn_rest_secret' | 'split_env' | 'default' | 'unknown';
 
 export interface ClientIceConfigStatus {
   source: ClientIceConfigSource;
@@ -138,7 +138,8 @@ function buildDerivedIceConfigStatus(config: RTCConfiguration): ClientIceConfigS
 function normalizeIceConfigStatus(value: unknown, config: RTCConfiguration): ClientIceConfigStatus | null {
   if (!isRecord(value)) return null;
   const derived = buildDerivedIceConfigStatus(config);
-  const source = value.source === 'ice_servers_json' || value.source === 'split_env' || value.source === 'default'
+  const source = value.source === 'ice_servers_json' || value.source === 'turn_rest_secret'
+    || value.source === 'split_env' || value.source === 'default'
     ? value.source
     : 'unknown';
   const serverCount = normalizeNonNegativeInteger(value.serverCount) ?? derived.serverCount;

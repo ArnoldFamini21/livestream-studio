@@ -78,6 +78,18 @@ TURN_CREDENTIAL_TYPE=password
 ICE_TRANSPORT_POLICY=all
 ```
 
+**Ephemeral TURN credentials (recommended for coturn / providers that support the TURN REST API).** Instead of shipping a static `TURN_USERNAME`/`TURN_CREDENTIAL`, set a shared secret and the signaling server mints short-lived credentials per request using the coturn `use-auth-secret` scheme (username `<expiry-unix>:<user>`, credential = base64 HMAC-SHA1). This avoids exposing a long-lived password to clients:
+
+```sh
+STUN_URLS=stun:<provider-stun-host>:19302
+TURN_URLS=turn:<provider-turn-host>:3478,turns:<provider-turn-host>:443
+TURN_STATIC_AUTH_SECRET=<same secret configured on coturn: static-auth-secret>
+TURN_CREDENTIAL_TTL_SECONDS=86400
+ICE_TRANSPORT_POLICY=all
+```
+
+When `TURN_STATIC_AUTH_SECRET` and `TURN_URLS` are both set (and `ICE_SERVERS_JSON` is not), `/api/ice-config` reports `source: "turn_rest_secret"` and returns freshly generated credentials on every request. Configure coturn with a matching `static-auth-secret` and `use-auth-secret`.
+
 `/health` and `/api/ice-config` expose non-secret ICE readiness metadata. `ice.turnReady: true` means the signaling server is using configured TURN credentials rather than the fallback.
 
 The media server can also copy recording export artifacts to S3-compatible object storage. Set these on `livestream-studio-media-server` when durable recording handoff is needed:

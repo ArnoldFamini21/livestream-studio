@@ -44,6 +44,10 @@ services:
         sync: false
       - key: TURN_CREDENTIAL_TYPE
         sync: false
+      - key: TURN_STATIC_AUTH_SECRET
+        sync: false
+      - key: TURN_CREDENTIAL_TTL_SECONDS
+        value: "86400"
 
   - type: web
     name: livestream-studio-media-server

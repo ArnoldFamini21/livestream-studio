@@ -1,3 +1,5 @@
+import { createHmac } from 'node:crypto';
+
 export interface StudioIceServer {
   urls: string | string[];
   username?: string;
@@ -5,12 +7,54 @@ export interface StudioIceServer {
   credentialType?: 'password' | 'oauth';
 }
 
+export const DEFAULT_TURN_CREDENTIAL_TTL_SECONDS = 86_400;
+const MIN_TURN_CREDENTIAL_TTL_SECONDS = 60;
+const MAX_TURN_CREDENTIAL_TTL_SECONDS = 7 * 86_400;
+
+export interface TurnRestCredential {
+  username: string;
+  credential: string;
+  expiresAtSeconds: number;
+}
+
+function sanitizeTurnUserId(value: string | undefined): string {
+  if (!value) return 'studio';
+  const cleaned = value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+  return cleaned || 'studio';
+}
+
+export function clampTurnCredentialTtlSeconds(value: unknown): number {
+  const numeric = typeof value === 'string' ? Number(value) : typeof value === 'number' ? value : Number.NaN;
+  if (!Number.isFinite(numeric)) return DEFAULT_TURN_CREDENTIAL_TTL_SECONDS;
+  return Math.min(MAX_TURN_CREDENTIAL_TTL_SECONDS, Math.max(MIN_TURN_CREDENTIAL_TTL_SECONDS, Math.floor(numeric)));
+}
+
+/**
+ * Generate short-lived TURN credentials using the coturn `use-auth-secret`
+ * (TURN REST API) scheme: username is `<expiry-unix>:<userId>` and the
+ * credential is the base64 HMAC-SHA1 of that username keyed by the shared secret.
+ */
+export function generateTurnRestCredential(
+  secret: string,
+  options: { ttlSeconds?: number; userId?: string; nowSeconds?: number } = {}
+): TurnRestCredential {
+  const ttlSeconds = clampTurnCredentialTtlSeconds(options.ttlSeconds ?? DEFAULT_TURN_CREDENTIAL_TTL_SECONDS);
+  const nowSeconds = Number.isFinite(options.nowSeconds)
+    ? Math.floor(options.nowSeconds as number)
+    : Math.floor(Date.now() / 1000);
+  const expiresAtSeconds = nowSeconds + ttlSeconds;
+  const userId = sanitizeTurnUserId(options.userId);
+  const username = `${expiresAtSeconds}:${userId}`;
+  const credential = createHmac('sha1', secret).update(username).digest('base64');
+  return { username, credential, expiresAtSeconds };
+}
+
 export interface StudioIceConfig {
   iceServers: StudioIceServer[];
   iceTransportPolicy: 'all' | 'relay';
 }
 
-export type StudioIceConfigSource = 'ice_servers_json' | 'split_env' | 'default';
+export type StudioIceConfigSource = 'ice_servers_json' | 'turn_rest_secret' | 'split_env' | 'default';
 
 export interface StudioIceConfigStatus {
   source: StudioIceConfigSource;
@@ -164,12 +208,45 @@ function parseJsonConfig(value: string | undefined): StudioIceConfig | null {
   }
 }
 
-export function buildIceConfigWithStatusFromEnv(env: NodeJS.ProcessEnv = process.env): StudioIceConfigWithStatus {
+export interface BuildIceConfigOptions {
+  userId?: string;
+  nowSeconds?: number;
+}
+
+export function buildIceConfigWithStatusFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: BuildIceConfigOptions = {}
+): StudioIceConfigWithStatus {
   const jsonConfig = parseJsonConfig(env.ICE_SERVERS_JSON);
   if (jsonConfig) return withStatus(jsonConfig, 'ice_servers_json');
 
   const stunUrls = normalizeUrlList(env.STUN_URLS);
   const turnUrls = normalizeUrlList(env.TURN_URLS);
+
+  // Preferred production path: mint short-lived TURN credentials from a shared
+  // secret (coturn use-auth-secret / TURN REST API) so no static password ships.
+  const turnAuthSecret = normalizeOptionalString(env.TURN_STATIC_AUTH_SECRET, 512);
+  if (turnUrls.length > 0 && turnAuthSecret) {
+    const { username, credential } = generateTurnRestCredential(turnAuthSecret, {
+      ttlSeconds: clampTurnCredentialTtlSeconds(env.TURN_CREDENTIAL_TTL_SECONDS),
+      userId: options.userId,
+      nowSeconds: options.nowSeconds,
+    });
+    const iceServers: StudioIceServer[] = [];
+    if (stunUrls.length > 0) {
+      iceServers.push({ urls: stunUrls.length === 1 ? stunUrls[0] : stunUrls });
+    }
+    iceServers.push({
+      urls: turnUrls.length === 1 ? turnUrls[0] : turnUrls,
+      username,
+      credential,
+      credentialType: 'password',
+    });
+    return withStatus(
+      { iceServers, iceTransportPolicy: normalizePolicy(env.ICE_TRANSPORT_POLICY) },
+      'turn_rest_secret'
+    );
+  }
   const turnUsername = normalizeOptionalString(env.TURN_USERNAME, 256);
   const turnCredential = normalizeOptionalString(env.TURN_CREDENTIAL, 512);
   const turnCredentialType = env.TURN_CREDENTIAL_TYPE === 'oauth' ? 'oauth' : env.TURN_CREDENTIAL_TYPE === 'password' ? 'password' : undefined;
@@ -199,7 +276,10 @@ export function buildIceConfigStatusFromEnv(env: NodeJS.ProcessEnv = process.env
   return buildIceConfigWithStatusFromEnv(env).status;
 }
 
-export function buildIceConfigFromEnv(env: NodeJS.ProcessEnv = process.env): StudioIceConfig {
-  const { status: _status, ...config } = buildIceConfigWithStatusFromEnv(env);
+export function buildIceConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: BuildIceConfigOptions = {}
+): StudioIceConfig {
+  const { status: _status, ...config } = buildIceConfigWithStatusFromEnv(env, options);
   return config;
 }

@@ -282,7 +282,8 @@
 - [x] Media-server health advertises exact deck-renderer readiness for LibreOffice + Poppler, and production checks require it before deck uploads are trusted
 - [x] Configurable STUN/TURN ICE config endpoint for WebRTC connectivity
 - [x] Host-visible TURN relay readiness in Session Health
-- [ ] Global TURN servers for reliable connectivity (production provider credentials)
+- [x] Ephemeral TURN credentials via coturn `use-auth-secret`/TURN REST API (HMAC-SHA1, per-request short-lived creds from `TURN_STATIC_AUTH_SECRET`)
+- [ ] Global TURN servers for reliable connectivity (production provider credentials/hosting)
 - [x] Prometheus-compatible `/metrics` endpoints for signaling and RTMP relay health
 - [x] Grafana dashboards and alerting for stream health metrics
 
