@@ -4,6 +4,8 @@ import {
   buildRecordingDriveRetentionManifest,
   buildGeneratedRecordingTranscriptText,
   createRecordingDriveHandoffFiles,
+  buildCaptionCues,
+  buildCaptionSubRip,
   buildDaVinciResolveXml,
   buildFinalCutProXml,
   buildPremiereProXml,
@@ -11,6 +13,74 @@ import {
   createRecordingBundle,
   type RecordingMarker,
 } from '../src/components/RecordingPanel.tsx';
+
+const CAPTION_START = Date.parse('2026-07-07T10:00:00.000Z');
+
+function captionSegment(offsetSeconds: number, text: string, speakerName = 'Host') {
+  return {
+    id: `cap-${offsetSeconds}`,
+    speakerName,
+    text,
+    interim: false,
+    timestamp: new Date(CAPTION_START + offsetSeconds * 1000).toISOString(),
+  };
+}
+
+describe('buildCaptionCues', () => {
+  it('derives sequential cues with timestamps relative to the first caption', () => {
+    const cues = buildCaptionCues([
+      captionSegment(0, 'Hello everyone'),
+      captionSegment(4, 'Welcome to the show', 'Guest'),
+    ]);
+    assert.equal(cues.length, 2);
+    assert.equal(cues[0].index, 1);
+    assert.equal(cues[0].startMs, 0);
+    assert.equal(cues[0].endMs, 4000);
+    assert.equal(cues[1].startMs, 4000);
+    assert.equal(cues[1].speakerName, 'Guest');
+  });
+
+  it('gives the trailing cue a text-length-based duration', () => {
+    const cues = buildCaptionCues([captionSegment(0, 'Hi')]);
+    assert.equal(cues[0].startMs, 0);
+    assert.equal(cues[0].endMs, 2500);
+  });
+});
+
+describe('buildCaptionSubRip', () => {
+  it('formats SRT cues with comma milliseconds and speaker prefixes', () => {
+    const srt = buildCaptionSubRip([
+      captionSegment(0, 'Hello everyone'),
+      captionSegment(4, 'Great to be here', 'Guest'),
+    ]);
+    const expected = [
+      '1',
+      '00:00:00,000 --> 00:00:04,000',
+      'Host: Hello everyone',
+      '',
+      '2',
+      '00:00:04,000 --> 00:00:06,500',
+      'Guest: Great to be here',
+      '',
+    ].join('\n');
+    assert.equal(srt, expected);
+  });
+
+  it('omits the speaker prefix when no speaker name is present', () => {
+    const srt = buildCaptionSubRip([captionSegment(0, 'No speaker line', '')]);
+    assert.match(srt, /\n00:00:00,000 --> 00:00:02,500\nNo speaker line\n/);
+  });
+
+  it('sanitizes arrow and angle-bracket sequences from caption text', () => {
+    // '-->' becomes '->' and then the stray '>' is stripped, matching the VTT sanitizer.
+    const srt = buildCaptionSubRip([captionSegment(0, 'a --> b <tag>', 'Host')]);
+    assert.match(srt, /Host: a - b tag/);
+  });
+
+  it('returns an empty string with no captions', () => {
+    assert.equal(buildCaptionSubRip([]), '');
+  });
+});
 
 const source = {
   roomName: 'Launch <Demo> & Review',
@@ -353,6 +423,8 @@ describe('recording bundle editor export', () => {
     assert.match(text, /quality\/recording_quality_report\.txt/);
     assert.match(text, /recording-quality-report/);
     assert.match(text, /captions\/live_captions\.txt/);
+    assert.match(text, /captions\/live_captions\.vtt/);
+    assert.match(text, /captions\/live_captions\.srt/);
     assert.match(text, /markers\/recording_markers\.csv/);
     assert.doesNotMatch(text, /tracks\/01_host\.webm/);
     assert.doesNotMatch(text, /video-track/);

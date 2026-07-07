@@ -153,7 +153,7 @@ export interface RecordingDriveRetentionManifest {
 
 interface RecordingCaptionFile {
   label: string;
-  format: 'txt' | 'vtt';
+  format: 'txt' | 'vtt' | 'srt';
   zipPath: string;
   size: number;
   type: string;
@@ -964,22 +964,59 @@ function buildPlainCaptionTranscript(source: RecordingBundleSource, segments: Li
   return lines.join('\n');
 }
 
-function formatVttTimestamp(ms: number): string {
+function padTimestampParts(ms: number): { hours: string; minutes: string; seconds: string; millis: string } {
   const safeMs = Math.max(0, Math.floor(ms));
-  const hours = Math.floor(safeMs / 3_600_000);
-  const minutes = Math.floor((safeMs % 3_600_000) / 60_000);
-  const seconds = Math.floor((safeMs % 60_000) / 1000);
-  const millis = safeMs % 1000;
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+  return {
+    hours: String(Math.floor(safeMs / 3_600_000)).padStart(2, '0'),
+    minutes: String(Math.floor((safeMs % 3_600_000) / 60_000)).padStart(2, '0'),
+    seconds: String(Math.floor((safeMs % 60_000) / 1000)).padStart(2, '0'),
+    millis: String(safeMs % 1000).padStart(3, '0'),
+  };
+}
+
+function formatVttTimestamp(ms: number): string {
+  const { hours, minutes, seconds, millis } = padTimestampParts(ms);
+  return `${hours}:${minutes}:${seconds}.${millis}`;
+}
+
+function formatSrtTimestamp(ms: number): string {
+  const { hours, minutes, seconds, millis } = padTimestampParts(ms);
+  return `${hours}:${minutes}:${seconds},${millis}`;
 }
 
 function sanitizeVttText(value: string): string {
   return value.replace(/-->/g, '->').replace(/[<>]/g, '');
 }
 
-function buildCaptionWebVtt(source: RecordingBundleSource, segments: LiveCaptionSegment[]): string {
+export interface CaptionCue {
+  index: number;
+  startMs: number;
+  endMs: number;
+  speakerName: string;
+  text: string;
+}
+
+export function buildCaptionCues(segments: LiveCaptionSegment[], originFallbackMs = 0): CaptionCue[] {
   const firstTime = Date.parse(segments[0]?.timestamp || '');
-  const origin = Number.isFinite(firstTime) ? firstTime : Date.now();
+  const origin = Number.isFinite(firstTime) ? firstTime : originFallbackMs;
+  return segments.map((segment, index) => {
+    const startTime = Date.parse(segment.timestamp);
+    const nextTime = Date.parse(segments[index + 1]?.timestamp || '');
+    const startMs = Number.isFinite(startTime) ? startTime - origin : index * 3500;
+    const endMs = Number.isFinite(nextTime)
+      ? Math.max(startMs + 1200, nextTime - origin)
+      : startMs + Math.max(2500, Math.min(6000, segment.text.length * 65));
+    return {
+      index: index + 1,
+      startMs,
+      endMs,
+      speakerName: segment.speakerName,
+      text: segment.text.trim(),
+    };
+  });
+}
+
+function buildCaptionWebVtt(source: RecordingBundleSource, segments: LiveCaptionSegment[]): string {
   const lines = [
     'WEBVTT',
     `NOTE Room: ${source.roomName}`,
@@ -987,20 +1024,26 @@ function buildCaptionWebVtt(source: RecordingBundleSource, segments: LiveCaption
     '',
   ];
 
-  segments.forEach((segment, index) => {
-    const startTime = Date.parse(segment.timestamp);
-    const nextTime = Date.parse(segments[index + 1]?.timestamp || '');
-    const start = Number.isFinite(startTime) ? startTime - origin : index * 3500;
-    const end = Number.isFinite(nextTime)
-      ? Math.max(start + 1200, nextTime - origin)
-      : start + Math.max(2500, Math.min(6000, segment.text.length * 65));
-
-    lines.push(String(index + 1));
-    lines.push(`${formatVttTimestamp(start)} --> ${formatVttTimestamp(end)}`);
-    lines.push(`<v ${sanitizeVttText(segment.speakerName)}>${sanitizeVttText(segment.text.trim())}`);
+  for (const cue of buildCaptionCues(segments, Date.now())) {
+    lines.push(String(cue.index));
+    lines.push(`${formatVttTimestamp(cue.startMs)} --> ${formatVttTimestamp(cue.endMs)}`);
+    lines.push(`<v ${sanitizeVttText(cue.speakerName)}>${sanitizeVttText(cue.text)}`);
     lines.push('');
-  });
+  }
 
+  return lines.join('\n');
+}
+
+export function buildCaptionSubRip(segments: LiveCaptionSegment[], originFallbackMs = 0): string {
+  const lines: string[] = [];
+  for (const cue of buildCaptionCues(segments, originFallbackMs)) {
+    const speaker = sanitizeVttText(cue.speakerName).trim();
+    const text = sanitizeVttText(cue.text);
+    lines.push(String(cue.index));
+    lines.push(`${formatSrtTimestamp(cue.startMs)} --> ${formatSrtTimestamp(cue.endMs)}`);
+    lines.push(speaker ? `${speaker}: ${text}` : text);
+    lines.push('');
+  }
   return lines.join('\n');
 }
 
@@ -2086,6 +2129,12 @@ function buildRecordingCaptionEntries(source: RecordingBundleSource) {
           blob: new Blob([buildCaptionWebVtt(source, finalCaptionSegments)], { type: 'text/vtt;charset=utf-8' }),
           label: 'Live captions WebVTT',
           format: 'vtt' as const,
+        },
+        {
+          path: 'captions/live_captions.srt',
+          blob: new Blob([buildCaptionSubRip(finalCaptionSegments)], { type: 'application/x-subrip;charset=utf-8' }),
+          label: 'Live captions SubRip',
+          format: 'srt' as const,
         },
       ]
     : [];
@@ -4442,7 +4491,7 @@ export function RecordingPanel({
               </div>
               {finalCaptionCount > 0 && (
                 <div style={styles.captionSidecarNote}>
-                  ZIP includes captions as TXT and WebVTT sidecars.
+                  ZIP includes captions as TXT, WebVTT, and SubRip (SRT) sidecars.
                 </div>
               )}
               {generatedTranscript && (
