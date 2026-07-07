@@ -416,3 +416,68 @@ describe('recording export clip aspect presets', () => {
     );
   });
 });
+
+describe('recording export audio normalization', () => {
+  it('leaves audio filters untouched by default', () => {
+    const command = createRecordingMp4Args({
+      tracks: [hostAudioTrack, hostVideoTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+    });
+    assert.equal(command.args.some((arg) => typeof arg === 'string' && arg.includes('loudnorm')), false);
+  });
+
+  it('chains loudnorm after the amix filter for mixed audio', () => {
+    const command = createRecordingMp4Args({
+      tracks: [hostAudioTrack, hostVideoTrack, { ...hostAudioTrack, id: 'guest-audio', label: 'Guest audio', path: '/tmp/recordings/guest-audio.webm' }],
+      outputDirectory: '/tmp/exports',
+      basename: 'Louder Demo',
+      normalizeAudio: true,
+    });
+    const filterIndex = command.args.indexOf('-filter_complex');
+    assert.ok(filterIndex > -1);
+    assert.match(command.args[filterIndex + 1], /amix=inputs=2:duration=longest:dropout_transition=2,loudnorm=I=-14:TP=-1\.5:LRA=11\[aout\]/);
+  });
+
+  it('normalizes the program mix single-audio path with -af', () => {
+    const command = createRecordingMp4Args({
+      tracks: [programTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Program Demo',
+      normalizeAudio: true,
+    });
+    const afIndex = command.args.indexOf('-af');
+    assert.ok(afIndex > -1);
+    assert.equal(command.args[afIndex + 1], 'loudnorm=I=-14:TP=-1.5:LRA=11');
+  });
+
+  it('does not add -af when the primary track has no audio', () => {
+    const silentVideo = { ...hostVideoTrack, hasAudio: false };
+    const command = createRecordingMp4Args({
+      tracks: [silentVideo],
+      outputDirectory: '/tmp/exports',
+      basename: 'Silent Demo',
+      normalizeAudio: true,
+    });
+    assert.equal(command.args.includes('-af'), false);
+  });
+
+  it('normalizes WAV and MP3 stems when requested', () => {
+    const wav = createRecordingAudioStemArgs(hostAudioTrack, '/tmp/exports', 'Launch Demo', 'wav', {}, null, true);
+    const mp3 = createRecordingAudioStemArgs(hostAudioTrack, '/tmp/exports', 'Launch Demo', 'mp3', {}, null, false);
+    assert.equal(wav.args.includes('-af'), true);
+    assert.equal(wav.args[wav.args.indexOf('-af') + 1], 'loudnorm=I=-14:TP=-1.5:LRA=11');
+    assert.equal(mp3.args.includes('-af'), false);
+  });
+
+  it('threads normalizeAudio through full export command plans', () => {
+    const commands = createRecordingExportCommands({
+      tracks: [hostAudioTrack, hostVideoTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      normalizeAudio: true,
+    });
+    assert.ok(commands.mp4.args.some((arg) => typeof arg === 'string' && arg.includes('loudnorm')));
+    assert.ok(commands.stems.every((stem) => stem.args.includes('-af')));
+  });
+});

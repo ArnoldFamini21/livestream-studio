@@ -43,7 +43,11 @@ export interface RecordingExportPlan {
   video?: Partial<RecordingExportVideoOptions>;
   audio?: Partial<RecordingExportAudioOptions>;
   clip?: RecordingExportClipRange | null;
+  normalizeAudio?: boolean;
 }
+
+// Broadcast/podcast loudness target (EBU R128 / streaming-friendly -14 LUFS).
+export const LOUDNORM_AUDIO_FILTER = 'loudnorm=I=-14:TP=-1.5:LRA=11';
 
 export interface RecordingExportCommand {
   label: string;
@@ -329,12 +333,16 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
 
   const videoFilter = getClipVideoGeometry(video, clip).filter;
   const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
+  const normalizeAudio = plan.normalizeAudio === true;
 
   if (audioTracks.length > 0) {
     const audioInputs = audioTracks.map((_, index) => `[${index + 1}:a:0]`).join('');
+    const mixFilter = normalizeAudio
+      ? `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2,${LOUDNORM_AUDIO_FILTER}`
+      : `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2`;
     args.push(
       '-filter_complex',
-      `[0:v:0]${videoFilter}[vout];${audioInputs}amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2[aout]`,
+      `[0:v:0]${videoFilter}[vout];${audioInputs}${mixFilter}[aout]`,
       '-map', '[vout]',
       '-map', '[aout]'
     );
@@ -344,6 +352,11 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
       '-map', '0:v:0',
       '-map', '0:a:0?'
     );
+    // The audio-less path is only reached with a program mix (audio present) or a
+    // silent video, so only normalize when the primary track is known to carry audio.
+    if (normalizeAudio && primaryVideoTrack.hasAudio !== false) {
+      args.push('-af', LOUDNORM_AUDIO_FILTER);
+    }
   }
 
   pushVideoEncodingArgs(args, video);
@@ -420,7 +433,8 @@ export function createRecordingAudioStemArgs(
   basename: string,
   format: RecordingAudioStemFormat,
   options: Partial<RecordingExportAudioOptions> = {},
-  clipRange: RecordingExportClipRange | null | undefined = null
+  clipRange: RecordingExportClipRange | null | undefined = null,
+  normalizeAudio = false
 ): RecordingExportCommand {
   if (track.kind !== 'audio' && track.hasAudio !== true) {
     throw new Error(`${track.label} does not contain an exportable audio track`);
@@ -442,6 +456,9 @@ export function createRecordingAudioStemArgs(
     '-ar', String(audio.sampleRate),
     '-ac', String(audio.channelCount),
   );
+  if (normalizeAudio) {
+    args.push('-af', LOUDNORM_AUDIO_FILTER);
+  }
 
   if (format === 'wav') {
     args.push('-c:a', 'pcm_s16le');
@@ -467,10 +484,11 @@ export function createRecordingExportCommands(plan: RecordingExportPlan): Record
   const isolatedVideos = selectIsolatedVideoTracks(plan.tracks).map((track) => (
     createRecordingIsolatedVideoArgs(track, plan.outputDirectory, basename, plan.video, plan.audio, clip)
   ));
+  const normalizeAudio = plan.normalizeAudio === true;
   const audioTracks = plan.tracks.filter((track) => track.kind === 'audio' || track.hasAudio === true).slice(0, AUDIO_INPUT_LIMIT);
   const stems = audioTracks.flatMap((track) => [
-    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'wav', plan.audio, clip),
-    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'mp3', plan.audio, clip),
+    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'wav', plan.audio, clip, normalizeAudio),
+    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'mp3', plan.audio, clip, normalizeAudio),
   ]);
 
   return { mp4, isolatedVideos, stems };

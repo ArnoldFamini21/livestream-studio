@@ -55,6 +55,7 @@ interface RecordingExportJob {
   createdAt: string;
   updatedAt: string;
   clip?: RecordingExportClipRange | null;
+  normalizeAudio?: boolean;
   tracks: RecordingExportManifestTrack[];
   artifacts: RecordingExportArtifact[];
   error?: string;
@@ -217,6 +218,7 @@ function buildExportManifest(job: RecordingExportJob): string {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       clip: job.clip ?? null,
+      normalizeAudio: job.normalizeAudio === true,
     },
     tracks: job.tracks,
     artifacts: job.artifacts
@@ -276,6 +278,7 @@ export class RecordingExportJobStore {
     const outputDirectory = path.join(source.rootDir, 'exports', exportId);
     await mkdir(outputDirectory, { recursive: true });
 
+    const normalizeAudio = request.normalizeAudio === true;
     const commands = createRecordingExportCommands({
       tracks: source.tracks.map(toExportTrack),
       outputDirectory,
@@ -283,6 +286,7 @@ export class RecordingExportJobStore {
       video: request.video,
       audio: request.audio,
       clip,
+      normalizeAudio,
     });
     const artifacts = buildArtifacts([commands.mp4, ...commands.isolatedVideos, ...commands.stems], request.includeAudioStems !== false);
     const createdAt = new Date(nowMs).toISOString();
@@ -296,6 +300,7 @@ export class RecordingExportJobStore {
       createdAt,
       updatedAt: createdAt,
       clip,
+      normalizeAudio,
       tracks: source.tracks.map(toManifestTrack),
       artifacts,
     };

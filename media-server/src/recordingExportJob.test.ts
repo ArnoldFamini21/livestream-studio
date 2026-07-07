@@ -267,5 +267,34 @@ describe('recording export jobs', () => {
     const manifest = exports.getArtifact(queued.exportId, 'export-manifest', session.uploadId);
     const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
     assert.equal(parsed.export.clip, null);
+    assert.equal(parsed.export.normalizeAudio, false);
+  });
+
+  it('applies loudnorm to the MP4 and stems and records it in the manifest', async () => {
+    const { uploads, session } = await createCompletedUpload();
+    const commands: RecordingExportCommand[] = [];
+    const runner: RecordingExportRunner = async (command) => {
+      commands.push(command);
+      await writeFile(command.outputPath, Buffer.from(command.label));
+    };
+    const exports = new RecordingExportJobStore(runner);
+
+    const queued = await exports.createJob(uploads.getExportSource(session.uploadId), {
+      basename: 'Launch Demo',
+      includeAudioStems: true,
+      normalizeAudio: true,
+    });
+    await exports.startJob(queued.exportId);
+
+    const mp4Command = commands.find((command) => command.artifactId === 'final-mp4');
+    assert.ok(mp4Command);
+    assert.ok(mp4Command.args.some((arg) => typeof arg === 'string' && arg.includes('loudnorm')));
+    const stemCommands = commands.filter((command) => /\.(wav|mp3)$/.test(command.outputPath));
+    assert.ok(stemCommands.length > 0);
+    assert.ok(stemCommands.every((command) => command.args.includes('-af')));
+
+    const manifest = exports.getArtifact(queued.exportId, 'export-manifest', session.uploadId);
+    const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
+    assert.equal(parsed.export.normalizeAudio, true);
   });
 });

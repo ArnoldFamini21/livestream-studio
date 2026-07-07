@@ -994,6 +994,7 @@ export interface RecordingExportSessionRequest {
   token?: string;
   basename?: string;
   includeAudioStems?: boolean;
+  normalizeAudio?: boolean;
   video?: RecordingExportVideoSettings;
   audio?: RecordingExportAudioSettings;
   clip?: RecordingExportClipSettings;

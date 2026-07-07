@@ -181,6 +181,7 @@
 - [x] Combined mix-down recording
 - [x] Separate screen share recording
 - [x] Audio-only export (podcast ZIP with isolated audio tracks, WAV stems when supported, captions, and markers)
+- [x] Audio loudness normalization to -14 LUFS ("Magic Audio"-style) on media-server MP4 and WAV/MP3 stem exports, toggleable in the recording panel
 - [x] Transcript generation (speech-to-text via Whisper API)
 - [x] AI show notes: titles, description, timestamped chapters, and social posts from the transcript via `/api/episode-content` (opt-in with OPENAI_API_KEY, copy/download as Markdown)
 

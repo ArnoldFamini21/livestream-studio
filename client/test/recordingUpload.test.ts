@@ -198,6 +198,7 @@ describe('recording media-server upload helper', () => {
     assert.deepEqual(JSON.parse(String(calls[4].init?.body)), {
       basename: 'session-1',
       includeAudioStems: true,
+      normalizeAudio: false,
       video: {
         codec: 'h265',
       },
@@ -328,12 +329,41 @@ describe('recording media-server upload helper', () => {
     const requestBody = JSON.parse(String(calls[0].init?.body));
     assert.deepEqual(requestBody.clip, { startSeconds: 5, endSeconds: 65 });
     assert.equal(requestBody.includeAudioStems, false);
+    assert.equal(requestBody.normalizeAudio, false);
     assert.equal(requestBody.basename, 'Launch Demo clip');
     assert.equal(requestBody.video.codec, 'h264');
     assert.equal(
       calls.at(-1)?.url,
       'https://media.example.com/recordings/uploads/upload-3/exports/export-clip'
     );
+  });
+
+  it('forwards the normalizeAudio flag on clip export requests', async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    globalThis.fetch = async (url, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return jsonResponse({
+        exportId: 'export-norm',
+        uploadId: 'upload-4',
+        roomId: 'room-1',
+        status: 'ready',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:02.000Z',
+        artifacts: [{ id: 'final-mp4', label: 'Final MP4 clip', format: 'mp4', status: 'ready' }],
+      });
+    };
+
+    await requestRecordingClipExport({
+      token: 'token-123',
+      uploadId: 'upload-4',
+      clip: { startSeconds: 0, endSeconds: 30 },
+      normalizeAudio: true,
+      mediaHttpUrl: 'https://media.example.com',
+      pollIntervalMs: 0,
+      pollTimeoutMs: 1_000,
+    });
+
+    assert.equal(requestBody?.normalizeAudio, true);
   });
 
   it('waits for participant uploads and starts one combined recording export', async () => {
@@ -414,6 +444,7 @@ describe('recording media-server upload helper', () => {
     assert.deepEqual(JSON.parse(String(exportCall?.init?.body)), {
       basename: 'Combined show',
       includeAudioStems: true,
+      normalizeAudio: false,
       video: { codec: 'h264' },
     });
     assert.equal((exportCall?.init?.headers as Record<string, string>).Authorization, 'Bearer host-token');

@@ -36,6 +36,7 @@ export interface UploadRecordingToMediaServerInput {
   exportBasename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
   includeAudioStems?: boolean;
+  normalizeAudio?: boolean;
   exportPollIntervalMs?: number;
   exportPollTimeoutMs?: number;
   onProgress?: (progress: RecordingUploadProgress) => void;
@@ -65,6 +66,7 @@ export interface RequestRecordingClipExportInput {
   basename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
   includeAudioStems?: boolean;
+  normalizeAudio?: boolean;
   mediaHttpUrl?: string;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
@@ -124,6 +126,7 @@ export interface WaitForDistributedRecordingSessionInput extends DistributedReco
 export interface ExportDistributedRecordingSessionInput extends DistributedRecordingSessionInput {
   basename?: string;
   includeAudioStems?: boolean;
+  normalizeAudio?: boolean;
   exportVideoCodec?: RecordingExportVideoCodec;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
@@ -378,6 +381,7 @@ export async function requestRecordingClipExport(
     {
       basename: input.basename || undefined,
       includeAudioStems: input.includeAudioStems === true,
+      normalizeAudio: input.normalizeAudio === true,
       video: {
         codec: input.exportVideoCodec || 'h264',
       },
@@ -515,6 +519,7 @@ export async function uploadRecordingToMediaServer(
           {
             basename: input.exportBasename || input.sessionId || uploadId,
             includeAudioStems: input.includeAudioStems !== false,
+            normalizeAudio: input.normalizeAudio === true,
             video: {
               codec: input.exportVideoCodec || 'h264',
             },
@@ -604,6 +609,7 @@ export async function exportDistributedRecordingSession(
     {
       basename: input.basename || sessionId,
       includeAudioStems: input.includeAudioStems !== false,
+      normalizeAudio: input.normalizeAudio === true,
       video: { codec: input.exportVideoCodec || 'h264' },
     }
   );
