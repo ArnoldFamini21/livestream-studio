@@ -58,6 +58,18 @@ export interface GetRecordingExportJobInput {
   mediaHttpUrl?: string;
 }
 
+export interface RequestRecordingClipExportInput {
+  token: string;
+  uploadId: string;
+  clip: { startSeconds: number; endSeconds: number };
+  basename?: string;
+  exportVideoCodec?: RecordingExportVideoCodec;
+  includeAudioStems?: boolean;
+  mediaHttpUrl?: string;
+  pollIntervalMs?: number;
+  pollTimeoutMs?: number;
+}
+
 export interface DownloadRecordingExportArtifactInput {
   token: string;
   uploadId: string;
@@ -352,6 +364,38 @@ export async function getRecordingExportJob(
     ),
     token
   );
+}
+
+export async function requestRecordingClipExport(
+  input: RequestRecordingClipExportInput
+): Promise<RecordingExportJobResponse> {
+  const token = assertNonEmpty(input.token, 'A host upload token');
+  const uploadId = assertNonEmpty(input.uploadId, 'Upload id');
+  const mediaHttpUrl = assertNonEmpty(input.mediaHttpUrl || resolveMediaHttpUrl(), 'Media server URL');
+  const job = await postJson<RecordingExportJobResponse>(
+    buildMediaUrl(mediaHttpUrl, `/recordings/uploads/${encodeURIComponent(uploadId)}/exports`),
+    token,
+    {
+      basename: input.basename || undefined,
+      includeAudioStems: input.includeAudioStems === true,
+      video: {
+        codec: input.exportVideoCodec || 'h264',
+      },
+      clip: {
+        startSeconds: input.clip.startSeconds,
+        endSeconds: input.clip.endSeconds,
+      },
+    }
+  );
+  return pollRecordingExportJob({
+    token,
+    uploadId,
+    exportId: job.exportId,
+    mediaHttpUrl,
+    intervalMs: input.pollIntervalMs,
+    timeoutMs: input.pollTimeoutMs,
+    initialJob: job,
+  });
 }
 
 export async function downloadRecordingExportArtifact(

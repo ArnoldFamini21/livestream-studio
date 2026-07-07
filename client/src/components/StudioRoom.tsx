@@ -67,6 +67,7 @@ import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, 
 import type {
   BlobExportDownload,
   RecordingMarker,
+  RecordingServerClipExportInput,
   RecordingServerExportArtifactInput,
   RecordingServerExportRefreshInput,
   RecordingServerUploadInput,
@@ -125,6 +126,7 @@ import {
   downloadRecordingExportArtifact,
   exportDistributedRecordingSession,
   getRecordingExportJob,
+  requestRecordingClipExport,
   uploadRecordingToMediaServer,
   waitForDistributedRecordingSession,
   type RecordingUploadFileInput,
@@ -3412,6 +3414,19 @@ export function StudioRoom() {
     });
   }, [requestLiveStreamToken]);
 
+  const requestMediaServerClipExport = useCallback(async (
+    input: RecordingServerClipExportInput
+  ) => {
+    const token = await requestLiveStreamToken();
+    return requestRecordingClipExport({
+      token,
+      uploadId: input.uploadId,
+      clip: input.clip,
+      basename: input.basename,
+      exportVideoCodec: input.exportVideoCodec,
+    });
+  }, [requestLiveStreamToken]);
+
   const syncLocalRecordingCatalog = useCallback(async (session: LocalRecordingSession) => {
     if (!roomId || !roomHostToken) return;
     await syncRecordingCatalogEntry({
@@ -6103,6 +6118,7 @@ export function StudioRoom() {
               onUploadRecording={uploadLocalRecordingToMediaServer}
               onDownloadRecordingExportArtifact={downloadMediaServerRecordingArtifact}
               onRefreshRecordingExport={refreshMediaServerRecordingExport}
+              onRequestRecordingClipExport={requestMediaServerClipExport}
               onSyncRecordingCatalog={syncLocalRecordingCatalog}
               mediaServerHealth={mediaServerHealth}
               onRefreshMediaServerHealth={refreshMediaServerHealth}

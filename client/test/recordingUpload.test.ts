@@ -7,6 +7,7 @@ import {
   getDistributedRecordingSession,
   getRecordingExportJob,
   pollRecordingExportJob,
+  requestRecordingClipExport,
   uploadRecordingToMediaServer,
   waitForDistributedRecordingSession,
 } from '../src/utils/recordingUpload.ts';
@@ -280,6 +281,59 @@ describe('recording media-server upload helper', () => {
       'https://media.example.com/recordings/uploads/upload-refresh/exports/export-refresh'
     );
     assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
+  });
+
+  it('requests frame-accurate clip exports on an existing upload and polls to ready', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (calls.length === 1) {
+        return jsonResponse({
+          exportId: 'export-clip',
+          uploadId: 'upload-3',
+          roomId: 'room-1',
+          status: 'queued',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-01T00:00:00.000Z',
+          artifacts: [{ id: 'final-mp4', label: 'Final MP4 clip', format: 'mp4', status: 'queued' }],
+        });
+      }
+      return jsonResponse({
+        exportId: 'export-clip',
+        uploadId: 'upload-3',
+        roomId: 'room-1',
+        status: 'ready',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:02.000Z',
+        artifacts: [{ id: 'final-mp4', label: 'Final MP4 clip', format: 'mp4', status: 'ready', bytes: 2048 }],
+      });
+    };
+
+    const job = await requestRecordingClipExport({
+      token: 'token-123',
+      uploadId: 'upload-3',
+      clip: { startSeconds: 5, endSeconds: 65 },
+      basename: 'Launch Demo clip',
+      exportVideoCodec: 'h264',
+      mediaHttpUrl: 'https://media.example.com',
+      pollIntervalMs: 0,
+      pollTimeoutMs: 1_000,
+    });
+
+    assert.equal(job.status, 'ready');
+    assert.equal(job.artifacts[0].label, 'Final MP4 clip');
+    assert.equal(calls[0].url, 'https://media.example.com/recordings/uploads/upload-3/exports');
+    assert.equal(calls[0].init?.method, 'POST');
+    assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
+    const requestBody = JSON.parse(String(calls[0].init?.body));
+    assert.deepEqual(requestBody.clip, { startSeconds: 5, endSeconds: 65 });
+    assert.equal(requestBody.includeAudioStems, false);
+    assert.equal(requestBody.basename, 'Launch Demo clip');
+    assert.equal(requestBody.video.codec, 'h264');
+    assert.equal(
+      calls.at(-1)?.url,
+      'https://media.example.com/recordings/uploads/upload-3/exports/export-clip'
+    );
   });
 
   it('waits for participant uploads and starts one combined recording export', async () => {

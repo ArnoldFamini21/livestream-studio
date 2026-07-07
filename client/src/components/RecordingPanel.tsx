@@ -51,6 +51,7 @@ interface RecordingPanelProps {
   onUploadRecording?: (input: RecordingServerUploadInput) => Promise<RecordingUploadSummary>;
   onDownloadRecordingExportArtifact?: (input: RecordingServerExportArtifactInput) => Promise<BlobExportDownload>;
   onRefreshRecordingExport?: (input: RecordingServerExportRefreshInput) => Promise<RecordingExportJobResponse>;
+  onRequestRecordingClipExport?: (input: RecordingServerClipExportInput) => Promise<RecordingExportJobResponse>;
   onSyncRecordingCatalog?: (session: LocalRecordingSession) => Promise<void>;
   mediaServerHealth?: MediaServerHealth | null;
   onRefreshMediaServerHealth?: () => void | Promise<MediaServerHealth>;
@@ -94,6 +95,13 @@ export interface RecordingServerExportArtifactInput {
 export interface RecordingServerExportRefreshInput {
   uploadId: string;
   exportId: string;
+}
+
+export interface RecordingServerClipExportInput {
+  uploadId: string;
+  clip: { startSeconds: number; endSeconds: number };
+  basename?: string;
+  exportVideoCodec?: RecordingExportVideoCodec;
 }
 
 export interface BlobExportDownload {
@@ -2368,6 +2376,7 @@ export function RecordingPanel({
   onUploadRecording,
   onDownloadRecordingExportArtifact,
   onRefreshRecordingExport,
+  onRequestRecordingClipExport,
   onSyncRecordingCatalog,
   mediaServerHealth,
   onRefreshMediaServerHealth,
@@ -2391,6 +2400,7 @@ export function RecordingPanel({
     label: string;
     file: RecordedFile;
     sourceName: string;
+    sessionId: string | null;
   } | null>(null);
   const previewMediaRef = useRef<HTMLMediaElement | null>(null);
   const previewUrlRef = useRef<string | null>(null);
@@ -2408,6 +2418,11 @@ export function RecordingPanel({
   } | null>(null);
   const [isSavingClip, setIsSavingClip] = useState(false);
   const [clipSaveMessage, setClipSaveMessage] = useState<string | null>(null);
+  const [isRequestingServerClip, setIsRequestingServerClip] = useState(false);
+  const [serverClipJob, setServerClipJob] = useState<RecordingExportJobResponse | null>(null);
+  const [serverClipError, setServerClipError] = useState<string | null>(null);
+  const [serverClipDownloadingId, setServerClipDownloadingId] = useState<string | null>(null);
+  const [isRefreshingServerClip, setIsRefreshingServerClip] = useState(false);
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [libraryTrackFiles, setLibraryTrackFiles] = useState<Record<string, RecordedFile[]>>({});
@@ -3056,7 +3071,7 @@ export function RecordingPanel({
     onClearRecordingMarkers?.();
   }, [onClearRecordingMarkers, resetCompletedRecordingState]);
 
-  const handlePreviewFile = useCallback((file: RecordedFile, sourceName?: string) => {
+  const handlePreviewFile = useCallback((file: RecordedFile, sourceName?: string, sessionId?: string) => {
     setPreview((current) => {
       if (current) URL.revokeObjectURL(current.url);
       return {
@@ -3065,9 +3080,10 @@ export function RecordingPanel({
         label: file.label,
         file,
         sourceName: sourceName || roomName,
+        sessionId: sessionId ?? activeSessionId,
       };
     });
-  }, [roomName]);
+  }, [activeSessionId, roomName]);
 
   useEffect(() => {
     previewUrlRef.current = preview?.url ?? null;
@@ -3079,7 +3095,21 @@ export function RecordingPanel({
     setClipResult(null);
     setIsSavingClip(false);
     setClipSaveMessage(null);
+    setIsRequestingServerClip(false);
+    setServerClipJob(null);
+    setServerClipError(null);
+    setServerClipDownloadingId(null);
+    setIsRefreshingServerClip(false);
   }, [preview?.url]);
+
+  const previewServerClipUploadId = useMemo(() => {
+    if (!preview?.sessionId || !onRequestRecordingClipExport) return null;
+    if (preview.sessionId === activeSessionId && mediaExportJob?.uploadId) {
+      return mediaExportJob.uploadId;
+    }
+    const session = sessions.find((item) => item.id === preview.sessionId);
+    return session?.mediaExport?.uploadId || null;
+  }, [activeSessionId, mediaExportJob?.uploadId, onRequestRecordingClipExport, preview?.sessionId, sessions]);
 
   const handleSetClipStart = useCallback(() => {
     const element = previewMediaRef.current;
@@ -3146,6 +3176,91 @@ export function RecordingPanel({
     if (!clipResult) return;
     downloadBlob(clipResult.blob, clipResult.fileName);
   }, [clipResult]);
+
+  const handleServerClipExport = useCallback(async () => {
+    if (!preview || !onRequestRecordingClipExport || !previewServerClipUploadId || isRequestingServerClip) return;
+    const range = {
+      startSeconds: clipStartSeconds ?? Number.NaN,
+      endSeconds: clipEndSeconds ?? Number.NaN,
+    };
+    const issue = getClipRangeIssue(range);
+    if (issue) {
+      setServerClipError(issue);
+      return;
+    }
+
+    const captureUrl = preview.url;
+    setIsRequestingServerClip(true);
+    setServerClipError(null);
+    setServerClipJob(null);
+    try {
+      const job = await onRequestRecordingClipExport({
+        uploadId: previewServerClipUploadId,
+        clip: range,
+        basename: `${preview.sourceName} clip`,
+        exportVideoCodec: recordingExportVideoCodec,
+      });
+      if (previewUrlRef.current !== captureUrl) return;
+      setServerClipJob(job);
+      if (job.status === 'error') {
+        setServerClipError(job.error || 'Server clip export failed');
+      }
+    } catch (err) {
+      if (previewUrlRef.current !== captureUrl) return;
+      const message = err instanceof Error ? err.message : 'Server clip export failed';
+      setServerClipError(message);
+    } finally {
+      if (previewUrlRef.current === captureUrl) setIsRequestingServerClip(false);
+    }
+  }, [
+    clipEndSeconds,
+    clipStartSeconds,
+    isRequestingServerClip,
+    onRequestRecordingClipExport,
+    preview,
+    previewServerClipUploadId,
+    recordingExportVideoCodec,
+  ]);
+
+  const handleRefreshServerClip = useCallback(async () => {
+    if (!serverClipJob || !onRefreshRecordingExport || isRefreshingServerClip) return;
+    setIsRefreshingServerClip(true);
+    setServerClipError(null);
+    try {
+      const job = await onRefreshRecordingExport({
+        uploadId: serverClipJob.uploadId,
+        exportId: serverClipJob.exportId,
+      });
+      setServerClipJob(job);
+      if (job.status === 'error') {
+        setServerClipError(job.error || 'Server clip export failed');
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to refresh the server clip status';
+      setServerClipError(message);
+    } finally {
+      setIsRefreshingServerClip(false);
+    }
+  }, [isRefreshingServerClip, onRefreshRecordingExport, serverClipJob]);
+
+  const handleDownloadServerClipArtifact = useCallback(async (artifact: RecordingExportArtifactStatus) => {
+    if (!serverClipJob || !onDownloadRecordingExportArtifact || serverClipDownloadingId) return;
+    setServerClipDownloadingId(artifact.id);
+    setServerClipError(null);
+    try {
+      const download = await onDownloadRecordingExportArtifact({
+        uploadId: serverClipJob.uploadId,
+        exportId: serverClipJob.exportId,
+        artifact,
+      });
+      downloadBlob(download.blob, download.fileName);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Server clip download failed';
+      setServerClipError(message);
+    } finally {
+      setServerClipDownloadingId(null);
+    }
+  }, [onDownloadRecordingExportArtifact, serverClipDownloadingId, serverClipJob]);
 
   const handleSaveClipToLibrary = useCallback(async () => {
     if (!clipResult || !preview || isSavingClip) return;
@@ -3966,6 +4081,66 @@ export function RecordingPanel({
                     </div>
                   )}
                   {clipSaveMessage && <div style={styles.clipSaveMessage}>{clipSaveMessage}</div>}
+                  {previewServerClipUploadId && (
+                    <>
+                      <button
+                        type="button"
+                        style={{
+                          ...styles.clipBtn,
+                          ...(isRequestingServerClip || clipStartSeconds === null || clipEndSeconds === null
+                            ? styles.clipBtnDisabled
+                            : {}),
+                        }}
+                        onClick={handleServerClipExport}
+                        disabled={isRequestingServerClip || clipStartSeconds === null || clipEndSeconds === null}
+                        title="Render this clip range on the media server with frame-accurate FFmpeg cuts"
+                      >
+                        {isRequestingServerClip ? 'Requesting server clip...' : 'Server clip (frame-accurate MP4)'}
+                      </button>
+                      {serverClipError && <div style={styles.clipError}>{serverClipError}</div>}
+                      {serverClipJob && (
+                        <div style={styles.clipResultRow}>
+                          <span style={styles.clipResultLabel}>
+                            Server clip export {serverClipJob.status}
+                          </span>
+                          <div style={styles.clipResultActions}>
+                            {serverClipJob.artifacts
+                              .filter((artifact) => artifact.format === 'mp4' && artifact.status === 'ready')
+                              .map((artifact) => (
+                                <button
+                                  key={artifact.id}
+                                  type="button"
+                                  style={{
+                                    ...styles.clipBtn,
+                                    ...(serverClipDownloadingId === artifact.id ? styles.clipBtnDisabled : {}),
+                                  }}
+                                  onClick={() => handleDownloadServerClipArtifact(artifact)}
+                                  disabled={serverClipDownloadingId === artifact.id}
+                                >
+                                  {serverClipDownloadingId === artifact.id
+                                    ? 'Downloading...'
+                                    : `Download ${artifact.label}`}
+                                </button>
+                              ))}
+                            {(serverClipJob.status === 'queued' || serverClipJob.status === 'running') &&
+                              onRefreshRecordingExport && (
+                                <button
+                                  type="button"
+                                  style={{
+                                    ...styles.clipBtn,
+                                    ...(isRefreshingServerClip ? styles.clipBtnDisabled : {}),
+                                  }}
+                                  onClick={handleRefreshServerClip}
+                                  disabled={isRefreshingServerClip}
+                                >
+                                  {isRefreshingServerClip ? 'Checking...' : 'Refresh status'}
+                                </button>
+                              )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -4391,7 +4566,7 @@ export function RecordingPanel({
                                 ...styles.sessionTrackBtn,
                                 ...(!previewable ? styles.sessionTrackBtnDisabled : {}),
                               }}
-                              onClick={() => handlePreviewFile(file, session.roomName)}
+                              onClick={() => handlePreviewFile(file, session.roomName, session.id)}
                               disabled={!previewable}
                               title={previewable ? `Preview ${file.label}` : 'Preview unavailable for this track'}
                             >
