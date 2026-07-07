@@ -982,9 +982,12 @@ export interface RecordingExportAudioSettings {
   audioBitsPerSecond?: number;
 }
 
+export type RecordingExportClipAspect = 'source' | 'vertical' | 'square';
+
 export interface RecordingExportClipSettings {
   startSeconds?: number;
   endSeconds?: number;
+  aspect?: RecordingExportClipAspect;
 }
 
 export interface RecordingExportSessionRequest {

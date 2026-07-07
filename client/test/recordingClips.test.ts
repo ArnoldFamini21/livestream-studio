@@ -6,7 +6,9 @@ import {
   buildClipLabel,
   clampClipRangeToDuration,
   formatClipTimecode,
+  getClipCanvasSize,
   getClipCaptureProgress,
+  getClipDrawRect,
   getClipDurationSeconds,
   getClipFileExtension,
   getClipRangeIssue,
@@ -255,5 +257,75 @@ describe('getClipTrackKind', () => {
   it('infers a kind when the source kind is unknown', () => {
     assert.equal(getClipTrackKind(undefined, true), 'video');
     assert.equal(getClipTrackKind(undefined, false), 'audio');
+  });
+});
+
+describe('getClipCanvasSize', () => {
+  it('keeps the source dimensions by default', () => {
+    assert.deepEqual(getClipCanvasSize(1920, 1080), { width: 1920, height: 1080 });
+    assert.deepEqual(getClipCanvasSize(1920, 1080, 'source'), { width: 1920, height: 1080 });
+  });
+
+  it('builds a 9:16 canvas from the source height for vertical clips', () => {
+    assert.deepEqual(getClipCanvasSize(1920, 1080, 'vertical'), { width: 608, height: 1080 });
+  });
+
+  it('builds a square canvas from the shorter side', () => {
+    assert.deepEqual(getClipCanvasSize(1920, 1080, 'square'), { width: 1080, height: 1080 });
+    assert.deepEqual(getClipCanvasSize(720, 1280, 'square'), { width: 720, height: 720 });
+  });
+
+  it('falls back to 720p dimensions before metadata is available', () => {
+    assert.deepEqual(getClipCanvasSize(0, 0), { width: 1280, height: 720 });
+    assert.deepEqual(getClipCanvasSize(0, 0, 'vertical'), { width: 406, height: 720 });
+  });
+
+  it('always returns even pixel dimensions', () => {
+    const size = getClipCanvasSize(1281, 719, 'vertical');
+    assert.equal(size.width % 2, 0);
+    assert.equal(size.height % 2, 0);
+  });
+});
+
+describe('getClipDrawRect', () => {
+  it('uses the full frame when the canvas matches the source aspect', () => {
+    assert.deepEqual(getClipDrawRect(1920, 1080, 1920, 1080), { sx: 0, sy: 0, sw: 1920, sh: 1080 });
+  });
+
+  it('center-crops the width for vertical canvases', () => {
+    const rect = getClipDrawRect(1920, 1080, 608, 1080);
+    assert.equal(rect.sy, 0);
+    assert.equal(rect.sh, 1080);
+    assert.equal(rect.sw, 608);
+    assert.equal(rect.sx, (1920 - 608) / 2);
+  });
+
+  it('center-crops the height when the source is taller than the canvas', () => {
+    const rect = getClipDrawRect(1080, 1920, 1080, 1080);
+    assert.equal(rect.sx, 0);
+    assert.equal(rect.sw, 1080);
+    assert.equal(rect.sh, 1080);
+    assert.equal(rect.sy, (1920 - 1080) / 2);
+  });
+
+  it('degrades safely with invalid dimensions', () => {
+    assert.deepEqual(getClipDrawRect(0, 0, 100, 100), { sx: 0, sy: 0, sw: 1, sh: 1 });
+  });
+});
+
+describe('buildClipFileName aspect suffixes', () => {
+  it('tags vertical and square clips in the file name', () => {
+    assert.equal(
+      buildClipFileName('Demo', 'Host Camera', { startSeconds: 0, endSeconds: 30 }, 'webm', 'vertical'),
+      'Demo_clip_Host_Camera_0m00s-0m30s_9x16.webm'
+    );
+    assert.equal(
+      buildClipFileName('Demo', 'Host Camera', { startSeconds: 0, endSeconds: 30 }, 'webm', 'square'),
+      'Demo_clip_Host_Camera_0m00s-0m30s_1x1.webm'
+    );
+    assert.equal(
+      buildClipFileName('Demo', 'Host Camera', { startSeconds: 0, endSeconds: 30 }, 'webm', 'source'),
+      'Demo_clip_Host_Camera_0m00s-0m30s.webm'
+    );
   });
 });

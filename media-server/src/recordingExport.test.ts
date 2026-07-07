@@ -5,6 +5,7 @@ import {
   createRecordingExportCommands,
   createRecordingIsolatedVideoArgs,
   createRecordingMp4Args,
+  getClipVideoGeometry,
   getRecordingExportClipIssue,
   normalizeRecordingExportClipRange,
   normalizeRecordingExportVideoOptions,
@@ -240,7 +241,7 @@ describe('recording export clip ranges', () => {
   it('normalizes clip ranges to millisecond precision', () => {
     assert.deepEqual(
       normalizeRecordingExportClipRange({ startSeconds: 1.23456, endSeconds: 30.98765 }),
-      { startSeconds: 1.235, endSeconds: 30.988 }
+      { startSeconds: 1.235, endSeconds: 30.988, aspect: 'source' }
     );
     assert.equal(normalizeRecordingExportClipRange(null), null);
     assert.throws(() => normalizeRecordingExportClipRange({ startSeconds: 20, endSeconds: 5 }), /after/);
@@ -341,5 +342,77 @@ describe('recording export clip ranges', () => {
       assert.equal(command.args.includes('-t'), false);
       assert.equal(command.outputPath.includes('_clip_'), false);
     }
+  });
+});
+
+describe('recording export clip aspect presets', () => {
+  it('validates clip aspect values', () => {
+    assert.equal(getRecordingExportClipIssue({ startSeconds: 0, endSeconds: 30, aspect: 'vertical' }), null);
+    assert.equal(getRecordingExportClipIssue({ startSeconds: 0, endSeconds: 30, aspect: 'square' }), null);
+    assert.match(
+      getRecordingExportClipIssue({ startSeconds: 0, endSeconds: 30, aspect: 'portrait' }) || '',
+      /aspect/i
+    );
+  });
+
+  it('normalizes missing aspect to source', () => {
+    assert.deepEqual(
+      normalizeRecordingExportClipRange({ startSeconds: 0, endSeconds: 30 }),
+      { startSeconds: 0, endSeconds: 30, aspect: 'source' }
+    );
+    assert.equal(
+      normalizeRecordingExportClipRange({ startSeconds: 0, endSeconds: 30, aspect: 'vertical' })?.aspect,
+      'vertical'
+    );
+  });
+
+  it('computes cover-crop geometry for vertical and square clips', () => {
+    const video = normalizeRecordingExportVideoOptions({ width: 1920, height: 1080 });
+    const vertical = getClipVideoGeometry(video, { startSeconds: 0, endSeconds: 30, aspect: 'vertical' });
+    assert.equal(vertical.height, 1080);
+    assert.equal(vertical.width, 608);
+    assert.equal(vertical.width % 2, 0);
+    assert.match(vertical.filter, /force_original_aspect_ratio=increase,crop=608:1080/);
+
+    const square = getClipVideoGeometry(video, { startSeconds: 0, endSeconds: 30, aspect: 'square' });
+    assert.equal(square.width, 1080);
+    assert.equal(square.height, 1080);
+    assert.match(square.filter, /crop=1080:1080/);
+
+    const source = getClipVideoGeometry(video, { startSeconds: 0, endSeconds: 30, aspect: 'source' });
+    assert.equal(source.width, 1920);
+    assert.match(source.filter, /force_original_aspect_ratio=decrease,pad=1920:1080/);
+  });
+
+  it('uses the crop filter and aspect suffix in vertical clip MP4 commands', () => {
+    const command = createRecordingMp4Args({
+      tracks: [hostVideoTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      clip: { startSeconds: 5, endSeconds: 65, aspect: 'vertical' },
+    });
+
+    assert.equal(command.outputPath, '/tmp/exports/Launch_Demo_clip_0m05s-1m05s_9x16.mp4');
+    assert.equal(
+      command.args.includes('scale=608:1080:force_original_aspect_ratio=increase,crop=608:1080,setsar=1'),
+      true
+    );
+  });
+
+  it('applies square aspect to isolated clip exports', () => {
+    const command = createRecordingIsolatedVideoArgs(
+      hostVideoTrack,
+      '/tmp/exports',
+      'Launch_Demo',
+      {},
+      {},
+      { startSeconds: 0, endSeconds: 30, aspect: 'square' }
+    );
+
+    assert.match(command.outputPath, /_clip_0m00s-0m30s_1x1\.mp4$/);
+    assert.equal(
+      command.args.includes('scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,setsar=1'),
+      true
+    );
   });
 });

@@ -61,7 +61,7 @@ export interface GetRecordingExportJobInput {
 export interface RequestRecordingClipExportInput {
   token: string;
   uploadId: string;
-  clip: { startSeconds: number; endSeconds: number };
+  clip: { startSeconds: number; endSeconds: number; aspect?: 'source' | 'vertical' | 'square' };
   basename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
   includeAudioStems?: boolean;
@@ -384,6 +384,7 @@ export async function requestRecordingClipExport(
       clip: {
         startSeconds: input.clip.startSeconds,
         endSeconds: input.clip.endSeconds,
+        aspect: input.clip.aspect || undefined,
       },
     }
   );

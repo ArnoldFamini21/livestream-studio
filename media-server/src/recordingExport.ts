@@ -28,9 +28,12 @@ export interface RecordingExportAudioOptions {
   audioBitsPerSecond: number;
 }
 
+export type RecordingExportClipAspect = 'source' | 'vertical' | 'square';
+
 export interface RecordingExportClipRange {
   startSeconds: number;
   endSeconds: number;
+  aspect?: RecordingExportClipAspect;
 }
 
 export interface RecordingExportPlan {
@@ -113,6 +116,10 @@ export function getRecordingExportClipIssue(clip: unknown): string | null {
   if (duration > MAX_EXPORT_CLIP_DURATION_SECONDS) {
     return `Clips are limited to ${Math.round(MAX_EXPORT_CLIP_DURATION_SECONDS / 3600)} hours`;
   }
+  const { aspect } = clip as { aspect?: unknown };
+  if (aspect !== undefined && aspect !== 'source' && aspect !== 'vertical' && aspect !== 'square') {
+    return 'Clip aspect must be source, vertical, or square';
+  }
   return null;
 }
 
@@ -125,6 +132,7 @@ export function normalizeRecordingExportClipRange(
   return {
     startSeconds: Math.round(clip.startSeconds * 1000) / 1000,
     endSeconds: Math.round(clip.endSeconds * 1000) / 1000,
+    aspect: clip.aspect === 'vertical' || clip.aspect === 'square' ? clip.aspect : 'source',
   };
 }
 
@@ -140,7 +148,29 @@ export function buildClipBasenameSuffix(clip: RecordingExportClipRange | null | 
     const s = whole % 60;
     return `${m}m${String(s).padStart(2, '0')}s`;
   };
-  return `_clip_${formatPart(clip.startSeconds)}-${formatPart(clip.endSeconds)}`;
+  const aspectPart = clip.aspect === 'vertical' ? '_9x16' : clip.aspect === 'square' ? '_1x1' : '';
+  return `_clip_${formatPart(clip.startSeconds)}-${formatPart(clip.endSeconds)}${aspectPart}`;
+}
+
+export function getClipVideoGeometry(
+  video: RecordingExportVideoOptions,
+  clip: RecordingExportClipRange | null
+): { width: number; height: number; filter: string } {
+  const aspect = clip?.aspect;
+  if (aspect === 'vertical' || aspect === 'square') {
+    const height = video.height;
+    const width = aspect === 'square' ? height : roundToEven((height * 9) / 16);
+    return {
+      width,
+      height,
+      filter: `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1`,
+    };
+  }
+  return {
+    width: video.width,
+    height: video.height,
+    filter: `scale=${video.width}:${video.height}:force_original_aspect_ratio=decrease,pad=${video.width}:${video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
+  };
 }
 
 function pushClipInputSeekArgs(args: string[], clip: RecordingExportClipRange | null) {
@@ -297,7 +327,7 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
     args.push('-i', track.path);
   });
 
-  const videoFilter = `scale=${video.width}:${video.height}:force_original_aspect_ratio=decrease,pad=${video.width}:${video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+  const videoFilter = getClipVideoGeometry(video, clip).filter;
   const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
 
   if (audioTracks.length > 0) {
@@ -352,7 +382,7 @@ export function createRecordingIsolatedVideoArgs(
   const clip = normalizeRecordingExportClipRange(clipRange);
   const outputBase = `${sanitizeExportBasename(`${basename}_${track.label}_video`)}${buildClipBasenameSuffix(clip)}`;
   const outputPath = path.join(outputDirectory, `${outputBase}.mp4`);
-  const videoFilter = `scale=${video.width}:${video.height}:force_original_aspect_ratio=decrease,pad=${video.width}:${video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+  const videoFilter = getClipVideoGeometry(video, clip).filter;
   const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
   const args = [
     '-hide_banner',

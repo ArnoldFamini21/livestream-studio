@@ -34,6 +34,7 @@ import {
   getClipRangeIssue,
   getClipTrackKind,
   roundClipSeconds,
+  type ClipAspectPreset,
 } from '../utils/recordingClips.ts';
 import { buildClipSuggestions, type ClipSuggestion } from '../utils/clipSuggestions.ts';
 
@@ -100,7 +101,7 @@ export interface RecordingServerExportRefreshInput {
 
 export interface RecordingServerClipExportInput {
   uploadId: string;
-  clip: { startSeconds: number; endSeconds: number };
+  clip: { startSeconds: number; endSeconds: number; aspect?: ClipAspectPreset };
   basename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
 }
@@ -2407,6 +2408,7 @@ export function RecordingPanel({
   const previewUrlRef = useRef<string | null>(null);
   const [clipStartSeconds, setClipStartSeconds] = useState<number | null>(null);
   const [clipEndSeconds, setClipEndSeconds] = useState<number | null>(null);
+  const [clipAspect, setClipAspect] = useState<ClipAspectPreset>('source');
   const [isExportingClip, setIsExportingClip] = useState(false);
   const [clipExportProgress, setClipExportProgress] = useState(0);
   const [clipExportError, setClipExportError] = useState<string | null>(null);
@@ -3090,6 +3092,7 @@ export function RecordingPanel({
     previewUrlRef.current = preview?.url ?? null;
     setClipStartSeconds(null);
     setClipEndSeconds(null);
+    setClipAspect('source');
     setIsExportingClip(false);
     setClipExportProgress(0);
     setClipExportError(null);
@@ -3186,8 +3189,9 @@ export function RecordingPanel({
     setClipResult(null);
     setClipSaveMessage(null);
     try {
+      const aspect = hasVideo ? clipAspect : 'source';
       const captured = await captureRecordingClip(
-        { blob: preview.file.blob, hasVideo },
+        { blob: preview.file.blob, hasVideo, aspect },
         range,
         (fraction) => {
           if (previewUrlRef.current === captureUrl) setClipExportProgress(fraction);
@@ -3196,7 +3200,7 @@ export function RecordingPanel({
       if (previewUrlRef.current !== captureUrl) return;
       setClipResult({
         blob: captured.blob,
-        fileName: buildClipFileName(preview.sourceName, preview.file.label, range, captured.extension),
+        fileName: buildClipFileName(preview.sourceName, preview.file.label, range, captured.extension, aspect),
         label: buildClipLabel(preview.file.label, range),
         durationSeconds: captured.durationSeconds,
         kind: getClipTrackKind(preview.file.kind, hasVideo),
@@ -3208,7 +3212,7 @@ export function RecordingPanel({
     } finally {
       if (previewUrlRef.current === captureUrl) setIsExportingClip(false);
     }
-  }, [clipEndSeconds, clipStartSeconds, isExportingClip, preview]);
+  }, [clipAspect, clipEndSeconds, clipStartSeconds, isExportingClip, preview]);
 
   const handleDownloadClip = useCallback(() => {
     if (!clipResult) return;
@@ -3234,7 +3238,10 @@ export function RecordingPanel({
     try {
       const job = await onRequestRecordingClipExport({
         uploadId: previewServerClipUploadId,
-        clip: range,
+        clip: {
+          ...range,
+          aspect: preview.type.startsWith('video/') ? clipAspect : 'source',
+        },
         basename: `${preview.sourceName} clip`,
         exportVideoCodec: recordingExportVideoCodec,
       });
@@ -3251,6 +3258,7 @@ export function RecordingPanel({
       if (previewUrlRef.current === captureUrl) setIsRequestingServerClip(false);
     }
   }, [
+    clipAspect,
     clipEndSeconds,
     clipStartSeconds,
     isRequestingServerClip,
@@ -4077,6 +4085,33 @@ export function RecordingPanel({
                       {isExportingClip ? `Exporting ${Math.round(clipExportProgress * 100)}%` : 'Export clip'}
                     </button>
                   </div>
+                  {!preview.type.startsWith('audio/') && (
+                    <div style={styles.clipAspectRow}>
+                      <span style={styles.clipAspectLabel}>Format</span>
+                      {([
+                        { id: 'source' as const, label: 'Original' },
+                        { id: 'vertical' as const, label: '9:16 Shorts' },
+                        { id: 'square' as const, label: '1:1 Square' },
+                      ]).map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          style={{
+                            ...styles.clipAspectBtn,
+                            ...(clipAspect === option.id ? styles.clipAspectBtnActive : {}),
+                            ...(isExportingClip ? styles.clipBtnDisabled : {}),
+                          }}
+                          onClick={() => setClipAspect(option.id)}
+                          disabled={isExportingClip}
+                          title={option.id === 'source'
+                            ? 'Keep the original aspect ratio'
+                            : `Center-crop the clip to ${option.label}`}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {clipSuggestions.length > 0 && (
                     <div style={styles.clipSuggestions}>
                       <span style={styles.clipSuggestionsTitle}>Suggested clips</span>
@@ -5558,6 +5593,35 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     lineHeight: 1.5,
     color: 'var(--text-muted)',
+  },
+  clipAspectRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flexWrap: 'wrap' as const,
+  },
+  clipAspectLabel: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.4,
+    marginRight: 2,
+  },
+  clipAspectBtn: {
+    padding: '3px 8px',
+    borderRadius: 999,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-secondary)',
+    fontSize: 10,
+    fontWeight: 500,
+    cursor: 'pointer',
+  },
+  clipAspectBtnActive: {
+    borderColor: 'var(--accent)',
+    color: 'var(--accent)',
+    background: 'var(--accent-subtle)',
   },
   clipSuggestions: {
     display: 'flex',

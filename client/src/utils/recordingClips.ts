@@ -3,9 +3,12 @@ export interface ClipRange {
   endSeconds: number;
 }
 
+export type ClipAspectPreset = 'source' | 'vertical' | 'square';
+
 export interface ClipCaptureSource {
   blob: Blob;
   hasVideo: boolean;
+  aspect?: ClipAspectPreset;
 }
 
 export interface CapturedRecordingClip {
@@ -42,6 +45,47 @@ const AUDIO_CLIP_MIME_CANDIDATES = [
 
 export function roundClipSeconds(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function roundToEvenPixels(value: number): number {
+  return Math.max(2, Math.round(value / 2) * 2);
+}
+
+export function getClipCanvasSize(
+  videoWidth: number,
+  videoHeight: number,
+  aspect: ClipAspectPreset = 'source'
+): { width: number; height: number } {
+  const safeWidth = videoWidth > 0 ? videoWidth : 1280;
+  const safeHeight = videoHeight > 0 ? videoHeight : 720;
+  if (aspect === 'vertical') {
+    return { width: roundToEvenPixels((safeHeight * 9) / 16), height: roundToEvenPixels(safeHeight) };
+  }
+  if (aspect === 'square') {
+    const side = roundToEvenPixels(Math.min(safeWidth, safeHeight));
+    return { width: side, height: side };
+  }
+  return { width: roundToEvenPixels(safeWidth), height: roundToEvenPixels(safeHeight) };
+}
+
+export function getClipDrawRect(
+  videoWidth: number,
+  videoHeight: number,
+  canvasWidth: number,
+  canvasHeight: number
+): { sx: number; sy: number; sw: number; sh: number } {
+  if (videoWidth <= 0 || videoHeight <= 0 || canvasWidth <= 0 || canvasHeight <= 0) {
+    return { sx: 0, sy: 0, sw: Math.max(1, videoWidth), sh: Math.max(1, videoHeight) };
+  }
+  const scale = Math.max(canvasWidth / videoWidth, canvasHeight / videoHeight);
+  const sw = canvasWidth / scale;
+  const sh = canvasHeight / scale;
+  return {
+    sx: (videoWidth - sw) / 2,
+    sy: (videoHeight - sh) / 2,
+    sw,
+    sh,
+  };
 }
 
 export function getClipDurationSeconds(range: ClipRange): number {
@@ -140,12 +184,14 @@ export function buildClipFileName(
   sourceName: string,
   trackLabel: string,
   range: ClipRange,
-  extension: string
+  extension: string,
+  aspect: ClipAspectPreset = 'source'
 ): string {
   const namePart = sanitizeClipNamePart(sourceName).slice(0, 60);
   const labelPart = sanitizeClipNamePart(trackLabel).slice(0, 40);
   const rangePart = `${formatClipFileTimecode(range.startSeconds)}-${formatClipFileTimecode(range.endSeconds)}`;
-  return `${namePart}_clip_${labelPart}_${rangePart}.${extension}`;
+  const aspectPart = aspect === 'vertical' ? '_9x16' : aspect === 'square' ? '_1x1' : '';
+  return `${namePart}_clip_${labelPart}_${rangePart}${aspectPart}.${extension}`;
 }
 
 export function buildClipLabel(trackLabel: string, range: ClipRange): string {
@@ -248,9 +294,11 @@ export async function captureRecordingClip(
     let stopDrawing: (() => void) | null = null;
 
     if (source.hasVideo) {
+      const aspect = source.aspect || 'source';
       const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 1280;
-      canvas.height = video.videoHeight || 720;
+      const initialSize = getClipCanvasSize(video.videoWidth, video.videoHeight, aspect);
+      canvas.width = initialSize.width;
+      canvas.height = initialSize.height;
       const context = canvas.getContext('2d');
       if (!context) throw new Error('Canvas rendering is unavailable for clip export');
       const canvasStream = canvas.captureStream(CLIP_CAPTURE_FRAME_RATE);
@@ -264,12 +312,20 @@ export async function captureRecordingClip(
       };
       const drawFrame = () => {
         if (drawingStopped) return;
-        if (video.videoWidth > 0 && video.videoHeight > 0 &&
-          (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          const size = getClipCanvasSize(video.videoWidth, video.videoHeight, aspect);
+          if (canvas.width !== size.width || canvas.height !== size.height) {
+            canvas.width = size.width;
+            canvas.height = size.height;
+          }
         }
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const rect = getClipDrawRect(
+          video.videoWidth || canvas.width,
+          video.videoHeight || canvas.height,
+          canvas.width,
+          canvas.height
+        );
+        context.drawImage(video, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, canvas.width, canvas.height);
         scheduleFrame();
       };
       const scheduleFrame = () => {

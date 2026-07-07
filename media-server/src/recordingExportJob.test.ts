@@ -228,7 +228,7 @@ describe('recording export jobs', () => {
 
     const manifest = exports.getArtifact(queued.exportId, 'export-manifest', session.uploadId);
     const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
-    assert.deepEqual(parsed.export.clip, { startSeconds: 5, endSeconds: 65 });
+    assert.deepEqual(parsed.export.clip, { startSeconds: 5, endSeconds: 65, aspect: 'source' });
   });
 
   it('rejects invalid clip ranges before creating a job', async () => {
