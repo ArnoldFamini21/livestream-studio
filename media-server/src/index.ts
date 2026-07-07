@@ -24,6 +24,8 @@ import {
 } from './objectStorage.js';
 import { buildAllowedOrigins, isAllowedOrigin, normalizeOrigin } from './origins.js';
 import { parseControlMessage } from './protocol.js';
+import { SfuManager } from './sfuManager.js';
+import { parseSfuAuthFrame, verifySfuIdentity } from './sfuAuth.js';
 import {
   createFfmpegLiveBackupArgs,
   createLiveBackupRecording,
@@ -1068,20 +1070,108 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const wss = new WebSocketServer({
-  server,
-  path: '/rtmp',
-  maxPayload: MAX_WS_PAYLOAD_BYTES,
-  verifyClient: (info, done) => {
-    const headerOrigin = info.req.headers.origin;
-    const origin = info.origin || (Array.isArray(headerOrigin) ? headerOrigin[0] : headerOrigin);
-    if (isAllowedOrigin(origin, { allowedOrigins, production: isProduction })) {
-      done(true);
-    } else {
-      console.warn(`RTMP relay connection rejected from origin: ${origin}`);
-      done(false, 403, 'Forbidden: origin not allowed');
+// Both WebSocket endpoints share the HTTP server, so each uses noServer and a
+// single upgrade router dispatches by path (a path-bound WSS would 400 the other).
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD_BYTES });
+const MAX_SFU_WS_PAYLOAD_BYTES = 64 * 1024;
+const sfuWss = new WebSocketServer({ noServer: true, maxPayload: MAX_SFU_WS_PAYLOAD_BYTES });
+
+server.on('upgrade', (req, socket, head) => {
+  const headerOrigin = req.headers.origin;
+  const origin = Array.isArray(headerOrigin) ? headerOrigin[0] : headerOrigin;
+  if (!isAllowedOrigin(origin, { allowedOrigins, production: isProduction })) {
+    console.warn(`WebSocket connection rejected from origin: ${origin}`);
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  let pathname = '';
+  try {
+    pathname = new URL(req.url || '/', 'http://localhost').pathname;
+  } catch {
+    pathname = '';
+  }
+
+  if (pathname === '/rtmp') {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  } else if (pathname === '/sfu') {
+    sfuWss.handleUpgrade(req, socket, head, (ws) => sfuWss.emit('connection', ws, req));
+  } else {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+  }
+});
+
+const sfuManager = new SfuManager();
+
+sfuWss.on('connection', (ws) => {
+  let sfuParticipantId: string | null = null;
+
+  ws.on('message', (data, isBinary) => {
+    if (isBinary || !Buffer.isBuffer(data)) {
+      ws.close(1003, 'Binary frames are not supported on /sfu');
+      return;
     }
-  },
+
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(data.toString('utf8'));
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'sfu-error', message: 'Invalid SFU message' }));
+      }
+      return;
+    }
+
+    if (sfuParticipantId === null) {
+      const frame = parseSfuAuthFrame(parsed);
+      if (!frame) {
+        ws.close(1008, 'Authenticate with sfu-auth first');
+        return;
+      }
+      const secret = getLiveStreamTokenSecret();
+      if (!secret) {
+        ws.close(1011, 'SFU signaling is not configured');
+        return;
+      }
+      try {
+        const identity = verifySfuIdentity(frame.token, secret);
+        sfuParticipantId = identity.participantId;
+        sfuManager.connect(identity.roomId, identity.participantId, (message) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+        });
+        ws.send(JSON.stringify({
+          type: 'sfu-ready',
+          roomId: identity.roomId,
+          participantId: identity.participantId,
+        }));
+      } catch {
+        ws.close(1008, 'Unauthorized');
+      }
+      return;
+    }
+
+    sfuManager.handleMessage(sfuParticipantId, parsed);
+  });
+
+  ws.on('close', () => {
+    if (sfuParticipantId) {
+      sfuManager.disconnect(sfuParticipantId);
+      sfuParticipantId = null;
+    }
+  });
+
+  ws.on('error', (err) => {
+    console.error('SFU socket error:', err.message);
+    if (sfuParticipantId) {
+      sfuManager.disconnect(sfuParticipantId);
+      sfuParticipantId = null;
+    }
+  });
 });
 
 wss.on('connection', (ws) => {
@@ -1146,11 +1236,14 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`Media server running on http://localhost:${PORT}`);
   console.log(`RTMP relay WebSocket on ws://localhost:${PORT}/rtmp`);
+  console.log(`SFU signaling WebSocket on ws://localhost:${PORT}/sfu`);
 });
 
 function gracefulShutdown(signal: string) {
   console.log(`Received ${signal}. Shutting down media server...`);
   wss.clients.forEach((ws) => ws.close(1001, 'Server shutting down'));
+  sfuWss.clients.forEach((ws) => ws.close(1001, 'Server shutting down'));
+  sfuWss.close();
   wss.close(() => {
     server.close(() => process.exit(0));
   });
