@@ -57,6 +57,11 @@ import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
 import { createActiveSpeakerTracker } from '../utils/activeSpeaker.ts';
+import {
+  groupShortcutsByCategory,
+  resolveShortcutId,
+  shouldIgnoreShortcutTarget,
+} from '../utils/keyboardShortcuts.ts';
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
 import { WidgetOverlayDisplay, type WidgetOverlayData } from './WidgetOverlay.tsx';
@@ -4525,6 +4530,33 @@ export function StudioRoom() {
     return () => window.clearInterval(interval);
   }, [autoDirectorEnabled, isHostOrCoHost, onSpotlightParticipant]);
 
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+
+  useEffect(() => {
+    if (!isHostOrCoHost) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (shouldIgnoreShortcutTarget(event.target as { tagName?: string; isContentEditable?: boolean } | null)) return;
+      const shortcutId = resolveShortcutId(event);
+      if (!shortcutId) return;
+      switch (shortcutId) {
+        case 'layout-grid': applyLayout('grid'); break;
+        case 'layout-spotlight': applyLayout('spotlight'); break;
+        case 'layout-side-by-side': applyLayout('side-by-side'); break;
+        case 'layout-pip': applyLayout('pip'); break;
+        case 'layout-single': applyLayout('single'); break;
+        case 'toggle-auto-director': setAutoDirectorEnabled((current) => !current); break;
+        case 'toggle-mic': onToggleAudio(); break;
+        case 'toggle-camera': onToggleVideo(); break;
+        case 'show-shortcuts': setShowShortcutHelp((current) => !current); break;
+        default: return;
+      }
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [applyLayout, isHostOrCoHost, onToggleAudio, onToggleVideo]);
+
   const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
     if (action === 'cycle-pip-corner') {
       setPipCorner((prev) => {
@@ -5894,6 +5926,44 @@ export function StudioRoom() {
                 />
                 Auto
               </button>
+              <button
+                type="button"
+                onClick={() => setShowShortcutHelp((current) => !current)}
+                title="Keyboard shortcuts (press ?)"
+                aria-label="Keyboard shortcuts"
+                style={styles.shortcutHelpBtn}
+              >
+                ?
+              </button>
+            </div>
+          )}
+
+          {showShortcutHelp && isHostOrCoHost && (
+            <div
+              style={styles.shortcutOverlay}
+              role="dialog"
+              aria-label="Keyboard shortcuts"
+              onClick={() => setShowShortcutHelp(false)}
+            >
+              <div style={styles.shortcutCard} onClick={(event) => event.stopPropagation()}>
+                <div style={styles.shortcutCardHeader}>
+                  <span style={styles.shortcutCardTitle}>Keyboard shortcuts</span>
+                  <button type="button" style={styles.shortcutCloseBtn} onClick={() => setShowShortcutHelp(false)}>
+                    Close
+                  </button>
+                </div>
+                {groupShortcutsByCategory().map((group) => (
+                  <div key={group.category} style={styles.shortcutGroup}>
+                    <span style={styles.shortcutGroupTitle}>{group.category}</span>
+                    {group.shortcuts.map((shortcut) => (
+                      <div key={shortcut.id} style={styles.shortcutRow}>
+                        <span style={styles.shortcutLabel}>{shortcut.label}</span>
+                        <kbd style={styles.shortcutKey}>{shortcut.key === '?' ? '?' : shortcut.key.toUpperCase()}</kbd>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -7009,6 +7079,93 @@ const styles: Record<string, React.CSSProperties> = {
   autoDirectorDotActive: {
     background: 'var(--accent)',
     boxShadow: '0 0 6px var(--accent)',
+  },
+  shortcutHelpBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-secondary)',
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: 'pointer',
+  },
+  shortcutOverlay: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 60,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(0, 0, 0, 0.55)',
+    padding: 20,
+  },
+  shortcutCard: {
+    width: 'min(420px, 100%)',
+    maxHeight: '80vh',
+    overflowY: 'auto',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: 14,
+    padding: 18,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14,
+  },
+  shortcutCardHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  shortcutCardTitle: {
+    fontSize: 15,
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+  },
+  shortcutCloseBtn: {
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-secondary)',
+    borderRadius: 8,
+    fontSize: 12,
+    fontWeight: 700,
+    padding: '5px 12px',
+    cursor: 'pointer',
+  },
+  shortcutGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  shortcutGroupTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  shortcutRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  shortcutLabel: {
+    fontSize: 13,
+    color: 'var(--text-secondary)',
+  },
+  shortcutKey: {
+    minWidth: 26,
+    textAlign: 'center',
+    padding: '2px 8px',
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    fontWeight: 700,
+    fontFamily: 'inherit',
   },
   // Screen share banner
   screenShareBanner: {

@@ -230,6 +230,7 @@
 
 ### 9D. Production Safety
 - [x] Browser exit warning while live streaming or recording
+- [x] Producer keyboard shortcuts (layout switching 1-5, auto-director, mic/camera toggle) with an in-studio shortcuts help overlay
 
 ---
 
