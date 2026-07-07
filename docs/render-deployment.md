@@ -45,9 +45,10 @@ OPENAI_API_KEY=<OpenAI API key>
 OPENAI_TRANSCRIPTION_MODEL=whisper-1
 OPENAI_HIGHLIGHT_MODEL=gpt-4o-mini
 OPENAI_EPISODE_CONTENT_MODEL=gpt-4o-mini
+OPENAI_CAPTION_TRANSLATION_MODEL=gpt-4o-mini
 ```
 
-These power the "Generate Transcript" (`/api/transcriptions`), "AI highlights" (`/api/highlights`), and "AI Show Notes" (`/api/episode-content`) actions in the recording panel. When `OPENAI_API_KEY` is not set, each endpoint returns HTTP 503 and the studio falls back gracefully — clip suggestions still come from the offline marker/caption heuristics, and manual transcript/show-notes generation is simply unavailable. No transcript or caption text is sent anywhere unless the key is configured and the host triggers the action.
+These power the "Generate Transcript" (`/api/transcriptions`), "AI highlights" (`/api/highlights`), "AI Show Notes" (`/api/episode-content`), and "Translate VTT" caption translation (`/api/translate-captions`) actions in the recording and live-caption panels. When `OPENAI_API_KEY` is not set, each endpoint returns HTTP 503 and the studio falls back gracefully — clip suggestions still come from the offline marker/caption heuristics, and manual transcript/show-notes/translation generation is simply unavailable. No transcript or caption text is sent anywhere unless the key is configured and the host triggers the action.
 
 For server-side platform chat ingestion in the studio Chat panel, set these on `livestream-studio-server` as needed:
 

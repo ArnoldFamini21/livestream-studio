@@ -28,6 +28,8 @@ services:
         value: gpt-4o-mini
       - key: OPENAI_EPISODE_CONTENT_MODEL
         value: gpt-4o-mini
+      - key: OPENAI_CAPTION_TRANSLATION_MODEL
+        value: gpt-4o-mini
       - key: ICE_TRANSPORT_POLICY
         value: all
       - key: ICE_SERVERS_JSON

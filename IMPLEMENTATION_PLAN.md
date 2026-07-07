@@ -184,6 +184,7 @@
 - [x] Audio loudness normalization to -14 LUFS ("Magic Audio"-style) on media-server MP4 and WAV/MP3 stem exports, toggleable in the recording panel
 - [x] Transcript generation (speech-to-text via Whisper API)
 - [x] Caption sidecar export in TXT, WebVTT, and SubRip (SRT) formats in recording and podcast ZIP bundles
+- [x] AI caption translation to 13 languages with translated subtitle (VTT) download via `/api/translate-captions` (opt-in with OPENAI_API_KEY)
 - [x] AI show notes: titles, description, timestamped chapters, and social posts from the transcript via `/api/episode-content` (opt-in with OPENAI_API_KEY, copy/download as Markdown)
 
 ### 8B. Clip Creation (StreamYard/Riverside-style clips)

@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions.ts';
+import {
+  CAPTION_TRANSLATION_LANGUAGES,
+  requestCaptionTranslation,
+} from '../utils/captionTranslation.ts';
 
 interface LiveCaptionsPanelProps {
   enabled: boolean;
@@ -172,6 +176,9 @@ export function LiveCaptionsPanel({
   const copiedTimerRef = useRef<number | null>(null);
   const finalSegments = useMemo(() => getSortedFinalSegments(segments), [segments]);
   const exportDisabled = finalSegments.length === 0;
+  const [translateLanguage, setTranslateLanguage] = useState(CAPTION_TRANSLATION_LANGUAGES[1]?.value || 'es');
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -204,6 +211,30 @@ export function LiveCaptionsPanel({
       makeTranscriptFileName(roomName, 'vtt'),
       'text/vtt;charset=utf-8'
     );
+  };
+
+  const handleTranslateVtt = async () => {
+    if (exportDisabled || isTranslating) return;
+    setIsTranslating(true);
+    setTranslateError(null);
+    try {
+      const result = await requestCaptionTranslation({
+        segments: finalSegments,
+        targetLanguage: translateLanguage,
+      });
+      const languageLabel = CAPTION_TRANSLATION_LANGUAGES.find((option) => option.value === result.targetLanguage)?.label
+        || result.targetLanguage;
+      const fileName = makeTranscriptFileName(roomName, 'vtt').replace(/\.vtt$/, `_${result.targetLanguage}.vtt`);
+      downloadTextFile(
+        buildWebVttTranscript(result.segments, `${languageLabel} (translated)`, roomName),
+        fileName,
+        'text/vtt;charset=utf-8'
+      );
+    } catch (err) {
+      setTranslateError(err instanceof Error ? err.message : 'Caption translation failed.');
+    } finally {
+      setIsTranslating(false);
+    }
   };
 
   return (
@@ -269,6 +300,31 @@ export function LiveCaptionsPanel({
           <button type="button" style={styles.clearBtn} onClick={onClear} disabled={segments.length === 0}>Clear</button>
         </div>
       </div>
+
+      <div style={styles.translateRow}>
+        <span style={styles.translateLabel}>Translate</span>
+        <select
+          style={styles.translateSelect}
+          value={translateLanguage}
+          onChange={(event) => setTranslateLanguage(event.target.value)}
+          disabled={isTranslating}
+          aria-label="Caption translation language"
+        >
+          {CAPTION_TRANSLATION_LANGUAGES.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          style={styles.translateBtn}
+          onClick={handleTranslateVtt}
+          disabled={exportDisabled || isTranslating}
+          title="Translate the captions and download a subtitle VTT in the chosen language"
+        >
+          {isTranslating ? 'Translating...' : 'Translate VTT'}
+        </button>
+      </div>
+      {translateError && <div style={styles.translateError}>{translateError}</div>}
 
       <div style={styles.transcriptList}>
         {segments.length === 0 ? (
@@ -460,6 +516,45 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: 'pointer',
     padding: '0 7px',
+  },
+  translateRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '6px 0 2px',
+  },
+  translateLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.4,
+  },
+  translateSelect: {
+    flex: 1,
+    height: 26,
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    padding: '0 6px',
+  },
+  translateBtn: {
+    height: 26,
+    borderRadius: 6,
+    border: '1px solid var(--accent)',
+    background: 'var(--accent-subtle)',
+    color: 'var(--accent)',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+    padding: '0 10px',
+  },
+  translateError: {
+    fontSize: 11,
+    color: '#fca5a5',
+    padding: '2px 0',
   },
   transcriptList: {
     flex: 1,
