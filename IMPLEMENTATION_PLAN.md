@@ -266,7 +266,8 @@
 - [x] SFU selective-forwarding core: producer/consumer routing graph + per-consumer simulcast layer selection with hysteresis (media-server/src/sfuRouter.ts), the transport-independent brain of the SFU
 - [x] SFU room coordinator: join/publish/unpublish/leave + downlink updates with automatic everyone-subscribes-to-everyone semantics and sparse layer-change emission (media-server/src/sfuSession.ts)
 - [x] SFU signaling hub + wire protocol: join/publish/unpublish/downlink/leave client messages → producers/producer-added/producer-removed/layer/error server messages, with validation and disconnect handling (media-server/src/sfuSignaling.ts)
-- [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants — remaining: WebRTC media transport (mediasoup workers / raw RTP terminating and forwarding tracks) bound to the SFU signaling hub, and a client publish/subscribe path replacing mesh
+- [x] SFU room multiplexer: per-room hub registry mapping each socket to its room, routing messages, resolving hub broadcasts back to the right sockets, and tearing down empty rooms (media-server/src/sfuManager.ts)
+- [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants — remaining: WebRTC media transport (mediasoup workers / raw RTP terminating + forwarding tracks) + a `/sfu` socket bound to SfuManager with guest-token auth, and a client publish/subscribe path replacing mesh
 - [ ] Simulcast: send multiple quality layers, server selects best for each viewer
 - [x] Client WebRTC sender simulcast encodings for camera/screen mesh connections
 - [x] Bandwidth adaptation per participant for current mesh WebRTC senders
