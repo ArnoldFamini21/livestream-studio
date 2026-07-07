@@ -12,7 +12,10 @@ import type {
 } from '@studio/shared';
 import {
   createRecordingExportCommands,
+  getRecordingExportClipIssue,
+  normalizeRecordingExportClipRange,
   sanitizeExportBasename,
+  type RecordingExportClipRange,
   type RecordingExportCommand,
   type RecordingExportTrack,
 } from './recordingExport.js';
@@ -51,6 +54,7 @@ interface RecordingExportJob {
   status: RecordingExportJobStatusValue;
   createdAt: string;
   updatedAt: string;
+  clip?: RecordingExportClipRange | null;
   tracks: RecordingExportManifestTrack[];
   artifacts: RecordingExportArtifact[];
   error?: string;
@@ -212,6 +216,7 @@ function buildExportManifest(job: RecordingExportJob): string {
       status: 'ready',
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
+      clip: job.clip ?? null,
     },
     tracks: job.tracks,
     artifacts: job.artifacts
@@ -261,6 +266,11 @@ export class RecordingExportJobStore {
     nowMs = Date.now()
   ): Promise<RecordingExportJobResponse> {
     validateExportSource(source);
+    const clipIssue = getRecordingExportClipIssue(request.clip ?? null);
+    if (clipIssue) {
+      throw new RecordingExportJobError(400, 'RECORDING_EXPORT_INVALID_CLIP', clipIssue);
+    }
+    const clip = normalizeRecordingExportClipRange(request.clip as RecordingExportClipRange | null | undefined);
     const exportId = randomUUID();
     const basename = sanitizeExportBasename(request.basename || source.sessionId || source.uploadId);
     const outputDirectory = path.join(source.rootDir, 'exports', exportId);
@@ -272,6 +282,7 @@ export class RecordingExportJobStore {
       basename,
       video: request.video,
       audio: request.audio,
+      clip,
     });
     const artifacts = buildArtifacts([commands.mp4, ...commands.isolatedVideos, ...commands.stems], request.includeAudioStems !== false);
     const createdAt = new Date(nowMs).toISOString();
@@ -284,6 +295,7 @@ export class RecordingExportJobStore {
       status: 'queued',
       createdAt,
       updatedAt: createdAt,
+      clip,
       tracks: source.tracks.map(toManifestTrack),
       artifacts,
     };

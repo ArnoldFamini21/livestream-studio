@@ -187,7 +187,8 @@
 - [x] In-browser clip trimming on any saved recording track (set start/end in the preview player)
 - [x] Real-time clip export via canvas + WebAudio + MediaRecorder with live progress (no media server required)
 - [x] Download exported clips or save them back into the recording library as new sessions
-- [ ] Frame-accurate media-server FFmpeg clip export for uploaded tracks
+- [x] Frame-accurate media-server FFmpeg clip export for uploaded tracks (clip range on export jobs trims the MP4, isolated videos, and stems)
+- [ ] Studio UI option to request media-server clip exports alongside browser clips
 - [ ] AI-suggested highlight clips from transcripts
 
 ### 8C. Recording Management

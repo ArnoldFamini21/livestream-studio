@@ -5,6 +5,8 @@ import {
   createRecordingExportCommands,
   createRecordingIsolatedVideoArgs,
   createRecordingMp4Args,
+  getRecordingExportClipIssue,
+  normalizeRecordingExportClipRange,
   normalizeRecordingExportVideoOptions,
   sanitizeExportBasename,
   validateRecordingExportTracks,
@@ -218,5 +220,126 @@ describe('recording export FFmpeg command builders', () => {
     assert.equal(normalizeRecordingExportVideoOptions({ codec: 'h265' }).codec, 'h265');
     assert.equal(normalizeRecordingExportVideoOptions({ codec: 'h264' }).codec, 'h264');
     assert.equal(normalizeRecordingExportVideoOptions({ codec: 'vp9' as never }).codec, 'h264');
+  });
+});
+
+describe('recording export clip ranges', () => {
+  it('accepts valid clip ranges and rejects invalid ones', () => {
+    assert.equal(getRecordingExportClipIssue(null), null);
+    assert.equal(getRecordingExportClipIssue(undefined), null);
+    assert.equal(getRecordingExportClipIssue({ startSeconds: 5, endSeconds: 65 }), null);
+    assert.match(getRecordingExportClipIssue({ startSeconds: -1, endSeconds: 10 }) || '', /start/i);
+    assert.match(getRecordingExportClipIssue({ startSeconds: 5 }) || '', /end/i);
+    assert.match(getRecordingExportClipIssue({ startSeconds: 10, endSeconds: 10 }) || '', /after/i);
+    assert.match(getRecordingExportClipIssue({ startSeconds: 10, endSeconds: 10.2 }) || '', /at least/i);
+    assert.match(getRecordingExportClipIssue({ startSeconds: 0, endSeconds: 7 * 60 * 60 }) || '', /limited/i);
+    assert.match(getRecordingExportClipIssue({ startSeconds: 'x', endSeconds: 10 }) || '', /start/i);
+    assert.match(getRecordingExportClipIssue('clip') || '', /invalid/i);
+  });
+
+  it('normalizes clip ranges to millisecond precision', () => {
+    assert.deepEqual(
+      normalizeRecordingExportClipRange({ startSeconds: 1.23456, endSeconds: 30.98765 }),
+      { startSeconds: 1.235, endSeconds: 30.988 }
+    );
+    assert.equal(normalizeRecordingExportClipRange(null), null);
+    assert.throws(() => normalizeRecordingExportClipRange({ startSeconds: 20, endSeconds: 5 }), /after/);
+  });
+
+  it('trims the final MP4 with an input seek and output duration', () => {
+    const command = createRecordingMp4Args({
+      tracks: [hostAudioTrack, hostVideoTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      clip: { startSeconds: 5, endSeconds: 65 },
+    });
+
+    assert.equal(command.outputPath, '/tmp/exports/Launch_Demo_clip_0m05s-1m05s.mp4');
+    assert.equal(command.label, 'Final MP4 clip');
+    const firstSeek = command.args.indexOf('-ss');
+    assert.ok(firstSeek > -1);
+    assert.equal(command.args[firstSeek + 1], '5.000');
+    assert.equal(command.args[firstSeek + 2], '-i');
+    assert.equal(command.args.filter((arg) => arg === '-ss').length, 2);
+    const durationIndex = command.args.indexOf('-t');
+    assert.ok(durationIndex > -1);
+    assert.equal(command.args[durationIndex + 1], '60.000');
+    assert.ok(durationIndex < command.args.indexOf('-movflags'));
+  });
+
+  it('seeks every input before mixing clipped audio tracks', () => {
+    const command = createRecordingMp4Args({
+      tracks: [hostAudioTrack, hostVideoTrack, { ...hostAudioTrack, id: 'guest-audio', label: 'Guest audio', path: '/tmp/recordings/guest-audio.webm' }],
+      outputDirectory: '/tmp/exports',
+      basename: 'Clip Mix',
+      clip: { startSeconds: 2.5, endSeconds: 12.5 },
+    });
+
+    const inputCount = command.args.filter((arg) => arg === '-i').length;
+    const seekCount = command.args.filter((arg) => arg === '-ss').length;
+    assert.equal(seekCount, inputCount);
+    command.args.forEach((arg, index) => {
+      if (arg === '-ss') {
+        assert.equal(command.args[index + 1], '2.500');
+        assert.equal(command.args[index + 2], '-i');
+      }
+    });
+  });
+
+  it('applies clip ranges to isolated videos and audio stems', () => {
+    const isolated = createRecordingIsolatedVideoArgs(
+      hostVideoTrack,
+      '/tmp/exports',
+      'Launch_Demo',
+      {},
+      {},
+      { startSeconds: 5, endSeconds: 65 }
+    );
+    const stem = createRecordingAudioStemArgs(
+      hostAudioTrack,
+      '/tmp/exports',
+      'Launch_Demo',
+      'wav',
+      {},
+      { startSeconds: 5, endSeconds: 65 }
+    );
+
+    assert.equal(isolated.outputPath, '/tmp/exports/Launch_Demo_Host_camera_video_clip_0m05s-1m05s.mp4');
+    assert.equal(isolated.label, 'Host camera isolated MP4 clip');
+    assert.equal(isolated.args[isolated.args.indexOf('-ss') + 1], '5.000');
+    assert.equal(isolated.args[isolated.args.indexOf('-t') + 1], '60.000');
+    assert.equal(stem.outputPath, '/tmp/exports/Launch_Demo_Host_audio_clip_0m05s-1m05s.wav');
+    assert.equal(stem.label, 'Host audio WAV stem clip');
+    assert.equal(stem.args[stem.args.indexOf('-ss') + 1], '5.000');
+    assert.equal(stem.args[stem.args.indexOf('-t') + 1], '60.000');
+  });
+
+  it('threads the clip range through full export command plans', () => {
+    const commands = createRecordingExportCommands({
+      tracks: [hostAudioTrack, hostVideoTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      clip: { startSeconds: 0, endSeconds: 30 },
+    });
+
+    assert.ok(commands.mp4.outputPath.includes('_clip_0m00s-0m30s'));
+    for (const command of [commands.mp4, ...commands.isolatedVideos, ...commands.stems]) {
+      assert.ok(command.args.includes('-ss'), `${command.label} should seek to the clip start`);
+      assert.ok(command.args.includes('-t'), `${command.label} should bound the clip duration`);
+    }
+  });
+
+  it('leaves commands untouched when no clip range is set', () => {
+    const commands = createRecordingExportCommands({
+      tracks: [hostAudioTrack, hostVideoTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+    });
+
+    for (const command of [commands.mp4, ...commands.isolatedVideos, ...commands.stems]) {
+      assert.equal(command.args.includes('-ss'), false);
+      assert.equal(command.args.includes('-t'), false);
+      assert.equal(command.outputPath.includes('_clip_'), false);
+    }
   });
 });

@@ -982,12 +982,18 @@ export interface RecordingExportAudioSettings {
   audioBitsPerSecond?: number;
 }
 
+export interface RecordingExportClipSettings {
+  startSeconds?: number;
+  endSeconds?: number;
+}
+
 export interface RecordingExportSessionRequest {
   token?: string;
   basename?: string;
   includeAudioStems?: boolean;
   video?: RecordingExportVideoSettings;
   audio?: RecordingExportAudioSettings;
+  clip?: RecordingExportClipSettings;
 }
 
 export type RecordingExportJobStatusValue = 'queued' | 'running' | 'ready' | 'error';

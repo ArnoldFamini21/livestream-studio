@@ -193,4 +193,79 @@ describe('recording export jobs', () => {
       (err) => err instanceof RecordingExportJobError && err.code === 'RECORDING_EXPORT_TRACK_EMPTY'
     );
   });
+  it('creates frame-accurate clip export jobs when a clip range is requested', async () => {
+    const { uploads, session } = await createCompletedUpload();
+    const commands: RecordingExportCommand[] = [];
+    const runner: RecordingExportRunner = async (command) => {
+      commands.push(command);
+      await writeFile(command.outputPath, Buffer.from(command.label));
+    };
+    const exports = new RecordingExportJobStore(runner);
+
+    const queued = await exports.createJob(uploads.getExportSource(session.uploadId), {
+      basename: 'Launch Demo',
+      includeAudioStems: true,
+      clip: { startSeconds: 5, endSeconds: 65 },
+    });
+
+    assert.equal(queued.status, 'queued');
+    assert.equal(queued.artifacts[0].label, 'Final MP4 clip');
+
+    await exports.startJob(queued.exportId);
+    const ready = exports.getJob(queued.exportId, session.uploadId);
+    assert.equal(ready.status, 'ready');
+
+    const mp4 = exports.getArtifact(queued.exportId, 'final-mp4', session.uploadId);
+    assert.match(mp4.path, /Launch_Demo_clip_0m05s-1m05s\.mp4$/);
+    for (const command of commands) {
+      const seekIndex = command.args.indexOf('-ss');
+      assert.ok(seekIndex > -1, `${command.label} should seek to the clip start`);
+      assert.equal(command.args[seekIndex + 1], '5.000');
+      const durationIndex = command.args.indexOf('-t');
+      assert.ok(durationIndex > -1, `${command.label} should bound the clip duration`);
+      assert.equal(command.args[durationIndex + 1], '60.000');
+    }
+
+    const manifest = exports.getArtifact(queued.exportId, 'export-manifest', session.uploadId);
+    const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
+    assert.deepEqual(parsed.export.clip, { startSeconds: 5, endSeconds: 65 });
+  });
+
+  it('rejects invalid clip ranges before creating a job', async () => {
+    const { uploads, session } = await createCompletedUpload();
+    const exports = new RecordingExportJobStore(async () => {});
+
+    await assert.rejects(
+      () => exports.createJob(uploads.getExportSource(session.uploadId), {
+        clip: { startSeconds: 65, endSeconds: 5 },
+      }),
+      (err) => err instanceof RecordingExportJobError
+        && err.code === 'RECORDING_EXPORT_INVALID_CLIP'
+        && err.statusCode === 400
+    );
+
+    await assert.rejects(
+      () => exports.createJob(uploads.getExportSource(session.uploadId), {
+        clip: { startSeconds: 0 },
+      }),
+      (err) => err instanceof RecordingExportJobError && err.code === 'RECORDING_EXPORT_INVALID_CLIP'
+    );
+  });
+
+  it('omits clip metadata from the manifest when no clip is requested', async () => {
+    const { uploads, session } = await createCompletedUpload();
+    const runner: RecordingExportRunner = async (command) => {
+      await writeFile(command.outputPath, Buffer.from(command.label));
+    };
+    const exports = new RecordingExportJobStore(runner);
+
+    const queued = await exports.createJob(uploads.getExportSource(session.uploadId), {
+      basename: 'Launch Demo',
+    });
+    await exports.startJob(queued.exportId);
+
+    const manifest = exports.getArtifact(queued.exportId, 'export-manifest', session.uploadId);
+    const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
+    assert.equal(parsed.export.clip, null);
+  });
 });
