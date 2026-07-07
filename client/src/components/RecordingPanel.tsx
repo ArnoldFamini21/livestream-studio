@@ -35,6 +35,7 @@ import {
   getClipTrackKind,
   roundClipSeconds,
 } from '../utils/recordingClips.ts';
+import { buildClipSuggestions, type ClipSuggestion } from '../utils/clipSuggestions.ts';
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -3111,6 +3112,43 @@ export function RecordingPanel({
     return session?.mediaExport?.uploadId || null;
   }, [activeSessionId, mediaExportJob?.uploadId, onRequestRecordingClipExport, preview?.sessionId, sessions]);
 
+  const clipSuggestions = useMemo(() => {
+    if (!preview) return [];
+    const isActiveSession = preview.sessionId !== null && preview.sessionId === activeSessionId;
+    const previewSession = preview.sessionId
+      ? sessions.find((item) => item.id === preview.sessionId)
+      : undefined;
+    return buildClipSuggestions({
+      markers: isActiveSession ? sortedRecordingMarkers : previewSession?.markers || [],
+      captionSegments: isActiveSession ? captionSegments : [],
+      durationSeconds: isActiveSession
+        ? lastRecordingDurationSeconds
+        : previewSession?.durationSeconds ?? null,
+    });
+  }, [
+    activeSessionId,
+    captionSegments,
+    lastRecordingDurationSeconds,
+    preview,
+    sessions,
+    sortedRecordingMarkers,
+  ]);
+
+  const handleApplyClipSuggestion = useCallback((suggestion: ClipSuggestion) => {
+    setClipStartSeconds(suggestion.startSeconds);
+    setClipEndSeconds(suggestion.endSeconds);
+    setClipExportError(null);
+    setServerClipError(null);
+    const element = previewMediaRef.current;
+    if (element) {
+      try {
+        element.currentTime = suggestion.startSeconds;
+      } catch {
+        // Seeking the preview is best-effort; the range is already applied.
+      }
+    }
+  }, []);
+
   const handleSetClipStart = useCallback(() => {
     const element = previewMediaRef.current;
     if (!element) return;
@@ -4039,6 +4077,28 @@ export function RecordingPanel({
                       {isExportingClip ? `Exporting ${Math.round(clipExportProgress * 100)}%` : 'Export clip'}
                     </button>
                   </div>
+                  {clipSuggestions.length > 0 && (
+                    <div style={styles.clipSuggestions}>
+                      <span style={styles.clipSuggestionsTitle}>Suggested clips</span>
+                      <div style={styles.clipSuggestionChips}>
+                        {clipSuggestions.map((suggestion) => (
+                          <button
+                            key={suggestion.id}
+                            type="button"
+                            style={{
+                              ...styles.clipSuggestionChip,
+                              ...(isExportingClip ? styles.clipBtnDisabled : {}),
+                            }}
+                            onClick={() => handleApplyClipSuggestion(suggestion)}
+                            disabled={isExportingClip}
+                            title={`Set the clip range to ${formatClipTimecode(suggestion.startSeconds)} - ${formatClipTimecode(suggestion.endSeconds)}`}
+                          >
+                            {formatClipTimecode(suggestion.startSeconds)} · {suggestion.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {isExportingClip && (
                     <div style={styles.progressContainer}>
                       <div style={styles.progressTrack}>
@@ -5498,6 +5558,37 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     lineHeight: 1.5,
     color: 'var(--text-muted)',
+  },
+  clipSuggestions: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  clipSuggestionsTitle: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.4,
+  },
+  clipSuggestionChips: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: 4,
+  },
+  clipSuggestionChip: {
+    padding: '4px 8px',
+    borderRadius: 999,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-secondary)',
+    fontSize: 10,
+    fontWeight: 500,
+    cursor: 'pointer',
+    maxWidth: '100%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
   },
   clipError: {
     fontSize: 11,

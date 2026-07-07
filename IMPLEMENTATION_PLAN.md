@@ -189,7 +189,8 @@
 - [x] Download exported clips or save them back into the recording library as new sessions
 - [x] Frame-accurate media-server FFmpeg clip export for uploaded tracks (clip range on export jobs trims the MP4, isolated videos, and stems)
 - [x] Studio UI option to request media-server clip exports alongside browser clips (server clip button in the preview player with status refresh and MP4 downloads)
-- [ ] AI-suggested highlight clips from transcripts
+- [x] Suggested highlight clips from markers and live captions (marker moments, audience questions, highlight phrases, densest speech burst as one-click clip ranges)
+- [ ] LLM-ranked highlight suggestions once a hosted model key is configured
 
 ### 8C. Recording Management
 - [x] Recording dashboard: list all past recordings
