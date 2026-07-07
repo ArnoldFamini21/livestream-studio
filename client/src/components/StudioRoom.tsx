@@ -56,6 +56,7 @@ import {
 import { BannerOverlayDisplay, type BannerData } from './BannerOverlay.tsx';
 import { TimerOverlayDisplay, useTimerTick, type TimerData } from './TimerOverlay.tsx';
 import { LayoutSwitcher } from './LayoutSwitcher.tsx';
+import { createActiveSpeakerTracker } from '../utils/activeSpeaker.ts';
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
 import { WidgetOverlayDisplay, type WidgetOverlayData } from './WidgetOverlay.tsx';
@@ -4494,6 +4495,36 @@ export function StudioRoom() {
     applyLayout(availableStageItemIds.length > 1 ? 'spotlight' : 'single');
   }, [applyLayout, availableStageItemIds]);
 
+  const [autoDirectorEnabled, setAutoDirectorEnabled] = useState(false);
+  const activeSpeakerTrackerRef = useRef(createActiveSpeakerTracker());
+  const stageAudioLevelsRef = useRef<Record<string, number>>({});
+  const autoDirectorTargetsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    stageAudioLevelsRef.current = stageAudioLevels;
+  }, [stageAudioLevels]);
+
+  useEffect(() => {
+    autoDirectorTargetsRef.current = new Set(availableStageItemIds);
+  }, [availableStageItemIds]);
+
+  useEffect(() => {
+    if (!autoDirectorEnabled || !isHostOrCoHost) return;
+    activeSpeakerTrackerRef.current.reset();
+    const interval = window.setInterval(() => {
+      const targets = autoDirectorTargetsRef.current;
+      if (targets.size < 2) return;
+      const levels = stageAudioLevelsRef.current;
+      const scoped: Record<string, number> = {};
+      for (const id of targets) {
+        scoped[id] = levels[id] || 0;
+      }
+      const nextActive = activeSpeakerTrackerRef.current.update(scoped, Date.now());
+      if (nextActive) onSpotlightParticipant(nextActive);
+    }, 300);
+    return () => window.clearInterval(interval);
+  }, [autoDirectorEnabled, isHostOrCoHost, onSpotlightParticipant]);
+
   const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
     if (action === 'cycle-pip-corner') {
       setPipCorner((prev) => {
@@ -5845,6 +5876,24 @@ export function StudioRoom() {
                 isMediaActive={sharedContentIsActive}
                 mediaParticipantCount={sharedContentIsActive ? sharedContentParticipantPresenceItems.length : undefined}
               />
+              <button
+                type="button"
+                onClick={() => setAutoDirectorEnabled((current) => !current)}
+                title="Auto-spotlight whoever is speaking"
+                aria-pressed={autoDirectorEnabled}
+                style={{
+                  ...styles.autoDirectorBtn,
+                  ...(autoDirectorEnabled ? styles.autoDirectorBtnActive : {}),
+                }}
+              >
+                <span
+                  style={{
+                    ...styles.autoDirectorDot,
+                    ...(autoDirectorEnabled ? styles.autoDirectorDotActive : {}),
+                  }}
+                />
+                Auto
+              </button>
             </div>
           )}
 
@@ -6927,6 +6976,39 @@ const styles: Record<string, React.CSSProperties> = {
   layoutBar: {
     flexShrink: 0,
     zIndex: 10,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  autoDirectorBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    height: 32,
+    padding: '0 12px',
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-secondary)',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap' as const,
+  },
+  autoDirectorBtnActive: {
+    borderColor: 'var(--accent)',
+    background: 'var(--accent-subtle)',
+    color: 'var(--accent)',
+  },
+  autoDirectorDot: {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    background: 'var(--text-muted)',
+  },
+  autoDirectorDotActive: {
+    background: 'var(--accent)',
+    boxShadow: '0 0 6px var(--accent)',
   },
   // Screen share banner
   screenShareBanner: {

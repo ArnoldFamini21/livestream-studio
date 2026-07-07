@@ -46,6 +46,7 @@
 - [x] Smooth CSS transitions when switching layouts (300ms ease)
 - [x] Drag-and-drop participant reordering within the grid
 - [x] Click-to-spotlight: click a participant to make them the main feed
+- [x] Auto-director: "Auto" toggle spotlights the active speaker automatically using audio levels with activation delay + hold-time hysteresis
 
 ### 2B. Scene System (OBS-style)
 - [x] Scene manager: create/name/reorder scenes
