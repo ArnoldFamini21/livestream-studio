@@ -24,6 +24,10 @@ services:
         sync: false
       - key: OPENAI_TRANSCRIPTION_MODEL
         value: whisper-1
+      - key: OPENAI_HIGHLIGHT_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_EPISODE_CONTENT_MODEL
+        value: gpt-4o-mini
       - key: ICE_TRANSPORT_POLICY
         value: all
       - key: ICE_SERVERS_JSON

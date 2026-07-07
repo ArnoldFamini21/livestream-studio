@@ -35,6 +35,20 @@ Toolbar recording coordinates device-local capture for every on-stage participan
 
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.
 
+### Optional AI features (OpenAI)
+
+Transcription, AI highlight clip suggestions, and AI show notes are all opt-in. Set an OpenAI API key on `livestream-studio-server` to enable them:
+
+```sh
+OPENAI_API_KEY=<OpenAI API key>
+# Optional model overrides (sensible defaults are used when unset):
+OPENAI_TRANSCRIPTION_MODEL=whisper-1
+OPENAI_HIGHLIGHT_MODEL=gpt-4o-mini
+OPENAI_EPISODE_CONTENT_MODEL=gpt-4o-mini
+```
+
+These power the "Generate Transcript" (`/api/transcriptions`), "AI highlights" (`/api/highlights`), and "AI Show Notes" (`/api/episode-content`) actions in the recording panel. When `OPENAI_API_KEY` is not set, each endpoint returns HTTP 503 and the studio falls back gracefully — clip suggestions still come from the offline marker/caption heuristics, and manual transcript/show-notes generation is simply unavailable. No transcript or caption text is sent anywhere unless the key is configured and the host triggers the action.
+
 For server-side platform chat ingestion in the studio Chat panel, set these on `livestream-studio-server` as needed:
 
 ```sh
