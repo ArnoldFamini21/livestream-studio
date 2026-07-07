@@ -263,7 +263,8 @@
 
 ### 10B. Media Server (SFU)
 - [x] Mesh capacity planner: computes per-sender quality tier + aggregate upload for the current stage size and uplink, surfaced in Session Health, and flags when an SFU is warranted
-- [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants (planner above is the interim mitigation + decision aid)
+- [x] SFU selective-forwarding core: producer/consumer routing graph + per-consumer simulcast layer selection with hysteresis (media-server/src/sfuRouter.ts), the transport-independent brain of the SFU
+- [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants — remaining: WebRTC transport wiring (mediasoup workers / raw RTP) around the sfuRouter core, plus signaling
 - [ ] Simulcast: send multiple quality layers, server selects best for each viewer
 - [x] Client WebRTC sender simulcast encodings for camera/screen mesh connections
 - [x] Bandwidth adaptation per participant for current mesh WebRTC senders
