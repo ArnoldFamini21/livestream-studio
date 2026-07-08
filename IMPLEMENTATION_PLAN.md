@@ -269,7 +269,8 @@
 - [x] SFU room multiplexer: per-room hub registry mapping each socket to its room, routing messages, resolving hub broadcasts back to the right sockets, and tearing down empty rooms (media-server/src/sfuManager.ts)
 - [x] SFU client publish/subscribe state machine: builds publish messages from simulcast encodings, tracks remote producers, records the server-selected forwarded layer per producer, and throttles downlink reports (client/src/utils/sfuClient.ts)
 - [x] Live `/sfu` signaling WebSocket on the media server: token-authenticated (host live-stream or guest recording-upload tokens), bound to SfuManager, coexisting with `/rtmp` via a shared upgrade router — verified end-to-end over real sockets (join → publish → layer selection → downlink downgrade → disconnect cleanup)
-- [ ] Replace mesh WebRTC with mediasoup/LiveKit SFU for 5+ participants — remaining: WebRTC media transport (mediasoup workers / raw RTP terminating + forwarding tracks) and RTCPeerConnection wiring binding SfuClientSession to real tracks in place of mesh
+- [x] SFU media transport (werift, pure TS — no native build): terminates browser simulcast publishes (recvonly rid transceivers), fans out cloned RTP per subscriber at the layer selected by the control plane, with live layer switching/pause and producer-removal teardown — subscribe leg verified over real loopback DTLS/SRTP (media-server/src/sfuTransport.ts)
+- [ ] Replace mesh WebRTC with the SFU path for 5+ participants — remaining: bind sfuTransport offers/answers/ICE into the /sfu signaling messages, and RTCPeerConnection wiring in the client binding SfuClientSession to real tracks in place of mesh
 - [ ] Simulcast: send multiple quality layers, server selects best for each viewer
 - [x] Client WebRTC sender simulcast encodings for camera/screen mesh connections
 - [x] Bandwidth adaptation per participant for current mesh WebRTC senders

@@ -14,6 +14,7 @@
     "@studio/shared": "*",
     "ffmpeg-static": "^5.2.0",
     "jszip": "^3.10.1",
+    "werift": "^0.23.0",
     "ws": "^8.17.0"
   },
   "devDependencies": {
