@@ -1,13 +1,13 @@
 import type { ParticipantRole } from '@studio/shared';
-import { verifyLiveStreamToken, verifyRecordingUploadToken } from './auth.js';
+import { verifyLiveStreamToken, verifyRecordingUploadToken, verifySfuToken } from './auth.js';
 
 /**
  * Authentication for the `/sfu` control-plane socket.
  *
  * The first frame a client sends must be `{ type: 'sfu-auth', token }`. Hosts
- * and co-hosts present live-stream tokens; guests present their participant-
- * scoped recording-upload tokens (both are signed by the signaling server with
- * the shared LIVE_STREAM_TOKEN_SECRET and carry roomId + participantId).
+ * Every admitted participant receives a purpose-scoped SFU token from the
+ * signaling server. Legacy live-stream and recording-upload tokens remain
+ * accepted during rolling deployment so existing sessions do not break.
  */
 
 export interface SfuAuthFrame {
@@ -30,10 +30,16 @@ export function parseSfuAuthFrame(value: unknown): SfuAuthFrame | null {
 
 export function verifySfuIdentity(token: string, secret: string, now = Date.now()): SfuIdentity {
   try {
+    const claims = verifySfuToken(token, secret, now);
+    return { roomId: claims.roomId, participantId: claims.participantId, role: claims.role };
+  } catch {
+    // Accept short-lived legacy tokens while the signaling server rolls out.
+  }
+  try {
     const claims = verifyLiveStreamToken(token, secret, now);
     return { roomId: claims.roomId, participantId: claims.participantId, role: claims.role };
   } catch {
-    // Fall through to the participant-scoped token guests hold.
+    // Fall through to the participant-scoped recording token guests may hold.
   }
   const claims = verifyRecordingUploadToken(token, secret, now);
   return { roomId: claims.roomId, participantId: claims.participantId, role: claims.role };

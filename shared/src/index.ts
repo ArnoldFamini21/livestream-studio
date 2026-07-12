@@ -311,6 +311,8 @@ export type SignalMessage =
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   | { type: 'recording-upload-token-request'; payload: RecordingUploadTokenRequestPayload }
   | { type: 'recording-upload-token-issued'; payload: RecordingUploadTokenIssuedPayload }
+  | { type: 'sfu-token-request'; payload: SfuTokenRequestPayload }
+  | { type: 'sfu-token-issued'; payload: SfuTokenIssuedPayload }
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
   | { type: 'live-stream-token-request'; payload: LiveStreamTokenRequestPayload }
   | { type: 'live-stream-token-issued'; payload: LiveStreamTokenIssuedPayload }
@@ -426,6 +428,17 @@ export interface RecordingUploadTokenRequestPayload {
 export interface RecordingUploadTokenIssuedPayload {
   requestId: string;
   sessionId: string;
+  token: string;
+  expiresAt: string;
+}
+
+/** Request a short-lived token for the media-server SFU socket. */
+export interface SfuTokenRequestPayload {
+  requestId: string;
+}
+
+export interface SfuTokenIssuedPayload {
+  requestId: string;
   token: string;
   expiresAt: string;
 }
@@ -827,6 +840,20 @@ export interface LiveStreamTokenClaims {
   roomId: string;
   participantId: string;
   role: Extract<ParticipantRole, 'host' | 'co-host'>;
+  exp: number;
+  nonce: string;
+}
+
+/**
+ * Signed identity used exclusively by the SFU control/media socket. Unlike a
+ * live-stream token it is valid for admitted guests as well as operators.
+ */
+export interface SfuTokenClaims {
+  v: 1;
+  purpose: 'sfu';
+  roomId: string;
+  participantId: string;
+  role: ParticipantRole;
   exp: number;
   nonce: string;
 }

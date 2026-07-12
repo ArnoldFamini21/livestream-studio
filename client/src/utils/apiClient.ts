@@ -93,6 +93,21 @@ export function resolveMediaWsUrl(
   return `${getWebSocketProtocol(location)}//${location.host}/rtmp`;
 }
 
+/** Resolve the media-server SFU socket from the same configured service as RTMP. */
+export function resolveSfuWsUrl(
+  env: ClientRuntimeEnv = getRuntimeEnv(),
+  location: BrowserLocationLike | undefined = getBrowserLocation()
+): string {
+  const mediaWsUrl = resolveMediaWsUrl(env, location);
+  try {
+    const url = new URL(mediaWsUrl);
+    url.pathname = url.pathname.replace(/\/rtmp\/?$/, '/sfu');
+    return url.toString();
+  } catch {
+    return mediaWsUrl.replace(/\/rtmp\/?$/, '/sfu');
+  }
+}
+
 export function resolveMediaHttpUrl(
   env: ClientRuntimeEnv = getRuntimeEnv(),
   location: BrowserLocationLike | undefined = getBrowserLocation()

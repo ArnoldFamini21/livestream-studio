@@ -5,6 +5,7 @@ import {
   encodingsToWireLayers,
   type SfuClientOutbound,
 } from '../src/utils/sfuClient.ts';
+import { SfuWebRtcTransport, type SfuPeerConnectionLike } from '../src/utils/sfuWebRtcTransport.ts';
 
 function createSession(events = {}) {
   const sent: SfuClientOutbound[] = [];
@@ -52,6 +53,19 @@ describe('SfuClientSession outbound', () => {
     assert.equal(ok, true);
     assert.equal(session.isPublishing(), true);
     assert.equal(sent[0].type, 'sfu-publish');
+  });
+
+  it('supports audio-only publishing and advertises audio with video publishes', () => {
+    const { session, sent } = createSession();
+    assert.equal(session.publish([], true), true);
+    assert.deepEqual(sent[0], { type: 'sfu-publish', layers: [], audio: true });
+
+    session.publish([{ rid: 'h', maxBitrate: 1_000_000, scaleResolutionDownBy: 1 }], true);
+    assert.deepEqual(sent[1], {
+      type: 'sfu-publish',
+      layers: [{ rid: 'h', bitrateKbps: 1000, scaleResolutionDownBy: 1 }],
+      audio: true,
+    });
   });
 
   it('only re-sends downlink when the estimate moves more than 10%', () => {
@@ -133,5 +147,213 @@ describe('SfuClientSession inbound', () => {
     session.handleServerMessage({ type: 'sfu-layer', producerId: 'alice', rid: 'h' });
     session.handleServerMessage({ type: 'sfu-producer-removed', producerId: 'alice' });
     assert.equal(session.getForwardedLayer('alice'), null);
+  });
+
+  it('routes transport offers and ICE candidates to the media-plane owner', () => {
+    const offers: string[] = [];
+    const candidates: string[] = [];
+    const { session } = createSession({
+      onTransportOffer: (offer: { sdp: string }) => offers.push(offer.sdp),
+      onTransportIce: (_side: string, candidate: { candidate: string }) => candidates.push(candidate.candidate),
+    });
+    session.handleServerMessage({ type: 'sfu-transport-offer', side: 'publish', sdp: 'offer-sdp' });
+    session.handleServerMessage({
+      type: 'sfu-transport-ice',
+      side: 'subscribe',
+      candidate: { candidate: 'candidate:1', sdpMLineIndex: 0 },
+    });
+    assert.deepEqual(offers, ['offer-sdp']);
+    assert.deepEqual(candidates, ['candidate:1']);
+  });
+});
+
+class FakePeerConnection implements SfuPeerConnectionLike {
+  remoteDescription: RTCSessionDescriptionInit | null = null;
+  localDescription: RTCSessionDescriptionInit | null = null;
+  onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
+  ontrack: ((event: RTCTrackEvent) => void) | null = null;
+  readonly candidates: RTCIceCandidateInit[] = [];
+  readonly replacedTracks: Array<MediaStreamTrack | null> = [];
+  closed = false;
+  readonly transceivers: RTCRtpTransceiver[];
+  readonly transceiver: RTCRtpTransceiver;
+
+  constructor(kinds: Array<'audio' | 'video'> = ['video']) {
+    this.transceivers = kinds.map((kind, index) => ({
+      mid: `${kind}-${index}`,
+      direction: 'recvonly',
+      receiver: { track: { kind } },
+      sender: { replaceTrack: async (track: MediaStreamTrack | null) => { this.replacedTracks.push(track); } },
+    } as unknown as RTCRtpTransceiver));
+    this.transceiver = this.transceivers[0];
+  }
+
+  async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+    this.remoteDescription = description;
+  }
+
+  async createAnswer(): Promise<RTCSessionDescriptionInit> {
+    return { type: 'answer', sdp: 'answer-sdp' };
+  }
+
+  async setLocalDescription(description: RTCSessionDescriptionInit): Promise<void> {
+    this.localDescription = description;
+  }
+
+  async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+    this.candidates.push(candidate);
+  }
+
+  getTransceivers(): RTCRtpTransceiver[] {
+    return this.transceivers;
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
+function fakeMediaStream(tracks: MediaStreamTrack[]): MediaStream {
+  return {
+    getTracks: () => tracks,
+    getAudioTracks: () => tracks.filter((track) => track.kind === 'audio'),
+    getVideoTracks: () => tracks.filter((track) => track.kind === 'video'),
+  } as unknown as MediaStream;
+}
+
+describe('SfuWebRtcTransport', () => {
+  it('answers a publish offer, attaches the local video, and drains early ICE', async () => {
+    const sent: SfuClientOutbound[] = [];
+    const publishPc = new FakePeerConnection();
+    const transport = new SfuWebRtcTransport((message) => sent.push(message), {
+      createPeerConnection: () => publishPc,
+    });
+    const track = { kind: 'video', readyState: 'live' } as MediaStreamTrack;
+    transport.setPublishTrack(track);
+    await transport.handleIce('publish', { candidate: 'candidate:early', sdpMLineIndex: 0 });
+    await transport.handleOffer({ side: 'publish', sdp: 'publish-offer' });
+
+    assert.equal(publishPc.replacedTracks[0], track);
+    assert.deepEqual(publishPc.candidates, [{ candidate: 'candidate:early', sdpMLineIndex: 0, sdpMid: null }]);
+    assert.deepEqual(sent, [{ type: 'sfu-transport-answer', side: 'publish', sdp: 'answer-sdp' }]);
+  });
+
+  it('replaces an established publish track without rebuilding the transport', async () => {
+    const publishPc = new FakePeerConnection();
+    const transport = new SfuWebRtcTransport(() => undefined, {
+      createPeerConnection: () => publishPc,
+    });
+    const first = { kind: 'video', readyState: 'live', id: 'camera' } as MediaStreamTrack;
+    const second = { kind: 'video', readyState: 'live', id: 'screen' } as MediaStreamTrack;
+    transport.setPublishTrack(first);
+    await transport.handleOffer({ side: 'publish', sdp: 'publish-offer' });
+    transport.setPublishTrack(second);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(publishPc.replacedTracks, [first, second]);
+  });
+
+  it('attaches local audio and video to one SFU publish connection', async () => {
+    const publishPc = new FakePeerConnection(['video', 'audio']);
+    const transport = new SfuWebRtcTransport(() => undefined, {
+      createPeerConnection: () => publishPc,
+    });
+    const video = { kind: 'video', readyState: 'live', id: 'camera' } as MediaStreamTrack;
+    const audio = { kind: 'audio', readyState: 'live', id: 'microphone' } as MediaStreamTrack;
+    transport.setPublishTrack(video);
+    transport.setPublishAudioTrack(audio);
+    await transport.handleOffer({ side: 'publish', sdp: 'publish-offer' });
+
+    assert.deepEqual(publishPc.replacedTracks, [video, audio]);
+  });
+
+  it('maps subscribed tracks to the producer supplied by the server', async () => {
+    const sent: SfuClientOutbound[] = [];
+    const subscribePc = new FakePeerConnection();
+    const delivered: string[] = [];
+    const transport = new SfuWebRtcTransport((message) => sent.push(message), {
+      createPeerConnection: () => subscribePc,
+      createMediaStream: fakeMediaStream,
+      onRemoteStream: (producerId) => delivered.push(producerId),
+    });
+    await transport.handleOffer({
+      side: 'subscribe',
+      sdp: 'subscribe-offer',
+      producerMids: { alice: { video: 'video-0' } },
+    });
+    subscribePc.ontrack?.({
+      transceiver: subscribePc.transceiver,
+      streams: [{} as MediaStream],
+      track: { kind: 'video', readyState: 'live', muted: false } as MediaStreamTrack,
+    } as RTCTrackEvent);
+
+    assert.deepEqual(delivered, ['alice']);
+    assert.deepEqual(sent, [{ type: 'sfu-transport-answer', side: 'subscribe', sdp: 'answer-sdp' }]);
+  });
+
+  it('waits for incoming RTP before exposing a muted subscribed track', async () => {
+    const subscribePc = new FakePeerConnection();
+    const delivered: string[] = [];
+    const transport = new SfuWebRtcTransport(() => undefined, {
+      createPeerConnection: () => subscribePc,
+      createMediaStream: fakeMediaStream,
+      onRemoteStream: (producerId) => delivered.push(producerId),
+    });
+    await transport.handleOffer({
+      side: 'subscribe',
+      sdp: 'subscribe-offer',
+      producerMids: { alice: { video: 'video-0' } },
+    });
+    let onUnmute: (() => void) | null = null;
+    const remoteTrack = {
+      kind: 'video',
+      readyState: 'live',
+      muted: true,
+      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+        if (type === 'unmute' && typeof listener === 'function') onUnmute = listener as () => void;
+      },
+    } as unknown as MediaStreamTrack;
+    subscribePc.ontrack?.({
+      transceiver: subscribePc.transceiver,
+      streams: [{} as MediaStream],
+      track: remoteTrack,
+    } as RTCTrackEvent);
+
+    assert.deepEqual(delivered, []);
+    assert.ok(onUnmute);
+    (onUnmute as () => void)();
+    assert.deepEqual(delivered, ['alice']);
+  });
+
+  it('combines subscribed audio and video tracks into one producer stream', async () => {
+    const subscribePc = new FakePeerConnection(['video', 'audio']);
+    const delivered: MediaStream[] = [];
+    const transport = new SfuWebRtcTransport(() => undefined, {
+      createPeerConnection: () => subscribePc,
+      createMediaStream: fakeMediaStream,
+      onRemoteStream: (_producerId, stream) => delivered.push(stream),
+    });
+    await transport.handleOffer({
+      side: 'subscribe',
+      sdp: 'subscribe-offer',
+      producerMids: { alice: { video: 'video-0', audio: 'audio-1' } },
+    });
+    const video = { kind: 'video', readyState: 'live', muted: false } as MediaStreamTrack;
+    const audio = { kind: 'audio', readyState: 'live', muted: false } as MediaStreamTrack;
+
+    subscribePc.ontrack?.({
+      transceiver: subscribePc.transceivers[0],
+      streams: [],
+      track: video,
+    } as unknown as RTCTrackEvent);
+    subscribePc.ontrack?.({
+      transceiver: subscribePc.transceivers[1],
+      streams: [],
+      track: audio,
+    } as unknown as RTCTrackEvent);
+
+    assert.equal(delivered.length, 2);
+    assert.deepEqual(delivered[1].getVideoTracks(), [video]);
+    assert.deepEqual(delivered[1].getAudioTracks(), [audio]);
   });
 });

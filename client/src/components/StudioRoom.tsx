@@ -10,7 +10,10 @@ function assertNever(value: never): never {
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
+import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
 import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
+import { SfuSocketSession } from '../utils/sfuSocket.ts';
+import { mergeSfuMediaWithMeshFallback, shouldUseSfuMedia, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
 import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
 import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
@@ -1228,11 +1231,34 @@ export function StudioRoom() {
     config: vbConfig,
   });
 
-  const { remoteStreams, peerBandwidthHealth, connectToPeer, handleOffer, handleAnswer, handleIceCandidate, removePeer, replaceTrack, cleanup } = useWebRTC({
+  const [sfuRemoteStreams, setSfuRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [sfuTransportStatus, setSfuTransportStatus] = useState<SfuTransportStatus>('idle');
+  const [sfuReconnectNonce, setSfuReconnectNonce] = useState(0);
+  const sfuSessionRef = useRef<SfuSocketSession | null>(null);
+
+  const {
+    remoteStreams: meshRemoteStreams,
+    peerBandwidthHealth,
+    connectToPeer,
+    handleOffer,
+    handleAnswer,
+    handleIceCandidate,
+    removePeer,
+    replaceTrack,
+    setAudioForwardingEnabled,
+    setVideoForwardingEnabled,
+    cleanup,
+  } = useWebRTC({
     localStream,
     myParticipantId: myParticipant?.id || null,
     send,
   });
+
+  const remoteStreams = useMemo(() => (
+    sfuTransportStatus === 'active'
+      ? mergeSfuMediaWithMeshFallback(meshRemoteStreams, sfuRemoteStreams)
+      : meshRemoteStreams
+  ), [meshRemoteStreams, sfuRemoteStreams, sfuTransportStatus]);
 
   const broadcastRemoteStreams = useMemo(() => {
     const streams = new Map<string, MediaStream>();
@@ -1316,6 +1342,11 @@ export function StudioRoom() {
     }
     return planMeshCapacity({ participantCount: onStageCount, uplinkKbps });
   }, [myParticipant, sessionPeerConnectionParticipants]);
+  const shouldConnectSfuMedia = useMemo(() => shouldUseSfuMedia({
+    localParticipant: myParticipant,
+    remoteParticipants: participants.values(),
+    mediaServerReady: mediaServerHealth.status === 'ready',
+  }), [mediaServerHealth.status, myParticipant, participants]);
   const recordingReadiness = useMemo(() => {
     const liveTracks = (tracks: MediaStreamTrack[] | undefined) => (
       (tracks || []).filter((track) => track.readyState === 'live')
@@ -1433,6 +1464,7 @@ export function StudioRoom() {
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
   const recordingUploadTokenRequestsRef = useRef<Map<string, PendingRecordingUploadTokenRequest>>(new Map());
+  const sfuTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
   const recordingUploadTokenRef = useRef<{ sessionId: string; token: string } | null>(null);
   const expectedDistributedUploadsRef = useRef(1);
   const guestInviteRequestsRef = useRef<Map<string, PendingGuestInviteRequest>>(new Map());
@@ -1458,6 +1490,7 @@ export function StudioRoom() {
   const destinationsRef = useRef<StreamDestination[]>(destinations);
   const sessionRecordingStartedAtRef = useRef<string | null>(sessionRecordingStartedAt);
   const publishedTrackIdsRef = useRef<{ audio?: string; video?: string }>({});
+  const publishedVideoTrackRef = useRef<MediaStreamTrack | null>(null);
   const reactionSequenceRef = useRef(0);
 
   // Refs for signaling handler dependencies to reduce recreation frequency
@@ -1772,6 +1805,11 @@ export function StudioRoom() {
         request.reject(new Error('Studio closed before recording upload authorization completed.'));
       }
       recordingUploadTokenRequestsRef.current.clear();
+      for (const request of sfuTokenRequestsRef.current.values()) {
+        clearTimeout(request.timer);
+        request.reject(new Error('Studio closed before SFU authorization completed.'));
+      }
+      sfuTokenRequestsRef.current.clear();
       for (const request of guestInviteRequestsRef.current.values()) {
         clearTimeout(request.timer);
         request.reject(new Error('Studio closed before guest invite authorization completed.'));
@@ -2482,6 +2520,15 @@ export function StudioRoom() {
           }
           break;
         }
+        case 'sfu-token-issued': {
+          const pending = sfuTokenRequestsRef.current.get(message.payload.requestId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            sfuTokenRequestsRef.current.delete(message.payload.requestId);
+            pending.resolve(message.payload.token);
+          }
+          break;
+        }
         case 'guest-invite-token-issued': {
           const pending = guestInviteRequestsRef.current.get(message.payload.requestId);
           if (pending) {
@@ -2571,6 +2618,17 @@ export function StudioRoom() {
               recordingUploadTokenRequestsRef.current.delete(requestId);
             }
           }
+          if (
+            sfuTokenRequestsRef.current.size > 0 &&
+            ['UNAUTHORIZED', 'SFU_NOT_CONFIGURED', 'PARTICIPANT_NOT_ADMITTED', 'VALIDATION_ERROR', 'UNKNOWN_TYPE'].includes(message.payload.code)
+          ) {
+            const error = new Error(message.payload.message);
+            for (const [requestId, request] of sfuTokenRequestsRef.current) {
+              clearTimeout(request.timer);
+              request.reject(error);
+              sfuTokenRequestsRef.current.delete(requestId);
+            }
+          }
           if (message.payload.code === 'CO_HOST_INVITE_INVALID') {
             if (roomId) sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
             sessionStorage.setItem('userRole', 'guest');
@@ -2616,6 +2674,7 @@ export function StudioRoom() {
         case 'poll-update':
         case 'live-stream-token-request':
         case 'recording-upload-token-request':
+        case 'sfu-token-request':
         case 'external-chat-connect':
         case 'external-chat-disconnect':
         case 'guest-invite-token-request':
@@ -2645,12 +2704,18 @@ export function StudioRoom() {
       if (audioTrack) {
         replaceTrack(audioTrack).catch((err) => console.error('Failed to publish audio track:', err));
       }
+      sfuSessionRef.current?.setLocalAudioTrack(audioTrack || null);
     }
 
     if (!isScreenSharing && videoTrack?.id !== published.video) {
       published.video = videoTrack?.id;
       if (videoTrack) {
+        publishedVideoTrackRef.current = videoTrack;
         replaceTrack(videoTrack).catch((err) => console.error('Failed to publish video track:', err));
+        sfuSessionRef.current?.setLocalVideoTrack(videoTrack);
+      } else {
+        publishedVideoTrackRef.current = null;
+        sfuSessionRef.current?.setLocalVideoTrack(null);
       }
     }
   }, [isScreenSharing, localStream, replaceTrack]);
@@ -2714,11 +2779,25 @@ export function StudioRoom() {
     catch (err) { console.error('Failed to update audio processing:', err); }
   };
   const onVideoDeviceChange = async (id: string) => {
-    try { const t = await switchVideoDevice(id); if (t && !isScreenSharingRef.current) await replaceTrack(t); }
+    try {
+      const t = await switchVideoDevice(id);
+      if (t && !isScreenSharingRef.current) {
+        publishedVideoTrackRef.current = t;
+        await replaceTrack(t);
+        sfuSessionRef.current?.setLocalVideoTrack(t);
+      }
+    }
     catch (err) { console.error('Failed to switch video device:', err); }
   };
   const onVideoQualityChange = async (next: VideoQualityPresetId) => {
-    try { const t = await updateVideoQuality(next); if (t && !isScreenSharingRef.current) await replaceTrack(t); }
+    try {
+      const t = await updateVideoQuality(next);
+      if (t && !isScreenSharingRef.current) {
+        publishedVideoTrackRef.current = t;
+        await replaceTrack(t);
+        sfuSessionRef.current?.setLocalVideoTrack(t);
+      }
+    }
     catch (err) { console.error('Failed to update video quality:', err); }
   };
   // Screen sharing publishes a screen+camera PiP track when possible so remote
@@ -2728,8 +2807,13 @@ export function StudioRoom() {
       stopPublishedScreenShareRef.current();
       const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
       if (cameraTrack) {
+        publishedVideoTrackRef.current = cameraTrack;
         await replaceTrackRef.current(cameraTrack);
+        sfuSessionRef.current?.setLocalVideoTrack(cameraTrack);
         publishedTrackIdsRef.current.video = cameraTrack.id;
+      } else {
+        publishedVideoTrackRef.current = null;
+        sfuSessionRef.current?.setLocalVideoTrack(null);
       }
       if (myParticipantRef.current) sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: false } });
     } else {
@@ -2746,14 +2830,21 @@ export function StudioRoom() {
             publishedScreenShareCleanupRef.current?.();
             publishedScreenShareCleanupRef.current = screenPip?.cleanup || null;
             const publishedVideoTrack = screenPip?.videoTrack || screenTrack;
+            publishedVideoTrackRef.current = publishedVideoTrack;
             await replaceTrackRef.current(publishedVideoTrack);
+            sfuSessionRef.current?.setLocalVideoTrack(publishedVideoTrack);
             publishedTrackIdsRef.current.video = publishedVideoTrack.id;
             screenTrack.addEventListener('ended', async () => {
               stopPublishedScreenShareRef.current();
               const camTrack = localStreamRef.current?.getVideoTracks()[0];
               if (camTrack) {
+                publishedVideoTrackRef.current = camTrack;
                 await replaceTrackRef.current(camTrack);
+                sfuSessionRef.current?.setLocalVideoTrack(camTrack);
                 publishedTrackIdsRef.current.video = camTrack.id;
+              } else {
+                publishedVideoTrackRef.current = null;
+                sfuSessionRef.current?.setLocalVideoTrack(null);
               }
               if (myParticipantRef.current) {
                 sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: false } });
@@ -3231,6 +3322,22 @@ export function StudioRoom() {
     buildGuestInviteUrl(INVITE_BASE_URL, roomId || '', room?.name || 'Studio')
   ), [room?.name, roomId]);
 
+  const requestSfuToken = useCallback((): Promise<string> => {
+    const requestId = `sfu-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        sfuTokenRequestsRef.current.delete(requestId);
+        reject(new Error('Timed out while authorizing the SFU media connection.'));
+      }, 10_000);
+
+      sfuTokenRequestsRef.current.set(requestId, { resolve, reject, timer });
+      send({
+        type: 'sfu-token-request',
+        payload: { requestId },
+      });
+    });
+  }, [send]);
+
   const requestLiveStreamToken = useCallback((): Promise<string> => {
     const requestId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     return new Promise((resolve, reject) => {
@@ -3265,6 +3372,139 @@ export function StudioRoom() {
       });
     });
   }, [send]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let session: SfuSocketSession | null = null;
+    let retryTimer: number | null = null;
+
+    const restoreMeshMedia = () => {
+      void setAudioForwardingEnabled(true);
+      void setVideoForwardingEnabled(true);
+      setSfuRemoteStreams(new Map());
+    };
+    const scheduleRetry = () => {
+      if (cancelled || retryTimer !== null) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        setSfuReconnectNonce((value) => value + 1);
+      }, 5_000);
+    };
+
+    if (!shouldConnectSfuMedia) {
+      sfuSessionRef.current?.close();
+      sfuSessionRef.current = null;
+      setSfuTransportStatus('idle');
+      restoreMeshMedia();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setSfuTransportStatus('connecting');
+    setSfuRemoteStreams(new Map());
+    void requestSfuToken().then(async (token) => {
+      const iceConfiguration = await fetchIceConfig().catch(() => DEFAULT_ICE_CONFIG);
+      if (cancelled) return;
+      const localVideoTrack = publishedVideoTrackRef.current || localStreamRef.current?.getVideoTracks()[0] || null;
+      const localAudioTrack = localStreamRef.current?.getAudioTracks()[0] || null;
+      let remoteMediaReady = false;
+      let localPublishReady = localVideoTrack === null && localAudioTrack === null;
+      const activateSfuMedia = () => {
+        if (cancelled || sfuSessionRef.current !== session || !remoteMediaReady || !localPublishReady) return;
+        setSfuTransportStatus('active');
+        void setAudioForwardingEnabled(false);
+        void setVideoForwardingEnabled(false);
+      };
+
+      const failToMesh = (message: string) => {
+        if (cancelled || sfuSessionRef.current !== session) return;
+        console.warn(`SFU media: ${message}`);
+        sfuSessionRef.current = null;
+        setSfuTransportStatus('fallback');
+        restoreMeshMedia();
+        session?.close();
+        scheduleRetry();
+      };
+
+      session = new SfuSocketSession({
+        token,
+        localVideoTrack,
+        localAudioTrack,
+        downlinkKbps: 6_000,
+        iceConfiguration,
+        onReady: () => {
+          if (!cancelled && sfuSessionRef.current === session) setSfuTransportStatus('ready');
+        },
+        onPublishStart: () => {
+          if (cancelled || sfuSessionRef.current !== session) return;
+          localPublishReady = false;
+          setSfuTransportStatus('ready');
+          void setAudioForwardingEnabled(true);
+          void setVideoForwardingEnabled(true);
+        },
+        onPublishReady: () => {
+          localPublishReady = true;
+          activateSfuMedia();
+        },
+        onRemoteStream: (producerId, stream) => {
+          if (cancelled || sfuSessionRef.current !== session) return;
+          setSfuRemoteStreams((current) => {
+            const next = new Map(current);
+            next.set(producerId, stream);
+            return next;
+          });
+        },
+        onRemoteStreamRemoved: (producerId) => {
+          if (cancelled || sfuSessionRef.current !== session) return;
+          setSfuRemoteStreams((current) => {
+            if (!current.has(producerId)) return current;
+            const next = new Map(current);
+            next.delete(producerId);
+            return next;
+          });
+        },
+        onRemoteMediaReady: () => {
+          remoteMediaReady = true;
+          activateSfuMedia();
+        },
+        onRemoteMediaPending: () => {
+          remoteMediaReady = false;
+          if (cancelled || sfuSessionRef.current !== session) return;
+          setSfuTransportStatus('ready');
+          void setAudioForwardingEnabled(true);
+          void setVideoForwardingEnabled(true);
+        },
+        onError: failToMesh,
+        onClose: () => {
+          if (cancelled || sfuSessionRef.current !== session) return;
+          sfuSessionRef.current = null;
+          setSfuTransportStatus('fallback');
+          restoreMeshMedia();
+          scheduleRetry();
+        },
+      });
+      sfuSessionRef.current = session;
+      session.connect();
+    }).catch((error) => {
+      if (cancelled) return;
+      console.warn('SFU media startup failed; keeping mesh media:', error);
+      if (sfuSessionRef.current === session) sfuSessionRef.current = null;
+      session?.close();
+      setSfuTransportStatus('fallback');
+      restoreMeshMedia();
+      scheduleRetry();
+    });
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      if (sfuSessionRef.current === session) sfuSessionRef.current = null;
+      session?.close();
+      void setAudioForwardingEnabled(true);
+      void setVideoForwardingEnabled(true);
+    };
+  }, [requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, shouldConnectSfuMedia]);
 
   useEffect(() => {
     if (
@@ -5341,6 +5581,7 @@ export function StudioRoom() {
           <SessionHealthPanel
             summary={sessionHealth}
             meshCapacity={meshCapacity}
+            sfuMediaStatus={sfuTransportStatus}
             onClose={() => setShowHealthPanel(false)}
           />
         )}
@@ -6355,6 +6596,7 @@ export function StudioRoom() {
         <SessionHealthPanel
           summary={sessionHealth}
           meshCapacity={meshCapacity}
+          sfuMediaStatus={sfuTransportStatus}
           onClose={() => setShowHealthPanel(false)}
         />
       )}

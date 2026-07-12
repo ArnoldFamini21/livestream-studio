@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "tsc -b ../shared && tsc --noEmit",
-    "test": "node --import tsx --test src/*.test.ts"
+    "test": "node --import tsx --test --test-force-exit src/*.test.ts"
   },
   "dependencies": {
     "@studio/shared": "*",

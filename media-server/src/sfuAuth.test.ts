@@ -33,6 +33,19 @@ function guestToken(overrides: Record<string, unknown> = {}): string {
   } as never, SECRET);
 }
 
+function sfuToken(overrides: Record<string, unknown> = {}): string {
+  return signLiveStreamToken({
+    v: 1,
+    purpose: 'sfu',
+    roomId: 'room-1',
+    participantId: 'guest-7',
+    role: 'guest',
+    exp: NOW + 60_000,
+    nonce: 'sfu-nonce',
+    ...overrides,
+  } as never, SECRET);
+}
+
 describe('parseSfuAuthFrame', () => {
   it('accepts a well-formed auth frame', () => {
     assert.deepEqual(parseSfuAuthFrame({ type: 'sfu-auth', token: 'abc' }), { token: 'abc' });
@@ -49,6 +62,14 @@ describe('parseSfuAuthFrame', () => {
 });
 
 describe('verifySfuIdentity', () => {
+  it('accepts a purpose-scoped token for an admitted guest outside recording', () => {
+    assert.deepEqual(verifySfuIdentity(sfuToken(), SECRET, NOW), {
+      roomId: 'room-1',
+      participantId: 'guest-7',
+      role: 'guest',
+    });
+  });
+
   it('accepts a host live-stream token', () => {
     assert.deepEqual(verifySfuIdentity(hostToken(), SECRET, NOW), {
       roomId: 'room-1',

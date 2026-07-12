@@ -26,6 +26,7 @@ import { buildAllowedOrigins, isAllowedOrigin, normalizeOrigin } from './origins
 import { parseControlMessage } from './protocol.js';
 import { SfuManager } from './sfuManager.js';
 import { parseSfuAuthFrame, verifySfuIdentity } from './sfuAuth.js';
+import { SfuMediaTransport } from './sfuTransport.js';
 import {
   createFfmpegLiveBackupArgs,
   createLiveBackupRecording,
@@ -1103,7 +1104,11 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
-const sfuManager = new SfuManager();
+const sfuManager = new SfuManager({}, (roomSend) => new SfuMediaTransport({
+  onIceCandidate: (participantId, side, candidate) => {
+    roomSend(participantId, { type: 'sfu-transport-ice', side, candidate });
+  },
+}));
 
 sfuWss.on('connection', (ws) => {
   let sfuParticipantId: string | null = null;

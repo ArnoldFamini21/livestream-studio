@@ -27,6 +27,16 @@ const CLIENT_VIDEO_CODECS = [
   }),
 ];
 
+const CLIENT_AUDIO_CODECS = [
+  new RTCRtpCodecParameters({
+    mimeType: 'audio/opus',
+    clockRate: 48000,
+    channels: 2,
+    payloadType: 111,
+    parameters: 'minptime=10;useinbandfec=1',
+  }),
+];
+
 const HIGH_PAYLOAD = 600;
 const LOW_PAYLOAD = 60;
 
@@ -42,12 +52,18 @@ async function waitFor(predicate: () => boolean, timeoutMs: number, label: strin
   }
 }
 
-function makePacket(sequenceNumber: number, ssrc: number, payloadBytes: number): RtpPacket {
+function makePacket(
+  sequenceNumber: number,
+  ssrc: number,
+  payloadBytes: number,
+  payloadType = 96,
+  timestampStep = 3000
+): RtpPacket {
   return new RtpPacket(
     new RtpHeader({
-      payloadType: 96,
+      payloadType,
       sequenceNumber,
-      timestamp: sequenceNumber * 3000,
+      timestamp: sequenceNumber * timestampStep,
       ssrc,
       marker: true,
     }),
@@ -72,18 +88,19 @@ describe('SfuMediaTransport', { timeout: 60_000 }, () => {
   });
 
   it('negotiates a recv-simulcast publish offer with the requested rids', async () => {
-    const offer = await transport.createPublishOffer('alice', ['h', 'l']);
+    const offer = await transport.createPublishOffer('alice', ['h', 'l'], true);
     assert.equal(offer.type, 'offer');
     assert.match(offer.sdp, /a=rid:h recv/);
     assert.match(offer.sdp, /a=rid:l recv/);
     assert.match(offer.sdp, /a=simulcast:recv/);
     assert.match(offer.sdp, /urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id/);
     assert.match(offer.sdp, /VP8\/90000/);
+    assert.match(offer.sdp, /opus\/48000\/2/);
     assert.equal(transport.getPublisherCount(), 1);
   });
 
   it('rejects publishing without rids and dedupes/caps rid lists', async () => {
-    await assert.rejects(() => transport.createPublishOffer('bob', []), /at least one simulcast rid/i);
+    await assert.rejects(() => transport.createPublishOffer('bob', [], false), /at least one audio or video track/i);
     const offer = await transport.createPublishOffer('carol', ['h', 'h', 'm', 'l', 'x']);
     const ridLines = offer.sdp.match(/a=rid:\w+ recv/g) || [];
     assert.equal(ridLines.length, 3);
@@ -91,8 +108,10 @@ describe('SfuMediaTransport', { timeout: 60_000 }, () => {
   });
 
   it('forwards the selected layer to a real subscriber peer and switches layers live', async () => {
-    subscriberClient = new RTCPeerConnection({ codecs: { video: CLIENT_VIDEO_CODECS } });
-    const received: Array<{ mid: string | null; size: number }> = [];
+    subscriberClient = new RTCPeerConnection({
+      codecs: { audio: CLIENT_AUDIO_CODECS, video: CLIENT_VIDEO_CODECS },
+    });
+    const received: Array<{ kind: string; mid: string | null; size: number }> = [];
     subscriberClient.onIceCandidate.subscribe((candidate) => {
       if (!candidate) return;
       void transport.addSubscribeIceCandidate('bob', {
@@ -104,13 +123,18 @@ describe('SfuMediaTransport', { timeout: 60_000 }, () => {
     subscriberClient.onTransceiverAdded.subscribe((transceiver) => {
       transceiver.onTrack.subscribe((track) => {
         track.onReceiveRtp.subscribe((rtp) => {
-          received.push({ mid: transceiver.mid ?? null, size: rtp.payload.length });
+          received.push({ kind: track.kind, mid: transceiver.mid ?? null, size: rtp.payload.length });
         });
       });
     });
 
-    const { description: subscribeOffer, producerMids } = await transport.createSubscribeOffer('bob', ['alice']);
-    assert.equal(typeof producerMids.alice, 'string');
+    const { description: subscribeOffer, producerMids } = await transport.createSubscribeOffer('bob', [{
+      producerId: 'alice',
+      hasVideo: true,
+      hasAudio: true,
+    }]);
+    assert.equal(typeof producerMids.alice.video, 'string');
+    assert.equal(typeof producerMids.alice.audio, 'string');
     await subscriberClient.setRemoteDescription(subscribeOffer as never);
     await subscriberClient.setLocalDescription(await subscriberClient.createAnswer());
     await transport.setSubscribeAnswer('bob', { sdp: subscriberClient.localDescription!.sdp });
@@ -122,37 +146,43 @@ describe('SfuMediaTransport', { timeout: 60_000 }, () => {
         sequence += 1;
         transport.injectPublisherRtp('alice', 'h', makePacket(sequence, 1111, HIGH_PAYLOAD));
         transport.injectPublisherRtp('alice', 'l', makePacket(sequence, 2222, LOW_PAYLOAD));
+        transport.injectPublisherAudioRtp('alice', makePacket(sequence, 3333, 120, 111, 960));
         await delay(10);
       }
     };
 
-    // No layer selected yet: nothing forwards.
+    // Audio always forwards, while video waits for a selected simulcast layer.
     await pump(5);
-    await delay(200);
-    assert.equal(received.length, 0, 'no packets before a layer is selected');
+    await waitFor(() => received.some((r) => r.kind === 'audio'), 10_000, 'audio before video selection');
+    assert.equal(received.some((r) => r.kind === 'video'), false, 'no video before a layer is selected');
+    assert.equal(transport.getPublisherAudioPacketCount('alice'), 5);
     const counts = transport.getPublisherRidCounts('alice');
     assert.ok((counts.h || 0) >= 5 && (counts.l || 0) >= 5, 'publisher counters track both rids');
 
     // Select the high layer.
     transport.setForwardedLayer('bob', 'alice', 'h');
+    received.length = 0;
     await pump(20);
-    await waitFor(() => received.some((r) => r.size === HIGH_PAYLOAD), 10_000, 'high-layer packets at subscriber');
-    assert.ok(received.every((r) => r.mid === producerMids.alice), 'packets arrive on the mapped mid');
-    assert.equal(received.some((r) => r.size === LOW_PAYLOAD), false, 'low layer must not leak while h selected');
+    await waitFor(() => received.some((r) => r.kind === 'video' && r.size === HIGH_PAYLOAD), 10_000, 'high-layer packets at subscriber');
+    const receivedVideo = received.filter((r) => r.kind === 'video');
+    const receivedAudio = received.filter((r) => r.kind === 'audio');
+    assert.ok(receivedVideo.every((r) => r.mid === producerMids.alice.video), 'video arrives on the mapped mid');
+    assert.ok(receivedAudio.every((r) => r.mid === producerMids.alice.audio), 'audio arrives on the mapped mid');
+    assert.equal(receivedVideo.some((r) => r.size === LOW_PAYLOAD), false, 'low layer must not leak while h selected');
 
     // Live switch to the low layer.
     transport.setForwardedLayer('bob', 'alice', 'l');
     received.length = 0;
     await pump(20);
     await waitFor(() => received.some((r) => r.size === LOW_PAYLOAD), 10_000, 'low-layer packets after switch');
-    assert.equal(received.some((r) => r.size === HIGH_PAYLOAD), false, 'high layer must stop after switch');
+    assert.equal(received.some((r) => r.kind === 'video' && r.size === HIGH_PAYLOAD), false, 'high layer must stop after switch');
 
-    // Pause forwards nothing.
+    // Pausing video does not interrupt audio.
     transport.setForwardedLayer('bob', 'alice', null);
     received.length = 0;
     await pump(8);
-    await delay(300);
-    assert.equal(received.length, 0, 'no packets while paused');
+    await waitFor(() => received.some((r) => r.kind === 'audio'), 10_000, 'audio while video paused');
+    assert.equal(received.some((r) => r.kind === 'video'), false, 'no video packets while paused');
 
     // Producer removal stops forwarding even with a layer re-selected.
     transport.setForwardedLayer('bob', 'alice', 'h');

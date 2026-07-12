@@ -15,18 +15,40 @@ export interface SfuWireLayer {
   scaleResolutionDownBy: number;
 }
 
+export interface SfuProducerMids {
+  video?: string;
+  audio?: string;
+}
+
 export type SfuClientOutbound =
   | { type: 'sfu-join'; downlinkKbps: number }
-  | { type: 'sfu-publish'; layers: SfuWireLayer[] }
+  | { type: 'sfu-publish'; layers: SfuWireLayer[]; audio: boolean }
   | { type: 'sfu-unpublish' }
   | { type: 'sfu-downlink'; downlinkKbps: number }
+  | { type: 'sfu-transport-answer'; side: SfuTransportSide; sdp: string }
+  | { type: 'sfu-transport-ice'; side: SfuTransportSide; candidate: SfuIceCandidate }
   | { type: 'sfu-leave' };
+
+export type SfuTransportSide = 'publish' | 'subscribe';
+
+export interface SfuIceCandidate {
+  candidate: string;
+  sdpMLineIndex?: number | null;
+  sdpMid?: string | null;
+}
 
 export type SfuClientInbound =
   | { type: 'sfu-producers'; producers: string[] }
   | { type: 'sfu-producer-added'; producerId: string }
   | { type: 'sfu-producer-removed'; producerId: string }
   | { type: 'sfu-layer'; producerId: string; rid: string | null; reason?: string }
+  | {
+    type: 'sfu-transport-offer';
+    side: SfuTransportSide;
+    sdp: string;
+    producerMids?: Record<string, SfuProducerMids>;
+  }
+  | { type: 'sfu-transport-ice'; side: SfuTransportSide; candidate: SfuIceCandidate }
   | { type: 'sfu-error'; message: string };
 
 export type SfuClientSend = (message: SfuClientOutbound) => void;
@@ -34,6 +56,8 @@ export type SfuClientSend = (message: SfuClientOutbound) => void;
 export interface SfuClientEvents {
   onProducersChanged?: (producers: string[]) => void;
   onLayerChanged?: (producerId: string, rid: string | null) => void;
+  onTransportOffer?: (offer: Extract<SfuClientInbound, { type: 'sfu-transport-offer' }>) => void;
+  onTransportIce?: (side: SfuTransportSide, candidate: SfuIceCandidate) => void;
   onError?: (message: string) => void;
 }
 
@@ -78,11 +102,11 @@ export class SfuClientSession {
     this.send({ type: 'sfu-join', downlinkKbps: this.downlinkKbps });
   }
 
-  publish(encodings: RTCRtpEncodingParameters[]): boolean {
+  publish(encodings: RTCRtpEncodingParameters[], audio = false): boolean {
     const layers = encodingsToWireLayers(encodings);
-    if (layers.length === 0) return false;
+    if (layers.length === 0 && !audio) return false;
     this.publishing = true;
-    this.send({ type: 'sfu-publish', layers });
+    this.send({ type: 'sfu-publish', layers, audio });
     return true;
   }
 
@@ -136,6 +160,14 @@ export class SfuClientSession {
       case 'sfu-layer': {
         this.layers.set(message.producerId, message.rid);
         this.events.onLayerChanged?.(message.producerId, message.rid);
+        return;
+      }
+      case 'sfu-transport-offer': {
+        this.events.onTransportOffer?.(message);
+        return;
+      }
+      case 'sfu-transport-ice': {
+        this.events.onTransportIce?.(message.side, message.candidate);
         return;
       }
       case 'sfu-error': {

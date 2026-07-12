@@ -1,5 +1,10 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { LiveStreamTokenClaims, ParticipantRole, RecordingUploadTokenClaims } from '@studio/shared';
+import type {
+  LiveStreamTokenClaims,
+  ParticipantRole,
+  RecordingUploadTokenClaims,
+  SfuTokenClaims,
+} from '@studio/shared';
 
 export function getLiveStreamTokenSecret(): string | null {
   const secret = process.env.LIVE_STREAM_TOKEN_SECRET;
@@ -19,7 +24,10 @@ function safeSignatureEquals(actual: string, expected: string): boolean {
   return timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-export function signLiveStreamToken(claims: LiveStreamTokenClaims | RecordingUploadTokenClaims, secret: string): string {
+export function signLiveStreamToken(
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims,
+  secret: string
+): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
   return `${body}.${signBody(body, secret)}`;
 }
@@ -95,4 +103,22 @@ export function verifyRecordingUploadToken(
     throw new Error('Recording upload token expired');
   }
   return claims as RecordingUploadTokenClaims;
+}
+
+export function verifySfuToken(token: string, secret: string, now = Date.now()): SfuTokenClaims {
+  const claims = verifyTokenPayload(token, secret) as Partial<SfuTokenClaims> | null;
+  if (
+    !claims ||
+    claims.v !== 1 ||
+    claims.purpose !== 'sfu' ||
+    typeof claims.roomId !== 'string' ||
+    typeof claims.participantId !== 'string' ||
+    !isParticipantRole(claims.role) ||
+    typeof claims.nonce !== 'string' ||
+    typeof claims.exp !== 'number'
+  ) {
+    throw new Error('Invalid SFU token claims');
+  }
+  if (claims.exp <= now) throw new Error('SFU token expired');
+  return claims as SfuTokenClaims;
 }

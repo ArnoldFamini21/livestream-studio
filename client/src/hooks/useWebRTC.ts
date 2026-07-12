@@ -20,6 +20,7 @@ interface PeerState {
   participantId: string;
   connection: RTCPeerConnection;
   stream: MediaStream | null;
+  senders: Map<'audio' | 'video', RTCRtpSender>;
 }
 
 interface UseWebRTCProps {
@@ -42,7 +43,17 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   useEffect(() => { sendRef.current = send; }, [send]);
 
   const localStreamRef = useRef(localStream);
-  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+  const publishedTracksRef = useRef<Map<'audio' | 'video', MediaStreamTrack>>(new Map());
+  const audioForwardingEnabledRef = useRef(true);
+  const videoForwardingEnabledRef = useRef(true);
+  useEffect(() => {
+    localStreamRef.current = localStream;
+    for (const track of localStream?.getTracks() || []) {
+      if ((track.kind === 'audio' || track.kind === 'video') && !publishedTracksRef.current.has(track.kind)) {
+        publishedTracksRef.current.set(track.kind, track);
+      }
+    }
+  }, [localStream]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,13 +148,30 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         participantId: remoteParticipantId,
         connection: pc,
         stream: null,
+        senders: new Map(),
       };
 
       // Add local tracks to the connection (use ref for latest stream)
       const currentStream = localStreamRef.current;
       if (currentStream) {
         for (const track of currentStream.getTracks()) {
-          addTrackWithOptionalSimulcast(pc, track, currentStream);
+          const publishedTrack = (track.kind === 'audio' || track.kind === 'video')
+            ? publishedTracksRef.current.get(track.kind) || track
+            : track;
+          const sender = addTrackWithOptionalSimulcast(pc, publishedTrack, currentStream);
+          if (track.kind === 'audio' || track.kind === 'video') {
+            peerState.senders.set(track.kind, sender);
+            if (!publishedTracksRef.current.has(track.kind)) publishedTracksRef.current.set(track.kind, track);
+          }
+          if (track.kind === 'video' && !videoForwardingEnabledRef.current) {
+            void sender.replaceTrack(null).catch((err) => {
+              console.warn(`Failed to pause mesh video for peer ${remoteParticipantId}:`, err);
+            });
+          } else if (track.kind === 'audio' && !audioForwardingEnabledRef.current) {
+            void sender.replaceTrack(null).catch((err) => {
+              console.warn(`Failed to pause mesh audio for peer ${remoteParticipantId}:`, err);
+            });
+          }
         }
       }
 
@@ -477,10 +505,13 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   // Replace a track on all active peer connections (used when switching devices)
   const replaceTrack = useCallback(
     async (newTrack: MediaStreamTrack) => {
+      if (newTrack.kind !== 'audio' && newTrack.kind !== 'video') return;
+      publishedTracksRef.current.set(newTrack.kind, newTrack);
       for (const [participantId, peer] of peersRef.current) {
-        const senders = peer.connection.getSenders();
-        const sender = senders.find((s) => s.track?.kind === newTrack.kind);
+        const sender = peer.senders.get(newTrack.kind);
         if (sender) {
+          if (newTrack.kind === 'video' && !videoForwardingEnabledRef.current) continue;
+          if (newTrack.kind === 'audio' && !audioForwardingEnabledRef.current) continue;
           await sender.replaceTrack(newTrack);
           try {
             await refreshSenderVideoEncodingParameters(sender, newTrack);
@@ -494,6 +525,43 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     },
     []
   );
+
+  const setVideoForwardingEnabled = useCallback(async (enabled: boolean) => {
+    if (videoForwardingEnabledRef.current === enabled) return;
+    videoForwardingEnabledRef.current = enabled;
+    const videoTrack = publishedTracksRef.current.get('video') || localStreamRef.current?.getVideoTracks()[0] || null;
+
+    await Promise.all(Array.from(peersRef.current.values()).map(async (peer) => {
+      const sender = peer.senders.get('video');
+      if (!sender) return;
+      try {
+        await sender.replaceTrack(enabled ? videoTrack : null);
+        if (enabled && videoTrack) {
+          await refreshSenderVideoEncodingParameters(sender, videoTrack);
+          const currentMode = bandwidthStatesRef.current.get(peer.participantId)?.mode || 'full';
+          await applyBandwidthModeToVideoSender(sender, currentMode);
+        }
+      } catch (err) {
+        console.warn(`Failed to ${enabled ? 'resume' : 'pause'} mesh video for peer ${peer.participantId}:`, err);
+      }
+    }));
+  }, []);
+
+  const setAudioForwardingEnabled = useCallback(async (enabled: boolean) => {
+    if (audioForwardingEnabledRef.current === enabled) return;
+    audioForwardingEnabledRef.current = enabled;
+    const audioTrack = publishedTracksRef.current.get('audio') || localStreamRef.current?.getAudioTracks()[0] || null;
+
+    await Promise.all(Array.from(peersRef.current.values()).map(async (peer) => {
+      const sender = peer.senders.get('audio');
+      if (!sender) return;
+      try {
+        await sender.replaceTrack(enabled ? audioTrack : null);
+      } catch (err) {
+        console.warn(`Failed to ${enabled ? 'resume' : 'pause'} mesh audio for peer ${peer.participantId}:`, err);
+      }
+    }));
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -551,6 +619,8 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     handleIceCandidate,
     removePeer,
     replaceTrack,
+    setAudioForwardingEnabled,
+    setVideoForwardingEnabled,
     cleanup,
   };
 }

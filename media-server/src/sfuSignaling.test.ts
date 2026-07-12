@@ -4,7 +4,9 @@ import {
   SfuSignalingHub,
   parseSfuClientMessage,
   type SfuServerMessage,
+  type SfuTransportLike,
 } from './sfuSignaling.js';
+import type { SfuProducerMedia } from './sfuTransport.js';
 
 const LAYERS = [
   { rid: 'h', bitrateKbps: 2800, scaleResolutionDownBy: 1 },
@@ -16,6 +18,43 @@ function createHub() {
   const sent: Array<{ to: string; message: SfuServerMessage }> = [];
   const hub = new SfuSignalingHub((to, message) => sent.push({ to, message }));
   return { hub, sent };
+}
+
+function flushAsyncWork(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+class FakeSfuTransport implements SfuTransportLike {
+  readonly subscribeOffers: Array<{ consumerId: string; producerIds: string[] }> = [];
+  readonly forwardedLayers: Array<{ consumerId: string; producerId: string; rid: string | null }> = [];
+
+  async createPublishOffer() {
+    return { type: 'offer' as const, sdp: 'publish-offer' };
+  }
+
+  async setPublishAnswer() {}
+  async addPublishIceCandidate() {}
+  async closePublisher() {}
+
+  async createSubscribeOffer(consumerId: string, producers: SfuProducerMedia[]) {
+    const producerIds = producers.map((producer) => producer.producerId);
+    this.subscribeOffers.push({ consumerId, producerIds: [...producerIds] });
+    return {
+      description: { type: 'offer' as const, sdp: `subscribe-${this.subscribeOffers.length}` },
+      producerMids: Object.fromEntries(producers.map((producer, index) => [producer.producerId, {
+        ...(producer.hasVideo ? { video: `video-${index}` } : {}),
+        ...(producer.hasAudio ? { audio: `audio-${index}` } : {}),
+      }])),
+    };
+  }
+
+  async setSubscribeAnswer() {}
+  async addSubscribeIceCandidate() {}
+  setForwardedLayer(consumerId: string, producerId: string, rid: string | null) {
+    this.forwardedLayers.push({ consumerId, producerId, rid });
+  }
+  removeProducer() {}
+  async closeParticipant() {}
 }
 
 describe('parseSfuClientMessage', () => {
@@ -32,6 +71,11 @@ describe('parseSfuClientMessage', () => {
     assert.equal(parseSfuClientMessage({ type: 'sfu-join', downlinkKbps: -5 })?.type, 'sfu-join');
     assert.deepEqual(parseSfuClientMessage({ type: 'sfu-join' }), { type: 'sfu-join', downlinkKbps: 0 });
     assert.equal(parseSfuClientMessage({ type: 'sfu-publish', layers: [] }), null);
+    assert.deepEqual(parseSfuClientMessage({ type: 'sfu-publish', layers: [], audio: true }), {
+      type: 'sfu-publish',
+      layers: [],
+      audio: true,
+    });
     assert.equal(parseSfuClientMessage({ type: 'sfu-publish', layers: [{ rid: '', bitrateKbps: 100 }] }), null);
     assert.equal(parseSfuClientMessage({ type: 'sfu-publish' }), null);
   });
@@ -50,6 +94,29 @@ describe('parseSfuClientMessage', () => {
       assert.equal(parsed.layers.length, 2);
       assert.equal(parsed.layers[1].scaleResolutionDownBy, 1); // defaulted
     }
+  });
+
+  it('parses bounded transport answers and ICE candidates', () => {
+    assert.deepEqual(parseSfuClientMessage({
+      type: 'sfu-transport-answer',
+      side: 'publish',
+      sdp: 'v=0\\r\\n',
+    }), {
+      type: 'sfu-transport-answer',
+      side: 'publish',
+      sdp: 'v=0\\r\\n',
+    });
+    assert.deepEqual(parseSfuClientMessage({
+      type: 'sfu-transport-ice',
+      side: 'subscribe',
+      candidate: { candidate: 'candidate:1', sdpMLineIndex: 0, sdpMid: '0' },
+    }), {
+      type: 'sfu-transport-ice',
+      side: 'subscribe',
+      candidate: { candidate: 'candidate:1', sdpMLineIndex: 0, sdpMid: '0' },
+    });
+    assert.equal(parseSfuClientMessage({ type: 'sfu-transport-answer', side: 'bad', sdp: 'v=0' }), null);
+    assert.equal(parseSfuClientMessage({ type: 'sfu-transport-ice', side: 'publish', candidate: {} }), null);
   });
 
   it('rejects unknown or malformed messages', () => {
@@ -150,5 +217,36 @@ describe('SfuSignalingHub', () => {
     const error = sent.find((s) => s.to === 'ghost' && s.message.type === 'sfu-error');
     assert.ok(error);
     assert.match((error!.message as { message: string }).message, /join before publishing/);
+  });
+
+  it('queues subscription renegotiation until the prior offer is answered', async () => {
+    const sent: Array<{ to: string; message: SfuServerMessage }> = [];
+    const transport = new FakeSfuTransport();
+    const hub = new SfuSignalingHub((to, message) => sent.push({ to, message }), {}, transport);
+
+    hub.handleMessage('alice', { type: 'sfu-join', downlinkKbps: 6000 });
+    hub.handleMessage('bob', { type: 'sfu-join', downlinkKbps: 6000 });
+    hub.handleMessage('alice', { type: 'sfu-publish', layers: LAYERS });
+    await flushAsyncWork();
+    assert.equal(transport.subscribeOffers.filter((offer) => offer.consumerId === 'bob').length, 1);
+
+    hub.handleMessage('carol', { type: 'sfu-join', downlinkKbps: 6000 });
+    hub.handleMessage('carol', { type: 'sfu-publish', layers: LAYERS });
+    await flushAsyncWork();
+    assert.equal(transport.subscribeOffers.filter((offer) => offer.consumerId === 'bob').length, 1);
+
+    hub.handleMessage('bob', { type: 'sfu-transport-answer', side: 'subscribe', sdp: 'answer-1' });
+    await flushAsyncWork();
+    const bobOffers = transport.subscribeOffers.filter((offer) => offer.consumerId === 'bob');
+    assert.equal(bobOffers.length, 2);
+    assert.deepEqual(bobOffers[1].producerIds.sort(), ['alice', 'carol']);
+    assert.ok(transport.forwardedLayers.some((selection) => (
+      selection.consumerId === 'bob' && selection.producerId === 'carol' && selection.rid !== null
+    )));
+
+    hub.handleDisconnect('alice');
+    hub.handleDisconnect('bob');
+    hub.handleDisconnect('carol');
+    assert.ok(sent.some(({ to, message }) => to === 'bob' && message.type === 'sfu-transport-offer'));
   });
 });

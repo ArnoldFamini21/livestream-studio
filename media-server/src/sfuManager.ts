@@ -1,4 +1,4 @@
-import { SfuSignalingHub, type SfuServerMessage } from './sfuSignaling.js';
+import { SfuSignalingHub, type SfuServerMessage, type SfuTransportLike } from './sfuSignaling.js';
 import type { LayerSelectionOptions } from './sfuRouter.js';
 
 /**
@@ -14,11 +14,21 @@ import type { LayerSelectionOptions } from './sfuRouter.js';
 
 export type SfuParticipantSend = (message: SfuServerMessage) => void;
 
+/**
+ * Creates a per-room media transport. The factory receives a send function that
+ * resolves the current socket for any participant in that room, so transport
+ * events (e.g. ICE candidates) can be pushed to the right connection.
+ */
+export type SfuTransportFactory = (
+  roomSend: (participantId: string, message: SfuServerMessage) => void
+) => SfuTransportLike & { closeAll?: () => Promise<void> };
+
 const MAX_SFU_ROOMS = 512;
 
 interface RoomEntry {
   hub: SfuSignalingHub;
   participants: Set<string>;
+  transport: (SfuTransportLike & { closeAll?: () => Promise<void> }) | null;
 }
 
 export class SfuManager {
@@ -26,7 +36,10 @@ export class SfuManager {
   private readonly sends = new Map<string, SfuParticipantSend>();
   private readonly participantRoom = new Map<string, string>();
 
-  constructor(private readonly options: LayerSelectionOptions = {}) {}
+  constructor(
+    private readonly options: LayerSelectionOptions = {},
+    private readonly createTransport: SfuTransportFactory | null = null
+  ) {}
 
   getRoomCount(): number {
     return this.rooms.size;
@@ -46,13 +59,12 @@ export class SfuManager {
       if (this.rooms.size >= MAX_SFU_ROOMS) {
         throw new Error(`SFU is at capacity (max ${MAX_SFU_ROOMS} rooms)`);
       }
-      const hub = new SfuSignalingHub(
-        (participantId, message) => {
-          this.sends.get(participantId)?.(message);
-        },
-        this.options
-      );
-      entry = { hub, participants: new Set() };
+      const roomSend = (participantId: string, message: SfuServerMessage) => {
+        this.sends.get(participantId)?.(message);
+      };
+      const transport = this.createTransport ? this.createTransport(roomSend) : null;
+      const hub = new SfuSignalingHub(roomSend, this.options, transport);
+      entry = { hub, participants: new Set(), transport };
       this.rooms.set(roomId, entry);
     }
     return entry;
@@ -91,6 +103,7 @@ export class SfuManager {
     entry.participants.delete(participantId);
     if (entry.participants.size === 0) {
       this.rooms.delete(roomId);
+      void entry.transport?.closeAll?.().catch(() => undefined);
     }
   }
 }

@@ -19,6 +19,7 @@ import type {
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
   RecordingUploadTokenClaims,
+  SfuTokenClaims,
   StudioBrandingPayload,
   RoomRegistrant,
   RoomRegistrantListResponse,
@@ -125,6 +126,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'studio-branding-updated',
   'recording-state-changed',
   'recording-upload-token-request',
+  'sfu-token-request',
   'live-stream-state-changed',
   'live-stream-token-request',
   'external-chat-connect',
@@ -213,6 +215,7 @@ const MAX_REGISTRANT_NAME_LENGTH = 80;
 const MAX_REGISTRANT_EMAIL_LENGTH = 254;
 const LIVE_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
 const RECORDING_UPLOAD_TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
+const SFU_TOKEN_TTL_MS = 15 * 60 * 1000;
 const GUEST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_GUEST_INVITE_TOKENS_PER_ROOM = 40;
 const CO_HOST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -738,7 +741,10 @@ function getLiveStreamTokenSecret(): string | null {
   return null;
 }
 
-function signMediaToken(claims: LiveStreamTokenClaims | RecordingUploadTokenClaims, secret: string): string {
+function signMediaToken(
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims,
+  secret: string
+): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
   const signature = createHmac('sha256', secret).update(body).digest('base64url');
   return `${body}.${signature}`;
@@ -988,6 +994,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'recording-upload-token-request':
       handleRecordingUploadTokenRequest(ws, message.payload);
+      break;
+    case 'sfu-token-request':
+      handleSfuTokenRequest(ws, message.payload);
       break;
     case 'live-stream-state-changed':
       handleLiveStreamStateChange(ws, message.payload);
@@ -1515,6 +1524,51 @@ function handleRecordingUploadTokenRequest(
     payload: {
       requestId: payload.requestId,
       sessionId: payload.sessionId,
+      token: signMediaToken(claims, secret),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    },
+  });
+}
+
+function handleSfuTokenRequest(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'sfu-token-request' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  if (!isValidRequestId(payload.requestId)) {
+    sendError(ws, 'Invalid SFU token request', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const roomState = rooms.get(mapping.roomId);
+  const participantEntry = roomState?.participants.get(mapping.participantId);
+  if (!roomState || !participantEntry) return;
+  if (participantEntry.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before connecting to studio media', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+
+  const secret = getLiveStreamTokenSecret();
+  if (!secret) {
+    sendError(ws, 'SFU media is not configured on this server', 'SFU_NOT_CONFIGURED');
+    return;
+  }
+
+  const expiresAtMs = Date.now() + SFU_TOKEN_TTL_MS;
+  const claims: SfuTokenClaims = {
+    v: 1,
+    purpose: 'sfu',
+    roomId: mapping.roomId,
+    participantId: mapping.participantId,
+    role: participantEntry.participant.role,
+    exp: expiresAtMs,
+    nonce: nanoid(16),
+  };
+  send(ws, {
+    type: 'sfu-token-issued',
+    payload: {
+      requestId: payload.requestId,
       token: signMediaToken(claims, secret),
       expiresAt: new Date(expiresAtMs).toISOString(),
     },

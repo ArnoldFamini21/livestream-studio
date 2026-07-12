@@ -339,6 +339,73 @@ describe('live stream token authorization', () => {
   });
 });
 
+describe('SFU media authorization', () => {
+  it('issues an admitted guest a purpose-scoped SFU token without requiring recording', async () => {
+    const previousSecret = process.env.LIVE_STREAM_TOKEN_SECRET;
+    const secret = 'test-sfu-media-token-secret-123456789';
+    process.env.LIVE_STREAM_TOKEN_SECRET = secret;
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('SFU token guest test', 'Arnold', {
+      creatorIp: `sfu-token-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest' });
+      const joined = await guestJoined;
+
+      const issuedToken = waitForMessage(guest, 'sfu-token-issued', (message) => (
+        message.payload.requestId === 'sfu-request-1'
+      ));
+      sendSignal(guest, { type: 'sfu-token-request', payload: { requestId: 'sfu-request-1' } });
+      const tokenMessage = await issuedToken;
+      const claims = verifySignedLiveToken(tokenMessage.payload.token, secret);
+      assert.deepEqual({
+        purpose: claims.purpose,
+        roomId: claims.roomId,
+        participantId: claims.participantId,
+        role: claims.role,
+      }, {
+        purpose: 'sfu',
+        roomId: room.id,
+        participantId: joined.payload.participant.id,
+        role: 'guest',
+      });
+    } finally {
+      if (previousSecret === undefined) delete process.env.LIVE_STREAM_TOKEN_SECRET;
+      else process.env.LIVE_STREAM_TOKEN_SECRET = previousSecret;
+      await harness.close();
+    }
+  });
+
+  it('keeps green-room guests out of the SFU', async () => {
+    const harness = await createSignalingHarness();
+    const { room } = createRoom('SFU green room test', 'Arnold', {
+      creatorIp: `sfu-green-room-${Date.now()}`,
+    });
+    try {
+      const guest = await connectClient(harness.url);
+      const joined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest' });
+      await joined;
+      const denied = waitForMessage(guest, 'error', (message) => message.payload.code === 'PARTICIPANT_NOT_ADMITTED');
+      sendSignal(guest, { type: 'sfu-token-request', payload: { requestId: 'sfu-green-request' } });
+      await denied;
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('participant recording upload authorization', () => {
   it('issues an admitted guest a session-scoped recording upload token', async () => {
     const previousSecret = process.env.LIVE_STREAM_TOKEN_SECRET;

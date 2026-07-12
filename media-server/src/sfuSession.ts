@@ -118,4 +118,17 @@ export class SfuSessionCoordinator {
         reason: decision.reason,
       }));
   }
+
+  /** Return the current full forwarding plan, including unchanged selections. */
+  listLayerSelections(consumerId?: string): SfuLayerChange[] {
+    return this.router
+      .computeForwardingDecisions()
+      .filter((decision) => consumerId === undefined || decision.consumerId === consumerId)
+      .map((decision) => ({
+        consumerId: decision.consumerId,
+        producerId: decision.producerId,
+        rid: decision.rid,
+        reason: decision.reason,
+      }));
+  }
 }

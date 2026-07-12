@@ -2,10 +2,12 @@ import type { SessionHealthCheck, SessionHealthSummary, HealthStatus } from '../
 import { buildMediaServerParityDiagnostics } from '../utils/mediaServerHealth.ts';
 import type { MediaServerParityFeatureStatus, MediaServerParityDiagnostics } from '../utils/mediaServerHealth.ts';
 import type { MeshCapacityPlan, MeshCapacityStatus } from '../utils/meshCapacityPlanner.ts';
+import type { SfuTransportStatus } from '../utils/sfuRuntime.ts';
 
 interface SessionHealthPanelProps {
   summary: SessionHealthSummary;
   meshCapacity?: MeshCapacityPlan | null;
+  sfuMediaStatus?: SfuTransportStatus;
   onClose: () => void;
 }
 
@@ -15,6 +17,20 @@ function meshStatusColor(status: MeshCapacityStatus): string {
     case 'tight': return 'var(--warning)';
     case 'over': return 'var(--error)';
   }
+}
+
+function mediaTransportColor(status: SfuTransportStatus | undefined, meshStatus: MeshCapacityStatus): string {
+  if (status === 'active') return 'var(--success)';
+  if (status === 'connecting' || status === 'ready' || status === 'fallback') return 'var(--warning)';
+  return meshStatusColor(meshStatus);
+}
+
+function mediaTransportLabel(status: SfuTransportStatus | undefined, meshStatus: MeshCapacityStatus): string {
+  if (status === 'active') return 'SFU active';
+  if (status === 'connecting') return 'Connecting';
+  if (status === 'ready') return 'Negotiating';
+  if (status === 'fallback') return 'Mesh fallback';
+  return meshStatus === 'comfortable' ? 'Comfortable' : meshStatus === 'tight' ? 'Tight' : 'Over budget';
 }
 
 function statusColor(status: HealthStatus): string {
@@ -170,7 +186,7 @@ function MediaServerDiagnosticsCard({ diagnostics }: { diagnostics: MediaServerP
   );
 }
 
-export function SessionHealthPanel({ summary, meshCapacity, onClose }: SessionHealthPanelProps) {
+export function SessionHealthPanel({ summary, meshCapacity, sfuMediaStatus, onClose }: SessionHealthPanelProps) {
   const mediaServerDiagnostics = buildMediaServerParityDiagnostics(summary.mediaServer);
   const showMeshCapacity = Boolean(meshCapacity && meshCapacity.outgoingPeerCount > 0);
 
@@ -212,25 +228,33 @@ export function SessionHealthPanel({ summary, meshCapacity, onClose }: SessionHe
           <div
             style={{
               ...styles.meshCard,
-              borderColor: meshStatusColor(meshCapacity.status),
+              borderColor: mediaTransportColor(sfuMediaStatus, meshCapacity.status),
             }}
           >
             <div style={styles.meshHeader}>
-              <span style={styles.meshTitle}>Mesh capacity</span>
-              <span style={{ ...styles.meshBadge, color: meshStatusColor(meshCapacity.status), borderColor: meshStatusColor(meshCapacity.status) }}>
-                {meshCapacity.status === 'comfortable' ? 'Comfortable' : meshCapacity.status === 'tight' ? 'Tight' : 'Over budget'}
+              <span style={styles.meshTitle}>Media transport</span>
+              <span style={{ ...styles.meshBadge, color: mediaTransportColor(sfuMediaStatus, meshCapacity.status), borderColor: mediaTransportColor(sfuMediaStatus, meshCapacity.status) }}>
+                {mediaTransportLabel(sfuMediaStatus, meshCapacity.status)}
               </span>
             </div>
             <div style={styles.meshMetrics}>
-              <span>{meshCapacity.outgoingPeerCount} upload{meshCapacity.outgoingPeerCount === 1 ? '' : 's'}</span>
+              <span>{sfuMediaStatus === 'active' ? '1 SFU media upload' : `${meshCapacity.outgoingPeerCount} mesh upload${meshCapacity.outgoingPeerCount === 1 ? '' : 's'}`}</span>
               <span>·</span>
-              <span>{meshCapacity.recommendedTier} target</span>
+              <span>{sfuMediaStatus === 'active' ? 'SFU audio + video' : `${meshCapacity.recommendedTier} target`}</span>
               <span>·</span>
-              <span>~{Math.round(meshCapacity.aggregateUploadKbps / 100) / 10} Mbps up</span>
+              <span>{sfuMediaStatus === 'active' ? 'Adaptive video layers' : `~${Math.round(meshCapacity.aggregateUploadKbps / 100) / 10} Mbps up`}</span>
             </div>
-            <p style={styles.meshNote}>{meshCapacity.note}</p>
-            {meshCapacity.sfuRecommended && (
-              <p style={styles.meshSfuNote}>An SFU (mediasoup/LiveKit) is recommended for stages this size.</p>
+            <p style={styles.meshNote}>
+              {sfuMediaStatus === 'active'
+                ? 'The media server is carrying one audio/video upload and selectively forwarding adaptive media to the stage.'
+                : sfuMediaStatus === 'connecting' || sfuMediaStatus === 'ready'
+                  ? 'SFU media is negotiating. Mesh stays active until every advertised remote track arrives.'
+                  : sfuMediaStatus === 'fallback'
+                    ? 'SFU media is unavailable. Mesh audio and video were restored automatically and will retry in the background.'
+                    : meshCapacity.note}
+            </p>
+            {meshCapacity.sfuRecommended && sfuMediaStatus !== 'active' && (
+              <p style={styles.meshSfuNote}>The media-server SFU is recommended for stages this size.</p>
             )}
           </div>
         )}
