@@ -63,43 +63,6 @@ jobs:
           cat changed-files.txt
           node scripts/classify-production-changes.mjs --files-from changed-files.txt --github-output "$GITHUB_OUTPUT"
 
-      - name: Report Render deploy hook availability
-        env:
-          RENDER_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_SERVER_DEPLOY_HOOK_URL }}
-          RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL }}
-          SIGNALING_CHANGED: ${{ steps.changed-paths.outputs.signaling_changed }}
-          MEDIA_CHANGED: ${{ steps.changed-paths.outputs.media_changed }}
-          FORCE_SIGNALING_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_signaling }}
-          FORCE_MEDIA_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_media }}
-        run: |
-          missing=false
-
-          if [ "$SIGNALING_CHANGED" = "true" ] || [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
-            if [ -z "$RENDER_SERVER_DEPLOY_HOOK_URL" ]; then
-              missing=true
-              if [ "$FORCE_SIGNALING_DEPLOY" = "true" ]; then
-                echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this manual run deploys the signaling server."
-              else
-                echo "::error::RENDER_SERVER_DEPLOY_HOOK_URL is required because this push changed signaling-server files. Configure the deploy hook before publishing a green deploy."
-              fi
-            fi
-          fi
-
-          if [ "$MEDIA_CHANGED" = "true" ] || [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
-            if [ -z "$RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL" ]; then
-              missing=true
-              if [ "$FORCE_MEDIA_DEPLOY" = "true" ]; then
-                echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this manual run deploys the media server."
-              else
-                echo "::error::RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL is required because this push changed media-server files. Configure the deploy hook before publishing a green deploy."
-              fi
-            fi
-          fi
-
-          if [ "$missing" = "true" ]; then
-            exit 1
-          fi
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -131,6 +94,7 @@ jobs:
 
       - name: Trigger Render deploys
         id: render-deploys
+        continue-on-error: true
         env:
           RENDER_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_SERVER_DEPLOY_HOOK_URL }}
           RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_MEDIA_SERVER_DEPLOY_HOOK_URL }}
@@ -203,6 +167,15 @@ jobs:
           PRODUCTION_REQUIRE_MEDIA_SERVER: 'false'
           PRODUCTION_CHECK_WAIT_MS: 300000
           PRODUCTION_CHECK_INTERVAL_MS: 15000
+
+      # Always publish the static client first. A missing Render hook must still
+      # fail the workflow, but should not prevent the Hostinger release that can
+      # ship independently of a backend change.
+      - name: Report required Render deployment failure
+        if: ${{ steps.render-deploys.outcome == 'failure' }}
+        run: |
+          echo "::error::The client was deployed, but one or more required Render deploy hooks are missing or failed. Configure the Render hook secrets and rerun this workflow."
+          exit 1
 
       - name: Verify production services
         if: ${{ (steps.render-deploys.outputs.services_changed == 'true' && steps.render-deploys.outputs.hooks_configured == 'true') || (github.event_name == 'workflow_dispatch' && inputs.verify_services) }}
