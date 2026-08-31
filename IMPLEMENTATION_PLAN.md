@@ -255,6 +255,7 @@
 - [ ] Auth: email/password registration, magic links for guests
   - [x] Email/password account registration and login with scrypt-hashed passwords
   - [x] Server-issued account session tokens with bearer restore and HttpOnly cookie support
+  - [x] Host-issued single-use guest and co-host invite links that bypass the room password, stored as sha256 digests and persisted in the room snapshot so an emailed link survives a restart or deploy within its 24h TTL — consumption is persisted too, so a spent link cannot be revived, and invites that expired during downtime are dropped on restore
 - [x] Local user dashboard: manage saved studios, local recordings, and brand assets in-browser
 - [x] Local workspace team roster with role labels and portable backup/import
 - [x] Portable workspace backup/import for saved studios, brand kits, and recording catalog metadata

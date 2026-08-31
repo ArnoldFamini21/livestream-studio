@@ -6,6 +6,21 @@ const { Pool } = pg;
 const DATABASE_URL_KEYS = ['DATABASE_URL', 'POSTGRES_URL', 'POSTGRES_PRISMA_URL'];
 const DISABLE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const MAX_PERSISTED_REGISTRANTS = 1000;
+// Matches the per-room caps the signaling server enforces on issue (40 + 20).
+const MAX_PERSISTED_INVITES = 80;
+
+/**
+ * A guest or co-host invite link, stored as a hash of the token rather than
+ * the token itself: an emailed invite has to outlive a restart, but a leaked
+ * snapshot must not hand anyone a working link.
+ */
+export interface PersistedRoomInvite {
+  kind: 'guest' | 'co-host';
+  tokenHash: string;
+  issuedBy: string;
+  createdAt: string;
+  expiresAt: string;
+}
 
 export interface RoomSnapshot {
   room: Room;
@@ -16,6 +31,7 @@ export interface RoomSnapshot {
   studioBranding?: StudioBrandingPayload;
   passwordHash?: string;
   passwordSalt?: string;
+  invites?: PersistedRoomInvite[];
 }
 
 export interface RoomSnapshotStore {
@@ -40,6 +56,7 @@ interface PgRoomRow {
   studio_branding?: unknown;
   password_hash?: unknown;
   password_salt?: unknown;
+  invites?: unknown;
 }
 
 function firstConfiguredDatabaseUrl(env: Record<string, string | undefined>): string {
@@ -130,6 +147,26 @@ function normalizeRegistrant(value: unknown, roomId: string): RoomRegistrant | n
   };
 }
 
+function normalizeInvites(value: unknown): PersistedRoomInvite[] {
+  if (!Array.isArray(value)) return [];
+  const invites: PersistedRoomInvite[] = [];
+  for (const item of value.slice(0, MAX_PERSISTED_INVITES)) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Partial<PersistedRoomInvite>;
+    const kind = entry.kind === 'co-host' ? 'co-host' : entry.kind === 'guest' ? 'guest' : null;
+    const tokenHash = safeText(entry.tokenHash, 128);
+    const issuedBy = safeText(entry.issuedBy, 120);
+    const createdAt = safeIsoDate(entry.createdAt);
+    const expiresAt = safeIsoDate(entry.expiresAt);
+    if (!kind || !tokenHash || !createdAt || !expiresAt) continue;
+    // A raw token would be 20-120 url-safe chars; a sha256 base64url digest is
+    // always 43. Refusing anything else keeps a raw token out of the store.
+    if (tokenHash.length !== 43) continue;
+    invites.push({ kind, tokenHash, issuedBy, createdAt, expiresAt });
+  }
+  return invites;
+}
+
 function normalizeRegistrants(value: unknown, roomId: string): RoomRegistrant[] {
   if (!Array.isArray(value)) return [];
   const byEmail = new Map<string, RoomRegistrant>();
@@ -189,6 +226,7 @@ export function normalizeRoomSnapshot(value: unknown): RoomSnapshot | null {
   const passwordHash = safeText(input.passwordHash, 256);
   const passwordSalt = safeText(input.passwordSalt, 128);
   const studioBranding = normalizeStudioBranding(input.studioBranding);
+  const invites = normalizeInvites(input.invites);
 
   return {
     room: {
@@ -210,6 +248,7 @@ export function normalizeRoomSnapshot(value: unknown): RoomSnapshot | null {
     ...(studioBranding ? { studioBranding } : {}),
     ...(passwordHash ? { passwordHash } : {}),
     ...(passwordSalt ? { passwordSalt } : {}),
+    ...(invites.length > 0 ? { invites } : {}),
   };
 }
 
@@ -254,9 +293,15 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
         studio_branding jsonb,
         password_hash text,
         password_salt text,
+        invites jsonb NOT NULL DEFAULT '[]'::jsonb,
         created_at timestamptz NOT NULL,
         updated_at timestamptz NOT NULL DEFAULT now()
       )
+    `);
+    // Existing deployments predate the invites column.
+    await this.db.query(`
+      ALTER TABLE studio_room_snapshots
+        ADD COLUMN IF NOT EXISTS invites jsonb NOT NULL DEFAULT '[]'::jsonb
     `);
     await this.db.query(`
       CREATE INDEX IF NOT EXISTS studio_room_snapshots_updated_at_idx
@@ -266,7 +311,7 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
 
   async loadRoomSnapshots(): Promise<RoomSnapshot[]> {
     const result = await this.db.query(`
-      SELECT room, host_token, creator_ip, has_been_joined, registrants, studio_branding, password_hash, password_salt
+      SELECT room, host_token, creator_ip, has_been_joined, registrants, studio_branding, password_hash, password_salt, invites
       FROM studio_room_snapshots
       WHERE room->>'status' <> 'ended'
       ORDER BY created_at ASC
@@ -291,10 +336,11 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
         studio_branding,
         password_hash,
         password_salt,
+        invites,
         created_at,
         updated_at
       )
-      VALUES ($1, $2::jsonb, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10::timestamptz, now())
+      VALUES ($1, $2::jsonb, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10::jsonb, $11::timestamptz, now())
       ON CONFLICT (room_id) DO UPDATE SET
         room = EXCLUDED.room,
         host_token = EXCLUDED.host_token,
@@ -304,6 +350,7 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
         studio_branding = EXCLUDED.studio_branding,
         password_hash = EXCLUDED.password_hash,
         password_salt = EXCLUDED.password_salt,
+        invites = EXCLUDED.invites,
         updated_at = now()
     `, [
       normalized.room.id,
@@ -315,6 +362,7 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
       normalized.studioBranding ? JSON.stringify(normalized.studioBranding) : null,
       normalized.passwordHash || null,
       normalized.passwordSalt || null,
+      JSON.stringify(normalized.invites || []),
       normalized.room.createdAt,
     ]);
   }
@@ -339,6 +387,7 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
       studioBranding: row.studio_branding,
       passwordHash: row.password_hash,
       passwordSalt: row.password_salt,
+      invites: row.invites,
     });
   }
 }
