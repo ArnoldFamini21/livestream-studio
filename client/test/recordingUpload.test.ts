@@ -366,6 +366,73 @@ describe('recording media-server upload helper', () => {
     assert.equal(requestBody?.normalizeAudio, true);
   });
 
+  it('sends a transcript edit list instead of a clip range when one is supplied', async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    globalThis.fetch = async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return jsonResponse({
+        exportId: 'export-edit',
+        uploadId: 'upload-5',
+        roomId: 'room-1',
+        status: 'ready',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:02.000Z',
+        artifacts: [{ id: 'final-mp4', label: 'Final MP4 edit', format: 'mp4', status: 'ready' }],
+      });
+    };
+
+    const job = await requestRecordingClipExport({
+      token: 'token-123',
+      uploadId: 'upload-5',
+      edl: {
+        segments: [
+          { startSeconds: 0, endSeconds: 12.5 },
+          { startSeconds: 14.25, endSeconds: 30 },
+        ],
+      },
+      mediaHttpUrl: 'https://media.example.com',
+      pollIntervalMs: 0,
+      pollTimeoutMs: 1_000,
+    });
+
+    assert.equal(job.artifacts[0].label, 'Final MP4 edit');
+    assert.equal(requestBody?.clip, undefined);
+    assert.deepEqual(requestBody?.edl, {
+      segments: [
+        { startSeconds: 0, endSeconds: 12.5 },
+        { startSeconds: 14.25, endSeconds: 30 },
+      ],
+    });
+  });
+
+  it('refuses server exports with no trim, or with both a clip and an edit', async () => {
+    let fetched = false;
+    globalThis.fetch = async () => {
+      fetched = true;
+      return jsonResponse({});
+    };
+
+    await assert.rejects(
+      requestRecordingClipExport({
+        token: 'token-123',
+        uploadId: 'upload-6',
+        mediaHttpUrl: 'https://media.example.com',
+      }),
+      /clip range or an edit list is required/
+    );
+    await assert.rejects(
+      requestRecordingClipExport({
+        token: 'token-123',
+        uploadId: 'upload-6',
+        clip: { startSeconds: 0, endSeconds: 30 },
+        edl: { segments: [{ startSeconds: 0, endSeconds: 12.5 }] },
+        mediaHttpUrl: 'https://media.example.com',
+      }),
+      /not both/
+    );
+    assert.equal(fetched, false);
+  });
+
   it('waits for participant uploads and starts one combined recording export', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     let sessionReads = 0;

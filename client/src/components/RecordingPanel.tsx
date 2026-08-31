@@ -36,6 +36,11 @@ import {
   roundClipSeconds,
   type ClipAspectPreset,
 } from '../utils/recordingClips.ts';
+import {
+  buildRecordingEditFileName,
+  captureRecordingEdit,
+} from '../utils/recordingEditExport.ts';
+import { TranscriptEditor, type TranscriptEditorExportRequest } from './TranscriptEditor.tsx';
 import { buildClipSuggestions, type ClipSuggestion, type ClipSuggestionCaptionSegment } from '../utils/clipSuggestions.ts';
 import { hasEnoughCaptionsForAiHighlights, requestAiHighlights } from '../utils/aiHighlights.ts';
 import {
@@ -110,7 +115,13 @@ export interface RecordingServerExportRefreshInput {
 
 export interface RecordingServerClipExportInput {
   uploadId: string;
-  clip: { startSeconds: number; endSeconds: number; aspect?: ClipAspectPreset };
+  /** A single trimmed range. Mutually exclusive with `edl`. */
+  clip?: { startSeconds: number; endSeconds: number; aspect?: ClipAspectPreset };
+  /** The kept ranges of a transcript edit. Mutually exclusive with `clip`. */
+  edl?: {
+    segments: Array<{ startSeconds: number; endSeconds: number }>;
+    aspect?: ClipAspectPreset;
+  };
   basename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
   normalizeAudio?: boolean;
@@ -2483,6 +2494,9 @@ export function RecordingPanel({
   const [isRequestingServerClip, setIsRequestingServerClip] = useState(false);
   const [serverClipJob, setServerClipJob] = useState<RecordingExportJobResponse | null>(null);
   const [serverClipError, setServerClipError] = useState<string | null>(null);
+  const [isExportingTranscriptEdit, setIsExportingTranscriptEdit] = useState(false);
+  const [transcriptEditProgress, setTranscriptEditProgress] = useState(0);
+  const [transcriptEditError, setTranscriptEditError] = useState<string | null>(null);
   const [serverClipDownloadingId, setServerClipDownloadingId] = useState<string | null>(null);
   const [isRefreshingServerClip, setIsRefreshingServerClip] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<ClipSuggestion[]>([]);
@@ -3227,11 +3241,23 @@ export function RecordingPanel({
     setServerClipError(null);
     setServerClipDownloadingId(null);
     setIsRefreshingServerClip(false);
+    setIsExportingTranscriptEdit(false);
+    setTranscriptEditProgress(0);
+    setTranscriptEditError(null);
     setAiSuggestions([]);
     setIsRequestingAiHighlights(false);
     setAiHighlightError(null);
     setAiHighlightNotice(null);
   }, [preview?.url]);
+
+  // The generated transcript always belongs to the loaded session, so only that
+  // session's own tracks can be edited against it.
+  const canEditPreviewByTranscript = Boolean(
+    preview
+    && generatedTranscript
+    && (generatedTranscript.words?.length || 0) > 0
+    && (preview.sessionId === null || preview.sessionId === activeSessionId)
+  );
 
   const previewServerClipUploadId = useMemo(() => {
     if (!preview?.sessionId || !onRequestRecordingClipExport) return null;
@@ -3399,6 +3425,96 @@ export function RecordingPanel({
     if (!clipResult) return;
     downloadBlob(clipResult.blob, clipResult.fileName);
   }, [clipResult]);
+
+  const handleExportTranscriptEdit = useCallback(async (request: TranscriptEditorExportRequest) => {
+    if (!preview || isExportingTranscriptEdit) return;
+    const captureUrl = preview.url;
+    const hasVideo = preview.type.startsWith('video/');
+    setIsExportingTranscriptEdit(true);
+    setTranscriptEditProgress(0);
+    setTranscriptEditError(null);
+    setClipResult(null);
+    setClipSaveMessage(null);
+    try {
+      const captured = await captureRecordingEdit(
+        { blob: preview.file.blob, hasVideo, aspect: 'source' },
+        request.edl.segments,
+        (progress) => {
+          if (previewUrlRef.current === captureUrl) setTranscriptEditProgress(progress.fraction);
+        }
+      );
+      if (previewUrlRef.current !== captureUrl) return;
+      // The edit reuses the clip result slot so it can be downloaded or saved
+      // back into the library with the same controls.
+      setClipResult({
+        blob: captured.blob,
+        fileName: buildRecordingEditFileName(
+          preview.sourceName,
+          preview.file.label,
+          request.edl.segments,
+          captured.extension
+        ),
+        label: `${preview.file.label} edit (${request.edl.segments.length} ranges)`,
+        durationSeconds: captured.durationSeconds,
+        kind: getClipTrackKind(preview.file.kind, hasVideo),
+      });
+    } catch (err) {
+      if (previewUrlRef.current !== captureUrl) return;
+      setTranscriptEditError(err instanceof Error ? err.message : 'Edit export failed');
+    } finally {
+      if (previewUrlRef.current === captureUrl) setIsExportingTranscriptEdit(false);
+    }
+  }, [isExportingTranscriptEdit, preview]);
+
+  const handleServerTranscriptEdit = useCallback(async (request: TranscriptEditorExportRequest) => {
+    if (!preview || !onRequestRecordingClipExport || !previewServerClipUploadId || isRequestingServerClip) return;
+    const captureUrl = preview.url;
+    setIsRequestingServerClip(true);
+    setTranscriptEditError(null);
+    setServerClipError(null);
+    setServerClipJob(null);
+    try {
+      const job = await onRequestRecordingClipExport({
+        uploadId: previewServerClipUploadId,
+        edl: {
+          segments: request.edl.segments.map((segment) => ({
+            startSeconds: segment.startSeconds,
+            endSeconds: segment.endSeconds,
+          })),
+        },
+        basename: `${preview.sourceName} edit`,
+        exportVideoCodec: recordingExportVideoCodec,
+        normalizeAudio: normalizeExportAudio,
+      });
+      if (previewUrlRef.current !== captureUrl) return;
+      setServerClipJob(job);
+      if (job.status === 'error') {
+        setTranscriptEditError(job.error || 'Server edit export failed');
+      }
+    } catch (err) {
+      if (previewUrlRef.current !== captureUrl) return;
+      setTranscriptEditError(err instanceof Error ? err.message : 'Server edit export failed');
+    } finally {
+      if (previewUrlRef.current === captureUrl) setIsRequestingServerClip(false);
+    }
+  }, [
+    isRequestingServerClip,
+    normalizeExportAudio,
+    onRequestRecordingClipExport,
+    preview,
+    previewServerClipUploadId,
+    recordingExportVideoCodec,
+  ]);
+
+  const handleSeekPreviewTo = useCallback((seconds: number) => {
+    const element = previewMediaRef.current;
+    if (!element || !Number.isFinite(seconds)) return;
+    try {
+      element.currentTime = Math.max(0, seconds);
+    } catch {
+      // Seeking the preview is best-effort.
+    }
+  }, []);
 
   const handleServerClipExport = useCallback(async () => {
     if (!preview || !onRequestRecordingClipExport || !previewServerClipUploadId || isRequestingServerClip) return;
@@ -4478,6 +4594,22 @@ export function RecordingPanel({
                     </>
                   )}
                 </div>
+
+                {canEditPreviewByTranscript && generatedTranscript && (
+                  <TranscriptEditor
+                    transcript={generatedTranscript}
+                    trackLabel={preview.file.label}
+                    canExportInBrowser
+                    canExportOnMediaServer={Boolean(previewServerClipUploadId)}
+                    isExportingInBrowser={isExportingTranscriptEdit}
+                    isExportingOnMediaServer={isRequestingServerClip}
+                    exportProgress={transcriptEditProgress}
+                    error={transcriptEditError}
+                    onExportInBrowser={handleExportTranscriptEdit}
+                    onExportOnMediaServer={handleServerTranscriptEdit}
+                    onSeekToSeconds={handleSeekPreviewTo}
+                  />
+                )}
               </div>
             )}
 

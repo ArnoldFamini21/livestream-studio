@@ -62,7 +62,13 @@ export interface GetRecordingExportJobInput {
 export interface RequestRecordingClipExportInput {
   token: string;
   uploadId: string;
-  clip: { startSeconds: number; endSeconds: number; aspect?: 'source' | 'vertical' | 'square' };
+  /** A single trimmed range. Mutually exclusive with `edl`. */
+  clip?: { startSeconds: number; endSeconds: number; aspect?: 'source' | 'vertical' | 'square' };
+  /** The kept ranges of a transcript edit. Mutually exclusive with `clip`. */
+  edl?: {
+    segments: Array<{ startSeconds: number; endSeconds: number }>;
+    aspect?: 'source' | 'vertical' | 'square';
+  };
   basename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
   includeAudioStems?: boolean;
@@ -375,6 +381,12 @@ export async function requestRecordingClipExport(
   const token = assertNonEmpty(input.token, 'A host upload token');
   const uploadId = assertNonEmpty(input.uploadId, 'Upload id');
   const mediaHttpUrl = assertNonEmpty(input.mediaHttpUrl || resolveMediaHttpUrl(), 'Media server URL');
+  if (input.clip && input.edl) {
+    throw new Error('Request either a clip range or an edit list, not both');
+  }
+  if (!input.clip && !(input.edl && input.edl.segments.length > 0)) {
+    throw new Error('A clip range or an edit list is required for a server export');
+  }
   const job = await postJson<RecordingExportJobResponse>(
     buildMediaUrl(mediaHttpUrl, `/recordings/uploads/${encodeURIComponent(uploadId)}/exports`),
     token,
@@ -385,11 +397,26 @@ export async function requestRecordingClipExport(
       video: {
         codec: input.exportVideoCodec || 'h264',
       },
-      clip: {
-        startSeconds: input.clip.startSeconds,
-        endSeconds: input.clip.endSeconds,
-        aspect: input.clip.aspect || undefined,
-      },
+      ...(input.clip
+        ? {
+            clip: {
+              startSeconds: input.clip.startSeconds,
+              endSeconds: input.clip.endSeconds,
+              aspect: input.clip.aspect || undefined,
+            },
+          }
+        : {}),
+      ...(input.edl
+        ? {
+            edl: {
+              segments: input.edl.segments.map((segment) => ({
+                startSeconds: segment.startSeconds,
+                endSeconds: segment.endSeconds,
+              })),
+              aspect: input.edl.aspect || undefined,
+            },
+          }
+        : {}),
     }
   );
   return pollRecordingExportJob({

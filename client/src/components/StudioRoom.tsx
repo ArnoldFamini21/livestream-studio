@@ -3684,6 +3684,7 @@ export function StudioRoom() {
       token,
       uploadId: input.uploadId,
       clip: input.clip,
+      edl: input.edl,
       basename: input.basename,
       exportVideoCodec: input.exportVideoCodec,
       normalizeAudio: input.normalizeAudio,
