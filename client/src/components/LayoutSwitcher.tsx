@@ -232,8 +232,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(15, 23, 42, 0.66)',
     color: 'rgba(255, 255, 255, 0.84)',
     boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   mediaStatusLabel: {
     minWidth: 0,
@@ -292,8 +290,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'inline-flex',
     gap: 2,
     background: 'rgba(0, 0, 0, 0.5)',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
     borderRadius: 10,
     padding: 3,
     border: '1px solid rgba(255, 255, 255, 0.08)',
@@ -313,8 +309,8 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.12s ease',
   },
   btnRecommended: {
-    color: '#a5f3fc',
-    boxShadow: 'inset 0 0 0 1px rgba(103, 232, 249, 0.38)',
+    color: 'var(--accent-hover)',
+    boxShadow: 'inset 0 0 0 1px rgba(167, 139, 250, 0.38)',
   },
   btnActive: {
     background: 'var(--accent)',
@@ -328,9 +324,9 @@ const styles: Record<string, React.CSSProperties> = {
   bestFitButton: {
     minHeight: 32,
     borderRadius: 10,
-    border: '1px solid rgba(103, 232, 249, 0.24)',
-    background: 'rgba(103, 232, 249, 0.10)',
-    color: '#a5f3fc',
+    border: '1px solid rgba(167, 139, 250, 0.24)',
+    background: 'rgba(167, 139, 250, 0.10)',
+    color: 'var(--accent-hover)',
     padding: '0 10px',
     fontSize: 11,
     fontWeight: 900,

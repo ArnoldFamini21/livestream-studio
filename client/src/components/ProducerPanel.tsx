@@ -684,7 +684,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
     fontSize: 11,
     fontWeight: 700,
-    color: '#ef4444',
+    color: 'var(--danger)',
     padding: '3px 10px',
     borderRadius: 6,
     background: 'rgba(239, 68, 68, 0.12)',
@@ -706,7 +706,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 7,
     height: 7,
     borderRadius: '50%',
-    background: '#ef4444',
+    background: 'var(--danger)',
     flexShrink: 0,
   },
   recDot: {
@@ -1005,7 +1005,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 5,
     fontSize: 11,
     fontWeight: 700,
-    color: '#ef4444',
+    color: 'var(--danger)',
     letterSpacing: '0.04em',
   },
   bottomRec: {
@@ -1156,7 +1156,7 @@ const rowStyles: Record<string, React.CSSProperties> = {
     padding: '0px 4px',
     borderRadius: 3,
     background: 'rgba(239, 68, 68, 0.1)',
-    color: '#ef4444',
+    color: 'var(--danger)',
   },
   actions: {
     display: 'flex',

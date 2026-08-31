@@ -464,7 +464,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     padding: '6px 10px',
     background: 'rgba(239,68,68,0.1)',
-    color: '#ef4444',
+    color: 'var(--danger)',
     borderRadius: 6,
     border: '1px solid rgba(239,68,68,0.2)',
     cursor: 'pointer',

@@ -5207,7 +5207,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 10,
     height: 10,
     borderRadius: '50%',
-    background: '#ef4444',
+    background: 'var(--danger)',
     animation: 'livePulse 1.5s infinite',
   },
   recordingDotPaused: {
@@ -5217,7 +5217,7 @@ const styles: Record<string, React.CSSProperties> = {
   statusLabel: {
     fontSize: 13,
     fontWeight: 600,
-    color: '#ef4444',
+    color: 'var(--danger)',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
   },
@@ -5525,7 +5525,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     borderRadius: 8,
     border: 'none',
-    background: '#ef4444',
+    background: 'var(--danger)',
     color: 'white',
     cursor: 'pointer',
     marginTop: 4,
@@ -5560,7 +5560,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     borderRadius: 8,
     border: 'none',
-    background: '#ef4444',
+    background: 'var(--danger)',
     color: 'white',
     cursor: 'pointer',
   },
@@ -5691,7 +5691,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 7,
     border: '1px solid rgba(125, 211, 252, 0.32)',
     background: 'rgba(14, 116, 144, 0.18)',
-    color: '#bae6fd',
+    color: 'var(--accent-hover)',
     fontSize: 10,
     fontWeight: 800,
     cursor: 'pointer',
@@ -5748,7 +5748,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 7,
     border: '1px solid rgba(125, 211, 252, 0.36)',
     background: 'rgba(14, 116, 144, 0.18)',
-    color: '#bae6fd',
+    color: 'var(--accent-hover)',
     fontSize: 10,
     fontWeight: 800,
     cursor: 'pointer',
@@ -5827,7 +5827,7 @@ const styles: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase' as const,
   },
   exportCodecValue: {
-    color: '#bae6fd',
+    color: 'var(--accent-hover)',
     fontSize: 11,
     fontWeight: 900,
   },
@@ -5849,7 +5849,7 @@ const styles: Record<string, React.CSSProperties> = {
   exportCodecButtonActive: {
     borderColor: 'rgba(125, 211, 252, 0.45)',
     background: 'rgba(14, 116, 144, 0.22)',
-    color: '#bae6fd',
+    color: 'var(--accent-hover)',
   },
   normalizeAudioRow: {
     display: 'flex',
@@ -6248,7 +6248,7 @@ const styles: Record<string, React.CSSProperties> = {
   errorBadge: {
     fontSize: 10,
     fontWeight: 600,
-    color: '#ef4444',
+    color: 'var(--danger)',
     marginTop: 2,
   },
 
@@ -6786,7 +6786,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid rgba(239, 68, 68, 0.18)',
   },
   deleteBtn: {
-    color: '#ef4444',
+    color: 'var(--danger)',
     borderColor: 'rgba(239, 68, 68, 0.25)',
   },
 };

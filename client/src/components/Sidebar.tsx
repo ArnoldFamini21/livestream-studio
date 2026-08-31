@@ -321,15 +321,15 @@ export function Sidebar(props: SidebarProps) {
     { name: 'Purple', color: '#7c3aed' },
     { name: 'Blue', color: '#3b82f6' },
     { name: 'Green', color: '#22c55e' },
-    { name: 'Red', color: '#ef4444' },
+    { name: 'Red', color: 'var(--danger)' },
     { name: 'Orange', color: '#f97316' },
     { name: 'Pink', color: '#ec4899' },
     { name: 'Cyan', color: '#06b6d4' },
-    { name: 'Amber', color: '#f59e0b' },
+    { name: 'Amber', color: 'var(--warning)' },
   ];
 
   const brandKits: BrandKitPreset[] = [
-    { name: 'Broadcast', studioTheme: 'dark', brandColor: '#ef4444', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium', logoOpacity: 0.85 },
+    { name: 'Broadcast', studioTheme: 'dark', brandColor: 'var(--danger)', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #111827 0%, #7f1d1d 100%)' }, cameraShape: 'rounded', nameTagStyle: 'block', logoSize: 'medium', logoOpacity: 0.85 },
     { name: 'Webinar', studioTheme: 'light', brandColor: '#2563eb', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)' }, cameraShape: 'rounded', nameTagStyle: 'classic', logoSize: 'small', logoOpacity: 0.75 },
     { name: 'Podcast', studioTheme: 'colorful', brandColor: '#db2777', stageBackground: { type: 'gradient', value: 'linear-gradient(135deg, #18181b 0%, #831843 100%)' }, cameraShape: 'circle', nameTagStyle: 'minimal', logoSize: 'medium', logoOpacity: 0.65 },
     { name: 'Executive', studioTheme: 'dark', brandColor: '#059669', stageBackground: { type: 'color', value: '#111827' }, cameraShape: 'rectangle', nameTagStyle: 'classic', logoSize: 'large', logoOpacity: 0.55 },
@@ -936,7 +936,6 @@ export function Sidebar(props: SidebarProps) {
             title={tab.label}
           >
             {tab.icon}
-            <span style={st.iconLabel}>{tab.label}</span>
           </button>
         ))}
       </div>
@@ -1100,7 +1099,7 @@ function PeopleContent({
           </label>
         )}
         {grouped['green-room'].length > 0 && (
-          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
+          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="var(--warning)" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
         )}
         <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} count={grouped['on-stage'].length + (myP?.status === 'on-stage' ? 1 : 0)} emptyMessage={myP?.status === 'on-stage' ? 'No other participants' : 'No participants'} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} participantVolumes={participantVolumes} onParticipantVolumeChange={onParticipantVolumeChange} showVolumeControls actions={(p) => (<>
           <SmallBtn label={focusedParticipantId === p.id ? 'Clear' : 'Spotlight'} color={focusedParticipantId === p.id ? 'var(--text-muted)' : 'var(--accent)'} onClick={() => onSpotlightParticipant(focusedParticipantId === p.id ? null : p.id)} />
@@ -2044,7 +2043,7 @@ function OverlayQuickActions({
   const packs = [
     { label: 'Live Show', meta: 'Host ID + live bug', color: brandColor, action: addLiveShowPack },
     { label: 'Webinar Q&A', meta: 'Questions + timer', color: '#2563eb', action: addWebinarPack },
-    { label: 'Countdown', meta: 'Starting soon', color: '#f59e0b', action: addCountdownPack },
+    { label: 'Countdown', meta: 'Starting soon', color: 'var(--warning)', action: addCountdownPack },
     { label: 'Ticker', meta: 'Scrolling message', color: '#06b6d4', action: addTickerPack },
     { label: 'Offer CTA', meta: 'Banner + ticker', color: '#059669', action: addOfferPack },
   ];
@@ -2112,12 +2111,11 @@ function getPositionDotStyle(placement: LogoPlacement): React.CSSProperties {
 // ---------------------------------------------------------------------------
 const st: Record<string, React.CSSProperties> = {
   wrapper: { display: 'flex', height: '100%', flexShrink: 0 },
-  contentPanel: { width: 340, display: 'flex', flexDirection: 'column', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border)', height: '100%', overflow: 'hidden', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)' },
+  contentPanel: { width: 340, display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%', overflow: 'hidden' },
   scrollContent: { flex: 1, overflowY: 'auto' },
-  iconStrip: { width: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, gap: 2, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%', flexShrink: 0 },
-  iconBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, width: 48, height: 48, borderRadius: 10, background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.15s ease' },
-  iconBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
-  iconLabel: { fontSize: 9, fontWeight: 500, lineHeight: 1 },
+  iconStrip: { width: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10, gap: 4, background: 'var(--bg-primary)', borderLeft: '1px solid var(--border)', height: '100%', flexShrink: 0 },
+  iconBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, borderRadius: 'var(--radius)', background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', padding: 0, transition: 'background-color 0.15s ease, color 0.15s ease' },
+  iconBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent)' },
   section: { padding: 16 },
   sectionTitle: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 },
   sectionTitleInline: { fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: 0 },
@@ -2233,7 +2231,7 @@ const st: Record<string, React.CSSProperties> = {
   badges: { display: 'flex', gap: 4, marginTop: 2 },
   roleBadge: { fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.04em' },
   qualityBadge: { fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'var(--bg-surface)', color: 'var(--text-muted)' },
-  muteBadge: { fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'rgba(239,68,68,0.1)', color: '#ef4444' },
+  muteBadge: { fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'rgba(239,68,68,0.1)', color: 'var(--danger)' },
   personActions: { display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'flex-end', gap: 3, flexShrink: 1, maxWidth: 220 },
   smallBtn: { fontSize: 10, fontWeight: 600, padding: '3px 7px', borderRadius: 5, background: 'transparent', border: '1px solid', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 150ms' },
   volumeControl: { display: 'grid', gridTemplateColumns: '18px minmax(0, 1fr) 34px', alignItems: 'center', gap: 7, paddingLeft: 56 },
@@ -2301,15 +2299,15 @@ const st: Record<string, React.CSSProperties> = {
   externalChatMetricLabel: { color: 'var(--text-muted)', fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0 },
   externalChatDivider: { height: 1, background: 'var(--border)', opacity: 0.7 },
   chatMessages: { flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 },
-  chatPinnedBanner: { display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 8, border: '1px solid rgba(34, 211, 238, 0.28)', background: 'rgba(34, 211, 238, 0.08)' },
-  chatPinnedLabel: { flexShrink: 0, fontSize: 9, fontWeight: 800, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  chatPinnedBanner: { display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 8, border: '1px solid rgba(167, 139, 250, 0.28)', background: 'rgba(167, 139, 250, 0.08)' },
+  chatPinnedLabel: { flexShrink: 0, fontSize: 9, fontWeight: 800, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatPinnedText: { minWidth: 0, flex: 1, fontSize: 12, lineHeight: 1.35, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   chatEmpty: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4 },
   chatEmptyText: { fontSize: 13, color: 'var(--text-muted)', fontWeight: 500 },
   chatEmptyHint: { fontSize: 12, color: 'var(--text-muted)', opacity: 0.6 },
   chatMsg: { display: 'flex', flexDirection: 'column', gap: 5, padding: 8, borderRadius: 8, border: '1px solid transparent' },
   chatMsgStarred: { borderColor: 'rgba(245, 158, 11, 0.28)', background: 'rgba(245, 158, 11, 0.06)' },
-  chatMsgPinned: { borderColor: 'rgba(34, 211, 238, 0.28)', background: 'rgba(34, 211, 238, 0.055)' },
+  chatMsgPinned: { borderColor: 'rgba(167, 139, 250, 0.28)', background: 'rgba(167, 139, 250, 0.055)' },
   chatMsgHead: { display: 'flex', alignItems: 'baseline', gap: 8 },
   chatMsgName: { fontSize: 12, fontWeight: 600 },
   chatSourceBadge: { fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: 'rgba(239, 68, 68, 0.14)', color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '0.04em' },
@@ -2317,7 +2315,7 @@ const st: Record<string, React.CSSProperties> = {
   chatBackstageBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.14)', color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatPrivateBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(34, 197, 94, 0.13)', color: '#86efac', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatPrivateMeta: { fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  chatPinBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(34, 211, 238, 0.12)', color: '#67e8f9', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  chatPinBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(167, 139, 250, 0.12)', color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatStarBadge: { fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.14)', color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.04em' },
   chatMsgTime: { fontSize: 10, color: 'var(--text-muted)' },
   chatMsgContent: { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.4, wordBreak: 'break-word', margin: 0 },
@@ -2326,13 +2324,13 @@ const st: Record<string, React.CSSProperties> = {
   chatMiniBtnFeatured: { borderColor: 'rgba(167, 139, 250, 0.4)', background: 'rgba(167, 139, 250, 0.14)', color: '#ddd6fe' },
   chatMiniBtnFlash: { borderColor: 'rgba(251, 191, 36, 0.34)', background: 'rgba(251, 191, 36, 0.12)', color: '#fbbf24' },
   chatMiniBtnActive: { borderColor: 'rgba(245, 158, 11, 0.36)', background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24' },
-  chatMiniBtnPinned: { borderColor: 'rgba(34, 211, 238, 0.36)', background: 'rgba(34, 211, 238, 0.12)', color: '#67e8f9' },
+  chatMiniBtnPinned: { borderColor: 'rgba(167, 139, 250, 0.36)', background: 'rgba(167, 139, 250, 0.12)', color: 'var(--accent)' },
   chatReactionBtn: { minWidth: 32, gap: 4, padding: '0 7px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' },
   chatReactionEmoji: { fontSize: 14, lineHeight: 1 },
   chatReactionCount: { minWidth: 14, height: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', borderRadius: 999, background: 'rgba(255, 255, 255, 0.08)', color: 'var(--text-primary)', fontSize: 9, lineHeight: 1 },
   chatDirectControls: { padding: '10px 12px 0', borderTop: '1px solid var(--border)' },
   chatDirectSelect: { width: '100%', minHeight: 34, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' },
-  chatTypingIndicator: { minHeight: 18, padding: '6px 12px 0', color: '#67e8f9', fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  chatTypingIndicator: { minHeight: 18, padding: '6px 12px 0', color: 'var(--accent)', fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   chatInputBar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderTop: '1px solid var(--border)' },
   chatInput: { flex: 1, padding: '8px 12px', fontSize: 13, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', outline: 'none' },
   chatSendBtn: { width: 34, height: 34, borderRadius: 8, background: 'var(--accent-solid)', color: 'white', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, transition: 'opacity var(--transition-fast)' },

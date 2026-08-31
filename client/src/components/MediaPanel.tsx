@@ -648,7 +648,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: '#ef4444',
+    background: 'var(--danger)',
     animation: 'pulse 1.5s ease-in-out infinite',
   },
   activeText: {
@@ -660,7 +660,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '3px 8px',
     fontSize: 10,
     fontWeight: 600,
-    background: '#ef4444',
+    background: 'var(--danger)',
     color: 'white',
     border: 'none',
     borderRadius: 'var(--radius)',

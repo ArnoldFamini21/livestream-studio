@@ -56,7 +56,7 @@ const LOWER_THIRD_DURATION_OPTIONS = [
 
 const LOWER_THIRD_ACCENT_COLORS = [
   '#7c3aed',
-  '#0891b2',
+  'var(--accent)',
   '#059669',
   '#db2777',
   '#ea580c',

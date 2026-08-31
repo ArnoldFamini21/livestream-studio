@@ -5371,7 +5371,7 @@ export function StudioRoom() {
           <circle cx="12" cy="12" r="10" />
           <path d="M15 9l-6 6M9 9l6 6" />
         </svg>
-        <p style={{ ...styles.loadingText, color: '#ef4444', marginTop: 16 }}>{connectionError}</p>
+        <p style={{ ...styles.loadingText, color: 'var(--danger)', marginTop: 16 }}>{connectionError}</p>
         <button
           className="btn-primary"
           style={{ marginTop: 16, padding: '10px 24px', borderRadius: 10, fontSize: 14, fontWeight: 600 }}
@@ -5392,7 +5392,7 @@ export function StudioRoom() {
           <line x1="12" y1="8" x2="12" y2="12" />
           <line x1="12" y1="16" x2="12.01" y2="16" />
         </svg>
-        <p style={{ ...styles.loadingText, color: '#f59e0b', marginTop: 16 }}>
+        <p style={{ ...styles.loadingText, color: 'var(--warning)', marginTop: 16 }}>
           Could not reconnect to the studio. Your network may be down or the server is unreachable.
         </p>
         <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
@@ -6781,12 +6781,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12, padding: '3px 10px', borderRadius: 20,
     background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24', fontWeight: 600,
   },
-  waitingDot: { width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 2s infinite' },
+  waitingDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--warning)', animation: 'pulse 2s infinite' },
   recBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
-    fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
-    background: 'rgba(239, 68, 68, 0.12)', color: 'var(--danger, #ef4444)',
-    fontFamily: 'monospace',
+    fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 999,
+    background: 'rgba(240, 85, 91, 0.12)', color: 'var(--danger)',
+    // Inter with tabular numerals holds the digits steady, so the timers no
+    // longer need a second typeface in the chrome.
+    fontVariantNumeric: 'tabular-nums',
   },
   recDot: {
     width: 8, height: 8, borderRadius: '50%', background: 'var(--danger, #ef4444)',
@@ -6794,10 +6796,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   liveBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
-    fontSize: 11, fontWeight: 700, padding: '3px 12px', borderRadius: 20,
-    background: '#ef4444', color: 'white',
-    textTransform: 'uppercase' as const, letterSpacing: 0,
-    fontFamily: 'monospace',
+    fontSize: 11, fontWeight: 700, padding: '3px 12px', borderRadius: 999,
+    background: 'var(--danger)', color: 'white',
+    textTransform: 'uppercase' as const, letterSpacing: '0.04em',
     fontVariantNumeric: 'tabular-nums',
     minWidth: 78,
   },
@@ -6808,7 +6809,7 @@ const styles: Record<string, React.CSSProperties> = {
   captionBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20,
-    background: 'rgba(14, 165, 233, 0.14)', color: '#bae6fd',
+    background: 'rgba(167, 139, 250, 0.14)', color: 'var(--accent-hover)',
   },
   captionBadgeDot: {
     width: 6, height: 6, borderRadius: '50%',
@@ -7019,10 +7020,10 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#22c55e',
   },
   liveSummaryDestinationDotWarning: {
-    background: '#f59e0b',
+    background: 'var(--warning)',
   },
   liveSummaryDestinationDotError: {
-    background: '#ef4444',
+    background: 'var(--danger)',
   },
   liveSummaryDestinationName: {
     minWidth: 0,
@@ -7135,7 +7136,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 7,
     height: 7,
     borderRadius: '50%',
-    background: '#f59e0b',
+    background: 'var(--warning)',
     boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.14)',
   },
   backstageRoomMeta: {
@@ -7255,7 +7256,7 @@ const styles: Record<string, React.CSSProperties> = {
   tileWrapperDropTarget: {
     outline: '3px solid #67e8f9',
     outlineOffset: -3,
-    boxShadow: '0 0 0 4px rgba(103, 232, 249, 0.18), 0 14px 34px rgba(0, 0, 0, 0.34)',
+    boxShadow: '0 0 0 4px rgba(167, 139, 250, 0.18), 0 14px 34px rgba(0, 0, 0, 0.34)',
   },
   tileControls: {
     position: 'absolute',
@@ -7451,7 +7452,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '3px 10px',
     fontSize: 11,
     fontWeight: 600,
-    background: '#ef4444',
+    background: 'var(--danger)',
     color: 'white',
     border: 'none',
     borderRadius: 6,

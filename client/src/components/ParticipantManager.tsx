@@ -53,7 +53,7 @@ export function ParticipantManager({
           <Section
             title="Green Room"
             subtitle="Waiting to be admitted"
-            color="#f59e0b"
+            color="var(--warning)"
             participants={grouped['green-room']}
             isHostOrCoHost={isHostOrCoHost}
             actions={(p) => (
@@ -269,7 +269,7 @@ const sectionStyles: Record<string, React.CSSProperties> = {
   },
   muteBadge: {
     fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 4,
-    background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444',
+    background: 'rgba(239, 68, 68, 0.1)', color: 'var(--danger)',
   },
   actions: { display: 'flex', gap: 3, flexShrink: 0 },
 };

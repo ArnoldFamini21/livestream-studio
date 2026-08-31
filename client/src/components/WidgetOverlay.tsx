@@ -315,7 +315,7 @@ const styles: Record<string, React.CSSProperties> = {
   sizeBtn: { minHeight: 28, borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 10, fontWeight: 800, cursor: 'pointer' },
   sizeBtnActive: { borderColor: 'var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
   addBtn: { width: '100%', marginTop: 2 },
-  errorBox: { fontSize: 11, padding: '6px 10px', background: 'rgba(239,68,68,0.1)', color: '#ef4444', borderRadius: 6, border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer', textAlign: 'left' },
+  errorBox: { fontSize: 11, padding: '6px 10px', background: 'rgba(239,68,68,0.1)', color: 'var(--danger)', borderRadius: 6, border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer', textAlign: 'left' },
   widgetFrameHeader: { position: 'absolute', top: 0, left: 0, right: 0, minHeight: 28, padding: '5px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: 'rgba(2, 6, 23, 0.72)', color: 'white', zIndex: 2 },
   widgetFrameTitle: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 800 },
   widgetFrameHost: { maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.7)' },

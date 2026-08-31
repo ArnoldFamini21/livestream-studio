@@ -523,14 +523,13 @@ export function JoinRoom() {
 
   return (
     <div style={styles.page}>
-      <div style={styles.bgGlow} />
 
       <div style={styles.card}>
         {/* Studio info badge */}
         <div style={styles.studioInfo}>
           <div style={{
             ...styles.liveDot,
-            background: roomInfo?.status === 'scheduled' ? '#f59e0b' : 'var(--accent)',
+            background: roomInfo?.status === 'scheduled' ? 'var(--warning)' : 'var(--accent)',
           }} />
           <span style={styles.studioName}>{roomInfo?.name}</span>
           {roomInfo?.status === 'scheduled' && (
@@ -879,20 +878,9 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 24,
     position: 'relative',
   },
-  bgGlow: {
-    position: 'absolute',
-    top: '30%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
-    width: 500,
-    height: 500,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(103, 232, 249, 0.05) 0%, transparent 70%)',
-    pointerEvents: 'none',
-  },
   card: {
-    background: 'rgba(255, 255, 255, 0.04)',
-    borderRadius: 18,
+    background: 'var(--bg-secondary)',
+    borderRadius: 12,
     border: '1px solid rgba(255, 255, 255, 0.08)',
     boxShadow: '0 8px 24px rgba(0, 0, 0, 0.28)',
     padding: '32px 28px',
@@ -902,8 +890,6 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'relative',
     zIndex: 1,
     animation: 'scaleIn 0.3s ease-out',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   studioInfo: {
     display: 'inline-flex',
@@ -928,7 +914,7 @@ const styles: Record<string, React.CSSProperties> = {
   scheduledBadge: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#f59e0b',
+    color: 'var(--warning)',
     background: 'rgba(245, 158, 11, 0.1)',
     padding: '2px 8px',
     borderRadius: 10,
@@ -1151,9 +1137,9 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: '100%',
     padding: '1px 4px',
     borderRadius: 5,
-    background: 'rgba(103, 232, 249, 0.12)',
-    border: '1px solid rgba(103, 232, 249, 0.28)',
-    color: '#a5f3fc',
+    background: 'rgba(167, 139, 250, 0.12)',
+    border: '1px solid rgba(167, 139, 250, 0.28)',
+    color: 'var(--accent-hover)',
     fontSize: 7,
     fontWeight: 900,
     lineHeight: 1.1,
@@ -1176,9 +1162,9 @@ const styles: Record<string, React.CSSProperties> = {
   speakerTestButton: {
     minWidth: 86,
     borderRadius: 'var(--radius-sm)',
-    border: '1px solid rgba(103, 232, 249, 0.26)',
-    background: 'rgba(103, 232, 249, 0.08)',
-    color: '#67e8f9',
+    border: '1px solid rgba(167, 139, 250, 0.26)',
+    background: 'rgba(167, 139, 250, 0.08)',
+    color: 'var(--accent)',
     fontSize: 12,
     fontWeight: 700,
     display: 'inline-flex',
@@ -1234,8 +1220,8 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 16,
     padding: '12px 14px',
     borderRadius: 12,
-    border: '1px solid rgba(103, 232, 249, 0.16)',
-    background: 'rgba(103, 232, 249, 0.07)',
+    border: '1px solid rgba(167, 139, 250, 0.16)',
+    background: 'rgba(167, 139, 250, 0.07)',
     textAlign: 'left' as const,
   },
   registrationHeader: {
@@ -1248,7 +1234,7 @@ const styles: Record<string, React.CSSProperties> = {
   registrationTitle: {
     fontSize: 13,
     fontWeight: 700,
-    color: '#a5f3fc',
+    color: 'var(--accent-hover)',
   },
   registrationBadge: {
     fontSize: 10,

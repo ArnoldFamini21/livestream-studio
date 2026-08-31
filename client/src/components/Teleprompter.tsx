@@ -286,7 +286,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     background: 'rgba(0, 0, 0, 0.85)',
-    backdropFilter: 'blur(8px)',
     borderRadius: 'var(--radius-lg)',
     overflow: 'hidden',
   },

@@ -113,7 +113,7 @@ export function ConfirmDialog({
             className="hover-lift"
             style={{
               ...styles.confirmBtn,
-              background: destructive ? '#ef4444' : '#7c3aed',
+              background: destructive ? 'var(--danger)' : '#7c3aed',
             }}
             onClick={onConfirm}
           >
@@ -138,7 +138,6 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 2000,
-    backdropFilter: 'blur(4px)',
   },
   dialog: {
     width: 400,
