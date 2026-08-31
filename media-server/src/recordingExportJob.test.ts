@@ -297,4 +297,70 @@ describe('recording export jobs', () => {
     const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
     assert.equal(parsed.export.normalizeAudio, true);
   });
+
+  it('renders a transcript edit across every artifact and records it in the manifest', async () => {
+    const { uploads, session } = await createCompletedUpload();
+    const commands: RecordingExportCommand[] = [];
+    const runner: RecordingExportRunner = async (command) => {
+      commands.push(command);
+      await writeFile(command.outputPath, Buffer.from(command.label));
+    };
+    const exports = new RecordingExportJobStore(runner);
+
+    const queued = await exports.createJob(uploads.getExportSource(session.uploadId), {
+      basename: 'Launch Demo',
+      includeAudioStems: true,
+      edl: {
+        segments: [
+          { startSeconds: 0, endSeconds: 12.5 },
+          { startSeconds: 14.25, endSeconds: 60 },
+        ],
+      },
+    });
+    await exports.startJob(queued.exportId);
+
+    const mp4Command = commands.find((command) => command.artifactId === 'final-mp4');
+    assert.ok(mp4Command);
+    assert.equal(mp4Command.label, 'Final MP4 edit');
+    // An edit rewrites the timeline with select filters, so there is no seek.
+    assert.equal(mp4Command.args.includes('-ss'), false);
+    const rendered = commands.filter((command) => /\.(mp4|wav|mp3)$/.test(command.outputPath));
+    assert.ok(rendered.length >= 4);
+    assert.ok(rendered.every((command) => command.args.some((arg) => (
+      typeof arg === 'string' && arg.includes('aselect=')
+    ))));
+
+    const manifest = exports.getArtifact(queued.exportId, 'export-manifest', session.uploadId);
+    const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
+    assert.deepEqual(parsed.export.edl, {
+      segments: [
+        { startSeconds: 0, endSeconds: 12.5 },
+        { startSeconds: 14.25, endSeconds: 60 },
+      ],
+      aspect: 'source',
+    });
+    assert.equal(parsed.export.clip, null);
+  });
+
+  it('rejects unrenderable edit lists and clip/edit combinations before creating a job', async () => {
+    const { uploads, session } = await createCompletedUpload();
+    const exports = new RecordingExportJobStore(async () => {});
+
+    await assert.rejects(
+      () => exports.createJob(uploads.getExportSource(session.uploadId), {
+        edl: { segments: [{ startSeconds: 10, endSeconds: 20 }, { startSeconds: 15, endSeconds: 30 }] },
+      }),
+      (err) => err instanceof RecordingExportJobError
+        && err.code === 'RECORDING_EXPORT_INVALID_EDL'
+        && err.statusCode === 400
+    );
+
+    await assert.rejects(
+      () => exports.createJob(uploads.getExportSource(session.uploadId), {
+        clip: { startSeconds: 0, endSeconds: 30 },
+        edl: { segments: [{ startSeconds: 0, endSeconds: 12.5 }] },
+      }),
+      (err) => err instanceof RecordingExportJobError && err.code === 'RECORDING_EXPORT_INVALID_EDL'
+    );
+  });
 });

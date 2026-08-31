@@ -1,16 +1,23 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildEdlAudioFilterChain,
+  buildEdlSelectExpression,
+  buildEdlVideoFilterChain,
   createRecordingAudioStemArgs,
   createRecordingExportCommands,
   createRecordingIsolatedVideoArgs,
   createRecordingMp4Args,
   getClipVideoGeometry,
   getRecordingExportClipIssue,
+  getRecordingExportEdlDurationSeconds,
+  getRecordingExportEdlIssue,
   normalizeRecordingExportClipRange,
+  normalizeRecordingExportEdl,
   normalizeRecordingExportVideoOptions,
   sanitizeExportBasename,
   validateRecordingExportTracks,
+  type RecordingExportEdl,
   type RecordingExportTrack,
 } from './recordingExport.js';
 
@@ -479,5 +486,153 @@ describe('recording export audio normalization', () => {
     });
     assert.ok(commands.mp4.args.some((arg) => typeof arg === 'string' && arg.includes('loudnorm')));
     assert.ok(commands.stems.every((stem) => stem.args.includes('-af')));
+  });
+});
+
+describe('recording export edit lists', () => {
+  const edl: RecordingExportEdl = {
+    segments: [
+      { startSeconds: 0, endSeconds: 12.5 },
+      { startSeconds: 14.25, endSeconds: 30 },
+    ],
+  };
+
+  it('rejects edit lists that no exporter could render', () => {
+    assert.equal(getRecordingExportEdlIssue(null), null);
+    assert.equal(getRecordingExportEdlIssue(edl), null);
+    assert.match(getRecordingExportEdlIssue({ segments: [] }) || '', /at least one kept range/);
+    assert.match(
+      getRecordingExportEdlIssue({ segments: [{ startSeconds: 5, endSeconds: 4 }] }) || '',
+      /after their starts/
+    );
+    assert.match(
+      getRecordingExportEdlIssue({ segments: [{ startSeconds: -1, endSeconds: 4 }] }) || '',
+      /non-negative/
+    );
+    assert.match(
+      getRecordingExportEdlIssue({
+        segments: [{ startSeconds: 0, endSeconds: 10 }, { startSeconds: 5, endSeconds: 20 }],
+      }) || '',
+      /ordered and must not overlap/
+    );
+    assert.match(
+      getRecordingExportEdlIssue({ segments: [{ startSeconds: 0, endSeconds: 0.005 }] }) || '',
+      /too short to render/
+    );
+    assert.match(
+      getRecordingExportEdlIssue({ segments: [{ startSeconds: 0, endSeconds: 0.1 }] }) || '',
+      /too little of the recording/
+    );
+    assert.match(
+      getRecordingExportEdlIssue({ segments: [{ startSeconds: 0, endSeconds: 5 }], aspect: 'circle' }) || '',
+      /aspect/
+    );
+    assert.match(
+      getRecordingExportEdlIssue({
+        segments: Array.from({ length: 401 }, (_, index) => ({
+          startSeconds: index * 2,
+          endSeconds: index * 2 + 1,
+        })),
+      }) || '',
+      /limited to 400/
+    );
+  });
+
+  it('normalizes edit lists to millisecond precision with a resolved aspect', () => {
+    assert.deepEqual(normalizeRecordingExportEdl({
+      segments: [{ startSeconds: 0.00049, endSeconds: 12.50051 }],
+      aspect: 'vertical',
+    }), {
+      segments: [{ startSeconds: 0, endSeconds: 12.501 }],
+      aspect: 'vertical',
+    });
+    assert.equal(normalizeRecordingExportEdl(null), null);
+    assert.equal(getRecordingExportEdlDurationSeconds(edl), 28.25);
+  });
+
+  it('builds select filter chains that close the holes the cuts leave', () => {
+    assert.equal(
+      buildEdlSelectExpression(edl),
+      'between(t\\,0.000\\,12.500)+between(t\\,14.250\\,30.000)'
+    );
+    assert.match(buildEdlVideoFilterChain(edl), /^select='between.+',setpts=N\/FRAME_RATE\/TB$/);
+    assert.match(buildEdlAudioFilterChain(edl), /^aselect='between.+',asetpts=N\/SR\/TB$/);
+  });
+
+  it('renders an edited MP4 in one pass without an input seek', () => {
+    const command = createRecordingMp4Args({
+      tracks: [programTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      edl,
+    });
+
+    assert.equal(command.label, 'Final MP4 edit');
+    assert.equal(command.outputPath, '/tmp/exports/Launch_Demo_edit_2x_0m28s.mp4');
+    assert.equal(command.args.includes('-ss'), false);
+    assert.equal(command.args.includes('-t'), false);
+    const videoFilter = command.args[command.args.indexOf('-vf') + 1];
+    assert.ok(videoFilter.startsWith("select='between(t\\,0.000\\,12.500)"));
+    assert.ok(videoFilter.includes(',setpts=N/FRAME_RATE/TB,scale='));
+    assert.equal(command.args[command.args.indexOf('-af') + 1], buildEdlAudioFilterChain(edl));
+  });
+
+  it('cuts the mixed program audio on the same joins as the video', () => {
+    const command = createRecordingMp4Args({
+      tracks: [hostVideoTrack, hostAudioTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      edl,
+      normalizeAudio: true,
+    });
+
+    const graph = command.args[command.args.indexOf('-filter_complex') + 1];
+    assert.ok(graph.includes(`[0:v:0]${buildEdlVideoFilterChain(edl)},scale=`));
+    // The edit runs after the mix and before loudness normalization.
+    assert.ok(graph.includes(`amix=inputs=1:duration=longest:dropout_transition=2,${buildEdlAudioFilterChain(edl)},loudnorm=`));
+  });
+
+  it('applies the edit to isolated videos and stems so every artifact stays in sync', () => {
+    const commands = createRecordingExportCommands({
+      tracks: [hostVideoTrack, hostAudioTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      edl,
+    });
+
+    assert.equal(commands.isolatedVideos.length, 1);
+    assert.equal(commands.isolatedVideos[0].label, 'Host camera isolated MP4 edit');
+    assert.ok(commands.isolatedVideos[0].outputPath.includes('_edit_2x_0m28s.mp4'));
+    assert.equal(
+      commands.isolatedVideos[0].args[commands.isolatedVideos[0].args.indexOf('-af') + 1],
+      buildEdlAudioFilterChain(edl)
+    );
+    assert.equal(commands.stems.length, 4);
+    commands.stems.forEach((stem) => {
+      assert.match(stem.label, /stem edit$/);
+      assert.equal(stem.args[stem.args.indexOf('-af') + 1], buildEdlAudioFilterChain(edl));
+    });
+  });
+
+  it('crops edited exports to vertical and square delivery formats', () => {
+    const command = createRecordingMp4Args({
+      tracks: [programTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      edl: { ...edl, aspect: 'vertical' },
+    });
+
+    assert.ok(command.outputPath.endsWith('_edit_2x_0m28s_9x16.mp4'));
+    assert.ok(command.args[command.args.indexOf('-vf') + 1].includes('crop=608:1080'));
+  });
+
+  it('refuses to apply a clip range and an edit list at the same time', () => {
+    assert.throws(() => createRecordingMp4Args({
+      tracks: [programTrack],
+      outputDirectory: '/tmp/exports',
+      basename: 'Launch Demo',
+      clip: { startSeconds: 0, endSeconds: 10 },
+      edl,
+    }), /either a clip range or an edit list/);
   });
 });

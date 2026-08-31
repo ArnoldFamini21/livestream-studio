@@ -1017,6 +1017,20 @@ export interface RecordingExportClipSettings {
   aspect?: RecordingExportClipAspect;
 }
 
+export interface RecordingExportEdlSegmentSettings {
+  startSeconds?: number;
+  endSeconds?: number;
+}
+
+/**
+ * The kept source ranges of a transcript-driven edit, in order. Mutually
+ * exclusive with `clip` — an export applies one trim, not both.
+ */
+export interface RecordingExportEdlSettings {
+  segments?: RecordingExportEdlSegmentSettings[];
+  aspect?: RecordingExportClipAspect;
+}
+
 export interface RecordingExportSessionRequest {
   token?: string;
   basename?: string;
@@ -1025,6 +1039,7 @@ export interface RecordingExportSessionRequest {
   video?: RecordingExportVideoSettings;
   audio?: RecordingExportAudioSettings;
   clip?: RecordingExportClipSettings;
+  edl?: RecordingExportEdlSettings;
 }
 
 export type RecordingExportJobStatusValue = 'queued' | 'running' | 'ready' | 'error';
