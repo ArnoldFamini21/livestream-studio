@@ -1,6 +1,13 @@
 export const DEFAULT_TRANSCRIPTION_MODEL = 'whisper-1';
 export const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
 
+// Word timestamps drive transcript-based editing, so keep the returned arrays
+// bounded even when a very long recording is transcribed.
+export const MAX_TRANSCRIPT_WORDS = 20_000;
+export const MAX_TRANSCRIPT_SEGMENTS = 4_000;
+const MAX_TRANSCRIPT_WORD_LENGTH = 120;
+const MAX_TRANSCRIPT_SEGMENT_LENGTH = 1_000;
+
 type FetchLike = typeof fetch;
 
 const SUPPORTED_TRANSCRIPTION_MIME_TYPES = new Set([
@@ -49,11 +56,25 @@ export interface OpenAITranscriptionInput {
   fetchImpl?: FetchLike;
 }
 
+export interface TranscriptWord {
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+}
+
+export interface TranscriptSegment {
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+}
+
 export interface RecordingTranscriptionResponse {
   text: string;
   language?: string;
   model: string;
   durationSeconds?: number;
+  words?: TranscriptWord[];
+  segments?: TranscriptSegment[];
 }
 
 function getFileExtension(fileName: string): string {
@@ -104,11 +125,70 @@ export function validateTranscriptionUpload(input: TranscriptionUploadValidation
   return null;
 }
 
+/**
+ * Only the Whisper models expose `verbose_json` with word timestamp
+ * granularity. Newer transcription models reject both, so they stay on the
+ * plain `json` response and simply return no word timings.
+ */
+export function supportsTranscriptWordTimestamps(model: string): boolean {
+  return /^whisper/i.test(model.trim());
+}
+
+function normalizeTimedText(
+  value: unknown,
+  textKeys: readonly string[],
+  maxTextLength: number
+): { text: string; startSeconds: number; endSeconds: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const entry = value as Record<string, unknown>;
+  const rawText = textKeys.map((key) => entry[key]).find((candidate) => typeof candidate === 'string');
+  const text = typeof rawText === 'string' ? rawText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').slice(0, maxTextLength) : '';
+  if (!text.trim()) return null;
+
+  const startSeconds = Number(entry.start);
+  const endSeconds = Number(entry.end);
+  if (!Number.isFinite(startSeconds) || startSeconds < 0) return null;
+  if (!Number.isFinite(endSeconds) || endSeconds < startSeconds) return null;
+
+  return {
+    text,
+    startSeconds: Math.round(startSeconds * 1000) / 1000,
+    endSeconds: Math.round(endSeconds * 1000) / 1000,
+  };
+}
+
+export function normalizeTranscriptWords(value: unknown): TranscriptWord[] {
+  if (!Array.isArray(value)) return [];
+  const words: TranscriptWord[] = [];
+  for (const entry of value) {
+    const word = normalizeTimedText(entry, ['word', 'text'], MAX_TRANSCRIPT_WORD_LENGTH);
+    if (word) words.push(word);
+    if (words.length >= MAX_TRANSCRIPT_WORDS) break;
+  }
+  return words;
+}
+
+export function normalizeTranscriptSegments(value: unknown): TranscriptSegment[] {
+  if (!Array.isArray(value)) return [];
+  const segments: TranscriptSegment[] = [];
+  for (const entry of value) {
+    const segment = normalizeTimedText(entry, ['text'], MAX_TRANSCRIPT_SEGMENT_LENGTH);
+    if (segment) segments.push(segment);
+    if (segments.length >= MAX_TRANSCRIPT_SEGMENTS) break;
+  }
+  return segments;
+}
+
 export async function createOpenAITranscription(input: OpenAITranscriptionInput): Promise<RecordingTranscriptionResponse> {
   const model = input.model?.trim() || DEFAULT_TRANSCRIPTION_MODEL;
+  const wantsWordTimestamps = supportsTranscriptWordTimestamps(model);
   const form = new FormData();
   form.set('model', model);
-  form.set('response_format', 'json');
+  form.set('response_format', wantsWordTimestamps ? 'verbose_json' : 'json');
+  if (wantsWordTimestamps) {
+    form.append('timestamp_granularities[]', 'word');
+    form.append('timestamp_granularities[]', 'segment');
+  }
   if (input.language) form.set('language', input.language);
   const bytes = new Uint8Array(input.buffer.byteLength);
   bytes.set(input.buffer);
@@ -130,15 +210,21 @@ export async function createOpenAITranscription(input: OpenAITranscriptionInput)
     text?: unknown;
     language?: unknown;
     duration?: unknown;
+    words?: unknown;
+    segments?: unknown;
   } | null;
   const text = typeof data?.text === 'string' ? data.text.trim() : '';
   if (!text) throw new Error('OpenAI transcription response did not include transcript text');
 
   const durationSeconds = Number(data?.duration);
+  const words = normalizeTranscriptWords(data?.words);
+  const segments = normalizeTranscriptSegments(data?.segments);
   return {
     text,
     model,
     ...(typeof data?.language === 'string' && data.language.trim() ? { language: data.language.trim() } : {}),
     ...(Number.isFinite(durationSeconds) && durationSeconds >= 0 ? { durationSeconds } : {}),
+    ...(words.length > 0 ? { words } : {}),
+    ...(segments.length > 0 ? { segments } : {}),
   };
 }

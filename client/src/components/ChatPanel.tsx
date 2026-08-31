@@ -243,7 +243,7 @@ export function ChatPanel({
         {input.length >= CHAR_COUNT_THRESHOLD && (
           <div style={{
             ...styles.charCount,
-            color: input.length > MAX_MESSAGE_LENGTH ? '#ef4444' : 'var(--text-muted)',
+            color: input.length > MAX_MESSAGE_LENGTH ? 'var(--danger)' : 'var(--text-muted)',
           }}>
             {input.length}/{MAX_MESSAGE_LENGTH}
           </div>
@@ -287,8 +287,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(15, 23, 42, 0.6)',
     borderLeft: '1px solid rgba(255, 255, 255, 0.06)',
     height: '100%',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   header: {
     display: 'flex',
@@ -327,14 +325,14 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     padding: '9px 10px',
     borderRadius: 8,
-    border: '1px solid rgba(34, 211, 238, 0.28)',
-    background: 'rgba(34, 211, 238, 0.08)',
+    border: '1px solid rgba(167, 139, 250, 0.28)',
+    background: 'rgba(167, 139, 250, 0.08)',
   },
   pinnedLabel: {
     flexShrink: 0,
     fontSize: 9,
     fontWeight: 800,
-    color: '#67e8f9',
+    color: 'var(--accent)',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.04em',
   },
@@ -379,8 +377,8 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(245, 158, 11, 0.06)',
   },
   messagePinned: {
-    borderColor: 'rgba(34, 211, 238, 0.28)',
-    background: 'rgba(34, 211, 238, 0.055)',
+    borderColor: 'rgba(167, 139, 250, 0.28)',
+    background: 'rgba(167, 139, 250, 0.055)',
   },
   msgHeader: {
     display: 'flex',
@@ -427,8 +425,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     padding: '1px 5px',
     borderRadius: 4,
-    background: 'rgba(34, 211, 238, 0.12)',
-    color: '#67e8f9',
+    background: 'rgba(167, 139, 250, 0.12)',
+    color: 'var(--accent)',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.04em',
   },
@@ -500,7 +498,7 @@ const styles: Record<string, React.CSSProperties> = {
   typingIndicator: {
     minHeight: 18,
     padding: '6px 12px 0',
-    color: '#67e8f9',
+    color: 'var(--accent)',
     fontSize: 11,
     fontWeight: 600,
     overflow: 'hidden',

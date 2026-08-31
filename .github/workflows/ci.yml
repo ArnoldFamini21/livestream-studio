@@ -1,0 +1,60 @@
+name: CI
+
+# The deploy workflow only runs on pushes to main, so nothing validated a
+# change before it landed. This runs the checks a contributor runs locally
+# against every pull request.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request makes the in-flight run obsolete; runs on main
+# are kept so every landed commit keeps its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Lint, test, and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Every workspace's lint script is a TypeScript check; the server and
+      # media-server scripts build the shared workspace they depend on first.
+      - name: Typecheck every workspace
+        run: npm run lint --workspaces
+
+      - name: Test deployment scripts
+        run: node --test scripts/*.test.mjs
+
+      - name: Test client
+        run: npm test --workspace=client
+
+      - name: Test signaling server
+        run: npm test --workspace=server
+
+      - name: Test media server
+        run: npm test --workspace=media-server
+
+      # Catches what typechecking alone cannot: the Vite bundle and the
+      # emitted server builds.
+      - name: Build all workspaces
+        run: npm run build

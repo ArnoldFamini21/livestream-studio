@@ -590,13 +590,11 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '6px 16px',
-    background: 'rgba(15, 23, 42, 0.8)',
-    borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+    padding: '10px 16px',
+    background: 'var(--bg-secondary)',
+    borderTop: '1px solid var(--border)',
     flexShrink: 0,
     gap: 12,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   barInner: {
     display: 'flex',
@@ -614,14 +612,15 @@ const styles: Record<string, React.CSSProperties> = {
   mediaGroup: {
     display: 'flex',
     alignItems: 'stretch',
-    borderRadius: 22,
+    height: 44,
+    borderRadius: 'var(--radius-lg)',
     overflow: 'hidden',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    background: 'rgba(255, 255, 255, 0.06)',
+    border: '1px solid var(--border-strong)',
+    background: 'transparent',
   },
   mediaBtn: {
-    width: 40,
-    height: 36,
+    width: 44,
+    height: '100%',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -637,7 +636,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'white',
   },
   chevronBtn: {
-    width: 18,
+    width: 22,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -650,9 +649,9 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.12s ease',
   },
   chevronBtnOff: {
-    background: 'rgba(185, 28, 28, 0.8)',
-    color: 'rgba(255,255,255,0.7)',
-    borderLeft: '1px solid rgba(255,255,255,0.2)',
+    background: 'var(--danger)',
+    color: 'rgba(255,255,255,0.8)',
+    borderLeft: '1px solid rgba(255,255,255,0.25)',
   },
 
   // Standalone icon button (screen share)
@@ -707,7 +706,7 @@ const styles: Record<string, React.CSSProperties> = {
   pillRecording: {
     background: 'rgba(239, 68, 68, 0.15)',
     border: '1px solid rgba(239, 68, 68, 0.3)',
-    color: '#ef4444',
+    color: 'var(--danger)',
     fontFamily: 'monospace',
     fontWeight: 600,
   },
@@ -734,7 +733,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 8,
     height: 8,
     borderRadius: '50%',
-    background: '#ef4444',
+    background: 'var(--danger)',
     animation: 'livePulse 1.5s infinite',
     flexShrink: 0,
   },
@@ -756,8 +755,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column' as const,
     gap: 1,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   moreItem: {
     display: 'flex',
@@ -793,7 +790,7 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: '0 0 12px rgba(167, 139, 250, 0.2)',
   },
   liveBtnActive: {
-    background: '#ef4444',
+    background: 'var(--danger)',
     boxShadow: '0 0 0 3px rgba(239, 68, 68, 0.2)',
   },
   liveDot: {

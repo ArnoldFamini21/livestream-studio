@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { nanoid } from 'nanoid';
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type {
   SignalMessage,
@@ -48,6 +48,7 @@ import {
 } from './facebookLiveComments.js';
 import {
   buildPersistentRoomSnapshot,
+  type PersistedRoomInvite,
   type RoomSnapshot,
   type RoomSnapshotStore,
 } from './roomPersistence.js';
@@ -314,6 +315,7 @@ function getRoomIdleReferenceMs(roomState: RoomState): number {
 }
 
 function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
+  const restoredInvites = restoreInviteTokens(snapshot);
   return {
     room: snapshot.room,
     participants: new Map(),
@@ -326,8 +328,8 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
     pollVotes: new Map(),
     registrants: new Map((snapshot.registrants || []).map((registrant) => [registrant.email, registrant])),
     externalChatConnections: new Map(),
-    guestInviteTokens: new Map(),
-    coHostInviteTokens: new Map(),
+    guestInviteTokens: restoredInvites.guest,
+    coHostInviteTokens: restoredInvites.coHost,
     hostToken: snapshot.hostToken,
     creatorIp: snapshot.creatorIp,
     hasBeenJoined: snapshot.hasBeenJoined,
@@ -347,7 +349,57 @@ function buildRoomStateSnapshot(roomState: RoomState): RoomSnapshot {
     ...(roomState.studioBranding ? { studioBranding: roomState.studioBranding } : {}),
     ...(roomState.passwordHash ? { passwordHash: roomState.passwordHash } : {}),
     ...(roomState.passwordSalt ? { passwordSalt: roomState.passwordSalt } : {}),
+    invites: buildPersistedInvites(roomState),
   });
+}
+
+function buildPersistedInvites(roomState: RoomState): PersistedRoomInvite[] {
+  const now = Date.now();
+  const invites: PersistedRoomInvite[] = [];
+  const collect = (kind: PersistedRoomInvite['kind'], tokens: RoomState['guestInviteTokens']) => {
+    for (const [tokenHash, invite] of tokens) {
+      if (invite.expiresAt <= now) continue;
+      invites.push({
+        kind,
+        tokenHash,
+        issuedBy: invite.issuedBy,
+        createdAt: new Date(invite.createdAt).toISOString(),
+        expiresAt: new Date(invite.expiresAt).toISOString(),
+      });
+    }
+  };
+  collect('guest', roomState.guestInviteTokens);
+  collect('co-host', roomState.coHostInviteTokens);
+  return invites;
+}
+
+function restoreInviteTokens(snapshot: RoomSnapshot): {
+  guest: RoomState['guestInviteTokens'];
+  coHost: RoomState['coHostInviteTokens'];
+} {
+  const now = Date.now();
+  const guest: RoomState['guestInviteTokens'] = new Map();
+  const coHost: RoomState['coHostInviteTokens'] = new Map();
+
+  for (const invite of snapshot.invites || []) {
+    const expiresAt = Date.parse(invite.expiresAt);
+    const createdAt = Date.parse(invite.createdAt);
+    // Drop invites that expired while the server was down.
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) continue;
+    const entry = {
+      expiresAt,
+      issuedBy: invite.issuedBy,
+      createdAt: Number.isFinite(createdAt) ? createdAt : now,
+    };
+    const target = invite.kind === 'co-host' ? coHost : guest;
+    const cap = invite.kind === 'co-host'
+      ? MAX_CO_HOST_INVITE_TOKENS_PER_ROOM
+      : MAX_GUEST_INVITE_TOKENS_PER_ROOM;
+    if (target.size >= cap) continue;
+    target.set(invite.tokenHash, entry);
+  }
+
+  return { guest, coHost };
 }
 
 function indexRoomCreator(roomId: string, creatorIp: string) {
@@ -725,6 +777,20 @@ function normalizeJoinSessionId(value: unknown): string | undefined {
 }
 
 // Constant-time comparison to thwart timing attacks on the host token.
+/**
+ * Invite tokens are held and persisted as sha256 digests, so a leaked room
+ * snapshot cannot be replayed as a working invite link. Looking a digest up
+ * directly is safe without a constant-time compare: an attacker would need a
+ * preimage, not a lucky prefix.
+ */
+function hashInviteToken(token: string): string {
+  return createHash('sha256').update(token).digest('base64url');
+}
+
+function isPresentableInviteToken(token: unknown): token is string {
+  return typeof token === 'string' && token.length >= 20 && token.length <= 120;
+}
+
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let mismatch = 0;
@@ -767,29 +833,25 @@ function pruneExpiredGuestInviteTokens(roomState: RoomState, now = Date.now()) {
 }
 
 function consumeCoHostInviteToken(roomState: RoomState, token: unknown): boolean {
-  if (typeof token !== 'string' || token.length < 20 || token.length > 120) return false;
+  if (!isPresentableInviteToken(token)) return false;
   pruneExpiredCoHostInviteTokens(roomState);
 
-  for (const [candidateToken] of roomState.coHostInviteTokens) {
-    if (safeEqual(candidateToken, token)) {
-      roomState.coHostInviteTokens.delete(candidateToken);
-      return true;
-    }
-  }
-  return false;
+  const tokenHash = hashInviteToken(token);
+  if (!roomState.coHostInviteTokens.delete(tokenHash)) return false;
+  // Persist the consumption so a restart cannot resurrect a spent invite.
+  persistRoomSnapshot(roomState.room.id);
+  return true;
 }
 
 function consumeGuestInviteToken(roomState: RoomState, token: unknown): boolean {
-  if (typeof token !== 'string' || token.length < 20 || token.length > 120) return false;
+  if (!isPresentableInviteToken(token)) return false;
   pruneExpiredGuestInviteTokens(roomState);
 
-  for (const [candidateToken] of roomState.guestInviteTokens) {
-    if (safeEqual(candidateToken, token)) {
-      roomState.guestInviteTokens.delete(candidateToken);
-      return true;
-    }
-  }
-  return false;
+  const tokenHash = hashInviteToken(token);
+  if (!roomState.guestInviteTokens.delete(tokenHash)) return false;
+  // Persist the consumption so a restart cannot resurrect a spent invite.
+  persistRoomSnapshot(roomState.room.id);
+  return true;
 }
 
 function isValidRequestId(value: unknown): value is string {
@@ -1711,11 +1773,13 @@ function handleCoHostInviteTokenRequest(
 
   const token = nanoid(32);
   const expiresAtMs = now + CO_HOST_INVITE_TOKEN_TTL_MS;
-  roomState.coHostInviteTokens.set(token, {
+  roomState.coHostInviteTokens.set(hashInviteToken(token), {
     expiresAt: expiresAtMs,
     issuedBy: mapping.participantId,
     createdAt: now,
   });
+  // An invite is emailed ahead of the show, so it has to outlive a deploy.
+  persistRoomSnapshot(mapping.roomId);
 
   send(ws, {
     type: 'co-host-invite-token-issued',
@@ -1764,11 +1828,13 @@ function handleGuestInviteTokenRequest(
 
   const token = nanoid(32);
   const expiresAtMs = now + GUEST_INVITE_TOKEN_TTL_MS;
-  roomState.guestInviteTokens.set(token, {
+  roomState.guestInviteTokens.set(hashInviteToken(token), {
     expiresAt: expiresAtMs,
     issuedBy: mapping.participantId,
     createdAt: now,
   });
+  // An invite is emailed ahead of the show, so it has to outlive a deploy.
+  persistRoomSnapshot(mapping.roomId);
 
   send(ws, {
     type: 'guest-invite-token-issued',

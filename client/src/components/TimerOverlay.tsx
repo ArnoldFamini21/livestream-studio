@@ -395,7 +395,7 @@ function getVisualStyle(
   isFinished: boolean,
   isUrgent: boolean,
 ) {
-  const urgentColor = isFinished ? '#ef4444' : isUrgent ? '#f97316' : undefined;
+  const urgentColor = isFinished ? 'var(--danger)' : isUrgent ? '#f97316' : undefined;
 
   switch (style) {
     case 'minimal':
@@ -462,27 +462,27 @@ function getVisualStyle(
           background: 'rgba(0, 0, 0, 0.8)',
           borderRadius: 10,
           padding: '10px 22px',
-          border: `1px solid ${urgentColor || '#22d3ee'}`,
-          boxShadow: `0 0 20px ${urgentColor ? urgentColor + '44' : 'rgba(34,211,238,0.25)'}, inset 0 0 20px ${urgentColor ? urgentColor + '11' : 'rgba(34,211,238,0.05)'}`,
+          border: `1px solid ${urgentColor || 'var(--accent)'}`,
+          boxShadow: `0 0 20px ${urgentColor ? urgentColor + '44' : 'rgba(167, 139, 250,0.25)'}, inset 0 0 20px ${urgentColor ? urgentColor + '11' : 'rgba(167, 139, 250,0.05)'}`,
         } as React.CSSProperties,
         time: {
           fontSize: 36,
           fontWeight: 700,
-          color: urgentColor || '#22d3ee',
+          color: urgentColor || 'var(--accent)',
           fontVariantNumeric: 'tabular-nums',
           letterSpacing: '0.06em',
           lineHeight: 1,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, monospace',
-          textShadow: `0 0 12px ${urgentColor ? urgentColor + '88' : 'rgba(34,211,238,0.6)'}, 0 0 30px ${urgentColor ? urgentColor + '44' : 'rgba(34,211,238,0.3)'}`,
+          textShadow: `0 0 12px ${urgentColor ? urgentColor + '88' : 'rgba(167, 139, 250,0.6)'}, 0 0 30px ${urgentColor ? urgentColor + '44' : 'rgba(167, 139, 250,0.3)'}`,
         } as React.CSSProperties,
         label: {
           fontSize: 10,
           fontWeight: 700,
-          color: urgentColor || '#22d3ee',
+          color: urgentColor || 'var(--accent)',
           textTransform: 'uppercase' as const,
           letterSpacing: '0.14em',
           marginTop: 2,
-          textShadow: `0 0 8px ${urgentColor ? urgentColor + '66' : 'rgba(34,211,238,0.4)'}`,
+          textShadow: `0 0 8px ${urgentColor ? urgentColor + '66' : 'rgba(167, 139, 250,0.4)'}`,
         } as React.CSSProperties,
       };
   }

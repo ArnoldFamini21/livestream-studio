@@ -7,54 +7,57 @@
 }
 
 :root {
-  /* Core palette — deep navy inspired by arnoldfamini.com */
-  --bg-primary: #0b1220;
-  --bg-secondary: #0f172a;
-  --bg-tertiary: #151e30;
-  --bg-elevated: #1a2540;
-  --bg-surface: #1e2d4a;
+  /* Surfaces — five steps, flat. Hierarchy comes from spacing and the
+     hairline, not from glow, blur or gradient fills. */
+  --bg-primary: #0b1220;   /* canvas */
+  --bg-secondary: #0d1524; /* chrome: top bar, side panels, control bar */
+  --bg-tertiary: #111a2b;  /* card */
+  --bg-elevated: #162034;  /* raised / hover */
+  --bg-surface: #162034;   /* raised, used as a control ground */
+  --bg-stage: #0e1626;     /* the program stage itself */
 
-  /* Glass effect layers */
-  --glass-bg: rgba(255, 255, 255, 0.04);
-  --glass-bg-hover: rgba(255, 255, 255, 0.07);
+  /* Panels are solid now. The names stay so existing components keep
+     working; the blur is off rather than ripped out of every call site. */
+  --glass-bg: #0d1524;
+  --glass-bg-hover: #111a2b;
   --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-blur: blur(12px);
+  --glass-blur: none;
 
-  /* Text — warm slate tones */
-  --text-primary: rgba(226, 232, 240, 0.92);
-  --text-secondary: rgba(255, 255, 255, 0.65);
-  --text-muted: rgba(255, 255, 255, 0.4);
+  /* Text — muted sits at 0.52 to clear WCAG AA (~5:1) at the 11-12px
+     label sizes it is used for; 0.4 measured about 3.2:1. */
+  --text-primary: #e8edf5;
+  --text-secondary: rgba(232, 237, 245, 0.68);
+  --text-muted: rgba(232, 237, 245, 0.52);
 
-  /* Brand — purple + cyan accents */
+  /* One accent, spent on the primary action and the active state. */
   --accent: #a78bfa;
   --accent-hover: #c4b5fd;
-  --accent-subtle: rgba(167, 139, 250, 0.12);
+  --accent-subtle: rgba(167, 139, 250, 0.14);
   --accent-glow: rgba(167, 139, 250, 0.2);
   --accent-solid: #7c3aed;
-  --cyan: #67e8f9;
-  --cyan-subtle: rgba(103, 232, 249, 0.1);
 
-  /* Semantic */
-  --danger: #ef4444;
-  --danger-hover: #dc2626;
-  --success: #6ee7b7;
-  --success-subtle: rgba(110, 231, 183, 0.1);
-  --warning: #f59e0b;
-  --live-red: #ef4444;
+  /* Semantic — matched chroma so they read as one family */
+  --danger: #f0555b;
+  --danger-hover: #d93f45;
+  --success: #5fd9a6;
+  --success-subtle: rgba(95, 217, 166, 0.1);
+  --warning: #e8a33d;
+  --live-red: #f0555b;
 
-  /* Borders & Radii */
-  --border: rgba(255, 255, 255, 0.06);
-  --border-strong: rgba(255, 255, 255, 0.1);
-  --radius-sm: 8px;
-  --radius: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
+  /* One hairline, with a hover step. Radii: 8 controls, 12 cards. */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
 
-  /* Shadows — softer, more depth */
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.28);
-  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.35);
-  --shadow-glow: 0 0 24px var(--accent-glow);
+  /* Elevation is a border, not a shadow. The one shadow left is for
+     things that genuinely float above the page. */
+  --shadow-sm: none;
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.4);
+  --shadow-glow: none;
 
   /* Transitions */
   --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -69,58 +72,66 @@ html, body, #root {
 
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: linear-gradient(135deg, #0f172a, #0b1220);
+  background: var(--bg-primary);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Timers, bitrates and counters, so digits stop shifting as they tick. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
 body[data-studio-theme='light'] {
-  --bg-primary: #f8fafc;
-  --bg-secondary: #eef2f7;
-  --bg-tertiary: #e2e8f0;
-  --bg-elevated: #ffffff;
-  --bg-surface: #cbd5e1;
-  --glass-bg: rgba(255, 255, 255, 0.72);
-  --glass-bg-hover: rgba(255, 255, 255, 0.9);
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f9fc;
+  --bg-tertiary: #f1f4f9;
+  --bg-elevated: #e9eef5;
+  --bg-surface: #e9eef5;
+  --bg-stage: #f1f4f9;
+  --glass-bg: #f7f9fc;
+  --glass-bg-hover: #f1f4f9;
   --glass-border: rgba(15, 23, 42, 0.1);
-  --text-primary: rgba(15, 23, 42, 0.94);
-  --text-secondary: rgba(30, 41, 59, 0.72);
-  --text-muted: rgba(51, 65, 85, 0.52);
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-subtle: rgba(37, 99, 235, 0.12);
-  --accent-glow: rgba(37, 99, 235, 0.18);
-  --accent-solid: #2563eb;
-  --cyan: #0891b2;
-  --cyan-subtle: rgba(8, 145, 178, 0.12);
+  --text-primary: #101828;
+  --text-secondary: rgba(16, 24, 40, 0.7);
+  --text-muted: rgba(16, 24, 40, 0.56);
+  --accent: #5b3fd4;
+  --accent-hover: #4a31b8;
+  --accent-subtle: rgba(91, 63, 212, 0.1);
+  --accent-glow: rgba(91, 63, 212, 0.18);
+  --accent-solid: #5b3fd4;
+  --danger: #c8323c;
+  --danger-hover: #a82730;
+  --success: #0f7a55;
+  --success-subtle: rgba(15, 122, 85, 0.1);
+  --warning: #9a6212;
+  --live-red: #c8323c;
   --border: rgba(15, 23, 42, 0.1);
   --border-strong: rgba(15, 23, 42, 0.16);
-  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.12);
-  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.14);
-  --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.18);
-  background: linear-gradient(135deg, #f8fafc, #dbeafe);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.1);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.14);
+  background: var(--bg-primary);
 }
 
 body[data-studio-theme='colorful'] {
-  --bg-primary: #111827;
-  --bg-secondary: #0f2f3b;
-  --bg-tertiary: #164e63;
-  --bg-elevated: #1f2937;
-  --bg-surface: #155e75;
-  --glass-bg: rgba(20, 83, 45, 0.13);
-  --glass-bg-hover: rgba(20, 83, 45, 0.2);
-  --glass-border: rgba(251, 146, 60, 0.18);
-  --accent: #f97316;
-  --accent-hover: #fdba74;
-  --accent-subtle: rgba(249, 115, 22, 0.14);
-  --accent-glow: rgba(249, 115, 22, 0.22);
-  --accent-solid: #ea580c;
-  --cyan: #22d3ee;
-  --cyan-subtle: rgba(34, 211, 238, 0.13);
+  --bg-primary: #0f1a1e;
+  --bg-secondary: #12222a;
+  --bg-tertiary: #172c36;
+  --bg-elevated: #1d3844;
+  --bg-surface: #1d3844;
+  --bg-stage: #101f26;
+  --glass-bg: #12222a;
+  --glass-bg-hover: #172c36;
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --accent: #f9a34a;
+  --accent-hover: #fbbf7a;
+  --accent-subtle: rgba(249, 163, 74, 0.14);
+  --accent-glow: rgba(249, 163, 74, 0.2);
+  --accent-solid: #d97a1f;
   --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(251, 146, 60, 0.18);
-  background: linear-gradient(135deg, #111827, #164e63 52%, #7c2d12);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  background: var(--bg-primary);
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -156,20 +167,14 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* One filled button per view; everything else is a hairline or bare. */
 .btn-primary {
   background: var(--accent-solid);
   color: white;
-  box-shadow: var(--shadow-sm), 0 0 0 0 var(--accent-glow);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #8b5cf6;
-  box-shadow: var(--shadow-md), var(--shadow-glow);
-  transform: translateY(-1px);
-}
-
-.btn-primary:active:not(:disabled) {
-  transform: translateY(0);
+  background: var(--accent);
 }
 
 .btn-danger {
@@ -179,18 +184,16 @@ button:disabled {
 
 .btn-danger:hover:not(:disabled) {
   background: var(--danger-hover);
-  transform: translateY(-1px);
 }
 
 .btn-secondary {
-  background: var(--bg-surface);
+  background: transparent;
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
 }
 
 .btn-secondary:hover:not(:disabled) {
   background: var(--bg-elevated);
-  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .btn-ghost {
@@ -212,21 +215,16 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  background: transparent;
   color: var(--text-primary);
   font-size: 18px;
-  border: 1px solid var(--border);
-  transition: all var(--transition);
-}
-
-.btn-icon:hover {
-  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  transition: background-color var(--transition), border-color var(--transition);
 }
 
 .btn-icon:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  transform: scale(1.05);
+  background: var(--bg-elevated);
 }
 
 .btn-icon.active {
@@ -243,17 +241,17 @@ button:disabled {
 input, select {
   font-family: inherit;
   font-size: 14px;
-  padding: 11px 14px;
+  padding: 10px 12px;
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
   color: var(--text-primary);
   outline: none;
-  transition: all var(--transition);
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
 
 input:focus, select:focus {
-  border-color: var(--accent-solid);
+  border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 
@@ -330,11 +328,6 @@ input::placeholder {
 @keyframes timerFlash {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
-}
-
-@keyframes neonGlow {
-  0%, 100% { text-shadow: 0 0 10px rgba(167, 139, 250, 0.8), 0 0 20px rgba(167, 139, 250, 0.4); }
-  50% { text-shadow: 0 0 20px rgba(167, 139, 250, 1), 0 0 40px rgba(167, 139, 250, 0.6); }
 }
 
 /* Scrollbar styling */

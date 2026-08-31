@@ -314,8 +314,8 @@ function playWhoosh(ctx: AudioContext, masterGain: GainNode) {
 // ---------------------------------------------------------------------------
 
 const effects: SoundEffect[] = [
-  { id: 'applause', name: 'Applause', icon: '\uD83D\uDC4F', color: '#f59e0b', play: playApplause },
-  { id: 'drumroll', name: 'Drum Roll', icon: '\uD83E\uDD41', color: '#ef4444', play: playDrumRoll },
+  { id: 'applause', name: 'Applause', icon: '\uD83D\uDC4F', color: 'var(--warning)', play: playApplause },
+  { id: 'drumroll', name: 'Drum Roll', icon: '\uD83E\uDD41', color: 'var(--danger)', play: playDrumRoll },
   { id: 'airhorn', name: 'Air Horn', icon: '\uD83D\uDCE2', color: '#f97316', play: playAirHorn },
   { id: 'rimshot', name: 'Ba-dum-tss', icon: '\uD83E\uDD39', color: '#8b5cf6', play: playRimShot },
   { id: 'crickets', name: 'Crickets', icon: '\uD83E\uDDA0', color: '#22c55e', play: playCrickets },
@@ -681,7 +681,6 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000,
-    backdropFilter: 'blur(4px)',
   },
   panel: {
     width: 420,

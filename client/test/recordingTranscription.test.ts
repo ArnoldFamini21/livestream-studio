@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   isRecordingTranscriptionCandidate,
+  parseTranscriptTimedText,
   requestRecordingTranscription,
   selectRecordingTranscriptionCandidate,
 } from '../src/utils/recordingTranscription.ts';
@@ -72,6 +73,52 @@ describe('recording transcription client helpers', () => {
     assert.equal(result.sourceFileName, 'host-mic.webm');
     assert.equal(result.sourceLabel, 'Host mic');
     assert.match(result.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('keeps word and segment timings when the model returns them', async () => {
+    const file = {
+      label: 'Host mic',
+      fileName: 'host-mic.webm',
+      blob: new Blob(['audio'], { type: 'audio/webm' }),
+      kind: 'audio' as const,
+    };
+    const fetchImpl = async () => new Response(JSON.stringify({
+      text: 'Welcome to the show.',
+      model: 'whisper-1',
+      words: [
+        { text: 'Welcome', startSeconds: 0.2, endSeconds: 0.7 },
+        { text: 'to', startSeconds: 0.7, endSeconds: 0.82 },
+        { text: 'bad', startSeconds: 3, endSeconds: 1 },
+      ],
+      segments: [{ text: 'Welcome to the show.', startSeconds: 0.2, endSeconds: 1.4 }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    const result = await requestRecordingTranscription(file, undefined, fetchImpl as typeof fetch);
+
+    assert.deepEqual(result.words, [
+      { text: 'Welcome', startSeconds: 0.2, endSeconds: 0.7 },
+      { text: 'to', startSeconds: 0.7, endSeconds: 0.82 },
+    ]);
+    assert.deepEqual(result.segments, [{ text: 'Welcome to the show.', startSeconds: 0.2, endSeconds: 1.4 }]);
+  });
+
+  it('omits word timings entirely when the model returns none', async () => {
+    const file = {
+      label: 'Host mic',
+      fileName: 'host-mic.webm',
+      blob: new Blob(['audio'], { type: 'audio/webm' }),
+      kind: 'audio' as const,
+    };
+    const fetchImpl = async () => new Response(JSON.stringify({
+      text: 'Welcome to the show.',
+      model: 'gpt-4o-transcribe',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    const result = await requestRecordingTranscription(file, undefined, fetchImpl as typeof fetch);
+
+    assert.equal(result.words, undefined);
+    assert.equal(result.segments, undefined);
+    assert.deepEqual(parseTranscriptTimedText(null), []);
   });
 
   it('surfaces transcription API errors', async () => {

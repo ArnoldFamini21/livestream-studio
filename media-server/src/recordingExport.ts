@@ -36,6 +36,21 @@ export interface RecordingExportClipRange {
   aspect?: RecordingExportClipAspect;
 }
 
+export interface RecordingExportEdlSegment {
+  startSeconds: number;
+  endSeconds: number;
+}
+
+/**
+ * An edit decision list: the ordered source ranges that survive a
+ * transcript-driven edit. Rendered as one pass with FFmpeg's select filters
+ * rather than as per-segment files plus a concat step.
+ */
+export interface RecordingExportEdl {
+  segments: RecordingExportEdlSegment[];
+  aspect?: RecordingExportClipAspect;
+}
+
 export interface RecordingExportPlan {
   tracks: RecordingExportTrack[];
   outputDirectory: string;
@@ -43,6 +58,7 @@ export interface RecordingExportPlan {
   video?: Partial<RecordingExportVideoOptions>;
   audio?: Partial<RecordingExportAudioOptions>;
   clip?: RecordingExportClipRange | null;
+  edl?: RecordingExportEdl | null;
   normalizeAudio?: boolean;
 }
 
@@ -63,6 +79,11 @@ export interface RecordingExportCommands {
 }
 
 const MAX_EXPORT_TRACKS = 64;
+const MAX_EXPORT_EDL_SEGMENTS = 400;
+// EDL segments come from word boundaries, so they are legitimately far shorter
+// than the one-second floor a hand-set clip range has to clear.
+const MIN_EXPORT_EDL_SEGMENT_SECONDS = 0.02;
+const MIN_EXPORT_EDL_TOTAL_SECONDS = 0.5;
 const MIN_EXPORT_CLIP_DURATION_SECONDS = 1;
 const MAX_EXPORT_CLIP_DURATION_SECONDS = 6 * 60 * 60;
 const MAX_EXPORT_CLIP_START_SECONDS = 24 * 60 * 60;
@@ -140,6 +161,98 @@ export function normalizeRecordingExportClipRange(
   };
 }
 
+export function getRecordingExportEdlIssue(edl: unknown): string | null {
+  if (edl === undefined || edl === null) return null;
+  if (typeof edl !== 'object') return 'Invalid edit list';
+  const { segments, aspect } = edl as { segments?: unknown; aspect?: unknown };
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return 'An edit list needs at least one kept range';
+  }
+  if (segments.length > MAX_EXPORT_EDL_SEGMENTS) {
+    return `Edit lists are limited to ${MAX_EXPORT_EDL_SEGMENTS} kept ranges`;
+  }
+  if (aspect !== undefined && aspect !== 'source' && aspect !== 'vertical' && aspect !== 'square') {
+    return 'Edit list aspect must be source, vertical, or square';
+  }
+
+  let total = 0;
+  let previousEnd = -1;
+  for (const segment of segments) {
+    if (!segment || typeof segment !== 'object') return 'Invalid edit list range';
+    const { startSeconds, endSeconds } = segment as { startSeconds?: unknown; endSeconds?: unknown };
+    if (typeof startSeconds !== 'number' || !Number.isFinite(startSeconds) || startSeconds < 0) {
+      return 'Edit list range starts must be non-negative numbers of seconds';
+    }
+    if (startSeconds > MAX_EXPORT_CLIP_START_SECONDS) {
+      return 'An edit list range starts beyond the supported recording length';
+    }
+    if (typeof endSeconds !== 'number' || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return 'Edit list range ends must be after their starts';
+    }
+    if (endSeconds - startSeconds < MIN_EXPORT_EDL_SEGMENT_SECONDS) {
+      return 'Edit list ranges are too short to render';
+    }
+    if (startSeconds < previousEnd) {
+      return 'Edit list ranges must be ordered and must not overlap';
+    }
+    previousEnd = endSeconds;
+    total += endSeconds - startSeconds;
+  }
+
+  if (total < MIN_EXPORT_EDL_TOTAL_SECONDS) {
+    return 'The edit keeps too little of the recording to export';
+  }
+  if (total > MAX_EXPORT_CLIP_DURATION_SECONDS) {
+    return `Edits are limited to ${Math.round(MAX_EXPORT_CLIP_DURATION_SECONDS / 3600)} hours`;
+  }
+  return null;
+}
+
+export function normalizeRecordingExportEdl(edl: RecordingExportEdl | null | undefined): RecordingExportEdl | null {
+  if (!edl) return null;
+  const issue = getRecordingExportEdlIssue(edl);
+  if (issue) throw new Error(issue);
+  return {
+    segments: edl.segments.map((segment) => ({
+      startSeconds: Math.round(segment.startSeconds * 1000) / 1000,
+      endSeconds: Math.round(segment.endSeconds * 1000) / 1000,
+    })),
+    aspect: edl.aspect === 'vertical' || edl.aspect === 'square' ? edl.aspect : 'source',
+  };
+}
+
+/**
+ * `select`/`aselect` keep only frames whose timestamp falls inside a kept
+ * range; the paired `setpts`/`asetpts` then close the resulting holes so the
+ * output plays as one continuous take.
+ */
+export function buildEdlSelectExpression(edl: RecordingExportEdl): string {
+  return edl.segments
+    .map((segment) => `between(t\\,${formatClipSeconds(segment.startSeconds)}\\,${formatClipSeconds(segment.endSeconds)})`)
+    .join('+');
+}
+
+export function buildEdlVideoFilterChain(edl: RecordingExportEdl): string {
+  return `select='${buildEdlSelectExpression(edl)}',setpts=N/FRAME_RATE/TB`;
+}
+
+export function buildEdlAudioFilterChain(edl: RecordingExportEdl): string {
+  return `aselect='${buildEdlSelectExpression(edl)}',asetpts=N/SR/TB`;
+}
+
+export function getRecordingExportEdlDurationSeconds(edl: RecordingExportEdl): number {
+  return Math.round(
+    edl.segments.reduce((total, segment) => total + (segment.endSeconds - segment.startSeconds), 0) * 1000
+  ) / 1000;
+}
+
+export function buildEdlBasenameSuffix(edl: RecordingExportEdl | null | undefined): string {
+  if (!edl) return '';
+  const whole = Math.max(0, Math.floor(getRecordingExportEdlDurationSeconds(edl)));
+  const aspectPart = edl.aspect === 'vertical' ? '_9x16' : edl.aspect === 'square' ? '_1x1' : '';
+  return `_edit_${edl.segments.length}x_${Math.floor(whole / 60)}m${String(whole % 60).padStart(2, '0')}s${aspectPart}`;
+}
+
 function formatClipSeconds(value: number): string {
   return value.toFixed(3);
 }
@@ -158,7 +271,7 @@ export function buildClipBasenameSuffix(clip: RecordingExportClipRange | null | 
 
 export function getClipVideoGeometry(
   video: RecordingExportVideoOptions,
-  clip: RecordingExportClipRange | null
+  clip: RecordingExportClipRange | RecordingExportEdl | null
 ): { width: number; height: number; filter: string } {
   const aspect = clip?.aspect;
   if (aspect === 'vertical' || aspect === 'square') {
@@ -180,6 +293,28 @@ export function getClipVideoGeometry(
 function pushClipInputSeekArgs(args: string[], clip: RecordingExportClipRange | null) {
   if (!clip) return;
   args.push('-ss', formatClipSeconds(clip.startSeconds));
+}
+
+/**
+ * A clip range is a single seek-and-trim; an edit list rewrites the timeline
+ * with select filters. Rendering both at once would silently apply one on top
+ * of the other, so callers have to pick.
+ */
+function resolveTrimPlan(
+  clipRange: RecordingExportClipRange | null | undefined,
+  edlPlan: RecordingExportEdl | null | undefined
+): { clip: RecordingExportClipRange | null; edl: RecordingExportEdl | null } {
+  if (clipRange && edlPlan) {
+    throw new Error('Provide either a clip range or an edit list, not both');
+  }
+  return {
+    clip: normalizeRecordingExportClipRange(clipRange),
+    edl: normalizeRecordingExportEdl(edlPlan),
+  };
+}
+
+function withEdlVideoFilter(filter: string, edl: RecordingExportEdl | null): string {
+  return edl ? `${buildEdlVideoFilterChain(edl)},${filter}` : filter;
 }
 
 function pushClipOutputDurationArgs(args: string[], clip: RecordingExportClipRange | null) {
@@ -314,8 +449,8 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
   if (!primaryVideoTrack) throw new Error('At least one video, screen, ISO, or program track is required for MP4 export');
   const video = normalizeRecordingExportVideoOptions(plan.video);
   const audio = normalizeRecordingExportAudioOptions(plan.audio);
-  const clip = normalizeRecordingExportClipRange(plan.clip);
-  const basename = `${sanitizeExportBasename(plan.basename)}${buildClipBasenameSuffix(clip)}`;
+  const { clip, edl } = resolveTrimPlan(plan.clip, plan.edl);
+  const basename = `${sanitizeExportBasename(plan.basename)}${buildClipBasenameSuffix(clip)}${buildEdlBasenameSuffix(edl)}`;
   const outputPath = path.join(plan.outputDirectory, `${basename}.mp4`);
   const audioTracks = selectAudioTracks(plan.tracks, primaryVideoTrack);
   const args = [
@@ -331,15 +466,19 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
     args.push('-i', track.path);
   });
 
-  const videoFilter = getClipVideoGeometry(video, clip).filter;
+  const videoFilter = withEdlVideoFilter(getClipVideoGeometry(video, edl || clip).filter, edl);
   const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
   const normalizeAudio = plan.normalizeAudio === true;
 
   if (audioTracks.length > 0) {
     const audioInputs = audioTracks.map((_, index) => `[${index + 1}:a:0]`).join('');
-    const mixFilter = normalizeAudio
-      ? `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2,${LOUDNORM_AUDIO_FILTER}`
-      : `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2`;
+    // The edit is applied to the mix so every stem is cut on the same joins,
+    // and loudness normalization runs last on the audio that actually ships.
+    const mixFilter = [
+      `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2`,
+      ...(edl ? [buildEdlAudioFilterChain(edl)] : []),
+      ...(normalizeAudio ? [LOUDNORM_AUDIO_FILTER] : []),
+    ].join(',');
     args.push(
       '-filter_complex',
       `[0:v:0]${videoFilter}[vout];${audioInputs}${mixFilter}[aout]`,
@@ -354,8 +493,12 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
     );
     // The audio-less path is only reached with a program mix (audio present) or a
     // silent video, so only normalize when the primary track is known to carry audio.
-    if (normalizeAudio && primaryVideoTrack.hasAudio !== false) {
-      args.push('-af', LOUDNORM_AUDIO_FILTER);
+    const audioFilters = [
+      ...(edl ? [buildEdlAudioFilterChain(edl)] : []),
+      ...(normalizeAudio && primaryVideoTrack.hasAudio !== false ? [LOUDNORM_AUDIO_FILTER] : []),
+    ];
+    if (audioFilters.length > 0) {
+      args.push('-af', audioFilters.join(','));
     }
   }
 
@@ -370,7 +513,7 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
   args.push('-movflags', '+faststart', outputPath);
 
   return {
-    label: clip ? 'Final MP4 clip' : 'Final MP4',
+    label: edl ? 'Final MP4 edit' : clip ? 'Final MP4 clip' : 'Final MP4',
     outputPath,
     args,
     artifactId: 'final-mp4',
@@ -383,7 +526,8 @@ export function createRecordingIsolatedVideoArgs(
   basename: string,
   videoOptions: Partial<RecordingExportVideoOptions> = {},
   audioOptions: Partial<RecordingExportAudioOptions> = {},
-  clipRange: RecordingExportClipRange | null | undefined = null
+  clipRange: RecordingExportClipRange | null | undefined = null,
+  edlPlan: RecordingExportEdl | null | undefined = null
 ): RecordingExportCommand {
   if (!['video', 'screen', 'iso'].includes(track.kind) || track.hasVideo === false) {
     throw new Error(`${track.label} does not contain an exportable video track`);
@@ -392,10 +536,10 @@ export function createRecordingIsolatedVideoArgs(
   if (pathIssue) throw new Error(pathIssue);
   const video = normalizeRecordingExportVideoOptions(videoOptions);
   const audio = normalizeRecordingExportAudioOptions(audioOptions);
-  const clip = normalizeRecordingExportClipRange(clipRange);
-  const outputBase = `${sanitizeExportBasename(`${basename}_${track.label}_video`)}${buildClipBasenameSuffix(clip)}`;
+  const { clip, edl } = resolveTrimPlan(clipRange, edlPlan);
+  const outputBase = `${sanitizeExportBasename(`${basename}_${track.label}_video`)}${buildClipBasenameSuffix(clip)}${buildEdlBasenameSuffix(edl)}`;
   const outputPath = path.join(outputDirectory, `${outputBase}.mp4`);
-  const videoFilter = getClipVideoGeometry(video, clip).filter;
+  const videoFilter = withEdlVideoFilter(getClipVideoGeometry(video, edl || clip).filter, edl);
   const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
   const args = [
     '-hide_banner',
@@ -409,6 +553,9 @@ export function createRecordingIsolatedVideoArgs(
     '-map', '0:v:0',
     '-map', '0:a:0?',
   );
+  if (edl) {
+    args.push('-af', buildEdlAudioFilterChain(edl));
+  }
   pushVideoEncodingArgs(args, video);
   args.push(
     '-c:a', 'aac',
@@ -419,8 +566,9 @@ export function createRecordingIsolatedVideoArgs(
   pushClipOutputDurationArgs(args, clip);
   args.push('-movflags', '+faststart', outputPath);
 
+  const suffix = edl ? ' edit' : clip ? ' clip' : '';
   return {
-    label: clip ? `${track.label} isolated MP4 clip` : `${track.label} isolated MP4`,
+    label: `${track.label} isolated MP4${suffix}`,
     outputPath,
     args,
     artifactId: `isolated-video-${sanitizeArtifactId(track.id)}`,
@@ -434,7 +582,8 @@ export function createRecordingAudioStemArgs(
   format: RecordingAudioStemFormat,
   options: Partial<RecordingExportAudioOptions> = {},
   clipRange: RecordingExportClipRange | null | undefined = null,
-  normalizeAudio = false
+  normalizeAudio = false,
+  edlPlan: RecordingExportEdl | null | undefined = null
 ): RecordingExportCommand {
   if (track.kind !== 'audio' && track.hasAudio !== true) {
     throw new Error(`${track.label} does not contain an exportable audio track`);
@@ -442,8 +591,8 @@ export function createRecordingAudioStemArgs(
   const pathIssue = validateLocalPath(track.path, track.label);
   if (pathIssue) throw new Error(pathIssue);
   const audio = normalizeRecordingExportAudioOptions(options);
-  const clip = normalizeRecordingExportClipRange(clipRange);
-  const outputBase = `${sanitizeExportBasename(`${basename}_${track.label}`)}${buildClipBasenameSuffix(clip)}`;
+  const { clip, edl } = resolveTrimPlan(clipRange, edlPlan);
+  const outputBase = `${sanitizeExportBasename(`${basename}_${track.label}`)}${buildClipBasenameSuffix(clip)}${buildEdlBasenameSuffix(edl)}`;
   const outputPath = path.join(outputDirectory, `${outputBase}.${format}`);
   const args = [
     '-hide_banner',
@@ -456,8 +605,14 @@ export function createRecordingAudioStemArgs(
     '-ar', String(audio.sampleRate),
     '-ac', String(audio.channelCount),
   );
-  if (normalizeAudio) {
-    args.push('-af', LOUDNORM_AUDIO_FILTER);
+  // Stems are cut on the same joins as the program mix so they stay in sync
+  // with it, and normalization runs after the edit like it does there.
+  const audioFilters = [
+    ...(edl ? [buildEdlAudioFilterChain(edl)] : []),
+    ...(normalizeAudio ? [LOUDNORM_AUDIO_FILTER] : []),
+  ];
+  if (audioFilters.length > 0) {
+    args.push('-af', audioFilters.join(','));
   }
 
   if (format === 'wav') {
@@ -468,27 +623,26 @@ export function createRecordingAudioStemArgs(
   pushClipOutputDurationArgs(args, clip);
   args.push(outputPath);
 
+  const suffix = edl ? ' stem edit' : clip ? ' stem clip' : ' stem';
   return {
-    label: clip
-      ? `${track.label} ${format.toUpperCase()} stem clip`
-      : `${track.label} ${format.toUpperCase()} stem`,
+    label: `${track.label} ${format.toUpperCase()}${suffix}`,
     outputPath,
     args,
   };
 }
 
 export function createRecordingExportCommands(plan: RecordingExportPlan): RecordingExportCommands {
-  const clip = normalizeRecordingExportClipRange(plan.clip);
+  const { clip, edl } = resolveTrimPlan(plan.clip, plan.edl);
   const mp4 = createRecordingMp4Args(plan);
   const basename = sanitizeExportBasename(plan.basename);
   const isolatedVideos = selectIsolatedVideoTracks(plan.tracks).map((track) => (
-    createRecordingIsolatedVideoArgs(track, plan.outputDirectory, basename, plan.video, plan.audio, clip)
+    createRecordingIsolatedVideoArgs(track, plan.outputDirectory, basename, plan.video, plan.audio, clip, edl)
   ));
   const normalizeAudio = plan.normalizeAudio === true;
   const audioTracks = plan.tracks.filter((track) => track.kind === 'audio' || track.hasAudio === true).slice(0, AUDIO_INPUT_LIMIT);
   const stems = audioTracks.flatMap((track) => [
-    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'wav', plan.audio, clip, normalizeAudio),
-    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'mp3', plan.audio, clip, normalizeAudio),
+    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'wav', plan.audio, clip, normalizeAudio, edl),
+    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'mp3', plan.audio, clip, normalizeAudio, edl),
   ]);
 
   return { mp4, isolatedVideos, stems };

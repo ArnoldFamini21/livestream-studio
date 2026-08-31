@@ -484,7 +484,6 @@ const overlayStyles: Record<string, React.CSSProperties> = {
   },
   card: {
     background: 'rgba(0, 0, 0, 0.6)',
-    backdropFilter: 'blur(16px)',
     borderRadius: 12,
     padding: '14px 18px',
     border: '1px solid rgba(255, 255, 255, 0.12)',

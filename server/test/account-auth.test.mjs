@@ -124,27 +124,52 @@ describe('account password verifier', () => {
 
 describe('InMemoryAccountAuthStore', () => {
   it('registers, logs in, reads sessions, and logs out accounts', async () => {
+    // Sessions expire 30 days after they are minted, so every read in this test
+    // reuses the same fixed clock instead of the real wall clock.
+    const registeredAt = new Date('2026-07-03T10:00:00.000Z');
+    const loggedInAt = new Date('2026-07-03T11:00:00.000Z');
     const store = new InMemoryAccountAuthStore();
     const registered = await registerAccount(store, {
       email: 'Host@Example.COM',
       name: 'Arnold',
       password: 'CorrectPassword123',
-    }, new Date('2026-07-03T10:00:00.000Z'));
+    }, registeredAt);
 
     assert.equal(registered.user.email, 'host@example.com');
     assert.equal(registered.user.name, 'Arnold');
     assert.ok(registered.session.token.length >= 32);
-    assert.equal((await getAccountSession(store, registered.session.token)).user?.id, registered.user.id);
+    assert.equal(
+      (await getAccountSession(store, registered.session.token, registeredAt)).user?.id,
+      registered.user.id
+    );
 
     const loggedIn = await loginAccount(store, {
       email: 'host@example.com',
       password: 'CorrectPassword123',
-    }, new Date('2026-07-03T11:00:00.000Z'));
+    }, loggedInAt);
     assert.equal(loggedIn.user.id, registered.user.id);
     assert.notEqual(loggedIn.session.token, registered.session.token);
 
     await logoutAccount(store, loggedIn.session.token);
-    assert.equal((await getAccountSession(store, loggedIn.session.token)).user, null);
+    assert.equal((await getAccountSession(store, loggedIn.session.token, loggedInAt)).user, null);
+  });
+
+  it('expires sessions once the stored expiry passes', async () => {
+    const registeredAt = new Date('2026-07-03T10:00:00.000Z');
+    const store = new InMemoryAccountAuthStore();
+    const registered = await registerAccount(store, {
+      email: 'host@example.com',
+      name: 'Arnold',
+      password: 'CorrectPassword123',
+    }, registeredAt);
+
+    const justBeforeExpiry = new Date(Date.parse(registered.session.expiresAt) - 1000);
+    assert.equal((await getAccountSession(store, registered.session.token, justBeforeExpiry)).user?.id, registered.user.id);
+
+    const afterExpiry = new Date(Date.parse(registered.session.expiresAt) + 1000);
+    assert.equal((await getAccountSession(store, registered.session.token, afterExpiry)).user, null);
+    // The expired session is dropped, so it stays rejected even on an earlier clock.
+    assert.equal((await getAccountSession(store, registered.session.token, justBeforeExpiry)).user, null);
   });
 
   it('rejects duplicate accounts and invalid credentials', async () => {
@@ -176,6 +201,7 @@ describe('InMemoryAccountAuthStore', () => {
 
 describe('PostgresAccountAuthStore', () => {
   it('creates account/session schema and stores only hashed session tokens', async () => {
+    const registeredAt = new Date('2026-07-03T10:00:00.000Z');
     const fakeDb = new FakeDb();
     const store = new PostgresAccountAuthStore(fakeDb);
 
@@ -184,7 +210,7 @@ describe('PostgresAccountAuthStore', () => {
       email: 'host@example.com',
       name: 'Arnold',
       password: 'CorrectPassword123',
-    }, new Date('2026-07-03T10:00:00.000Z'));
+    }, registeredAt);
 
     assert.ok(fakeDb.queries.some((query) => query.sql.includes('CREATE TABLE IF NOT EXISTS studio_accounts')));
     assert.ok(fakeDb.queries.some((query) => query.sql.includes('CREATE TABLE IF NOT EXISTS studio_account_sessions')));
@@ -193,7 +219,7 @@ describe('PostgresAccountAuthStore', () => {
     assert.equal(fakeDb.sessions.has(tokenHash), true);
     assert.equal(fakeDb.sessions.has(registered.session.token), false);
 
-    const session = await getAccountSession(store, registered.session.token);
+    const session = await getAccountSession(store, registered.session.token, registeredAt);
     assert.equal(session.user?.email, 'host@example.com');
 
     await store.close();

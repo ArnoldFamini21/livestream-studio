@@ -480,7 +480,7 @@ export function StreamDestinations({
                   style={{
                     ...styles.bitrateBar,
                     height: `${bar}%`,
-                    background: bar >= 60 ? '#22c55e' : bar >= 25 ? '#f59e0b' : 'rgba(148, 163, 184, 0.7)',
+                    background: bar >= 60 ? '#22c55e' : bar >= 25 ? 'var(--warning)' : 'rgba(148, 163, 184, 0.7)',
                   }}
                 />
               ))}
@@ -542,7 +542,7 @@ export function StreamDestinations({
                   <span style={{
                     ...styles.statusBadge,
                     background: dest.status === 'live' ? 'rgba(34,197,94,0.12)' : dest.status === 'connecting' ? 'rgba(96,165,250,0.12)' : dest.status === 'error' || issue ? 'rgba(239,68,68,0.12)' : 'var(--bg-surface)',
-                    color: dest.status === 'live' ? '#22c55e' : dest.status === 'connecting' ? '#60a5fa' : dest.status === 'error' || issue ? '#ef4444' : 'var(--text-muted)',
+                    color: dest.status === 'live' ? '#22c55e' : dest.status === 'connecting' ? '#60a5fa' : dest.status === 'error' || issue ? 'var(--danger)' : 'var(--text-muted)',
                   }}>
                     {issue ? 'error' : dest.status}
                   </span>
@@ -743,7 +743,7 @@ export function StreamDestinations({
             <button
               type="button"
               className="btn-primary"
-              style={{ ...styles.liveBtn, background: canGoLive ? '#ef4444' : 'var(--bg-surface)', color: canGoLive ? 'white' : 'var(--text-muted)' }}
+              style={{ ...styles.liveBtn, background: canGoLive ? 'var(--danger)' : 'var(--bg-surface)', color: canGoLive ? 'white' : 'var(--text-muted)' }}
               onClick={onGoLive}
               disabled={!canGoLive}
             >
@@ -1082,7 +1082,7 @@ const styles: Record<string, React.CSSProperties> = {
   destKey: { fontSize: 10, color: 'var(--text-muted)', marginTop: 6, fontFamily: 'monospace' },
   destRtmp: { fontSize: 10, color: 'var(--text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' },
   destStatusMessage: { fontSize: 10, color: '#93c5fd', marginTop: 5, lineHeight: 1.35 },
-  destIssue: { fontSize: 10, color: '#ef4444', marginTop: 5, lineHeight: 1.3 },
+  destIssue: { fontSize: 10, color: 'var(--danger)', marginTop: 5, lineHeight: 1.3 },
   form: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 12, border: '1px solid var(--border)' },
   formHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   formTitle: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },

@@ -8,6 +8,12 @@ export interface RecordingTranscriptionSourceFile {
   kind?: LocalRecordingFileResult['kind'];
 }
 
+export interface TranscriptTimedText {
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+}
+
 export interface RecordingTranscriptionResult {
   text: string;
   model: string;
@@ -16,12 +22,16 @@ export interface RecordingTranscriptionResult {
   sourceLabel: string;
   language?: string;
   durationSeconds?: number;
+  /** Word-level timings, present when the transcription model supports them. */
+  words?: TranscriptTimedText[];
+  segments?: TranscriptTimedText[];
 }
 
 type FetchLike = typeof fetch;
 
 const AUDIO_FILE_EXTENSIONS = new Set(['aac', 'flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']);
 const TRANSCRIPTION_TIMEOUT_MS = 120_000;
+const MAX_TRANSCRIPT_TIMED_ENTRIES = 20_000;
 
 function getFileExtension(fileName: string): string {
   const match = fileName.toLowerCase().match(/\.([a-z0-9]+)$/);
@@ -101,12 +111,16 @@ export async function requestRecordingTranscription(
     model?: unknown;
     language?: unknown;
     durationSeconds?: unknown;
+    words?: unknown;
+    segments?: unknown;
   } | null;
   const text = typeof data?.text === 'string' ? data.text.trim() : '';
   const model = typeof data?.model === 'string' && data.model.trim() ? data.model.trim() : 'whisper-1';
   if (!text) throw new ApiRequestError('Transcript generation returned no text.');
 
   const durationSeconds = Number(data?.durationSeconds);
+  const words = parseTranscriptTimedText(data?.words);
+  const segments = parseTranscriptTimedText(data?.segments);
   return {
     text,
     model,
@@ -115,5 +129,25 @@ export async function requestRecordingTranscription(
     sourceLabel: file.label,
     ...(typeof data?.language === 'string' && data.language.trim() ? { language: data.language.trim() } : {}),
     ...(Number.isFinite(durationSeconds) && durationSeconds >= 0 ? { durationSeconds } : {}),
+    ...(words.length > 0 ? { words } : {}),
+    ...(segments.length > 0 ? { segments } : {}),
   };
+}
+
+export function parseTranscriptTimedText(value: unknown): TranscriptTimedText[] {
+  if (!Array.isArray(value)) return [];
+  const entries: TranscriptTimedText[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as { text?: unknown; startSeconds?: unknown; endSeconds?: unknown };
+    const text = typeof entry.text === 'string' ? entry.text : '';
+    const startSeconds = Number(entry.startSeconds);
+    const endSeconds = Number(entry.endSeconds);
+    if (!text.trim()) continue;
+    if (!Number.isFinite(startSeconds) || startSeconds < 0) continue;
+    if (!Number.isFinite(endSeconds) || endSeconds < startSeconds) continue;
+    entries.push({ text, startSeconds, endSeconds });
+    if (entries.length >= MAX_TRANSCRIPT_TIMED_ENTRIES) break;
+  }
+  return entries;
 }

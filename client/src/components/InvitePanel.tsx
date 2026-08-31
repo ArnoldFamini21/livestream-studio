@@ -630,8 +630,6 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     padding: 20,
     background: 'rgba(2, 6, 23, 0.72)',
-    backdropFilter: 'blur(10px)',
-    WebkitBackdropFilter: 'blur(10px)',
   },
   panel: {
     width: 520,

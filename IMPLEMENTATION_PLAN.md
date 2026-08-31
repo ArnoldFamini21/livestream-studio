@@ -207,6 +207,16 @@
 - [x] Cloud storage with expiry / permanent options
 - [x] Share recording link
 
+### 8D. Text-Based Editing (Riverside "Magic Editor"-style)
+- [x] Word-level transcript timestamps from Whisper (`verbose_json` + word/segment granularity), validated and bounded, with graceful fallback for models that only return plain text
+- [x] Transcript editor core: words and the pauses between them become an editable document, and deletions resolve to an EDL of kept source ranges (`client/src/utils/transcriptEditor.ts`)
+- [x] Cut maths that survives real edits: inward padding so cuts do not clip neighbouring word onsets, near-adjacent cut merging, word-aware sliver removal, and smallest-cut abandonment instead of timeline truncation when an edit exceeds the renderable segment budget
+- [x] Tiered filler detection: vocal sounds (um, uh, hmm) always matched; crutch phrases and hedges opt-in with a review warning
+- [x] One-click passes: remove all fillers, trim all pauses over a chosen threshold (default 0.75s, trimmed to a 0.25s breath)
+- [x] Media-server EDL rendering in a single FFmpeg pass (`select`/`aselect` + `setpts`/`asetpts`), applied to the program mix, isolated videos, and WAV/MP3 stems on the same joins, with loudness normalization after the edit — verified against real FFmpeg
+- [x] Browser EDL export with no media server required (plays kept ranges into MediaRecorder, pausing across each cut), reusing the clip download and save-to-library controls
+- [x] Transcript editor UI in the recording panel: clickable words and pause chips, kept-duration/cuts/tightened summary, double-click to seek the preview
+
 ---
 
 ## Phase 9: Polish & Production Features (Priority: Lower)
@@ -245,6 +255,7 @@
 - [ ] Auth: email/password registration, magic links for guests
   - [x] Email/password account registration and login with scrypt-hashed passwords
   - [x] Server-issued account session tokens with bearer restore and HttpOnly cookie support
+  - [x] Host-issued single-use guest and co-host invite links that bypass the room password, stored as sha256 digests and persisted in the room snapshot so an emailed link survives a restart or deploy within its 24h TTL — consumption is persisted too, so a spent link cannot be revived, and invites that expired during downtime are dropped on restore
 - [x] Local user dashboard: manage saved studios, local recordings, and brand assets in-browser
 - [x] Local workspace team roster with role labels and portable backup/import
 - [x] Portable workspace backup/import for saved studios, brand kits, and recording catalog metadata

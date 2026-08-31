@@ -41,7 +41,7 @@ interface CommentHighlightManagerProps {
 
 const AVATAR_COLORS = [
   '#6366f1', '#8b5cf6', '#a855f7', '#d946ef',
-  '#ec4899', '#f43f5e', '#ef4444', '#f97316',
+  '#ec4899', '#f43f5e', 'var(--danger)', '#f97316',
   '#eab308', '#22c55e', '#14b8a6', '#06b6d4',
   '#3b82f6', '#2563eb',
 ];
@@ -489,7 +489,7 @@ const overlayKeyframes = `
 }
 
 @keyframes commentGlow {
-  0%, 100% { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16), 0 0 28px rgba(34,211,238,0.12); }
+  0%, 100% { box-shadow: 0 18px 42px rgba(0,0,0,0.34), 0 0 0 1px rgba(255,255,255,0.16), 0 0 28px rgba(167, 139, 250,0.12); }
   50% { box-shadow: 0 20px 48px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,255,255,0.2), 0 0 34px rgba(167,139,250,0.16); }
 }
 
@@ -601,9 +601,9 @@ const overlayPill: React.CSSProperties = {
   minHeight: 18,
   padding: '2px 8px',
   borderRadius: 999,
-  background: 'rgba(34, 211, 238, 0.16)',
+  background: 'rgba(167, 139, 250, 0.16)',
   border: '1px solid rgba(125, 211, 252, 0.28)',
-  color: '#cffafe',
+  color: 'var(--accent-hover)',
   fontSize: 10,
   fontWeight: 800,
   lineHeight: 1,
@@ -954,8 +954,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     padding: '1px 4px',
     borderRadius: 4,
-    background: 'rgba(34, 211, 238, 0.12)',
-    color: '#67e8f9',
+    background: 'rgba(167, 139, 250, 0.12)',
+    color: 'var(--accent)',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
   },

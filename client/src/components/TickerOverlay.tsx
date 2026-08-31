@@ -147,7 +147,7 @@ const BG_PRESETS = [
   '#0f172a',
   '#18181b',
   '#1c1917',
-  '#dc2626',
+  'var(--danger-hover)',
   '#2563eb',
   '#7c3aed',
   '#059669',
@@ -157,8 +157,8 @@ const BG_PRESETS = [
 const TEXT_COLOR_PRESETS = [
   { label: 'White', value: '#ffffff' },
   { label: 'Yellow', value: '#facc15' },
-  { label: 'Red', value: '#ef4444' },
-  { label: 'Cyan', value: '#22d3ee' },
+  { label: 'Red', value: 'var(--danger)' },
+  { label: 'Cyan', value: 'var(--accent)' },
 ];
 
 const SEPARATOR_PRESETS = ['\u2022', '\u2605', '|', '\u2014', '\u26A1'];

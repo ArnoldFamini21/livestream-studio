@@ -19,7 +19,7 @@ interface BannerManagerProps {
 }
 
 const STYLE_PRESETS: Record<'breaking' | 'info' | 'alert', { label: string; color: string; bg: string }> = {
-  breaking: { label: 'Breaking', color: '#fff', bg: '#dc2626' },
+  breaking: { label: 'Breaking', color: '#fff', bg: 'var(--danger-hover)' },
   info: { label: 'Info', color: '#fff', bg: '#2563eb' },
   alert: { label: 'Alert', color: '#fff', bg: '#d97706' },
 };
@@ -28,7 +28,7 @@ const CUSTOM_COLOR_PRESETS = [
   '#7c3aed',
   '#059669',
   '#db2777',
-  '#0891b2',
+  'var(--accent)',
   '#ea580c',
   '#4f46e5',
   '#15803d',

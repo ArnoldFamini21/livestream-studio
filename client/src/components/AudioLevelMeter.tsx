@@ -102,8 +102,8 @@ function useAudioLevel(stream: MediaStream | null): number {
 // ---------------------------------------------------------------------------
 
 function levelColor(level: number): string {
-  if (level >= 85) return '#ef4444'; // Red - clipping
-  if (level >= 60) return '#f59e0b'; // Yellow/amber - high
+  if (level >= 85) return 'var(--danger)'; // Red - clipping
+  if (level >= 60) return 'var(--warning)'; // Yellow/amber - high
   return '#22c55e'; // Green - normal
 }
 

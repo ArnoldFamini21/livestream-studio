@@ -1354,8 +1354,6 @@ export function HomePage() {
   return (
     <div style={styles.page}>
       {/* Background glow effects */}
-      <div style={styles.bgGlow1} />
-      <div style={styles.bgGlow2} />
 
       <div style={styles.container}>
         {/* Logo / Brand */}
@@ -2140,26 +2138,6 @@ const styles: Record<string, React.CSSProperties> = {
     overflowY: 'auto',
     overflowX: 'hidden',
   },
-  bgGlow1: {
-    position: 'absolute',
-    top: '-20%',
-    left: '-10%',
-    width: 600,
-    height: 600,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(167, 139, 250, 0.06) 0%, transparent 70%)',
-    pointerEvents: 'none',
-  },
-  bgGlow2: {
-    position: 'absolute',
-    bottom: '-30%',
-    right: '-10%',
-    width: 500,
-    height: 500,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(103, 232, 249, 0.04) 0%, transparent 70%)',
-    pointerEvents: 'none',
-  },
   container: {
     display: 'flex',
     flexDirection: 'column',
@@ -2194,7 +2172,7 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '0.03em',
   } as React.CSSProperties,
   poweredByLink: {
-    color: '#67e8f9',
+    color: 'var(--accent)',
     textDecoration: 'none',
     fontWeight: 500,
   } as React.CSSProperties,
@@ -2222,8 +2200,6 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid rgba(255, 255, 255, 0.08)',
     boxShadow: '0 8px 24px rgba(0, 0, 0, 0.28)',
     overflow: 'hidden',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   cardInner: {
     padding: '28px 28px 32px',
@@ -2265,8 +2241,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '11px 12px',
     marginBottom: 14,
     borderRadius: 12,
-    border: '1px solid rgba(103, 232, 249, 0.14)',
-    background: 'rgba(103, 232, 249, 0.06)',
+    border: '1px solid rgba(167, 139, 250, 0.14)',
+    background: 'rgba(167, 139, 250, 0.06)',
     cursor: 'pointer',
   },
   registrationToggleCopy: {
@@ -2278,7 +2254,7 @@ const styles: Record<string, React.CSSProperties> = {
   registrationToggleTitle: {
     fontSize: 12,
     fontWeight: 700,
-    color: '#a5f3fc',
+    color: 'var(--accent-hover)',
   },
   registrationToggleText: {
     fontSize: 11,
@@ -2309,7 +2285,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   error: {
     fontSize: 13,
-    color: '#ef4444',
+    color: 'var(--danger)',
     marginTop: 0,
     marginBottom: 8,
     lineHeight: 1.4,
@@ -2344,8 +2320,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     fontWeight: 600,
     background: 'transparent',
-    color: '#67e8f9',
-    border: '1.5px solid rgba(103, 232, 249, 0.3)',
+    color: 'var(--accent)',
+    border: '1.5px solid rgba(167, 139, 250, 0.3)',
     borderRadius: 12,
     cursor: 'pointer',
     display: 'flex',
@@ -2363,8 +2339,6 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid rgba(255, 255, 255, 0.08)',
     boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
     padding: 18,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   workspaceHeader: {
     display: 'flex',
@@ -2387,9 +2361,9 @@ const styles: Record<string, React.CSSProperties> = {
   workspaceHeaderAction: {
     minHeight: 28,
     borderRadius: 8,
-    border: '1px solid rgba(103, 232, 249, 0.2)',
-    background: 'rgba(103, 232, 249, 0.08)',
-    color: '#a5f3fc',
+    border: '1px solid rgba(167, 139, 250, 0.2)',
+    background: 'rgba(167, 139, 250, 0.08)',
+    color: 'var(--accent-hover)',
     fontSize: 11,
     fontWeight: 800,
     cursor: 'pointer',
@@ -2542,8 +2516,8 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     gap: 12,
     borderRadius: 12,
-    border: '1px solid rgba(103, 232, 249, 0.16)',
-    background: 'rgba(103, 232, 249, 0.055)',
+    border: '1px solid rgba(167, 139, 250, 0.16)',
+    background: 'rgba(167, 139, 250, 0.055)',
     padding: '11px 12px',
     marginBottom: 12,
   },
@@ -2556,7 +2530,7 @@ const styles: Record<string, React.CSSProperties> = {
   workspaceExportTitle: {
     fontSize: 12,
     fontWeight: 800,
-    color: '#a5f3fc',
+    color: 'var(--accent-hover)',
   },
   workspaceExportText: {
     minWidth: 0,
@@ -2633,7 +2607,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   workspaceNotice: {
     fontSize: 12,
-    color: '#67e8f9',
+    color: 'var(--accent)',
     marginBottom: 10,
     lineHeight: 1.4,
   },
@@ -2717,9 +2691,9 @@ const styles: Record<string, React.CSSProperties> = {
     flex: '0 0 42px',
     minHeight: 24,
     borderRadius: 8,
-    border: '1px solid rgba(103, 232, 249, 0.2)',
-    background: 'rgba(103, 232, 249, 0.08)',
-    color: '#67e8f9',
+    border: '1px solid rgba(167, 139, 250, 0.2)',
+    background: 'rgba(167, 139, 250, 0.08)',
+    color: 'var(--accent)',
     fontSize: 10,
     fontWeight: 900,
     display: 'inline-flex',
@@ -2802,9 +2776,9 @@ const styles: Record<string, React.CSSProperties> = {
     flex: '0 0 48px',
     minHeight: 30,
     borderRadius: 8,
-    border: '1px solid rgba(103, 232, 249, 0.22)',
-    background: 'rgba(103, 232, 249, 0.08)',
-    color: '#67e8f9',
+    border: '1px solid rgba(167, 139, 250, 0.22)',
+    background: 'rgba(167, 139, 250, 0.08)',
+    color: 'var(--accent)',
     fontSize: 11,
     fontWeight: 800,
     cursor: 'pointer',
@@ -2824,9 +2798,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    border: '1px solid rgba(103, 232, 249, 0.2)',
-    background: 'rgba(103, 232, 249, 0.08)',
-    color: '#a5f3fc',
+    border: '1px solid rgba(167, 139, 250, 0.2)',
+    background: 'rgba(167, 139, 250, 0.08)',
+    color: 'var(--accent-hover)',
     fontSize: 11,
     fontWeight: 900,
   },
@@ -2839,8 +2813,6 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid rgba(255, 255, 255, 0.08)',
     boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
     padding: 18,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   schedulePanelHeader: {
     display: 'flex',
@@ -2864,9 +2836,9 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     fontSize: 12,
     fontWeight: 700,
-    color: '#67e8f9',
-    background: 'rgba(103, 232, 249, 0.1)',
-    border: '1px solid rgba(103, 232, 249, 0.18)',
+    color: 'var(--accent)',
+    background: 'rgba(167, 139, 250, 0.1)',
+    border: '1px solid rgba(167, 139, 250, 0.18)',
   },
   savedRoomList: {
     display: 'flex',
@@ -2917,7 +2889,7 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '0.04em',
   },
   savedRoomBadgeUpcoming: {
-    color: '#f59e0b',
+    color: 'var(--warning)',
     background: 'rgba(245, 158, 11, 0.1)',
     borderColor: 'rgba(245, 158, 11, 0.18)',
   },
@@ -2970,8 +2942,6 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'fixed',
     inset: 0,
     background: 'rgba(0, 0, 0, 0.6)',
-    backdropFilter: 'blur(8px)',
-    WebkitBackdropFilter: 'blur(8px)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -2990,8 +2960,6 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     position: 'relative',
     animation: 'scaleIn 0.3s ease-out',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
   },
   modalClose: {
     position: 'absolute',
@@ -3095,7 +3063,7 @@ const styles: Record<string, React.CSSProperties> = {
   modalQrLabel: {
     fontSize: 11,
     fontWeight: 800,
-    color: '#67e8f9',
+    color: 'var(--accent)',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.06em',
   },

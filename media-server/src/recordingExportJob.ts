@@ -13,10 +13,13 @@ import type {
 import {
   createRecordingExportCommands,
   getRecordingExportClipIssue,
+  getRecordingExportEdlIssue,
   normalizeRecordingExportClipRange,
+  normalizeRecordingExportEdl,
   sanitizeExportBasename,
   type RecordingExportClipRange,
   type RecordingExportCommand,
+  type RecordingExportEdl,
   type RecordingExportTrack,
 } from './recordingExport.js';
 import type { RecordingUploadExportSource, RecordingUploadExportTrack } from './recordingUpload.js';
@@ -55,6 +58,7 @@ interface RecordingExportJob {
   createdAt: string;
   updatedAt: string;
   clip?: RecordingExportClipRange | null;
+  edl?: RecordingExportEdl | null;
   normalizeAudio?: boolean;
   tracks: RecordingExportManifestTrack[];
   artifacts: RecordingExportArtifact[];
@@ -218,6 +222,7 @@ function buildExportManifest(job: RecordingExportJob): string {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       clip: job.clip ?? null,
+      edl: job.edl ?? null,
       normalizeAudio: job.normalizeAudio === true,
     },
     tracks: job.tracks,
@@ -272,7 +277,19 @@ export class RecordingExportJobStore {
     if (clipIssue) {
       throw new RecordingExportJobError(400, 'RECORDING_EXPORT_INVALID_CLIP', clipIssue);
     }
+    const edlIssue = getRecordingExportEdlIssue(request.edl ?? null);
+    if (edlIssue) {
+      throw new RecordingExportJobError(400, 'RECORDING_EXPORT_INVALID_EDL', edlIssue);
+    }
+    if (request.clip && request.edl) {
+      throw new RecordingExportJobError(
+        400,
+        'RECORDING_EXPORT_INVALID_EDL',
+        'Provide either a clip range or an edit list, not both'
+      );
+    }
     const clip = normalizeRecordingExportClipRange(request.clip as RecordingExportClipRange | null | undefined);
+    const edl = normalizeRecordingExportEdl(request.edl as RecordingExportEdl | null | undefined);
     const exportId = randomUUID();
     const basename = sanitizeExportBasename(request.basename || source.sessionId || source.uploadId);
     const outputDirectory = path.join(source.rootDir, 'exports', exportId);
@@ -286,6 +303,7 @@ export class RecordingExportJobStore {
       video: request.video,
       audio: request.audio,
       clip,
+      edl,
       normalizeAudio,
     });
     const artifacts = buildArtifacts([commands.mp4, ...commands.isolatedVideos, ...commands.stems], request.includeAudioStems !== false);
@@ -300,6 +318,7 @@ export class RecordingExportJobStore {
       createdAt,
       updatedAt: createdAt,
       clip,
+      edl,
       normalizeAudio,
       tracks: source.tracks.map(toManifestTrack),
       artifacts,
