@@ -16,6 +16,9 @@ export interface TimerData {
 // ---------------------------------------------------------------------------
 
 interface TimerManagerProps {
+  initialValue?: TimerData;
+  editorOnly?: boolean;
+  submitLabel?: string;
   timers: TimerData[];
   onAdd: (timer: Omit<TimerData, 'id' | 'visible'>) => void;
   onToggle: (id: string) => void;
@@ -23,12 +26,12 @@ interface TimerManagerProps {
   onUpdate: (id: string, updates: Partial<TimerData>) => void;
 }
 
-export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: TimerManagerProps) {
-  const [mode, setMode] = useState<TimerData['mode']>('countdown');
-  const [minutes, setMinutes] = useState(5);
-  const [seconds, setSeconds] = useState(0);
-  const [position, setPosition] = useState<TimerData['position']>('top-right');
-  const [style, setStyle] = useState<TimerData['style']>('minimal');
+export function TimerManager({ initialValue, editorOnly = false, submitLabel, timers, onAdd, onToggle, onRemove, onUpdate }: TimerManagerProps) {
+  const [mode, setMode] = useState<TimerData['mode']>(initialValue?.mode || 'countdown');
+  const [minutes, setMinutes] = useState(initialValue ? Math.floor(initialValue.durationSeconds / 60) : 5);
+  const [seconds, setSeconds] = useState(initialValue ? initialValue.durationSeconds % 60 : 0);
+  const [position, setPosition] = useState<TimerData['position']>(initialValue?.position || 'top-right');
+  const [style, setStyle] = useState<TimerData['style']>(initialValue?.style || 'minimal');
 
   const handleAdd = () => {
     const durationSeconds = mode === 'countdown' ? minutes * 60 + seconds : 0;
@@ -60,11 +63,11 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
   };
 
   return (
-    <div style={styles.container}>
-      <h4 style={styles.sectionTitle}>Timers</h4>
+    <div className={editorOnly ? "overlay-editor-form" : undefined} style={styles.container}>
+      <h4 className="overlay-editor-title" style={styles.sectionTitle}>Timers</h4>
 
       {/* Existing timers */}
-      <div style={styles.list}>
+      <div className={editorOnly ? "overlay-editor-existing" : undefined} style={styles.list}>
         {timers.map((timer) => (
           <div key={timer.id} className="participant-item" style={styles.item}>
             <div style={styles.itemInfo}>
@@ -159,6 +162,7 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
               <div style={styles.durationField}>
                 <input
                   type="number"
+                  aria-label="Minutes"
                   min={0}
                   max={99}
                   value={minutes}
@@ -171,6 +175,7 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
               <div style={styles.durationField}>
                 <input
                   type="number"
+                  aria-label="Seconds"
                   min={0}
                   max={59}
                   value={seconds}
@@ -183,6 +188,8 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
           </div>
         )}
 
+        <details className="overlay-editor-options" open={editorOnly ? undefined : true}>
+          <summary>Appearance & options</summary>
         {/* Position selector */}
         <div style={styles.fieldGroup}>
           <span style={styles.fieldLabel}>Position</span>
@@ -195,6 +202,7 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
                   ...(position === p ? styles.positionBtnActive : {}),
                 }}
                 onClick={() => setPosition(p)}
+                aria-label={p.replace('-', ' ')}
               >
                 <div
                   style={{
@@ -227,13 +235,14 @@ export function TimerManager({ timers, onAdd, onToggle, onRemove, onUpdate }: Ti
           </div>
         </div>
 
+        </details>
         <button
           className="btn-primary"
           style={styles.addBtn}
           onClick={handleAdd}
           disabled={mode === 'countdown' && minutes === 0 && seconds === 0}
         >
-          Add Timer
+          {submitLabel || 'Add Timer'}
         </button>
       </div>
     </div>

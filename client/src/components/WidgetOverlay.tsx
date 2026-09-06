@@ -14,6 +14,9 @@ export interface WidgetOverlayData {
 }
 
 interface WidgetOverlayManagerProps {
+  initialValue?: WidgetOverlayData;
+  editorOnly?: boolean;
+  submitLabel?: string;
   widgets: WidgetOverlayData[];
   onAdd: (widget: Omit<WidgetOverlayData, 'id' | 'visible'>) => void;
   onToggle: (id: string) => void;
@@ -96,15 +99,15 @@ export function getWidgetOverlayPositionStyle(widget: Pick<WidgetOverlayData, 'p
   }
 }
 
-export function WidgetOverlayManager({ widgets, onAdd, onToggle, onRemove }: WidgetOverlayManagerProps) {
-  const [name, setName] = useState('');
-  const [url, setUrl] = useState('');
-  const [position, setPosition] = useState<WidgetOverlayPosition>('center');
-  const [sizePreset, setSizePreset] = useState<(typeof WIDGET_SIZE_PRESETS)[number]>(WIDGET_SIZE_PRESETS[1]);
+export function WidgetOverlayManager({ initialValue, editorOnly = false, submitLabel, widgets, onAdd, onToggle, onRemove }: WidgetOverlayManagerProps) {
+  const [name, setName] = useState(initialValue?.name || '');
+  const [url, setUrl] = useState(initialValue?.url || '');
+  const [position, setPosition] = useState<WidgetOverlayPosition>(initialValue?.position || 'center');
+  const [sizePreset, setSizePreset] = useState<{ label: string; widthPercent: number; heightPercent: number }>(initialValue ? { label: WIDGET_SIZE_PRESETS.find(preset => preset.widthPercent === initialValue.widthPercent && preset.heightPercent === initialValue.heightPercent)?.label || 'Custom', widthPercent: initialValue.widthPercent, heightPercent: initialValue.heightPercent } : WIDGET_SIZE_PRESETS[1]);
   const [error, setError] = useState<string | null>(null);
 
   const handleAdd = () => {
-    if (widgets.length >= MAX_WIDGETS) {
+    if ((!initialValue && widgets.length >= MAX_WIDGETS)) {
       setError(`Maximum of ${MAX_WIDGETS} widgets reached.`);
       return;
     }
@@ -119,7 +122,7 @@ export function WidgetOverlayManager({ widgets, onAdd, onToggle, onRemove }: Wid
       position,
       widthPercent: sizePreset.widthPercent,
       heightPercent: sizePreset.heightPercent,
-      opacity: 1,
+      opacity: initialValue?.opacity ?? 1,
     });
     setName('');
     setUrl('');
@@ -127,11 +130,11 @@ export function WidgetOverlayManager({ widgets, onAdd, onToggle, onRemove }: Wid
   };
 
   return (
-    <div style={styles.container}>
-      <h4 style={styles.sectionTitle}>Widget Overlays</h4>
+    <div className={editorOnly ? "overlay-editor-form" : undefined} style={styles.container}>
+      <h4 className="overlay-editor-title" style={styles.sectionTitle}>Widget Overlays</h4>
 
       {widgets.length > 0 && (
-        <div style={styles.list}>
+        <div className={editorOnly ? "overlay-editor-existing" : undefined} style={styles.list}>
           {widgets.map((widget) => (
             <div key={widget.id} className="participant-item" style={styles.item}>
               <div style={styles.itemInfo}>
@@ -175,13 +178,13 @@ export function WidgetOverlayManager({ widgets, onAdd, onToggle, onRemove }: Wid
         )}
         <input
           style={styles.input}
-          placeholder="Widget name"
+          placeholder="Widget name" aria-label="Widget name"
           value={name}
           onChange={(event) => setName(event.currentTarget.value.slice(0, MAX_WIDGET_NAME_LENGTH))}
         />
         <input
           style={styles.input}
-          placeholder="https://widget.example.com/embed"
+          placeholder="https://widget.example.com/embed" aria-label="Widget URL"
           value={url}
           onChange={(event) => setUrl(event.currentTarget.value)}
           onKeyDown={(event) => {
@@ -189,6 +192,8 @@ export function WidgetOverlayManager({ widgets, onAdd, onToggle, onRemove }: Wid
           }}
         />
 
+        <details className="overlay-editor-options" open={editorOnly ? undefined : true}>
+          <summary>Appearance & options</summary>
         <div style={styles.fieldGroup}>
           <span style={styles.fieldLabel}>Position</span>
           <div style={styles.positionGrid}>
@@ -225,13 +230,14 @@ export function WidgetOverlayManager({ widgets, onAdd, onToggle, onRemove }: Wid
           </div>
         </div>
 
+        </details>
         <button
           className="btn-primary"
           style={styles.addBtn}
           onClick={handleAdd}
-          disabled={!url.trim() || widgets.length >= MAX_WIDGETS}
+          disabled={!url.trim() || (!initialValue && widgets.length >= MAX_WIDGETS)}
         >
-          {widgets.length >= MAX_WIDGETS ? `Max ${MAX_WIDGETS} Widgets` : 'Add Widget'}
+          {(!initialValue && widgets.length >= MAX_WIDGETS) ? `Max ${MAX_WIDGETS} Widgets` : submitLabel || 'Add Widget'}
         </button>
       </div>
     </div>

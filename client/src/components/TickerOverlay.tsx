@@ -134,6 +134,9 @@ export function TickerOverlayDisplay({ data }: TickerOverlayDisplayProps) {
 // ---------------------------------------------------------------------------
 
 interface TickerManagerProps {
+  initialValue?: TickerData;
+  editorOnly?: boolean;
+  submitLabel?: string;
   tickers: TickerData[];
   onAdd: (ticker: Omit<TickerData, 'id' | 'visible'>) => void;
   onToggle: (id: string) => void;
@@ -165,15 +168,15 @@ const SEPARATOR_PRESETS = ['\u2022', '\u2605', '|', '\u2014', '\u26A1'];
 
 const MAX_TICKERS = 5;
 
-export function TickerManager({ tickers, onAdd, onToggle, onRemove, onUpdate }: TickerManagerProps) {
-  const [text, setText] = useState('');
-  const [speed, setSpeed] = useState<TickerData['speed']>('normal');
-  const [backgroundColor, setBackgroundColor] = useState(BG_PRESETS[0]);
-  const [textColor, setTextColor] = useState(TEXT_COLOR_PRESETS[0].value);
-  const [separator, setSeparator] = useState(SEPARATOR_PRESETS[0]);
+export function TickerManager({ initialValue, editorOnly = false, submitLabel, tickers, onAdd, onToggle, onRemove, onUpdate }: TickerManagerProps) {
+  const [text, setText] = useState(initialValue?.text || '');
+  const [speed, setSpeed] = useState<TickerData['speed']>(initialValue?.speed || 'normal');
+  const [backgroundColor, setBackgroundColor] = useState(initialValue?.backgroundColor || BG_PRESETS[0]);
+  const [textColor, setTextColor] = useState(initialValue?.textColor || TEXT_COLOR_PRESETS[0].value);
+  const [separator, setSeparator] = useState(initialValue?.separator || SEPARATOR_PRESETS[0]);
 
   const handleAdd = () => {
-    if (!text.trim() || tickers.length >= MAX_TICKERS) return;
+    if (!text.trim() || (!initialValue && tickers.length >= MAX_TICKERS)) return;
     onAdd({
       text: text.trim(),
       speed,
@@ -185,14 +188,14 @@ export function TickerManager({ tickers, onAdd, onToggle, onRemove, onUpdate }: 
   };
 
   return (
-    <div style={styles.container}>
-      <h4 style={styles.sectionTitle}>Scrolling Tickers</h4>
+    <div className={editorOnly ? "overlay-editor-form" : undefined} style={styles.container}>
+      <h4 className="overlay-editor-title" style={styles.sectionTitle}>Scrolling Tickers</h4>
 
       {/* Add Ticker form */}
       <div style={styles.form}>
         <input
           style={styles.input}
-          placeholder="Ticker message..."
+          placeholder="Ticker message..." aria-label="Ticker message"
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -200,6 +203,8 @@ export function TickerManager({ tickers, onAdd, onToggle, onRemove, onUpdate }: 
           }}
         />
 
+        <details className="overlay-editor-options" open={editorOnly ? undefined : true}>
+          <summary>Appearance & options</summary>
         {/* Speed selector */}
         <div style={styles.fieldGroup}>
           <span style={styles.fieldLabel}>Speed</span>
@@ -278,19 +283,20 @@ export function TickerManager({ tickers, onAdd, onToggle, onRemove, onUpdate }: 
           </div>
         </div>
 
+        </details>
         <button
           className="btn-primary"
           style={styles.addBtn}
           onClick={handleAdd}
-          disabled={!text.trim() || tickers.length >= MAX_TICKERS}
+          disabled={!text.trim() || (!initialValue && tickers.length >= MAX_TICKERS)}
         >
-          {tickers.length >= MAX_TICKERS ? `Max ${MAX_TICKERS} tickers` : 'Add Ticker'}
+          {(!initialValue && tickers.length >= MAX_TICKERS) ? `Max ${MAX_TICKERS} tickers` : submitLabel || 'Add Ticker'}
         </button>
       </div>
 
       {/* Existing tickers list */}
       {tickers.length > 0 && (
-        <div style={styles.list}>
+        <div className={editorOnly ? "overlay-editor-existing" : undefined} style={styles.list}>
           {tickers.map((ticker) => (
             <div key={ticker.id} className="participant-item" style={styles.item}>
               <div style={styles.itemInfo}>

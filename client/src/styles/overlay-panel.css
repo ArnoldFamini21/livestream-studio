@@ -1,0 +1,51 @@
+/* Keep production choices close at hand without filling the panel with controls. */
+.overlay-workspace { padding: 18px !important; }
+.overlay-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.overlay-add { display: inline-flex; align-items: center; justify-content: center; gap: 8px; flex: 1; min-height: 38px; border-radius: 7px; background: var(--accent-subtle); color: var(--text-primary); border: 1px solid var(--border-strong); font-size: 12px; font-weight: 550; }
+.overlay-add > span { font-size: 18px; font-weight: 400; line-height: 1; }
+.overlay-add:hover { background: var(--bg-surface); }
+.overlay-more { position: relative; flex: none; }
+.overlay-more > summary { display: grid; place-items: center; list-style: none; width: 30px; height: 32px; border-radius: 6px; color: var(--text-muted); cursor: pointer; font-size: 12px; letter-spacing: 1px; }
+.overlay-more > summary::-webkit-details-marker { display: none; }
+.overlay-more > summary:hover, .overlay-more[open] > summary { background: var(--bg-surface); color: var(--text-primary); }
+.overlay-menu { position: absolute; right: 0; top: calc(100% + 4px); width: 170px; display: flex; flex-direction: column; padding: 5px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-secondary); box-shadow: 0 8px 22px #0003; z-index: 20; }
+.overlay-menu button { text-align: left; background: none; color: var(--text-secondary); padding: 10px; border-radius: 4px; font-size: 12px; line-height: 1.35; }
+.overlay-menu button:hover:not(:disabled) { background: var(--bg-surface); color: var(--text-primary); }
+.overlay-menu button:disabled { opacity: .4; cursor: default; }
+.overlay-menu .overlay-remove { color: var(--danger); }
+.overlay-empty { padding: 26px 4px; text-align: center; }
+.overlay-empty p { font-size: 12px; color: var(--text-secondary); line-height: 1.6; margin: 0 0 7px; }
+.overlay-empty > span { display: block; font-size: 11px; color: var(--text-muted); line-height: 1.7; }
+.overlay-list { margin: 0; padding: 0 0 145px; list-style: none; }
+.overlay-row { display: flex; gap: 8px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--border); }
+.overlay-row:first-child { padding-top: 0; }
+.overlay-row-copy { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.overlay-row-name { font-size: 12px; font-weight: 500; color: var(--text-primary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; line-height: 1.5; }
+.overlay-row-caption { font-size: 10px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; line-height: 1.5; }
+.overlay-visibility { min-width: 42px; min-height: 30px; background: none; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-secondary); padding: 5px 7px; font-size: 10px; }
+.overlay-visibility[data-visible=true] { border-color: var(--accent); color: var(--accent-hover); background: var(--accent-subtle); }
+.overlay-view-heading { display: flex; align-items: center; gap: 11px; margin-bottom: 24px; }
+.overlay-view-heading > button { width: 28px; height: 28px; display: grid; place-items: center; background: transparent; color: var(--text-muted); font-size: 18px; border-radius: 5px; }
+.overlay-view-heading > button:hover { color: var(--text-primary); background: var(--bg-surface); }
+.overlay-view-heading h3 { color: var(--text-primary); font-size: 13px; font-weight: 550; margin: 0; }
+.overlay-type-list { display: flex; flex-direction: column; }
+.overlay-type-list > button { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 15px 26px 15px 2px; text-align: left; background: transparent; border-bottom: 1px solid var(--border); border-radius: 0; }
+.overlay-type-list > button:hover { background: var(--bg-tertiary); }
+.overlay-type-list > button > span:first-child { font-size: 12px; font-weight: 500; color: var(--text-primary); }
+.overlay-type-list small { font-size: 10px; font-weight: 400; color: var(--text-muted); line-height: 1.5; }
+.overlay-type-list > button > span:last-child { position: absolute; right: 7px; top: 21px; font-size: 18px; color: var(--text-muted); }
+.overlay-editor-form { padding: 0 !important; }
+.overlay-editor-form > .overlay-editor-title, .overlay-editor-existing { display: none !important; }
+.overlay-editor-form [aria-label='Lower third preview'], .overlay-editor-form [aria-label='Banner preview'] { display: none; }
+.overlay-editor-form input { min-height: 38px; font-size: 12px !important; border-radius: 6px !important; background: var(--bg-tertiary) !important; }
+.overlay-editor-options { border-top: 1px solid var(--border); margin-top: 7px; padding-top: 4px; }
+.overlay-editor-options > summary { cursor: pointer; font-size: 11px; color: var(--text-secondary); padding: 13px 0; }
+.overlay-editor-options > div { margin-bottom: 13px; }
+.overlay-editor-form .btn-primary { min-height: 38px; border-radius: 7px !important; box-shadow: none !important; font-size: 12px !important; font-weight: 550 !important; }
+.overlay-speakers > label { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--text-primary); font-size: 12px; }
+.overlay-speakers > label input { width: 16px; height: 16px; accent-color: var(--accent); }
+.overlay-speakers > p { color: var(--text-muted); font-size: 11px; margin: 9px 0 22px; line-height: 1.7; }
+.overlay-speaker-list { display: flex; flex-direction: column; }
+.overlay-speaker-list > button { display: flex; justify-content: space-between; gap: 12px; background: transparent; padding: 12px 0; border-bottom: 1px solid var(--border); text-align: left; color: var(--text-primary); font-size: 12px; }
+.overlay-speaker-list small { color: var(--text-muted); font-size: 10px; }
+.overlay-workspace :is(button, summary, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

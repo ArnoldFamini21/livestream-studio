@@ -12,6 +12,9 @@ export interface BannerData {
 }
 
 interface BannerManagerProps {
+  initialValue?: BannerData;
+  editorOnly?: boolean;
+  submitLabel?: string;
   banners: BannerData[];
   onAdd: (banner: Omit<BannerData, 'id' | 'visible'>) => void;
   onToggle: (id: string) => void;
@@ -47,13 +50,13 @@ function getStyleColor(style: BannerData['style'], customColor?: string): string
   return STYLE_PRESETS[style].bg;
 }
 
-export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerManagerProps) {
-  const [text, setText] = useState('');
-  const [style, setStyle] = useState<BannerData['style']>('breaking');
-  const [customColor, setCustomColor] = useState('#7c3aed');
-  const [isTicker, setIsTicker] = useState(false);
-  const [position, setPosition] = useState<'top' | 'bottom'>('bottom');
-  const [durationSeconds, setDurationSeconds] = useState(0);
+export function BannerManager({ initialValue, editorOnly = false, submitLabel, banners, onAdd, onToggle, onRemove }: BannerManagerProps) {
+  const [text, setText] = useState(initialValue?.text || '');
+  const [style, setStyle] = useState<BannerData['style']>(initialValue?.style || 'breaking');
+  const [customColor, setCustomColor] = useState(initialValue?.customColor || '#7c3aed');
+  const [isTicker, setIsTicker] = useState(initialValue?.isTicker || false);
+  const [position, setPosition] = useState<'top' | 'bottom'>(initialValue?.position || 'bottom');
+  const [durationSeconds, setDurationSeconds] = useState(initialValue?.durationSeconds || 0);
   const textLimit = isTicker ? 1000 : 200;
   const previewColor = getStyleColor(style, customColor);
   const previewText = text.trim() || (isTicker ? 'Welcome to the live stream' : 'Banner text');
@@ -80,11 +83,11 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
   };
 
   return (
-    <div style={styles.container}>
-      <h4 style={styles.sectionTitle}>Banners</h4>
+    <div className={editorOnly ? "overlay-editor-form" : undefined} style={styles.container}>
+      <h4 className="overlay-editor-title" style={styles.sectionTitle}>Banners</h4>
 
       {/* Existing banners */}
-      <div style={styles.list}>
+      <div className={editorOnly ? "overlay-editor-existing" : undefined} style={styles.list}>
         {banners.map((banner) => (
           <div key={banner.id} className="participant-item" style={styles.item}>
             <div style={styles.itemInfo}>
@@ -130,7 +133,7 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
       <div style={styles.form}>
         <input
           style={styles.input}
-          placeholder="Banner text"
+          placeholder="Banner text" aria-label="Banner text"
           value={text}
           onChange={(e) => setText(e.target.value.slice(0, textLimit))}
           onKeyDown={(e) => {
@@ -139,6 +142,8 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
           maxLength={textLimit}
         />
 
+        <details className="overlay-editor-options" open={editorOnly ? undefined : true}>
+          <summary>Appearance & options</summary>
         {/* Style selector */}
         <div style={styles.styleRow}>
           {(['breaking', 'info', 'alert', 'custom'] as const).map((s) => (
@@ -259,13 +264,14 @@ export function BannerManager({ banners, onAdd, onToggle, onRemove }: BannerMana
           </div>
         </div>
 
+        </details>
         <button
           className="btn-primary"
           style={styles.addBtn}
           onClick={handleAdd}
           disabled={!text.trim()}
         >
-          Add Banner
+          {submitLabel || 'Add Banner'}
         </button>
       </div>
     </div>

@@ -1,4 +1,6 @@
 import '../styles/studio-chrome.css';
+import '../styles/join-room.css';
+import { StudioIcon } from './StudioIcon.tsx';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -35,8 +37,6 @@ import {
   getRegistrationSessionKey,
   isValidRegistrantEmail,
 } from '../utils/webinarRegistration.ts';
-
-const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing in this browser. Open this studio from Your Studios, use your private host link, or create a new studio.';
 
 interface RoomExistsResponse {
   name: string;
@@ -143,6 +143,7 @@ export function JoinRoom() {
   // Media preview
   const {
     localStream,
+    error: mediaError,
     audioEnabled,
     videoEnabled,
     startMedia,
@@ -163,6 +164,17 @@ export function JoinRoom() {
     applyAudioOutput,
     onAudioOutputDeviceChange,
   } = useMediaDevices();
+
+  const [showDeviceSettings, setShowDeviceSettings] = useState(false);
+  const deviceSettingsRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (!showDeviceSettings) return;
+    const dialog = deviceSettingsRef.current;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    dialog?.showModal();
+    dialog?.querySelector<HTMLSelectElement>('select')?.focus();
+    return () => { dialog?.close(); previousFocus?.focus(); };
+  }, [showDeviceSettings]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -427,7 +439,7 @@ export function JoinRoom() {
       : scheduledGuestBlocked
         ? registrationRequired && !registrationSubmitted ? 'Register for Studio' : 'Not Open Yet'
         : isHostSession
-          ? 'Enter as Host'
+          ? 'Enter studio'
           : isCoHostInvite
             ? 'Join as Co-host'
             : registrationRequired && !registrationSubmitted
@@ -523,50 +535,109 @@ export function JoinRoom() {
   }
 
   return (
-    <div className="join-page" style={styles.page}>
-      <div className="join-bgGlow" style={styles.bgGlow} />
+    <div className="entry-page">
+      <header className="entry-header">
+        <a href="/" className="entry-wordmark"><StudioIcon name="video" /><span>Live Stream Studio</span></a>
+        <button type="button" className="entry-back" onClick={() => navigate('/')} aria-label="Back to workspace"><StudioIcon name="close" /></button>
+      </header>
+      <main className="entry-main">
+        <section className="entry-media" aria-label="Camera preview">
+        {/* Camera Preview */}
+        <div className="entry-preview">
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            playsInline
+            style={{
+              ...styles.previewVideo,
+              ...(videoEnabled ? {} : { display: 'none' }),
+            }}
+          />
+          {!videoEnabled && (
+            <div style={styles.previewOff}>
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+              <span style={styles.previewOffText}>Camera off</span>
+            </div>
+          )}
 
-      <div className="join-card" style={styles.card}>
-        {/* Studio info badge */}
-        <div className="join-studioInfo" style={styles.studioInfo}>
-          <div style={{
-            ...styles.liveDot,
-            background: roomInfo?.status === 'scheduled' ? '#f59e0b' : 'var(--accent)',
-          }} />
-          <span style={styles.studioName}>{roomInfo?.name}</span>
-          {roomInfo?.status === 'scheduled' && (
-            <span style={styles.scheduledBadge}>Scheduled</span>
-          )}
-          {roomInfo?.passwordProtected && (
-            <span style={styles.scheduledBadge}>Password</span>
-          )}
-          {hostEntryMode && (
-            <span style={styles.scheduledBadge}>Host</span>
-          )}
-          {isCoHostInvite && (
-            <span style={styles.scheduledBadge}>Co-host</span>
-          )}
-          {isSecureGuestInvite && (
-            <span style={styles.scheduledBadge}>Secure guest</span>
+          {/* Audio level indicator */}
+          {audioEnabled && (
+            <div className="entry-audio-meter" aria-hidden="true">
+              <div style={styles.audioLevelTrack}>
+                <div
+                  style={{
+                    ...styles.audioLevelFill,
+                    width: `${Math.max(4, audioLevel * 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
           )}
         </div>
 
-        <h2 className="join-cardTitle" style={styles.cardTitle}>{isHostSession ? 'Ready when you are' : "You’re invited"}</h2>
-        <p style={styles.text}>
-          {hostAccessMissing
-            ? HOST_ACCESS_MISSING_MESSAGE
-            : isHostSession
-            ? `Hosted by ${roomInfo?.hostName || savedHostStudio?.hostName || 'you'}`
-            : roomInfo?.status === 'scheduled'
-            ? `Hosted by ${roomInfo?.hostName || 'the organizer'}. Enter your name to join when the session starts.`
-            : isCoHostInvite
-              ? 'You were invited as a co-host'
-              : isSecureGuestInvite
-                ? 'You were invited with a secure guest link'
-              : roomInfo?.participantCount === 0
-              ? 'Be the first to join this studio'
-              : `${roomInfo?.participantCount} participant${roomInfo?.participantCount !== 1 ? 's' : ''} already here`}
-        </p>
+        {/* AV toggle buttons */}
+        <div className="join-toggleRow">
+          <button
+            className="entry-toggle"
+            type="button"
+            onClick={toggleAudio}
+            title={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
+            aria-label={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
+            aria-pressed={audioEnabled}
+          >
+            {audioEnabled ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="1" y1="1" x2="23" y2="23" />
+                <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            )}
+          </button>
+          <button
+            className="entry-toggle"
+            type="button"
+            onClick={toggleVideo}
+            title={videoEnabled ? 'Turn off camera' : 'Turn on camera'}
+            aria-label={videoEnabled ? 'Turn off camera' : 'Turn on camera'}
+            aria-pressed={videoEnabled}
+          >
+            {videoEnabled ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            )}
+          </button>
+          <button className="entry-settings-trigger" type="button" onClick={() => setShowDeviceSettings(true)} aria-haspopup="dialog" aria-controls="entry-device-settings" aria-expanded={showDeviceSettings}>
+            <StudioIcon name="settings" /><span>Settings</span>
+          </button>
+        </div>
+
+
+          {mediaError ? <p className="entry-media-error" role="alert">{mediaError}</p> : <p className="entry-preview-note">Only you can see this preview.</p>}
+        </section>
+        <section className="entry-form" aria-labelledby="entry-heading">
+          <p className="entry-studio-name">{roomInfo?.name || inviteStudioName || 'Your studio'}</p>
+          <h1 id="entry-heading">Ready when<br /> you are.</h1>
+          <p className="entry-intro">{hostEntryMode ? 'Check your camera and step into your studio.' : isCoHostInvite ? 'Join the conversation as a co-host.' : `Join ${roomInfo?.hostName || 'your host'} in the studio.`}</p>
         {roomInfo?.scheduledFor && (
           <p style={styles.scheduleText}>
             {new Date(roomInfo.scheduledFor).toLocaleString([], {
@@ -595,102 +666,88 @@ export function JoinRoom() {
           </div>
         )}
 
-        {/* Camera Preview */}
-        <div style={styles.previewContainer}>
-          <video
-            ref={videoRef}
-            autoPlay
-            muted
-            playsInline
-            style={{
-              ...styles.previewVideo,
-              ...(videoEnabled ? {} : { display: 'none' }),
-            }}
+
+        {/* Name input */}
+        <div style={styles.field}>
+          <label style={styles.label} htmlFor="join-name">Your name</label>
+          <input
+            style={styles.input}
+            id="join-name" placeholder="Enter your name"
+            value={guestName}
+            onChange={(e) => setGuestName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
+            autoFocus
+            maxLength={50}
           />
-          {!videoEnabled && (
-            <div style={styles.previewOff}>
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10" />
-                <line x1="1" y1="1" x2="23" y2="23" />
-              </svg>
-              <span style={styles.previewOffText}>Camera off</span>
-            </div>
-          )}
-
-          {/* Audio level indicator */}
-          {audioEnabled && (
-            <div style={styles.audioLevelWrap}>
-              <div style={styles.audioLevelTrack}>
-                <div
-                  style={{
-                    ...styles.audioLevelFill,
-                    width: `${Math.max(4, audioLevel * 100)}%`,
-                  }}
-                />
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* AV toggle buttons */}
-        <div className="join-toggleRow" style={styles.toggleRow}>
-          <button
-            style={{
-              ...styles.toggleBtn,
-              ...(audioEnabled ? styles.toggleBtnOn : styles.toggleBtnOff),
-            }}
-            onClick={toggleAudio}
-            title={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
-            aria-label="Toggle microphone"
-          >
-            {audioEnabled ? (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                <line x1="12" y1="19" x2="12" y2="23" />
-                <line x1="8" y1="23" x2="16" y2="23" />
-              </svg>
-            ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="1" y1="1" x2="23" y2="23" />
-                <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" />
-                <line x1="12" y1="19" x2="12" y2="23" />
-                <line x1="8" y1="23" x2="16" y2="23" />
-              </svg>
+        {registrationRequired && (
+          <div style={styles.registrationBox}>
+            <div style={styles.registrationHeader}>
+              <span style={styles.registrationTitle}>Webinar registration</span>
+              {registrationSubmitted && <span style={styles.registrationBadge}>Registered</span>}
+            </div>
+            <p style={styles.registrationText}>
+              {registrationSubmitted
+                ? 'Your spot is saved for this studio.'
+                : 'Enter your email so the host can manage this scheduled guest list.'}
+            </p>
+            {!registrationSubmitted && (
+              <input
+                style={styles.input}
+                id="entry-email" aria-label="Email address"
+                type="email"
+                placeholder="name@example.com"
+                value={guestEmail}
+                onChange={(e) => setGuestEmail(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
+                maxLength={254}
+                autoComplete="email"
+              />
             )}
-          </button>
-          <button
-            style={{
-              ...styles.toggleBtn,
-              ...(videoEnabled ? styles.toggleBtnOn : styles.toggleBtnOff),
-            }}
-            onClick={toggleVideo}
-            title={videoEnabled ? 'Turn off camera' : 'Turn on camera'}
-            aria-label="Toggle camera"
-          >
-            {videoEnabled ? (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="23 7 16 12 23 17 23 7" />
-                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-              </svg>
-            ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10" />
-                <line x1="1" y1="1" x2="23" y2="23" />
-              </svg>
+            {registrationError && (
+              <p role="alert" style={styles.registrationError}>{registrationError}</p>
             )}
-          </button>
-        </div>
+          </div>
+        )}
 
+        {needsRoomPassword && (
+          <div style={styles.field}>
+            <label style={styles.label} htmlFor="entry-password">Room password</label>
+            <input
+              style={styles.input}
+              id="entry-password" type="password"
+              placeholder="Enter room password"
+              value={roomPassword}
+              onChange={(e) => setRoomPassword(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
+              maxLength={100}
+              autoComplete="current-password"
+            />
+          </div>
+        )}
+
+        <button
+          className="btn-primary entry-submit"
+          onClick={joinStudio}
+          disabled={joinDisabled}
+        >
+          {joinButtonLabel}
+        </button>
+
+
+        </section>
+      </main>
+      {showDeviceSettings && <dialog id="entry-device-settings" ref={deviceSettingsRef} className="entry-device-dialog" aria-labelledby="entry-settings-heading" onCancel={event => { event.preventDefault(); setShowDeviceSettings(false); }} onClick={event => { if (event.target !== deviceSettingsRef.current) return; const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) setShowDeviceSettings(false); }}>
+        <div className="entry-dialog-heading"><h2 id="entry-settings-heading">Camera & audio</h2><button type="button" onClick={() => setShowDeviceSettings(false)} aria-label="Close settings"><StudioIcon name="close" /></button></div>
         {/* Device selectors */}
         <div style={styles.deviceSelectors}>
           {audioDevices.length > 0 && (
             <div style={styles.deviceField}>
-              <label style={styles.deviceLabel}>Microphone</label>
+              <label style={styles.deviceLabel} htmlFor="entry-microphone">Microphone</label>
               <select
                 style={styles.deviceSelect}
-                value={selectedAudioDeviceId}
+                id="entry-microphone" value={selectedAudioDeviceId}
                 onChange={(e) => onAudioDeviceChange(e.target.value)}
               >
                 {audioDevices.map((d) => (
@@ -701,10 +758,10 @@ export function JoinRoom() {
           )}
           {videoDevices.length > 0 && (
             <div style={styles.deviceField}>
-              <label style={styles.deviceLabel}>Camera</label>
+              <label style={styles.deviceLabel} htmlFor="entry-camera">Camera</label>
               <select
                 style={styles.deviceSelect}
-                value={selectedVideoDeviceId}
+                id="entry-camera" value={selectedVideoDeviceId}
                 onChange={(e) => onVideoDeviceChange(e.target.value)}
               >
                 {videoDevices.map((d) => (
@@ -715,40 +772,19 @@ export function JoinRoom() {
           )}
           {videoDevices.length > 0 && (
             <div style={styles.deviceField}>
-              <label style={styles.deviceLabel}>Camera Quality</label>
-              <div style={styles.qualityGrid} role="group" aria-label="Camera quality">
-                {VIDEO_QUALITY_PRESETS.map((preset) => {
-                  const active = preset.id === videoQuality;
-                  const recommended = preset.id === recommendedVideoQuality;
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      style={{
-                        ...styles.qualityButton,
-                        ...(active ? styles.qualityButtonActive : {}),
-                      }}
-                      onClick={() => onVideoQualityChange(preset.id)}
-                      aria-pressed={active}
-                    >
-                      <span style={styles.qualityButtonLabelRow}>
-                        <span style={styles.qualityButtonLabel}>{preset.label}</span>
-                        {recommended && <span style={styles.qualityButtonBadge}>Suggested</span>}
-                      </span>
-                      <span style={styles.qualityButtonText}>{preset.description}</span>
-                    </button>
-                  );
-                })}
-              </div>
+              <label style={styles.deviceLabel} htmlFor="entry-quality">Video quality</label>
+              <select id="entry-quality" style={styles.deviceSelect} value={videoQuality} onChange={e => void onVideoQualityChange(e.target.value as VideoQualityPresetId)}>
+                {VIDEO_QUALITY_PRESETS.map(preset => <option key={preset.id} value={preset.id}>{preset.label}{preset.id === recommendedVideoQuality ? ' (recommended)' : ''}</option>)}
+              </select>
             </div>
           )}
           {audioOutputDevices.length > 0 && (
             <div style={styles.deviceField}>
-              <label style={styles.deviceLabel}>Speaker</label>
+              <label style={styles.deviceLabel} htmlFor="entry-speaker">Speaker</label>
               <div style={styles.speakerControlRow}>
                 <select
                   style={{ ...styles.deviceSelect, ...styles.speakerSelect }}
-                  value={selectedAudioOutputDeviceId}
+                  id="entry-speaker" value={selectedAudioOutputDeviceId}
                   onChange={(e) => onSpeakerDeviceChange(e.target.value)}
                 >
                   <option value="">System default</option>
@@ -797,76 +833,9 @@ export function JoinRoom() {
           </div>
         </details>
 
-        {/* Name input */}
-        <div style={styles.field}>
-          <label style={styles.label} htmlFor="join-name">Your name</label>
-          <input
-            style={styles.input}
-            id="join-name" placeholder="Enter your name"
-            value={guestName}
-            onChange={(e) => setGuestName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
-            autoFocus
-            maxLength={50}
-          />
-        </div>
 
-        {registrationRequired && (
-          <div style={styles.registrationBox}>
-            <div style={styles.registrationHeader}>
-              <span style={styles.registrationTitle}>Webinar registration</span>
-              {registrationSubmitted && <span style={styles.registrationBadge}>Registered</span>}
-            </div>
-            <p style={styles.registrationText}>
-              {registrationSubmitted
-                ? 'Your spot is saved for this studio.'
-                : 'Enter your email so the host can manage this scheduled guest list.'}
-            </p>
-            {!registrationSubmitted && (
-              <input
-                style={styles.input}
-                type="email"
-                placeholder="name@example.com"
-                value={guestEmail}
-                onChange={(e) => setGuestEmail(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
-                maxLength={254}
-                autoComplete="email"
-              />
-            )}
-            {registrationError && (
-              <p style={styles.registrationError}>{registrationError}</p>
-            )}
-          </div>
-        )}
-
-        {needsRoomPassword && (
-          <div style={styles.field}>
-            <label style={styles.label}>Room password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Enter room password"
-              value={roomPassword}
-              onChange={(e) => setRoomPassword(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
-              maxLength={100}
-              autoComplete="current-password"
-            />
-          </div>
-        )}
-
-        <button
-          className="btn-primary"
-          style={styles.joinButton}
-          onClick={joinStudio}
-          disabled={joinDisabled}
-        >
-          {joinButtonLabel}
-        </button>
-
-        <p style={styles.finePrint}>No account or download required</p>
-      </div>
+        <button className="entry-settings-done" type="button" onClick={() => setShowDeviceSettings(false)}>Done</button>
+      </dialog>}
     </div>
   );
 }
@@ -879,17 +848,6 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     padding: 24,
     position: 'relative',
-  },
-  bgGlow: {
-    position: 'absolute',
-    top: '30%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
-    width: 500,
-    height: 500,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(103, 232, 249, 0.05) 0%, transparent 70%)',
-    pointerEvents: 'none',
   },
   card: {
     background: 'rgba(255, 255, 255, 0.04)',
@@ -905,36 +863,6 @@ const styles: Record<string, React.CSSProperties> = {
     animation: 'scaleIn 0.3s ease-out',
     backdropFilter: 'blur(12px)',
     WebkitBackdropFilter: 'blur(12px)',
-  },
-  studioInfo: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '6px 14px',
-    background: 'rgba(167, 139, 250, 0.1)',
-    borderRadius: 20,
-    marginBottom: 16,
-  },
-  liveDot: {
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    background: 'var(--accent)',
-  },
-  studioName: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: '#c4b5fd',
-  },
-  scheduledBadge: {
-    fontSize: 11,
-    fontWeight: 600,
-    color: '#f59e0b',
-    background: 'rgba(245, 158, 11, 0.1)',
-    padding: '2px 8px',
-    borderRadius: 10,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.04em',
   },
   cardTitle: {
     fontSize: 20,
@@ -995,18 +923,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     padding: '7px 10px',
   },
-
-  // Camera preview
-  previewContainer: {
-    position: 'relative',
-    width: '100%',
-    aspectRatio: '16 / 9',
-    borderRadius: 14,
-    overflow: 'hidden',
-    background: 'rgba(255, 255, 255, 0.03)',
-    border: '1px solid rgba(255, 255, 255, 0.06)',
-    marginBottom: 12,
-  },
   previewVideo: {
     width: '100%',
     height: '100%',
@@ -1027,14 +943,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)',
     fontWeight: 500,
   },
-
-  // Audio level indicator
-  audioLevelWrap: {
-    position: 'absolute',
-    bottom: 8,
-    left: 8,
-    right: 8,
-  },
   audioLevelTrack: {
     width: '100%',
     height: 4,
@@ -1047,36 +955,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 2,
     background: 'var(--success)',
     transition: 'width 0.08s ease',
-  },
-
-  // Toggle buttons
-  toggleRow: {
-    display: 'flex',
-    justifyContent: 'center',
-    gap: 12,
-    marginBottom: 16,
-  },
-  toggleBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: '50%',
-    border: '1px solid var(--border)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    cursor: 'pointer',
-    padding: 0,
-    transition: 'all 0.15s ease',
-  },
-  toggleBtnOn: {
-    background: 'rgba(255, 255, 255, 0.06)',
-    color: 'var(--text-primary)',
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  toggleBtnOff: {
-    background: 'var(--danger)',
-    color: 'white',
-    borderColor: 'var(--danger)',
   },
 
   // Device selectors
@@ -1108,62 +986,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-tertiary)',
     color: 'var(--text-primary)',
     cursor: 'pointer',
-  },
-  qualityGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-    gap: 6,
-  },
-  qualityButton: {
-    minWidth: 0,
-    minHeight: 58,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-    padding: '7px 5px',
-    borderRadius: 'var(--radius-sm)',
-    border: '1px solid var(--border-strong)',
-    background: 'var(--bg-tertiary)',
-    color: 'var(--text-muted)',
-    cursor: 'pointer',
-    textAlign: 'center' as const,
-  },
-  qualityButtonActive: {
-    background: 'rgba(124, 58, 237, 0.22)',
-    borderColor: 'rgba(167, 139, 250, 0.62)',
-    color: '#ede9fe',
-  },
-  qualityButtonLabel: {
-    fontSize: 12,
-    fontWeight: 900,
-    lineHeight: 1.1,
-  },
-  qualityButtonLabelRow: {
-    minWidth: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-    flexWrap: 'wrap',
-  },
-  qualityButtonBadge: {
-    maxWidth: '100%',
-    padding: '1px 4px',
-    borderRadius: 5,
-    background: 'rgba(103, 232, 249, 0.12)',
-    border: '1px solid rgba(103, 232, 249, 0.28)',
-    color: '#a5f3fc',
-    fontSize: 7,
-    fontWeight: 900,
-    lineHeight: 1.1,
-    textTransform: 'uppercase' as const,
-  },
-  qualityButtonText: {
-    fontSize: 8,
-    lineHeight: 1.2,
-    color: 'var(--text-muted)',
   },
   speakerControlRow: {
     display: 'flex',
@@ -1281,11 +1103,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 15,
     fontWeight: 600,
     borderRadius: 12,
-  },
-  finePrint: {
-    marginTop: 14,
-    fontSize: 12,
-    color: 'var(--text-muted)',
   },
 
   // Loading / error
