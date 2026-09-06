@@ -21,7 +21,7 @@ import type { LiveCaptionSegment } from './useLiveCaptions.ts';
 
 interface CompositorProps {
   containerRef: React.RefObject<HTMLDivElement>;
-  isLive: boolean;
+  isActive: boolean;
   banners: BannerData[];
   lowerThirds: LowerThirdData[];
   timers: TimerData[];
@@ -1252,7 +1252,7 @@ function drawStreamScreen(
 
 export function useCompositor({
   containerRef,
-  isLive,
+  isActive,
   banners,
   lowerThirds,
   timers,
@@ -1565,8 +1565,8 @@ export function useCompositor({
   }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen]);
 
   useEffect(() => {
-    if (isLive) {
-      console.log('Compositor Engine Started: Drawing 1080p canvas at 30FPS');
+    if (isActive) {
+      console.log('Compositor started for streaming or recording');
       cancelAnimationFrame(rAF.current); // Guard against multi-ticks
       rAF.current = requestAnimationFrame(drawLoop);
     } else {
@@ -1577,7 +1577,7 @@ export function useCompositor({
     return () => {
       cancelAnimationFrame(rAF.current);
     };
-  }, [isLive, drawLoop]);
+  }, [isActive, drawLoop]);
 
   return { compositeStreamRef, compositeCanvasRef: canvasRef };
 }

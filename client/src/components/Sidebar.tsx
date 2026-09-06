@@ -425,10 +425,11 @@ export function Sidebar(props: SidebarProps) {
   };
 
   return (
-    <div style={st.wrapper}>
+    <div className="studio-sidebar" style={st.wrapper}>
       {/* Content panel — only visible when a tab is active */}
       {activeTab && (
-        <div style={st.contentPanel}>
+        <div className="studio-sidebar-panel" style={st.contentPanel}>
+          <div className="studio-panel-heading"><span>{tabDefs.find(tab => tab.id === activeTab)?.label}</span><button aria-label="Close sidebar panel" onClick={() => setActiveTab(null)}>×</button></div>
           {activeTab === 'people' && (
             <PeopleContent
               participants={props.allParticipants}
@@ -575,8 +576,8 @@ export function Sidebar(props: SidebarProps) {
                   nameTagStyle={props.nameTagStyle}
                   waitingRoomBranding={props.waitingRoomBranding}
                 />
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Studio Theme</span>
+                <details className="studio-brand-setting"><summary>Studio Theme</summary>
+
                   <div style={st.themeGrid}>
                     {STUDIO_THEME_PRESETS.map((theme) => {
                       const active = props.studioTheme === theme.id;
@@ -601,9 +602,9 @@ export function Sidebar(props: SidebarProps) {
                       );
                     })}
                   </div>
-                </div>
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Presets</span>
+                </details>
+                <details className="studio-brand-setting"><summary>Presets</summary>
+
                   <div style={st.brandKitGrid}>
                     {brandKits.map((kit) => (
                       <button key={kit.name} type="button" style={st.brandKitBtn} onClick={() => applyBrandKit(kit)}>
@@ -612,10 +613,10 @@ export function Sidebar(props: SidebarProps) {
                       </button>
                     ))}
                   </div>
-                </div>
-                <div style={st.brandGroup}>
+                </details>
+                <details className="studio-brand-setting"><summary>Saved Kits</summary>
                   <div style={st.brandLabelRow}>
-                    <span style={st.brandLabel}>Saved Kits</span>
+
                     <span style={st.brandKitCount}>{savedBrandKits.length}/{MAX_SAVED_BRAND_KITS}</span>
                   </div>
                   <div style={st.brandSaveRow}>
@@ -677,9 +678,9 @@ export function Sidebar(props: SidebarProps) {
                       ))}
                     </div>
                   )}
-                </div>
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Logo</span>
+                </details>
+                <details className="studio-brand-setting"><summary>Logo</summary>
+
                   <input ref={logoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleLogoUpload} />
                   {props.logoUrl ? (
                     <div style={st.logoPreview}>
@@ -698,9 +699,9 @@ export function Sidebar(props: SidebarProps) {
                       Upload Logo
                     </button>
                   )}
-                </div>
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Waiting Room</span>
+                </details>
+                <details className="studio-brand-setting"><summary>Waiting Room</summary>
+
                   <input
                     type="text"
                     style={st.textInput}
@@ -755,9 +756,9 @@ export function Sidebar(props: SidebarProps) {
                     />
                     <span>Show logo</span>
                   </label>
-                </div>
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Logo Position</span>
+                </details>
+                <details className="studio-brand-setting"><summary>Logo Position</summary>
+
                   <div style={st.positionGrid}>
                     {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as LogoPlacement[]).map((placement) => (
                       <button
@@ -790,9 +791,9 @@ export function Sidebar(props: SidebarProps) {
                       Corner
                     </button>
                   </div>
-                </div>
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Logo Size</span>
+                </details>
+                <details className="studio-brand-setting"><summary>Logo Size</summary>
+
                   <div style={st.segmented}>
                     {(['small', 'medium', 'large'] as LogoSize[]).map((size) => (
                       <button
@@ -805,10 +806,10 @@ export function Sidebar(props: SidebarProps) {
                       </button>
                     ))}
                   </div>
-                </div>
-                <div style={st.brandGroup}>
+                </details>
+                <details className="studio-brand-setting"><summary>Watermark Opacity</summary>
                   <div style={st.brandLabelRow}>
-                    <span style={st.brandLabel}>Watermark Opacity</span>
+
                     <span style={st.colorHex}>{Math.round(props.logoOpacity * 100)}%</span>
                   </div>
                   <input
@@ -840,13 +841,13 @@ export function Sidebar(props: SidebarProps) {
                       </button>
                     ))}
                   </div>
-                </div>
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Stage Background</span>
+                </details>
+                <details className="studio-brand-setting"><summary>Stage Background</summary>
+
                   <BackgroundPicker value={props.stageBackground} onChange={props.onStageBackgroundChange} />
-                </div>
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Brand Color</span>
+                </details>
+                <details className="studio-brand-setting"><summary>Brand Color</summary>
+
                   <div style={st.colorGrid}>
                     {brandPresets.map((p) => (
                       <button
@@ -861,10 +862,10 @@ export function Sidebar(props: SidebarProps) {
                     <div style={{ ...st.colorDot, background: props.brandColor }} />
                     <span style={st.colorHex}>{props.brandColor}</span>
                   </div>
-                </div>
+                </details>
 
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Camera Shape</span>
+                <details className="studio-brand-setting"><summary>Camera Shape</summary>
+
                   <div style={st.shapeGrid}>
                     {(['rectangle', 'rounded', 'square', 'circle'] as CameraShape[]).map((shape) => (
                       <button
@@ -878,20 +879,20 @@ export function Sidebar(props: SidebarProps) {
                       </button>
                     ))}
                   </div>
-                </div>
+                </details>
 
-                <div style={st.brandGroup}>
-                  <span style={st.brandLabel}>Name Tag Style</span>
-                  <select 
-                    style={st.selectInput} 
-                    value={props.nameTagStyle} 
+                <details className="studio-brand-setting"><summary>Name Tag Style</summary>
+
+                  <select
+                    style={st.selectInput}
+                    value={props.nameTagStyle}
                     onChange={(e) => props.onNameTagStyleChange(e.target.value as NameTagStyle)}
                   >
                     <option value="classic">Classic (Pill)</option>
                     <option value="minimal">Minimal</option>
                     <option value="block">Block (Solid Brand Color)</option>
                   </select>
-                </div>
+                </details>
               </div>
             </div>
           )}
@@ -926,7 +927,7 @@ export function Sidebar(props: SidebarProps) {
       )}
 
       {/* Vertical icon strip — always visible (StreamYard / Riverside pattern) */}
-      <div style={st.iconStrip}>
+      <nav className="studio-tool-rail" aria-label="Studio panels" style={st.iconStrip}>
         {tabDefs.map((tab) => (
           <button
             key={tab.id}
@@ -934,12 +935,14 @@ export function Sidebar(props: SidebarProps) {
             style={{ ...st.iconBtn, ...(activeTab === tab.id ? st.iconBtnActive : {}) }}
             onClick={() => handleTabClick(tab.id)}
             title={tab.label}
+            aria-label={tab.label}
+            aria-expanded={activeTab === tab.id}
           >
             {tab.icon}
             <span style={st.iconLabel}>{tab.label}</span>
           </button>
         ))}
-      </div>
+      </nav>
     </div>
   );
 }

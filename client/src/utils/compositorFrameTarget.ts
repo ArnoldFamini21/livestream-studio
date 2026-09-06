@@ -81,3 +81,8 @@ export function createCompositorFrameTarget(
     dispose: () => undefined,
   };
 }
+
+/** Offline program recordings need the same composed video frames as a live stream. */
+export function shouldRunCompositor(state: { live: boolean; mixRecording: boolean; localRecording: boolean }): boolean {
+  return state.live || state.mixRecording || state.localRecording;
+}

@@ -19,7 +19,7 @@ export const STUDIO_LAYOUT_LABELS: Record<LayoutMode, string> = {
 };
 
 export const STUDIO_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
-  grid: 'Auto-fit grid for 1-7 people',
+  grid: 'Auto-fit grid for 1-12 people',
   spotlight: 'One large tile with others below',
   'side-by-side': 'Two equal tiles',
   featured: 'Main tile with side stack',
@@ -63,4 +63,12 @@ export function getMediaShareLayoutDescription(layout: LayoutMode): string {
 
 export function isMultiParticipantLayout(layout: LayoutMode): boolean {
   return layout === 'spotlight' || layout === 'side-by-side' || layout === 'featured' || layout === 'pip';
+}
+
+export function getAutoGridColumnCount(count: number): number {
+  if (!Number.isFinite(count) || count <= 1) return 1;
+  if (count <= 4) return 2;
+  if (count <= 9) return 3;
+  if (count <= 16) return 4;
+  return Math.ceil(Math.sqrt(count * 16 / 9));
 }
