@@ -2,8 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { HomePage } from './components/HomePage.tsx';
-import { StudioRoom } from './components/StudioRoom.tsx';
-import { JoinRoom } from './components/JoinRoom.tsx';
+const StudioRoom = React.lazy(() => import('./components/StudioRoom.tsx').then(module => ({ default: module.StudioRoom })));
+const JoinRoom = React.lazy(() => import('./components/JoinRoom.tsx').then(module => ({ default: module.JoinRoom })));
 import { NotFound } from './components/NotFound.tsx';
 import { PrivacyPolicy } from './components/PrivacyPolicy.tsx';
 import { TermsOfService } from './components/TermsOfService.tsx';
@@ -28,9 +28,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
           <Routes>
             <Route path="/" element={<HomePage />} />
-            <Route path="/studio/:roomId" element={<StudioRoom />} />
+            <Route path="/studio/:roomId" element={<React.Suspense fallback={<RouteFallback />}><StudioRoom /></React.Suspense>} />
             <Route path="/studio/:roomId/popout-chat" element={<React.Suspense fallback={<RouteFallback />}><PopoutChat /></React.Suspense>} />
-            <Route path="/join/:roomId" element={<JoinRoom />} />
+            <Route path="/join/:roomId" element={<React.Suspense fallback={<RouteFallback />}><JoinRoom /></React.Suspense>} />
             <Route path="/privacy" element={<PrivacyPolicy />} />
             <Route path="/terms" element={<TermsOfService />} />
             <Route path="*" element={<NotFound />} />

@@ -6,6 +6,7 @@ export interface StudioRecordingStatusInput {
   localPaused?: boolean;
   localFormattedTime: string;
   sessionStartedAt: string | null;
+  sessionPaused?: boolean;
   sessionElapsedSeconds: number;
 }
 
@@ -38,7 +39,7 @@ export function getStudioRecordingStatus(input: StudioRecordingStatusInput): Stu
   if (input.sessionStartedAt) {
     return {
       active: true,
-      paused: false,
+      paused: Boolean(input.sessionPaused),
       formattedTime: formatStudioRecordingDuration(input.sessionElapsedSeconds),
       source: 'session',
     };

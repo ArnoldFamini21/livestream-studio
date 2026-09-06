@@ -5,6 +5,7 @@ import {
   buildToolbarRecordingUploadFiles,
   formatRecordingTimestamp,
   getToolbarRecordingFallbackToast,
+  getToolbarRecordingAction,
 } from '../src/utils/toolbarRecording.ts';
 import type { RecordingTrackResult } from '../src/hooks/useRecording.ts';
 
@@ -54,5 +55,18 @@ describe('toolbar recording file mapping', () => {
       getToolbarRecordingFallbackToast(files),
       'Media-server final MP4 mix unavailable. Saved browser-native MP4/M4A recording tracks.'
     );
+  });
+});
+
+describe('toolbar action after reconnecting', () => {
+  it('stops the shared session when no program recorder exists in this tab', () => {
+    assert.equal(getToolbarRecordingAction({ mixRecording: false, localRecording: false, sessionStartedAt: '2026-09-06T00:00:00Z' }), 'stop-session');
+  });
+  it('finishes standalone local tracks rather than starting an overlapping mix', () => {
+    assert.equal(getToolbarRecordingAction({ mixRecording: false, localRecording: true, sessionStartedAt: null }), 'stop-local');
+  });
+  it('exports an existing mix first and starts only when all sources are idle', () => {
+    assert.equal(getToolbarRecordingAction({ mixRecording: true, localRecording: true, sessionStartedAt: '2026-09-06T00:00:00Z' }), 'stop-mix');
+    assert.equal(getToolbarRecordingAction({ mixRecording: false, localRecording: false, sessionStartedAt: null }), 'start');
   });
 });

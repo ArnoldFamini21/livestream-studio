@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { StudioToolMenu } from './StudioToolMenu.tsx';
 import { buildGuestInviteUrl } from '../utils/inviteLinks.ts';
 
 interface ControlBarProps {
@@ -161,7 +162,7 @@ export function ControlBar({
   // ====== Guest Layout ======
   if (!isHost) {
     return (
-      <div style={styles.bar}>
+      <div className="studio-control-bar" style={styles.bar}>
         <style>{focusStyles}</style>
         <div style={styles.barInner}>
           {/* Mic with device selector */}
@@ -332,12 +333,12 @@ export function ControlBar({
     onClick: () => { onOpenBackgroundMusic(); setShowMore(false); },
   });
   if (onOpenTeleprompter) moreItems.push({
-    label: 'Script',
+    label: 'Teleprompter',
     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
     onClick: () => { onOpenTeleprompter(); setShowMore(false); },
   });
   if (onOpenRecordingPanel) moreItems.push({
-    label: 'Local Rec',
+    label: 'Recordings',
     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>,
     onClick: () => { onOpenRecordingPanel(); setShowMore(false); },
   });
@@ -368,10 +369,10 @@ export function ControlBar({
   });
 
   return (
-    <div style={styles.bar}>
+    <div className="studio-control-bar" style={styles.bar}>
       <style>{focusStyles}</style>
       {/* Left: Media controls */}
-      <div style={styles.leftGroup}>
+      <div className="studio-control-devices" style={styles.leftGroup}>
         {/* Mic with device selector chevron */}
         <div style={styles.mediaGroup}>
           <button
@@ -438,7 +439,7 @@ export function ControlBar({
       </div>
 
       {/* Center: Essential actions */}
-      <div style={styles.centerGroup}>
+      <div className="studio-control-actions" style={styles.centerGroup}>
         {/* Record */}
         {onToggleRecording && (
           <button
@@ -523,6 +524,7 @@ export function ControlBar({
               style={{ ...styles.pill, ...(showMore ? styles.pillActive : {}) }}
               onClick={() => setShowMore(!showMore)}
               aria-label="More tools"
+              aria-haspopup="dialog"
               aria-expanded={showMore}
               title="More tools"
             >
@@ -534,28 +536,17 @@ export function ControlBar({
               More
             </button>
             {showMore && (
-              <div style={styles.moreMenu} role="menu">
-                {moreItems.map((item) => (
-                  <button
-                    key={item.label}
-                    className="cb-focusable"
-                    style={styles.moreItem}
-                    onClick={item.onClick}
-                    role="menuitem"
-                    aria-label={item.label}
-                  >
-                    {item.icon}
-                    {item.label}
-                  </button>
-                ))}
-              </div>
+              <StudioToolMenu items={moreItems} onDismiss={() => {
+                setShowMore(false);
+                moreRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+              }} />
             )}
           </div>
         )}
       </div>
 
       {/* Right: Live + End */}
-      <div style={styles.rightGroup}>
+      <div className="studio-control-session" style={styles.rightGroup}>
         {onOpenStreamDestinations && (
           <button
             className="cb-focusable"
@@ -590,8 +581,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '6px 16px',
-    background: 'rgba(15, 23, 42, 0.8)',
+    padding: '14px 22px',
+    background: 'var(--bg-secondary)',
     borderTop: '1px solid rgba(255, 255, 255, 0.06)',
     flexShrink: 0,
     gap: 12,
@@ -614,7 +605,7 @@ const styles: Record<string, React.CSSProperties> = {
   mediaGroup: {
     display: 'flex',
     alignItems: 'stretch',
-    borderRadius: 22,
+    borderRadius: 8,
     overflow: 'hidden',
     border: '1px solid rgba(255, 255, 255, 0.08)',
     background: 'rgba(255, 255, 255, 0.06)',
@@ -659,7 +650,7 @@ const styles: Record<string, React.CSSProperties> = {
   iconBtn: {
     width: 36,
     height: 36,
-    borderRadius: 22,
+    borderRadius: 8,
     border: '1px solid rgba(255, 255, 255, 0.08)',
     background: 'rgba(255, 255, 255, 0.06)',
     color: 'var(--text-primary)',
@@ -688,10 +679,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 5,
-    padding: '6px 12px',
+    padding: '10px 13px',
     fontSize: 11,
     fontWeight: 500,
-    borderRadius: 20,
+    borderRadius: 8,
     background: 'rgba(255, 255, 255, 0.04)',
     color: 'var(--text-secondary)',
     border: '1px solid rgba(255, 255, 255, 0.06)',
@@ -739,43 +730,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
 
-  // More dropdown menu
-  moreMenu: {
-    position: 'absolute',
-    bottom: '100%',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    marginBottom: 6,
-    background: 'rgba(15, 23, 42, 0.95)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: 12,
-    padding: 4,
-    minWidth: 140,
-    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-    zIndex: 100,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 1,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
-  },
-  moreItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '8px 12px',
-    fontSize: 12,
-    fontWeight: 500,
-    color: 'var(--text-secondary)',
-    background: 'none',
-    border: 'none',
-    borderRadius: 8,
-    cursor: 'pointer',
-    transition: 'background 0.1s',
-    textAlign: 'left' as const,
-    width: '100%',
-  },
-
   // Live button
   liveBtn: {
     display: 'flex',
@@ -784,13 +738,13 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 16px',
     fontSize: 12,
     fontWeight: 600,
-    borderRadius: 20,
+    borderRadius: 8,
     background: 'var(--accent-solid)',
     color: 'white',
     border: 'none',
     cursor: 'pointer',
     transition: 'all 0.15s ease',
-    boxShadow: '0 0 12px rgba(167, 139, 250, 0.2)',
+    boxShadow: 'none',
   },
   liveBtnActive: {
     background: '#ef4444',
@@ -813,9 +767,9 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 14px',
     fontSize: 12,
     fontWeight: 600,
-    borderRadius: 20,
-    background: 'var(--danger)',
-    color: 'white',
+    borderRadius: 8,
+    background: 'transparent',
+    color: '#ef9b9b',
     border: 'none',
     cursor: 'pointer',
     transition: 'all 0.12s ease',

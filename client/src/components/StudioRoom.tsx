@@ -1,3 +1,6 @@
+import { getAutoGridColumnCount } from '../utils/layoutPresets.ts';
+import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
+import '../styles/studio-chrome.css';
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
@@ -151,6 +154,7 @@ import {
   buildToolbarRecordingUploadFiles,
   formatRecordingTimestamp,
   getToolbarRecordingFallbackToast,
+  getToolbarRecordingAction,
   makeToolbarRecordingFileName,
 } from '../utils/toolbarRecording.ts';
 import {
@@ -1022,7 +1026,7 @@ export function StudioRoom() {
   const [showGuestChat, setShowGuestChat] = useState(false);
   const broadcastAudioBus = useBroadcastAudioBus();
   const [showInvitePanel, setShowInvitePanel] = useState(false);
-  const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>('people');
+  const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatTypingIndicators, setChatTypingIndicators] = useState<ChatTypingIndicator[]>([]);
   const [supportsChatTyping, setSupportsChatTyping] = useState(false);
@@ -1520,7 +1524,7 @@ export function StudioRoom() {
   // Initialize Canvas Compositor for RTMP
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     containerRef: stageRef,
-    isLive,
+    isActive: shouldRunCompositor({ live: isLive, mixRecording: isRecording, localRecording: isLocalRecording }),
     banners,
     lowerThirds,
     timers,
@@ -2884,7 +2888,41 @@ export function StudioRoom() {
 
   const onToggleRecording = async () => {
     if (!myParticipant || !canControlRecording) return;
-    if (isRecording) {
+    const action = getToolbarRecordingAction({
+      mixRecording: isRecording,
+      sessionStartedAt: sessionRecordingStartedAt,
+      localRecording: isLocalRecording,
+    });
+    if (action === 'stop-session') {
+      // A rejoined operator has shared session state but no local program recorder.
+      // Stop that existing session; starting another would be rejected by signaling.
+      send({ type: 'recording-state-changed', payload: {
+        recording: false,
+        sessionId: sessionRecordingSessionId || undefined,
+        performedBy: myParticipant.id,
+      } });
+      return;
+    }
+    if (action === 'stop-local') {
+      try {
+        const result = await stopLocalRecording();
+        const timestamp = formatRecordingTimestamp(new Date());
+        const files = result.files.filter(file => file.blob.size > 0).map((file, index) => ({
+          label: file.label,
+          blob: file.blob,
+          kind: file.kind,
+          capture: file.capture,
+          fileName: makeToolbarRecordingFileName(`${file.label}_${index + 1}`, file.blob, timestamp),
+        }));
+        await persistRecordingSession({ roomName: room?.name || 'Studio', durationSeconds: null, files });
+        setShowRecordingPanel(true);
+        addToast('Recording saved to your library.', 'success');
+      } catch (error) {
+        addToast(error instanceof Error ? error.message : 'Could not save the local recording.', 'error');
+      }
+      return;
+    }
+    if (action === 'stop-mix') {
       const stoppedAt = new Date();
       const timestamp = formatRecordingTimestamp(stoppedAt);
       const recordingSessionId = sessionRecordingSessionId || `recording-${stoppedAt.getTime()}`;
@@ -4910,11 +4948,7 @@ export function StudioRoom() {
   const getAutoGridLayout = useCallback((count: number): LayoutResult => {
     if (count <= 0) return { containerStyle: { ...containerBase, display: 'flex' }, tileStyles: [], mode: 'flex' };
 
-    let maxCols = 1;
-    if (count >= 2 && count <= 4) maxCols = 2;
-    else if (count >= 5 && count <= 9) maxCols = 3;
-    else if (count >= 10 && count <= 16) maxCols = 4;
-    else maxCols = Math.ceil(Math.sqrt(count * 16 / 9));
+    const maxCols = getAutoGridColumnCount(count);
 
     const tileW = `calc(${100 / maxCols}% - ${GAP * (maxCols - 1) / maxCols}px)`;
 
@@ -4943,9 +4977,9 @@ export function StudioRoom() {
   const getSpotlightLayout = useCallback((count: number): LayoutResult => {
     if (count <= 1) return getAutoGridLayout(count);
     const thumbCount = count - 1;
-    const maxThumbsPerRow = Math.max(3, Math.min(thumbCount, 6)); 
+    const maxThumbsPerRow = Math.max(3, Math.min(thumbCount, 6));
     const thumbW = 100 / maxThumbsPerRow;
-    const mainW = 100 - thumbW; 
+    const mainW = 100 - thumbW;
 
     const tiles: React.CSSProperties[] = [
       { width: `calc(${mainW}% - ${GAP}px)`, aspectRatio: '16 / 9', flexShrink: 0, flexGrow: 0 },
@@ -5308,6 +5342,7 @@ export function StudioRoom() {
     localFormattedTime: localRecFormattedTime,
     sessionStartedAt: sessionRecordingStartedAt,
     sessionElapsedSeconds: sessionRecordingElapsed,
+    sessionPaused: sessionRecordingPaused,
   });
   const liveStatus = getLiveStreamStatus({
     live: isLive,
@@ -5455,9 +5490,9 @@ export function StudioRoom() {
 
   if (isHeldOffStageGuest) {
     return (
-      <div style={styles.container}>
-        <div style={styles.header}>
-          <div style={styles.headerLeft}>
+      <div className="studio-container" style={styles.container}>
+        <div className="studio-header" style={styles.header}>
+          <div className="studio-headerLeft" style={styles.headerLeft}>
             <div style={styles.logoMark}>
               {waitingLogoUrl ? (
                 <img src={waitingLogoUrl} alt="" style={styles.waitingLogoMarkImg} />
@@ -5465,14 +5500,14 @@ export function StudioRoom() {
                 <span style={{ ...styles.waitingLogoFallback, background: waitingBrandColor }} />
               )}
             </div>
-            <h2 style={styles.roomTitle}>{room?.name || 'Studio'}</h2>
+            <h2 className="studio-roomTitle" style={styles.roomTitle}>{room?.name || 'Studio'}</h2>
             <div style={styles.divider} />
             <span style={styles.waitingBadge}>
               <span style={styles.waitingDot} />
               {holdLabel}
             </span>
           </div>
-          <div style={styles.headerRight}>
+          <div className="studio-headerRight" style={styles.headerRight}>
             <button
               style={{
                 ...styles.healthBtn,
@@ -5486,7 +5521,7 @@ export function StudioRoom() {
               <span style={{ ...styles.healthDot, background: getHealthColor(sessionHealth.status) }} />
               {sessionHealth.score}
             </button>
-            <span style={styles.roomIdBadge}>{roomId}</span>
+
           </div>
         </div>
 
@@ -5614,10 +5649,10 @@ export function StudioRoom() {
   }
 
   return (
-    <div style={styles.container}>
+    <div className="studio-container" style={styles.container}>
       {/* Header */}
-      <div style={styles.header}>
-        <div style={styles.headerLeft}>
+      <div className="studio-header" style={styles.header}>
+        <div className="studio-headerLeft" style={styles.headerLeft}>
           <div style={styles.logoMark}>
             <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
               <rect width="32" height="32" rx="7" fill="url(#g2)" />
@@ -5625,7 +5660,7 @@ export function StudioRoom() {
               <defs><linearGradient id="g2" x1="0" y1="0" x2="32" y2="32"><stop stopColor="#a78bfa" /><stop offset="1" stopColor="#67e8f9" /></linearGradient></defs>
             </svg>
           </div>
-          <h2 style={styles.roomTitle}>{room?.name || 'Studio'}</h2>
+          <h2 className="studio-roomTitle" style={styles.roomTitle}>{room?.name || 'Studio'}</h2>
           <div style={styles.divider} />
           <span style={styles.badge}>
             <span style={styles.badgeDot} />
@@ -5662,7 +5697,7 @@ export function StudioRoom() {
             <span style={styles.roleBadge}>{myParticipant.role}</span>
           )}
         </div>
-        <div style={styles.headerRight}>
+        <div className="studio-headerRight" style={styles.headerRight}>
           <button
             style={{
               ...styles.healthBtn,
@@ -5690,7 +5725,7 @@ export function StudioRoom() {
               </svg>
             </button>
           )}
-          <span style={styles.roomIdBadge}>{roomId}</span>
+
         </div>
       </div>
 
@@ -5797,9 +5832,10 @@ export function StudioRoom() {
       )}
 
       {/* Main Area */}
-      <div style={styles.main}>
+      <div className="studio-main" style={styles.main}>
         {/* Stage */}
-        <div style={styles.stage}>
+        <div className="studio-stage" style={styles.stage}>
+          <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : 'Stage preview'}</span><span>{liveStatus.active ? 'Your audience can see this stage' : recordingStatus.active ? recordingStatus.paused ? 'Resume when you are ready' : 'Recording session in progress' : 'Prepare your stage before going live'}</span></div>
           {/* Screen share overlay */}
           {isScreenSharing && (
             <div style={styles.screenShareBanner}>
@@ -5810,7 +5846,7 @@ export function StudioRoom() {
           )}
 
           {/* Fixed 16:9 Canvas */}
-          <div style={styles.canvasWrapper}>
+          <div className="studio-canvasWrapper" style={styles.canvasWrapper}>
             <div ref={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }}>
               {stageBackground.type === 'video' && stageBackground.value && (
                 <video
@@ -6157,7 +6193,7 @@ export function StudioRoom() {
 
           {/* Floating layout switcher (like StreamYard) — below canvas */}
           {isHostOrCoHost && (
-            <div style={styles.layoutBar}>
+            <div className="studio-layoutBar" style={styles.layoutBar}>
               <LayoutSwitcher
                 currentLayout={layout}
                 onLayoutChange={applyLayout}

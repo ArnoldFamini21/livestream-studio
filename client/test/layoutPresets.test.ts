@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { LayoutMode } from '@studio/shared';
 import {
   getMediaShareLayoutDescription,
+  getAutoGridColumnCount,
   getMediaShareLayoutLabel,
   getStudioLayoutDescription,
   getStudioLayoutLabel,
@@ -51,4 +52,11 @@ describe('studio layout presets', () => {
     assert.match(getMediaShareLayoutDescription('featured'), /stacked floating participant videos/);
     assert.match(getMediaShareLayoutDescription('pip'), /up to 4 floating participant videos/);
   });
+});
+
+it('gives a solo host the full grid width and scales for additional guests', () => {
+  assert.equal(getAutoGridColumnCount(1), 1);
+  assert.deepEqual([2, 4, 5, 9, 10, 12].map(getAutoGridColumnCount), [2, 2, 3, 3, 4, 4]);
+  assert.equal(getAutoGridColumnCount(0), 1);
+  assert.equal(getAutoGridColumnCount(NaN), 1);
 });

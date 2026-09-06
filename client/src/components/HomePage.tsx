@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
+import { StudioIcon } from './StudioIcon.tsx';
+import { WorkspaceDialog } from './WorkspaceDialog.tsx';
+import '../styles/workspace.css';
 import { buildStudioCalendarInvite, type AccountUser, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse, type WorkspaceStudioCatalogEntry, type WorkspaceTeamCatalogMember } from '@studio/shared';
 import {
   buildHostEntryPath,
@@ -269,6 +272,22 @@ function toSavedScheduledRoom(
 }
 
 export function HomePage() {
+  const [workspaceParams, setWorkspaceParams] = useSearchParams();
+  type WorkspaceView = 'studios' | 'recordings' | 'brand' | 'team' | 'settings';
+  const requestedView = workspaceParams.get('view');
+  const workspaceView: WorkspaceView = requestedView === 'recordings' || requestedView === 'brand' || requestedView === 'team' || requestedView === 'settings' ? requestedView : 'studios';
+  const setWorkspaceView = (view: WorkspaceView) => {
+    setWorkspaceParams(previous => {
+      const next = new URLSearchParams(previous);
+      if (view === 'studios') next.delete('view');
+      else next.set('view', view);
+      return next;
+    });
+  };
+  const [showCreate, setShowCreate] = useState(false);
+  const [studioSearch, setStudioSearch] = useState('');
+  const [downloadingRecordingId, setDownloadingRecordingId] = useState<string | null>(null);
+  const [studioFilter, setStudioFilter] = useState<'all' | 'upcoming'>('all');
   const [roomName, setRoomName] = useState('');
   const [hostName, setHostName] = useState('');
   const [scheduledFor, setScheduledFor] = useState('');
@@ -461,7 +480,7 @@ export function HomePage() {
     () => buildWorkspaceDashboardSummary(dashboardStudios, dashboardRecordings, dashboardBrandKits, dashboardTeamMembers),
     [dashboardStudios, dashboardRecordings, dashboardBrandKits, dashboardTeamMembers]
   );
-  const recentRecordings = dashboardRecordings.slice(0, 3);
+  const recentRecordings = dashboardRecordings;
   const localRecordingIds = useMemo(
     () => new Set(recordingLibrary.sessions.map((session) => session.id)),
     [recordingLibrary.sessions]
@@ -471,22 +490,21 @@ export function HomePage() {
     [savedBrandKits]
   );
   const hasTeamInviteRecipients = dashboardTeamMembers.some((member) => member.email);
-  const recentBrandKits = dashboardBrandKits.slice(0, 4);
+  const recentBrandKits = dashboardBrandKits;
   const recentTeamMembers = dashboardTeamMembers
     .slice()
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-    .slice(0, 5);
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const workspaceSyncNotice = dashboardNotice ||
     (serverWorkspaceStudioCatalogLoading ? 'Refreshing cloud studios...' : null) ||
     (accountWorkspaceStudioCatalogLoading ? 'Refreshing account studios...' : null) ||
-    (serverRecordingCatalogLoading ? 'Refreshing cloud recording catalog...' : null) ||
-    (serverBrandKitCatalogLoading ? 'Refreshing cloud brand kit catalog...' : null) ||
-    (serverWorkspaceTeamCatalogLoading ? 'Refreshing cloud team roster...' : null) ||
+    (workspaceView === 'recordings' && serverRecordingCatalogLoading ? 'Refreshing cloud recording catalog...' : null) ||
+    (workspaceView === 'brand' && serverBrandKitCatalogLoading ? 'Refreshing cloud brand kit catalog...' : null) ||
+    (workspaceView === 'team' && serverWorkspaceTeamCatalogLoading ? 'Refreshing cloud team roster...' : null) ||
     serverWorkspaceStudioCatalogError ||
     accountWorkspaceStudioCatalogError ||
-    serverRecordingCatalogError ||
-    serverBrandKitCatalogError ||
-    serverWorkspaceTeamCatalogError;
+    (workspaceView === 'recordings' ? serverRecordingCatalogError : null) ||
+    (workspaceView === 'brand' ? serverBrandKitCatalogError : null) ||
+    (workspaceView === 'team' ? serverWorkspaceTeamCatalogError : null);
 
   useEffect(() => {
     if (!scheduledRoom || !inviteLink) {
@@ -638,6 +656,10 @@ export function HomePage() {
   }, [accountUser, savedScheduledRooms]);
 
   useEffect(() => {
+    if (workspaceView !== 'recordings') {
+      setServerRecordingCatalogLoading(false);
+      return;
+    }
     const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleStudios.length === 0) {
       setServerRecordingCatalog([]);
@@ -684,9 +706,13 @@ export function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [dashboardStudios]);
+  }, [dashboardStudios, workspaceView]);
 
   useEffect(() => {
+    if (workspaceView !== 'brand') {
+      setServerBrandKitCatalogLoading(false);
+      return;
+    }
     const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleStudios.length === 0) {
       setServerBrandKitCatalog([]);
@@ -733,9 +759,13 @@ export function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [dashboardStudios]);
+  }, [dashboardStudios, workspaceView]);
 
   useEffect(() => {
+    if (workspaceView !== 'team') {
+      setServerWorkspaceTeamCatalogLoading(false);
+      return;
+    }
     const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleStudios.length === 0) {
       setServerWorkspaceTeamCatalog([]);
@@ -782,7 +812,7 @@ export function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [dashboardStudios]);
+  }, [dashboardStudios, workspaceView]);
 
   const copyToClipboard = async () => {
     await writeClipboardText(inviteLink);
@@ -976,6 +1006,33 @@ export function HomePage() {
       setDashboardNotice('Recording deleted.');
     } catch {
       setDashboardError('Could not delete that recording.');
+    }
+  };
+
+  const downloadLocalRecording = async (recording: WorkspaceDashboardRecording) => {
+    setDownloadingRecordingId(recording.id);
+    setDashboardError(null);
+    try {
+      const files = await recordingLibrary.loadFiles(recording.id);
+      if (files.length === 0) throw new Error('No local tracks were found for this recording.');
+      const { default: JSZip } = await import('jszip');
+      const zip = new JSZip();
+      for (const [index, file] of files.entries()) {
+        const name = file.fileName.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+        zip.file(`${index + 1}_${name}`, file.blob);
+      }
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${safeFileName(recording.roomName)}_tracks.zip`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      setDashboardNotice('Recording tracks downloaded.');
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : 'Could not download the recording.');
+    } finally {
+      setDownloadingRecordingId(null);
     }
   };
 
@@ -1337,6 +1394,7 @@ export function HomePage() {
   };
 
   const closeModal = () => {
+    setShowCreate(false);
     setScheduledRoom(null);
     setCopied(false);
     setHostCopied(false);
@@ -1351,182 +1409,187 @@ export function HomePage() {
 
   const minScheduleDateTime = toDateTimeLocalValue(new Date(Date.now() + 60_000));
 
+  const filteredStudios = dashboardStudios.filter(room =>
+    room.name.toLowerCase().includes(studioSearch.toLowerCase()) &&
+    (studioFilter === 'all' || getScheduleState(room) === 'Upcoming')
+  );
+  const viewTitles = { studios: 'Your studios', recordings: 'Recordings', brand: 'Brand kits', team: 'Team', settings: 'Settings' };
+  const viewDescriptions = {
+    studios: 'A little preparation. A great conversation.',
+    recordings: 'Your sessions, ready for the next chapter.',
+    brand: 'A consistent look for every conversation.',
+    team: 'Bring your production team together.',
+    settings: 'Manage your account and workspace.',
+  };
+
   return (
-    <div style={styles.page}>
-      {/* Background glow effects */}
-      <div style={styles.bgGlow1} />
-      <div style={styles.bgGlow2} />
-
-      <div style={styles.container}>
-        {/* Logo / Brand */}
-        <div style={styles.brand}>
-          <div style={styles.logoMark}>
-            <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-              <rect width="32" height="32" rx="10" fill="url(#grad)" />
-              <path d="M10 12L16 8L22 12V20L16 24L10 20V12Z" stroke="white" strokeWidth="1.5" fill="none" />
-              <circle cx="16" cy="16" r="3" fill="white" />
-              <defs>
-                <linearGradient id="grad" x1="0" y1="0" x2="32" y2="32">
-                  <stop stopColor="#a78bfa" />
-                  <stop offset="1" stopColor="#67e8f9" />
-                </linearGradient>
-              </defs>
-            </svg>
-          </div>
-          <h1 style={styles.title}>Studio</h1>
+    <div className="workspace-app">
+      <a className="workspace-skip" href="#workspace-main">Skip to content</a>
+      <aside className="workspace-nav">
+        <a className="workspace-logo" href="/" aria-label="Live Stream Studio home"><span className="brand-symbol"><StudioIcon name="video" /></span><span>Live Stream<span>Studio</span></span></a>
+        <div className="workspace-switcher"><span className="workspace-avatar">AF</span><span>My workspace<small>Personal workspace</small></span></div>
+        <span className="nav-caption">WORKSPACE</span>
+        <nav aria-label="Workspace">
+          {(['studios', 'recordings', 'brand', 'team'] as const).map(view => <button key={view} aria-current={workspaceView === view ? 'page' : undefined} onClick={() => setWorkspaceView(view)}><StudioIcon name={view} />{viewTitles[view]}{view === 'studios' && dashboardStudios.length > 0 && <span className="nav-count">{dashboardStudios.length}</span>}</button>)}
+        </nav>
+        <div className="workspace-nav-bottom">
+          <button aria-current={workspaceView === 'settings' ? 'page' : undefined} onClick={() => setWorkspaceView('settings')}><StudioIcon name="settings" />Settings & account</button>
+          <div className="workspace-attribution">Powered by<a href="https://ArnoldFamily.com" target="_blank" rel="noopener noreferrer">ArnoldFamily.com <span>↗</span></a></div>
         </div>
-
-        <p style={styles.poweredBy}>
-          Powered by{' '}
-          <a href="https://arnoldfamini.com" target="_blank" rel="noopener noreferrer" style={styles.poweredByLink}>
-            ArnoldFamini.com
-          </a>
-        </p>
-
-        <p style={styles.tagline}>
-          Professional live streaming & recording, right in your browser.
-        </p>
-
-        <div style={styles.contentGrid}>
-          {/* Card */}
-          <div style={styles.card}>
-            <div style={styles.cardInner}>
-              <h2 style={styles.cardTitle}>Create a studio</h2>
-              <p style={styles.cardSub}>Set up your broadcast in seconds</p>
-
-              <div style={styles.field}>
-                <label style={styles.label}>Studio name</label>
-                <input
-                  style={styles.input}
-                  placeholder="e.g. The Morning Show"
-                  value={roomName}
-                  onChange={(e) => setRoomName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && createRoom()}
-                />
+      </aside>
+      <div className="workspace-body">
+        <header className="workspace-topbar"><span>Workspace <span className="breadcrumb-divider">/</span> <strong>{viewTitles[workspaceView]}</strong></span><button className="account-chip" onClick={() => setWorkspaceView('settings')}><span className="account-avatar">{accountUser?.name.slice(0, 1).toUpperCase() || 'AF'}</span>{accountUser?.name || 'My account'}<StudioIcon name="chevron" /></button></header>
+        <main id="workspace-main" className="workspace-main">
+          <div className="workspace-page-heading"><div><span className="eyebrow">CREATE. CONNECT. GO LIVE.</span><h1>{viewTitles[workspaceView]}</h1><p>{viewDescriptions[workspaceView]}</p></div><button className="workspace-primary" onClick={() => setShowCreate(true)}><StudioIcon name="plus" />Create studio</button></div>
+          {(dashboardError || recordingLibrary.error) && <p className="workspace-alert" role="alert">{dashboardError || recordingLibrary.error}</p>}
+          {workspaceSyncNotice && !dashboardError && !recordingLibrary.error && <p className="workspace-notice" role="status">{workspaceSyncNotice}</p>}
+          {error && !showCreate && <p className="workspace-alert" role="alert">{error}</p>}
+          {workspaceView === 'studios' && <>
+            <section className="workspace-hero">
+              <div className="hero-copy"><span className="hero-kicker"><span /> YOUR NEXT GREAT CONVERSATION</span><h2>Big ideas.<br />Beautifully broadcast.</h2><p>Your guests, your brand, your stage.<br />One space to bring it all together.</p><button className="hero-action" onClick={() => setShowCreate(true)}>Let's create something <span>↗</span></button></div>
+              <div className="hero-illustration" aria-hidden="true"><div className="mini-studio"><div className="mini-top"><span className="mini-dot" />Studio preview <span>16:9</span></div><div className="mini-stage"><div className="mini-person person-one"><StudioIcon name="person" /><span>You</span></div><div className="mini-person person-two"><StudioIcon name="person" /><span>Your guest</span></div></div><div className="mini-controls"><span><StudioIcon name="mic" /></span><span><StudioIcon name="video" /></span><i /><b>Go live</b></div></div><span className="illustration-caption">MAKE ROOM FOR YOUR STORY.</span></div>
+            </section>
+            {dashboardStudios.length === 0 && <section className="workspace-empty"><span className="empty-icon"><StudioIcon name="studios" /></span><h2>A fresh stage, just for you</h2><p>Create your first studio to invite guests, record a conversation,<br />or prepare your next live show.</p><button className="workspace-secondary" onClick={() => setShowCreate(true)}><StudioIcon name="plus" />Create your first studio</button></section>}
+          </>}
+          {workspaceView === 'studios' && dashboardStudios.length > 0 && (
+            <section className="ws-schedulePanel" style={styles.schedulePanel}>
+              <div className="ws-schedulePanelHeader" style={styles.schedulePanelHeader}>
+                <h2 className="ws-schedulePanelTitle" style={styles.schedulePanelTitle}>Your Studios</h2>
+                <span className="ws-schedulePanelCount" style={styles.schedulePanelCount}>{dashboardStudios.length}</span>
               </div>
-
-              <div style={styles.field}>
-                <label style={styles.label}>Your name</label>
-                <input
-                  style={styles.input}
-                  placeholder="How guests will see you"
-                  value={hostName}
-                  onChange={(e) => setHostName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && createRoom()}
-                  maxLength={50}
-                />
-              </div>
-
-              <div style={styles.field}>
-                <label style={styles.label}>Schedule time (optional)</label>
-                <input
-                  style={styles.input}
-                  type="datetime-local"
-                  value={scheduledFor}
-                  min={minScheduleDateTime}
-                  onChange={(e) => setScheduledFor(e.target.value)}
-                />
-              </div>
-
-              <div style={styles.field}>
-                <label style={styles.label}>Guest password (optional)</label>
-                <input
-                  style={styles.input}
-                  type="password"
-                  placeholder="Require guests to enter a password"
-                  value={roomPassword}
-                  onChange={(e) => setRoomPassword(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && createRoom()}
-                  maxLength={100}
-                  autoComplete="new-password"
-                />
-                <p style={styles.fieldHint}>Hosts can still enter with the creator session.</p>
-              </div>
-
-              <label style={styles.registrationToggle}>
-                <input
-                  type="checkbox"
-                  checked={registrationEnabled}
-                  onChange={(e) => setRegistrationEnabled(e.target.checked)}
-                />
-                <span style={styles.registrationToggleCopy}>
-                  <span style={styles.registrationToggleTitle}>Collect guest registration</span>
-                  <span style={styles.registrationToggleText}>Guests enter name and email before joining; hosts can export a CSV.</span>
-                </span>
-              </label>
-
-              {error && (
-                <p style={styles.error}>{error}</p>
-              )}
-              {progressMessage && !error && (
-                <p style={styles.progress}>{progressMessage}</p>
-              )}
-
-              <button
-                className="btn-primary"
-                style={styles.button}
-                onClick={createRoom}
-                disabled={loading || !roomName.trim() || !hostName.trim()}
-              >
-                {loading ? (
-                  <span style={styles.loadingInner}>
-                    <span style={styles.loadingDot} />
-                    Creating...
-                  </span>
-                ) : (
-                  'Create Studio'
-                )}
-              </button>
-
-              <div style={styles.divider}>
-                <span style={styles.dividerLine} />
-                <span style={styles.dividerText}>or</span>
-                <span style={styles.dividerLine} />
-              </div>
-
-              <button
-                style={styles.scheduleButton}
-                onClick={scheduleRoom}
-                disabled={schedulingLoading || !roomName.trim() || !hostName.trim()}
-              >
-                {schedulingLoading ? (
-                  <span style={styles.loadingInner}>
-                    <span style={{ ...styles.loadingDot, background: 'var(--accent)' }} />
-                    Scheduling...
-                  </span>
-                ) : (
-                  <>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 8, flexShrink: 0 }}>
-                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                    </svg>
-                    Schedule & Get Invite Link
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          <section style={styles.workspacePanel} aria-label="Workspace dashboard">
-              <div style={styles.workspaceHeader}>
-                <div style={styles.workspaceHeaderCopy}>
-                  <h2 style={styles.workspaceTitle}>Workspace</h2>
-                  <p style={styles.workspaceSubtitle}>Saved studios, team, recordings, and brand assets</p>
+              <div className="studio-list-tools">
+                <div className="studio-filters" role="group" aria-label="Filter studios">
+                  <button aria-pressed={studioFilter === 'all'} onClick={() => setStudioFilter('all')}>All studios</button>
+                  <button aria-pressed={studioFilter === 'upcoming'} onClick={() => setStudioFilter('upcoming')}>Upcoming</button>
                 </div>
-                <div style={styles.workspaceHeaderActions}>
+                <label className="studio-search"><StudioIcon name="search" /><input aria-label="Search studios" placeholder="Search studios" value={studioSearch} onChange={e => setStudioSearch(e.target.value)} /></label>
+              </div>
+              {filteredStudios.length === 0 && <p className="search-empty" role="status">No studios match your search.</p>}
+              <div className="ws-savedRoomList" style={styles.savedRoomList}>
+                {filteredStudios.map((room) => {
+                  const scheduleState = getScheduleState(room);
+                  return (
+                    <div key={room.id} className="ws-savedRoomCard" style={styles.savedRoomCard}>
+                      <div className="ws-savedRoomTop" style={styles.savedRoomTop}><span className="room-art"><StudioIcon name="video" /></span>
+                        <div className="ws-savedRoomInfo" style={styles.savedRoomInfo}>
+                          <span className="ws-savedRoomName" style={styles.savedRoomName}>{room.name}</span>
+                          <span className="ws-savedRoomMeta" style={styles.savedRoomMeta}>{formatScheduledDate(room.scheduledFor)}</span>
+                        </div>
+                        <span style={{
+                          ...styles.savedRoomBadge,
+                          ...(scheduleState === 'Upcoming' ? styles.savedRoomBadgeUpcoming : {}),
+                        }}>
+                          {scheduleState}
+                        </span>
+                      </div>
+
+
+                      <div className="ws-savedRoomActions" style={styles.savedRoomActions}>
+                        <button
+                          className="ws-savedRoomAction" style={styles.savedRoomAction}
+                          onClick={() => copySavedInviteLink(room)}
+                        >
+                          {savedRoomCopiedId === room.id ? 'Copied' : 'Guest Link'}
+                        </button>
+                        <button
+                          className="ws-savedRoomPrimaryAction" style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
+                          onClick={() => openScheduledAsHost(room)}
+                        >
+                          Enter studio
+                        </button>
+                        <details className="studio-row-more"><summary aria-label={`More actions for ${room.name}`}><StudioIcon name="more" /></summary><div>
+                        <button
+                          className="ws-savedRoomAction" style={styles.savedRoomAction}
+                          onClick={() => emailGuestInvite(room)}
+                        >
+                          Email
+                        </button>
+                        <button
+                          className="ws-savedRoomAction" style={styles.savedRoomAction}
+                          onClick={() => downloadGuestPreparationSheet(room)}
+                        >
+                          Guest Prep
+                        </button>
+                        {dashboardTeamMembers.length > 0 && (
+                          <>
+                            <button
+                              className="ws-savedRoomAction" style={styles.savedRoomAction}
+                              onClick={() => emailTeamInvite(room)}
+                              disabled={!hasTeamInviteRecipients}
+                            >
+                              Team Email
+                            </button>
+                            <button
+                              className="ws-savedRoomAction" style={styles.savedRoomAction}
+                              onClick={() => downloadTeamCallSheet(room)}
+                            >
+                              Team Sheet
+                            </button>
+                          </>
+                        )}
+                        <button
+                          className="ws-savedRoomAction" style={styles.savedRoomAction}
+                          onClick={() => copySavedHostLink(room)}
+                        >
+                          {savedHostCopiedId === room.id ? 'Copied' : 'Host Link'}
+                        </button>
+                        <button
+                          className="ws-savedRoomAction" style={styles.savedRoomAction}
+                          onClick={() => void downloadSavedInviteQr(room)}
+                          disabled={savedQrDownloadingId === room.id}
+                        >
+                          {savedQrDownloadingId === room.id ? 'QR...' : 'QR'}
+                        </button>
+                        {room.scheduledFor && (
+                          <button
+                            className="ws-savedRoomAction" style={styles.savedRoomAction}
+                            onClick={() => downloadCalendarInvite(room)}
+                          >
+                            Calendar
+                          </button>
+                        )}
+                        {room.registrationEnabled && (
+                          <button
+                            className="ws-savedRoomAction" style={styles.savedRoomAction}
+                            onClick={() => void downloadRegistrants(room)}
+                            disabled={registrantsDownloadingId === room.id}
+                          >
+                            {registrantsDownloadingId === room.id ? 'Exporting...' : 'Registrants'}
+                          </button>
+                        )}
+                        <button
+                          style={{ ...styles.savedRoomAction, ...styles.savedRoomDangerAction }}
+                          onClick={() => forgetScheduledRoom(room.id)}
+                        >
+                          Remove
+                        </button></div></details>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {workspaceView === 'settings' && <section className="workspace-surface" aria-label="Account and workspace settings">              <div className="ws-workspaceHeader" style={styles.workspaceHeader}>
+                <div className="ws-workspaceHeaderCopy" style={styles.workspaceHeaderCopy}>
+                  <h2 className="ws-workspaceTitle" style={styles.workspaceTitle}>Workspace</h2>
+                  <p className="ws-workspaceSubtitle" style={styles.workspaceSubtitle}>Saved studios, team, recordings, and brand assets</p>
+                </div>
+                <div className="ws-workspaceHeaderActions" style={styles.workspaceHeaderActions}>
                   <button
-                    style={styles.workspaceHeaderAction}
+                    className="ws-workspaceHeaderAction" style={styles.workspaceHeaderAction}
                     onClick={exportWorkspaceBackup}
                   >
                     Export
                   </button>
                   <button
-                    style={styles.workspaceHeaderAction}
+                    className="ws-workspaceHeaderAction" style={styles.workspaceHeaderAction}
                     onClick={openWorkspaceBackupImport}
                   >
                     Import
                   </button>
-                  <span style={styles.workspaceBadge}>
+                  <span className="ws-workspaceBadge" style={styles.workspaceBadge}>
                     {workspaceDashboard.totalStudios + workspaceDashboard.totalRecordings + workspaceDashboard.totalBrandKits + workspaceDashboard.totalTeamMembers}
                   </span>
                 </div>
@@ -1534,33 +1597,33 @@ export function HomePage() {
                   ref={workspaceImportInputRef}
                   type="file"
                   accept="application/json,.json"
-                  style={styles.workspaceImportInput}
+                  className="ws-workspaceImportInput" style={styles.workspaceImportInput}
                   onChange={(event) => void importWorkspaceBackup(event)}
                 />
               </div>
 
-              <div style={styles.accountPanel}>
-                <div style={styles.accountHeader}>
-                  <div style={styles.accountHeaderCopy}>
-                    <span style={styles.workspaceSectionTitle}>Account</span>
+              <div className="ws-accountPanel" style={styles.accountPanel}>
+                <div className="ws-accountHeader" style={styles.accountHeader}>
+                  <div className="ws-accountHeaderCopy" style={styles.accountHeaderCopy}>
+                    <span className="ws-workspaceSectionTitle" style={styles.workspaceSectionTitle}>Account</span>
                     {accountUser ? (
-                      <span style={styles.workspaceRowMeta}>
+                      <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
                         {accountUser.name} | {accountUser.email}
                       </span>
                     ) : (
-                      <span style={styles.workspaceRowMeta}>Not signed in</span>
+                      <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>Not signed in</span>
                     )}
                   </div>
                   {accountUser ? (
                     <button
-                      style={styles.workspaceRowAction}
+                      className="ws-workspaceRowAction" style={styles.workspaceRowAction}
                       onClick={() => void signOutAccount()}
                       disabled={accountLoading}
                     >
                       {accountLoading ? 'Signing out...' : 'Sign out'}
                     </button>
                   ) : (
-                    <div style={styles.accountModeToggle}>
+                    <div className="ws-accountModeToggle" style={styles.accountModeToggle}>
                       <button
                         style={{
                           ...styles.accountModeButton,
@@ -1584,18 +1647,19 @@ export function HomePage() {
                 </div>
 
                 {accountUser ? (
-                  <div style={styles.accountSignedInRow}>
-                    <span style={styles.accountStatusDot} />
-                    <span style={styles.workspaceRowMeta}>
+                  <div className="ws-accountSignedInRow" style={styles.accountSignedInRow}>
+                    <span className="ws-accountStatusDot" style={styles.accountStatusDot} />
+                    <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
                       Session active{accountSessionExpiresAt ? ` until ${formatDashboardDate(accountSessionExpiresAt)}` : ''}
                     </span>
                   </div>
                 ) : (
-                  <div style={styles.accountFormGrid}>
+                  <div className="ws-accountFormGrid" style={styles.accountFormGrid}>
                     {accountMode === 'register' && (
                       <input
-                        style={styles.accountInput}
+                        className="ws-accountInput" style={styles.accountInput}
                         placeholder="Name"
+                        aria-label="Account name"
                         value={accountName}
                         onChange={(event) => setAccountName(event.target.value)}
                         onKeyDown={(event) => event.key === 'Enter' && void submitAccountAuth()}
@@ -1603,8 +1667,9 @@ export function HomePage() {
                       />
                     )}
                     <input
-                      style={styles.accountInput}
+                      className="ws-accountInput" style={styles.accountInput}
                       placeholder="Email"
+                      aria-label="Account email"
                       type="email"
                       value={accountEmail}
                       onChange={(event) => setAccountEmail(event.target.value)}
@@ -1612,8 +1677,9 @@ export function HomePage() {
                       autoComplete="email"
                     />
                     <input
-                      style={styles.accountInput}
+                      className="ws-accountInput" style={styles.accountInput}
                       placeholder="Password"
+                      aria-label="Account password"
                       type="password"
                       value={accountPassword}
                       onChange={(event) => setAccountPassword(event.target.value)}
@@ -1621,7 +1687,7 @@ export function HomePage() {
                       autoComplete={accountMode === 'register' ? 'new-password' : 'current-password'}
                     />
                     <button
-                      style={styles.accountSubmitButton}
+                      className="ws-accountSubmitButton" style={styles.accountSubmitButton}
                       onClick={() => void submitAccountAuth()}
                       disabled={accountLoading}
                     >
@@ -1629,108 +1695,27 @@ export function HomePage() {
                     </button>
                   </div>
                 )}
-                {accountError && <p style={styles.workspaceError}>{accountError}</p>}
+                {accountError && <p className="ws-workspaceError" style={styles.workspaceError}>{accountError}</p>}
               </div>
 
-              <div style={styles.workspaceStats}>
-                <div style={styles.workspaceStat}>
-                  <span style={styles.workspaceStatValue}>{workspaceDashboard.totalStudios}</span>
-                  <span style={styles.workspaceStatLabel}>
-                    {workspaceDashboard.upcomingStudios} upcoming | {workspaceDashboard.passwordProtectedStudios} locked
-                  </span>
+</section>}
+          {workspaceView === 'team' && <section className="workspace-surface">              <div className="ws-workspaceSection" style={styles.workspaceSection}>
+                <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>
+                  <span className="ws-workspaceSectionTitle" style={styles.workspaceSectionTitle}>Team roster</span>
+                  <span className="ws-workspaceSectionCount" style={styles.workspaceSectionCount}>{workspaceDashboard.totalTeamMembers}/12</span>
                 </div>
-                <div style={styles.workspaceStat}>
-                  <span style={styles.workspaceStatValue}>{workspaceDashboard.totalRecordings}</span>
-                  <span style={styles.workspaceStatLabel}>
-                    {workspaceDashboard.readyMp4RecordingCount} MP4 ready | {formatWorkspaceFileSize(workspaceDashboard.totalRecordingBytes)}
-                  </span>
-                </div>
-                <div style={styles.workspaceStat}>
-                  <span style={styles.workspaceStatValue}>{workspaceDashboard.totalBrandKits}</span>
-                  <span style={styles.workspaceStatLabel}>
-                    {workspaceDashboard.brandKitsWithLogo} logo | {workspaceDashboard.brandKitsWithBackground} background
-                  </span>
-                </div>
-                <div style={styles.workspaceStat}>
-                  <span style={styles.workspaceStatValue}>{workspaceDashboard.totalTeamMembers}</span>
-                  <span style={styles.workspaceStatLabel}>
-                    {workspaceDashboard.productionTeamMembers} production | roster
-                  </span>
-                </div>
-              </div>
-
-              {workspaceDashboard.mediaExportRecordingCount > 0 && (
-                <div style={styles.workspaceExportCard}>
-                  <div style={styles.workspaceExportCopy}>
-                    <span style={styles.workspaceExportTitle}>Recording exports</span>
-                    <span style={styles.workspaceExportText}>
-                      {workspaceDashboard.readyMp4RecordingCount}/{workspaceDashboard.mediaExportRecordingCount} server-mixed MP4 export{workspaceDashboard.mediaExportRecordingCount === 1 ? '' : 's'} ready to share.
-                    </span>
-                  </div>
-                  <span style={{
-                    ...styles.workspaceExportStatus,
-                    ...(workspaceDashboard.readyMp4RecordingCount > 0 ? styles.workspaceExportStatusReady : {}),
-                  }}>
-                    {workspaceDashboard.readyMp4RecordingCount > 0 ? 'Archive ready' : 'Processing'}
-                  </span>
-                </div>
-              )}
-
-              <div style={styles.workspaceMetaGrid}>
-                {workspaceDashboard.latestStudio && (
-                  <div style={styles.workspaceMetaItem}>
-                    <span style={styles.workspaceMetaLabel}>Latest studio</span>
-                    <span style={styles.workspaceMetaValue}>{workspaceDashboard.latestStudio.name || 'Untitled studio'}</span>
-                    <span style={styles.workspaceMetaSub}>{formatDashboardDate(workspaceDashboard.latestStudio.scheduledFor || workspaceDashboard.latestStudio.createdAt)}</span>
-                  </div>
-                )}
-                {workspaceDashboard.latestRecording && (
-                  <div style={styles.workspaceMetaItem}>
-                    <span style={styles.workspaceMetaLabel}>Latest recording</span>
-                    <span style={styles.workspaceMetaValue}>{workspaceDashboard.latestRecording.roomName}</span>
-                    <span style={styles.workspaceMetaSub}>{formatDashboardDate(workspaceDashboard.latestRecording.createdAt)}</span>
-                  </div>
-                )}
-                {workspaceDashboard.latestBrandKit && (
-                  <div style={styles.workspaceMetaItem}>
-                    <span style={styles.workspaceMetaLabel}>Latest brand kit</span>
-                    <span style={styles.workspaceMetaValue}>{workspaceDashboard.latestBrandKit.name}</span>
-                    <span style={styles.workspaceMetaSub}>{formatDashboardDate(workspaceDashboard.latestBrandKit.createdAt)}</span>
-                  </div>
-                )}
-                {workspaceDashboard.latestTeamMember && (
-                  <div style={styles.workspaceMetaItem}>
-                    <span style={styles.workspaceMetaLabel}>Latest team</span>
-                    <span style={styles.workspaceMetaValue}>{workspaceDashboard.latestTeamMember.name}</span>
-                    <span style={styles.workspaceMetaSub}>{getWorkspaceTeamRoleLabel(workspaceDashboard.latestTeamMember.role)}</span>
-                  </div>
-                )}
-              </div>
-
-              {(dashboardError || recordingLibrary.error) && (
-                <p style={styles.workspaceError}>{dashboardError || recordingLibrary.error}</p>
-              )}
-              {workspaceSyncNotice && !dashboardError && !recordingLibrary.error && (
-                <p style={styles.workspaceNotice}>
-                  {workspaceSyncNotice}
-                </p>
-              )}
-
-              <div style={styles.workspaceSection}>
-                <div style={styles.workspaceSectionHeader}>
-                  <span style={styles.workspaceSectionTitle}>Team roster</span>
-                  <span style={styles.workspaceSectionCount}>{workspaceDashboard.totalTeamMembers}/12</span>
-                </div>
-                <div style={styles.workspaceTeamForm}>
+                <div className="ws-workspaceTeamForm" style={styles.workspaceTeamForm}>
                   <input
-                    style={styles.workspaceInput}
+                    className="ws-workspaceInput" style={styles.workspaceInput}
+                    aria-label="Team member name"
                     value={teamMemberName}
                     onChange={(event) => setTeamMemberName(event.target.value)}
                     placeholder="Name"
                     maxLength={80}
                   />
                   <input
-                    style={styles.workspaceInput}
+                    className="ws-workspaceInput" style={styles.workspaceInput}
+                    aria-label="Team member email"
                     value={teamMemberEmail}
                     onChange={(event) => setTeamMemberEmail(event.target.value)}
                     placeholder="Email"
@@ -1738,7 +1723,8 @@ export function HomePage() {
                     type="email"
                   />
                   <select
-                    style={styles.workspaceSelect}
+                    className="ws-workspaceSelect" style={styles.workspaceSelect}
+                    aria-label="Team member role"
                     value={teamMemberRole}
                     onChange={(event) => setTeamMemberRole(event.target.value as WorkspaceTeamRole)}
                   >
@@ -1748,7 +1734,7 @@ export function HomePage() {
                     <option value="guest-manager">Guest Manager</option>
                   </select>
                   <button
-                    style={styles.workspaceAddButton}
+                    className="ws-workspaceAddButton" style={styles.workspaceAddButton}
                     onClick={addTeamMember}
                     disabled={!teamMemberName.trim()}
                   >
@@ -1756,18 +1742,18 @@ export function HomePage() {
                   </button>
                 </div>
                 {recentTeamMembers.length > 0 && (
-                  <div style={styles.workspaceRows}>
+                  <div className="ws-workspaceRows" style={styles.workspaceRows}>
                     {recentTeamMembers.map((member) => (
-                      <div key={member.id} style={styles.workspaceRow}>
-                        <span style={styles.workspaceRoleBadge}>{getWorkspaceTeamRoleLabel(member.role).slice(0, 1)}</span>
-                        <div style={styles.workspaceRowCopy}>
-                          <span style={styles.workspaceRowTitle}>{member.name}</span>
-                          <span style={styles.workspaceRowMeta}>
+                      <div key={member.id} className="ws-workspaceRow" style={styles.workspaceRow}>
+                        <span className="ws-workspaceRoleBadge" style={styles.workspaceRoleBadge}>{getWorkspaceTeamRoleLabel(member.role).slice(0, 1)}</span>
+                        <div className="ws-workspaceRowCopy" style={styles.workspaceRowCopy}>
+                          <span className="ws-workspaceRowTitle" style={styles.workspaceRowTitle}>{member.name}</span>
+                          <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
                             {getWorkspaceTeamRoleLabel(member.role)}{member.email ? ` | ${member.email}` : ''}
                           </span>
                         </div>
                         <button
-                          style={styles.workspaceRowAction}
+                          className="ws-workspaceRowAction" style={styles.workspaceRowAction}
                           onClick={() => deleteTeamMember(member)}
                         >
                           Remove
@@ -1778,24 +1764,25 @@ export function HomePage() {
                 )}
               </div>
 
-              {(recordingLibrary.isLoading || serverRecordingCatalogLoading || recentRecordings.length > 0) && (
-                <div style={styles.workspaceSection}>
-                  <div style={styles.workspaceSectionHeader}>
-                    <span style={styles.workspaceSectionTitle}>Recent recordings</span>
-                    <span style={styles.workspaceSectionCount}>
+<p className="section-footnote">Keep a production roster and generate call sheets from your studio's actions.</p></section>}
+          {workspaceView === 'recordings' && <section className="workspace-surface">              {(recordingLibrary.isLoading || serverRecordingCatalogLoading || recentRecordings.length > 0) && (
+                <div className="ws-workspaceSection" style={styles.workspaceSection}>
+                  <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>
+                    <span className="ws-workspaceSectionTitle" style={styles.workspaceSectionTitle}>All recordings</span>
+                    <span className="ws-workspaceSectionCount" style={styles.workspaceSectionCount}>
                       {recordingLibrary.isLoading || serverRecordingCatalogLoading
                         ? 'Loading'
                         : `${workspaceDashboard.cloudRecordingCount} cloud | ${workspaceDashboard.readyMp4RecordingCount} MP4`}
                     </span>
                   </div>
                   {!recordingLibrary.isLoading && !serverRecordingCatalogLoading && (
-                    <div style={styles.workspaceRows}>
+                    <div className="ws-workspaceRows" style={styles.workspaceRows}>
                       {recentRecordings.map((session) => {
                         const exportState = getWorkspaceRecordingExportState(session);
                         const exportLabel = getWorkspaceRecordingExportLabel(session);
                         return (
-                          <div key={session.id} style={styles.workspaceRow}>
-                            <span style={styles.workspaceRecordingSourceBadge}>
+                          <div key={session.id} className="ws-workspaceRow" style={styles.workspaceRow}>
+                            <span className="ws-workspaceRecordingSourceBadge" style={styles.workspaceRecordingSourceBadge}>
                               {session.source === 'local-and-server' ? 'Both' : session.source === 'server' ? 'Cloud' : 'Local'}
                             </span>
                             {session.mediaExport && (
@@ -1807,9 +1794,9 @@ export function HomePage() {
                                 {exportState === 'ready' ? 'MP4' : exportState === 'error' ? 'Fix' : 'Mix'}
                               </span>
                             )}
-                            <div style={styles.workspaceRowCopy}>
-                              <span style={styles.workspaceRowTitle}>{session.roomName}</span>
-                              <span style={styles.workspaceRowMeta}>
+                            <div className="ws-workspaceRowCopy" style={styles.workspaceRowCopy}>
+                              <span className="ws-workspaceRowTitle" style={styles.workspaceRowTitle}>{session.roomName}</span>
+                              <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
                                 {formatDashboardDate(session.createdAt)} | {formatWorkspaceDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'}
                               </span>
                               {session.mediaExport && (
@@ -1822,17 +1809,17 @@ export function HomePage() {
                                 </span>
                               )}
                             </div>
-                            <div style={styles.workspaceRowActions}>
+                            <div className="ws-workspaceRowActions" style={styles.workspaceRowActions}>
                               {session.mediaExport?.mp4ShareUrl && (
                                 <>
                                   <button
-                                    style={styles.workspaceRowSecondaryAction}
+                                    className="ws-workspaceRowSecondaryAction" style={styles.workspaceRowSecondaryAction}
                                     onClick={() => openRecordingMp4ShareLink(session)}
                                   >
                                     Open
                                   </button>
                                   <button
-                                    style={styles.workspaceRowSecondaryAction}
+                                    className="ws-workspaceRowSecondaryAction" style={styles.workspaceRowSecondaryAction}
                                     onClick={() => void copyRecordingMp4ShareLink(session)}
                                   >
                                     Copy
@@ -1840,12 +1827,17 @@ export function HomePage() {
                                 </>
                               )}
                               {localRecordingIds.has(session.id) && (
+                                <>
+                                <button className="ws-workspaceRowAction" style={styles.workspaceRowAction} onClick={() => void downloadLocalRecording(session)} disabled={downloadingRecordingId !== null}>
+                                  {downloadingRecordingId === session.id ? 'Preparing…' : 'Download tracks'}
+                                </button>
                                 <button
-                                  style={styles.workspaceRowAction}
+                                  className="ws-workspaceRowAction" style={styles.workspaceRowAction}
                                   onClick={() => void deleteDashboardRecordingSession(session)}
                                 >
                                   Delete
                                 </button>
+                                </>
                               )}
                             </div>
                           </div>
@@ -1856,26 +1848,27 @@ export function HomePage() {
                 </div>
               )}
 
-              {recentBrandKits.length > 0 && (
-                <div style={styles.workspaceSection}>
-                  <div style={styles.workspaceSectionHeader}>
-                    <span style={styles.workspaceSectionTitle}>Brand kits</span>
-                    <span style={styles.workspaceSectionCount}>{recentBrandKits.length}/{workspaceDashboard.totalBrandKits}</span>
+{!recordingLibrary.isLoading && !serverRecordingCatalogLoading && recentRecordings.length === 0 && <div className="workspace-empty"><span className="empty-icon"><StudioIcon name="recordings" /></span><h2>Your next story starts here</h2><p>Record a session in your studio to see it in your library.</p><button className="workspace-secondary" onClick={() => setWorkspaceView('studios')}>Go to studios <span>→</span></button></div>}</section>}
+          {workspaceView === 'brand' && <section className="workspace-surface">              {recentBrandKits.length > 0 && (
+                <div className="ws-workspaceSection" style={styles.workspaceSection}>
+                  <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>
+                    <span className="ws-workspaceSectionTitle" style={styles.workspaceSectionTitle}>Brand kits</span>
+                    <span className="ws-workspaceSectionCount" style={styles.workspaceSectionCount}>{recentBrandKits.length}/{workspaceDashboard.totalBrandKits}</span>
                   </div>
-                  <div style={styles.workspaceRows}>
+                  <div className="ws-workspaceRows" style={styles.workspaceRows}>
                     {recentBrandKits.map((kit) => (
-                      <div key={kit.id} style={styles.workspaceRow}>
+                      <div key={kit.id} className="ws-workspaceRow" style={styles.workspaceRow}>
                         <span style={{ ...styles.workspaceBrandSwatch, background: kit.brandColor }} />
-                        <div style={styles.workspaceRowCopy}>
-                          <span style={styles.workspaceRowTitle}>{kit.name}</span>
-                          <span style={styles.workspaceRowMeta}>
+                        <div className="ws-workspaceRowCopy" style={styles.workspaceRowCopy}>
+                          <span className="ws-workspaceRowTitle" style={styles.workspaceRowTitle}>{kit.name}</span>
+                          <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
                             {kit.studioTheme} | {kit.logoUrl ? 'Logo saved' : 'No logo'} | {kit.stageBackground.type}
                             {!localBrandKitIds.has(kit.id) ? ' | Cloud' : ''}
                           </span>
                         </div>
                         {localBrandKitIds.has(kit.id) && (
                           <button
-                            style={styles.workspaceRowAction}
+                            className="ws-workspaceRowAction" style={styles.workspaceRowAction}
                             onClick={() => deleteBrandKit(kit)}
                           >
                             Delete
@@ -1886,156 +1879,148 @@ export function HomePage() {
                   </div>
                 </div>
               )}
-            </section>
-
-          {dashboardStudios.length > 0 && (
-            <section style={styles.schedulePanel}>
-              <div style={styles.schedulePanelHeader}>
-                <h2 style={styles.schedulePanelTitle}>Your Studios</h2>
-                <span style={styles.schedulePanelCount}>{dashboardStudios.length}</span>
-              </div>
-              <div style={styles.savedRoomList}>
-                {dashboardStudios.map((room) => {
-                  const roomInviteLink = buildInviteLink(room);
-                  const scheduleState = getScheduleState(room);
-                  return (
-                    <div key={room.id} style={styles.savedRoomCard}>
-                      <div style={styles.savedRoomTop}>
-                        <div style={styles.savedRoomInfo}>
-                          <span style={styles.savedRoomName}>{room.name}</span>
-                          <span style={styles.savedRoomMeta}>{formatScheduledDate(room.scheduledFor)}</span>
-                        </div>
-                        <span style={{
-                          ...styles.savedRoomBadge,
-                          ...(scheduleState === 'Upcoming' ? styles.savedRoomBadgeUpcoming : {}),
-                        }}>
-                          {scheduleState}
-                        </span>
-                      </div>
-
-                      <div style={styles.savedRoomLink}>{roomInviteLink}</div>
-
-                      <div style={styles.savedRoomActions}>
-                        <button
-                          style={styles.savedRoomAction}
-                          onClick={() => copySavedInviteLink(room)}
-                        >
-                          {savedRoomCopiedId === room.id ? 'Copied' : 'Guest Link'}
-                        </button>
-                        <button
-                          style={styles.savedRoomAction}
-                          onClick={() => emailGuestInvite(room)}
-                        >
-                          Email
-                        </button>
-                        <button
-                          style={styles.savedRoomAction}
-                          onClick={() => downloadGuestPreparationSheet(room)}
-                        >
-                          Guest Prep
-                        </button>
-                        {dashboardTeamMembers.length > 0 && (
-                          <>
-                            <button
-                              style={styles.savedRoomAction}
-                              onClick={() => emailTeamInvite(room)}
-                              disabled={!hasTeamInviteRecipients}
-                            >
-                              Team Email
-                            </button>
-                            <button
-                              style={styles.savedRoomAction}
-                              onClick={() => downloadTeamCallSheet(room)}
-                            >
-                              Team Sheet
-                            </button>
-                          </>
-                        )}
-                        <button
-                          style={styles.savedRoomAction}
-                          onClick={() => copySavedHostLink(room)}
-                        >
-                          {savedHostCopiedId === room.id ? 'Copied' : 'Host Link'}
-                        </button>
-                        <button
-                          style={styles.savedRoomAction}
-                          onClick={() => void downloadSavedInviteQr(room)}
-                          disabled={savedQrDownloadingId === room.id}
-                        >
-                          {savedQrDownloadingId === room.id ? 'QR...' : 'QR'}
-                        </button>
-                        {room.scheduledFor && (
-                          <button
-                            style={styles.savedRoomAction}
-                            onClick={() => downloadCalendarInvite(room)}
-                          >
-                            Calendar
-                          </button>
-                        )}
-                        {room.registrationEnabled && (
-                          <button
-                            style={styles.savedRoomAction}
-                            onClick={() => void downloadRegistrants(room)}
-                            disabled={registrantsDownloadingId === room.id}
-                          >
-                            {registrantsDownloadingId === room.id ? 'Exporting...' : 'Registrants'}
-                          </button>
-                        )}
-                        <button
-                          style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
-                          onClick={() => openScheduledAsHost(room)}
-                        >
-                          Host
-                        </button>
-                        <button
-                          style={{ ...styles.savedRoomAction, ...styles.savedRoomDangerAction }}
-                          onClick={() => forgetScheduledRoom(room.id)}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-	        </div>
-
-        <p style={styles.hint}>
-          Have an invite link? Just open it to join as a guest -- no sign-up needed.
-        </p>
-
-        <div style={styles.legalLinks}>
-          <Link to="/privacy" style={styles.legalLink}>Privacy Policy</Link>
-          <span style={styles.legalSep}>|</span>
-          <Link to="/terms" style={styles.legalLink}>Terms of Service</Link>
-        </div>
+{recentBrandKits.length === 0 && <div className="workspace-empty"><span className="empty-icon"><StudioIcon name="brand" /></span><h2>Make it unmistakably yours</h2><p>Open Brand inside a studio to save your logo, colors,<br />and background as a reusable brand kit.</p><button className="workspace-secondary" onClick={() => setWorkspaceView('studios')}>Go to studios <span>→</span></button></div>}</section>}
+          <footer className="workspace-footer"><span>Good conversations start here.</span><div><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link></div></footer>
+        </main>
       </div>
+      {showCreate && !scheduledRoom && <WorkspaceDialog title="Create a studio" onClose={() => { if (!loading && !schedulingLoading) setShowCreate(false); }}>          <div className="ws-card" style={styles.card}>
+            <div className="ws-cardInner" style={styles.cardInner}>
+              <h2 id="create-studio-title" className="ws-cardTitle" style={styles.cardTitle}>Create a studio</h2>
+              <p className="ws-cardSub" style={styles.cardSub}>Set up your broadcast in seconds</p>
+
+              <div className="ws-field" style={styles.field}>
+                <label className="ws-label" style={styles.label} htmlFor="studio-name">Studio name</label>
+                <input
+                  className="ws-input" style={styles.input}
+                  id="studio-name" autoFocus placeholder="e.g. The Morning Show"
+                  value={roomName}
+                  onChange={(e) => setRoomName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && createRoom()}
+                />
+              </div>
+
+              <div className="ws-field" style={styles.field}>
+                <label className="ws-label" style={styles.label} htmlFor="host-name">Your name</label>
+                <input
+                  className="ws-input" style={styles.input}
+                  id="host-name" placeholder="How guests will see you"
+                  value={hostName}
+                  onChange={(e) => setHostName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && createRoom()}
+                  maxLength={50}
+                />
+              </div>
+
+              <details className="setup-options"><summary>Scheduling & guest access</summary>
+              <div className="ws-field" style={styles.field}>
+                <label className="ws-label" style={styles.label} htmlFor="schedule-time">Schedule time (optional)</label>
+                <input
+                  className="ws-input" style={styles.input}
+                  id="schedule-time" type="datetime-local"
+                  value={scheduledFor}
+                  min={minScheduleDateTime}
+                  onChange={(e) => setScheduledFor(e.target.value)}
+                />
+              </div>
+
+              <div className="ws-field" style={styles.field}>
+                <label className="ws-label" style={styles.label} htmlFor="guest-password">Guest password (optional)</label>
+                <input
+                  className="ws-input" style={styles.input}
+                  type="password"
+                  id="guest-password" placeholder="Require guests to enter a password"
+                  value={roomPassword}
+                  onChange={(e) => setRoomPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && createRoom()}
+                  maxLength={100}
+                  autoComplete="new-password"
+                />
+                <p className="ws-fieldHint" style={styles.fieldHint}>Hosts can still enter with the creator session.</p>
+              </div>
+
+              <label className="ws-registrationToggle" style={styles.registrationToggle}>
+                <input
+                  type="checkbox"
+                  checked={registrationEnabled}
+                  onChange={(e) => setRegistrationEnabled(e.target.checked)}
+                />
+                <span className="ws-registrationToggleCopy" style={styles.registrationToggleCopy}>
+                  <span className="ws-registrationToggleTitle" style={styles.registrationToggleTitle}>Collect guest registration</span>
+                  <span className="ws-registrationToggleText" style={styles.registrationToggleText}>Guests enter name and email before joining; hosts can export a CSV.</span>
+                </span>
+              </label>
+
+              </details>
+              {error && (
+                <p className="ws-error" style={styles.error}>{error}</p>
+              )}
+              {progressMessage && !error && (
+                <p className="ws-progress" style={styles.progress}>{progressMessage}</p>
+              )}
+
+              <button
+                className="btn-primary ws-button" style={styles.button}
+                onClick={createRoom}
+                disabled={loading || schedulingLoading || !roomName.trim() || !hostName.trim()}
+              >
+                {loading ? (
+                  <span className="ws-loadingInner" style={styles.loadingInner}>
+                    <span className="ws-loadingDot" style={styles.loadingDot} />
+                    Creating...
+                  </span>
+                ) : (
+                  'Create Studio'
+                )}
+              </button>
+
+              <div className="ws-divider" style={styles.divider}>
+                <span className="ws-dividerLine" style={styles.dividerLine} />
+                <span className="ws-dividerText" style={styles.dividerText}>or</span>
+                <span className="ws-dividerLine" style={styles.dividerLine} />
+              </div>
+
+              <button
+                className="ws-scheduleButton" style={styles.scheduleButton}
+                onClick={scheduleRoom}
+                disabled={loading || schedulingLoading || !roomName.trim() || !hostName.trim()}
+              >
+                {schedulingLoading ? (
+                  <span className="ws-loadingInner" style={styles.loadingInner}>
+                    <span style={{ ...styles.loadingDot, background: 'var(--accent)' }} />
+                    Scheduling...
+                  </span>
+                ) : (
+                  <>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 8, flexShrink: 0 }}>
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                    </svg>
+                    Schedule & Get Invite Link
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+</WorkspaceDialog>}
 
       {/* Invite Link Modal */}
       {scheduledRoom && (
-        <div style={styles.modalOverlay} onClick={closeModal}>
-          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <button style={styles.modalClose} onClick={closeModal}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
-
-            <div style={styles.modalIcon}>
+        <WorkspaceDialog title="Studio scheduled" onClose={closeModal}>
+          <div className="ws-modal" style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div className="ws-modalIcon" style={styles.modalIcon}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
                 <polyline points="22 4 12 14.01 9 11.01" />
               </svg>
             </div>
 
-            <h3 style={styles.modalTitle}>Studio Scheduled</h3>
-            <p style={styles.modalSub}>
+            <h3 className="ws-modalTitle" style={styles.modalTitle}>Studio Scheduled</h3>
+            <p className="ws-modalSub" style={styles.modalSub}>
               <strong>{scheduledRoom.name}</strong> is ready. Share this invite link with your guests.
             </p>
             {scheduledRoom.scheduledFor && (
-              <p style={styles.modalSchedule}>
+              <p className="ws-modalSchedule" style={styles.modalSchedule}>
                 Scheduled for {new Date(scheduledRoom.scheduledFor).toLocaleString([], {
                   dateStyle: 'medium',
                   timeStyle: 'short',
@@ -2043,20 +2028,20 @@ export function HomePage() {
               </p>
             )}
             {scheduledRoom.passwordProtected && (
-              <p style={styles.modalSchedule}>Password protected. Share the password with guests separately.</p>
+              <p className="ws-modalSchedule" style={styles.modalSchedule}>Password protected. Share the password with guests separately.</p>
             )}
             {scheduledRoom.registrationEnabled && (
-              <p style={styles.modalSchedule}>Guest registration is on. You can export registrants from Your Studios.</p>
+              <p className="ws-modalSchedule" style={styles.modalSchedule}>Guest registration is on. You can export registrants from Your Studios.</p>
             )}
 
-            <div style={styles.linkBox}>
+            <div className="ws-linkBox" style={styles.linkBox}>
               <input
-                style={styles.linkInput}
+                className="ws-linkInput" style={styles.linkInput}
                 value={inviteLink}
                 readOnly
                 onClick={(e) => (e.target as HTMLInputElement).select()}
               />
-              <button style={styles.copyButton} onClick={copyToClipboard}>
+              <button className="ws-copyButton" style={styles.copyButton} onClick={copyToClipboard}>
                 {copied ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <polyline points="20 6 9 17 4 12" />
@@ -2071,12 +2056,12 @@ export function HomePage() {
               </button>
             </div>
 
-            <div style={styles.modalQrCard}>
-              <div style={styles.modalQrPreview}>
+            <div className="ws-modalQrCard" style={styles.modalQrCard}>
+              <div className="ws-modalQrPreview" style={styles.modalQrPreview}>
                 {scheduledQrDataUrl ? (
-                  <img src={scheduledQrDataUrl} alt="Guest invite QR code" style={styles.modalQrImage} />
+                  <img src={scheduledQrDataUrl} alt="Guest invite QR code" className="ws-modalQrImage" style={styles.modalQrImage} />
                 ) : (
-                  <div style={styles.modalQrPlaceholder}>
+                  <div className="ws-modalQrPlaceholder" style={styles.modalQrPlaceholder}>
                     {scheduledQrError ? (
                       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <circle cx="12" cy="12" r="10" />
@@ -2084,135 +2069,51 @@ export function HomePage() {
                         <line x1="12" y1="16" x2="12.01" y2="16" />
                       </svg>
                     ) : (
-                      <span style={styles.modalQrLoadingDot} />
+                      <span className="ws-modalQrLoadingDot" style={styles.modalQrLoadingDot} />
                     )}
                   </div>
                 )}
               </div>
-              <div style={styles.modalQrCopy}>
-                <span style={styles.modalQrLabel}>Guest QR</span>
-                <span style={styles.modalQrText}>Guests can scan this to open the join link on a phone.</span>
-                {scheduledQrError && <span style={styles.modalQrError}>{scheduledQrError}</span>}
+              <div className="ws-modalQrCopy" style={styles.modalQrCopy}>
+                <span className="ws-modalQrLabel" style={styles.modalQrLabel}>Guest QR</span>
+                <span className="ws-modalQrText" style={styles.modalQrText}>Guests can scan this to open the join link on a phone.</span>
+                {scheduledQrError && <span className="ws-modalQrError" style={styles.modalQrError}>{scheduledQrError}</span>}
               </div>
             </div>
 
-            <div style={styles.modalActions}>
+            <div className="ws-modalActions" style={styles.modalActions}>
               <button
-                className="btn-primary"
-                style={styles.modalStartButton}
+                className="btn-primary ws-modalStartButton" style={styles.modalStartButton}
                 onClick={goToStudioAsHost}
               >
                 Start Studio Now
               </button>
-              <button style={styles.modalDoneButton} onClick={copyHostEntryLink}>
+              <button className="ws-modalDoneButton" style={styles.modalDoneButton} onClick={copyHostEntryLink}>
                 {hostCopied ? 'Host Link Copied' : 'Copy Host Link'}
               </button>
-              <button style={styles.modalDoneButton} onClick={emailScheduledGuestInvite}>
+              <button className="ws-modalDoneButton" style={styles.modalDoneButton} onClick={emailScheduledGuestInvite}>
                 Email Guest
               </button>
-              <button style={styles.modalDoneButton} onClick={downloadScheduledInviteQr} disabled={!scheduledQrDataUrl}>
+              <button className="ws-modalDoneButton" style={styles.modalDoneButton} onClick={downloadScheduledInviteQr} disabled={!scheduledQrDataUrl}>
                 Download QR
               </button>
               {scheduledRoom.scheduledFor && (
-                <button style={styles.modalDoneButton} onClick={() => downloadCalendarInvite(scheduledRoom)}>
+                <button className="ws-modalDoneButton" style={styles.modalDoneButton} onClick={() => downloadCalendarInvite(scheduledRoom)}>
                   Calendar
                 </button>
               )}
-              <button style={styles.modalDoneButton} onClick={closeModal}>
+              <button className="ws-modalDoneButton" style={styles.modalDoneButton} onClick={closeModal}>
                 Done
               </button>
             </div>
           </div>
-        </div>
+        </WorkspaceDialog>
       )}
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  page: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: '100%',
-    padding: 24,
-    position: 'relative',
-    overflowY: 'auto',
-    overflowX: 'hidden',
-  },
-  bgGlow1: {
-    position: 'absolute',
-    top: '-20%',
-    left: '-10%',
-    width: 600,
-    height: 600,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(167, 139, 250, 0.06) 0%, transparent 70%)',
-    pointerEvents: 'none',
-  },
-  bgGlow2: {
-    position: 'absolute',
-    bottom: '-30%',
-    right: '-10%',
-    width: 500,
-    height: 500,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(103, 232, 249, 0.04) 0%, transparent 70%)',
-    pointerEvents: 'none',
-  },
-  container: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    width: '100%',
-    maxWidth: 940,
-    position: 'relative',
-    zIndex: 1,
-    animation: 'slideUp 0.5s ease-out',
-  },
-  brand: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 12,
-  },
-  logoMark: {
-    display: 'flex',
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 700,
-    letterSpacing: '-0.02em',
-    color: 'var(--text-primary)',
-  },
-  poweredBy: {
-    fontSize: 12,
-    color: 'var(--text-secondary)',
-    marginBottom: 8,
-    textAlign: 'center',
-    opacity: 0.7,
-    letterSpacing: '0.03em',
-  } as React.CSSProperties,
-  poweredByLink: {
-    color: '#67e8f9',
-    textDecoration: 'none',
-    fontWeight: 500,
-  } as React.CSSProperties,
-  tagline: {
-    fontSize: 15,
-    color: 'var(--text-secondary)',
-    marginBottom: 28,
-    textAlign: 'center',
-    lineHeight: 1.5,
-  },
-  contentGrid: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'center',
-    gap: 20,
-    flexWrap: 'wrap',
-    width: '100%',
-  },
   card: {
     width: '100%',
     maxWidth: 420,
@@ -2354,18 +2255,6 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.18s ease',
     letterSpacing: '-0.01em',
   },
-  workspacePanel: {
-    width: '100%',
-    maxWidth: 460,
-    flex: '1 1 360px',
-    background: 'rgba(255, 255, 255, 0.035)',
-    borderRadius: 18,
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
-    padding: 18,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
-  },
   workspaceHeader: {
     display: 'flex',
     alignItems: 'flex-start',
@@ -2506,134 +2395,9 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#34d399',
     boxShadow: '0 0 0 4px rgba(52, 211, 153, 0.08)',
   },
-  workspaceStats: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(112px, 1fr))',
-    gap: 8,
-    marginBottom: 12,
-  },
-  workspaceStat: {
-    minWidth: 0,
-    borderRadius: 10,
-    background: 'rgba(15, 23, 42, 0.42)',
-    border: '1px solid rgba(255, 255, 255, 0.06)',
-    padding: '10px 11px',
-  },
-  workspaceStatValue: {
-    display: 'block',
-    fontSize: 20,
-    fontWeight: 800,
-    color: 'var(--text-primary)',
-    lineHeight: 1.1,
-    marginBottom: 5,
-  },
-  workspaceStatLabel: {
-    display: 'block',
-    fontSize: 10,
-    fontWeight: 700,
-    color: 'var(--text-muted)',
-    lineHeight: 1.3,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.04em',
-  },
-  workspaceExportCard: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    borderRadius: 12,
-    border: '1px solid rgba(103, 232, 249, 0.16)',
-    background: 'rgba(103, 232, 249, 0.055)',
-    padding: '11px 12px',
-    marginBottom: 12,
-  },
-  workspaceExportCopy: {
-    minWidth: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 3,
-  },
-  workspaceExportTitle: {
-    fontSize: 12,
-    fontWeight: 800,
-    color: '#a5f3fc',
-  },
-  workspaceExportText: {
-    minWidth: 0,
-    fontSize: 11,
-    color: 'var(--text-muted)',
-    lineHeight: 1.35,
-  },
-  workspaceExportStatus: {
-    flex: '0 0 auto',
-    minHeight: 26,
-    borderRadius: 999,
-    border: '1px solid rgba(167, 139, 250, 0.22)',
-    background: 'rgba(167, 139, 250, 0.12)',
-    color: '#ddd6fe',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '0 10px',
-    fontSize: 10,
-    fontWeight: 900,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.04em',
-  },
-  workspaceExportStatusReady: {
-    borderColor: 'rgba(34, 197, 94, 0.24)',
-    background: 'rgba(34, 197, 94, 0.1)',
-    color: '#bbf7d0',
-  },
-  workspaceMetaGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr',
-    gap: 8,
-    marginBottom: 12,
-  },
-  workspaceMetaItem: {
-    minWidth: 0,
-    display: 'grid',
-    gridTemplateColumns: '96px minmax(0, 1fr)',
-    gap: '2px 8px',
-    alignItems: 'baseline',
-    padding: '8px 0',
-    borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-  },
-  workspaceMetaLabel: {
-    gridRow: '1 / span 2',
-    fontSize: 10,
-    fontWeight: 800,
-    color: 'var(--text-muted)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.04em',
-  },
-  workspaceMetaValue: {
-    minWidth: 0,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-    fontSize: 12,
-    fontWeight: 700,
-    color: 'var(--text-primary)',
-  },
-  workspaceMetaSub: {
-    minWidth: 0,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-    fontSize: 11,
-    color: 'var(--text-muted)',
-  },
   workspaceError: {
     fontSize: 12,
     color: '#f87171',
-    marginBottom: 10,
-    lineHeight: 1.4,
-  },
-  workspaceNotice: {
-    fontSize: 12,
-    color: '#67e8f9',
     marginBottom: 10,
     lineHeight: 1.4,
   },
@@ -2921,18 +2685,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(245, 158, 11, 0.1)',
     borderColor: 'rgba(245, 158, 11, 0.18)',
   },
-  savedRoomLink: {
-    fontSize: 11,
-    color: 'var(--text-muted)',
-    fontFamily: 'monospace',
-    lineHeight: 1.35,
-    padding: '8px 9px',
-    borderRadius: 8,
-    background: 'rgba(255, 255, 255, 0.035)',
-    border: '1px solid rgba(255, 255, 255, 0.06)',
-    wordBreak: 'break-all' as const,
-    marginBottom: 10,
-  },
   savedRoomActions: {
     display: 'flex',
     gap: 8,
@@ -2957,12 +2709,6 @@ const styles: Record<string, React.CSSProperties> = {
   savedRoomDangerAction: {
     color: '#f87171',
     borderColor: 'rgba(248, 113, 113, 0.18)',
-  },
-  hint: {
-    marginTop: 20,
-    fontSize: 13,
-    color: 'var(--text-muted)',
-    textAlign: 'center',
   },
 
   // Modal styles
@@ -2992,18 +2738,6 @@ const styles: Record<string, React.CSSProperties> = {
     animation: 'scaleIn 0.3s ease-out',
     backdropFilter: 'blur(12px)',
     WebkitBackdropFilter: 'blur(12px)',
-  },
-  modalClose: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    background: 'none',
-    border: 'none',
-    color: 'var(--text-muted)',
-    cursor: 'pointer',
-    padding: 4,
-    display: 'flex',
-    borderRadius: 6,
   },
   modalIcon: {
     marginBottom: 16,
@@ -3146,23 +2880,5 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 12,
     cursor: 'pointer',
     transition: 'all 0.18s ease',
-  },
-  legalLinks: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    marginTop: 16,
-  },
-  legalLink: {
-    fontSize: 12,
-    color: 'var(--text-muted)',
-    textDecoration: 'none',
-    opacity: 0.7,
-  },
-  legalSep: {
-    fontSize: 12,
-    color: 'var(--text-muted)',
-    opacity: 0.4,
   },
 };

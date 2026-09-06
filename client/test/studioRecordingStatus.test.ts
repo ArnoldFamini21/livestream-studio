@@ -105,3 +105,9 @@ describe('studio recording status', () => {
     });
   });
 });
+
+it('shows shared pause state to rejoined operators', () => {
+  const status = getStudioRecordingStatus({ mixRecording: false, mixFormattedTime: '0:00', localRecording: false, localFormattedTime: '0:00', sessionStartedAt: '2026-09-06T00:00:00Z', sessionPaused: true, sessionElapsedSeconds: 30 });
+  assert.equal(status.paused, true);
+  assert.equal(status.source, 'session');
+});

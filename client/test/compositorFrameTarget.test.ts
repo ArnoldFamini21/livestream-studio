@@ -1,3 +1,4 @@
+import { shouldRunCompositor } from '../src/utils/compositorFrameTarget.ts';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
@@ -98,4 +99,11 @@ describe('compositor frame target', () => {
 
     assert.equal(target, null);
   });
+});
+
+it('renders video during offline mixed and local recordings, not only live broadcasts', () => {
+  assert.equal(shouldRunCompositor({ live: false, mixRecording: true, localRecording: false }), true);
+  assert.equal(shouldRunCompositor({ live: false, mixRecording: false, localRecording: true }), true);
+  assert.equal(shouldRunCompositor({ live: true, mixRecording: false, localRecording: false }), true);
+  assert.equal(shouldRunCompositor({ live: false, mixRecording: false, localRecording: false }), false);
 });

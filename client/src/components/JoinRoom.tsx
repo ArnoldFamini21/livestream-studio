@@ -1,3 +1,4 @@
+import '../styles/studio-chrome.css';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -488,7 +489,7 @@ export function JoinRoom() {
 
   if (loading) {
     return (
-      <div style={styles.page}>
+      <div className="join-page" style={styles.page}>
         <div style={styles.loadingWrap}>
           <div style={styles.spinner} />
           <p style={styles.loadingText}>Looking for {inviteStudioName || 'studio'}...</p>
@@ -499,15 +500,15 @@ export function JoinRoom() {
 
   if (notFound) {
     return (
-      <div style={styles.page}>
-        <div style={styles.card}>
+      <div className="join-page" style={styles.page}>
+        <div className="join-card" style={styles.card}>
           <div style={styles.errorIcon}>
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round">
               <circle cx="12" cy="12" r="10" />
               <path d="M15 9l-6 6M9 9l6 6" />
             </svg>
           </div>
-          <h2 style={styles.cardTitle}>Studio not found</h2>
+          <h2 className="join-cardTitle" style={styles.cardTitle}>Studio not found</h2>
           <p style={styles.text}>
             {inviteStudioName
               ? `${inviteStudioName} does not exist or has already ended.`
@@ -522,12 +523,12 @@ export function JoinRoom() {
   }
 
   return (
-    <div style={styles.page}>
-      <div style={styles.bgGlow} />
+    <div className="join-page" style={styles.page}>
+      <div className="join-bgGlow" style={styles.bgGlow} />
 
-      <div style={styles.card}>
+      <div className="join-card" style={styles.card}>
         {/* Studio info badge */}
-        <div style={styles.studioInfo}>
+        <div className="join-studioInfo" style={styles.studioInfo}>
           <div style={{
             ...styles.liveDot,
             background: roomInfo?.status === 'scheduled' ? '#f59e0b' : 'var(--accent)',
@@ -550,7 +551,7 @@ export function JoinRoom() {
           )}
         </div>
 
-        <h2 style={styles.cardTitle}>You're invited</h2>
+        <h2 className="join-cardTitle" style={styles.cardTitle}>{isHostSession ? 'Ready when you are' : "You’re invited"}</h2>
         <p style={styles.text}>
           {hostAccessMissing
             ? HOST_ACCESS_MISSING_MESSAGE
@@ -632,7 +633,7 @@ export function JoinRoom() {
         </div>
 
         {/* AV toggle buttons */}
-        <div style={styles.toggleRow}>
+        <div className="join-toggleRow" style={styles.toggleRow}>
           <button
             style={{
               ...styles.toggleBtn,
@@ -778,8 +779,8 @@ export function JoinRoom() {
         </div>
 
         {/* Advanced Audio Options */}
-        <div style={styles.advancedAudio}>
-          <label style={styles.deviceLabel}>Audio Settings</label>
+        <details className="join-audio-options" style={styles.advancedAudio}>
+          <summary>Audio settings</summary>
           <div style={styles.checkboxRow}>
             <label style={styles.checkboxLabel}>
               <input type="checkbox" checked={echoCancellation} onChange={(e) => setEchoCancellation(e.target.checked)} />
@@ -794,14 +795,14 @@ export function JoinRoom() {
               Studio Voice Cleanup
             </label>
           </div>
-        </div>
+        </details>
 
         {/* Name input */}
         <div style={styles.field}>
-          <label style={styles.label}>Your name</label>
+          <label style={styles.label} htmlFor="join-name">Your name</label>
           <input
             style={styles.input}
-            placeholder="Enter your name"
+            id="join-name" placeholder="Enter your name"
             value={guestName}
             onChange={(e) => setGuestName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && joinStudio()}

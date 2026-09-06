@@ -45,3 +45,15 @@ export function getToolbarRecordingFallbackToast(files: RecordingUploadFileInput
   }
   return 'MP4 export was unavailable. Saved original recording tracks instead.';
 }
+
+/** Match the button action to the same recording sources displayed by the toolbar. */
+export function getToolbarRecordingAction(state: {
+  mixRecording: boolean;
+  sessionStartedAt: string | null;
+  localRecording: boolean;
+}): 'stop-mix' | 'stop-session' | 'stop-local' | 'start' {
+  if (state.mixRecording) return 'stop-mix';
+  if (state.sessionStartedAt) return 'stop-session';
+  if (state.localRecording) return 'stop-local';
+  return 'start';
+}
