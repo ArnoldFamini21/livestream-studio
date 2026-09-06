@@ -1,24 +1,23 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ActiveMedia, StudioMediaAsset, StudioMediaType } from '@studio/shared';
 import {
   getNextPresentationSlideIndex,
   getPresentationDeckStatus,
-  getPresentationItemDisplayTitle,
   getPresentationPresenterCards,
   getPresentationSlidePickerItems,
 } from '../utils/presentationDeckControls.ts';
 import { canBrowserRenderPowerPointFile, hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
+import { StudioIcon } from './StudioIcon.tsx';
 
 type MediaTab = 'videos' | 'slides' | 'images' | 'files';
-
 interface MediaLibraryProps {
   assets: StudioMediaAsset[];
   activeMedia: ActiveMedia | null;
   activeMediaSlideIndex: number;
   onActiveMediaSlideIndexChange: (index: number) => void;
   onUpload: (files: FileList | File[]) => void | Promise<void>;
-  onAddUrl: (url: string, type: 'video' | 'image') => void;
+  onAddUrl: (url: string, type: 'video' | 'image') => void | Promise<void>;
   onPlay: (asset: StudioMediaAsset) => void;
   onRemove: (assetId: string) => void;
   onStop: () => void;
@@ -26,449 +25,188 @@ interface MediaLibraryProps {
   onRefreshMediaServerHealth?: () => void | Promise<MediaServerHealth>;
 }
 
-const tabDefs: Array<{ id: MediaTab; label: string; accepts: string; title: string }> = [
-  { id: 'videos', label: 'Videos', accepts: 'video/*', title: 'Video Clips' },
-  { id: 'slides', label: 'Slides', accepts: '.pdf,.ppt,.pptx,.pps,.ppsx,.potx,.key,image/*', title: 'Slides & Decks' },
-  { id: 'images', label: 'Images', accepts: 'image/*', title: 'Images' },
-  { id: 'files', label: 'Files', accepts: '.pdf,.ppt,.pptx,.pps,.ppsx,.potx,.key,.doc,.docx,.xls,.xlsx,.txt,image/*,video/*', title: 'Files' },
-];
+export const SUPPORTED_MEDIA_ACCEPT = 'video/*,image/*,.pdf,.ppt,.pptx,.pps,.ppsx,.potx,.key,.doc,.docx,.xls,.xlsx,.txt';
 
-export const SUPPORTED_MEDIA_ACCEPT = [
-  'video/*',
-  'image/*',
-  '.pdf',
-  '.ppt',
-  '.pptx',
-  '.pps',
-  '.ppsx',
-  '.potx',
-  '.key',
-  '.doc',
-  '.docx',
-  '.xls',
-  '.xlsx',
-  '.txt',
-].join(',');
-
-export function MediaLibrary({
-  assets,
-  activeMedia,
-  activeMediaSlideIndex,
-  onActiveMediaSlideIndexChange,
-  onUpload,
-  onAddUrl,
-  onPlay,
-  onRemove,
-  onStop,
-  mediaServerHealth,
-  onRefreshMediaServerHealth,
-}: MediaLibraryProps) {
-  const [activeTab, setActiveTab] = useState<MediaTab>('videos');
-  const [videoUrl, setVideoUrl] = useState('');
-  const [imageUrl, setImageUrl] = useState('');
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadError, setUploadError] = useState('');
-  const inputRefs = {
-    videos: useRef<HTMLInputElement>(null),
-    slides: useRef<HTMLInputElement>(null),
-    images: useRef<HTMLInputElement>(null),
-    files: useRef<HTMLInputElement>(null),
-  };
-
-  const activeDef = tabDefs.find((tab) => tab.id === activeTab) || tabDefs[0];
+export function MediaLibrary({ assets, activeMedia, activeMediaSlideIndex, onActiveMediaSlideIndexChange,
+  onUpload, onAddUrl, onPlay, onRemove, onStop }: MediaLibraryProps) {
+  const [view, setView] = useState<'library' | 'add' | 'preview'>('library');
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [url, setUrl] = useState('');
+  const [urlType, setUrlType] = useState<'video' | 'image'>('video');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const busyRef = useRef(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const previousView = useRef(view);
+  const selected = assets.find(asset => asset.id === previewId);
+  const filtered = useMemo(() => assets.filter(asset => asset.name.toLowerCase().includes(query.toLowerCase())), [assets, query]);
   const deckStatus = getPresentationDeckStatus(activeMedia, activeMediaSlideIndex);
-  const deckUploadBlockMessage = getDeckUploadBlockMessage(mediaServerHealth);
-  const showDeckUploadNotice = (activeTab === 'slides' || activeTab === 'files') && Boolean(deckUploadBlockMessage);
-  const filteredAssets = useMemo(() => {
-    switch (activeTab) {
-      case 'videos':
-        return assets.filter((asset) => asset.type === 'video');
-      case 'slides':
-        return assets.filter((asset) => asset.type === 'pdf' || asset.type === 'presentation');
-      case 'images':
-        return assets.filter((asset) => asset.type === 'image');
-      case 'files':
-        return assets;
+
+  useEffect(() => {
+    if (previousView.current !== view) {
+      panelRef.current?.querySelector<HTMLButtonElement>('[data-view-focus]')?.focus();
+      previousView.current = view;
     }
-  }, [activeTab, assets]);
+  }, [view]);
 
-  const handleUrlSubmit = (type: 'video' | 'image') => {
-    const value = type === 'video' ? videoUrl.trim() : imageUrl.trim();
-    if (!value) return;
-    onAddUrl(value, type);
-    if (type === 'video') setVideoUrl('');
-    else setImageUrl('');
+  const handleUpload = async (files: File[]) => {
+    if (!files.length || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    setQuery('');
+    setView('library');
+    try { await onUpload(files); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not add these files. Please try again.'); }
+    finally { busyRef.current = false; setBusy(false); }
   };
 
-  const handleUpload = (fileList: FileList | null) => {
-    const files = Array.from(fileList || []);
-    if (files.length === 0) return;
-    setActiveTab(getMediaTabForType(detectMediaType(files[0])));
-    setUploadError('');
-
-    if (deckUploadBlockMessage && hasDeckFilesRequiringMediaServer(files)) {
-      setActiveTab('slides');
-      setUploadError(deckUploadBlockMessage);
-      return;
-    }
-
-    setIsUploading(true);
-    void Promise.resolve(onUpload(files))
-      .catch((error) => {
-        console.error('Failed to upload media:', error);
-        setUploadError('Upload failed. Try that file again.');
-      })
-      .finally(() => setIsUploading(false));
+  const submitUrl = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!url.trim() || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      await onAddUrl(url.trim(), urlType);
+      setUrl('');
+      setQuery('');
+      setView('library');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not add this link. Please try again.'); }
+    finally { busyRef.current = false; setBusy(false); }
   };
 
-  const counts = {
-    videos: assets.filter((asset) => asset.type === 'video').length,
-    slides: assets.filter((asset) => asset.type === 'pdf' || asset.type === 'presentation').length,
-    images: assets.filter((asset) => asset.type === 'image').length,
-    files: assets.length,
-  };
+  return <div ref={panelRef} className={`media-workspace${dragging ? ' is-dragging' : ''}`}
+    onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
+    onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
+    onDrop={event => { event.preventDefault(); setDragging(false); void handleUpload(Array.from(event.dataTransfer.files)); }}>
+    <input ref={inputRef} type="file" accept={SUPPORTED_MEDIA_ACCEPT} multiple hidden aria-label="Upload media files"
+      onChange={event => { void handleUpload(Array.from(event.target.files || [])); event.target.value = ''; }} />
+    {dragging && <div className="media-drop-overlay">Drop files to add</div>}
 
-  return (
-    <div style={styles.panelFull}>
-      <div style={styles.panelHeader}>
-        <h3 style={styles.panelTitle}>Media</h3>
-        {activeMedia && (
-          <div style={styles.liveMedia}>
-            <span style={styles.liveDot} />
-            <span style={styles.liveMediaName}>{activeMedia.name}</span>
-            <button type="button" style={styles.stopBtn} onClick={onStop}>Stop</button>
-          </div>
-        )}
-      </div>
-
-      {deckStatus.hasDeck && (
-        <ActiveDeckControls
-          mediaName={activeMedia?.name || 'Presentation'}
-          status={deckStatus}
-          onSlideIndexChange={onActiveMediaSlideIndexChange}
-        />
-      )}
-
-      <div style={styles.tabBar} role="tablist" aria-label="Media library">
-        {tabDefs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            style={{ ...styles.tabBtn, ...(activeTab === tab.id ? styles.tabBtnActive : {}) }}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.label}
-            {counts[tab.id] > 0 && <span style={styles.tabCount}>{counts[tab.id]}</span>}
-          </button>
-        ))}
-      </div>
-
-      <div style={styles.body}>
-        {showDeckUploadNotice && (
-          <div
-            style={{
-              ...styles.deckReadinessNotice,
-              ...(mediaServerHealth?.status === 'checking' ? styles.deckReadinessNoticeChecking : styles.deckReadinessNoticeBlocked),
-            }}
-          >
-            <div style={styles.deckReadinessText}>
-              <span style={styles.deckReadinessTitle}>
-                {mediaServerHealth?.status === 'checking' ? 'Checking exact deck renderer' : 'Exact deck renderer unavailable'}
-              </span>
-              <span style={styles.deckReadinessMessage}>{deckUploadBlockMessage}</span>
-            </div>
-            {onRefreshMediaServerHealth && (
-              <button
-                type="button"
-                style={{
-                  ...styles.deckReadinessButton,
-                  ...(mediaServerHealth?.status === 'checking' ? styles.deckReadinessButtonDisabled : {}),
-                }}
-                disabled={mediaServerHealth?.status === 'checking'}
-                onClick={() => {
-                  setUploadError('');
-                  void onRefreshMediaServerHealth();
-                }}
-              >
-                Check
-              </button>
-            )}
-          </div>
-        )}
-        <div style={styles.uploadCard}>
-          <input
-            ref={inputRefs[activeTab]}
-            type="file"
-            accept={SUPPORTED_MEDIA_ACCEPT}
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              handleUpload(e.target.files);
-              e.target.value = '';
-            }}
-          />
-          <div>
-            <h4 style={styles.sectionTitle}>{activeDef.title}</h4>
-            <p style={styles.uploadMeta}>{getUploadMeta(activeTab)}</p>
-            <p style={styles.uploadHint}>PDF and PowerPoint files are accepted from any tab.</p>
-          </div>
-          <button
-            type="button"
-            style={{ ...styles.uploadBtn, ...(isUploading ? styles.uploadBtnDisabled : {}) }}
-            disabled={isUploading}
-            onClick={() => inputRefs[activeTab].current?.click()}
-          >
-            <UploadIcon />
-            {isUploading ? 'Rendering...' : 'Upload'}
-          </button>
-        </div>
-        {uploadError && <div style={styles.uploadError}>{uploadError}</div>}
-
-        {activeTab === 'videos' && (
-          <UrlBox
-            value={videoUrl}
-            placeholder="Paste video URL"
-            actionLabel="Add Video"
-            onChange={setVideoUrl}
-            onSubmit={() => handleUrlSubmit('video')}
-          />
-        )}
-
-        {activeTab === 'images' && (
-          <UrlBox
-            value={imageUrl}
-            placeholder="Paste image URL"
-            actionLabel="Add Image"
-            onChange={setImageUrl}
-            onSubmit={() => handleUrlSubmit('image')}
-          />
-        )}
-
-        <div style={styles.assetList}>
-          {filteredAssets.length === 0 ? (
-            <div style={styles.emptyState}>
-              <MediaTypeIcon type={activeTab === 'slides' ? 'presentation' : activeTab === 'videos' ? 'video' : activeTab === 'images' ? 'image' : 'file'} />
-              <span style={styles.emptyText}>No media yet</span>
-            </div>
-          ) : (
-            filteredAssets.map((asset) => {
-              const isActive = activeMedia?.assetId === asset.id || activeMedia?.url === asset.url;
-              const canPlay = canPlayMediaAsset(asset);
-              const isProcessing = asset.processingStatus === 'processing';
-              const hasError = asset.processingStatus === 'error';
-              const statusLabel = getMediaAssetStatusLabel(asset);
-              return (
-                <div
-                  key={asset.id}
-                  style={{
-                    ...styles.assetCard,
-                    ...(isActive ? styles.assetCardActive : {}),
-                    ...(isProcessing ? styles.assetCardProcessing : {}),
-                    ...(hasError ? styles.assetCardError : {}),
-                  }}
-                >
-                  <div
-                    style={{
-                      ...styles.assetIcon,
-                      ...(isProcessing ? styles.assetIconProcessing : {}),
-                      ...(hasError ? styles.assetIconError : {}),
-                    }}
-                  >
-                    <MediaTypeIcon type={asset.type} />
-                  </div>
-                  <div style={styles.assetInfo}>
-                    <span style={styles.assetName}>{asset.name}</span>
-                    <span
-                      style={{
-                        ...styles.assetMeta,
-                        ...(isProcessing ? styles.assetMetaProcessing : {}),
-                        ...(hasError ? styles.assetMetaError : {}),
-                      }}
-                    >
-                      {statusLabel}
-                    </span>
-                  </div>
-                  <div style={styles.assetActions}>
-                    <button
-                      type="button"
-                      style={{ ...styles.iconBtn, ...(!canPlay ? styles.iconBtnDisabled : {}) }}
-                      onClick={() => { if (canPlay) onPlay(asset); }}
-                      disabled={!canPlay}
-                      aria-label={`Show ${asset.name}`}
-                      title={canPlay ? `Show ${asset.name}` : statusLabel}
-                    >
-                      <PlayIcon />
-                    </button>
-                    <button type="button" style={styles.iconBtn} onClick={() => onRemove(asset.id)} aria-label={`Remove ${asset.name}`}>
-                      <CloseIcon />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ActiveDeckControls({
-  mediaName,
-  status,
-  onSlideIndexChange,
-}: {
-  mediaName: string;
-  status: ReturnType<typeof getPresentationDeckStatus>;
-  onSlideIndexChange: (index: number) => void;
-}) {
-  const goPrevious = () => {
-    onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'previous'));
-  };
-  const goNext = () => {
-    onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'));
-  };
-  const slideItems = getPresentationSlidePickerItems(status.slides, status.currentIndex, status.unitLabel);
-  const presenterCards = getPresentationPresenterCards(status);
-  const currentCard = presenterCards.find((card) => card.kind === 'current') || presenterCards[0];
-  const currentNotes = currentCard.notes;
-
-  return (
-    <div style={styles.deckControl}>
-      <div style={styles.deckControlHeader}>
-        <span style={styles.deckEyebrow}>Live Deck</span>
-        <span style={styles.deckCount}>{status.unitLabel} {status.currentIndex + 1} / {status.total}</span>
-      </div>
-      <div style={styles.deckName}>{mediaName}</div>
-      <div style={styles.deckPresenterGrid}>
-        {presenterCards.map((card) => (
-          <div
-            key={card.kind}
-            style={{
-              ...styles.deckPresenterCard,
-              ...(card.kind === 'current' ? styles.deckPresenterCardCurrent : {}),
-            }}
-          >
-            <div style={styles.deckPresenterFrame}>
-              {card.imageUrl ? (
-                <img src={card.imageUrl} alt="" style={styles.deckPresenterImage} />
-              ) : (
-                <span style={styles.deckPresenterFallback}>{card.isEnd ? 'End' : card.index !== null ? card.index + 1 : '-'}</span>
-              )}
-            </div>
-            <div style={styles.deckPresenterMeta}>
-              <span style={styles.deckPresenterLabel}>{card.label}</span>
-              <span style={styles.deckPresenterTitle}>{card.title}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-      {currentNotes.length > 0 && (
-        <div style={styles.deckNotes}>
-          <div style={styles.deckNotesHeader}>Speaker Notes</div>
-          <ul style={styles.deckNotesList}>
-            {currentNotes.map((note, index) => (
-              <li key={`${status.currentSlide?.id || status.currentIndex}-note-${index}`} style={styles.deckNoteItem}>
-                {note}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <label style={styles.deckJumpLabel}>
-        <span style={styles.deckJumpText}>Jump to</span>
-        <select
-          style={styles.deckJumpSelect}
-          value={status.currentIndex}
-          onChange={(event) => onSlideIndexChange(Number(event.target.value))}
-          aria-label="Jump to slide"
-        >
-          {slideItems.map((item) => (
-            <option key={item.index} value={item.index}>
-              {item.label}: {item.title}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div style={styles.deckFilmstrip} role="list" aria-label="Slides in live deck">
-        {slideItems.map((item) => (
-          <button
-            key={item.index}
-            type="button"
-            role="listitem"
-            style={{
-              ...styles.deckThumbButton,
-              ...(item.isCurrent ? styles.deckThumbButtonActive : {}),
-            }}
-            onClick={() => onSlideIndexChange(item.index)}
-            aria-pressed={item.isCurrent}
-            aria-label={`Show ${item.label}: ${item.title}`}
-            title={`${item.label}: ${item.title}`}
-          >
-            <span style={styles.deckThumbFrame}>
-              {item.imageUrl ? (
-                <img src={item.imageUrl} alt="" style={styles.deckThumbImage} />
-              ) : (
-                <span style={styles.deckThumbFallback}>{item.index + 1}</span>
-              )}
-            </span>
-            <span style={styles.deckThumbNumber}>{item.index + 1}</span>
-          </button>
-        ))}
-      </div>
-      <div style={styles.deckActions}>
-        <button
-          type="button"
-          style={{ ...styles.deckButton, ...(status.canGoPrevious ? {} : styles.deckButtonDisabled) }}
-          disabled={!status.canGoPrevious}
-          onClick={goPrevious}
-          aria-label="Show previous slide"
-        >
-          Previous
-        </button>
-        <button
-          type="button"
-          style={{ ...styles.deckButton, ...styles.deckPrimaryButton, ...(status.canGoNext ? {} : styles.deckButtonDisabled) }}
-          disabled={!status.canGoNext}
-          onClick={goNext}
-          aria-label="Show next slide"
-        >
-          Next
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function UrlBox({
-  value,
-  placeholder,
-  actionLabel,
-  onChange,
-  onSubmit,
-}: {
-  value: string;
-  placeholder: string;
-  actionLabel: string;
-  onChange: (value: string) => void;
-  onSubmit: () => void;
-}) {
-  return (
-    <div style={styles.urlBox}>
-      <input
-        style={styles.urlInput}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') onSubmit(); }}
-      />
-      <button type="button" style={{ ...styles.urlBtn, opacity: value.trim() ? 1 : 0.45 }} disabled={!value.trim()} onClick={onSubmit}>
-        {actionLabel}
+    {view === 'library' ? <>
+      <button type="button" data-view-focus className="media-add" disabled={busy} onClick={() => { setError(''); setView('add'); }}>
+        <StudioIcon name="plus" /> Add media
       </button>
+      {busy && <p className="media-progress" role="status"><span className="media-spinner" /> Preparing media…</p>}
+      {error && <p className="media-error" role="alert">{error}</p>}
+      {activeMedia && <section className="media-onstage" aria-label="Media on stage">
+        <div className="media-onstage-heading"><span><i /> On stage</span><button type="button" onClick={onStop}>Stop sharing</button></div>
+        <p title={activeMedia.name}>{activeMedia.name}</p>
+        {deckStatus.hasDeck && <ActiveDeckControls status={deckStatus} onSlideIndexChange={onActiveMediaSlideIndexChange} />}
+      </section>}
+      {(assets.length > 5 || query) && <label className="media-search"><StudioIcon name="search" />
+        <input aria-label="Search media" placeholder="Search media" value={query} onChange={event => setQuery(event.target.value)} />
+      </label>}
+      {assets.length === 0 ? <div className="media-empty">
+        <div className="media-empty-icon"><StudioIcon name="recordings" /></div>
+        <p>Your media, ready to share.</p>
+        <span>Add videos, images, or slides.<br />You can also drop files here.</span>
+      </div> : <ul className="media-library-list" aria-label="Media library">
+        {filtered.map(asset => {
+          const isActive = activeMedia?.assetId === asset.id || activeMedia?.url === asset.url;
+          const canPlay = canPlayMediaAsset(asset);
+          const showPreview = () => { setPreviewId(asset.id); setView('preview'); };
+          return <li key={asset.id} className="media-library-row" data-active={isActive}>
+            <button type="button" className="media-asset-preview" onClick={showPreview} aria-label={`Preview ${asset.name}`}>
+              <MediaThumbnail asset={asset} />
+            </button>
+            <div className="media-asset-copy"><button type="button" onClick={showPreview} title={asset.name}>{asset.name}</button>
+              <span className={asset.processingStatus === 'error' ? 'media-error-copy' : ''}>
+                {asset.processingStatus === 'processing' && <span className="media-spinner" />}{getMediaAssetStatusLabel(asset)}
+              </span>
+            </div>
+            {!isActive && <button type="button" className="media-show" onClick={() => onPlay(asset)} disabled={!canPlay} aria-label={`Show ${asset.name}`} title={canPlay ? 'Show on stage' : getMediaAssetStatusLabel(asset)}>Show</button>}
+            <details className="media-item-menu" onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); } }}>
+              <summary aria-label={`Options for ${asset.name}`}><StudioIcon name="more" /></summary>
+              <div><button type="button" onClick={showPreview}>Preview</button>
+                <button type="button" className="media-remove" onClick={() => onRemove(asset.id)}>Remove</button></div>
+            </details>
+          </li>;
+        })}
+        {filtered.length === 0 && <li className="media-no-results">No media matches “{query}”.</li>}
+      </ul>}
+    </> : <>
+      <div className="media-view-heading"><button type="button" data-view-focus aria-label="Back to media library" onClick={() => { setError(''); setView('library'); }}>←</button>
+        <h3>{view === 'add' ? 'Add media' : 'Preview'}</h3></div>
+      {view === 'add' ? <div className="media-add-view">
+        <button type="button" className="media-upload-target" disabled={busy} onClick={() => inputRef.current?.click()}>
+          <UploadIcon /><strong>Upload files</strong><span>or drag and drop here</span>
+        </button>
+        <p className="media-format-hint">Videos, images, PDF & PowerPoint</p>
+        <details className="media-disclosure"><summary>Add from a link</summary>
+          <form onSubmit={submitUrl} className="media-link-form">
+            <label>Media type<select value={urlType} onChange={event => setUrlType(event.target.value as 'video' | 'image')}><option value="video">Video</option><option value="image">Image</option></select></label>
+            <label>File link<input type="url" required value={url} placeholder="https://…" onChange={event => setUrl(event.target.value)} /></label>
+            <p>Use a direct file link. For a YouTube or webpage link, share your browser tab instead.</p>
+            <button type="submit" className="media-primary" disabled={!url.trim() || busy}>{busy ? 'Checking link…' : 'Add to library'}</button>
+          </form>
+        </details>
+        {error && <p className="media-error" role="alert">{error}</p>}
+      </div> : selected ? <MediaPreview key={selected.id} asset={selected} isActive={activeMedia?.assetId === selected.id || activeMedia?.url === selected.url} onShow={index => { onPlay(selected); onActiveMediaSlideIndexChange(index); setView('library'); }} onStop={onStop} /> : <p className="media-no-results">This media has been removed.</p>}
+    </>}
+  </div>;
+}
+
+function MediaThumbnail({ asset }: { asset: StudioMediaAsset }) {
+  const src = asset.type === 'image' ? asset.url : asset.preview?.slides[0]?.imageUrl;
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  return src && !failed ? <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} /> : <MediaTypeIcon type={asset.type} />;
+}
+
+function MediaPreview({ asset, isActive, onShow, onStop }: { asset: StudioMediaAsset; isActive: boolean; onShow: (index: number) => void; onStop: () => void }) {
+  const [page, setPage] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const slides = asset.preview?.slides || [];
+  const image = slides[page]?.imageUrl || (asset.type === 'image' ? asset.url : null);
+  return <div className="media-preview-view" onKeyDown={event => {
+    if (!slides.length || event.altKey || event.metaKey || event.ctrlKey) return;
+    const direction = ['ArrowLeft', 'PageUp'].includes(event.key) ? -1 : ['ArrowRight', 'PageDown'].includes(event.key) ? 1 : 0;
+    if (!direction) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setPage(current => Math.max(0, Math.min(slides.length - 1, current + direction)));
+  }}>
+    <h4 title={asset.name}>{asset.name}</h4>
+    <div className="media-preview-frame">
+      {failed ? <p>Preview unavailable. Try uploading the file again.</p> : asset.type === 'video' ? <video src={asset.url} controls playsInline preload="metadata" onError={() => setFailed(true)} /> : image ? <img src={image} alt={slides[page]?.title || asset.name} onError={() => setFailed(true)} /> : <MediaTypeIcon type={asset.type} />}
     </div>
-  );
+    {slides.length > 1 && <div className="media-slide-navigation">
+      <button type="button" aria-label="Preview previous slide" disabled={page === 0} onClick={() => setPage(page - 1)}>←</button>
+      <span>{page + 1} / {slides.length}</span>
+      <button type="button" aria-label="Preview next slide" disabled={page === slides.length - 1} onClick={() => setPage(page + 1)}>→</button>
+    </div>}
+    <p className="media-preview-note">Only you see this preview.</p>
+    <button type="button" className="media-primary" disabled={!isActive && (!canPlayMediaAsset(asset) || failed)} onClick={isActive ? onStop : () => onShow(page)}>{isActive ? 'Stop sharing' : 'Show on stage'}</button>
+    <p className={asset.processingStatus === 'error' ? 'media-error' : 'media-format-hint'}>{getMediaAssetStatusLabel(asset)}</p>
+  </div>;
+}
+
+function ActiveDeckControls({ status, onSlideIndexChange }: {
+  status: ReturnType<typeof getPresentationDeckStatus>; onSlideIndexChange: (index: number) => void;
+}) {
+  const items = getPresentationSlidePickerItems(status.slides, status.currentIndex, status.unitLabel);
+  const next = getPresentationPresenterCards(status).find(card => card.kind === 'next');
+  return <div className="media-deck-controls">
+    <div className="media-slide-navigation">
+      <button type="button" aria-label="Show previous slide" disabled={!status.canGoPrevious} onClick={() => onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'previous'))}>←</button>
+      <select aria-label="Jump to slide" value={status.currentIndex} onChange={event => onSlideIndexChange(Number(event.target.value))}>
+        {items.map(item => <option key={item.index} value={item.index}>{item.label} of {status.total}</option>)}
+      </select>
+      <button type="button" aria-label="Show next slide" disabled={!status.canGoNext} onClick={() => onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'))}>→</button>
+    </div>
+    <details className="media-disclosure"><summary>Presenter view</summary>
+      {next && <div className="media-next-slide"><span>Up next</span>{next.imageUrl && <img src={next.imageUrl} alt="" loading="lazy" />}<p>{next.title}</p></div>}
+      {!!status.currentSlide?.notes?.length && <div className="media-speaker-notes"><span>Speaker notes · only you</span>{status.currentSlide.notes.map((note, index) => <p key={index}>{note}</p>)}</div>}
+      <div className="media-filmstrip" aria-label="Slides in presentation">{items.map(item => <button type="button" key={item.index} aria-pressed={item.isCurrent} aria-label={`Show ${item.label}: ${item.title}`} onClick={() => onSlideIndexChange(item.index)}>
+        {item.imageUrl && <img src={item.imageUrl} alt="" loading="lazy" />}<span>{item.index + 1}</span>
+      </button>)}</div>
+    </details>
+  </div>;
 }
 
 export function detectMediaType(file: File): StudioMediaType {
@@ -522,7 +260,7 @@ export function hasDeckFilesRequiringMediaServer(files: File[]): boolean {
 export function getDeckUploadBlockMessage(
   health?: Pick<MediaServerHealth, 'status' | 'message' | 'presentationRenderer'> | null
 ): string {
-  const exactRendererMessage = 'Modern PPTX files will use visual browser rendering when the exact Render media-server is unavailable. Legacy PPT and Keynote files still require the media-server; PDF files can render in this browser.';
+  const exactRendererMessage = 'Modern PPTX files will use visual browser rendering when the exact Render media-server is unavailable. Legacy PPT files still require the media-server; export Keynote files as PDF or PPTX. PDF files can render in this browser.';
   if (!health) return `Checking the exact deck renderer. ${exactRendererMessage}`;
   if (health.status === 'ready') {
     if (!health.presentationRenderer) {
@@ -549,19 +287,6 @@ export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {
     return asset.processingMessage || 'This asset could not be prepared for broadcast.';
   }
   return getAssetLabel(asset);
-}
-
-function getUploadMeta(tab: MediaTab): string {
-  switch (tab) {
-    case 'videos':
-      return 'MP4, MOV, WebM';
-    case 'slides':
-      return 'PDF, PowerPoint, Keynote, images';
-    case 'images':
-      return 'PNG, JPG, WebP, GIF';
-    case 'files':
-      return 'Documents, videos, images';
-  }
 }
 
 function getAssetLabel(asset: StudioMediaAsset): string {
@@ -634,95 +359,3 @@ function PlayIcon() {
     </svg>
   );
 }
-
-function CloseIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-      <path d="M18 6L6 18" />
-      <path d="M6 6l12 12" />
-    </svg>
-  );
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  panelFull: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
-  panelHeader: { padding: '14px 16px 10px', borderBottom: '1px solid var(--border)' },
-  panelTitle: { fontSize: 14, fontWeight: 600, margin: 0 },
-  liveMedia: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, minWidth: 0 },
-  liveDot: { width: 8, height: 8, borderRadius: '50%', background: 'var(--success)', flexShrink: 0 },
-  liveMediaName: { fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 },
-  stopBtn: { border: '1px solid rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.12)', color: '#fca5a5', borderRadius: 6, fontSize: 10, fontWeight: 700, padding: '3px 7px', cursor: 'pointer' },
-  deckControl: { margin: '10px 12px 8px', padding: 12, borderRadius: 8, border: '1px solid rgba(103,232,249,0.24)', background: 'rgba(103,232,249,0.07)' },
-  deckControlHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 7 },
-  deckEyebrow: { fontSize: 10, fontWeight: 800, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0 },
-  deckCount: { fontSize: 10, fontWeight: 800, color: 'var(--text-muted)' },
-  deckName: { fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 5 },
-  deckPresenterGrid: { display: 'grid', gridTemplateColumns: '1.16fr 0.84fr', gap: 8, marginTop: 8 },
-  deckPresenterCard: { minWidth: 0, padding: 6, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(15,23,42,0.48)', display: 'flex', flexDirection: 'column', gap: 5 },
-  deckPresenterCardCurrent: { border: '1px solid rgba(103,232,249,0.34)', background: 'rgba(8,47,73,0.28)' },
-  deckPresenterFrame: { width: '100%', aspectRatio: '16 / 9', borderRadius: 6, overflow: 'hidden', background: 'rgba(2,6,23,0.78)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.1)' },
-  deckPresenterImage: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
-  deckPresenterFallback: { fontSize: 11, fontWeight: 900, color: 'var(--text-muted)' },
-  deckPresenterMeta: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
-  deckPresenterLabel: { fontSize: 8, fontWeight: 900, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0 },
-  deckPresenterTitle: { minHeight: 24, fontSize: 10, lineHeight: 1.2, fontWeight: 800, color: 'var(--text-primary)', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' },
-  deckNotes: { marginTop: 9, padding: '8px 9px', borderRadius: 7, border: '1px solid rgba(103,232,249,0.18)', background: 'rgba(2,6,23,0.28)' },
-  deckNotesHeader: { fontSize: 9, fontWeight: 900, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: 0, marginBottom: 5 },
-  deckNotesList: { margin: 0, paddingLeft: 15, display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 96, overflowY: 'auto' },
-  deckNoteItem: { fontSize: 10, lineHeight: 1.35, color: 'var(--text-secondary)' },
-  deckJumpLabel: { display: 'grid', gridTemplateColumns: '48px minmax(0, 1fr)', alignItems: 'center', gap: 7, marginTop: 9 },
-  deckJumpText: { fontSize: 10, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase' },
-  deckJumpSelect: { minWidth: 0, width: '100%', height: 30, padding: '0 8px', borderRadius: 7, border: '1px solid rgba(103,232,249,0.22)', background: 'rgba(15,23,42,0.72)', color: 'var(--text-primary)', fontSize: 11, fontWeight: 700, outline: 'none' },
-  deckFilmstrip: { display: 'flex', gap: 7, overflowX: 'auto', padding: '9px 1px 2px', marginTop: 2 },
-  deckThumbButton: { position: 'relative', flex: '0 0 68px', width: 68, minWidth: 68, padding: 3, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(15,23,42,0.5)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'stretch' },
-  deckThumbButtonActive: { border: '1px solid var(--accent)', background: 'var(--accent-subtle)', boxShadow: '0 0 0 1px rgba(167,139,250,0.35)' },
-  deckThumbFrame: { width: '100%', aspectRatio: '16 / 9', borderRadius: 5, overflow: 'hidden', background: 'rgba(2,6,23,0.78)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.08)' },
-  deckThumbImage: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
-  deckThumbFallback: { fontSize: 14, fontWeight: 900, color: 'var(--text-muted)' },
-  deckThumbNumber: { fontSize: 9, lineHeight: 1.2, fontWeight: 900, color: 'inherit', textAlign: 'center', fontVariantNumeric: 'tabular-nums' },
-  deckActions: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 10 },
-  deckButton: { minWidth: 0, height: 30, borderRadius: 7, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', fontSize: 11, fontWeight: 800, cursor: 'pointer' },
-  deckPrimaryButton: { border: '1px solid var(--accent)', background: 'var(--accent-solid)', color: '#fff' },
-  deckButtonDisabled: { opacity: 0.4, cursor: 'not-allowed' },
-  tabBar: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4, padding: 8, borderBottom: '1px solid var(--border)' },
-  tabBtn: { minWidth: 0, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', borderRadius: 7, fontSize: 10, fontWeight: 700, cursor: 'pointer' },
-  tabBtnActive: { border: '1px solid var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
-  tabCount: { minWidth: 14, height: 14, borderRadius: 7, padding: '0 4px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.08)', fontSize: 9 },
-  body: { flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 },
-  uploadCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: 12, background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8 },
-  sectionTitle: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', margin: 0 },
-  uploadMeta: { margin: '3px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.25 },
-  uploadHint: { margin: '3px 0 0', fontSize: 9, color: 'var(--text-muted)', lineHeight: 1.25 },
-  uploadBtn: { height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 7, border: '1px solid var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)', fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: '0 10px', flexShrink: 0 },
-  uploadBtnDisabled: { opacity: 0.58, cursor: 'wait' },
-  uploadError: { marginTop: -4, padding: '8px 10px', borderRadius: 7, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.1)', color: '#fecaca', fontSize: 10, fontWeight: 700, lineHeight: 1.3 },
-  deckReadinessNotice: { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 8 },
-  deckReadinessNoticeChecking: { border: '1px solid rgba(103,232,249,0.3)', background: 'rgba(103,232,249,0.08)' },
-  deckReadinessNoticeBlocked: { border: '1px solid rgba(248,113,113,0.34)', background: 'rgba(248,113,113,0.09)' },
-  deckReadinessText: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
-  deckReadinessTitle: { fontSize: 10, fontWeight: 900, color: 'var(--text-primary)' },
-  deckReadinessMessage: { fontSize: 10, lineHeight: 1.3, color: 'var(--text-muted)' },
-  deckReadinessButton: { height: 28, borderRadius: 7, border: '1px solid var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)', fontSize: 10, fontWeight: 800, cursor: 'pointer', padding: '0 9px', flexShrink: 0 },
-  deckReadinessButtonDisabled: { opacity: 0.5, cursor: 'wait' },
-  urlBox: { display: 'flex', gap: 6 },
-  urlInput: { minWidth: 0, flex: 1, height: 34, padding: '0 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', outline: 'none', fontSize: 12 },
-  urlBtn: { height: 34, borderRadius: 7, border: 'none', background: 'var(--accent-solid)', color: 'white', fontSize: 11, fontWeight: 700, padding: '0 10px', cursor: 'pointer' },
-  assetList: { display: 'flex', flexDirection: 'column', gap: 6 },
-  emptyState: { minHeight: 128, border: '1px dashed var(--border-strong)', borderRadius: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--text-muted)' },
-  emptyText: { fontSize: 12, color: 'var(--text-muted)' },
-  assetCard: { display: 'flex', alignItems: 'center', gap: 9, padding: '9px 10px', border: '1px solid var(--border)', background: 'var(--bg-tertiary)', borderRadius: 8 },
-  assetCardActive: { border: '1px solid var(--success)', background: 'rgba(34,197,94,0.08)' },
-  assetCardProcessing: { border: '1px solid rgba(103,232,249,0.34)', background: 'rgba(103,232,249,0.07)' },
-  assetCardError: { border: '1px solid rgba(248,113,113,0.45)', background: 'rgba(248,113,113,0.08)' },
-  assetIcon: { width: 28, height: 28, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-hover)', background: 'rgba(167,139,250,0.1)', flexShrink: 0 },
-  assetIconProcessing: { color: '#67e8f9', background: 'rgba(103,232,249,0.12)' },
-  assetIconError: { color: '#fca5a5', background: 'rgba(248,113,113,0.12)' },
-  assetInfo: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
-  assetName: { fontSize: 12, fontWeight: 650, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  assetMeta: { fontSize: 10, color: 'var(--text-muted)' },
-  assetMetaProcessing: { color: '#67e8f9', lineHeight: 1.25, whiteSpace: 'normal' },
-  assetMetaError: { color: '#fca5a5', lineHeight: 1.25, whiteSpace: 'normal' },
-  assetActions: { display: 'flex', alignItems: 'center', gap: 4 },
-  iconBtn: { width: 26, height: 26, borderRadius: 6, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0 },
-  iconBtnDisabled: { opacity: 0.35, cursor: 'not-allowed' },
-};

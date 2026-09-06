@@ -84,7 +84,7 @@ describe('media library upload support', () => {
     assert.match(getDeckUploadBlockMessage(null), /Modern PPTX files will use visual browser rendering/);
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),
-      /Legacy PPT and Keynote files still require the media-server/
+      /Legacy PPT files still require the media-server/
     );
     assert.match(
       getDeckUploadBlockMessage({ status: 'ready', message: 'Ready' }),

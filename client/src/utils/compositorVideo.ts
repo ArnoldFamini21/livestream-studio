@@ -1,5 +1,37 @@
 export type CompositorVideoObjectFit = 'cover' | 'contain' | 'fill';
 
+function hasCanvasSafeMediaSource(
+  element: { currentSrc: string; src: string; crossOrigin: string | null },
+  pageUrl: string
+): boolean {
+  try {
+    const url = new URL(element.currentSrc || element.src, pageUrl);
+    if (url.protocol === 'blob:' || url.protocol === 'data:') return true;
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    return url.origin === new URL(pageUrl).origin || element.crossOrigin === 'anonymous';
+  } catch {
+    return false;
+  }
+}
+
+export function canDrawMediaImage(
+  image: Pick<HTMLImageElement, 'complete' | 'naturalWidth' | 'naturalHeight' | 'crossOrigin' | 'currentSrc' | 'src'>,
+  pageUrl: string
+): boolean {
+  return image.complete && finitePositive(image.naturalWidth) && finitePositive(image.naturalHeight)
+    && hasCanvasSafeMediaSource(image, pageUrl);
+}
+
+export function canDrawMediaVideo(
+  video: Pick<HTMLVideoElement, 'readyState' | 'videoWidth' | 'videoHeight' | 'crossOrigin' | 'currentSrc' | 'src'>,
+  pageUrl: string
+): boolean {
+  if (video.readyState < 2 || !finitePositive(video.videoWidth) || !finitePositive(video.videoHeight)) return false;
+  // Remote elements must successfully load under CORS before the compositor
+  // can draw them without tainting the canvas and breaking its recording.
+  return hasCanvasSafeMediaSource(video, pageUrl);
+}
+
 export interface CompositorVideoDrawPlan {
   sourceX: number;
   sourceY: number;

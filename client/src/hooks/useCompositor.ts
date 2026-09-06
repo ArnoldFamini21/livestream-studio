@@ -10,6 +10,8 @@ import type { WidgetOverlayData } from '../components/WidgetOverlay.tsx';
 import { buildLowerThirdCanvasFont, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 import { createCompositorFrameTarget, type CompositorFrameTarget } from '../utils/compositorFrameTarget.ts';
 import {
+  canDrawMediaImage,
+  canDrawMediaVideo,
   getCompositorVideoDrawPlan,
   getCompositorVideoObjectFit,
   isCompositorVideoHorizontallyMirrored,
@@ -389,16 +391,6 @@ function drawContainedSource(
   ctx.drawImage(source, dx, dy, drawnWidth, drawnHeight);
 }
 
-function isSameOriginOrLocalMediaUrl(url: string): boolean {
-  if (!url) return false;
-  if (url.startsWith('blob:') || url.startsWith('data:')) return true;
-  try {
-    return new URL(url, window.location.href).origin === window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
 function drawMediaFallbackCard(
   ctx: CanvasRenderingContext2D,
   media: ActiveMedia,
@@ -535,7 +527,6 @@ function drawActiveMediaOverlay(
   containerBounds: DOMRect,
   scaleX: number,
   scaleY: number,
-  image: HTMLImageElement | null,
   presentationSlideImage: HTMLImageElement | null,
   brandColor: string,
   slideIndex: number
@@ -552,15 +543,16 @@ function drawActiveMediaOverlay(
   ctx.fillStyle = '#000';
   drawRoundedRect(ctx, rect.x, rect.y, rect.width, rect.height, radius);
 
-  if (media.type === 'image' && image?.complete && image.naturalWidth > 0) {
+  const image = mediaNode?.querySelector('img');
+  if (media.type === 'image' && image instanceof HTMLImageElement && canDrawMediaImage(image, window.location.href)) {
     drawContainedSource(ctx, image, image.naturalWidth, image.naturalHeight, contentX, contentY, contentW, contentH);
     ctx.restore();
     return;
   }
 
-  if (media.type === 'video' && isSameOriginOrLocalMediaUrl(media.url)) {
+  if (media.type === 'video') {
     const video = mediaNode?.querySelector('video');
-    if (video instanceof HTMLVideoElement && video.readyState >= 2 && video.videoWidth > 0) {
+    if (video instanceof HTMLVideoElement && canDrawMediaVideo(video, window.location.href)) {
       try {
         drawContainedSource(ctx, video, video.videoWidth, video.videoHeight, contentX, contentY, contentW, contentH);
         ctx.restore();
@@ -1279,7 +1271,6 @@ export function useCompositor({
   const rAF = useRef<number>(0);
   const logoImageRef = useRef<HTMLImageElement | null>(null);
   const backgroundImageRef = useRef<HTMLImageElement | null>(null);
-  const activeMediaImageRef = useRef<HTMLImageElement | null>(null);
   const activePresentationSlideImageRef = useRef<HTMLImageElement | null>(null);
   const frameTargetRef = useRef<CompositorFrameTarget | null>(null);
   const activePresentationSlideImageUrl = getPresentationSlideImageUrl(activeMedia, activeMediaSlideIndex);
@@ -1321,25 +1312,6 @@ export function useCompositor({
       cancelled = true;
     };
   }, [stageBackground]);
-
-  useEffect(() => {
-    activeMediaImageRef.current = null;
-    if (activeMedia?.type !== 'image' || !activeMedia.url) return;
-
-    let cancelled = false;
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.src = activeMedia.url;
-    img.onload = () => {
-      if (!cancelled) activeMediaImageRef.current = img;
-    };
-    img.onerror = () => {
-      if (!cancelled) activeMediaImageRef.current = null;
-    };
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMedia?.type, activeMedia?.url]);
 
   useEffect(() => {
     activePresentationSlideImageRef.current = null;
@@ -1418,7 +1390,6 @@ export function useCompositor({
         containerBounds,
         scaleX,
         scaleY,
-        activeMediaImageRef.current,
         activePresentationSlideImageRef.current,
         brandColor,
         activeMediaSlideIndex
