@@ -1,4 +1,5 @@
 import '../styles/overlay-panel.css';
+import '../styles/media-library.css';
 import { useState, useRef, useEffect } from 'react';
 import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
 import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
@@ -137,7 +138,7 @@ interface SidebarProps {
   activeMediaSlideIndex: number;
   onActiveMediaSlideIndexChange: (index: number) => void;
   onUploadMedia: (files: FileList | File[]) => void;
-  onAddMediaUrl: (url: string, type: 'video' | 'image') => void;
+  onAddMediaUrl: (url: string, type: 'video' | 'image') => void | Promise<void>;
   onPlayMediaAsset: (asset: StudioMediaAsset) => void;
   onRemoveMediaAsset: (assetId: string) => void;
   onStopMedia: () => void;

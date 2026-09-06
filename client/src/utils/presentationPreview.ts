@@ -2,7 +2,7 @@ import type JSZip from 'jszip';
 import type { StudioMediaAssetPreview, PresentationSlidePreview } from '@studio/shared';
 import { resolveMediaHttpUrl } from './apiClient.ts';
 
-const MAX_PRESENTATION_PREVIEW_BYTES = 50 * 1024 * 1024;
+export const MAX_PRESENTATION_PREVIEW_BYTES = 50 * 1024 * 1024;
 const MAX_PREVIEW_SLIDES = 60;
 const MAX_PREVIEW_LINES_PER_SLIDE = 10;
 const MAX_PREVIEW_NOTES_PER_SLIDE = 8;

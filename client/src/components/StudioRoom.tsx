@@ -1,3 +1,4 @@
+import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { getAutoGridColumnCount } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
@@ -41,6 +42,7 @@ import {
   removeSavedHostStudio,
 } from '../utils/hostSession.ts';
 import { VideoTile } from './VideoTile.tsx';
+import { StudioMediaVideo } from './StudioMediaVideo.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
 import { Sidebar, type SidebarTab } from './Sidebar.tsx';
@@ -1077,12 +1079,24 @@ export function StudioRoom() {
   const [activeMediaSlideIndex, setActiveMediaSlideIndex] = useState(0);
   const [mediaAssets, setMediaAssets] = useState<StudioMediaAsset[]>([]);
 
+  const onStageMediaError = (media: ActiveMedia, message: string) => {
+    setMediaAssets((current) => current.map((asset) => (
+      asset.id === media.assetId
+        ? { ...asset, processingStatus: 'error', processingMessage: message }
+        : asset
+    )));
+    setActiveMedia((current) => current?.url === media.url ? null : current);
+    setActiveMediaSlideIndex(0);
+    addToast(message, 'error');
+  };
+
   useEffect(() => {
     const slideCount = getPresentationSlides(activeMedia).length;
     if (slideCount <= 1) return;
 
     const handlePresentationKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTextEntryTarget(event.target)) return;
+      if (event.target instanceof HTMLElement && event.target.closest('button, summary, a, video, [role="button"]')) return;
       const direction = event.key === 'ArrowLeft' || event.key === 'PageUp'
         ? 'previous'
         : event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' '
@@ -1931,7 +1945,7 @@ export function StudioRoom() {
         nameTagStyle,
         pipCorner,
         stageItemOrder,
-        mediaAssets: mediaAssets.filter((asset) => asset.source === 'url'),
+        mediaAssets: getPersistableMediaAssets(mediaAssets),
         scenes: getPersistableScenes(scenes, mediaAssets),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
         sceneTransitionPreset,
@@ -3979,9 +3993,14 @@ export function StudioRoom() {
 
   // Media library
   const onUploadMedia = async (files: FileList | File[]) => {
-    const uploads = Array.from(files).map((file) => {
+    const selectedFiles = Array.from(files);
+    assertMediaLibraryCapacity(mediaAssetsRef.current.length, selectedFiles.length);
+    const failures: Array<{ name: string; message: string }> = [];
+    const uploads = selectedFiles.map((file) => {
       const type = detectMediaType(file);
       const isDeck = type === 'presentation' || type === 'pdf';
+      const preparationError = getMediaFilePreparationError(file, type);
+      if (preparationError) failures.push({ name: file.name, message: preparationError });
       const asset: StudioMediaAsset = {
         id: `media-${++idCounters.current.media}`,
         name: file.name,
@@ -3990,31 +4009,48 @@ export function StudioRoom() {
         mimeType: file.type || 'application/octet-stream',
         sizeBytes: file.size,
         createdAt: new Date().toISOString(),
-        source: 'upload' as const,
-        ...(isDeck ? {
+        source: 'upload',
+        ...(preparationError ? {
+          processingStatus: 'error' as const,
+          processingMessage: preparationError,
+        } : isDeck || type === 'image' || type === 'video' ? {
           processingStatus: 'processing' as const,
-          processingMessage: getDeckPreparationMessage(type),
+          processingMessage: isDeck ? 'Waiting to render…' : 'Checking media…',
         } : {}),
       };
-      return { file, type, isDeck, asset };
+      return { file, type, isDeck, asset, preparationError };
     });
 
     if (uploads.length > 0) {
-      setMediaAssets((prev) => [...uploads.map((upload) => upload.asset), ...prev].slice(0, 80));
+      setMediaAssets((prev) => [...uploads.map((upload) => upload.asset), ...prev]);
     }
 
-    await Promise.all(uploads.map(async ({ file, type, isDeck, asset }) => {
-      if (!isDeck) return;
-
+    // A single render at a time prevents large decks from exhausting the browser's
+    // canvas/DOM memory while keeping every queued file visible in the library.
+    for (const { file, type, isDeck, asset, preparationError } of uploads) {
+      if (preparationError) continue;
+      if (type === 'image' || type === 'video') {
+        try {
+          await probeMediaAsset(asset.url, type);
+          setMediaAssets(prev => prev.map(item => item.id === asset.id ? { ...item, processingStatus: 'ready', processingMessage: undefined } : item));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'This media file could not be opened.';
+          failures.push({ name: file.name, message });
+          setMediaAssets(prev => prev.map(item => item.id === asset.id ? { ...item, processingStatus: 'error', processingMessage: message } : item));
+        }
+        continue;
+      }
+      if (!isDeck) continue;
+      setMediaAssets((prev) => prev.map((item) => item.id === asset.id
+        ? { ...item, processingMessage: getDeckPreparationMessage(type) }
+        : item));
       try {
         let serverRenderFailure: PresentationServerRenderFailure | undefined;
         const powerPointRenderStrategy = type === 'presentation'
           ? getPowerPointRenderStrategy(file)
           : null;
-        const skipUnavailableServerRender = type === 'presentation' && (
-          mediaServerHealth.status === 'unavailable' ||
-          mediaServerHealth.presentationRenderer?.ready === false
-        );
+        const skipUnavailableServerRender = mediaServerHealth.status === 'unavailable' ||
+          mediaServerHealth.presentationRenderer?.ready === false;
         if (skipUnavailableServerRender) {
           serverRenderFailure = getUnavailableMediaServerPresentationFailure(type, mediaServerHealth);
         }
@@ -4023,52 +4059,48 @@ export function StudioRoom() {
           requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
           allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
           skipServerRender: skipUnavailableServerRender,
-          onServerRenderFailure: (failure) => {
-            serverRenderFailure = failure;
-          },
+          onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
         });
-        const nextState = preview
-          ? {
-              preview,
-              processingStatus: 'ready' as const,
-              processingMessage: undefined,
-            }
-          : {
-              processingStatus: 'error' as const,
-              processingMessage: getDeckRenderFailureMessage(type, serverRenderFailure),
-            };
-
-        setMediaAssets((prev) => prev.map((item) => (
-          item.id === asset.id ? { ...item, ...nextState } : item
-        )));
+        const message = preview ? undefined : getDeckRenderFailureMessage(type, serverRenderFailure);
+        if (message) failures.push({ name: file.name, message });
+        setMediaAssets((prev) => prev.map((item) => item.id === asset.id
+          ? { ...item, preview, processingStatus: preview ? 'ready' : 'error', processingMessage: message }
+          : item));
       } catch (err) {
         console.error('Failed to render presentation media:', err);
-        setMediaAssets((prev) => prev.map((item) => (
-          item.id === asset.id
-            ? {
-                ...item,
-                processingStatus: 'error',
-                processingMessage: getDeckRenderFailureMessage(type),
-              }
-            : item
-        )));
+        const message = getDeckRenderFailureMessage(type);
+        failures.push({ name: file.name, message });
+        setMediaAssets((prev) => prev.map((item) => item.id === asset.id
+          ? { ...item, processingStatus: 'error', processingMessage: message }
+          : item));
       }
-    }));
+    }
+    if (failures.length > 0) throw new Error(getMediaBatchFailureMessage(failures, uploads.length));
   };
 
-  const onAddMediaUrl = (url: string, type: 'video' | 'image') => {
-    const trimmed = url.trim();
-    if (!trimmed) return;
+  const onAddMediaUrl = async (url: string, type: 'video' | 'image') => {
+    const normalizedUrl = normalizeMediaAssetUrl(url, type);
+    assertMediaLibraryCapacity(mediaAssetsRef.current.length, 1);
     const asset: StudioMediaAsset = {
       id: `media-${++idCounters.current.media}`,
-      name: getMediaNameFromUrl(trimmed, type),
-      url: trimmed,
+      name: getMediaNameFromUrl(normalizedUrl, type),
+      url: normalizedUrl,
       type,
       mimeType: type === 'video' ? 'video/url' : 'image/url',
       createdAt: new Date().toISOString(),
       source: 'url',
+      processingStatus: 'processing',
+      processingMessage: 'Checking media…',
     };
-    setMediaAssets((prev) => [asset, ...prev].slice(0, 80));
+    setMediaAssets((prev) => [asset, ...prev]);
+    try {
+      await probeMediaAsset(normalizedUrl, type);
+      setMediaAssets(prev => prev.map(item => item.id === asset.id ? { ...item, processingStatus: 'ready', processingMessage: undefined } : item));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'This media link could not be opened.';
+      setMediaAssets(prev => prev.map(item => item.id === asset.id ? { ...item, processingStatus: 'error', processingMessage: message } : item));
+      throw new Error(message);
+    }
   };
 
   const onPlayMediaAsset = (asset: StudioMediaAsset) => {
@@ -5893,9 +5925,22 @@ export function StudioRoom() {
                         onSlideIndexChange={setActiveMediaSlideIndex}
                       />
                     ) : activeMedia.type === 'video' ? (
-                      <video src={activeMedia.url} style={styles.mediaContent} autoPlay controls />
+                      <StudioMediaVideo
+                        key={activeMedia.assetId || activeMedia.url}
+                        url={activeMedia.url}
+                        name={activeMedia.name}
+                        style={styles.mediaContent}
+                        broadcastAudio={broadcastAudioBus}
+                        onError={(message) => onStageMediaError(activeMedia, message)}
+                      />
                     ) : activeMedia.type === 'image' ? (
-                      <img src={activeMedia.url} alt={activeMedia.name} style={styles.mediaContent} />
+                      <img
+                        crossOrigin="anonymous"
+                        src={activeMedia.url}
+                        alt={activeMedia.name}
+                        style={styles.mediaContent}
+                        onError={() => onStageMediaError(activeMedia, 'This image could not load. Upload the image or use a direct link that allows sharing.')}
+                      />
                     ) : activeMedia.type === 'pdf' ? (
                       <object data={`${activeMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
                         <iframe src={`${activeMedia.url}#view=FitH`} style={styles.mediaContent} title={activeMedia.name} />

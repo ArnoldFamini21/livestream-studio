@@ -1,12 +1,52 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  canDrawMediaImage,
+  canDrawMediaVideo,
   getCompositorVideoDrawPlan,
   getCompositorVideoObjectFit,
   isCompositorVideoHorizontallyMirrored,
 } from '../src/utils/compositorVideo.ts';
 
 describe('compositor video drawing', () => {
+  const readyVideo = {
+    readyState: 2,
+    videoWidth: 1920,
+    videoHeight: 1080,
+    crossOrigin: null,
+    currentSrc: '',
+    src: 'https://studio.example.com/clip.mp4',
+  };
+
+  it('draws local clips and loaded remote clips requested with anonymous CORS', () => {
+    const page = 'https://studio.example.com/room';
+    assert.equal(canDrawMediaVideo(readyVideo, page), true);
+    assert.equal(canDrawMediaVideo({ ...readyVideo, src: 'blob:https://studio.example.com/clip' }, page), true);
+    assert.equal(canDrawMediaVideo({ ...readyVideo, src: 'https://media.example.com/clip.mp4', crossOrigin: 'anonymous' }, page), true);
+  });
+
+  it('keeps failed CORS loads and unsafe remote sources away from the recording canvas', () => {
+    const page = 'https://studio.example.com/room';
+    const remoteVideo = { ...readyVideo, src: 'https://media.example.com/clip.mp4' };
+    assert.equal(canDrawMediaVideo(remoteVideo, page), false);
+    assert.equal(canDrawMediaVideo({ ...remoteVideo, crossOrigin: 'anonymous', readyState: 0 }, page), false);
+    assert.equal(canDrawMediaVideo({ ...remoteVideo, crossOrigin: 'anonymous', videoWidth: 0 }, page), false);
+    assert.equal(canDrawMediaVideo({ ...remoteVideo, currentSrc: 'https://media.example.com/redirect.mp4' }, page), false);
+    assert.equal(canDrawMediaVideo({ ...readyVideo, src: 'javascript:alert(1)', crossOrigin: 'anonymous' }, page), false);
+  });
+
+  it('draws the loaded stage image only when its pixels are safe for recording', () => {
+    const page = 'https://studio.example.com/room';
+    const image = {
+      complete: true, naturalWidth: 1200, naturalHeight: 800,
+      currentSrc: 'https://images.example.com/slide.png', src: '', crossOrigin: 'anonymous',
+    };
+    assert.equal(canDrawMediaImage(image, page), true);
+    assert.equal(canDrawMediaImage({ ...image, crossOrigin: null }, page), false);
+    assert.equal(canDrawMediaImage({ ...image, naturalWidth: 0 }, page), false);
+    assert.equal(canDrawMediaImage({ ...image, complete: false }, page), false);
+  });
+
   it('letterboxes contained screen shares without stretching them', () => {
     assert.deepEqual(
       getCompositorVideoDrawPlan(1280, 1024, 1920, 1080, 'contain'),
