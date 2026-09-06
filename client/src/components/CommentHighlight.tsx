@@ -561,7 +561,7 @@ const overlayCard: React.CSSProperties = {
   border: '1px solid rgba(255, 255, 255, 0.18)',
   boxShadow: '0 18px 42px rgba(0, 0, 0, 0.34), 0 0 0 1px rgba(255, 255, 255, 0.16)',
   maxWidth: 560,
-  width: 'min(92vw, 560px)',
+  width: '100%',
   minHeight: 96,
   overflow: 'hidden',
   transformOrigin: 'bottom center',

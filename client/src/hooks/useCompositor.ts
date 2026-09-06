@@ -9,6 +9,7 @@ import type { TickerData } from '../components/TickerOverlay.tsx';
 import type { WidgetOverlayData } from '../components/WidgetOverlay.tsx';
 import { buildLowerThirdCanvasFont, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
 import { createCompositorFrameTarget, type CompositorFrameTarget } from '../utils/compositorFrameTarget.ts';
+import { getCompositorCoordinateScales } from '../utils/compositorCoordinates.ts';
 import {
   canDrawMediaImage,
   canDrawMediaVideo,
@@ -527,12 +528,13 @@ function drawActiveMediaOverlay(
   containerBounds: DOMRect,
   scaleX: number,
   scaleY: number,
+  logicalScale: number,
   presentationSlideImage: HTMLImageElement | null,
   brandColor: string,
   slideIndex: number
 ) {
   const rect = getScaledNodeRect(mediaNode, containerBounds, scaleX, scaleY);
-  const radius = Math.max(12, 16 * Math.min(scaleX, scaleY));
+  const radius = Math.max(12, 16 * logicalScale);
   const padding = 20;
   const contentX = rect.x + padding;
   const contentY = rect.y + padding;
@@ -1372,14 +1374,17 @@ export function useCompositor({
     drawStageBackground(ctx, stageBackground, backgroundImageRef.current, backgroundVideo);
 
     const containerBounds = containerRef.current.getBoundingClientRect();
-    if (containerBounds.width === 0 || containerBounds.height === 0) {
+    const scales = getCompositorCoordinateScales(containerBounds, {
+      width: containerRef.current.clientWidth,
+      height: containerRef.current.clientHeight,
+    });
+    if (!scales) {
       target?.commit();
       rAF.current = requestAnimationFrame(drawLoop);
       return;
     }
     
-    const scaleX = 1920 / containerBounds.width;
-    const scaleY = 1080 / containerBounds.height;
+    const { displayScaleX: scaleX, displayScaleY: scaleY, logicalScaleX, logicalScaleY } = scales;
 
     // 2. Draw shared media first so participant PiP tiles can remain visible above it.
     if (activeMedia) {
@@ -1390,6 +1395,7 @@ export function useCompositor({
         containerBounds,
         scaleX,
         scaleY,
+        Math.min(logicalScaleX, logicalScaleY),
         activePresentationSlideImageRef.current,
         brandColor,
         activeMediaSlideIndex
@@ -1423,12 +1429,12 @@ export function useCompositor({
           
           ctx.fillStyle = 'rgba(0,0,0,0.6)';
           ctx.beginPath();
-          ctx.roundRect(tx, ty, tw, th, 6 * scaleX);
+          ctx.roundRect(tx, ty, tw, th, 6 * Math.min(logicalScaleX, logicalScaleY));
           ctx.fill();
           
           ctx.fillStyle = 'white';
           ctx.font = '24px Inter, sans-serif';
-          ctx.fillText(nameTag.innerText, tx + 10 * scaleX, ty + 24 * scaleY);
+          ctx.fillText(nameTag.innerText, tx + 10 * logicalScaleX, ty + 24 * logicalScaleY);
         }
       }
     });
@@ -1442,8 +1448,8 @@ export function useCompositor({
         placement: logoPlacement,
         position: logoPosition,
         size: logoSize,
-        scaleX,
-        scaleY,
+        scaleX: logicalScaleX,
+        scaleY: logicalScaleY,
       });
       if (rect) {
         ctx.save();

@@ -291,8 +291,8 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 const overlayStyles: Record<string, React.CSSProperties> = {
-  container: { position: 'absolute', left: 32, bottom: 32, zIndex: 34, pointerEvents: 'none' },
-  card: { width: 430, maxWidth: 'calc(100vw - 64px)', padding: 18, borderRadius: 12, background: 'rgba(15, 23, 42, 0.92)', border: '1px solid rgba(255,255,255,0.12)', boxShadow: '0 16px 48px rgba(0,0,0,0.35)' },
+  container: { position: 'absolute', left: 32, bottom: 32, maxWidth: 'calc(100% - 64px)', zIndex: 34, pointerEvents: 'none' },
+  card: { width: 430, maxWidth: '100%', padding: 18, borderRadius: 12, background: 'rgba(15, 23, 42, 0.92)', border: '1px solid rgba(255,255,255,0.12)', boxShadow: '0 16px 48px rgba(0,0,0,0.35)' },
   header: { display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 10 },
   badge: { fontSize: 11, fontWeight: 900, color: '#67e8f9', textTransform: 'uppercase', letterSpacing: '0.08em' },
   votes: { fontSize: 11, fontWeight: 800, color: 'var(--text-muted)' },
