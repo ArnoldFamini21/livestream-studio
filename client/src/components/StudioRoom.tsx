@@ -42,6 +42,7 @@ import {
   removeSavedHostStudio,
 } from '../utils/hostSession.ts';
 import { VideoTile } from './VideoTile.tsx';
+import { StageCanvas } from './StageCanvas.tsx';
 import { StudioMediaVideo } from './StudioMediaVideo.tsx';
 import { ControlBar } from './ControlBar.tsx';
 import { DeviceSelector } from './DeviceSelector.tsx';
@@ -5890,9 +5891,8 @@ export function StudioRoom() {
             </div>
           )}
 
-          {/* Fixed 16:9 Canvas */}
-          <div className="studio-canvasWrapper" style={styles.canvasWrapper}>
-            <div ref={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }}>
+          {/* Scale the complete broadcast composition; panels never reflow it. */}
+          <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }}>
               {stageBackground.type === 'video' && stageBackground.value && (
                 <video
                   key={stageBackground.value}
@@ -6236,8 +6236,7 @@ export function StudioRoom() {
                   />
                 </div>
               )}
-            </div>
-          </div>
+          </StageCanvas>
 
           {isHostOrCoHost && backstagePrivateItems.length > 0 && (
             <BackstagePrivateRoom
@@ -7253,14 +7252,6 @@ const styles: Record<string, React.CSSProperties> = {
   backstageRoomTileCompact: {
     height: 92,
   },
-  canvasWrapper: {
-    flex: 1,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-    minHeight: 0,
-  },
   canvas: {
     position: 'relative',
     width: '100%',
@@ -7268,8 +7259,7 @@ const styles: Record<string, React.CSSProperties> = {
     aspectRatio: '16 / 9',
     borderRadius: 14,
     overflow: 'hidden',
-    border: '2px solid rgba(255, 255, 255, 0.08)',
-    boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
+    boxShadow: '0 0 0 2px rgba(255, 255, 255, 0.08), 0 4px 24px rgba(0, 0, 0, 0.3)',
     background: '#0f172a',
   },
   stageBackgroundVideo: {
