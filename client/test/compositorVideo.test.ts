@@ -6,9 +6,29 @@ import {
   getCompositorVideoDrawPlan,
   getCompositorVideoObjectFit,
   isCompositorVideoHorizontallyMirrored,
+  isCompositorFeedbackSource,
 } from '../src/utils/compositorVideo.ts';
 
 describe('compositor video drawing', () => {
+  it('rejects output monitors even when their output track is wrapped in another stream', () => {
+    const stream = (id: string) => ({ getVideoTracks: () => [{ id }] }) as MediaStream;
+    const output = stream('program');
+    assert.equal(isCompositorFeedbackSource(output, output), true);
+    assert.equal(isCompositorFeedbackSource(stream('program'), output), true);
+    assert.equal(isCompositorFeedbackSource(stream('camera'), output), false);
+    assert.equal(isCompositorFeedbackSource(null, output), false);
+    assert.equal(isCompositorFeedbackSource(stream('camera'), null), false);
+    assert.equal(isCompositorFeedbackSource({} as MediaSource, output), false);
+  });
+
+  it('preserves the entire camera frame at every preview size without progressive cropping', () => {
+    for (let frame = 0; frame < 1800; frame++) {
+      const width = [1920, 960, 640, 320][frame % 4];
+      const plan = getCompositorVideoDrawPlan(1280, 960, width, width * 9 / 16, 'contain')!;
+      assert.deepEqual([plan.sourceX, plan.sourceY, plan.sourceWidth, plan.sourceHeight], [0, 0, 1280, 960]);
+      assert.equal(plan.destWidth / plan.destHeight, 4 / 3);
+    }
+  });
   const readyVideo = {
     readyState: 2,
     videoWidth: 1920,

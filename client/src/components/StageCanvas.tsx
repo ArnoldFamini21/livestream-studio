@@ -12,19 +12,21 @@ export function StageCanvas({ stageRef, style, children }: {
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
-    const resize = () => {
-      const { width, height } = viewport.getBoundingClientRect();
+    const resize = (width: number, height: number) => {
       const next = fitStageCanvas(width, height);
       // Preserve the broadcast geometry while a viewport is temporarily hidden.
       if (next.scale > 0) setScale(current => current === next.scale ? current : next.scale);
     };
-    resize();
-    const observer = new ResizeObserver(resize);
+    // Measure the untransformed layout box, never a previously scaled frame.
+    resize(viewport.clientWidth, viewport.clientHeight);
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) resize(entry.contentRect.width, entry.contentRect.height);
+    });
     observer.observe(viewport);
     return () => observer.disconnect();
   }, []);
 
-  return <div ref={viewportRef} className="studio-canvasWrapper" style={{ position: 'relative', flex: 1, width: '100%', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+  return <div ref={viewportRef} className="studio-canvasWrapper" style={{ position: 'relative', flex: 1, width: '100%', minWidth: 0, minHeight: 0, overflow: 'hidden', contain: 'size layout' }}>
     <div ref={stageRef} className="studio-canvas" role="region" aria-label="Broadcast canvas" style={{
       ...style,
       position: 'absolute', left: '50%', top: '50%',

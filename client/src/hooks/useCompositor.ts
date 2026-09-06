@@ -16,6 +16,7 @@ import {
   getCompositorVideoDrawPlan,
   getCompositorVideoObjectFit,
   isCompositorVideoHorizontallyMirrored,
+  isCompositorFeedbackSource,
 } from '../utils/compositorVideo.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { getLogoCanvasRect } from '../utils/logoPosition.ts';
@@ -1405,6 +1406,7 @@ export function useCompositor({
     // 3. Draw Videos mapped precisely from DOM coordinates
     const videos = containerRef.current.querySelectorAll('video');
     videos.forEach((video) => {
+      if (video.hasAttribute('data-compositor-output') || isCompositorFeedbackSource(video.srcObject, compositeStreamRef.current)) return;
       if (video.classList.contains('studio-stage-background-video')) return;
       if (activeMedia && video.closest('.studio-active-media')) return;
 
