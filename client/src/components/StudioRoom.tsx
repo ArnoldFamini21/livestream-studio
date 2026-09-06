@@ -3163,6 +3163,10 @@ export function StudioRoom() {
     const recipient = recipientId
       ? participants.get(recipientId) || (myParticipant.id === recipientId ? myParticipant : undefined)
       : undefined;
+    if (recipientId && !recipient) {
+      addToast('This participant has left. Your private message was not sent.', 'warning');
+      return;
+    }
     const msg: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       senderId: myParticipant.id,
