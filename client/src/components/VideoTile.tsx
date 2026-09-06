@@ -165,8 +165,6 @@ export function VideoTile({
   const hasAudiblePlayback = audioEnabled && playbackVolume > 0;
   const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, hasAudiblePlayback);
 
-  const [isVertical, setIsVertical] = useState(false);
-
   useEffect(() => {
     if (!participantId || !onAudioLevelChange) return;
     onAudioLevelChange(participantId, speakingLevel);
@@ -193,13 +191,6 @@ export function VideoTile({
     video.volume = playbackVolume;
     video.muted = Boolean(isLocal || !audioEnabled || playbackVolume === 0);
   }, [audioEnabled, isLocal, playbackVolume]);
-
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      const { videoWidth, videoHeight } = videoRef.current;
-      setIsVertical(videoHeight > videoWidth);
-    }
-  };
 
   const initials = (name || '?')
     .split(' ')
@@ -247,10 +238,11 @@ export function VideoTile({
           autoPlay
           playsInline
           muted={isLocal || !audioEnabled || playbackVolume === 0}
-          onLoadedMetadata={handleLoadedMetadata}
           style={videoEnabled ? {
             ...tileStyles.video,
-            objectFit: isScreenShare || isVertical ? 'contain' : 'cover',
+            // Preserve the complete camera frame. Cropping is only intentional
+            // when the operator explicitly chooses a square or circular mask.
+            objectFit: !isScreenShare && (cameraShape === 'circle' || cameraShape === 'square') ? 'cover' : 'contain',
             transform: isLocal && !isScreenShare ? 'scaleX(-1)' : 'none',
           } : tileStyles.hiddenVideo}
         />
@@ -327,9 +319,12 @@ const tileStyles: Record<string, React.CSSProperties> = {
     transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
   },
   video: {
+    position: 'absolute',
+    inset: 0,
     width: '100%',
     height: '100%',
-    objectFit: 'cover',
+    objectFit: 'contain',
+    background: '#000',
     display: 'block',
   },
   hiddenVideo: {

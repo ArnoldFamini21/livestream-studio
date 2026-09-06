@@ -1,5 +1,17 @@
 export type CompositorVideoObjectFit = 'cover' | 'contain' | 'fill';
 
+/** An output monitor must never become an input to the frame it displays. */
+export function isCompositorFeedbackSource(
+  source: HTMLMediaElement['srcObject'],
+  output: MediaStream | null,
+): boolean {
+  if (!source || !output) return false;
+  if (source === output) return true;
+  if (!('getVideoTracks' in source)) return false;
+  const outputIds = new Set(output.getVideoTracks().map(track => track.id));
+  return source.getVideoTracks().some(track => outputIds.has(track.id));
+}
+
 function hasCanvasSafeMediaSource(
   element: { currentSrc: string; src: string; crossOrigin: string | null },
   pageUrl: string
