@@ -41,3 +41,11 @@ The local development services are available at `http://localhost:5173` (client)
 - Browser checks cover studio creation, scheduling, search/filtering, workspace history, tool search and Escape focus restoration, brand disclosures, and mobile layouts. Workspace sections fit a 390px viewport.
 - Synthetic camera/microphone checks cover recording start, pause, resume, stop, and rejoining an active session. The offline fallback MP4 contains H.264 1920×1080 video and AAC audio; the local-track ZIP contains two nonempty tracks.
 - A successful server-processed final MP4 remains unverified after the compositor fix: local testing encountered media-token timeouts and API throttling during repeated reloads. Development server restarts also invalidate rooms when persistence is not configured. These results do not establish production reliability.
+
+## Minimal entry and overlay controls
+
+The entry screen now pairs a large camera preview with a short name-and-entry form. Device selectors, video quality, speaker testing, and audio processing are available in one keyboard-accessible Camera & audio dialog. The mobile layout stacks these two areas without the old long settings form. Passwords, registration, scheduled entry restrictions, and host-access recovery remain conditional on the existing access rules.
+
+The Overlays panel now has one Add overlay action and a compact unified list. Each row exposes Show/Hide, with editing, removal, and timer actions in a secondary menu. Creating or editing opens a focused form with appearance controls collapsed. Preset packs, speaker names, automatic naming, and chat highlights are available under Overlay options. Edits preserve overlay IDs and visibility; unchanged timer configurations preserve elapsed/running state.
+
+Validation: client typecheck/build and 671 existing tests pass. Codex in-app browser checks cover desktop and 390px entry layouts, quality changes, dialog Escape/focus restoration, blank-name validation, studio entry, banner creation/visibility/editing, and timer start/edit/pause. The narrow overlay panel remains usable without horizontal scrolling. Tests used a local studio with camera/microphone disabled for visual captures; no broadcast was started.

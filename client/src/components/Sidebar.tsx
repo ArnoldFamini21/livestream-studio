@@ -1,3 +1,4 @@
+import '../styles/overlay-panel.css';
 import { useState, useRef, useEffect } from 'react';
 import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
 import { CHAT_REACTION_EMOJIS, CHAT_REACTION_LABELS, CHAT_REACTION_TYPES } from '@studio/shared';
@@ -76,12 +77,14 @@ interface SidebarProps {
   onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleLowerThird: (id: string) => void;
   onRemoveLowerThird: (id: string) => void;
+  onUpdateLowerThird?: (id: string, updates: Partial<LowerThirdData>) => void;
   autoSpeakerLowerThirds: boolean;
   onAutoSpeakerLowerThirdsChange: (enabled: boolean) => void;
   banners: BannerData[];
   onAddBanner: (banner: Omit<BannerData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleBanner: (id: string) => void;
   onRemoveBanner: (id: string) => void;
+  onUpdateBanner?: (id: string, updates: Partial<BannerData>) => void;
   timers: TimerData[];
   onAddTimer: (timer: Omit<TimerData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleTimer: (id: string) => void;
@@ -96,6 +99,7 @@ interface SidebarProps {
   onAddWidget: (widget: Omit<WidgetOverlayData, 'id' | 'visible'> & { visible?: boolean }) => void;
   onToggleWidget: (id: string) => void;
   onRemoveWidget: (id: string) => void;
+  onUpdateWidget?: (id: string, updates: Partial<WidgetOverlayData>) => void;
   // Comment highlight
   chatMessages: ChatMessage[];
   highlightedComment: HighlightedComment | null;
@@ -488,76 +492,7 @@ export function Sidebar(props: SidebarProps) {
             />
           )}
 
-          {activeTab === 'overlays' && (
-            <div style={st.scrollContent}>
-              <OverlayQuickActions
-                hostName={props.chatSenderName}
-                brandColor={props.brandColor}
-                lowerThirds={props.lowerThirds}
-                banners={props.banners}
-                timers={props.timers}
-                tickers={props.tickers}
-                widgets={props.widgets}
-                onAddLowerThird={props.onAddLowerThird}
-                onToggleLowerThird={props.onToggleLowerThird}
-                onAddBanner={props.onAddBanner}
-                onToggleBanner={props.onToggleBanner}
-                onAddTimer={props.onAddTimer}
-                onToggleTimer={props.onToggleTimer}
-                onAddTicker={props.onAddTicker}
-                onToggleTicker={props.onToggleTicker}
-                onToggleWidget={props.onToggleWidget}
-              />
-              <div style={st.divider} />
-              <LowerThirdManager
-                lowerThirds={props.lowerThirds}
-                participants={Array.from(props.allParticipants.values())}
-                onAdd={props.onAddLowerThird}
-                onToggle={props.onToggleLowerThird}
-                onRemove={props.onRemoveLowerThird}
-                autoSpeakerEnabled={props.autoSpeakerLowerThirds}
-                onAutoSpeakerEnabledChange={props.onAutoSpeakerLowerThirdsChange}
-              />
-              <div style={st.divider} />
-              <BannerManager
-                banners={props.banners}
-                onAdd={props.onAddBanner}
-                onToggle={props.onToggleBanner}
-                onRemove={props.onRemoveBanner}
-              />
-              <div style={st.divider} />
-              <TimerManager
-                timers={props.timers}
-                onAdd={props.onAddTimer}
-                onToggle={props.onToggleTimer}
-                onRemove={props.onRemoveTimer}
-                onUpdate={props.onUpdateTimer}
-              />
-              <div style={st.divider} />
-              <TickerManager
-                tickers={props.tickers}
-                onAdd={props.onAddTicker}
-                onToggle={props.onToggleTicker}
-                onRemove={props.onRemoveTicker}
-                onUpdate={props.onUpdateTicker}
-              />
-              <div style={st.divider} />
-              <WidgetOverlayManager
-                widgets={props.widgets}
-                onAdd={props.onAddWidget}
-                onToggle={props.onToggleWidget}
-                onRemove={props.onRemoveWidget}
-              />
-              <div style={st.divider} />
-              <CommentHighlightManager
-                chatMessages={props.chatMessages}
-                activeComment={props.highlightedComment}
-                onHighlightComment={props.onHighlightComment}
-                onFlashComment={props.onFlashComment}
-                onDismissComment={props.onDismissComment}
-              />
-            </div>
-          )}
+          {activeTab === 'overlays' && <OverlayPanel {...props} />}
 
           {activeTab === 'brand' && (
             <div style={st.scrollContent}>
@@ -1946,56 +1881,109 @@ function BrandPreview({
   );
 }
 
-function OverlayQuickActions({
-  hostName,
-  brandColor,
-  lowerThirds,
-  banners,
-  timers,
-  tickers,
-  widgets,
-  onAddLowerThird,
-  onToggleLowerThird,
-  onAddBanner,
-  onToggleBanner,
-  onAddTimer,
-  onToggleTimer,
-  onAddTicker,
-  onToggleTicker,
-  onToggleWidget,
-}: {
-  hostName: string;
-  brandColor: string;
-  lowerThirds: LowerThirdData[];
-  banners: BannerData[];
-  timers: TimerData[];
-  tickers: TickerData[];
-  widgets: WidgetOverlayData[];
-  onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
-  onToggleLowerThird: (id: string) => void;
-  onAddBanner: (banner: Omit<BannerData, 'id' | 'visible'> & { visible?: boolean }) => void;
-  onToggleBanner: (id: string) => void;
-  onAddTimer: (timer: Omit<TimerData, 'id' | 'visible'> & { visible?: boolean }) => void;
-  onToggleTimer: (id: string) => void;
-  onAddTicker: (ticker: Omit<TickerData, 'id' | 'visible'> & { visible?: boolean }) => void;
-  onToggleTicker: (id: string) => void;
-  onToggleWidget: (id: string) => void;
-}) {
-  const visibleCount =
-    lowerThirds.filter((item) => item.visible).length +
-    banners.filter((item) => item.visible).length +
-    timers.filter((item) => item.visible).length +
-    tickers.filter((item) => item.visible).length +
-    widgets.filter((item) => item.visible).length;
+type OverlayEditorType = 'lower-third' | 'banner' | 'timer' | 'ticker' | 'widget';
+type OverlayPanelView = OverlayEditorType | 'choose' | 'packs' | 'speakers' | 'comments' | null;
 
-  const clearLiveOverlays = () => {
-    lowerThirds.filter((item) => item.visible).forEach((item) => onToggleLowerThird(item.id));
-    banners.filter((item) => item.visible).forEach((item) => onToggleBanner(item.id));
-    timers.filter((item) => item.visible).forEach((item) => onToggleTimer(item.id));
-    tickers.filter((item) => item.visible).forEach((item) => onToggleTicker(item.id));
-    widgets.filter((item) => item.visible).forEach((item) => onToggleWidget(item.id));
+const OVERLAY_TYPES: { id: OverlayEditorType; label: string; description: string }[] = [
+  { id: 'lower-third', label: 'Name & title', description: 'Introduce a speaker' },
+  { id: 'banner', label: 'Banner', description: 'A message on screen' },
+  { id: 'timer', label: 'Timer', description: 'Count down or keep time' },
+  { id: 'ticker', label: 'Ticker', description: 'A scrolling message' },
+  { id: 'widget', label: 'Web widget', description: 'Embed an external overlay' },
+];
+
+function OverlayPanel(props: SidebarProps) {
+  const [view, setView] = useState<OverlayPanelView>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const viewRef = useRef<HTMLDivElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
+  const previousView = useRef<OverlayPanelView>(null);
+  useEffect(() => {
+    if (view) (viewRef.current?.querySelector<HTMLElement>('input, select') || viewRef.current?.querySelector<HTMLElement>('button'))?.focus();
+    else if (previousView.current) addRef.current?.focus();
+    previousView.current = view;
+  }, [view, editingId]);
+  const openView = (next: OverlayPanelView, id: string | null = null) => {
+    setEditingId(id);
+    setView(next);
+  };
+  const closeEditor = () => openView(null);
+  const lowerThird = props.lowerThirds.find(item => item.id === editingId);
+  const banner = props.banners.find(item => item.id === editingId);
+  const timer = props.timers.find(item => item.id === editingId);
+  const ticker = props.tickers.find(item => item.id === editingId);
+  const widget = props.widgets.find(item => item.id === editingId);
+  const formatTimer = (value: number) => `${String(Math.floor(Math.abs(value) / 60)).padStart(2, '0')}:${String(Math.abs(value) % 60).padStart(2, '0')}`;
+  const items: {
+    id: string; type: OverlayEditorType; name: string; caption: string; visible: boolean;
+    toggle: () => void; remove: () => void; editable: boolean; timer?: TimerData;
+  }[] = [
+    ...props.lowerThirds.map(item => ({ id: item.id, type: 'lower-third' as const, name: item.name, caption: item.title || 'Name & title', visible: item.visible, toggle: () => props.onToggleLowerThird(item.id), remove: () => props.onRemoveLowerThird(item.id), editable: Boolean(props.onUpdateLowerThird) && item.source !== 'auto-speaker' })),
+    ...props.banners.map(item => ({ id: item.id, type: 'banner' as const, name: item.text, caption: 'Banner', visible: item.visible, toggle: () => props.onToggleBanner(item.id), remove: () => props.onRemoveBanner(item.id), editable: Boolean(props.onUpdateBanner) })),
+    ...props.timers.map(item => ({ id: item.id, type: 'timer' as const, name: `${item.mode === 'countdown' ? 'Countdown' : 'Count up'} · ${formatTimer(item.remainingSeconds)}`, caption: item.isRunning ? 'Timer running' : 'Timer paused', visible: item.visible, toggle: () => props.onToggleTimer(item.id), remove: () => props.onRemoveTimer(item.id), editable: true, timer: item })),
+    ...props.tickers.map(item => ({ id: item.id, type: 'ticker' as const, name: item.text, caption: 'Ticker', visible: item.visible, toggle: () => props.onToggleTicker(item.id), remove: () => props.onRemoveTicker(item.id), editable: true })),
+    ...props.widgets.map(item => ({ id: item.id, type: 'widget' as const, name: item.name, caption: 'Web widget', visible: item.visible, toggle: () => props.onToggleWidget(item.id), remove: () => props.onRemoveWidget(item.id), editable: Boolean(props.onUpdateWidget) })),
+  ];
+  const dismissMenu = (element: HTMLElement) => element.closest('details')?.removeAttribute('open');
+  const hideAll = () => {
+    items.filter(item => item.visible).forEach(item => item.toggle());
+    if (props.highlightedComment) props.onDismissComment();
+    if (props.autoSpeakerLowerThirds) props.onAutoSpeakerLowerThirdsChange(false);
   };
 
+  return (
+    <div className="overlay-workspace" style={st.scrollContent}>
+      {!view ? <>
+        <div className="overlay-toolbar">
+          <button ref={addRef} type="button" className="overlay-add" onClick={() => openView('choose')}><span aria-hidden="true">+</span> Add overlay</button>
+          <details className="overlay-more" onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.removeAttribute('open'); event.currentTarget.querySelector('summary')?.focus(); } }}>
+            <summary aria-label="Overlay options">•••</summary>
+            <div className="overlay-menu">
+              <button type="button" onClick={() => openView('packs')}>Preset packs</button>
+              <button type="button" onClick={() => openView('speakers')}>Speaker names</button>
+              <button type="button" onClick={() => openView('comments')}>Chat highlights</button>
+              <button type="button" disabled={!items.some(item => item.visible) && !props.highlightedComment && !props.autoSpeakerLowerThirds} onClick={event => { hideAll(); dismissMenu(event.currentTarget); }}>Hide all overlays</button>
+            </div>
+          </details>
+        </div>
+        {items.length === 0 ? <div className="overlay-empty"><p>Your overlays, ready when you need them.</p><span>Add a name, message, or timer to your stage.</span></div> :
+          <ul className="overlay-list" aria-label="Saved overlays">
+            {items.map(item => <li key={`${item.type}:${item.id}`} className="overlay-row">
+              <div className="overlay-row-copy"><span className="overlay-row-name" title={item.name}>{item.name}</span><span className="overlay-row-caption">{item.caption}</span></div>
+              <button type="button" className="overlay-visibility" data-visible={item.visible} aria-label={`${item.visible ? 'Hide' : 'Show'} ${item.name}`} onClick={item.toggle}>{item.visible ? 'Hide' : 'Show'}</button>
+              <details className="overlay-more" onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.removeAttribute('open'); event.currentTarget.querySelector('summary')?.focus(); } }}>
+                <summary aria-label={`Options for ${item.name}`}>•••</summary>
+                <div className="overlay-menu">
+                  {item.editable && <button type="button" onClick={() => openView(item.type, item.id)}>Edit</button>}
+                  {item.timer && <><button type="button" onClick={event => { props.onUpdateTimer(item.id, { isRunning: !item.timer!.isRunning }); dismissMenu(event.currentTarget); }}>{item.timer.isRunning ? 'Pause timer' : 'Start timer'}</button><button type="button" onClick={event => { props.onUpdateTimer(item.id, { isRunning: false, remainingSeconds: item.timer!.mode === 'countdown' ? item.timer!.durationSeconds : 0 }); dismissMenu(event.currentTarget); }}>Reset timer</button></>}
+                  <button type="button" className="overlay-remove" onClick={item.remove}>Remove</button>
+                </div>
+              </details>
+            </li>)}
+          </ul>}
+      </> : <div ref={viewRef} className="overlay-focused-view">
+        <div className="overlay-view-heading"><button type="button" onClick={closeEditor} aria-label="Back to overlays">←</button><h3>{view === 'choose' ? 'Add overlay' : view === 'packs' ? 'Preset packs' : view === 'speakers' ? 'Speaker names' : view === 'comments' ? 'Chat highlights' : `${editingId ? 'Edit' : 'Add'} ${OVERLAY_TYPES.find(type => type.id === view)?.label.toLowerCase()}`}</h3></div>
+        {view === 'choose' && <div className="overlay-type-list">{OVERLAY_TYPES.map(type => <button key={type.id} type="button" onClick={() => openView(type.id)}><span>{type.label}</span><small>{type.description}</small><span aria-hidden="true">›</span></button>)}</div>}
+        {view === 'lower-third' && <LowerThirdManager key={editingId || 'new'} editorOnly initialValue={lowerThird} submitLabel={editingId ? 'Save changes' : 'Add overlay'} lowerThirds={props.lowerThirds} onToggle={props.onToggleLowerThird} onRemove={props.onRemoveLowerThird} onAdd={value => { if (lowerThird) props.onUpdateLowerThird?.(lowerThird.id, value); else props.onAddLowerThird(value); closeEditor(); }} />}
+        {view === 'banner' && <BannerManager key={editingId || 'new'} editorOnly initialValue={banner} submitLabel={editingId ? 'Save changes' : 'Add overlay'} banners={props.banners} onToggle={props.onToggleBanner} onRemove={props.onRemoveBanner} onAdd={value => { if (banner) props.onUpdateBanner?.(banner.id, value); else props.onAddBanner(value); closeEditor(); }} />}
+        {view === 'timer' && <TimerManager key={editingId || 'new'} editorOnly initialValue={timer} submitLabel={editingId ? 'Save changes' : 'Add overlay'} timers={props.timers} onToggle={props.onToggleTimer} onRemove={props.onRemoveTimer} onUpdate={props.onUpdateTimer} onAdd={value => {
+          if (timer) {
+            const configurationChanged = timer.mode !== value.mode || timer.durationSeconds !== value.durationSeconds;
+            props.onUpdateTimer(timer.id, configurationChanged ? value : { mode: value.mode, durationSeconds: value.durationSeconds, position: value.position, style: value.style });
+          } else props.onAddTimer(value);
+          closeEditor();
+        }} />}
+        {view === 'ticker' && <TickerManager key={editingId || 'new'} editorOnly initialValue={ticker} submitLabel={editingId ? 'Save changes' : 'Add overlay'} tickers={props.tickers} onToggle={props.onToggleTicker} onRemove={props.onRemoveTicker} onUpdate={props.onUpdateTicker} onAdd={value => { if (ticker) props.onUpdateTicker(ticker.id, value); else props.onAddTicker(value); closeEditor(); }} />}
+        {view === 'widget' && <WidgetOverlayManager key={editingId || 'new'} editorOnly initialValue={widget} submitLabel={editingId ? 'Save changes' : 'Add overlay'} widgets={props.widgets} onToggle={props.onToggleWidget} onRemove={props.onRemoveWidget} onAdd={value => { if (widget) props.onUpdateWidget?.(widget.id, value); else props.onAddWidget(value); closeEditor(); }} />}
+        {view === 'speakers' && <div className="overlay-speakers"><label><span>Automatic speaker names</span><input type="checkbox" checked={props.autoSpeakerLowerThirds} onChange={event => props.onAutoSpeakerLowerThirdsChange(event.target.checked)} /></label><p>Show the active speaker’s name automatically.</p><div className="overlay-speaker-list">{Array.from(props.allParticipants.values()).filter(person => person.status === 'on-stage').map(person => <button key={person.id} type="button" onClick={() => { props.onAddLowerThird({ name: person.name, title: person.role === 'host' ? 'Host' : person.role === 'co-host' ? 'Co-host' : 'Guest', style: 'bold', durationSeconds: 10, animation: 'slide', animationDirection: 'left', visible: true, source: 'participant', participantId: person.id }); closeEditor(); }}><span>{person.name}</span><small>Show name</small></button>)}</div></div>}
+        {view === 'packs' && <OverlayPacks hostName={props.chatSenderName} brandColor={props.brandColor} onAddLowerThird={props.onAddLowerThird} onAddBanner={props.onAddBanner} onAddTimer={props.onAddTimer} onAddTicker={props.onAddTicker} onDone={closeEditor} />}
+        {view === 'comments' && <CommentHighlightManager chatMessages={props.chatMessages} activeComment={props.highlightedComment} onHighlightComment={props.onHighlightComment} onFlashComment={props.onFlashComment} onDismissComment={props.onDismissComment} />}
+      </div>}
+    </div>
+  );
+}
+
+function OverlayPacks({ hostName, brandColor, onAddLowerThird, onAddBanner, onAddTimer, onAddTicker, onDone }: Pick<SidebarProps, 'brandColor' | 'onAddLowerThird' | 'onAddBanner' | 'onAddTimer' | 'onAddTicker'> & { hostName: string; onDone: () => void }) {
   const addLiveShowPack = () => {
     onAddLowerThird({
       name: hostName || 'Host',
@@ -2051,54 +2039,7 @@ function OverlayQuickActions({
     { label: 'Ticker', meta: 'Scrolling message', color: '#06b6d4', action: addTickerPack },
     { label: 'Offer CTA', meta: 'Banner + ticker', color: '#059669', action: addOfferPack },
   ];
-  const overlayStats = [
-    { label: 'Lower', count: lowerThirds.length, live: lowerThirds.filter((item) => item.visible).length },
-    { label: 'Banner', count: banners.length, live: banners.filter((item) => item.visible).length },
-    { label: 'Timer', count: timers.length, live: timers.filter((item) => item.visible).length },
-    { label: 'Ticker', count: tickers.length, live: tickers.filter((item) => item.visible).length },
-    { label: 'Widget', count: widgets.length, live: widgets.filter((item) => item.visible).length },
-  ];
-
-  return (
-    <div style={st.overlayQuick}>
-      <div style={st.overlayQuickHead}>
-        <div>
-          <h4 style={st.sectionTitleInline}>Overlay Packs</h4>
-          <p style={st.panelSub}>{visibleCount} live overlay{visibleCount === 1 ? '' : 's'}</p>
-        </div>
-        <button type="button" style={{ ...st.clearBtn, opacity: visibleCount > 0 ? 1 : 0.45 }} disabled={visibleCount === 0} onClick={clearLiveOverlays}>
-          Clear
-        </button>
-      </div>
-      <div style={st.overlayLivePreview}>
-        <div style={st.overlayPreviewStage}>
-          <span style={{ ...st.overlayPreviewBug, background: brandColor }}>LIVE</span>
-          <span style={{ ...st.overlayPreviewLower, borderColor: brandColor }} />
-          <span style={{ ...st.overlayPreviewBanner, background: brandColor }} />
-          <span style={st.overlayPreviewTicker} />
-        </div>
-        <div style={st.overlayStatGrid}>
-          {overlayStats.map((stat) => (
-            <div key={stat.label} style={{ ...st.overlayStat, ...(stat.live > 0 ? st.overlayStatLive : {}) }}>
-              <span style={st.overlayStatValue}>{stat.live}/{stat.count}</span>
-              <span style={st.overlayStatLabel}>{stat.label}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div style={st.overlayPackGrid}>
-        {packs.map((pack) => (
-          <button key={pack.label} type="button" style={st.overlayPackBtn} onClick={pack.action}>
-            <span style={{ ...st.overlayPackAccent, background: pack.color }} />
-            <span style={st.overlayPackText}>
-              <span style={st.overlayPackLabel}>{pack.label}</span>
-              <span style={st.overlayPackMeta}>{pack.meta}</span>
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+  return <div className="overlay-type-list">{packs.map(pack => <button key={pack.label} type="button" onClick={() => { pack.action(); onDone(); }}><span>{pack.label}</span><small>{pack.meta}</small><span aria-hidden="true">›</span></button>)}</div>;
 }
 
 function getPositionDotStyle(placement: LogoPlacement): React.CSSProperties {
@@ -2123,7 +2064,6 @@ const st: Record<string, React.CSSProperties> = {
   iconLabel: { fontSize: 9, fontWeight: 500, lineHeight: 1 },
   section: { padding: 16 },
   sectionTitle: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 },
-  sectionTitleInline: { fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: 0 },
   divider: { height: 1, background: 'var(--border)', margin: '4px 16px 8px' },
   brandPreviewCard: { marginBottom: 16, overflow: 'hidden', borderRadius: 10, border: '1px solid rgba(167, 139, 250, 0.26)', background: 'rgba(15, 23, 42, 0.42)' },
   brandPreviewStage: { position: 'relative', aspectRatio: '16 / 9', overflow: 'hidden', background: '#0f172a' },
@@ -2251,27 +2191,6 @@ const st: Record<string, React.CSSProperties> = {
   duckingState: { fontSize: 10, fontWeight: 800, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.04em' },
   duckingCheckbox: { width: 16, height: 16, margin: 0, accentColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 },
   admitAllBtn: { margin: '8px 16px', width: 'calc(100% - 32px)', fontSize: 13, padding: '8px 14px' },
-  // Overlay quick actions
-  overlayQuick: { padding: 12, display: 'flex', flexDirection: 'column', gap: 10 },
-  overlayQuickHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  clearBtn: { border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.1)', color: '#fca5a5', borderRadius: 7, height: 28, padding: '0 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
-  overlayLivePreview: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr)', gap: 8, alignItems: 'stretch' },
-  overlayPreviewStage: { position: 'relative', minHeight: 92, borderRadius: 9, border: '1px solid rgba(255,255,255,0.08)', background: 'linear-gradient(135deg, rgba(15,23,42,0.96), rgba(30,41,59,0.82))', overflow: 'hidden' },
-  overlayPreviewBug: { position: 'absolute', top: 9, right: 9, height: 18, padding: '0 7px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 8, fontWeight: 900, letterSpacing: '0.05em' },
-  overlayPreviewLower: { position: 'absolute', left: 12, bottom: 24, width: 86, height: 18, borderRadius: 7, borderWidth: 1, borderStyle: 'solid', background: 'rgba(2, 6, 23, 0.8)' },
-  overlayPreviewBanner: { position: 'absolute', left: 0, right: 0, top: 0, height: 9, opacity: 0.9 },
-  overlayPreviewTicker: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 12, background: 'rgba(2, 6, 23, 0.9)', borderTop: '1px solid rgba(255,255,255,0.08)' },
-  overlayStatGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 5 },
-  overlayStat: { minWidth: 0, padding: '6px 7px', borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.035)', display: 'flex', flexDirection: 'column', gap: 2 },
-  overlayStatLive: { borderColor: 'rgba(34, 197, 94, 0.32)', background: 'rgba(34, 197, 94, 0.08)' },
-  overlayStatValue: { fontSize: 12, fontWeight: 900, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' },
-  overlayStatLabel: { fontSize: 9, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' },
-  overlayPackGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 },
-  overlayPackBtn: { minHeight: 48, minWidth: 0, display: 'grid', gridTemplateColumns: '5px minmax(0, 1fr)', alignItems: 'stretch', gap: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: 0, overflow: 'hidden', textAlign: 'left' },
-  overlayPackAccent: { display: 'block', width: 5 },
-  overlayPackText: { minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2, padding: '7px 8px 7px 0' },
-  overlayPackLabel: { minWidth: 0, color: 'var(--text-primary)', fontSize: 11, fontWeight: 900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  overlayPackMeta: { minWidth: 0, color: 'var(--text-muted)', fontSize: 9, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   // Chat
   chatTabs: { display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 3, marginTop: 10, padding: 3, background: 'rgba(255, 255, 255, 0.04)', borderRadius: 8, border: '1px solid var(--border)' },
   chatHeaderActions: { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },

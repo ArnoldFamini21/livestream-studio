@@ -1,0 +1,53 @@
+/* A quiet entry screen; setup controls stay in their own accessible dialog. */
+.entry-page {
+  --text-primary: #f3f2f5; --text-secondary: #a5a3ae; --text-muted: #8e8b98;
+  --bg-primary: #18181c; --bg-secondary: #232328; --bg-tertiary: #29292f;
+  --border: #ffffff12; --border-strong: #ffffff25; --accent: #b9a8ef;
+  min-height: 100dvh; background: var(--bg-primary); color: var(--text-primary);
+  display: flex; flex-direction: column; padding: 0 48px 48px;
+}
+.entry-header { display: flex; justify-content: space-between; align-items: center; min-height: 100px; gap: 24px; }
+.entry-wordmark { display: flex; align-items: center; gap: 11px; color: #dfdde6; text-decoration: none; font-size: 13px; font-weight: 550; }
+.entry-wordmark svg { width: 25px; height: 25px; color: #b3a5d7; }
+.entry-back, .entry-dialog-heading button { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 8px; background: transparent; color: var(--text-muted); }
+.entry-back:hover, .entry-dialog-heading button:hover { background: #ffffff09; color: var(--text-primary); }
+.entry-main { width: 100%; max-width: 1060px; margin: auto; display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr); gap: 72px; align-items: center; padding: 32px 0 64px; }
+.entry-media { min-width: 0; }
+.entry-page .entry-preview { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #242429; border: 1px solid #ffffff0d; border-radius: 16px; margin-bottom: 18px; }
+.entry-page .entry-audio-meter { position: absolute; width: 46px; left: 17px; bottom: 17px; right: auto; }
+.entry-page .join-toggleRow { display: flex; justify-content: center; align-items: center; gap: 10px; margin: 0; }
+.entry-page .join-toggleRow > button { display: grid; place-items: center; padding: 0; color: var(--text-primary); border: 1px solid var(--border); cursor: pointer; width: 42px; height: 42px; border-radius: 9px; box-shadow: none; }
+.entry-page .join-toggleRow > button[aria-pressed=true] { background: #26262d !important; border-color: #ffffff12 !important; }
+.entry-page .join-toggleRow > button[aria-pressed=false] { background: #683238 !important; border-color: #8e474e !important; }
+.entry-page .join-toggleRow > .entry-settings-trigger { display: flex; align-items: center; justify-content: center; gap: 8px; width: auto; padding: 0 14px; color: #bcb9c7; background: transparent; border: 1px solid #ffffff16; font-size: 12px; }
+.entry-settings-trigger svg { width: 17px; height: 17px; }
+.entry-preview-note { font-size: 11px; text-align: center; margin-top: 15px; color: #8f8c99; }
+.entry-form { min-width: 0; padding-bottom: 57px; }
+.entry-studio-name { color: #a9a4b6; font-size: 12px; line-height: 1.5; margin-bottom: 16px; overflow-wrap: anywhere; }
+.entry-form h1 { font-size: clamp(32px, 3.4vw, 44px); line-height: 1.1; font-weight: 550; letter-spacing: -1.6px; margin: 0 0 16px; }
+.entry-intro { color: var(--text-secondary); font-size: 13px; line-height: 1.7; margin-bottom: 28px; max-width: 290px; }
+.entry-page .entry-form input:not([type=checkbox]) { min-height: 48px; border: 1px solid #ffffff20; border-radius: 8px; background: #242429; color: #f3f2f5; padding: 12px 14px; font-size: 14px; box-shadow: none; }
+.entry-page .entry-form .entry-submit { width: 100%; padding: 12px 20px; min-height: 48px; border-radius: 8px; font-size: 13px; font-weight: 550; background: #b8a6ec; color: #211b30; box-shadow: none; }
+.entry-page .entry-form .entry-submit:not(:disabled):hover { background: #c6b6f3; transform: none; }
+.entry-page .entry-form .entry-submit:disabled { background: #302d38; color: #918c9b; opacity: 1; cursor: not-allowed; }
+.entry-page :is(button, a, input, select, summary):focus-visible { outline: 2px solid #b9a8ef; outline-offset: 4px; }
+.entry-device-dialog { width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; margin: auto; padding: 26px; background: #232328; color: #f3f2f5; border: 1px solid #ffffff20; border-radius: 16px; box-shadow: 0 24px 100px #0007; }
+.entry-device-dialog::backdrop { background: #0c0c12aa; backdrop-filter: blur(5px); }
+.entry-dialog-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+.entry-dialog-heading h2 { font-size: 19px; font-weight: 550; letter-spacing: -.4px; }
+.entry-device-dialog select { min-height: 42px; border-radius: 7px !important; padding: 9px 10px !important; }
+.entry-device-dialog label { text-transform: none !important; letter-spacing: 0 !important; font-size: 12px !important; }
+.entry-device-dialog .join-audio-options { margin: 20px 0 !important; padding: 14px 0 !important; background: none !important; border: 0 !important; border-top: 1px solid #ffffff12 !important; border-radius: 0 !important; }
+.entry-device-dialog .join-audio-options > div { flex-direction: column; gap: 14px !important; }
+.entry-device-dialog .join-audio-options input { accent-color: #b8a6ec; width: 15px; height: 15px; }
+.entry-settings-done { width: 100%; padding: 12px; background: #37313f; border: 1px solid #ffffff15; color: #e6dff2; border-radius: 8px; font-size: 13px; }
+@media (max-width: 950px) { .entry-page { padding: 0 30px 30px; }.entry-main { gap: 40px; grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr); } }
+@media (max-width: 720px) {
+ .entry-page { padding: 0 22px 32px; }.entry-header { min-height: 74px; }.entry-wordmark { font-size: 12px; }
+ .entry-main { grid-template-columns: 1fr; gap: 30px; max-width: 460px; padding: 18px 0 20px; margin: auto; }
+ .entry-form { padding-bottom: 0; }.entry-form h1 { font-size: 30px; letter-spacing: -.9px; }.entry-form h1 br { display: none; }
+ .entry-studio-name { margin-bottom: 10px; }.entry-intro { margin-bottom: 22px; max-width: none; }.entry-preview-note { margin-top: 12px; }
+}
+@media (max-height: 700px) and (min-width: 721px) { .entry-header { min-height: 76px; }.entry-main { padding: 18px 0; }.entry-form { padding-bottom: 20px; } }
+
+.entry-media-error { margin-top: 15px; color: #e6afb0; font-size: 12px; line-height: 1.6; text-align: center; }

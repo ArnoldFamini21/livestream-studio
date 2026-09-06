@@ -38,6 +38,9 @@ export interface LowerThirdData {
 }
 
 interface LowerThirdManagerProps {
+  initialValue?: LowerThirdData;
+  editorOnly?: boolean;
+  submitLabel?: string;
   lowerThirds: LowerThirdData[];
   participants?: Participant[];
   onAdd: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
@@ -64,6 +67,7 @@ const LOWER_THIRD_ACCENT_COLORS = [
 ] as const;
 
 export function LowerThirdManager({
+  initialValue, editorOnly = false, submitLabel,
   lowerThirds,
   participants = [],
   onAdd,
@@ -72,14 +76,14 @@ export function LowerThirdManager({
   autoSpeakerEnabled = false,
   onAutoSpeakerEnabledChange,
 }: LowerThirdManagerProps) {
-  const [name, setName] = useState('');
-  const [title, setTitle] = useState('');
-  const [style, setStyle] = useState<LowerThirdData['style']>('minimal');
-  const [durationSeconds, setDurationSeconds] = useState(0);
-  const [accentColor, setAccentColor] = useState('');
-  const [animation, setAnimation] = useState<LowerThirdAnimation>('slide');
-  const [animationDirection, setAnimationDirection] = useState<LowerThirdAnimationDirection>(DEFAULT_LOWER_THIRD_ANIMATION_DIRECTION);
-  const [fontFamily, setFontFamily] = useState<LowerThirdFont>(DEFAULT_LOWER_THIRD_FONT);
+  const [name, setName] = useState(initialValue?.name || '');
+  const [title, setTitle] = useState(initialValue?.title || '');
+  const [style, setStyle] = useState<LowerThirdData['style']>(initialValue?.style || 'minimal');
+  const [durationSeconds, setDurationSeconds] = useState(initialValue?.durationSeconds || 0);
+  const [accentColor, setAccentColor] = useState(initialValue?.accentColor || '');
+  const [animation, setAnimation] = useState<LowerThirdAnimation>(initialValue?.animation || 'slide');
+  const [animationDirection, setAnimationDirection] = useState<LowerThirdAnimationDirection>(initialValue?.animationDirection || DEFAULT_LOWER_THIRD_ANIMATION_DIRECTION);
+  const [fontFamily, setFontFamily] = useState<LowerThirdFont>(initialValue?.fontFamily || DEFAULT_LOWER_THIRD_FONT);
   const onStageParticipants = participants.filter((participant) => participant.status === 'on-stage');
   const previewAccent = normalizeLowerThirdAccentColor(accentColor) || 'var(--accent)';
   const previewName = name.trim() || 'Guest Name';
@@ -102,8 +106,8 @@ export function LowerThirdManager({
   };
 
   return (
-    <div style={styles.container}>
-      <h4 style={styles.sectionTitle}>Lower Thirds</h4>
+    <div className={editorOnly ? "overlay-editor-form" : undefined} style={styles.container}>
+      <h4 className="overlay-editor-title" style={styles.sectionTitle}>Lower Thirds</h4>
 
       {onAutoSpeakerEnabledChange && (
         <div style={styles.autoSpeakerBlock}>
@@ -161,7 +165,7 @@ export function LowerThirdManager({
       )}
 
       {/* Existing lower thirds */}
-      <div style={styles.list}>
+      <div className={editorOnly ? "overlay-editor-existing" : undefined} style={styles.list}>
         {lowerThirds.map((lt) => (
           <div key={lt.id} className="participant-item" style={styles.item}>
             <div style={styles.itemInfo}>
@@ -209,16 +213,18 @@ export function LowerThirdManager({
       <div style={styles.form}>
         <input
           style={styles.input}
-          placeholder="Name"
+          placeholder="Name" aria-label="Name"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
         <input
           style={styles.input}
-          placeholder="Title (optional)"
+          placeholder="Title (optional)" aria-label="Title (optional)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
         />
+        <details className="overlay-editor-options" open={editorOnly ? undefined : true}>
+          <summary>Appearance & options</summary>
         <div style={styles.styleRow}>
           {(['minimal', 'bold', 'gradient', 'glass'] as const).map((s) => (
             <button
@@ -354,13 +360,14 @@ export function LowerThirdManager({
             </div>
           </div>
         </div>
+        </details>
         <button
           className="btn-primary"
           style={styles.addBtn}
           onClick={handleAdd}
           disabled={!name.trim()}
         >
-          Add Lower Third
+          {submitLabel || 'Add Lower Third'}
         </button>
       </div>
     </div>

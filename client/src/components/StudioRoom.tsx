@@ -3324,6 +3324,9 @@ export function StudioRoom() {
   const onToggleLowerThird = (id: string) => {
     setLowerThirds((prev) => toggleLowerThirdVisibility(prev, id));
   };
+  const onUpdateLowerThird = (id: string, updates: Partial<LowerThirdData>) => {
+    setLowerThirds(prev => prev.map(item => item.id === id ? { ...item, ...updates, id: item.id, visible: item.visible } : item));
+  };
   const onRemoveLowerThird = (id: string) => {
     setLowerThirds((prev) => prev.filter((lt) => lt.id !== id));
   };
@@ -3334,6 +3337,9 @@ export function StudioRoom() {
   };
   const onToggleBanner = (id: string) => {
     setBanners((prev) => prev.map((b) => ({ ...b, visible: b.id === id ? !b.visible : b.visible })));
+  };
+  const onUpdateBanner = (id: string, updates: Partial<BannerData>) => {
+    setBanners(prev => prev.map(item => item.id === id ? { ...item, ...updates, id: item.id, visible: item.visible } : item));
   };
   const onRemoveBanner = (id: string) => {
     setBanners((prev) => prev.filter((b) => b.id !== id));
@@ -4473,6 +4479,9 @@ export function StudioRoom() {
   };
   const onToggleWidget = (id: string) => {
     setWidgets(prev => prev.map(widget => ({ ...widget, visible: widget.id === id ? !widget.visible : widget.visible })));
+  };
+  const onUpdateWidget = (id: string, updates: Partial<WidgetOverlayData>) => {
+    setWidgets(prev => prev.map(item => item.id === id ? { ...item, ...updates, id: item.id, visible: item.visible } : item));
   };
   const onRemoveWidget = (id: string) => {
     setWidgets(prev => prev.filter(widget => widget.id !== id));
@@ -6329,12 +6338,14 @@ export function StudioRoom() {
             onActiveTabChange={setSidebarActiveTab}
             lowerThirds={lowerThirds}
             onAddLowerThird={onAddLowerThird}
+            onUpdateLowerThird={onUpdateLowerThird}
             onToggleLowerThird={onToggleLowerThird}
             onRemoveLowerThird={onRemoveLowerThird}
             autoSpeakerLowerThirds={autoSpeakerLowerThirds}
             onAutoSpeakerLowerThirdsChange={setAutoSpeakerLowerThirds}
             banners={banners}
             onAddBanner={onAddBanner}
+            onUpdateBanner={onUpdateBanner}
             onToggleBanner={onToggleBanner}
             onRemoveBanner={onRemoveBanner}
             timers={timers}
@@ -6402,6 +6413,7 @@ export function StudioRoom() {
             onUpdateTicker={onUpdateTicker}
             widgets={widgets}
             onAddWidget={onAddWidget}
+            onUpdateWidget={onUpdateWidget}
             onToggleWidget={onToggleWidget}
             onRemoveWidget={onRemoveWidget}
             chatMessages={chatMessages}
