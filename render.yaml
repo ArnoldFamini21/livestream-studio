@@ -3,7 +3,8 @@ services:
     name: livestream-studio-server
     runtime: node
     plan: free
-    buildCommand: npm install && npm run -w shared build && npm run -w server build
+    # NODE_ENV=production still needs the locked TypeScript build dependencies.
+    buildCommand: npm ci --include=dev && npm run -w shared build && npm run -w server build
     startCommand: npm run -w server start
     envVars:
       - key: NODE_ENV
