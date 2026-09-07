@@ -34,4 +34,6 @@ The September 7 release exposed infrastructure gaps beyond the UI. The signaling
 
 The release checker now sends the configured website origin to service health endpoints, including its curl fallback. This matches the browser's request contract without relaxing the media server's production origin checks.
 
+The signaling build explicitly installs locked development dependencies with `npm ci --include=dev`. With `NODE_ENV=production`, the previous install omitted the project compiler and Render fell back to a different global TypeScript version, failing with TS5102. The Render dashboard build command must match `render.yaml` for services managed outside a Blueprint.
+
 Production readiness still requires durable PostgreSQL storage for accounts, rooms, and catalogs; object storage for cloud recordings; a configured production TURN relay; and capacity testing on appropriate hosting. The current free instances can sleep and lack persistent disks. In-memory cloud data does not survive a backend restart. External platform and AI credentials also need configuration before those integrations can be considered operational. Local browser recordings and workspace data are distinct from those server-side persistence gaps.
