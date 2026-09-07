@@ -31,6 +31,11 @@ export function StudioChat({
   onOpenPopoutChat,
   participants,
   myParticipantId,
+  initialRecipientId = '',
+  initialMode = initialRecipientId ? 'direct' : 'public',
+  onConversationChange,
+  draftValues,
+  onDraftsChange,
 }: {
   messages: ChatMessage[];
   onSend: (c: string, isBackstage?: boolean, recipientId?: string) => void;
@@ -55,12 +60,19 @@ export function StudioChat({
   onOpenPopoutChat?: () => void;
   participants: Map<string, Participant>;
   myParticipantId: string;
+  initialRecipientId?: string;
+  initialMode?: ChatTranscriptScope;
+  onConversationChange?: (mode: ChatTranscriptScope, recipientId: string) => void;
+  draftValues?: Record<string, string>;
+  onDraftsChange?: React.Dispatch<React.SetStateAction<Record<string, string>>>;
 }) {
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [mode, setMode] = useState<ChatTranscriptScope>('public');
+  const [localDrafts, setLocalDrafts] = useState<Record<string, string>>({});
+  const drafts = draftValues ?? localDrafts;
+  const setDrafts = onDraftsChange ?? setLocalDrafts;
+  const [mode, setMode] = useState<ChatTranscriptScope>(initialMode);
   const [view, setView] = useState<'chat' | 'connections'>('chat');
   const [connectionIds, setConnectionIds] = useState({ youtube: '', facebook: '' });
-  const [directRecipientId, setDirectRecipientId] = useState('');
+  const [directRecipientId, setDirectRecipientId] = useState(initialRecipientId);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDetailsElement>(null);
@@ -107,8 +119,8 @@ export function StudioChat({
     if (typingTimer.current) clearTimeout(typingTimer.current);
     typingTimer.current = setTimeout(stopTyping, 2500);
   };
-  const handleModeChange = (nextMode: ChatTranscriptScope) => { stopTyping(); nearBottom.current = true; setHasNewMessages(false); setMode(nextMode); };
-  const handleRecipientChange = (id: string) => { stopTyping(); nearBottom.current = true; setHasNewMessages(false); setDirectRecipientId(id); };
+  const handleModeChange = (nextMode: ChatTranscriptScope) => { stopTyping(); nearBottom.current = true; setHasNewMessages(false); setMode(nextMode); onConversationChange?.(nextMode, directRecipientId); };
+  const handleRecipientChange = (id: string) => { stopTyping(); nearBottom.current = true; setHasNewMessages(false); setDirectRecipientId(id); onConversationChange?.(mode, id); };
   const handleSend = () => {
     if (!preparedMessage) return;
     stopTyping();
@@ -171,7 +183,7 @@ export function StudioChat({
       }}>
         {visibleMessages.length === 0 && <div className="chat-empty">
           <p>{mode === 'social' ? 'Your audience joins here.' : mode === 'starred' ? 'Keep the good ones close.' : mode === 'direct' ? 'A space for private messages.' : mode === 'backstage' ? 'Behind the scenes.' : 'Start the conversation.'}</p>
-          <span>{mode === 'social' ? 'Comments from YouTube and Facebook appear here.' : mode === 'starred' ? 'Star a public message to find it here.' : mode === 'direct' ? 'Choose a participant to send a private note.' : mode === 'backstage' ? 'Coordinate with the host and backstage team.' : 'Public messages appear here.'}</span>
+          <span>{mode === 'social' ? 'Comments from YouTube and Facebook appear here.' : mode === 'starred' ? 'Star a public message to find it here.' : mode === 'direct' ? (selectedRecipient ? `Only you and ${selectedRecipient.name} can see this conversation.` : 'Choose a participant to send a private note.') : mode === 'backstage' ? 'Coordinate with the host and backstage team.' : 'Public messages appear here.'}</span>
           {mode === 'social' && canManageExternalChat && <button type="button" className="chat-text-button" onClick={openConnections}>Connect platforms</button>}
         </div>}
         {visibleMessages.map(message => <ChatMessageItem key={message.id} message={message} isMine={message.senderId === myParticipantId} onReact={onReact} onToggleStar={onToggleStar} onTogglePin={onTogglePin} onFeature={handleFeature} onFlash={handleFlash}

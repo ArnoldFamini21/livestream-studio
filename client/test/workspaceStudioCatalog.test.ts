@@ -167,3 +167,47 @@ describe('workspace studio catalog client helpers', () => {
     }
   });
 });
+
+describe('bounded workspace synchronization', () => {
+  it('replaces 20-by-20 HTTP fan-out with one request and deduplicates simultaneous refreshes', async () => {
+    const { syncWorkspaceStudioCatalogs } = await import('../src/utils/workspaceStudioCatalog.ts');
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; body: any }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    globalThis.fetch = (async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      await gate;
+      return jsonResponse({ roomId: 'workspace', studios: [], exportedAt: '', failedCatalogIds: [], rejectedStudioIds: [] });
+    }) as typeof fetch;
+    try {
+      const studios = Array.from({ length: 20 }, (_, i) => ({ ...savedStudio, id: `studio-${i}` }));
+      const first = syncWorkspaceStudioCatalogs(studios);
+      const second = syncWorkspaceStudioCatalogs(studios);
+      assert.equal(first, second);
+      release();
+      await Promise.all([first, second]);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].body.catalogs.length, 20);
+      assert.equal(calls[0].body.studios.length, 20);
+      assert.match(calls[0].url, /\/workspace-studios\/sync$/);
+      await syncWorkspaceStudioCatalogs(studios);
+      assert.equal(calls.length, 2, 'A later refresh must check the server again');
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  it('clears failed in-flight requests so the next refresh can recover', async () => {
+    const { syncWorkspaceStudioCatalogs } = await import('../src/utils/workspaceStudioCatalog.ts');
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      if (++calls === 1) return jsonResponse({ error: 'Busy' }, 503);
+      return jsonResponse({ roomId: 'workspace', studios: [], exportedAt: '', failedCatalogIds: [], rejectedStudioIds: [] });
+    }) as typeof fetch;
+    try {
+      await assert.rejects(syncWorkspaceStudioCatalogs([savedStudio]));
+      await syncWorkspaceStudioCatalogs([savedStudio]);
+      assert.equal(calls, 2);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+});

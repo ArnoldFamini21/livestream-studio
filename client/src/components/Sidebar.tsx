@@ -1,3 +1,5 @@
+import type { ChatTranscriptScope } from '../utils/chatTranscript.ts';
+import { PeoplePanel } from './PeoplePanel.tsx';
 import { StudioChat } from './StudioChat.tsx';
 import '../styles/overlay-panel.css';
 import '../styles/media-library.css';
@@ -15,7 +17,6 @@ import {
   type HighlightedComment,
 } from './CommentHighlight.tsx';
 import { MediaLibrary } from './MediaLibrary.tsx';
-import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import {
   BRAND_KIT_STORAGE_KEY,
   MAX_SAVED_BRAND_KITS,
@@ -42,11 +43,7 @@ import {
   MAX_WAITING_ROOM_HEADLINE_LENGTH,
   MAX_WAITING_ROOM_MESSAGE_LENGTH,
 } from '../utils/waitingRoomBranding.ts';
-import {
-  formatPeerBandwidthHealthTitle,
-  formatPeerBandwidthQualityLabel,
-} from '../utils/peerBandwidthDisplay.ts';
-import type { PeerBandwidthHealth, PeerBandwidthQuality } from '../utils/webrtcBandwidthAdaptation.ts';
+import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 // ---------------------------------------------------------------------------
@@ -287,6 +284,9 @@ type BrandKitPreset = Omit<BrandKitVisuals, 'logoUrl' | 'logoPlacement' | 'logoP
 // Main Sidebar component
 // ---------------------------------------------------------------------------
 export function Sidebar(props: SidebarProps) {
+  const [chatRecipient, setChatRecipient] = useState('');
+  const [chatMode, setChatMode] = useState<ChatTranscriptScope>('public');
+  const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({});
   const [internalActiveTab, setInternalActiveTab] = useState<SidebarTab | null>('people');
   const [savedBrandKits, setSavedBrandKits] = useState<SavedBrandKit[]>(loadSavedBrandKits);
   const [brandKitName, setBrandKitName] = useState('');
@@ -413,7 +413,8 @@ export function Sidebar(props: SidebarProps) {
         <div className="studio-sidebar-panel" style={st.contentPanel}>
           <div className="studio-panel-heading"><span>{tabDefs.find(tab => tab.id === activeTab)?.label}</span><button aria-label="Close sidebar panel" onClick={() => setActiveTab(null)}>×</button></div>
           {activeTab === 'people' && (
-            <PeopleContent
+            <PeoplePanel
+              onMessageParticipant={id => { setChatRecipient(id); setChatMode('direct'); setActiveTab('chat'); }}
               participants={props.allParticipants}
               myParticipantId={props.myParticipantId}
               myRole={props.myRole}
@@ -432,6 +433,11 @@ export function Sidebar(props: SidebarProps) {
 
           {activeTab === 'chat' && (
             <StudioChat
+              initialRecipientId={chatRecipient}
+              initialMode={chatMode}
+              onConversationChange={(mode, id) => { setChatMode(mode); setChatRecipient(id); }}
+              draftValues={chatDrafts}
+              onDraftsChange={setChatDrafts}
               messages={props.chatPanelMessages}
               onSend={props.onSendChat}
               onReact={props.onReactChat}
@@ -863,346 +869,6 @@ export function Sidebar(props: SidebarProps) {
 // ---------------------------------------------------------------------------
 // Mini video preview for the People tab
 // ---------------------------------------------------------------------------
-function MiniVideoPreview({ stream, videoEnabled, name }: { stream: MediaStream | null; videoEnabled: boolean; name: string }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream]);
-
-  const initial = (name || '?').charAt(0).toUpperCase();
-
-  if (!stream || !videoEnabled) {
-    return (
-      <div style={st.miniPreview}>
-        <div style={st.miniPreviewPlaceholder}>
-          <span style={st.miniPreviewInitial}>{initial}</span>
-        </div>
-        {!videoEnabled && (
-          <div style={st.miniCamOff}>
-            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="1" y1="1" x2="23" y2="23" />
-              <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" />
-            </svg>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div style={st.miniPreview}>
-      <video ref={videoRef} autoPlay playsInline muted style={st.miniPreviewVideo} />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// People sub-component
-// ---------------------------------------------------------------------------
-function PeopleContent({
-  participants,
-  myParticipantId,
-  myRole,
-  onStageAction,
-  focusedParticipantId,
-  onSpotlightParticipant,
-  remoteStreams,
-  peerBandwidthHealth,
-  localStream,
-  participantVolumes,
-  onParticipantVolumeChange,
-  audioDuckingEnabled,
-  onAudioDuckingEnabledChange,
-}: {
-  participants: Map<string, Participant>; myParticipantId: string;
-  myRole: 'host' | 'co-host' | 'guest';
-  onStageAction: (action: StageActionPayload['action'], targetId: string) => void;
-  focusedParticipantId: string | null;
-  onSpotlightParticipant: (participantId: string | null) => void;
-  remoteStreams: Map<string, MediaStream>;
-  peerBandwidthHealth: Map<string, PeerBandwidthHealth>;
-  localStream: MediaStream | null;
-  participantVolumes: Record<string, number>;
-  onParticipantVolumeChange: (participantId: string, volume: number) => void;
-  audioDuckingEnabled: boolean;
-  onAudioDuckingEnabledChange: (enabled: boolean) => void;
-}) {
-  const isHostOrCoHost = myRole === 'host' || myRole === 'co-host';
-  type PStatus = 'on-stage' | 'backstage' | 'green-room';
-  const grouped: Record<PStatus, Participant[]> = { 'on-stage': [], 'backstage': [], 'green-room': [] };
-  for (const [, p] of participants) {
-    if (p.id !== myParticipantId) grouped[p.status].push(p);
-  }
-  const myP = participants.get(myParticipantId);
-
-  const getStream = (id: string): MediaStream | null => {
-    if (id === myParticipantId) return localStream;
-    return remoteStreams.get(id) || null;
-  };
-  const canAdjustOwnVolume = isHostOrCoHost && myP?.status === 'on-stage';
-  const isMeSpotlighted = Boolean(myP && focusedParticipantId === myP.id);
-
-  return (
-    <div style={st.panelFull}>
-      <div style={st.panelHeader}><h3 style={st.panelTitle}>People</h3><span style={st.panelSub}>{participants.size}/12 in session</span></div>
-      <div style={st.panelBody}>
-        {myP && (
-          <div className="participant-item" style={{ ...st.personItem, ...(canAdjustOwnVolume ? st.personItemStack : {}) }}>
-            <div style={st.personRow}>
-              <div style={st.personLeft}>
-                <MiniVideoPreview stream={localStream} videoEnabled={myP.videoEnabled} name={myP.name} />
-                <div style={st.personInfo}>
-                  <span style={st.personName}>{myP.name}</span>
-                  <div style={st.badges}>
-                    <span style={{ ...st.roleBadge, background: 'var(--accent-subtle)', color: 'var(--accent)' }}>{myP.role}</span>
-                    <span style={st.qualityBadge}>You</span>
-                  </div>
-                </div>
-              </div>
-              <div style={st.personRight}>
-                <div style={st.mediaIndicators}>
-                  <div style={{ ...st.mediaIcon, color: myP.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                    {myP.audioEnabled ? (
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
-                    ) : (
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
-                    )}
-                  </div>
-                  <div style={{ ...st.mediaIcon, color: myP.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                    {myP.videoEnabled ? (
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
-                    ) : (
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
-                    )}
-                  </div>
-                </div>
-                {canAdjustOwnVolume && (
-                  <div style={st.personActions}>
-                    <SmallBtn
-                      label={isMeSpotlighted ? 'Clear' : 'Spotlight'}
-                      color={isMeSpotlighted ? 'var(--text-muted)' : 'var(--accent)'}
-                      onClick={() => onSpotlightParticipant(isMeSpotlighted ? null : myP.id)}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-            {canAdjustOwnVolume && (
-              <ParticipantVolumeControl
-                participant={myP}
-                stream={localStream}
-                value={participantVolumes[myP.id] ?? 1}
-                onChange={onParticipantVolumeChange}
-              />
-            )}
-          </div>
-        )}
-        {isHostOrCoHost && (
-          <label style={st.duckingControl} title="Lower non-speaking broadcast audio while one participant is clearly speaking">
-            <span style={st.duckingText}>
-              <span style={st.duckingTitle}>Auto ducking</span>
-              <span style={st.duckingState}>{audioDuckingEnabled ? 'On' : 'Off'}</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={audioDuckingEnabled}
-              onChange={(event) => onAudioDuckingEnabledChange(event.currentTarget.checked)}
-              aria-label="Auto ducking"
-              style={st.duckingCheckbox}
-            />
-          </label>
-        )}
-        {grouped['green-room'].length > 0 && (
-          <PeopleSection title="Green Room" subtitle="Waiting to be admitted" color="#f59e0b" participants={grouped['green-room']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
-        )}
-        <PeopleSection title="On Stage" subtitle="Visible in the broadcast" color="var(--success)" participants={grouped['on-stage']} count={grouped['on-stage'].length + (myP?.status === 'on-stage' ? 1 : 0)} emptyMessage={myP?.status === 'on-stage' ? 'No other participants' : 'No participants'} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} participantVolumes={participantVolumes} onParticipantVolumeChange={onParticipantVolumeChange} showVolumeControls actions={(p) => (<>
-          <SmallBtn label={focusedParticipantId === p.id ? 'Clear' : 'Spotlight'} color={focusedParticipantId === p.id ? 'var(--text-muted)' : 'var(--accent)'} onClick={() => onSpotlightParticipant(focusedParticipantId === p.id ? null : p.id)} />
-          {p.audioEnabled && <SmallBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />}
-          {!p.audioEnabled && <SmallBtn label="Ask Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />}
-          <SmallBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
-          <SmallBtn label="Hold" color="#fbbf24" onClick={() => onStageAction('move-to-green-room', p.id)} />
-          {p.role === 'guest' && <SmallBtn label="Co-host" color="var(--accent)" onClick={() => onStageAction('promote-co-host', p.id)} />}
-          {p.role === 'co-host' && <SmallBtn label="Demote" color="var(--text-muted)" onClick={() => onStageAction('demote-to-guest', p.id)} />}
-          <SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} />
-          <SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} />
-        </>)} />
-        {grouped['backstage'].length > 0 && (
-          <PeopleSection title="Backstage" subtitle="Off broadcast stage" color="var(--accent)" participants={grouped['backstage']} isHostOrCoHost={isHostOrCoHost} getStream={getStream} peerBandwidthHealth={peerBandwidthHealth} actions={(p) => (<><SmallBtn label="Next" color="var(--accent)" onClick={() => onStageAction('notify-next', p.id)} /><SmallBtn label="To Stage" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} /><SmallBtn label="Hold" color="#fbbf24" onClick={() => onStageAction('move-to-green-room', p.id)} /><SmallBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} /><SmallBtn label="Ban" color="var(--danger)" onClick={() => onStageAction('ban', p.id)} /></>)} />
-        )}
-        {grouped['green-room'].length > 1 && isHostOrCoHost && (
-          <button className="btn-primary" style={st.admitAllBtn} onClick={() => grouped['green-room'].forEach((p) => onStageAction('move-to-stage', p.id))}>
-            Admit All ({grouped['green-room'].length})
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PeopleSection({
-  title,
-  subtitle,
-  color,
-  participants,
-  isHostOrCoHost,
-  getStream,
-  peerBandwidthHealth,
-  participantVolumes = {},
-  onParticipantVolumeChange,
-  showVolumeControls = false,
-  count,
-  emptyMessage = 'No participants',
-  actions,
-}: {
-  title: string; subtitle: string; color: string; participants: Participant[];
-  isHostOrCoHost: boolean; getStream: (id: string) => MediaStream | null;
-  peerBandwidthHealth: Map<string, PeerBandwidthHealth>;
-  participantVolumes?: Record<string, number>;
-  onParticipantVolumeChange?: (participantId: string, volume: number) => void;
-  showVolumeControls?: boolean;
-  count?: number;
-  emptyMessage?: string;
-  actions: (p: Participant) => React.ReactNode;
-}) {
-  return (
-    <div style={st.pSection}>
-      <div style={st.pSectionHead}><div style={{ ...st.pDot, background: color }} /><span style={st.pSectionTitle}>{title}</span><span style={st.pSectionCount}>({count ?? participants.length})</span></div>
-      <p style={st.pSectionSub}>{subtitle}</p>
-      {participants.length === 0 ? <p style={st.emptyText}>{emptyMessage}</p> : (
-        <div style={st.pList}>
-          {participants.map((p) => {
-            const canAdjustVolume = isHostOrCoHost && showVolumeControls && Boolean(onParticipantVolumeChange);
-            const health = peerBandwidthHealth.get(p.id);
-            return (
-              <div key={p.id} className="participant-item" style={{ ...st.personItem, ...st.personItemStack }}>
-                <div style={st.personRow}>
-                  <div style={st.personLeft}>
-                    <MiniVideoPreview stream={getStream(p.id)} videoEnabled={p.videoEnabled} name={p.name} />
-                    <div style={st.personInfo}>
-                      <span style={st.personName}>{p.name}</span>
-                      <div style={st.badges}>
-                        {p.role !== 'guest' && <span style={{ ...st.roleBadge, background: p.role === 'host' ? 'var(--accent-subtle)' : 'var(--success-subtle)', color: p.role === 'host' ? 'var(--accent)' : 'var(--success)' }}>{p.role}</span>}
-                        {health && (
-                          <span
-                            style={{ ...st.qualityBadge, ...getPeerBandwidthQualityBadgeStyle(health.quality) }}
-                            title={formatPeerBandwidthHealthTitle(health)}
-                          >
-                            {formatPeerBandwidthQualityLabel(health)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <div style={st.personRight}>
-                    <div style={st.mediaIndicators}>
-                      <div style={{ ...st.mediaIcon, color: p.audioEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                        {p.audioEnabled ? (
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
-                        ) : (
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" /><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" /></svg>
-                        )}
-                      </div>
-                      <div style={{ ...st.mediaIcon, color: p.videoEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                        {p.videoEnabled ? (
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
-                        ) : (
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="1" y1="1" x2="23" y2="23" /><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34" /></svg>
-                        )}
-                      </div>
-                    </div>
-                    {isHostOrCoHost && p.role !== 'host' && <div style={st.personActions}>{actions(p)}</div>}
-                  </div>
-                </div>
-                {canAdjustVolume && onParticipantVolumeChange && (
-                  <ParticipantVolumeControl
-                    participant={p}
-                    stream={getStream(p.id)}
-                    value={participantVolumes[p.id] ?? 1}
-                    onChange={onParticipantVolumeChange}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function getPeerBandwidthQualityBadgeStyle(quality: PeerBandwidthQuality): React.CSSProperties {
-  switch (quality) {
-    case 'good':
-      return { background: 'var(--success-subtle)', color: 'var(--success)' };
-    case 'fair':
-      return { background: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24' };
-    case 'poor':
-      return { background: 'rgba(239, 68, 68, 0.16)', color: 'var(--danger)' };
-    default:
-      return {};
-  }
-}
-
-function ParticipantVolumeControl({
-  participant,
-  stream,
-  value,
-  onChange,
-}: {
-  participant: Participant;
-  stream: MediaStream | null;
-  value: number;
-  onChange: (participantId: string, volume: number) => void;
-}) {
-  const percentage = Math.round(Math.min(1, Math.max(0, Number.isFinite(value) ? value : 1)) * 100);
-  const meterStream = participant.audioEnabled ? stream : null;
-
-  return (
-    <div style={st.volumeControl}>
-      <div style={st.volumeIcon} title={`Broadcast mix for ${participant.name}`}>
-        {percentage === 0 ? (
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-            <line x1="23" y1="9" x2="17" y2="15" />
-            <line x1="17" y1="9" x2="23" y2="15" />
-          </svg>
-        ) : (
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-          </svg>
-        )}
-      </div>
-      <div style={st.volumeStack}>
-        <div style={st.volumeMeter} title={`Live audio level for ${participant.name}`}>
-          <AudioLevelMeter stream={meterStream} size="small" orientation="horizontal" />
-        </div>
-        <input
-          type="range"
-          min={0}
-          max={100}
-          step={1}
-          value={percentage}
-          onChange={(event) => onChange(participant.id, Number(event.currentTarget.value) / 100)}
-          aria-label={`Broadcast mix for ${participant.name}`}
-          title={`Broadcast mix for ${participant.name}`}
-          style={st.volumeSlider}
-        />
-      </div>
-      <span style={st.volumeValue}>{percentage}%</span>
-    </div>
-  );
-}
-
-function SmallBtn({ label, color, onClick }: { label: string; color: string; onClick: () => void }) {
-  const borderColor = color.startsWith('#') ? `${color}33` : 'var(--border-strong)';
-  return <button style={{ ...st.smallBtn, color, borderColor }} onClick={onClick}>{label}</button>;
-}
-
 // ---------------------------------------------------------------------------
 // Brand preview
 // ---------------------------------------------------------------------------
