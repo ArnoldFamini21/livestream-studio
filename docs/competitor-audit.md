@@ -26,3 +26,12 @@ The benchmark is a small set of clear controls backed by dependable capture, gue
 4. Further reduction of account/catalog traffic when quickly switching between recordings, brand kits, and team views.
 
 The changes above are concrete progress toward StreamYard/Riverside parity. Full parity has not been established.
+
+
+## Production deployment findings
+
+The September 7 release exposed infrastructure gaps beyond the UI. The signaling service was still running commit `2542d58` from March 17. The media service declared in `render.yaml` had not been provisioned. The existing signaling service has now been updated and the media service provisioned on the declared free plan, with matching service authentication and both GitHub deployment hooks configured. The signaling service's empty `NODE_ENV` value was corrected to `production`. Secret values are stored in the hosting providers, not this repository.
+
+The release checker now sends the configured website origin to service health endpoints, including its curl fallback. This matches the browser's request contract without relaxing the media server's production origin checks.
+
+Production readiness still requires durable PostgreSQL storage for accounts, rooms, and catalogs; object storage for cloud recordings; a configured production TURN relay; and capacity testing on appropriate hosting. The current free instances can sleep and lack persistent disks. In-memory cloud data does not survive a backend restart. External platform and AI credentials also need configuration before those integrations can be considered operational. Local browser recordings and workspace data are distinct from those server-side persistence gaps.
