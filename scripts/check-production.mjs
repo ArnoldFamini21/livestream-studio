@@ -111,6 +111,9 @@ async function fetchWithCurlFallback(url, options = {}, fetchError) {
     args.push('--request', method);
   }
 
+  for (const [name, value] of new Headers(options.headers)) {
+    args.push('--header', `${name}: ${value}`);
+  }
   args.push(url);
 
   try {
@@ -127,13 +130,13 @@ async function fetchWithCurlFallback(url, options = {}, fetchError) {
   }
 }
 
-async function fetchText(url) {
+async function fetchText(url, options = {}) {
   try {
-    const response = await fetch(url, { redirect: 'follow' });
+    const response = await fetch(url, { ...options, redirect: 'follow' });
     const text = await response.text();
     return { response, text };
   } catch (err) {
-    return fetchWithCurlFallback(url, {}, err);
+    return fetchWithCurlFallback(url, options, err);
   }
 }
 
@@ -147,8 +150,8 @@ async function fetchHeaders(url) {
   }
 }
 
-async function fetchJson(url) {
-  const { response, text } = await fetchText(url);
+async function fetchJson(url, options = {}) {
+  const { response, text } = await fetchText(url, options);
   if (!response.ok) {
     return { response, json: null, text };
   }
@@ -336,8 +339,12 @@ async function checkClient() {
   return { asset, cache };
 }
 
-async function checkHealth(label, url, expectedService) {
-  const { response, json, text } = await fetchJson(`${url}/health`);
+export async function checkHealth(label, url, expectedService, originUrl = clientUrl) {
+  // Probe with the same allowed origin as the browser. The media server
+  // deliberately rejects origin-less requests in production.
+  const { response, json, text } = await fetchJson(`${url}/health`, {
+    headers: { Origin: new URL(originUrl).origin },
+  });
   requireOk(response, label, text);
   requireServiceHealth(label, json, expectedService);
   return json;

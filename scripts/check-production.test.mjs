@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 
 import {
+  checkHealth,
   describeHttpFailure,
   describeServiceCapabilityFailure,
   describeServiceHealthMetadataFailure,
@@ -173,4 +176,37 @@ test('rejects create studio responses that omit host access', () => {
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join('\n'), /valid private hostToken/);
+});
+
+
+test('health checks send the configured website origin through fetch and curl fallback', async () => {
+  const origins = [];
+  const server = createServer((req, res) => {
+    origins.push(req.headers.origin);
+    if (req.headers.origin !== 'https://studio.example.test') {
+      res.writeHead(403).end('Forbidden: origin not allowed');
+      return;
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({
+      status: 'ok', service: 'media-server',
+      commit: process.env.EXPECTED_COMMIT || process.env.GITHUB_SHA || 'abcdef0',
+    }));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const originalFetch = globalThis.fetch;
+  try {
+    assert.equal((await checkHealth('Media', url, 'media-server', 'https://studio.example.test/path')).status, 'ok');
+    globalThis.fetch = async () => { throw new Error('Simulated fetch transport failure'); };
+    assert.equal((await checkHealth('Media', url, 'media-server', 'https://studio.example.test/path')).status, 'ok');
+    globalThis.fetch = originalFetch;
+    await assert.rejects(checkHealth('Media', url, 'media-server', 'https://untrusted.example'), /HTTP 403/);
+    assert.deepEqual(origins, ['https://studio.example.test', 'https://studio.example.test', 'https://untrusted.example']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
 });
