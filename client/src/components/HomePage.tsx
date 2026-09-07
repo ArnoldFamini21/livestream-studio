@@ -56,10 +56,9 @@ import {
   deleteAccountWorkspaceStudioCatalogEntry,
   deleteWorkspaceStudioCatalogEntry,
   fetchAccountWorkspaceStudioCatalog,
-  fetchWorkspaceStudioCatalog,
   mergeWorkspaceStudioCatalogEntries,
   syncAccountWorkspaceStudioCatalogEntry,
-  syncWorkspaceStudioCatalogEntry,
+  syncWorkspaceStudioCatalogs,
 } from '../utils/workspaceStudioCatalog.ts';
 import {
   deleteWorkspaceTeamCatalogMember,
@@ -330,7 +329,6 @@ export function HomePage() {
   const navigate = useNavigate();
   const recordingLibrary = useRecordingLibrary();
   const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
-  const lastWorkspaceStudioCatalogSyncKey = useRef('');
   const lastAccountWorkspaceStudioCatalogSyncKey = useRef('');
 
   const [error, setError] = useState<string | null>(null);
@@ -560,24 +558,13 @@ export function HomePage() {
     setServerWorkspaceStudioCatalogLoading(true);
     setServerWorkspaceStudioCatalogError(null);
 
-    Promise.allSettled(
-      hostAccessibleStudios.map((room) => fetchWorkspaceStudioCatalog(room.id, room.hostToken))
-    )
-      .then((results) => {
+    syncWorkspaceStudioCatalogs(hostAccessibleStudios)
+      .then((response) => {
         if (cancelled) return;
-        const byId = new Map<string, WorkspaceStudioCatalogEntry>();
-        for (const result of results) {
-          if (result.status !== 'fulfilled') continue;
-          for (const studio of result.value.studios) {
-            byId.set(studio.id, studio);
-          }
-        }
-        setServerWorkspaceStudioCatalog(
-          Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-        );
-        const failedCount = results.filter((result) => result.status === 'rejected').length;
+        setServerWorkspaceStudioCatalog(response.studios);
+        const failedCount = new Set([...response.failedCatalogIds, ...response.rejectedStudioIds]).size;
         setServerWorkspaceStudioCatalogError(failedCount > 0
-          ? `Could not refresh cloud studios for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
+          ? `${failedCount} saved studio${failedCount === 1 ? ' is' : 's are'} unavailable. Your local studios are still here.`
           : null
         );
       })
@@ -630,16 +617,6 @@ export function HomePage() {
       cancelled = true;
     };
   }, [accountUser]);
-
-  useEffect(() => {
-    const syncKey = savedScheduledRooms
-      .filter((room) => getValidHostToken(room.hostToken))
-      .map((room) => `${room.id}:${room.hostToken}:${room.createdAt}:${room.scheduledFor || ''}`)
-      .join('|');
-    if (!syncKey || syncKey === lastWorkspaceStudioCatalogSyncKey.current) return;
-    lastWorkspaceStudioCatalogSyncKey.current = syncKey;
-    void syncWorkspaceStudiosToSavedStudios(savedScheduledRooms, savedScheduledRooms, false);
-  }, [savedScheduledRooms]);
 
   useEffect(() => {
     const syncKey = accountUser
@@ -1106,27 +1083,15 @@ export function HomePage() {
     const syncableStudios = studios.filter((room) => getValidHostToken(room.hostToken));
     if (hostAccessibleCatalogs.length === 0 || syncableStudios.length === 0) return;
 
-    const results = await Promise.allSettled(
-      hostAccessibleCatalogs.flatMap((room) => (
-        syncableStudios.map((studio) => syncWorkspaceStudioCatalogEntry({
-          roomId: room.id,
-          hostToken: room.hostToken,
-          studio,
-        }))
-      ))
-    );
-
-    const synced = results
-      .filter((result): result is PromiseFulfilledResult<WorkspaceStudioCatalogEntry> => result.status === 'fulfilled')
-      .map((result) => result.value);
-    mergeSyncedWorkspaceStudios(synced);
-
-    const failedCount = results.filter((result) => result.status === 'rejected').length;
-    if (showErrors) {
-      setServerWorkspaceStudioCatalogError(failedCount > 0
-        ? `Saved locally, but ${failedCount} cloud studio sync ${failedCount === 1 ? 'request' : 'requests'} failed.`
-        : null
-      );
+    try {
+      const response = await syncWorkspaceStudioCatalogs(syncableStudios, hostAccessibleCatalogs);
+      mergeSyncedWorkspaceStudios(response.studios);
+      if (showErrors) {
+        const failedCount = new Set([...response.failedCatalogIds, ...response.rejectedStudioIds]).size;
+        setServerWorkspaceStudioCatalogError(failedCount ? 'Saved locally. Some cloud studios could not be synced.' : null);
+      }
+    } catch {
+      if (showErrors) setServerWorkspaceStudioCatalogError('Saved locally. Cloud sync is temporarily unavailable.');
     }
   };
 

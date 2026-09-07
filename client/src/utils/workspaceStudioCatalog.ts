@@ -3,7 +3,12 @@ import type {
   WorkspaceStudioCatalogListResponse,
   WorkspaceStudioCatalogUpsertRequest,
 } from '@studio/shared';
-import { ApiRequestError, buildApiUrl, getJson, postJson } from './apiClient.ts';
+import {
+  ApiRequestError,
+  buildApiUrl,
+  getJson,
+  postJson,
+} from './apiClient.ts';
 import { accountHeaders } from './accountAuth.ts';
 import { getValidHostToken, type SavedHostStudio } from './hostSession.ts';
 
@@ -19,8 +24,12 @@ function catalogHeaders(hostToken: string): Headers {
   return headers;
 }
 
-function getStudioSortTime(studio: Pick<SavedHostStudio, 'createdAt' | 'scheduledFor'>): number {
-  const scheduledAt = studio.scheduledFor ? Date.parse(studio.scheduledFor) : NaN;
+function getStudioSortTime(
+  studio: Pick<SavedHostStudio, 'createdAt' | 'scheduledFor'>
+): number {
+  const scheduledAt = studio.scheduledFor
+    ? Date.parse(studio.scheduledFor)
+    : NaN;
   if (Number.isFinite(scheduledAt)) return scheduledAt;
   const createdAt = studio.createdAt ? Date.parse(studio.createdAt) : NaN;
   return Number.isFinite(createdAt) ? createdAt : Number.MAX_SAFE_INTEGER;
@@ -140,34 +149,124 @@ export async function deleteWorkspaceStudioCatalogEntry(
   hostToken: string,
   studioId: string
 ): Promise<void> {
-  const response = await fetch(buildApiUrl(
-    `/api/workspace-studios/rooms/${encodeURIComponent(roomId)}/catalog/${encodeURIComponent(studioId)}`
-  ), {
-    method: 'DELETE',
-    headers: catalogHeaders(hostToken),
-  });
+  const response = await fetch(
+    buildApiUrl(
+      `/api/workspace-studios/rooms/${encodeURIComponent(roomId)}/catalog/${encodeURIComponent(studioId)}`
+    ),
+    {
+      method: 'DELETE',
+      headers: catalogHeaders(hostToken),
+    }
+  );
 
   if (!response.ok) {
     throw new ApiRequestError(
       `Studio server returned ${response.status}. Please try again.`,
-      { status: response.status, responseText: await response.text().catch(() => '') }
+      {
+        status: response.status,
+        responseText: await response.text().catch(() => ''),
+      }
     );
   }
 }
 
-export async function deleteAccountWorkspaceStudioCatalogEntry(studioId: string): Promise<void> {
-  const response = await fetch(buildApiUrl(
-    `/api/workspace-studios/account/catalog/${encodeURIComponent(studioId)}`
-  ), {
-    method: 'DELETE',
-    credentials: 'include',
-    headers: accountHeaders(),
-  });
+export async function deleteAccountWorkspaceStudioCatalogEntry(
+  studioId: string
+): Promise<void> {
+  const response = await fetch(
+    buildApiUrl(
+      `/api/workspace-studios/account/catalog/${encodeURIComponent(studioId)}`
+    ),
+    {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: accountHeaders(),
+    }
+  );
 
   if (!response.ok) {
     throw new ApiRequestError(
       `Studio server returned ${response.status}. Please try again.`,
-      { status: response.status, responseText: await response.text().catch(() => '') }
+      {
+        status: response.status,
+        responseText: await response.text().catch(() => ''),
+      }
     );
   }
+}
+
+export interface WorkspaceStudioSyncResponse
+  extends WorkspaceStudioCatalogListResponse {
+  failedCatalogIds: string[];
+  rejectedStudioIds: string[];
+}
+
+// Deduplicate simultaneous create/effect/StrictMode calls without caching private
+// results after completion. A later visit always checks current server state.
+const pendingWorkspaceSyncs = new Map<
+  string,
+  Promise<WorkspaceStudioSyncResponse>
+>();
+
+export function syncWorkspaceStudioCatalogs(
+  studios: SavedHostStudio[],
+  catalogs: SavedHostStudio[] = studios
+): Promise<WorkspaceStudioSyncResponse> {
+  const validStudios = [
+    ...new Map(
+      studios
+        .filter((studio) => getValidHostToken(studio.hostToken))
+        .map((studio) => [studio.id, studio])
+    ).values(),
+  ];
+  const validCatalogs = [
+    ...new Map(
+      catalogs
+        .filter((studio) => getValidHostToken(studio.hostToken))
+        .map((studio) => [studio.id, studio])
+    ).values(),
+  ];
+  const body = {
+    studios: validStudios.map((studio) =>
+      buildWorkspaceStudioCatalogUpsertRequest(studio)
+    ),
+    catalogs: validCatalogs.map(({ id, hostToken }) => ({ id, hostToken })),
+  };
+  const key = JSON.stringify(body);
+  const pending = pendingWorkspaceSyncs.get(key);
+  if (pending) return pending;
+  const request = (async () => {
+    const merged = new Map<string, WorkspaceStudioCatalogEntry>();
+    const failures = new Set<string>();
+    const rejected = new Set<string>();
+    // Imported workspaces can exceed the ordinary 20 locally saved studios.
+    for (let offset = 0; offset < body.catalogs.length; offset += 20) {
+      for (
+        let studioOffset = 0;
+        studioOffset < Math.max(1, body.studios.length);
+        studioOffset += 100
+      ) {
+        const response = await postJson<WorkspaceStudioSyncResponse>(
+          '/api/workspace-studios/sync',
+          {
+            studios: body.studios.slice(studioOffset, studioOffset + 100),
+            catalogs: body.catalogs.slice(offset, offset + 20),
+          }
+        );
+        response.studios.forEach((studio) => merged.set(studio.id, studio));
+        response.failedCatalogIds.forEach((id) => failures.add(id));
+        response.rejectedStudioIds.forEach((id) => rejected.add(id));
+      }
+    }
+    return {
+      roomId: 'workspace',
+      exportedAt: new Date().toISOString(),
+      studios: [...merged.values()],
+      failedCatalogIds: [...failures],
+      rejectedStudioIds: [...rejected],
+    };
+  })();
+  pendingWorkspaceSyncs.set(key, request);
+  void request.finally(() => pendingWorkspaceSyncs.delete(key)).catch(() => {});
+  return request;
 }

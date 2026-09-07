@@ -134,7 +134,7 @@ describe('InMemoryAccountAuthStore', () => {
     assert.equal(registered.user.email, 'host@example.com');
     assert.equal(registered.user.name, 'Arnold');
     assert.ok(registered.session.token.length >= 32);
-    assert.equal((await getAccountSession(store, registered.session.token)).user?.id, registered.user.id);
+    assert.equal((await getAccountSession(store, registered.session.token, new Date('2026-07-03T10:01:00.000Z'))).user?.id, registered.user.id);
 
     const loggedIn = await loginAccount(store, {
       email: 'host@example.com',
@@ -144,7 +144,7 @@ describe('InMemoryAccountAuthStore', () => {
     assert.notEqual(loggedIn.session.token, registered.session.token);
 
     await logoutAccount(store, loggedIn.session.token);
-    assert.equal((await getAccountSession(store, loggedIn.session.token)).user, null);
+    assert.equal((await getAccountSession(store, loggedIn.session.token, new Date('2026-07-03T11:01:00.000Z'))).user, null);
   });
 
   it('rejects duplicate accounts and invalid credentials', async () => {
@@ -193,9 +193,10 @@ describe('PostgresAccountAuthStore', () => {
     assert.equal(fakeDb.sessions.has(tokenHash), true);
     assert.equal(fakeDb.sessions.has(registered.session.token), false);
 
-    const session = await getAccountSession(store, registered.session.token);
+    const session = await getAccountSession(store, registered.session.token, new Date('2026-07-03T10:01:00.000Z'));
     assert.equal(session.user?.email, 'host@example.com');
 
+    assert.equal((await getAccountSession(store, registered.session.token, new Date(registered.session.expiresAt))).user, null);
     await store.close();
     assert.equal(fakeDb.closed, true);
   });

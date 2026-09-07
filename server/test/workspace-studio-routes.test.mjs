@@ -249,3 +249,76 @@ describe('workspace studio catalog routes', () => {
     assert.equal(body.code, 'HOST_TOKEN_INVALID');
   });
 });
+
+describe('workspace catalog batch sync', () => {
+  let server, baseUrl;
+  before(async () => {
+    const app = express();
+    app.set('trust proxy', 1);
+    app.use(express.json());
+    app.use('/api/rooms', roomRouter);
+    app.use('/api/workspace-studios', workspaceStudioRouter);
+    server = http.createServer(app);
+    await listen(server);
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+  });
+  beforeEach(() => configureWorkspaceStudioCatalogStore(new InMemoryWorkspaceStudioCatalogStore()));
+  after(async () => { configureWorkspaceStudioCatalogStore(null); await close(server); });
+  const sync = (catalogs, studios) => fetch(`${baseUrl}/api/workspace-studios/sync`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ catalogs: catalogs.map(({ id, hostToken }) => ({ id, hostToken })), studios: studios.map(room => studioBody(room)) }),
+  });
+
+  it('syncs 20 studios in one request, preserves cross-room recovery, and skips unchanged writes', async () => {
+    let writes = 0;
+    class CountedStore extends InMemoryWorkspaceStudioCatalogStore {
+      async upsertStudio(...args) { writes++; return super.upsertStudio(...args); }
+    }
+    configureWorkspaceStudioCatalogStore(new CountedStore());
+    const rooms = [];
+    for (let i = 0; i < 20; i++) rooms.push(await createRoom(baseUrl, `Batch studio ${i}`));
+    const response = await sync(rooms, rooms);
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.studios.length, 20);
+    assert.deepEqual(result.failedCatalogIds, []);
+    assert.deepEqual(result.rejectedStudioIds, []);
+    assert.equal(writes, 400);
+    await sync(rooms, rooms);
+    assert.equal(writes, 400, 'An unchanged revisit must not repeat 400 database writes');
+    const restored = await sync([rooms[0]], []);
+    assert.equal((await restored.json()).studios.length, 20, 'Any authorized catalog still restores its linked studios');
+  });
+
+  it('verifies destination and source host tokens independently without leaking catalog contents', async () => {
+    const catalog = await createRoom(baseUrl, 'Private catalog');
+    const other = await createRoom(baseUrl, 'Other studio');
+    await sync([catalog], [catalog]);
+    const denied = await sync([{ ...catalog, hostToken: 'InvalidHostToken_123456' }], [other]);
+    const deniedBody = await denied.json();
+    assert.deepEqual(deniedBody.studios, []);
+    assert.deepEqual(deniedBody.failedCatalogIds, [catalog.id]);
+    const invalidSource = await sync([catalog], [{ ...other, hostToken: 'InvalidHostToken_123456' }]);
+    const sourceBody = await invalidSource.json();
+    assert.deepEqual(sourceBody.rejectedStudioIds, [other.id]);
+    assert.deepEqual(sourceBody.studios.map(s => s.id), [catalog.id]);
+  });
+
+  it('reports an unavailable catalog while keeping results from healthy catalogs', async () => {
+    const first = await createRoom(baseUrl, 'Healthy');
+    const second = await createRoom(baseUrl, 'Unavailable');
+    class PartialStore extends InMemoryWorkspaceStudioCatalogStore {
+      async listRoomStudios(id) { if (id === second.id) throw new Error('Temporary failure'); return super.listRoomStudios(id); }
+    }
+    configureWorkspaceStudioCatalogStore(new PartialStore());
+    const result = await (await sync([first, second], [first])).json();
+    assert.deepEqual(result.failedCatalogIds, [second.id]);
+    assert.deepEqual(result.studios.map(s => s.id), [first.id]);
+  });
+
+  it('rejects oversized batches before processing credentials', async () => {
+    const result = await fetch(`${baseUrl}/api/workspace-studios/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ catalogs: Array(21).fill({}), studios: [] }) });
+    assert.equal(result.status, 400);
+    assert.equal((await result.json()).code, 'INVALID_CATALOG_BATCH');
+  });
+});

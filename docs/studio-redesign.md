@@ -91,3 +91,15 @@ Validation: 708 client tests and production client build pass. A live 1280×960 
 Scenes now opens with one Add scene action and compact thumbnail rows. The selected scene is indicated in its row. Naming and templates appear only when adding a scene; transitions, stinger video setup, and import/export are under Scene settings. Each row's options retain rename, update from stage, duplicate, reorder, and delete. The redundant director board, repeated save controls, and always-visible template/transition grids are removed.
 
 Validation: all 708 client tests and the production build/typecheck pass. An isolated local preview of the actual SceneManager in the Codex browser covered creation, templates/show pack, switching, renaming, duplication, reordering, transition URL validation, save-failure retry, and the 12-scene limit. Panels at 240px and 320px remained within their bounds, including long names and expanded settings. The user's production studio was not modified during these checks.
+
+## Guest workflows and capture reliability
+
+People now uses compact rows grouped by waiting room, stage, and backstage. Immediate controls are limited to admission and microphone management; a participant menu contains volume, spotlight, private chat, role changes, and moderation. Opening a private conversation selects the intended guest. Chat drafts, channel, and recipient survive sidebar tab changes. Camera previews reattach when the same stream is enabled again.
+
+Workspace studio bootstrap now uses a bounded authenticated sync request instead of N catalog reads plus N² writes. The server skips unchanged entries, checks credentials for every catalog and source studio, and reports partial failures. Private host tokens remain excluded from logs and URLs.
+
+Recording chunks are committed individually to browser disk storage. If writing or committing a later chunk fails, the earlier disk-backed chunks and subsequent in-memory chunks are combined in order, preventing incomplete fallback recordings. This is not a browser-crash recovery interface.
+
+Validation: client production build/typecheck and 715 client tests pass. All 147 server tests pass; two old account tests now use consistent fixture clocks and explicitly check expiry. Browser checks cover compact guest controls, role gating, private-recipient routing, draft/channel retention, video preview after toggling the camera, and 240px/320px panels. Catalog route regressions cover 20 studios, unchanged-write skipping, independent source/destination authorization, partial outages, and oversized batches.
+
+A synthetic 640×360 browser recording with a simulated third-chunk disk failure played through all 6.469 seconds without a media error. A normal recording through the actual capture hook played through all 19.4325 seconds at the same dimensions. These short checks do not substitute for long-session or cross-browser load testing.

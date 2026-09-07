@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { createRecordingChunkStore } from '../utils/recordingChunkStore.ts';
 import {
   createRecordingCaptureMetadata,
   finalizeRecordingCaptureMetadata,
@@ -15,7 +16,6 @@ import {
 import {
   getPreferredAudioRecordingMimeType,
   getPreferredVideoRecordingMimeType,
-  getRecordingFileExtension,
 } from '../utils/recordingMimeTypes.ts';
 
 export interface RecordingResult {
@@ -47,13 +47,10 @@ interface TrackRecorder {
   label: string;
   kind: LocalRecordingSource['kind'];
   recorder: MediaRecorder;
-  chunks: Blob[];
+  chunkStore: ReturnType<typeof createRecordingChunkStore>;
   capture: RecordingCaptureMetadata;
   sidecarResults: LocalRecordingFileResult[];
   webCodecsSidecar?: WebCodecsSidecarRecorder;
-  activeWritable?: any; // FileSystemWritableFileStream
-  fileHandle?: any; // FileSystemFileHandle
-  getWritePromise: () => Promise<void> | null;
   cleanup?: () => void;
 }
 
@@ -314,19 +311,11 @@ export function useLocalRecording() {
       return null;
     }
 
-    const chunks: Blob[] = [];
-    let fileHandle: any = undefined;
-    let activeWritable: any = undefined;
-
-    if (dirHandle) {
-      try {
-        const ext = getRecordingFileExtension(mimeType);
-        fileHandle = await dirHandle.getFileHandle(`${source.id}-${Date.now()}.${ext}`, { create: true });
-        activeWritable = await fileHandle.createWritable();
-      } catch (err) {
-        console.warn(`Failed to create OPFS file for ${source.label}, falling back to memory chunks`, err);
-      }
-    }
+    const chunkStore = createRecordingChunkStore(
+      dirHandle,
+      `${source.id.replace(/[^a-zA-Z0-9_-]/g, '_')}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      error => console.warn(`Recording storage switched to memory for ${source.label}:`, error)
+    );
 
     const recorder = new MediaRecorder(stream, {
       mimeType,
@@ -344,26 +333,7 @@ export function useLocalRecording() {
       encoder: getEncoderMetadataForSource(stream, mimeType, bitsPerSecond),
     });
 
-    let currentWritePromise: Promise<void> | null = null;
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
-        if (activeWritable) {
-          const p = (async () => {
-            if (currentWritePromise) await currentWritePromise;
-            try {
-              await activeWritable.write(e.data);
-            } catch (err) {
-              console.error(`OPFS write error for ${source.label}:`, err);
-              chunks.push(e.data); // Fallback to memory
-            }
-          })();
-          currentWritePromise = p;
-        } else {
-          chunks.push(e.data);
-        }
-      }
-    };
+    recorder.ondataavailable = (event) => chunkStore.append(event.data);
 
     recorder.onerror = (e) => {
       console.error(`Recording error for ${source.label}:`, e);
@@ -374,13 +344,10 @@ export function useLocalRecording() {
       label: source.label,
       kind: source.kind,
       recorder,
-      chunks,
+      chunkStore,
       capture,
       sidecarResults: [],
       webCodecsSidecar,
-      fileHandle,
-      activeWritable,
-      getWritePromise: () => currentWritePromise,
       cleanup: source.cleanup,
     };
   };
@@ -579,7 +546,7 @@ export function useLocalRecording() {
         return;
       }
 
-      const { recorder, chunks, activeWritable, fileHandle, getWritePromise, cleanup } = trackRecorder;
+      const { recorder, chunkStore, cleanup } = trackRecorder;
       let cleanedUp = false;
       const cleanupSource = () => {
         if (cleanedUp) return;
@@ -592,24 +559,8 @@ export function useLocalRecording() {
         trackRecorder.capture = finalizeRecordingCaptureMetadata(trackRecorder.capture, stoppedAt);
         const sidecar = await stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, stoppedAt);
         const sidecars = sidecar ? [sidecar] : [];
-        if (activeWritable) {
-          try {
-            const p = getWritePromise();
-            if (p) await p; // wait for final chunk write
-            await activeWritable.close();
-            const file = await fileHandle.getFile();
-            console.log(`${label} OPFS recording stopped. Size: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
-            cleanupSource();
-            resolve({ blob: file, sidecars }); // returning File object maps to disk, doesn't load into RAM
-            return;
-          } catch (err) {
-            console.error(`Error closing OPFS file for ${label}:`, err);
-            // Fallthrough to memory chunks if OPFS threw error
-          }
-        }
-        
-        const blob = new Blob(chunks, { type: recorder.mimeType });
-        console.log(`${label} RAM recording stopped. Size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
+        const blob = await chunkStore.finish(recorder.mimeType);
+        console.log(`${label} recording stopped. Size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
         cleanupSource();
         resolve({ blob, sidecars });
       };
@@ -706,13 +657,7 @@ export function useLocalRecording() {
       }
     });
 
-    try {
-      const writePromise = trackRecorder.getWritePromise();
-      if (writePromise) await writePromise.catch(() => undefined);
-      await trackRecorder.activeWritable?.close?.();
-    } catch {
-      // Cancel discards recording data, so failed close cleanup is non-fatal.
-    }
+    await trackRecorder.chunkStore.discard();
     trackRecorder.cleanup?.();
   };
 
@@ -760,10 +705,7 @@ export function useLocalRecording() {
               trackRecorder.recorder.stop();
             }
             void stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, new Date().toISOString());
-            if (trackRecorder.activeWritable) {
-              // Fire-and-forget close during quick unmount
-              trackRecorder.activeWritable.close().catch(() => {});
-            }
+            void trackRecorder.chunkStore.flush();
             trackRecorder.cleanup?.();
           } catch {
             // ignore
