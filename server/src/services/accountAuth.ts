@@ -102,6 +102,10 @@ function normalizePassword(value: unknown): string {
 }
 
 function safeIsoDate(value: unknown): string {
+  // node-postgres returns timestamptz columns as Date instances.
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : '';
+  }
   if (typeof value !== 'string') return '';
   const time = Date.parse(value);
   return Number.isFinite(time) ? new Date(time).toISOString() : '';
