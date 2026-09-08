@@ -175,6 +175,45 @@ describe('InMemoryAccountAuthStore', () => {
 });
 
 describe('PostgresAccountAuthStore', () => {
+  it('restores accounts and sessions from native PostgreSQL timestamps', async () => {
+    const db = new FakeDb();
+    const now = new Date('2026-09-08T03:00:00.123Z');
+    const credentials = { email: 'host@example.com', name: 'Host', password: 'CorrectPassword123' };
+    const registered = await registerAccount(new PostgresAccountAuthStore(db), credentials, now);
+    // node-postgres parses timestamptz columns as Date objects on reads.
+    const user = db.users.get(registered.user.id);
+    user.created_at = new Date(user.created_at);
+    user.updated_at = new Date(user.updated_at);
+    const tokenHash = hashAccountSessionToken(registered.session.token);
+    const session = db.sessions.get(tokenHash);
+    session.created_at = new Date(session.created_at);
+    session.expires_at = new Date(session.expires_at);
+
+    const restored = new PostgresAccountAuthStore(db);
+    const current = await getAccountSession(restored, registered.session.token, now);
+    assert.deepEqual(current.user, registered.user);
+    assert.equal(current.session.expiresAt, registered.session.expiresAt);
+    assert.equal((await loginAccount(restored, credentials, now)).user.id, registered.user.id);
+    await assert.rejects(() => loginAccount(restored, { ...credentials, password: 'WrongPassword123' }, now), /incorrect/);
+    assert.equal((await getAccountSession(restored, registered.session.token, session.expires_at)).user, null);
+    assert.equal(db.sessions.has(tokenHash), false);
+  });
+
+  it('rejects invalid database timestamps without throwing or authenticating', async () => {
+    const db = new FakeDb();
+    const now = new Date('2026-09-08T03:00:00.123Z');
+    const store = new PostgresAccountAuthStore(db);
+    const registered = await registerAccount(store, { email: 'host@example.com', name: 'Host', password: 'CorrectPassword123' }, now);
+    const session = db.sessions.get(hashAccountSessionToken(registered.session.token));
+    for (const invalid of [new Date(NaN), Infinity, null, {}]) {
+      session.expires_at = invalid;
+      assert.equal((await getAccountSession(store, registered.session.token, now)).user, null);
+    }
+    session.expires_at = new Date(registered.session.expiresAt);
+    db.users.get(registered.user.id).created_at = new Date(NaN);
+    assert.equal((await getAccountSession(store, registered.session.token, now)).user, null);
+  });
+
   it('creates account/session schema and stores only hashed session tokens', async () => {
     const fakeDb = new FakeDb();
     const store = new PostgresAccountAuthStore(fakeDb);
