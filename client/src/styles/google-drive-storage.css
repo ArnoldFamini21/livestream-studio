@@ -1,0 +1,13 @@
+.drive-storage { margin-top: 28px; padding-top: 28px; border-top: 1px solid #e5e3ec; }
+.drive-storage-heading, .drive-storage-folder { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.drive-storage h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+.drive-storage p { margin: 0; color: #706d7e; font-size: 14px; line-height: 1.5; }
+.drive-storage button { font: inherit; cursor: pointer; }
+.drive-connect { border: 1px solid #ded8f3; border-radius: 9px; padding: 11px 16px; background: #f0ecfa; color: #5940a9; font-size: 14px !important; font-weight: 600 !important; }
+.drive-storage button:disabled { opacity: .55; cursor: default; }
+.drive-storage-folder { margin-top: 18px; }
+.drive-storage-folder a { color: #5940a9; overflow-wrap: anywhere; }
+.drive-storage-folder button { border: 0; background: transparent; color: #706d7e; font-size: 13px; padding: 8px; }
+.drive-storage .drive-storage-note { margin-top: 12px; font-size: 12px; }
+.drive-storage .drive-storage-error { margin-top: 12px; color: #b42318; }
+.drive-storage button:focus-visible, .drive-storage a:focus-visible { outline: 2px solid #7760c5; outline-offset: 3px; }

@@ -2529,13 +2529,12 @@ export function RecordingPanel({
   const [episodeContentCopied, setEpisodeContentCopied] = useState(false);
 
   const {
-    authorize,
+    prepareDestination,
     uploadFile,
     createFolder,
-    createShareLink,
+    getFolderLink,
     uploadProgress,
     isUploading,
-    isAuthorized,
   } = useGoogleDriveUpload();
   const {
     sessions,
@@ -3081,105 +3080,109 @@ export function RecordingPanel({
     downloadBlob(file.blob, file.fileName);
   }, []);
 
+  const driveOperationRef = useRef(false);
+  const [isPreparingDrive, setIsPreparingDrive] = useState(false);
   const handleUploadToDrive = useCallback(async () => {
-    setDriveShareLink(null);
-    setDriveUploadMessage(null);
-    setDriveUploadError(null);
-    setDriveLinkCopied(false);
-    let authorized = isAuthorized;
-    if (!authorized) {
-      authorized = await authorize();
-      if (!authorized) {
-        setDriveUploadError('Google Drive authorization failed.');
-        console.error('Google Drive authorization failed');
+    if (driveOperationRef.current) return;
+    driveOperationRef.current = true;
+    setIsPreparingDrive(true);
+    try {
+      setDriveShareLink(null);
+      setDriveUploadMessage(null);
+      setDriveUploadError(null);
+      setDriveLinkCopied(false);
+      await prepareDestination();
+
+      const activeSession = activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null;
+      const source: RecordingBundleSource = {
+        roomName: activeSession?.roomName || roomName,
+        sessionId: activeSession?.id || activeSessionId,
+        createdAt: activeSession?.createdAt || new Date().toISOString(),
+        durationSeconds: activeSession?.durationSeconds ?? parseDurationSeconds(formattedTime),
+        files: recordedFiles,
+        captionSegments,
+        captionLanguage,
+        markers: sortedRecordingMarkers,
+        generatedTranscript,
+      };
+      const uploadedAt = new Date().toISOString();
+      const retentionPolicy = getRecordingCloudRetentionPolicy(driveRetentionPolicyId);
+      const retentionManifest: RecordingDriveRetentionManifest = {
+        policyId: retentionPolicy.id,
+        label: retentionPolicy.label,
+        uploadedAt,
+        expiresAt: getRecordingCloudRetentionExpiresAt(retentionPolicy.id, uploadedAt),
+        permanent: retentionPolicy.permanent,
+      };
+
+      let uploadFiles: RecordedFile[];
+      try {
+        setDriveUploadMessage('Preparing editor bundles for Google Drive...');
+        uploadFiles = await createRecordingDriveHandoffFiles(source, retentionManifest);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to prepare Google Drive upload bundle.';
+        setDriveUploadError(message);
+        setDriveUploadMessage(null);
         return;
       }
-    }
 
-    const activeSession = activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null;
-    const source: RecordingBundleSource = {
-      roomName: activeSession?.roomName || roomName,
-      sessionId: activeSession?.id || activeSessionId,
-      createdAt: activeSession?.createdAt || new Date().toISOString(),
-      durationSeconds: activeSession?.durationSeconds ?? parseDurationSeconds(formattedTime),
-      files: recordedFiles,
-      captionSegments,
-      captionLanguage,
-      markers: sortedRecordingMarkers,
-      generatedTranscript,
-    };
-    const uploadedAt = new Date().toISOString();
-    const retentionPolicy = getRecordingCloudRetentionPolicy(driveRetentionPolicyId);
-    const retentionManifest: RecordingDriveRetentionManifest = {
-      policyId: retentionPolicy.id,
-      label: retentionPolicy.label,
-      uploadedAt,
-      expiresAt: getRecordingCloudRetentionExpiresAt(retentionPolicy.id, uploadedAt),
-      permanent: retentionPolicy.permanent,
-    };
+      // Create a folder for this recording session
+      const date = new Date().toISOString().slice(0, 10);
+      const folderName = `${source.roomName} - ${date}`;
+      const folderId = await createFolder(folderName);
 
-    let uploadFiles: RecordedFile[];
-    try {
-      setDriveUploadMessage('Preparing editor bundles for Google Drive...');
-      uploadFiles = await createRecordingDriveHandoffFiles(source, retentionManifest);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to prepare Google Drive upload bundle.';
-      setDriveUploadError(message);
+      if (!folderId) {
+        setDriveUploadError('Failed to create Google Drive folder.');
+        console.error('Failed to create Google Drive folder');
+        return;
+      }
+
+      // Upload all files into the folder
+      setDriveUploadMessage(`Uploading ${uploadFiles.length} Drive handoff files...`);
+      const uploadPromises = uploadFiles.map((file) =>
+        uploadFile(file.blob, file.fileName, folderId)
+      );
+
+      const uploadResults = await Promise.allSettled(uploadPromises);
+      if (uploadResults.some((result) => result.status === 'rejected' || !result.value)) {
+        setDriveUploadError('Some recording handoff files failed to upload.');
+        return;
+      }
+
+      const shareResult = await getFolderLink(folderId);
+      if (!shareResult) {
+        setDriveUploadError('Saved to Google Drive, but the folder link could not be retrieved.');
+        return;
+      }
+
+      setDriveShareLink(shareResult.webViewLink);
+      const cloudHandoff: RecordingCloudHandoff = {
+        provider: 'google-drive',
+        folderId: shareResult.folderId || folderId,
+        webViewLink: shareResult.webViewLink,
+        uploadedAt,
+        expiresAt: retentionManifest.expiresAt,
+        retentionPolicyId: retentionManifest.policyId,
+        permanent: retentionManifest.permanent,
+        fileCount: uploadFiles.length,
+        totalBytes: uploadFiles.reduce((total, file) => total + file.blob.size, 0),
+      };
+      if (activeSession?.id) {
+        const updatedSession = await updateSessionCloudHandoff(activeSession.id, cloudHandoff);
+        void syncRecordingCatalog(updatedSession);
+      }
+      const retentionLabel = retentionManifest.permanent
+        ? 'permanent archive'
+        : `review after ${formatDateTime(retentionManifest.expiresAt || uploadedAt)}`;
+      setDriveUploadMessage(`Uploaded ${uploadFiles.length} files to Google Drive. ${retentionLabel}. Folder sharing settings are unchanged.`);
+    } catch (error) {
       setDriveUploadMessage(null);
-      return;
+      setDriveUploadError(error instanceof Error ? error.message : 'Could not save to Google Drive. Please try again.');
+    } finally {
+      driveOperationRef.current = false;
+      setIsPreparingDrive(false);
     }
-
-    // Create a folder for this recording session
-    const date = new Date().toISOString().slice(0, 10);
-    const folderName = `${source.roomName} - ${date}`;
-    const folderId = await createFolder(folderName);
-
-    if (!folderId) {
-      setDriveUploadError('Failed to create Google Drive folder.');
-      console.error('Failed to create Google Drive folder');
-      return;
-    }
-
-    // Upload all files into the folder
-    setDriveUploadMessage(`Uploading ${uploadFiles.length} Drive handoff files...`);
-    const uploadPromises = uploadFiles.map((file) =>
-      uploadFile(file.blob, file.fileName, folderId)
-    );
-
-    const uploadResults = await Promise.all(uploadPromises);
-    if (uploadResults.some((id) => !id)) {
-      setDriveUploadError('Some recording handoff files failed to upload.');
-      return;
-    }
-
-    const shareResult = await createShareLink(folderId);
-    if (!shareResult) {
-      setDriveUploadError('Uploaded to Google Drive, but sharing could not be enabled.');
-      return;
-    }
-
-    setDriveShareLink(shareResult.webViewLink);
-    const cloudHandoff: RecordingCloudHandoff = {
-      provider: 'google-drive',
-      folderId: shareResult.folderId || folderId,
-      webViewLink: shareResult.webViewLink,
-      uploadedAt,
-      expiresAt: retentionManifest.expiresAt,
-      retentionPolicyId: retentionManifest.policyId,
-      permanent: retentionManifest.permanent,
-      fileCount: uploadFiles.length,
-      totalBytes: uploadFiles.reduce((total, file) => total + file.blob.size, 0),
-    };
-    if (activeSession?.id) {
-      const updatedSession = await updateSessionCloudHandoff(activeSession.id, cloudHandoff);
-      void syncRecordingCatalog(updatedSession);
-    }
-    const retentionLabel = retentionManifest.permanent
-      ? 'permanent archive'
-      : `expires ${formatDateTime(retentionManifest.expiresAt || uploadedAt)}`;
-    setDriveUploadMessage(`Uploaded ${uploadFiles.length} files to Google Drive. Share link is ready; ${retentionLabel}.`);
-    console.log('All files uploaded to Google Drive');
-  }, [activeSessionId, authorize, captionLanguage, captionSegments, createFolder, createShareLink, driveRetentionPolicyId, formattedTime, generatedTranscript, isAuthorized, recordedFiles, roomName, sessions, sortedRecordingMarkers, syncRecordingCatalog, updateSessionCloudHandoff, uploadFile]);
+  }, [activeSessionId, prepareDestination, captionLanguage, captionSegments, createFolder, getFolderLink, driveRetentionPolicyId, formattedTime, generatedTranscript, recordedFiles, roomName, sessions, sortedRecordingMarkers, syncRecordingCatalog, updateSessionCloudHandoff, uploadFile]);
 
   const handleCopyDriveShareLink = useCallback(async () => {
     if (!driveShareLink) return;
@@ -4514,7 +4517,7 @@ export function RecordingPanel({
                   style={styles.driveRetentionSelect}
                   value={driveRetentionPolicyId}
                   onChange={(event) => setDriveRetentionPolicyId(event.target.value as RecordingCloudRetentionPolicyId)}
-                  disabled={isUploading}
+                  disabled={isUploading || isPreparingDrive}
                 >
                   {RECORDING_CLOUD_RETENTION_POLICIES.map((policy) => (
                     <option key={policy.id} value={policy.id}>{policy.label}</option>
@@ -4673,17 +4676,17 @@ export function RecordingPanel({
                 className="hover-lift"
                 style={{
                   ...styles.driveBtn,
-                  opacity: isUploading ? 0.6 : 1,
+                  opacity: isUploading || isPreparingDrive ? 0.6 : 1,
                 }}
                 onClick={handleUploadToDrive}
-                disabled={isUploading}
+                disabled={isUploading || isPreparingDrive}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M18 15v3a2 2 0 01-2 2H5a2 2 0 01-2-2v-3" />
                   <polyline points="17 8 12 3 7 8" />
                   <line x1="12" y1="3" x2="12" y2="15" />
                 </svg>
-                {isUploading ? 'Uploading...' : 'Upload to Google Drive'}
+                {isPreparingDrive || isUploading ? 'Saving to Drive…' : 'Save to Google Drive'}
               </button>
 
               {driveUploadMessage && <div style={styles.driveStatusBadge}>{driveUploadMessage}</div>}

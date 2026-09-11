@@ -1,10 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID';
+import { authorizeGoogleDrive, prepareGoogleDrive, getDriveUploadDestination, createDriveRecordingFolder } from '../utils/googleDriveConnection.ts';
 const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
 const DRIVE_FILES_URL = 'https://www.googleapis.com/drive/v3/files';
-const DRIVE_PERMISSIONS_URL = 'https://www.googleapis.com/drive/v3/files';
-const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024;
 const DRIVE_UPLOAD_RESUME_STORAGE_PREFIX = 'livestream-studio:drive-upload-session:';
 const DRIVE_UPLOAD_RESUME_TTL_MS = 24 * 60 * 60 * 1000;
@@ -13,14 +11,9 @@ interface UploadProgress {
   [fileName: string]: number; // 0-100
 }
 
-interface TokenClient {
-  requestAccessToken: (overrides?: { prompt?: string }) => void;
-}
-
 export interface DriveShareLinkResult {
   folderId: string;
   webViewLink: string;
-  permissionId?: string;
 }
 
 type FetchLike = typeof fetch;
@@ -37,26 +30,6 @@ export type DriveUploadResumeStatus =
   | { status: 'resume'; offset: number }
   | { status: 'complete'; fileId: string }
   | { status: 'invalid' };
-
-declare global {
-  interface Window {
-    google?: {
-      accounts: {
-        oauth2: {
-          initTokenClient: (config: {
-            client_id: string;
-            scope: string;
-            callback: (response: { access_token?: string; expires_in?: number; error?: string }) => void;
-          }) => TokenClient;
-        };
-      };
-    };
-  }
-}
-
-// Google OAuth access tokens default to ~1 hour. Treat them as stale a bit early
-// so we proactively re-auth before a long upload runs out of token mid-flight.
-const TOKEN_SAFETY_MARGIN_MS = 5 * 60 * 1000;
 
 function isDriveFileId(value: string): boolean {
   return /^[a-zA-Z0-9_-]{8,200}$/.test(value);
@@ -96,6 +69,13 @@ export function getDriveUploadResumeOffset(rangeHeader: string | null): number {
   return end === null ? 0 : end + 1;
 }
 
+export function isDriveUploadUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.origin === 'https://www.googleapis.com' && url.pathname === '/upload/drive/v3/files' && !url.username && !url.password;
+  } catch { return false; }
+}
+
 export function isFreshDriveUploadResumeState(
   state: DriveUploadResumeState,
   nowMs = Date.now(),
@@ -103,7 +83,7 @@ export function isFreshDriveUploadResumeState(
 ): boolean {
   return (
     typeof state.uploadUri === 'string' &&
-    /^https:\/\//i.test(state.uploadUri) &&
+    isDriveUploadUrl(state.uploadUri) &&
     typeof state.fileName === 'string' &&
     Number.isSafeInteger(state.fileSize) &&
     state.fileSize >= 0 &&
@@ -119,7 +99,7 @@ export async function queryDriveResumableUploadStatus(
   fileSize: number,
   fetchImpl: FetchLike = fetch
 ): Promise<DriveUploadResumeStatus> {
-  if (!uploadUri || !accessToken || !Number.isSafeInteger(fileSize) || fileSize < 0) {
+  if (!isDriveUploadUrl(uploadUri) || !accessToken || !Number.isSafeInteger(fileSize) || fileSize < 0) {
     return { status: 'invalid' };
   }
 
@@ -210,33 +190,13 @@ function clearDriveUploadResumeState(key: string) {
   }
 }
 
-export async function createDriveFolderShareLinkRequest(
+export async function getDriveFolderLinkRequest(
   accessToken: string,
   folderId: string,
   fetchImpl: FetchLike = fetch
 ): Promise<DriveShareLinkResult | null> {
   if (!accessToken || !isDriveFileId(folderId)) return null;
 
-  const permissionResponse = await fetchImpl(
-    `${DRIVE_PERMISSIONS_URL}/${encodeURIComponent(folderId)}/permissions?supportsAllDrives=true`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        type: 'anyone',
-        role: 'reader',
-      }),
-    }
-  );
-
-  if (!permissionResponse.ok && permissionResponse.status !== 409) {
-    return null;
-  }
-
-  const permissionData = permissionResponse.ok ? await permissionResponse.json().catch(() => null) : null;
   const fileResponse = await fetchImpl(
     `${DRIVE_FILES_URL}/${encodeURIComponent(folderId)}?fields=webViewLink`,
     {
@@ -250,7 +210,6 @@ export async function createDriveFolderShareLinkRequest(
     return {
       folderId,
       webViewLink: buildDriveFolderUrl(folderId),
-      ...(typeof permissionData?.id === 'string' ? { permissionId: permissionData.id } : {}),
     };
   }
 
@@ -258,7 +217,6 @@ export async function createDriveFolderShareLinkRequest(
   return {
     folderId,
     webViewLink: typeof fileData?.webViewLink === 'string' ? fileData.webViewLink : buildDriveFolderUrl(folderId),
-    ...(typeof permissionData?.id === 'string' ? { permissionId: permissionData.id } : {}),
   };
 }
 
@@ -268,159 +226,26 @@ export function useGoogleDriveUpload() {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress>({});
 
   const accessTokenRef = useRef<string | null>(null);
-  const accessTokenExpiresAtRef = useRef<number>(0);
-  const tokenClientRef = useRef<TokenClient | null>(null);
-  const gisLoadedRef = useRef<boolean>(false);
-
-  function isTokenFresh(): boolean {
-    return Boolean(accessTokenRef.current) && Date.now() < accessTokenExpiresAtRef.current - TOKEN_SAFETY_MARGIN_MS;
-  }
-
-  // Load Google Identity Services script dynamically
-  const loadGisScript = useCallback((): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      if (gisLoadedRef.current && window.google?.accounts?.oauth2) {
-        resolve();
-        return;
-      }
-
-      // Check if script is already in the DOM
-      const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
-      if (existing) {
-        // Script tag exists, wait for it to load
-        if (window.google?.accounts?.oauth2) {
-          gisLoadedRef.current = true;
-          resolve();
-          return;
-        }
-        existing.addEventListener('load', () => {
-          gisLoadedRef.current = true;
-          resolve();
-        });
-        existing.addEventListener('error', () => reject(new Error('Failed to load Google Identity Services')));
-        return;
-      }
-
-      const script = document.createElement('script');
-      script.src = 'https://accounts.google.com/gsi/client';
-      script.async = true;
-      script.defer = true;
-      script.onload = () => {
-        gisLoadedRef.current = true;
-        resolve();
-      };
-      script.onerror = () => reject(new Error('Failed to load Google Identity Services'));
-      document.head.appendChild(script);
-    });
-  }, []);
-
-  // Resolver for the in-flight authorize() call. The token client is created once
-  // and reused; each authorize() swaps in a new resolver via this ref so we don't
-  // re-initialize the underlying client and leak the previous one.
-  const pendingResolveRef = useRef<((authorized: boolean) => void) | null>(null);
-
-  const handleTokenResponse = useCallback((response: { access_token?: string; expires_in?: number; error?: string }) => {
-    const resolve = pendingResolveRef.current;
-    pendingResolveRef.current = null;
-
-    if (response.error) {
-      console.error('OAuth2 error:', response.error);
-      setIsAuthorized(false);
-      accessTokenRef.current = null;
-      accessTokenExpiresAtRef.current = 0;
-      resolve?.(false);
-      return;
-    }
-    if (response.access_token) {
-      accessTokenRef.current = response.access_token;
-      // expires_in is in seconds; default to 1 hour if absent.
-      const ttlMs = (response.expires_in ?? 3600) * 1000;
-      accessTokenExpiresAtRef.current = Date.now() + ttlMs;
-      setIsAuthorized(true);
-      console.log('Google Drive authorized');
-      resolve?.(true);
-      return;
-    }
-    resolve?.(false);
-  }, []);
-
-  const initTokenClient = useCallback(() => {
-    if (!window.google?.accounts?.oauth2) {
-      console.error('Google Identity Services not loaded');
-      return null;
-    }
-    const client = window.google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: SCOPES,
-      callback: handleTokenResponse,
-    });
-    tokenClientRef.current = client;
-    return client;
-  }, [handleTokenResponse]);
+  useEffect(() => { void prepareGoogleDrive().catch(() => {}); }, []);
 
   const authorize = useCallback(async (): Promise<boolean> => {
     try {
-      await loadGisScript();
-
-      const client = tokenClientRef.current ?? initTokenClient();
-      if (!client) {
-        console.error('Failed to initialize token client');
-        return false;
-      }
-
-      return new Promise((resolve) => {
-        pendingResolveRef.current = resolve;
-        client.requestAccessToken({ prompt: '' });
-      });
-    } catch (err) {
-      console.error('Authorization failed:', err);
-      return false;
+      accessTokenRef.current = await authorizeGoogleDrive();
+      setIsAuthorized(true);
+      return true;
+    } catch (error) {
+      accessTokenRef.current = null;
+      setIsAuthorized(false);
+      throw error;
     }
-  }, [loadGisScript, initTokenClient]);
-
-  // Ensure we have a fresh token (or trigger re-auth) before kicking off a long upload.
-  const ensureFreshToken = useCallback(async (): Promise<boolean> => {
-    if (isTokenFresh()) return true;
-    return authorize();
-  }, [authorize]);
-
-  const createFolder = useCallback(async (name: string): Promise<string | null> => {
-    const ok = await ensureFreshToken();
-    if (!ok || !accessTokenRef.current) {
-      console.error('Not authorized');
-      return null;
-    }
-
-    try {
-      const metadata = {
-        name,
-        mimeType: 'application/vnd.google-apps.folder',
-      };
-
-      const response = await fetch(DRIVE_FILES_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessTokenRef.current}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(metadata),
-      });
-
-      if (!response.ok) {
-        const error = await response.text();
-        console.error('Failed to create folder:', error);
-        return null;
-      }
-
-      const data = await response.json();
-      if (typeof data?.id !== 'string') throw new Error('Invalid response from Google Drive API');
-      console.log(`Created Google Drive folder: ${name} (${data.id})`);
-      return data.id;
-    } catch (err) {
-      console.error('Error creating folder:', err);
-      return null;
-    }
-  }, [ensureFreshToken]);
+  }, []);
+  const ensureFreshToken = authorize;
+  const prepareDestination = useCallback(async () => getDriveUploadDestination(), []);
+  const createFolder = useCallback(async (name: string): Promise<string> => {
+    const parent = await getDriveUploadDestination();
+    const token = await authorizeGoogleDrive();
+    return createDriveRecordingFolder(token, parent, name);
+  }, []);
 
   const uploadFile = useCallback(
     async (blob: Blob, fileName: string, folderId?: string): Promise<string | null> => {
@@ -503,7 +328,7 @@ export function useGoogleDriveUpload() {
           }
 
           uploadUri = initResponse.headers.get('Location') || '';
-          if (!uploadUri) {
+          if (!isDriveUploadUrl(uploadUri)) {
             console.error('No upload URI in response');
             setUploadProgress((prev) => ({ ...prev, [fileName]: -1 }));
             return null;
@@ -526,7 +351,6 @@ export function useGoogleDriveUpload() {
             method: 'PUT',
             headers: {
               Authorization: `Bearer ${accessTokenRef.current}`,
-              'Content-Length': chunk.size.toString(),
               'Content-Range': `bytes ${offset}-${end - 1}/${totalSize}`,
             },
             body: chunk,
@@ -594,7 +418,7 @@ export function useGoogleDriveUpload() {
     [ensureFreshToken]
   );
 
-  const createShareLink = useCallback(async (folderId: string): Promise<DriveShareLinkResult | null> => {
+  const getFolderLink = useCallback(async (folderId: string): Promise<DriveShareLinkResult | null> => {
     const ok = await ensureFreshToken();
     if (!ok || !accessTokenRef.current) {
       console.error('Not authorized');
@@ -602,14 +426,14 @@ export function useGoogleDriveUpload() {
     }
 
     try {
-      const result = await createDriveFolderShareLinkRequest(accessTokenRef.current, folderId);
+      const result = await getDriveFolderLinkRequest(accessTokenRef.current, folderId);
       if (!result) {
-        console.error('Failed to create Google Drive share link');
+        console.error('Failed to create Google Drive folder link');
         return null;
       }
       return result;
     } catch (err) {
-      console.error('Error creating Google Drive share link:', err);
+      console.error('Error creating Google Drive folder link:', err);
       return null;
     }
   }, [ensureFreshToken]);
@@ -629,7 +453,8 @@ export function useGoogleDriveUpload() {
     authorize,
     uploadFile,
     createFolder,
-    createShareLink,
+    getFolderLink,
+    prepareDestination,
     uploadProgress,
     isUploading,
     isAuthorized,
