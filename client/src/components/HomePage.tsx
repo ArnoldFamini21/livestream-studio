@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
+import { GoogleDriveStorage } from './GoogleDriveStorage.tsx';
 import { StudioIcon } from './StudioIcon.tsx';
 import { WorkspaceDialog } from './WorkspaceDialog.tsx';
 import '../styles/workspace.css';
@@ -1663,6 +1664,7 @@ export function HomePage() {
                 {accountError && <p className="ws-workspaceError" style={styles.workspaceError}>{accountError}</p>}
               </div>
 
+              <GoogleDriveStorage />
 </section>}
           {workspaceView === 'team' && <section className="workspace-surface">              <div className="ws-workspaceSection" style={styles.workspaceSection}>
                 <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>

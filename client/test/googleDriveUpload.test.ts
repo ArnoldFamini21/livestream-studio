@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   buildDriveFolderUrl,
   createDriveUploadResumeKey,
-  createDriveFolderShareLinkRequest,
+  getDriveFolderLinkRequest,
   getDriveUploadResumeOffset,
   isFreshDriveUploadResumeState,
   parseDriveUploadRangeEnd,
@@ -11,7 +11,7 @@ import {
 } from '../src/hooks/useGoogleDriveUpload.ts';
 
 describe('Google Drive upload sharing helpers', () => {
-  it('creates an anyone-with-link folder permission and returns the Drive web view link', async () => {
+  it('returns the Drive folder link without making recordings public', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(url), init });
@@ -21,17 +21,16 @@ describe('Google Drive upload sharing helpers', () => {
       return new Response(JSON.stringify({ webViewLink: 'https://drive.google.com/drive/folders/folder_123' }), { status: 200 });
     };
 
-    const result = await createDriveFolderShareLinkRequest('token-1', 'folder_123', fetchImpl as typeof fetch);
+    const result = await getDriveFolderLinkRequest('token-1', 'folder_123', fetchImpl as typeof fetch);
 
     assert.deepEqual(result, {
       folderId: 'folder_123',
       webViewLink: 'https://drive.google.com/drive/folders/folder_123',
-      permissionId: 'permission-1',
     });
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].init?.method, 'POST');
-    assert.match(String(calls[0].init?.body), /"type":"anyone"/);
-    assert.match(String(calls[0].init?.body), /"role":"reader"/);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].init?.method, undefined);
+    assert.ok(!calls[0].url.includes('/permissions'));
+    assert.equal(calls[0].init?.body, undefined);
   });
 
   it('falls back to a deterministic folder URL when Drive does not return webViewLink', async () => {
@@ -42,7 +41,7 @@ describe('Google Drive upload sharing helpers', () => {
       return new Response('missing', { status: 500 });
     };
 
-    const result = await createDriveFolderShareLinkRequest('token-1', 'folder_abc', fetchImpl as typeof fetch);
+    const result = await getDriveFolderLinkRequest('token-1', 'folder_abc', fetchImpl as typeof fetch);
 
     assert.deepEqual(result, {
       folderId: 'folder_abc',
@@ -57,8 +56,8 @@ describe('Google Drive upload sharing helpers', () => {
       return new Response('{}', { status: 200 });
     };
 
-    assert.equal(await createDriveFolderShareLinkRequest('', 'folder_abc', fetchImpl as typeof fetch), null);
-    assert.equal(await createDriveFolderShareLinkRequest('token-1', '../bad', fetchImpl as typeof fetch), null);
+    assert.equal(await getDriveFolderLinkRequest('', 'folder_abc', fetchImpl as typeof fetch), null);
+    assert.equal(await getDriveFolderLinkRequest('token-1', '../bad', fetchImpl as typeof fetch), null);
     assert.equal(callCount, 0);
   });
 
@@ -100,7 +99,9 @@ describe('Google Drive resumable upload helpers', () => {
 
     assert.equal(isFreshDriveUploadResumeState(state, 2_000, 5_000), true);
     assert.equal(isFreshDriveUploadResumeState(state, 8_000, 5_000), false);
-    assert.equal(isFreshDriveUploadResumeState({ ...state, uploadUri: 'http://example.com' }, 2_000, 5_000), false);
+    for (const uploadUri of ['http://example.com', 'https://attacker.example/upload/drive/v3/files', 'https://www.googleapis.com.attacker.example/upload/drive/v3/files', 'https://www.googleapis.com/other']) {
+      assert.equal(isFreshDriveUploadResumeState({ ...state, uploadUri }, 2_000, 5_000), false);
+    }
   });
 
   it('queries Google resumable upload sessions for the next byte offset', async () => {
@@ -138,4 +139,11 @@ describe('Google Drive resumable upload helpers', () => {
 
     assert.deepEqual(result, { status: 'complete', fileId: 'drive-file-123' });
   });
+});
+
+it('does not send credentials to an untrusted saved upload URL', async () => {
+  let calls = 0;
+  const fake = (async () => { calls++; return new Response('{}'); }) as typeof fetch;
+  assert.deepEqual(await queryDriveResumableUploadStatus('https://untrusted.example', 'token', 100, fake), { status: 'invalid' });
+  assert.equal(calls, 0);
 });
