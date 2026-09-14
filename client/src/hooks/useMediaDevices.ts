@@ -215,13 +215,6 @@ export function useMediaDevices() {
       const enhancedAudio = createEnhancedAudioStream(stream, nextAudioProcessing);
       stream = enhancedAudio.stream;
       enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
-      streamRef.current = stream;
-      setLocalStream(stream);
-
-      // After getting the stream, enumerate devices to get labels
-      // (labels are only available after granting permission)
-      await enumerateDevices();
-
       // Track which devices are actually active
       const activeAudioTrack = stream.getAudioTracks()[0];
       const activeSourceAudioTrack = enhancedAudio.sourceTrack || activeAudioTrack;
@@ -236,6 +229,11 @@ export function useMediaDevices() {
       if (activeVideoTrack) activeVideoTrack.enabled = options.videoEnabled ?? true;
       setAudioEnabled(Boolean(activeAudioTrack?.enabled));
       setVideoEnabled(Boolean(activeVideoTrack?.enabled));
+
+      // Apply privacy choices before the stream can be rendered or published.
+      streamRef.current = stream;
+      setLocalStream(stream);
+      await enumerateDevices();
 
       if (activeAudioTrack) {
         const settings = (activeSourceAudioTrack || activeAudioTrack).getSettings();

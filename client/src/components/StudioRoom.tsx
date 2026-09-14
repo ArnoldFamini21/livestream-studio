@@ -1,3 +1,4 @@
+import { withLocalJoinMedia } from '../utils/joinMediaState.ts';
 import { getPresentationLayout } from '../utils/presentationLayout.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
@@ -2289,7 +2290,17 @@ export function StudioRoom() {
           setRoom(roomData);
           setIsLive(live);
           setLiveStartedAt(liveStartedAt);
-          setMyParticipant(participant);
+          const localParticipant = withLocalJoinMedia(participant, localStreamRef.current);
+          setMyParticipant(localParticipant);
+          sendRef.current({
+            type: 'media-state-changed',
+            payload: {
+              participantId: participant.id,
+              audioEnabled: localParticipant.audioEnabled,
+              videoEnabled: localParticipant.videoEnabled,
+              screenSharing: isScreenSharingRef.current,
+            },
+          });
           setJoined(true);
           setChatMessages(existingChatMessages);
           setChatTypingIndicators([]);
@@ -5199,8 +5210,9 @@ export function StudioRoom() {
     return () => window.clearTimeout(timer);
   }, [visibleLowerThird]);
 
-  // Connection error
-  if (connectionError) {
+  const connectionTimedOut = connectionError === 'Unable to connect to server. Please check your connection and try again.';
+  // Keep an existing stage mounted during a network interruption.
+  if (connectionError && !connectionTimedOut) {
     const passwordError = connectionError === 'This room requires a password' || connectionError === 'Incorrect room password';
     const hostAccessError = connectionError.includes('Host access is missing or expired');
     const joinRecoverableError =
@@ -5227,7 +5239,7 @@ export function StudioRoom() {
   }
 
   // Reconnect failed after max attempts — let the user manually retry rather than spinning forever.
-  if (reconnectFailed) {
+  if (!joined && (reconnectFailed || connectionTimedOut)) {
     return (
       <div style={styles.loading}>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round">
@@ -5317,6 +5329,12 @@ export function StudioRoom() {
             </span>
           </div>
           <div className="studio-headerRight" style={styles.headerRight}>
+            {!connected && (
+              <span role="status" style={{ color: 'var(--warning)', fontSize: 13 }}>
+                {reconnectFailed ? 'Connection lost' : 'Reconnecting…'}
+              </span>
+            )}
+            {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
             <button
               style={{
                 ...styles.healthBtn,
@@ -5507,6 +5525,12 @@ export function StudioRoom() {
           )}
         </div>
         <div className="studio-headerRight" style={styles.headerRight}>
+          {!connected && (
+            <span role="status" style={{ color: 'var(--warning)', fontSize: 13 }}>
+              {reconnectFailed ? 'Connection lost' : 'Reconnecting…'}
+            </span>
+          )}
+          {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
           <button
             style={{
               ...styles.healthBtn,

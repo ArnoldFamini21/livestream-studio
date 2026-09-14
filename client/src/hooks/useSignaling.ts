@@ -1,3 +1,4 @@
+import { shouldReconnectSignaling } from '../utils/signalingRecovery.ts';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import type { SignalMessage } from '@studio/shared';
 import { resolveWebSocketUrl } from '../utils/apiClient.ts';
@@ -19,17 +20,6 @@ export function useSignaling() {
   const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const intentionalDisconnectRef = useRef<boolean>(false);
-
-  // Message queue for offline messages
-  const messageQueueRef = useRef<SignalMessage[]>([]);
-
-  // Bug fix #7: Drain queued messages
-  const drainMessageQueue = useCallback((ws: WebSocket) => {
-    while (messageQueueRef.current.length > 0) {
-      const msg = messageQueueRef.current.shift()!;
-      ws.send(JSON.stringify(msg));
-    }
-  }, []);
 
   const connect = useCallback(() => {
     // Bug fix #8: Guard against OPEN and CONNECTING states
@@ -56,9 +46,6 @@ export function useSignaling() {
 
         // Reset reconnect attempts on successful connection
         reconnectAttemptsRef.current = 0;
-
-        // Drain any queued messages
-        drainMessageQueue(ws);
       };
 
       ws.onmessage = (event) => {
@@ -80,11 +67,8 @@ export function useSignaling() {
         console.log('WebSocket disconnected');
         setConnected(false);
 
-        // Clear stale message queue from old session to avoid replaying outdated data
-        messageQueueRef.current = [];
-
-        // Reconnect on non-clean close, unless intentionally disconnected or out of attempts.
-        if (intentionalDisconnectRef.current || event.wasClean) return;
+        // Planned restarts close cleanly too; preserve deliberate departures.
+        if (!shouldReconnectSignaling(event.code, intentionalDisconnectRef.current)) return;
 
         if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
           console.warn(`Giving up after ${MAX_RECONNECT_ATTEMPTS} reconnect attempts`);
@@ -110,7 +94,7 @@ export function useSignaling() {
 
       wsRef.current = ws;
     }, 0);
-  }, [drainMessageQueue]);
+  }, []);
 
   const disconnect = useCallback(() => {
     // Bug fix #6: Prevent reconnection on manual disconnect
@@ -134,10 +118,9 @@ export function useSignaling() {
   const send = useCallback((message: SignalMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(message));
-    } else {
-      // Bug fix #7: Queue messages when not connected
-      messageQueueRef.current.push(message);
     }
+    // Room state is restored after rejoining. Never replay offline media or
+    // broadcast commands belonging to a disconnected participant.
   }, []);
 
   const addHandler = useCallback((handler: MessageHandler) => {
@@ -149,6 +132,10 @@ export function useSignaling() {
 
   // After max attempts the UI calls this to kick off a fresh attempt cycle.
   const retry = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     reconnectAttemptsRef.current = 0;
     setReconnectFailed(false);
     connect();
