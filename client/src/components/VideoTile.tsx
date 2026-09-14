@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { getParticipantAvatarColors } from '../utils/participantAvatar.ts';
 import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 import {
@@ -121,17 +122,6 @@ function useSpeakingDetector(
   return { isSpeaking: enabled && level > 8, audioLevel: level };
 }
 
-// Generate a deterministic background gradient from a name string for the avatar placeholder
-function nameToGradient(name: string): string {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const h1 = Math.abs(hash % 360);
-  const h2 = (h1 + 40) % 360;
-  return `linear-gradient(135deg, hsl(${h1}, 60%, 35%), hsl(${h2}, 50%, 25%))`;
-}
-
 function getConnectionBadgeStyle(quality: PeerBandwidthQuality): React.CSSProperties {
   switch (quality) {
     case 'good':
@@ -200,6 +190,8 @@ export function VideoTile({
     .toUpperCase()
     .slice(0, 2) || '?';
 
+  const avatarColors = getParticipantAvatarColors(name);
+
   // Dynamic styling overrides
   const getShapeStyle = (): React.CSSProperties => {
     switch (cameraShape) {
@@ -222,7 +214,7 @@ export function VideoTile({
 
   const tileStyle: React.CSSProperties = {
     ...tileStyles.tile,
-    ...getShapeStyle(),
+    ...(isScreenShare ? { borderRadius: 0, aspectRatio: 'auto' } : getShapeStyle()),
     boxShadow: isSpeaking
       ? `0 0 0 3px ${brandColor}, 0 0 ${Math.min(speakingLevel / 4, 20)}px ${brandColor}88`
       : 'none',
@@ -230,7 +222,7 @@ export function VideoTile({
   };
 
   return (
-    <div style={tileStyle} role="group" aria-label={`Video feed: ${name}${isLocal ? ' (you)' : ''}${!audioEnabled ? ', muted' : ''}${!videoEnabled ? ', camera off' : ''}`}>
+    <div style={tileStyle} data-stage-participant={isScreenShare ? undefined : name} role="group" aria-label={`Video feed: ${name}${isLocal ? ' (you)' : ''}${!audioEnabled ? ', muted' : ''}${!videoEnabled ? ', camera off' : ''}`}>
       {/* Always render a hidden video/audio element for remote streams so audio plays even when camera is off */}
       {stream && (
         <video
@@ -248,17 +240,17 @@ export function VideoTile({
         />
       )}
       {(!stream || !videoEnabled) && (
-        <div style={{ ...tileStyles.placeholder, background: nameToGradient(name) }}>
-          <div style={tileStyles.avatarOuter}>
-            <div style={tileStyles.avatarInner}>
-              <span style={tileStyles.avatarInitials}>{initials}</span>
+        <div data-stage-placeholder={name} style={{ ...tileStyles.placeholder, background: `linear-gradient(135deg, ${avatarColors[0]}, ${avatarColors[1]})` }}>
+          <div data-stage-avatar-circle style={tileStyles.avatarOuter}>
+            <div data-stage-avatar-circle style={tileStyles.avatarInner}>
+              <span data-stage-avatar-text style={tileStyles.avatarInitials}>{initials}</span>
             </div>
           </div>
-          <span style={tileStyles.offlineLabel}>Camera Off</span>
+          <span data-stage-avatar-text style={tileStyles.offlineLabel}>Camera Off</span>
         </div>
       )}
 
-      {connectionHealth && !isLocal && (
+      {connectionHealth && !isLocal && !isScreenShare && (
         <div
           style={{ ...tileStyles.connectionBadge, ...getConnectionBadgeStyle(connectionHealth.quality) }}
           title={formatPeerBandwidthHealthTitle(connectionHealth)}
@@ -270,11 +262,11 @@ export function VideoTile({
       )}
 
       {/* Bottom gradient overlay */}
-      <div style={tileStyles.gradient} />
+      {!isScreenShare && <div style={tileStyles.gradient} />}
 
       {/* Name Tag Area */}
-      <div style={tileStyles.nameBar}>
-        <div style={{ ...getNameTagStyle(), display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      {!isScreenShare && <div style={tileStyles.nameBar}>
+        <div data-stage-name-tag style={{ ...getNameTagStyle(), display: 'inline-flex', alignItems: 'center', gap: 8 }}>
           {!audioEnabled ? (
             <div style={tileStyles.muteIcon}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round">
@@ -297,12 +289,12 @@ export function VideoTile({
               </svg>
             </div>
           )}
-          <span style={tileStyles.nameText}>
+          <span data-stage-name-text style={tileStyles.nameText}>
             {name}
             {isLocal && <span style={tileStyles.youTag}> (You)</span>}
           </span>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { drawParticipantCards } from '../utils/compositorParticipantCards.ts';
 import { CHAT_REACTION_EMOJIS, type ActiveMedia, type LivePoll, type LogoPlacement, type LogoPosition, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
 import type { BannerData } from '../components/BannerOverlay.tsx';
 import { getCommentSourceLabel, type HighlightedComment } from '../components/CommentHighlight.tsx';
@@ -482,30 +483,8 @@ function drawPresentationMediaPreview(
   const currentIndex = clampMediaSlideIndex(slideIndex, slides.length);
   const sourceLabel = getDeckSourceLabel(media);
   const slide = slides[currentIndex];
-  const slideWidth = Math.min(width * 0.86, 1460);
-  const slideHeight = slideWidth * 9 / 16;
-  const finalHeight = Math.min(slideHeight, height * 0.86);
-  const finalWidth = finalHeight * 16 / 9;
-  const slideX = x + (width - finalWidth) / 2;
-  const slideY = y + (height - finalHeight) / 2;
-
   if (slide.imageUrl && slideImage?.complete && slideImage.naturalWidth > 0) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(slideX, slideY, finalWidth, finalHeight, 24);
-    ctx.clip();
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(slideX, slideY, finalWidth, finalHeight);
-    drawContainedSource(ctx, slideImage, slideImage.naturalWidth, slideImage.naturalHeight, slideX, slideY, finalWidth, finalHeight);
-    ctx.restore();
-
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.roundRect(slideX, slideY, finalWidth, finalHeight, 24);
-    ctx.stroke();
-    ctx.restore();
+    drawContainedSource(ctx, slideImage, slideImage.naturalWidth, slideImage.naturalHeight, x, y, width, height);
     return true;
   }
 
@@ -529,26 +508,18 @@ function drawActiveMediaOverlay(
   containerBounds: DOMRect,
   scaleX: number,
   scaleY: number,
-  logicalScale: number,
   presentationSlideImage: HTMLImageElement | null,
   brandColor: string,
   slideIndex: number
 ) {
   const rect = getScaledNodeRect(mediaNode, containerBounds, scaleX, scaleY);
-  const radius = Math.max(12, 16 * logicalScale);
-  const padding = 20;
-  const contentX = rect.x + padding;
-  const contentY = rect.y + padding;
-  const contentW = Math.max(0, rect.width - padding * 2);
-  const contentH = Math.max(0, rect.height - padding * 2);
-
   ctx.save();
   ctx.fillStyle = '#000';
-  drawRoundedRect(ctx, rect.x, rect.y, rect.width, rect.height, radius);
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 
   const image = mediaNode?.querySelector('img');
   if (media.type === 'image' && image instanceof HTMLImageElement && canDrawMediaImage(image, window.location.href)) {
-    drawContainedSource(ctx, image, image.naturalWidth, image.naturalHeight, contentX, contentY, contentW, contentH);
+    drawContainedSource(ctx, image, image.naturalWidth, image.naturalHeight, rect.x, rect.y, rect.width, rect.height);
     ctx.restore();
     return;
   }
@@ -557,7 +528,7 @@ function drawActiveMediaOverlay(
     const video = mediaNode?.querySelector('video');
     if (video instanceof HTMLVideoElement && canDrawMediaVideo(video, window.location.href)) {
       try {
-        drawContainedSource(ctx, video, video.videoWidth, video.videoHeight, contentX, contentY, contentW, contentH);
+        drawContainedSource(ctx, video, video.videoWidth, video.videoHeight, rect.x, rect.y, rect.width, rect.height);
         ctx.restore();
         return;
       } catch {
@@ -1396,7 +1367,6 @@ export function useCompositor({
         containerBounds,
         scaleX,
         scaleY,
-        Math.min(logicalScaleX, logicalScaleY),
         activePresentationSlideImageRef.current,
         brandColor,
         activeMediaSlideIndex
@@ -1418,28 +1388,8 @@ export function useCompositor({
 
       drawVideoElementFrame(ctx, video, x, y, w, h);
       
-      // Attempt to draw name tags for each participant tile
-      const tileNode = video.closest('.participant-tile');
-      if (tileNode) {
-        const nameTag = tileNode.querySelector('.name-tag') as HTMLElement;
-        if (nameTag) {
-          const tagRect = nameTag.getBoundingClientRect();
-          const tx = (tagRect.left - containerBounds.left) * scaleX;
-          const ty = (tagRect.top - containerBounds.top) * scaleY;
-          const tw = tagRect.width * scaleX;
-          const th = tagRect.height * scaleY;
-          
-          ctx.fillStyle = 'rgba(0,0,0,0.6)';
-          ctx.beginPath();
-          ctx.roundRect(tx, ty, tw, th, 6 * Math.min(logicalScaleX, logicalScaleY));
-          ctx.fill();
-          
-          ctx.fillStyle = 'white';
-          ctx.font = '24px Inter, sans-serif';
-          ctx.fillText(nameTag.innerText, tx + 10 * logicalScaleX, ty + 24 * logicalScaleY);
-        }
-      }
     });
+    drawParticipantCards(ctx, containerRef.current, containerBounds, scaleX, scaleY, logicalScaleX, logicalScaleY);
 
     // 4. Draw logo watermark with the same placement and max-size rules as the stage.
     const logoImage = logoImageRef.current;

@@ -1,32 +1,33 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { createScreenCaptureSession } from '../utils/screenCapture.ts';
 
 export function useScreenShare() {
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
 
-  const streamRef = useRef<MediaStream | null>(null);
+  const sessionRef = useRef<ReturnType<typeof createScreenCaptureSession> | null>(null);
+  if (!sessionRef.current) {
+    sessionRef.current = createScreenCaptureSession(() => navigator.mediaDevices.getDisplayMedia({
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } },
+      audio: true,
+    }));
+  }
 
   const stopScreenShare = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-      setScreenStream(null);
-      setIsScreenSharing(false);
-    }
+    sessionRef.current?.stop();
+    setScreenStream(null);
+    setIsScreenSharing(false);
   }, []);
 
   const startScreenShare = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
-      });
+      const stream = await sessionRef.current!.start();
+      if (!stream) return null;
 
       // NOTE: The browser's native "Stop sharing" ended event is handled in
       // StudioRoom.tsx where it can also notify peers via signaling. Do not
       // add a duplicate ended listener here to avoid race conditions.
 
-      streamRef.current = stream;
       setScreenStream(stream);
       setIsScreenSharing(true);
 
@@ -40,14 +41,14 @@ export function useScreenShare() {
       }
       return null;
     }
-  }, [stopScreenShare]);
+  }, []);
 
   // Clean up on unmount
   useEffect(() => {
     return () => {
-      stopScreenShare();
+      sessionRef.current?.stop();
     };
-  }, [stopScreenShare]);
+  }, []);
 
   return {
     screenStream,

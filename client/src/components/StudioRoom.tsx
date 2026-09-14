@@ -1,3 +1,5 @@
+import { getPresentationLayout } from '../utils/presentationLayout.ts';
+import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { getAutoGridColumnCount } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
@@ -99,10 +101,8 @@ import {
   serializeVirtualBackgroundConfig,
 } from '../utils/virtualBackgrounds.ts';
 import {
-  getMediaShareLayoutPlan,
   mergeSharedMediaParticipantItems,
   selectVisibleStageItems,
-  type MediaShareParticipantPlacement,
 } from '../utils/mediaShareLayouts.ts';
 import { buildGuestInviteUrl, buildSecureGuestInviteUrl } from '../utils/inviteLinks.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
@@ -335,6 +335,7 @@ function getGuestJoinSessionId(): string | undefined {
 interface PersistedStudioState {
   version: typeof STUDIO_STATE_VERSION;
   layout: LayoutMode;
+  presentationLayout?: LayoutMode;
   studioTheme?: StudioThemeId;
   stageBackground: StageBackground;
   brandColor: string;
@@ -829,11 +830,9 @@ function PresentationRenderMissingCard({ media }: { media: ActiveMedia }) {
 function PresentationDeckStage({
   media,
   slideIndex,
-  onSlideIndexChange,
 }: {
   media: ActiveMedia;
   slideIndex: number;
-  onSlideIndexChange: (index: number) => void;
 }) {
   const slides = getPresentationSlides(media);
   const unitLabel = getPresentationDeckUnitLabel(slides.length > 0 && media.preview?.kind === 'presentation-slides' ? media.preview.sourceFormat : null);
@@ -842,37 +841,11 @@ function PresentationDeckStage({
 
   if (!slide) return <PresentationRenderMissingCard media={media} />;
 
-  return (
-    <div style={styles.presentationStage}>
-      <div style={styles.presentationSlideVisualFrame}>
-        <img
-          src={slide.imageUrl}
-          alt={`${media.name} ${unitLabel.toLowerCase()} ${currentIndex + 1}`}
-          style={styles.presentationSlideImage}
-        />
-      </div>
-      {slides.length > 1 && (
-        <div style={styles.presentationControls}>
-          <button
-            type="button"
-            style={{ ...styles.presentationControlBtn, ...(currentIndex <= 0 ? styles.presentationControlBtnDisabled : {}) }}
-            disabled={currentIndex <= 0}
-            onClick={() => onSlideIndexChange(currentIndex - 1)}
-          >
-            Prev
-          </button>
-          <button
-            type="button"
-            style={{ ...styles.presentationControlBtn, ...(currentIndex >= slides.length - 1 ? styles.presentationControlBtnDisabled : {}) }}
-            disabled={currentIndex >= slides.length - 1}
-            onClick={() => onSlideIndexChange(currentIndex + 1)}
-          >
-            Next
-          </button>
-        </div>
-      )}
-    </div>
-  );
+  return <img
+    src={slide.imageUrl}
+    alt={`${media.name} ${unitLabel.toLowerCase()} ${currentIndex + 1}`}
+    style={styles.mediaContent}
+  />;
 }
 
 function getPersistableScenes(scenes: Scene[], mediaAssets: StudioMediaAsset[] = []): Scene[] {
@@ -1038,6 +1011,7 @@ export function StudioRoom() {
 
   // Layout
   const [layout, setLayout] = useState<LayoutMode>('grid');
+  const [presentationLayout, setPresentationLayout] = useState<LayoutMode>('grid');
   const layoutRef = useRef<LayoutMode>('grid');
   const [layoutTransition, setLayoutTransition] = useState<StageLayoutTransition | null>(null);
 
@@ -1097,7 +1071,8 @@ export function StudioRoom() {
 
     const handlePresentationKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTextEntryTarget(event.target)) return;
-      if (event.target instanceof HTMLElement && event.target.closest('button, summary, a, video, [role="button"]')) return;
+      if (event.target instanceof HTMLElement && event.target.closest('button, summary, a, video, [role="button"]')
+        && (event.key === ' ' || !event.target.closest('.presentation-toolbar'))) return;
       const direction = event.key === 'ArrowLeft' || event.key === 'PageUp'
         ? 'previous'
         : event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' '
@@ -1873,6 +1848,7 @@ export function StudioRoom() {
         const parsed = JSON.parse(raw) as Partial<PersistedStudioState>;
         if (parsed.version === STUDIO_STATE_VERSION) {
           if (parsed.layout) applyLayout(parsed.layout, { animate: false });
+          if (parsed.presentationLayout) setPresentationLayout(parsed.presentationLayout);
           setStudioTheme(normalizeStudioThemeId(parsed.studioTheme));
           if (parsed.stageBackground) setStageBackground(parsed.stageBackground);
           if (parsed.brandColor) setBrandColor(parsed.brandColor);
@@ -1932,6 +1908,7 @@ export function StudioRoom() {
       const state: PersistedStudioState = {
         version: STUDIO_STATE_VERSION,
         layout,
+        presentationLayout,
         studioTheme,
         stageBackground: getPersistableStageBackground(stageBackground),
         brandColor,
@@ -1968,7 +1945,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoPosition, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers, widgets]);
+  }, [roomId, layout, presentationLayout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoPosition, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers, widgets]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -2849,6 +2826,7 @@ export function StudioRoom() {
             publishedScreenShareCleanupRef.current?.();
             publishedScreenShareCleanupRef.current = screenPip?.cleanup || null;
             const publishedVideoTrack = screenPip?.videoTrack || screenTrack;
+            try { publishedVideoTrack.contentHint = 'detail'; } catch { /* Optional encoder hint. */ }
             publishedVideoTrackRef.current = publishedVideoTrack;
             await replaceTrackRef.current(publishedVideoTrack);
             sfuSessionRef.current?.setLocalVideoTrack(publishedVideoTrack);
@@ -2958,6 +2936,19 @@ export function StudioRoom() {
           const files = buildToolbarRecordingUploadFiles(recordings, timestamp);
           if (files.length === 0) {
             throw new Error('No finished recording tracks were available to export.');
+          }
+
+          // Preserve the complete stage locally before a server export or download.
+          // The distributed participant uploads only contain isolated source tracks.
+          try {
+            await persistRecordingSession({
+              roomName: `${room?.name || 'Studio'} - Program`,
+              durationSeconds: null,
+              files,
+            });
+          } catch (error) {
+            console.warn('Could not save the program to the recording library:', error);
+            addToast('The recording library could not save this program. Keep the downloaded recording.', 'warning');
           }
 
           try {
@@ -4197,7 +4188,7 @@ export function StudioRoom() {
     return {
       id,
       name,
-      layout,
+      layout: effectiveLayout,
       background: persistedBackground,
       brandColor,
       logoUrl: persistedLogoUrl,
@@ -4379,6 +4370,7 @@ export function StudioRoom() {
         : null
     );
     const nextSceneMedia = getSceneActiveMediaForApply(scene, mediaAssets);
+    setPresentationLayout(scene.layout);
     setActiveMedia(nextSceneMedia.activeMedia);
     setActiveMediaSlideIndex(nextSceneMedia.slideIndex);
     // Restore overlay visibility from saved scene
@@ -4784,6 +4776,10 @@ export function StudioRoom() {
     ? screenShareStageSplit.participantItems
     : stagePresenceItems;
   const sharedContentIsActive = Boolean(activeMedia || sharedContentScreenShare);
+  const effectiveLayout = sharedContentIsActive ? presentationLayout : layout;
+  const changeVisibleLayout = useCallback((next: LayoutMode) => {
+    if (sharedContentIsActive) setPresentationLayout(next); else applyLayout(next);
+  }, [sharedContentIsActive, applyLayout]);
   const sharedContentStageItemCount = sharedContentParticipantPresenceItems.length + (sharedContentIsActive ? 1 : 0);
 
   useEffect(() => {
@@ -4836,8 +4832,8 @@ export function StudioRoom() {
 
     setStageItemOrder((current) => moveStageItemInOrder(current, availableStageItemIds, participantId, 'first'));
     setFocusedVideoItemId(participantId);
-    applyLayout(availableStageItemIds.length > 1 ? 'spotlight' : 'single');
-  }, [applyLayout, availableStageItemIds]);
+    if (!sharedContentIsActive) applyLayout(availableStageItemIds.length > 1 ? 'spotlight' : 'single');
+  }, [applyLayout, availableStageItemIds, sharedContentIsActive]);
 
   const [autoDirectorEnabled, setAutoDirectorEnabled] = useState(false);
   const activeSpeakerTrackerRef = useRef(createActiveSpeakerTracker());
@@ -4879,11 +4875,11 @@ export function StudioRoom() {
       const shortcutId = resolveShortcutId(event);
       if (!shortcutId) return;
       switch (shortcutId) {
-        case 'layout-grid': applyLayout('grid'); break;
-        case 'layout-spotlight': applyLayout('spotlight'); break;
-        case 'layout-side-by-side': applyLayout('side-by-side'); break;
-        case 'layout-pip': applyLayout('pip'); break;
-        case 'layout-single': applyLayout('single'); break;
+        case 'layout-grid': changeVisibleLayout('grid'); break;
+        case 'layout-spotlight': changeVisibleLayout('spotlight'); break;
+        case 'layout-side-by-side': changeVisibleLayout('side-by-side'); break;
+        case 'layout-pip': changeVisibleLayout('pip'); break;
+        case 'layout-single': changeVisibleLayout('single'); break;
         case 'toggle-auto-director': setAutoDirectorEnabled((current) => !current); break;
         case 'toggle-mic': onToggleAudio(); break;
         case 'toggle-camera': onToggleVideo(); break;
@@ -4894,7 +4890,7 @@ export function StudioRoom() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [applyLayout, isHostOrCoHost, onToggleAudio, onToggleVideo]);
+  }, [changeVisibleLayout, isHostOrCoHost, onToggleAudio, onToggleVideo]);
 
   const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
     if (action === 'cycle-pip-corner') {
@@ -4917,6 +4913,7 @@ export function StudioRoom() {
 
   // Auto-switch layout when participant count changes
   useEffect(() => {
+    if (sharedContentIsActive) return;
     // Layouts requiring >= 2 participants
     if (sharedContentStageItemCount < 2 && (layout === 'spotlight' || layout === 'featured' || layout === 'side-by-side' || layout === 'pip')) {
       applyLayout(sharedContentStageItemCount === 1 ? 'single' : 'grid');
@@ -4967,15 +4964,6 @@ export function StudioRoom() {
     containerStyle: React.CSSProperties;
     tileStyles: React.CSSProperties[];
     mode: 'flex' | 'grid' | 'custom';
-  };
-
-  type MediaShareLayoutResult = {
-    containerStyle: React.CSSProperties;
-    mediaStyle: React.CSSProperties;
-    participantStyles: React.CSSProperties[];
-    visibleParticipantCount: number;
-    placement: MediaShareParticipantPlacement;
-    usesFloatingParticipant: boolean;
   };
 
   const GAP = 8;
@@ -5071,231 +5059,6 @@ export function StudioRoom() {
     };
   }, [getAutoGridLayout]);
 
-  const getMediaShareLayout = useCallback((count: number, selectedLayout: LayoutMode): MediaShareLayoutResult => {
-    const plan = getMediaShareLayoutPlan(selectedLayout, count);
-    const visibleCount = plan.visibleParticipantCount;
-    const fullMediaStyle: React.CSSProperties = {
-      width: '100%',
-      height: '100%',
-      minWidth: 0,
-      minHeight: 0,
-    };
-
-    if (visibleCount <= 0) {
-      return {
-        containerStyle: {
-          ...containerBase,
-          display: 'grid',
-          gridTemplateColumns: '1fr',
-          gridTemplateRows: '1fr',
-          gap: GAP,
-          alignItems: 'stretch',
-          justifyItems: 'stretch',
-        },
-        mediaStyle: {
-          ...fullMediaStyle,
-          gridColumn: '1',
-          gridRow: '1',
-        },
-        participantStyles: [],
-        visibleParticipantCount: 0,
-        placement: plan.placement,
-        usesFloatingParticipant: false,
-      };
-    }
-
-    if (plan.placement === 'pip') {
-      const getPipPosition = (index: number): React.CSSProperties => {
-        const tileOffset = visibleCount >= 3 ? '18%' : visibleCount === 2 ? '21%' : '24%';
-        const clusterGap = '12px';
-        const column = visibleCount >= 3 ? index % 2 : 0;
-        const row = visibleCount >= 3 ? Math.floor(index / 2) : index;
-        const inlineOffset = column === 0 ? 20 : `calc(20px + ${tileOffset} + ${clusterGap})`;
-        const blockOffset = row === 0 ? 20 : `calc(20px + ${tileOffset} + ${clusterGap})`;
-        switch (pipCorner) {
-          case 'TL':
-            return { top: blockOffset, left: inlineOffset };
-          case 'TR':
-            return { top: blockOffset, right: inlineOffset };
-          case 'BL':
-            return { bottom: blockOffset, left: inlineOffset };
-          case 'BR':
-            return { bottom: blockOffset, right: inlineOffset };
-        }
-      };
-      const tileWidth = visibleCount >= 3 ? '18%' : visibleCount > 1 ? '21%' : '24%';
-
-      return {
-        containerStyle: {
-          ...containerBase,
-          display: 'grid',
-          gridTemplateColumns: '1fr',
-          gridTemplateRows: '1fr',
-          gap: GAP,
-          position: 'relative' as const,
-          overflow: 'hidden',
-          alignItems: 'stretch',
-          justifyItems: 'stretch',
-        },
-        mediaStyle: {
-          ...fullMediaStyle,
-          gridColumn: '1',
-          gridRow: '1',
-        },
-        participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
-          position: 'absolute' as const,
-          ...getPipPosition(i),
-          width: tileWidth,
-          aspectRatio: '16 / 9',
-          borderRadius: 12,
-          overflow: 'hidden',
-          boxShadow: '0 4px 24px rgba(0, 0, 0, 0.5)',
-          border: '2px solid rgba(255, 255, 255, 0.15)',
-          zIndex: 6,
-          flexShrink: 0,
-          flexGrow: 0,
-          cursor: 'pointer',
-          transition: 'top 0.3s ease, bottom 0.3s ease, left 0.3s ease, right 0.3s ease',
-        })),
-        visibleParticipantCount: visibleCount,
-        placement: plan.placement,
-        usesFloatingParticipant: true,
-      };
-    }
-
-    if (plan.placement === 'floating-stack') {
-      const spacing = visibleCount <= 1 ? 0 : Math.min(19, 64 / visibleCount);
-      const start = 50 - ((visibleCount - 1) * spacing) / 2;
-      return {
-        containerStyle: {
-          ...containerBase,
-          display: 'grid',
-          gridTemplateColumns: '1fr',
-          gridTemplateRows: '1fr',
-          gap: GAP,
-          position: 'relative' as const,
-          overflow: 'hidden',
-          alignItems: 'stretch',
-          justifyItems: 'stretch',
-        },
-        mediaStyle: {
-          ...fullMediaStyle,
-          gridColumn: '1',
-          gridRow: '1',
-        },
-        participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
-          position: 'absolute' as const,
-          right: 22,
-          top: `${start + i * spacing}%`,
-          transform: 'translateY(-50%)',
-          width: visibleCount > 2 ? '18%' : '22%',
-          aspectRatio: '16 / 9',
-          borderRadius: 12,
-          overflow: 'hidden',
-          boxShadow: '0 6px 28px rgba(0, 0, 0, 0.52)',
-          border: '2px solid rgba(255, 255, 255, 0.16)',
-          zIndex: 6,
-          flexShrink: 0,
-          flexGrow: 0,
-          cursor: 'pointer',
-          transition: 'top 0.3s ease, right 0.3s ease, transform 0.3s ease',
-        })),
-        visibleParticipantCount: visibleCount,
-        placement: plan.placement,
-        usesFloatingParticipant: true,
-      };
-    }
-
-    if (plan.placement === 'side-by-side') {
-      return {
-        containerStyle: {
-          ...containerBase,
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1fr) minmax(220px, 0.52fr)',
-          gridTemplateRows: `repeat(${visibleCount}, minmax(0, 1fr))`,
-          gap: GAP,
-          alignItems: 'stretch',
-          justifyItems: 'stretch',
-        },
-        mediaStyle: {
-          ...fullMediaStyle,
-          gridColumn: '1',
-          gridRow: `1 / ${visibleCount + 1}`,
-        },
-        participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
-          gridColumn: '2',
-          gridRow: `${i + 1}`,
-          width: '100%',
-          height: '100%',
-          minWidth: 0,
-          minHeight: 0,
-        })),
-        visibleParticipantCount: visibleCount,
-        placement: plan.placement,
-        usesFloatingParticipant: false,
-      };
-    }
-
-    if (plan.placement === 'bottom-strip') {
-      return {
-        containerStyle: {
-          ...containerBase,
-          display: 'grid',
-          gridTemplateColumns: `repeat(${visibleCount}, minmax(0, 1fr))`,
-          gridTemplateRows: 'minmax(0, 1fr) minmax(82px, 0.22fr)',
-          gap: GAP,
-          alignItems: 'stretch',
-          justifyItems: 'stretch',
-        },
-        mediaStyle: {
-          ...fullMediaStyle,
-          gridColumn: `1 / ${visibleCount + 1}`,
-          gridRow: '1',
-        },
-        participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
-          gridColumn: `${i + 1}`,
-          gridRow: '2',
-          width: '100%',
-          height: '100%',
-          minWidth: 0,
-          minHeight: 0,
-        })),
-        visibleParticipantCount: visibleCount,
-        placement: plan.placement,
-        usesFloatingParticipant: false,
-      };
-    }
-
-    return {
-      containerStyle: {
-        ...containerBase,
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0, 1fr) minmax(160px, 0.28fr)',
-        gridTemplateRows: `repeat(${visibleCount}, minmax(0, 1fr))`,
-        gap: GAP,
-        alignItems: 'center',
-        justifyItems: 'stretch',
-      },
-      mediaStyle: {
-        ...fullMediaStyle,
-        gridColumn: '1',
-        gridRow: `1 / ${visibleCount + 1}`,
-      },
-      participantStyles: Array.from({ length: visibleCount }, (_, i) => ({
-        gridColumn: '2',
-        gridRow: `${i + 1}`,
-        width: '100%',
-        aspectRatio: '16 / 9',
-        alignSelf: 'center',
-        minWidth: 0,
-        minHeight: 0,
-      })),
-      visibleParticipantCount: visibleCount,
-      placement: plan.placement,
-      usesFloatingParticipant: false,
-    };
-  }, [pipCorner]);
-
   const layoutResult = useMemo((): LayoutResult => {
     const count = renderedVideoItems.length;
     switch (layout) {
@@ -5360,13 +5123,13 @@ export function StudioRoom() {
       default:
         return assertNever(layout);
     }
-  }, [layout, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout]);
+  }, [layout, pipCorner, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout]);
 
   const sharedContentLayoutResult = useMemo(() => (
     sharedContentIsActive
-      ? getMediaShareLayout(sharedContentParticipantPresenceItems.length, layout)
+      ? getPresentationLayout(presentationLayout, sharedContentParticipantPresenceItems.length, pipCorner)
       : null
-  ), [getMediaShareLayout, layout, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
+  ), [presentationLayout, pipCorner, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
@@ -5882,17 +5645,17 @@ export function StudioRoom() {
         {/* Stage */}
         <div className="studio-stage" style={styles.stage}>
           <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : 'Stage preview'}</span><span>{liveStatus.active ? 'Your audience can see this stage' : recordingStatus.active ? recordingStatus.paused ? 'Resume when you are ready' : 'Recording session in progress' : 'Prepare your stage before going live'}</span></div>
-          {/* Screen share overlay */}
-          {isScreenSharing && (
-            <div style={styles.screenShareBanner}>
-              <span style={styles.screenShareDot} />
-              You are sharing your screen
-              <button className="hover-scale" style={styles.screenShareStopBtn} onClick={onToggleScreenShare} aria-label="Stop screen sharing">Stop Sharing</button>
-            </div>
-          )}
-
           {/* Scale the complete broadcast composition; panels never reflow it. */}
-          <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }}>
+          <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }} footer={
+            isHostOrCoHost && sharedContentIsActive && <PresentationToolbar
+              media={activeMedia}
+              slideIndex={activeMediaSlideIndex}
+              onSlideIndexChange={setActiveMediaSlideIndex}
+              screenName={sharedContentScreenShare?.item.name}
+              canStopScreen={isScreenSharing}
+              onStop={activeMedia ? onStopMedia : onToggleScreenShare}
+            />
+          }>
               {stageBackground.type === 'video' && stageBackground.value && (
                 <video
                   key={stageBackground.value}
@@ -5926,7 +5689,6 @@ export function StudioRoom() {
                       <PresentationDeckStage
                         media={activeMedia}
                         slideIndex={activeMediaSlideIndex}
-                        onSlideIndexChange={setActiveMediaSlideIndex}
                       />
                     ) : activeMedia.type === 'video' ? (
                       <StudioMediaVideo
@@ -5952,11 +5714,7 @@ export function StudioRoom() {
                     ) : (
                       <MediaDocumentCard media={activeMedia} />
                     )}
-                    <button className="panel-close-btn" style={styles.mediaCloseBtn} onClick={onStopMedia} aria-label="Close shared media">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                    </button>
+
                   </div>
                 )}
                 {!activeMedia && sharedContentScreenShare && (
@@ -5990,14 +5748,14 @@ export function StudioRoom() {
                   const stageItemsForLayout = sharedContentIsActive
                     ? sharedContentParticipantPresenceItems
                     : stagePresenceItems;
-                  const itemsToRender = selectVisibleStageItems(stageItemsForLayout, layout, {
+                  const itemsToRender = selectVisibleStageItems(stageItemsForLayout, effectiveLayout, {
                     mediaVisibleParticipantCount: sharedContentLayoutResult?.visibleParticipantCount,
                   });
 
                   return itemsToRender.map((presence, i) => {
                     const item = presence.item;
                     const isLeavingTile = presence.phase === 'leaving';
-                    const isPipSmallTile = sharedContentLayoutResult?.usesFloatingParticipant || (layout === 'pip' && i === 1);
+                    const isPipSmallTile = sharedContentLayoutResult ? sharedContentLayoutResult.usesFloatingParticipant : layout === 'pip' && i === 1;
                     const isFocusedTile = !isLeavingTile && focusedVideoItemId === item.id;
                     const canFocusTile = !isLeavingTile && isHostOrCoHost && orderedVideoItems.length > 1;
                     const orderedIndex = orderedVideoItems.findIndex((orderedItem) => orderedItem.id === item.id);
@@ -6239,6 +5997,7 @@ export function StudioRoom() {
               )}
           </StageCanvas>
 
+
           {isHostOrCoHost && backstagePrivateItems.length > 0 && (
             <BackstagePrivateRoom
               items={backstagePrivateItems}
@@ -6253,13 +6012,15 @@ export function StudioRoom() {
           {isHostOrCoHost && (
             <div className="studio-layoutBar" style={styles.layoutBar}>
               <LayoutSwitcher
-                currentLayout={layout}
-                onLayoutChange={applyLayout}
+                currentLayout={effectiveLayout}
+                onLayoutChange={changeVisibleLayout}
+                pipCorner={pipCorner}
+                onPipCornerChange={setPipCorner}
                 participantCount={sharedContentIsActive ? sharedContentStageItemCount : displayedStageVideoItems.length}
                 isMediaActive={sharedContentIsActive}
                 mediaParticipantCount={sharedContentIsActive ? sharedContentParticipantPresenceItems.length : undefined}
               />
-              <button
+              {!sharedContentIsActive && <><button
                 type="button"
                 onClick={() => setAutoDirectorEnabled((current) => !current)}
                 title="Auto-spotlight whoever is speaking"
@@ -6285,7 +6046,7 @@ export function StudioRoom() {
                 style={styles.shortcutHelpBtn}
               >
                 ?
-              </button>
+              </button></>}
             </div>
           )}
 
@@ -6659,7 +6420,7 @@ export function StudioRoom() {
             isLive={isLive}
             isRecording={recordingStatus.active}
             formattedTime={recordingStatus.formattedTime}
-            currentLayout={layout}
+            currentLayout={effectiveLayout}
             onLayoutChange={applyLayout}
             focusedParticipantId={focusedVideoItemId}
             onSpotlightParticipant={onSpotlightParticipant}
@@ -7548,7 +7309,6 @@ const styles: Record<string, React.CSSProperties> = {
   mediaOverlay: {
     position: 'relative',
     background: '#000',
-    borderRadius: 'var(--radius-lg)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -7556,9 +7316,6 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     minHeight: 0,
     overflow: 'hidden',
-    border: '1px solid rgba(255, 255, 255, 0.10)',
-    boxShadow: '0 18px 44px rgba(0, 0, 0, 0.28)',
-    transition: 'width 0.3s ease, height 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease',
   },
   mediaContent: {
     width: '100%',
@@ -7632,47 +7389,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     lineHeight: 1.5,
     color: 'rgba(226,232,240,0.82)',
-  },
-  presentationStage: {
-    position: 'relative',
-    width: '100%',
-    height: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '4%',
-    background: 'linear-gradient(135deg, #0f172a 0%, #020617 100%)',
-  },
-  presentationSlide: {
-    width: 'min(86%, 980px)',
-    aspectRatio: '16 / 9',
-    display: 'flex',
-    flexDirection: 'column',
-    borderRadius: 18,
-    background: '#f8fafc',
-    color: '#0f172a',
-    border: '1px solid rgba(255,255,255,0.24)',
-    boxShadow: '0 28px 80px rgba(0,0,0,0.42)',
-    overflow: 'hidden',
-  },
-  presentationSlideVisualFrame: {
-    position: 'relative',
-    width: 'min(92%, 1180px)',
-    aspectRatio: '16 / 9',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 18,
-    background: '#050816',
-    border: '1px solid rgba(255,255,255,0.24)',
-    boxShadow: '0 28px 80px rgba(0,0,0,0.42)',
-    overflow: 'hidden',
-  },
-  presentationSlideImage: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'contain',
-    background: '#ffffff',
   },
   presentationSlideBadge: {
     position: 'absolute',

@@ -2464,6 +2464,7 @@ export function RecordingPanel({
     sessionId: string | null;
   } | null>(null);
   const previewMediaRef = useRef<HTMLMediaElement | null>(null);
+  const previewCardRef = useRef<HTMLDivElement | null>(null);
   const previewUrlRef = useRef<string | null>(null);
   const [clipStartSeconds, setClipStartSeconds] = useState<number | null>(null);
   const [clipEndSeconds, setClipEndSeconds] = useState<number | null>(null);
@@ -3216,6 +3217,7 @@ export function RecordingPanel({
 
   useEffect(() => {
     previewUrlRef.current = preview?.url ?? null;
+    if (preview) previewCardRef.current?.scrollIntoView({ block: 'nearest' });
     setClipStartSeconds(null);
     setClipEndSeconds(null);
     setClipAspect('source');
@@ -4234,256 +4236,6 @@ export function RecordingPanel({
               );
             })}
 
-            {preview && (
-              <div style={styles.previewCard}>
-                <div style={styles.previewHeader}>
-                  <span style={styles.previewTitle}>Preview: {preview.label}</span>
-                  <button style={styles.previewClose} onClick={() => setPreview(null)}>Close</button>
-                </div>
-                {preview.type.startsWith('audio/') ? (
-                  <audio
-                    ref={(element) => { previewMediaRef.current = element; }}
-                    src={preview.url}
-                    controls
-                    style={styles.previewMedia}
-                  />
-                ) : (
-                  <video
-                    ref={(element) => { previewMediaRef.current = element; }}
-                    src={preview.url}
-                    controls
-                    style={styles.previewMedia}
-                  />
-                )}
-                <div style={styles.clipSection}>
-                  <div style={styles.clipHeader}>
-                    <span style={styles.clipTitle}>Create clip</span>
-                    <span style={styles.clipRangeText}>
-                      {clipStartSeconds !== null ? formatClipTimecode(clipStartSeconds) : '--:--'}
-                      {' -> '}
-                      {clipEndSeconds !== null ? formatClipTimecode(clipEndSeconds) : '--:--'}
-                      {clipStartSeconds !== null && clipEndSeconds !== null && clipEndSeconds > clipStartSeconds
-                        ? ` (${formatClipTimecode(clipEndSeconds - clipStartSeconds)})`
-                        : ''}
-                    </span>
-                  </div>
-                  <div style={styles.clipControls}>
-                    <button
-                      type="button"
-                      style={styles.clipBtn}
-                      onClick={handleSetClipStart}
-                      disabled={isExportingClip}
-                      title="Mark the clip start at the current playback position"
-                    >
-                      Set start
-                    </button>
-                    <button
-                      type="button"
-                      style={styles.clipBtn}
-                      onClick={handleSetClipEnd}
-                      disabled={isExportingClip}
-                      title="Mark the clip end at the current playback position"
-                    >
-                      Set end
-                    </button>
-                    <button
-                      type="button"
-                      style={{
-                        ...styles.clipBtn,
-                        ...styles.clipBtnPrimary,
-                        ...(isExportingClip || clipStartSeconds === null || clipEndSeconds === null
-                          ? styles.clipBtnDisabled
-                          : {}),
-                      }}
-                      onClick={handleExportClip}
-                      disabled={isExportingClip || clipStartSeconds === null || clipEndSeconds === null}
-                    >
-                      {isExportingClip ? `Exporting ${Math.round(clipExportProgress * 100)}%` : 'Export clip'}
-                    </button>
-                  </div>
-                  {!preview.type.startsWith('audio/') && (
-                    <div style={styles.clipAspectRow}>
-                      <span style={styles.clipAspectLabel}>Format</span>
-                      {([
-                        { id: 'source' as const, label: 'Original' },
-                        { id: 'vertical' as const, label: '9:16 Shorts' },
-                        { id: 'square' as const, label: '1:1 Square' },
-                      ]).map((option) => (
-                        <button
-                          key={option.id}
-                          type="button"
-                          style={{
-                            ...styles.clipAspectBtn,
-                            ...(clipAspect === option.id ? styles.clipAspectBtnActive : {}),
-                            ...(isExportingClip ? styles.clipBtnDisabled : {}),
-                          }}
-                          onClick={() => setClipAspect(option.id)}
-                          disabled={isExportingClip}
-                          title={option.id === 'source'
-                            ? 'Keep the original aspect ratio'
-                            : `Center-crop the clip to ${option.label}`}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {(clipSuggestions.length > 0 || canRequestAiHighlights) && (
-                    <div style={styles.clipSuggestions}>
-                      <div style={styles.clipSuggestionsHeader}>
-                        <span style={styles.clipSuggestionsTitle}>
-                          {aiSuggestions.length > 0 ? 'AI-suggested clips' : 'Suggested clips'}
-                        </span>
-                        {canRequestAiHighlights && (
-                          <button
-                            type="button"
-                            style={{
-                              ...styles.clipAiBtn,
-                              ...(isRequestingAiHighlights ? styles.clipBtnDisabled : {}),
-                            }}
-                            onClick={handleRequestAiHighlights}
-                            disabled={isRequestingAiHighlights}
-                            title="Ask the studio AI to pick the most shareable moments from the captions"
-                          >
-                            {isRequestingAiHighlights
-                              ? 'Finding highlights...'
-                              : aiSuggestions.length > 0
-                                ? 'Refresh AI picks'
-                                : 'AI highlights'}
-                          </button>
-                        )}
-                      </div>
-                      {clipSuggestions.length > 0 && (
-                        <div style={styles.clipSuggestionChips}>
-                          {clipSuggestions.map((suggestion) => (
-                            <button
-                              key={suggestion.id}
-                              type="button"
-                              style={{
-                                ...styles.clipSuggestionChip,
-                                ...(suggestion.reason === 'ai' ? styles.clipSuggestionChipAi : {}),
-                                ...(isExportingClip ? styles.clipBtnDisabled : {}),
-                              }}
-                              onClick={() => handleApplyClipSuggestion(suggestion)}
-                              disabled={isExportingClip}
-                              title={`Set the clip range to ${formatClipTimecode(suggestion.startSeconds)} - ${formatClipTimecode(suggestion.endSeconds)}`}
-                            >
-                              {suggestion.reason === 'ai' ? '✨ ' : ''}
-                              {formatClipTimecode(suggestion.startSeconds)} · {suggestion.label}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {aiHighlightError && <div style={styles.clipError}>{aiHighlightError}</div>}
-                      {aiHighlightNotice && <div style={styles.clipHint}>{aiHighlightNotice}</div>}
-                    </div>
-                  )}
-                  {isExportingClip && (
-                    <div style={styles.progressContainer}>
-                      <div style={styles.progressTrack}>
-                        <div
-                          style={{
-                            ...styles.progressBar,
-                            width: `${Math.round(clipExportProgress * 100)}%`,
-                          }}
-                        />
-                      </div>
-                      <span style={styles.progressText}>{Math.round(clipExportProgress * 100)}%</span>
-                    </div>
-                  )}
-                  <div style={styles.clipHint}>
-                    Pause the player where you want the clip to begin and end, then use Set start and Set end.
-                    Clips export in real time, so a 30-second clip takes about 30 seconds.
-                  </div>
-                  {clipExportError && <div style={styles.clipError}>{clipExportError}</div>}
-                  {clipResult && (
-                    <div style={styles.clipResultRow}>
-                      <span style={styles.clipResultLabel}>
-                        {clipResult.fileName} ({formatFileSize(clipResult.blob.size)})
-                      </span>
-                      <div style={styles.clipResultActions}>
-                        <button type="button" style={styles.clipBtn} onClick={handleDownloadClip}>
-                          Download
-                        </button>
-                        <button
-                          type="button"
-                          style={{
-                            ...styles.clipBtn,
-                            ...(isSavingClip || clipSaveMessage ? styles.clipBtnDisabled : {}),
-                          }}
-                          onClick={handleSaveClipToLibrary}
-                          disabled={isSavingClip || Boolean(clipSaveMessage)}
-                        >
-                          {isSavingClip ? 'Saving...' : clipSaveMessage ? 'Saved' : 'Save to library'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {clipSaveMessage && <div style={styles.clipSaveMessage}>{clipSaveMessage}</div>}
-                  {previewServerClipUploadId && (
-                    <>
-                      <button
-                        type="button"
-                        style={{
-                          ...styles.clipBtn,
-                          ...(isRequestingServerClip || clipStartSeconds === null || clipEndSeconds === null
-                            ? styles.clipBtnDisabled
-                            : {}),
-                        }}
-                        onClick={handleServerClipExport}
-                        disabled={isRequestingServerClip || clipStartSeconds === null || clipEndSeconds === null}
-                        title="Render this clip range on the media server with frame-accurate FFmpeg cuts"
-                      >
-                        {isRequestingServerClip ? 'Requesting server clip...' : 'Server clip (frame-accurate MP4)'}
-                      </button>
-                      {serverClipError && <div style={styles.clipError}>{serverClipError}</div>}
-                      {serverClipJob && (
-                        <div style={styles.clipResultRow}>
-                          <span style={styles.clipResultLabel}>
-                            Server clip export {serverClipJob.status}
-                          </span>
-                          <div style={styles.clipResultActions}>
-                            {serverClipJob.artifacts
-                              .filter((artifact) => artifact.format === 'mp4' && artifact.status === 'ready')
-                              .map((artifact) => (
-                                <button
-                                  key={artifact.id}
-                                  type="button"
-                                  style={{
-                                    ...styles.clipBtn,
-                                    ...(serverClipDownloadingId === artifact.id ? styles.clipBtnDisabled : {}),
-                                  }}
-                                  onClick={() => handleDownloadServerClipArtifact(artifact)}
-                                  disabled={serverClipDownloadingId === artifact.id}
-                                >
-                                  {serverClipDownloadingId === artifact.id
-                                    ? 'Downloading...'
-                                    : `Download ${artifact.label}`}
-                                </button>
-                              ))}
-                            {(serverClipJob.status === 'queued' || serverClipJob.status === 'running') &&
-                              onRefreshRecordingExport && (
-                                <button
-                                  type="button"
-                                  style={{
-                                    ...styles.clipBtn,
-                                    ...(isRefreshingServerClip ? styles.clipBtnDisabled : {}),
-                                  }}
-                                  onClick={handleRefreshServerClip}
-                                  disabled={isRefreshingServerClip}
-                                >
-                                  {isRefreshingServerClip ? 'Checking...' : 'Refresh status'}
-                                </button>
-                              )}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-
             {/* Action buttons */}
             <div style={styles.actions}>
               <div style={styles.captionSidecarNote}>
@@ -4715,6 +4467,256 @@ export function RecordingPanel({
               New Recording
             </button>
           </>
+        )}
+
+        {preview && (
+          <div ref={previewCardRef} style={styles.previewCard} role="region" aria-label="Recording preview">
+            <div style={styles.previewHeader}>
+              <span style={styles.previewTitle}>Preview: {preview.label}</span>
+              <button style={styles.previewClose} onClick={() => setPreview(null)}>Close</button>
+            </div>
+            {preview.type.startsWith('audio/') ? (
+              <audio
+                ref={(element) => { previewMediaRef.current = element; }}
+                src={preview.url}
+                controls
+                style={styles.previewMedia}
+              />
+            ) : (
+              <video
+                ref={(element) => { previewMediaRef.current = element; }}
+                src={preview.url}
+                controls
+                style={styles.previewMedia}
+              />
+            )}
+            <div style={styles.clipSection}>
+              <div style={styles.clipHeader}>
+                <span style={styles.clipTitle}>Create clip</span>
+                <span style={styles.clipRangeText}>
+                  {clipStartSeconds !== null ? formatClipTimecode(clipStartSeconds) : '--:--'}
+                  {' -> '}
+                  {clipEndSeconds !== null ? formatClipTimecode(clipEndSeconds) : '--:--'}
+                  {clipStartSeconds !== null && clipEndSeconds !== null && clipEndSeconds > clipStartSeconds
+                    ? ` (${formatClipTimecode(clipEndSeconds - clipStartSeconds)})`
+                    : ''}
+                </span>
+              </div>
+              <div style={styles.clipControls}>
+                <button
+                  type="button"
+                  style={styles.clipBtn}
+                  onClick={handleSetClipStart}
+                  disabled={isExportingClip}
+                  title="Mark the clip start at the current playback position"
+                >
+                  Set start
+                </button>
+                <button
+                  type="button"
+                  style={styles.clipBtn}
+                  onClick={handleSetClipEnd}
+                  disabled={isExportingClip}
+                  title="Mark the clip end at the current playback position"
+                >
+                  Set end
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.clipBtn,
+                    ...styles.clipBtnPrimary,
+                    ...(isExportingClip || clipStartSeconds === null || clipEndSeconds === null
+                      ? styles.clipBtnDisabled
+                      : {}),
+                  }}
+                  onClick={handleExportClip}
+                  disabled={isExportingClip || clipStartSeconds === null || clipEndSeconds === null}
+                >
+                  {isExportingClip ? `Exporting ${Math.round(clipExportProgress * 100)}%` : 'Export clip'}
+                </button>
+              </div>
+              {!preview.type.startsWith('audio/') && (
+                <div style={styles.clipAspectRow}>
+                  <span style={styles.clipAspectLabel}>Format</span>
+                  {([
+                    { id: 'source' as const, label: 'Original' },
+                    { id: 'vertical' as const, label: '9:16 Shorts' },
+                    { id: 'square' as const, label: '1:1 Square' },
+                  ]).map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      style={{
+                        ...styles.clipAspectBtn,
+                        ...(clipAspect === option.id ? styles.clipAspectBtnActive : {}),
+                        ...(isExportingClip ? styles.clipBtnDisabled : {}),
+                      }}
+                      onClick={() => setClipAspect(option.id)}
+                      disabled={isExportingClip}
+                      title={option.id === 'source'
+                        ? 'Keep the original aspect ratio'
+                        : `Center-crop the clip to ${option.label}`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {(clipSuggestions.length > 0 || canRequestAiHighlights) && (
+                <div style={styles.clipSuggestions}>
+                  <div style={styles.clipSuggestionsHeader}>
+                    <span style={styles.clipSuggestionsTitle}>
+                      {aiSuggestions.length > 0 ? 'AI-suggested clips' : 'Suggested clips'}
+                    </span>
+                    {canRequestAiHighlights && (
+                      <button
+                        type="button"
+                        style={{
+                          ...styles.clipAiBtn,
+                          ...(isRequestingAiHighlights ? styles.clipBtnDisabled : {}),
+                        }}
+                        onClick={handleRequestAiHighlights}
+                        disabled={isRequestingAiHighlights}
+                        title="Ask the studio AI to pick the most shareable moments from the captions"
+                      >
+                        {isRequestingAiHighlights
+                          ? 'Finding highlights...'
+                          : aiSuggestions.length > 0
+                            ? 'Refresh AI picks'
+                            : 'AI highlights'}
+                      </button>
+                    )}
+                  </div>
+                  {clipSuggestions.length > 0 && (
+                    <div style={styles.clipSuggestionChips}>
+                      {clipSuggestions.map((suggestion) => (
+                        <button
+                          key={suggestion.id}
+                          type="button"
+                          style={{
+                            ...styles.clipSuggestionChip,
+                            ...(suggestion.reason === 'ai' ? styles.clipSuggestionChipAi : {}),
+                            ...(isExportingClip ? styles.clipBtnDisabled : {}),
+                          }}
+                          onClick={() => handleApplyClipSuggestion(suggestion)}
+                          disabled={isExportingClip}
+                          title={`Set the clip range to ${formatClipTimecode(suggestion.startSeconds)} - ${formatClipTimecode(suggestion.endSeconds)}`}
+                        >
+                          {suggestion.reason === 'ai' ? '✨ ' : ''}
+                          {formatClipTimecode(suggestion.startSeconds)} · {suggestion.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {aiHighlightError && <div style={styles.clipError}>{aiHighlightError}</div>}
+                  {aiHighlightNotice && <div style={styles.clipHint}>{aiHighlightNotice}</div>}
+                </div>
+              )}
+              {isExportingClip && (
+                <div style={styles.progressContainer}>
+                  <div style={styles.progressTrack}>
+                    <div
+                      style={{
+                        ...styles.progressBar,
+                        width: `${Math.round(clipExportProgress * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <span style={styles.progressText}>{Math.round(clipExportProgress * 100)}%</span>
+                </div>
+              )}
+              <div style={styles.clipHint}>
+                Pause the player where you want the clip to begin and end, then use Set start and Set end.
+                Clips export in real time, so a 30-second clip takes about 30 seconds.
+              </div>
+              {clipExportError && <div style={styles.clipError}>{clipExportError}</div>}
+              {clipResult && (
+                <div style={styles.clipResultRow}>
+                  <span style={styles.clipResultLabel}>
+                    {clipResult.fileName} ({formatFileSize(clipResult.blob.size)})
+                  </span>
+                  <div style={styles.clipResultActions}>
+                    <button type="button" style={styles.clipBtn} onClick={handleDownloadClip}>
+                      Download
+                    </button>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.clipBtn,
+                        ...(isSavingClip || clipSaveMessage ? styles.clipBtnDisabled : {}),
+                      }}
+                      onClick={handleSaveClipToLibrary}
+                      disabled={isSavingClip || Boolean(clipSaveMessage)}
+                    >
+                      {isSavingClip ? 'Saving...' : clipSaveMessage ? 'Saved' : 'Save to library'}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {clipSaveMessage && <div style={styles.clipSaveMessage}>{clipSaveMessage}</div>}
+              {previewServerClipUploadId && (
+                <>
+                  <button
+                    type="button"
+                    style={{
+                      ...styles.clipBtn,
+                      ...(isRequestingServerClip || clipStartSeconds === null || clipEndSeconds === null
+                        ? styles.clipBtnDisabled
+                        : {}),
+                    }}
+                    onClick={handleServerClipExport}
+                    disabled={isRequestingServerClip || clipStartSeconds === null || clipEndSeconds === null}
+                    title="Render this clip range on the media server with frame-accurate FFmpeg cuts"
+                  >
+                    {isRequestingServerClip ? 'Requesting server clip...' : 'Server clip (frame-accurate MP4)'}
+                  </button>
+                  {serverClipError && <div style={styles.clipError}>{serverClipError}</div>}
+                  {serverClipJob && (
+                    <div style={styles.clipResultRow}>
+                      <span style={styles.clipResultLabel}>
+                        Server clip export {serverClipJob.status}
+                      </span>
+                      <div style={styles.clipResultActions}>
+                        {serverClipJob.artifacts
+                          .filter((artifact) => artifact.format === 'mp4' && artifact.status === 'ready')
+                          .map((artifact) => (
+                            <button
+                              key={artifact.id}
+                              type="button"
+                              style={{
+                                ...styles.clipBtn,
+                                ...(serverClipDownloadingId === artifact.id ? styles.clipBtnDisabled : {}),
+                              }}
+                              onClick={() => handleDownloadServerClipArtifact(artifact)}
+                              disabled={serverClipDownloadingId === artifact.id}
+                            >
+                              {serverClipDownloadingId === artifact.id
+                                ? 'Downloading...'
+                                : `Download ${artifact.label}`}
+                            </button>
+                          ))}
+                        {(serverClipJob.status === 'queued' || serverClipJob.status === 'running') &&
+                          onRefreshRecordingExport && (
+                            <button
+                              type="button"
+                              style={{
+                                ...styles.clipBtn,
+                                ...(isRefreshingServerClip ? styles.clipBtnDisabled : {}),
+                              }}
+                              onClick={handleRefreshServerClip}
+                              disabled={isRefreshingServerClip}
+                            >
+                              {isRefreshingServerClip ? 'Checking...' : 'Refresh status'}
+                            </button>
+                          )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
         )}
 
         <div style={styles.librarySection}>

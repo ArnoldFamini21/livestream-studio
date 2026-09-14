@@ -24,7 +24,7 @@ export function makeToolbarRecordingFileName(name: string, blob: Blob, timestamp
 export function buildToolbarRecordingUploadFiles(
   recordings: Map<string, RecordingTrackResult>,
   timestamp: string
-): RecordingUploadFileInput[] {
+): Array<RecordingUploadFileInput & { fileName: string }> {
   return Array.from(recordings.values())
     .filter(({ blob }) => blob.size > 0)
     .map(({ name, blob, kind }) => ({

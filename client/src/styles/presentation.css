@@ -1,0 +1,17 @@
+.presentation-toolbar { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; padding: 8px 0 0; color: var(--text-secondary); font-size: 12px; flex-shrink: 0; }
+.presentation-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presentation-toolbar button, .presentation-layouts button, .presentation-layouts select { font: inherit; color: var(--text-primary); border: 1px solid var(--border); background: var(--bg-surface); border-radius: 7px; cursor: pointer; }
+.presentation-toolbar button { min-height: 32px; padding: 4px 10px; }
+.presentation-navigation { display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+.presentation-navigation button { width: 32px; }
+.presentation-toolbar button:disabled { opacity: .3; cursor: default; }
+.presentation-toolbar button:focus-visible, .presentation-layouts button:focus-visible, .presentation-layouts select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.presentation-layouts { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+.presentation-layout-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+.presentation-layout-options button { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 9px; min-height: 34px; font-size: 11px; border-color: transparent; background: transparent; color: var(--text-secondary); }
+.presentation-layout-options button[aria-pressed="true"] { color: var(--text-primary); background: var(--accent-soft, rgba(167,139,250,.16)); border-color: var(--accent); }
+.presentation-layout-options button:disabled { opacity: .3; cursor: default; }
+.presentation-layout-options select { font-size: 11px; max-width: 85px; background: transparent; border-color: transparent; }
+.presentation-layout-meta { display: flex; gap: 10px; align-items: center; color: var(--text-secondary); font-size: 11px; }
+.presentation-layout-meta select { font-size: 11px; padding: 3px; }
+@media (max-width: 600px) { .presentation-layout-options button { padding: 7px; } .presentation-layout-options button svg { display: none; } }

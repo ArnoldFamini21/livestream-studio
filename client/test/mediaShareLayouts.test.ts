@@ -11,13 +11,13 @@ import {
 } from '../src/utils/mediaShareLayouts.ts';
 
 describe('media share layouts', () => {
-  it('keeps a participant visible for every layout while media is active', () => {
+  it('keeps a presenter visible unless content only is selected', () => {
     const layouts: LayoutMode[] = ['grid', 'spotlight', 'side-by-side', 'pip', 'single', 'featured'];
 
     for (const layout of layouts) {
       const plan = getMediaShareLayoutPlan(layout, 1);
 
-      assert.equal(plan.visibleParticipantCount, 1);
+      assert.equal(plan.visibleParticipantCount, layout === 'single' ? 0 : 1);
     }
   });
 
@@ -27,7 +27,7 @@ describe('media share layouts', () => {
     assert.equal(getMediaShareLayoutPlan('spotlight', 3).placement, 'bottom-strip');
     assert.equal(getMediaShareLayoutPlan('side-by-side', 3).placement, 'side-by-side');
     assert.equal(getMediaShareLayoutPlan('pip', 3).placement, 'pip');
-    assert.equal(getMediaShareLayoutPlan('single', 3).placement, 'pip');
+    assert.equal(getMediaShareLayoutPlan('single', 3).usesFloatingParticipant, false);
   });
 
   it('caps participant rails so the shared file remains readable', () => {
@@ -36,7 +36,7 @@ describe('media share layouts', () => {
     assert.equal(getMediaShareLayoutPlan('spotlight', 12).visibleParticipantCount, 6);
     assert.equal(getMediaShareLayoutPlan('side-by-side', 12).visibleParticipantCount, 2);
     assert.equal(getMediaShareLayoutPlan('pip', 12).visibleParticipantCount, 4);
-    assert.equal(getMediaShareLayoutPlan('single', 12).visibleParticipantCount, 1);
+    assert.equal(getMediaShareLayoutPlan('single', 12).visibleParticipantCount, 0);
   });
 
   it('summarizes visible and hidden participants for host-facing media layout controls', () => {
@@ -52,14 +52,14 @@ describe('media share layouts', () => {
     });
     assert.deepEqual(getMediaShareLayoutVisibilitySummary('single', 7), {
       totalParticipantCount: 7,
-      visibleParticipantCount: 1,
-      hiddenParticipantCount: 6,
+      visibleParticipantCount: 0,
+      hiddenParticipantCount: 7,
     });
   });
 
   it('recommends readable shared-media layouts based on presenter count', () => {
     assert.equal(getRecommendedMediaShareLayout(0), 'grid');
-    assert.equal(getRecommendedMediaShareLayout(1), 'single');
+    assert.equal(getRecommendedMediaShareLayout(1), 'grid');
     assert.equal(getRecommendedMediaShareLayout(2), 'grid');
     assert.equal(getRecommendedMediaShareLayout(4), 'grid');
     assert.equal(getRecommendedMediaShareLayout(5), 'spotlight');
