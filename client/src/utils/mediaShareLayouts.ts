@@ -47,7 +47,7 @@ function normalizeParticipantCount(count: number): number {
 export function getMediaShareLayoutPlan(layout: LayoutMode, participantCount: number): MediaShareLayoutPlan {
   const count = normalizeParticipantCount(participantCount);
 
-  if (count === 0) {
+  if (count === 0 || layout === 'single') {
     return {
       placement: 'side-rail',
       visibleParticipantCount: 0,
@@ -61,13 +61,6 @@ export function getMediaShareLayoutPlan(layout: LayoutMode, participantCount: nu
       return {
         placement: 'pip',
         visibleParticipantCount: Math.min(count, MAX_FLOATING_PIP_PARTICIPANTS),
-        mediaIsDominant: true,
-        usesFloatingParticipant: true,
-      };
-    case 'single':
-      return {
-        placement: 'pip',
-        visibleParticipantCount: 1,
         mediaIsDominant: true,
         usesFloatingParticipant: true,
       };
@@ -118,7 +111,7 @@ export function getMediaShareLayoutVisibilitySummary(
 export function getRecommendedMediaShareLayout(participantCount: number): LayoutMode {
   const count = normalizeParticipantCount(participantCount);
   if (count <= 0) return 'grid';
-  if (count === 1) return 'single';
+  if (count === 1) return 'grid';
   if (count <= MAX_SIDE_RAIL_PARTICIPANTS) return 'grid';
   return 'spotlight';
 }

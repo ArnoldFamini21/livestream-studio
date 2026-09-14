@@ -28,12 +28,12 @@ export const STUDIO_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
 };
 
 export const MEDIA_SHARE_LAYOUT_LABELS: Record<LayoutMode, string> = {
-  grid: 'Media Rail',
-  spotlight: 'Speaker Strip',
-  'side-by-side': 'Split Stage',
-  featured: 'Presenter Stack',
-  pip: 'Floating PiP',
-  single: 'Presenter PiP',
+  grid: 'Beside',
+  spotlight: 'Below',
+  'side-by-side': 'Split',
+  featured: 'Stack',
+  pip: 'Picture in picture',
+  single: 'Content only',
 };
 
 export const MEDIA_SHARE_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
@@ -42,7 +42,7 @@ export const MEDIA_SHARE_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
   'side-by-side': 'Shared media beside up to 2 participant videos',
   featured: 'Shared media with up to 4 stacked floating participant videos',
   pip: 'Shared media with up to 4 floating participant videos',
-  single: 'Shared media with one floating presenter video',
+  single: 'Full canvas for shared content, with cameras hidden',
 };
 
 export function getStudioLayoutLabel(layout: LayoutMode): string {

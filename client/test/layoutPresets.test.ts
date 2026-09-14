@@ -44,10 +44,10 @@ describe('studio layout presets', () => {
   });
 
   it('uses media-specific labels and descriptions when shared content is on stage', () => {
-    assert.equal(getMediaShareLayoutLabel('grid'), 'Media Rail');
-    assert.equal(getMediaShareLayoutLabel('spotlight'), 'Speaker Strip');
-    assert.equal(getMediaShareLayoutLabel('side-by-side'), 'Split Stage');
-    assert.equal(getMediaShareLayoutLabel('featured'), 'Presenter Stack');
+    assert.equal(getMediaShareLayoutLabel('grid'), 'Beside');
+    assert.equal(getMediaShareLayoutLabel('spotlight'), 'Below');
+    assert.equal(getMediaShareLayoutLabel('side-by-side'), 'Split');
+    assert.equal(getMediaShareLayoutLabel('featured'), 'Stack');
     assert.match(getMediaShareLayoutDescription('side-by-side'), /up to 2 participant videos/);
     assert.match(getMediaShareLayoutDescription('featured'), /stacked floating participant videos/);
     assert.match(getMediaShareLayoutDescription('pip'), /up to 4 floating participant videos/);

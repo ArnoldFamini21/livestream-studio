@@ -1,3 +1,5 @@
+import type { PresentationCorner } from '../utils/presentationLayout.ts';
+import '../styles/presentation.css';
 import type { LayoutMode } from '@studio/shared';
 import {
   getMediaShareLayoutDescription,
@@ -9,7 +11,6 @@ import {
 } from '../utils/layoutPresets.ts';
 import {
   getMediaShareLayoutVisibilitySummary,
-  getRecommendedMediaShareLayout,
 } from '../utils/mediaShareLayouts.ts';
 
 interface LayoutSwitcherProps {
@@ -18,6 +19,8 @@ interface LayoutSwitcherProps {
   participantCount: number;
   isMediaActive?: boolean;
   mediaParticipantCount?: number;
+  pipCorner?: PresentationCorner;
+  onPipCornerChange?: (corner: PresentationCorner) => void;
 }
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
@@ -82,40 +85,43 @@ function formatMediaVisibilityLabel(
   return `${formatPersonCount(summary.visibleParticipantCount)} visible`;
 }
 
-function formatMediaVisibilityTitle(
-  layout: LayoutMode,
-  mediaParticipantCount: number
-): string {
-  const summary = getMediaShareLayoutVisibilitySummary(layout, mediaParticipantCount);
-  if (summary.totalParticipantCount === 0) return 'No participant cameras are visible with the shared media.';
-  if (summary.hiddenParticipantCount > 0) {
-    return `Shows ${formatPersonCount(summary.visibleParticipantCount)} and hides ${formatPersonCount(summary.hiddenParticipantCount)}.`;
-  }
-  return `Shows all ${formatPersonCount(summary.totalParticipantCount)}.`;
-}
-
 export function LayoutSwitcher({
   currentLayout,
   onLayoutChange,
   participantCount,
   isMediaActive = false,
   mediaParticipantCount,
+  pipCorner = 'BR',
+  onPipCornerChange,
 }: LayoutSwitcherProps) {
   const activeMediaParticipantCount = normalizeCount(mediaParticipantCount ?? Math.max(0, participantCount - 1));
-  const recommendedMediaLayout = isMediaActive ? getRecommendedMediaShareLayout(activeMediaParticipantCount) : null;
-  const selectedMediaSummary = isMediaActive
-    ? getMediaShareLayoutVisibilitySummary(currentLayout, activeMediaParticipantCount)
-    : null;
-  const selectedMediaVisibilityLabel = isMediaActive
-    ? formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)
-    : '';
-  const recommendationLabel = recommendedMediaLayout ? getMediaShareLayoutLabel(recommendedMediaLayout) : '';
-  const canApplyRecommendation = Boolean(
-    isMediaActive &&
-    recommendedMediaLayout &&
-    currentLayout !== recommendedMediaLayout &&
-    (activeMediaParticipantCount > 0 || recommendedMediaLayout === 'grid')
-  );
+
+  if (isMediaActive) {
+    const summary = getMediaShareLayoutVisibilitySummary(currentLayout, activeMediaParticipantCount);
+    const showHiddenCount = currentLayout !== 'single' && summary.hiddenParticipantCount > 0;
+    const primary: LayoutMode[] = ['single', 'grid', 'spotlight', 'pip'];
+    const labels = { single: 'Content only', grid: 'Beside', spotlight: 'Below', pip: 'PiP' };
+    return <div className="presentation-layouts">
+      <div className="presentation-layout-options" role="group" aria-label="Presentation layout">
+        {primary.map(mode => <button type="button" key={mode} aria-pressed={currentLayout === mode}
+          aria-label={`${getMediaShareLayoutLabel(mode)} layout`}
+          title={getMediaShareLayoutDescription(mode)} disabled={mode !== 'single' && activeMediaParticipantCount === 0}
+          onClick={() => onLayoutChange(mode)}>
+          {labels[mode as keyof typeof labels]}
+        </button>)}
+        <select aria-label="More presentation layouts" value={primary.includes(currentLayout) ? '' : currentLayout}
+          onChange={event => { if (event.target.value) onLayoutChange(event.target.value as LayoutMode); }} disabled={activeMediaParticipantCount === 0}>
+          <option value="" disabled>More</option><option value="side-by-side">Split</option><option value="featured">Stack</option>
+        </select>
+      </div>
+      {(showHiddenCount || currentLayout === 'pip' || currentLayout === 'featured') && <div className="presentation-layout-meta">
+        {showHiddenCount && <span>{formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)}</span>}
+        {(currentLayout === 'pip' || currentLayout === 'featured') && onPipCornerChange && <select aria-label="Presenter position" value={pipCorner} onChange={event => onPipCornerChange(event.target.value as PresentationCorner)}>
+          <option value="TL">Top left</option><option value="TR">Top right</option><option value="BL">Bottom left</option><option value="BR">Bottom right</option>
+        </select>}
+      </div>}
+    </div>;
+  }
 
   return (
     <div style={styles.wrap}>
@@ -137,51 +143,26 @@ export function LayoutSwitcher({
           transform: none;
         }
       `}</style>
-      {isMediaActive && (
-        <div style={styles.mediaStatus} aria-live="polite">
-          <span style={styles.mediaStatusLabel}>{getMediaShareLayoutLabel(currentLayout)}</span>
-          <span style={styles.mediaStatusMeta}>{selectedMediaVisibilityLabel}</span>
-          {selectedMediaSummary && selectedMediaSummary.hiddenParticipantCount > 0 && (
-            <span style={styles.mediaHiddenBadge}>
-              {selectedMediaSummary.hiddenParticipantCount} hidden
-            </span>
-          )}
-          {recommendedMediaLayout && currentLayout === recommendedMediaLayout && (
-            <span style={styles.mediaRecommendedBadge}>Best fit</span>
-          )}
-        </div>
-      )}
       <div style={styles.controlRow}>
-        <div style={styles.bar} role="radiogroup" aria-label={isMediaActive ? 'Shared media layout switcher' : 'Layout switcher'}>
+        <div style={styles.bar} role="radiogroup" aria-label="Layout switcher">
           {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
-            const label = isMediaActive ? getMediaShareLayoutLabel(mode) : getStudioLayoutLabel(mode);
-            const description = isMediaActive ? getMediaShareLayoutDescription(mode) : getStudioLayoutDescription(mode);
+            const label = getStudioLayoutLabel(mode);
+            const description = getStudioLayoutDescription(mode);
             const isActive = currentLayout === mode;
-            const isRecommended = isMediaActive && recommendedMediaLayout === mode;
-            const isDisabled = isMediaActive
-              ? activeMediaParticipantCount < 1 && isMultiParticipantLayout(mode)
-              : participantCount < 2 && isMultiParticipantLayout(mode);
-            const mediaVisibilityTitle = isMediaActive
-              ? ` ${formatMediaVisibilityTitle(mode, activeMediaParticipantCount)}`
-              : '';
-            const recommendationTitle = isRecommended ? ' Recommended for the current shared media.' : '';
-            const disabledTitle = isMediaActive
-              ? `${label} (Requires at least one person on stage)`
-              : `${label} (Requires 2+ people)`;
+            const isDisabled = participantCount < 2 && isMultiParticipantLayout(mode);
             return (
               <button
                 key={mode}
                 className={`ls-btn ${isActive ? 'active' : ''}`}
                 role="radio"
                 aria-checked={isActive}
-                aria-label={`${label} layout - ${description}${mediaVisibilityTitle}${recommendationTitle}`}
+                aria-label={`${label} layout - ${description}`}
                 onClick={() => onLayoutChange(mode)}
                 disabled={isDisabled}
-                title={isDisabled ? disabledTitle : `${label} - ${description}.${mediaVisibilityTitle}${recommendationTitle}`}
+                title={isDisabled ? `${label} (Requires 2+ people)` : `${label} - ${description}`}
                 style={{
                   ...styles.btn,
                   ...(isDisabled ? styles.btnDisabled : {}),
-                  ...(isRecommended && !isActive ? styles.btnRecommended : {}),
                 }}
               >
                 {layoutIcons[mode]}
@@ -189,23 +170,6 @@ export function LayoutSwitcher({
             );
           })}
         </div>
-        {isMediaActive && (
-          <button
-            style={{
-              ...styles.bestFitButton,
-              ...(!canApplyRecommendation ? styles.bestFitButtonDisabled : {}),
-            }}
-            disabled={!canApplyRecommendation}
-            onClick={() => {
-              if (recommendedMediaLayout) onLayoutChange(recommendedMediaLayout);
-            }}
-            title={canApplyRecommendation
-              ? `Switch to ${recommendationLabel}, the recommended shared-media layout.`
-              : `${recommendationLabel || 'Current layout'} is already the best fit.`}
-          >
-            Best fit
-          </button>
-        )}
       </div>
     </div>
   );
@@ -218,68 +182,6 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 5,
     maxWidth: 'min(100%, 420px)',
-  },
-  mediaStatus: {
-    maxWidth: '100%',
-    minHeight: 24,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    padding: '4px 9px',
-    borderRadius: 999,
-    border: '1px solid rgba(255, 255, 255, 0.10)',
-    background: 'rgba(15, 23, 42, 0.66)',
-    color: 'rgba(255, 255, 255, 0.84)',
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
-  },
-  mediaStatusLabel: {
-    minWidth: 0,
-    color: 'white',
-    fontSize: 11,
-    fontWeight: 800,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  mediaStatusMeta: {
-    flexShrink: 0,
-    color: 'rgba(255, 255, 255, 0.66)',
-    fontSize: 10,
-    fontWeight: 700,
-    fontVariantNumeric: 'tabular-nums',
-  },
-  mediaHiddenBadge: {
-    flexShrink: 0,
-    minHeight: 18,
-    display: 'inline-flex',
-    alignItems: 'center',
-    borderRadius: 999,
-    border: '1px solid rgba(251, 191, 36, 0.24)',
-    background: 'rgba(251, 191, 36, 0.10)',
-    color: '#fde68a',
-    padding: '0 6px',
-    fontSize: 9,
-    fontWeight: 900,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.04em',
-  },
-  mediaRecommendedBadge: {
-    flexShrink: 0,
-    minHeight: 18,
-    display: 'inline-flex',
-    alignItems: 'center',
-    borderRadius: 999,
-    border: '1px solid rgba(34, 197, 94, 0.24)',
-    background: 'rgba(34, 197, 94, 0.10)',
-    color: '#bbf7d0',
-    padding: '0 6px',
-    fontSize: 9,
-    fontWeight: 900,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.04em',
   },
   controlRow: {
     display: 'inline-flex',
@@ -312,33 +214,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 0,
     transition: 'all 0.12s ease',
   },
-  btnRecommended: {
-    color: '#a5f3fc',
-    boxShadow: 'inset 0 0 0 1px rgba(103, 232, 249, 0.38)',
-  },
-  btnActive: {
-    background: 'var(--accent)',
-    color: 'white',
-    boxShadow: '0 1px 4px rgba(124, 58, 237, 0.3)',
-  },
   btnDisabled: {
     opacity: 0.25,
-    cursor: 'not-allowed',
-  },
-  bestFitButton: {
-    minHeight: 32,
-    borderRadius: 10,
-    border: '1px solid rgba(103, 232, 249, 0.24)',
-    background: 'rgba(103, 232, 249, 0.10)',
-    color: '#a5f3fc',
-    padding: '0 10px',
-    fontSize: 11,
-    fontWeight: 900,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-  },
-  bestFitButtonDisabled: {
-    opacity: 0.46,
     cursor: 'not-allowed',
   },
 };
