@@ -7039,10 +7039,6 @@ const styles: Record<string, React.CSSProperties> = {
     height: 92,
   },
   canvas: {
-    position: 'relative',
-    width: '100%',
-    maxHeight: '100%',
-    aspectRatio: '16 / 9',
     borderRadius: 14,
     overflow: 'hidden',
     boxShadow: '0 0 0 2px rgba(255, 255, 255, 0.08), 0 4px 24px rgba(0, 0, 0, 0.3)',
