@@ -10,6 +10,7 @@ import { TermsOfService } from './components/TermsOfService.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { ToastProvider } from './components/Toast.tsx';
 import './styles/global.css';
+import './styles/recording-recovery.css';
 
 const PopoutChat = React.lazy(() => import('./components/PopoutChat.tsx').then((module) => ({ default: module.PopoutChat })));
 

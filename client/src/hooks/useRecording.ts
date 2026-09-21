@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { createRecoverableRecordingStore } from '../utils/recordingRecovery.ts';
 import type { RecordingUploadTrackKind } from '@studio/shared';
 import {
   getPreferredVideoRecordingMimeType,
@@ -24,14 +25,16 @@ interface RecordingTrack {
   name: string;
   kind?: RecordingUploadTrackKind;
   recorder: MediaRecorder;
-  chunks: Blob[];
+  chunkStore: ReturnType<typeof createRecoverableRecordingStore>;
+  finished: Promise<Blob>;
   cleanup?: () => void;
   cleanedUp?: boolean;
 }
 
-export function useRecording() {
+export function useRecording(roomName = 'Studio') {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const tracksRef = useRef<Map<string, RecordingTrack>>(new Map());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -41,6 +44,7 @@ export function useRecording() {
 
   // Bug fix #11: Guard against double-stop
   const stoppingRef = useRef<boolean>(false);
+  const stopPromiseRef = useRef<Promise<Map<string, RecordingTrackResult>> | null>(null);
 
   const getMimeType = () => getPreferredVideoRecordingMimeType();
 
@@ -63,7 +67,7 @@ export function useRecording() {
   const startRecording = useCallback(
     (streams: Map<string, RecordingStreamInput>) => {
       // Bug fix #10: Guard against double-start
-      if (isRecording) {
+      if (tracksRef.current.size > 0 || stoppingRef.current) {
         streams.forEach((input) => input.cleanup?.());
         return false;
       }
@@ -75,12 +79,13 @@ export function useRecording() {
         return false;
       }
 
+      setStorageWarning(null);
+      stopPromiseRef.current = null;
       // Clear previous tracks
       tracksRef.current.forEach(cleanupTrack);
       tracksRef.current.clear();
 
       for (const [id, { stream, name, kind, cleanup }] of streams) {
-        const chunks: Blob[] = [];
         let recorder: MediaRecorder;
         try {
           recorder = new MediaRecorder(stream, {
@@ -94,29 +99,31 @@ export function useRecording() {
           continue;
         }
 
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) {
-            chunks.push(e.data);
-          }
-        };
-
-        recorder.onerror = (e) => {
-          console.error(`Recording error for ${name}:`, e);
-        };
-
-        const track: RecordingTrack = { participantId: id, name, kind, recorder, chunks, cleanup };
+        const chunkStore = createRecoverableRecordingStore({
+          roomName, label: name, kind: kind || 'iso', mimeType: recorder.mimeType,
+        }, () => setStorageWarning('Recording is continuing in memory. Keep this tab open until it has been saved.'));
+        recorder.ondataavailable = (e) => chunkStore.append(e.data);
+        let resolveFinished!: (blob: Blob) => void;
+        let rejectFinished!: (error: unknown) => void;
+        const finished = new Promise<Blob>((resolve, reject) => { resolveFinished = resolve; rejectFinished = reject; });
+        // Attach immediately: recorder errors can stop capture before the user
+        // presses Stop. The final data event is delivered before this handler.
+        recorder.onstop = () => { void chunkStore.finish(recorder.mimeType).then(resolveFinished, rejectFinished); };
+        recorder.onerror = () => setStorageWarning('A recording track was interrupted. Stop and save the available footage.');
+        const track: RecordingTrack = { participantId: id, name, kind, recorder, chunkStore, finished, cleanup };
+        void finished.catch(() => {}); // stopRecording reports failures to its caller.
         tracksRef.current.set(id, track);
         try {
           recorder.start(1000); // Capture in 1-second chunks
         } catch (err) {
           console.error(`Failed to start recording for ${name}:`, err);
           tracksRef.current.delete(id);
+          void chunkStore.discard();
           cleanupTrack(track);
         }
       }
 
       if (tracksRef.current.size === 0) {
-        streams.forEach((input) => input.cleanup?.());
         return false;
       }
 
@@ -132,7 +139,7 @@ export function useRecording() {
       console.log(`Recording started: ${streams.size} track(s)`);
       return true;
     },
-    [getElapsedSeconds, isRecording]
+    [getElapsedSeconds, roomName]
   );
 
   const pauseRecording = useCallback(() => {
@@ -180,67 +187,32 @@ export function useRecording() {
   }, [getElapsedSeconds, isPaused, isRecording]);
 
   const stopRecording = useCallback((): Promise<Map<string, RecordingTrackResult>> => {
-    // Bug fix #11: Guard against double-stop
-    if (stoppingRef.current) {
-      return Promise.resolve(new Map());
-    }
+    if (stopPromiseRef.current) return stopPromiseRef.current;
     stoppingRef.current = true;
-
-    return new Promise((resolve) => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-      pausedAtRef.current = null;
-      accumulatedPausedMsRef.current = 0;
-
-      const results = new Map<string, RecordingTrackResult>();
-      let pending = tracksRef.current.size;
-
-      if (pending === 0) {
-        setIsRecording(false);
-        setIsPaused(false);
-        setRecordingTime(0);
-        stoppingRef.current = false;
-        resolve(results);
-        return;
-      }
-
-      for (const [id, track] of tracksRef.current) {
-        // Bug fix #12: Check recorder state before calling stop
-        if (track.recorder.state === 'inactive') {
-          // Recorder already inactive - collect existing chunks directly
-          const blob = new Blob(track.chunks, { type: track.recorder.mimeType });
-          results.set(id, { name: track.name, blob, ...(track.kind ? { kind: track.kind } : {}) });
-          cleanupTrack(track);
-          pending--;
-          if (pending === 0) {
-            setIsRecording(false);
-            setIsPaused(false);
-            setRecordingTime(0);
-            tracksRef.current.clear();
-            stoppingRef.current = false;
-            resolve(results);
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+    const tracks = [...tracksRef.current.entries()];
+    stopPromiseRef.current = (async () => {
+      try {
+        const results = await Promise.all(tracks.map(async ([id, track]) => {
+          if (track.recorder.state !== 'inactive') {
+            try { track.recorder.stop(); }
+            catch { return [id, { name: track.name, kind: track.kind, blob: await track.chunkStore.finish(track.recorder.mimeType) }] as const; }
           }
-        } else {
-          track.recorder.onstop = () => {
-            const blob = new Blob(track.chunks, { type: track.recorder.mimeType });
-            results.set(id, { name: track.name, blob, ...(track.kind ? { kind: track.kind } : {}) });
-            cleanupTrack(track);
-            pending--;
-            if (pending === 0) {
-              setIsRecording(false);
-              setIsPaused(false);
-              setRecordingTime(0);
-              tracksRef.current.clear();
-              stoppingRef.current = false;
-              resolve(results);
-            }
-          };
-          track.recorder.stop();
-        }
+          const blob = await track.finished;
+          return [id, { name: track.name, kind: track.kind, blob }] as const;
+        }));
+        return new Map(results);
+      } finally {
+        tracks.forEach(([, track]) => cleanupTrack(track));
+        tracksRef.current.clear();
+        pausedAtRef.current = null;
+        accumulatedPausedMsRef.current = 0;
+        setIsRecording(false); setIsPaused(false); setRecordingTime(0);
+        stoppingRef.current = false;
       }
-    });
+    })();
+    return stopPromiseRef.current;
   }, []);
 
   const downloadRecordings = useCallback(async () => {
@@ -279,7 +251,7 @@ export function useRecording() {
           try {
             track.recorder.stop();
           } catch {
-            // Recorder may already be in an invalid state
+            void track.chunkStore.finish(track.recorder.mimeType);
           }
         }
         cleanupTrack(track);
@@ -291,6 +263,7 @@ export function useRecording() {
   return {
     isRecording,
     isPaused,
+    storageWarning,
     recordingTime,
     formattedTime: formatTime(recordingTime),
     startRecording,

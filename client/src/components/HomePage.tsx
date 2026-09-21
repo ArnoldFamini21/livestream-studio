@@ -1,3 +1,4 @@
+import { RecordingRecoveryNotice } from './RecordingRecoveryNotice.tsx';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import QRCode from 'qrcode';
@@ -1732,7 +1733,9 @@ export function HomePage() {
               </div>
 
 <p className="section-footnote">Keep a production roster and generate call sheets from your studio's actions.</p></section>}
-          {workspaceView === 'recordings' && <section className="workspace-surface">              {(recordingLibrary.isLoading || serverRecordingCatalogLoading || recentRecordings.length > 0) && (
+          {workspaceView === 'recordings' && <section className="workspace-surface">
+            <RecordingRecoveryNotice onRecovered={recordingLibrary.refresh} />
+            {(recordingLibrary.isLoading || serverRecordingCatalogLoading || recentRecordings.length > 0) && (
                 <div className="ws-workspaceSection" style={styles.workspaceSection}>
                   <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>
                     <span className="ws-workspaceSectionTitle" style={styles.workspaceSectionTitle}>All recordings</span>
@@ -1764,7 +1767,7 @@ export function HomePage() {
                             <div className="ws-workspaceRowCopy" style={styles.workspaceRowCopy}>
                               <span className="ws-workspaceRowTitle" style={styles.workspaceRowTitle}>{session.roomName}</span>
                               <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
-                                {formatDashboardDate(session.createdAt)} | {formatWorkspaceDuration(session.durationSeconds)} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'}
+                                {formatDashboardDate(session.createdAt)}{session.durationSeconds != null ? ` | ${formatWorkspaceDuration(session.durationSeconds)}` : ''} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'}
                               </span>
                               {session.mediaExport && (
                                 <span style={{

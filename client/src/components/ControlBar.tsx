@@ -14,6 +14,7 @@ interface ControlBarProps {
   isHost: boolean;
   isRecording?: boolean;
   recordingPaused?: boolean;
+  recordingFinalizing?: boolean;
   formattedTime?: string;
   onToggleRecording?: () => void;
   onToggleRecordingPause?: () => void;
@@ -50,6 +51,7 @@ export function ControlBar({
   isHost,
   isRecording = false,
   recordingPaused = false,
+  recordingFinalizing = false,
   formattedTime = '0:00',
   onToggleRecording,
   onToggleRecordingPause,
@@ -446,9 +448,10 @@ export function ControlBar({
             className="cb-focusable"
             style={{ ...styles.pill, ...(isRecording ? styles.pillRecording : {}), ...(recordingPaused ? styles.pillRecordingPaused : {}) }}
             onClick={onToggleRecording}
-            aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+            disabled={recordingFinalizing}
+            aria-label={recordingFinalizing ? 'Saving recording' : isRecording ? 'Stop recording' : 'Start recording'}
             aria-pressed={isRecording}
-            title={isRecording ? 'Stop recording' : 'Start recording'}
+            title={recordingFinalizing ? 'Saving recording' : isRecording ? 'Stop recording' : 'Start recording'}
           >
             {isRecording ? (
               <span style={styles.recDot} />
@@ -459,7 +462,7 @@ export function ControlBar({
               </svg>
             )}
             <span style={{ minWidth: 42, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
-              {isRecording ? `${recordingPaused ? 'PAUSED ' : ''}${formattedTime}` : 'Record'}
+              {recordingFinalizing ? 'Saving…' : isRecording ? `${recordingPaused ? 'PAUSED ' : ''}${formattedTime}` : 'Record'}
             </span>
           </button>
         )}

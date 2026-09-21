@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { createRecordingChunkStore } from '../utils/recordingChunkStore.ts';
+import { createRecoverableRecordingStore } from '../utils/recordingRecovery.ts';
 import {
   createRecordingCaptureMetadata,
   finalizeRecordingCaptureMetadata,
@@ -47,7 +47,9 @@ interface TrackRecorder {
   label: string;
   kind: LocalRecordingSource['kind'];
   recorder: MediaRecorder;
-  chunkStore: ReturnType<typeof createRecordingChunkStore>;
+  chunkStore: ReturnType<typeof createRecoverableRecordingStore>;
+  finished: Promise<Blob>;
+  started: boolean;
   capture: RecordingCaptureMetadata;
   sidecarResults: LocalRecordingFileResult[];
   webCodecsSidecar?: WebCodecsSidecarRecorder;
@@ -70,9 +72,11 @@ interface StoppedTrackRecorderResult {
   sidecars: LocalRecordingFileResult[];
 }
 
-export function useLocalRecording() {
+export function useLocalRecording(roomName = 'Studio') {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
+  const startingRef = useRef(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [recordingLabels, setRecordingLabels] = useState<string[]>([]);
 
@@ -84,6 +88,8 @@ export function useLocalRecording() {
 
   // Guard against double-stop
   const stoppingRef = useRef<boolean>(false);
+  const stopPromiseRef = useRef<Promise<RecordingResult> | null>(null);
+  const generationRef = useRef(0);
 
   const getAudioMimeType = (): string => getPreferredAudioRecordingMimeType();
 
@@ -301,7 +307,7 @@ export function useLocalRecording() {
     }
   };
 
-  const createTrackRecorder = async (source: LocalRecordingSource, dirHandle?: any): Promise<TrackRecorder | null> => {
+  const createTrackRecorder = async (source: LocalRecordingSource): Promise<TrackRecorder | null> => {
     const stream = new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live'));
     if (stream.getTracks().length === 0) return null;
     const mimeType = getMimeTypeForSource({ ...source, stream });
@@ -311,16 +317,16 @@ export function useLocalRecording() {
       return null;
     }
 
-    const chunkStore = createRecordingChunkStore(
-      dirHandle,
-      `${source.id.replace(/[^a-zA-Z0-9_-]/g, '_')}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      error => console.warn(`Recording storage switched to memory for ${source.label}:`, error)
-    );
-
-    const recorder = new MediaRecorder(stream, {
-      mimeType,
-      bitsPerSecond,
-    });
+    const recorder = new MediaRecorder(stream, { mimeType, bitsPerSecond });
+    const chunkStore = createRecoverableRecordingStore({
+      roomName, label: source.label, kind: source.kind, mimeType: recorder.mimeType,
+    }, () => setStorageWarning('Recording is continuing in memory. Keep this tab open until it has been saved.'));
+    // Finalize even when capture stops unexpectedly, after its final data event.
+    let resolveFinished!: (blob: Blob) => void;
+    let rejectFinished!: (error: unknown) => void;
+    const finished = new Promise<Blob>((resolve, reject) => { resolveFinished = resolve; rejectFinished = reject; });
+    recorder.onstop = () => { void chunkStore.finish(recorder.mimeType).then(resolveFinished, rejectFinished); };
+    void finished.catch(() => {});
     const webCodecsSidecar = createWebCodecsSidecarRecorder(source, stream, mimeType, bitsPerSecond);
     const capture = createRecordingCaptureMetadata({
       sourceId: source.id,
@@ -337,6 +343,7 @@ export function useLocalRecording() {
 
     recorder.onerror = (e) => {
       console.error(`Recording error for ${source.label}:`, e);
+      setStorageWarning('A recording track was interrupted. Stop and save the available footage.');
     };
 
     return {
@@ -345,6 +352,8 @@ export function useLocalRecording() {
       kind: source.kind,
       recorder,
       chunkStore,
+      finished,
+      started: false,
       capture,
       sidecarResults: [],
       webCodecsSidecar,
@@ -393,73 +402,81 @@ export function useLocalRecording() {
   const startRecording = useCallback(
     async (input: MediaStream | LocalRecordingSource[], screenStream?: MediaStream | null) => {
       // Guard against double-start
-      if (isRecording) return;
-      const sources = (Array.isArray(input) ? input : getDefaultSources(input, screenStream))
-        .map((source) => ({
-          ...source,
-          stream: new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live')),
-        }))
-        .filter((source) => source.stream.getTracks().length > 0);
-      if (sources.length === 0) return;
-
-      let dirHandle: any = undefined;
+      if (startingRef.current || recordersRef.current.length || stoppingRef.current) return;
+      startingRef.current = true;
+      setStorageWarning(null);
+      stopPromiseRef.current = null;
+      const generation = generationRef.current;
       try {
-        if (navigator.storage && navigator.storage.getDirectory) {
-          const opfsRoot = await navigator.storage.getDirectory();
-          dirHandle = await opfsRoot.getDirectoryHandle(`recording-${Date.now()}`, { create: true });
-          console.log('OPFS Directory created for local recording');
-        }
-      } catch (err) {
-        console.warn('OPFS not available, chunks will be stored in RAM', err);
-      }
+        const sources = (Array.isArray(input) ? input : getDefaultSources(input, screenStream))
+          .map((source) => ({
+            ...source,
+            stream: new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live')),
+          }))
+          .filter((source) => source.stream.getTracks().length > 0);
+        if (sources.length === 0) return;
 
-      const recorders: TrackRecorder[] = [];
-      for (const source of sources) {
-        const trackRecorder = await createTrackRecorder(source, dirHandle);
-        if (trackRecorder) {
-          recorders.push(trackRecorder);
-        } else {
-          source.cleanup?.();
-        }
-      }
-      if (recorders.length === 0) return;
-
-      // Start all recorders with 1-second chunks
-      try {
-        const startedAt = new Date().toISOString();
-        for (const trackRecorder of recorders) {
-          trackRecorder.capture = { ...trackRecorder.capture, startedAt };
-          trackRecorder.recorder.start(1000);
-          await startWebCodecsSidecar(trackRecorder, startedAt);
-        }
-      } catch (err) {
-        for (const trackRecorder of recorders) {
+        const recorders: TrackRecorder[] = [];
+        recordersRef.current = recorders;
+        for (const source of sources) {
+          if (generation !== generationRef.current) { source.cleanup?.(); continue; }
           try {
-            if (trackRecorder.recorder.state !== 'inactive') trackRecorder.recorder.stop();
-          } catch {
-            // ignore failed cleanup after a start failure
+            const trackRecorder = await createTrackRecorder(source);
+            if (trackRecorder) {
+              if (generation !== generationRef.current) {
+                await trackRecorder.chunkStore.discard();
+                source.cleanup?.();
+              } else recorders.push(trackRecorder);
+            } else source.cleanup?.();
+          } catch (error) {
+            source.cleanup?.();
+            setStorageWarning(`Could not start the ${source.label} track. Other available tracks can still record.`);
           }
-          await stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, new Date().toISOString());
-          trackRecorder.cleanup?.();
         }
-        throw err;
-      }
-      recordersRef.current = recorders;
-      setRecordingLabels(recorders.map((recorder) => recorder.label));
+        if (recorders.length === 0) return;
 
-      // Start timer
-      startTimeRef.current = Date.now();
-      pausedAtRef.current = null;
-      accumulatedPausedMsRef.current = 0;
-      timerRef.current = setInterval(() => {
-        setRecordingDuration(getElapsedSeconds());
-      }, 1000);
+        // Start all recorders with 1-second chunks
+        try {
+          const startedAt = new Date().toISOString();
+          for (const trackRecorder of recorders) {
+            trackRecorder.capture = { ...trackRecorder.capture, startedAt };
+            if (generation !== generationRef.current) throw new Error('Studio closed before recording started.');
+            trackRecorder.recorder.start(1000);
+            trackRecorder.started = true;
+            await startWebCodecsSidecar(trackRecorder, startedAt);
+          }
+          if (generation !== generationRef.current) throw new Error('Studio closed before recording started.');
+        } catch (err) {
+          for (const trackRecorder of recorders) {
+            try {
+              if (trackRecorder.recorder.state !== 'inactive') trackRecorder.recorder.stop();
+            } catch {
+              // ignore failed cleanup after a start failure
+            }
+            await stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, new Date().toISOString());
+            if (!trackRecorder.started) await trackRecorder.chunkStore.discard();
+            trackRecorder.cleanup?.();
+          }
+          recordersRef.current = [];
+          throw err;
+        }
+        recordersRef.current = recorders;
+        setRecordingLabels(recorders.map((recorder) => recorder.label));
 
-      setIsRecording(true);
-      setIsPaused(false);
-      console.log(`Local recording started on disk/RAM: ${recorders.length} track(s)`);
+        // Start timer
+        startTimeRef.current = Date.now();
+        pausedAtRef.current = null;
+        accumulatedPausedMsRef.current = 0;
+        timerRef.current = setInterval(() => {
+          setRecordingDuration(getElapsedSeconds());
+        }, 1000);
+
+        setIsRecording(true);
+        setIsPaused(false);
+        console.log(`Local recording started on disk/RAM: ${recorders.length} track(s)`);
+      } finally { startingRef.current = false; }
     },
-    [getElapsedSeconds, isRecording]
+    [getElapsedSeconds, roomName]
   );
 
   const pauseRecording = useCallback(async (): Promise<void> => {
@@ -536,53 +553,26 @@ export function useLocalRecording() {
     }));
   }, [getElapsedSeconds, isPaused, isRecording]);
 
-  const stopSingleRecorder = (
-    trackRecorder: TrackRecorder | null,
-    label: string
-  ): Promise<StoppedTrackRecorderResult> => {
-    return new Promise((resolve) => {
-      if (!trackRecorder) {
-        resolve({ blob: null, sidecars: [] });
-        return;
+  const stopSingleRecorder = async (trackRecorder: TrackRecorder): Promise<StoppedTrackRecorderResult> => {
+    const { recorder, chunkStore, cleanup } = trackRecorder;
+    try {
+      let stopFailed = false;
+      if (recorder.state !== 'inactive') {
+        try { recorder.stop(); } catch { stopFailed = true; }
       }
-
-      const { recorder, chunkStore, cleanup } = trackRecorder;
-      let cleanedUp = false;
-      const cleanupSource = () => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        cleanup?.();
-      };
-
-      const finishUp = async () => {
-        const stoppedAt = new Date().toISOString();
-        trackRecorder.capture = finalizeRecordingCaptureMetadata(trackRecorder.capture, stoppedAt);
-        const sidecar = await stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, stoppedAt);
-        const sidecars = sidecar ? [sidecar] : [];
-        const blob = await chunkStore.finish(recorder.mimeType);
-        console.log(`${label} recording stopped. Size: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
-        cleanupSource();
-        resolve({ blob, sidecars });
-      };
-
-      if (recorder.state === 'inactive') {
-        finishUp();
-        return;
-      }
-
-      recorder.onstop = () => {
-        finishUp();
-      };
-
-      recorder.stop();
-    });
+      // Wait for MediaRecorder's final data event, including spontaneous stops.
+      const blob = await (stopFailed ? chunkStore.finish(recorder.mimeType) : trackRecorder.finished);
+      const stoppedAt = new Date().toISOString();
+      trackRecorder.capture = finalizeRecordingCaptureMetadata(trackRecorder.capture, stoppedAt);
+      const sidecar = await stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, stoppedAt);
+      return { blob, sidecars: sidecar ? [sidecar] : [] };
+    } finally { cleanup?.(); }
   };
 
   const stopRecording = useCallback((): Promise<RecordingResult> => {
     // Guard against double-stop
-    if (stoppingRef.current) {
-      return Promise.resolve({ audio: new Blob(), video: new Blob(), files: [] });
-    }
+    if (stopPromiseRef.current) return stopPromiseRef.current;
+    if (stoppingRef.current) return Promise.reject(new Error('Recording cancellation is still in progress.'));
     stoppingRef.current = true;
 
     // Stop timer
@@ -594,19 +584,10 @@ export function useLocalRecording() {
     accumulatedPausedMsRef.current = 0;
 
     const activeRecorders = [...recordersRef.current];
-    const stopPromises = activeRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder, trackRecorder.label));
+    const stopPromises = activeRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder));
 
-    return Promise.all(stopPromises).then(
+    stopPromiseRef.current = Promise.all(stopPromises).then(
       (results) => {
-        // Clean up refs
-        recordersRef.current = [];
-
-        setIsRecording(false);
-        setIsPaused(false);
-        setRecordingDuration(0);
-        setRecordingLabels([]);
-        stoppingRef.current = false;
-
         const files = activeRecorders.flatMap((recorder, index): LocalRecordingFileResult[] => {
           const result = results[index];
           const primary = result.blob && result.blob.size > 0
@@ -634,7 +615,12 @@ export function useLocalRecording() {
         console.log('Local recording stopped completely.');
         return result;
       }
-    );
+    ).finally(() => {
+      recordersRef.current = [];
+      setIsRecording(false); setIsPaused(false); setRecordingDuration(0); setRecordingLabels([]);
+      stoppingRef.current = false;
+    });
+    return stopPromiseRef.current;
   }, []);
 
   const discardSingleRecorder = async (trackRecorder: TrackRecorder): Promise<void> => {
@@ -676,6 +662,7 @@ export function useLocalRecording() {
     await Promise.all(activeRecorders.map(discardSingleRecorder));
 
     recordersRef.current = [];
+    stopPromiseRef.current = null;
     setIsRecording(false);
     setIsPaused(false);
     setRecordingDuration(0);
@@ -694,6 +681,7 @@ export function useLocalRecording() {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      generationRef.current++;
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -705,7 +693,8 @@ export function useLocalRecording() {
               trackRecorder.recorder.stop();
             }
             void stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, new Date().toISOString());
-            void trackRecorder.chunkStore.flush();
+            if (!trackRecorder.started) void trackRecorder.chunkStore.discard();
+            else void trackRecorder.chunkStore.flush();
             trackRecorder.cleanup?.();
           } catch {
             // ignore
@@ -722,6 +711,7 @@ export function useLocalRecording() {
     isRecording,
     isPaused,
     formattedTime: formatTime(recordingDuration),
+    storageWarning,
     recordingLabels,
     startRecording,
     pauseRecording,
