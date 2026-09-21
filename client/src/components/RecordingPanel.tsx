@@ -1,3 +1,4 @@
+import { RecordingRecoveryNotice } from './RecordingRecoveryNotice.tsx';
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import type { RecordingExportArtifactStatus, RecordingExportJobResponse, RecordingExportVideoCodec } from '@studio/shared';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
@@ -57,6 +58,7 @@ interface RecordingPanelProps {
   onPauseRecording?: () => void | Promise<void>;
   onResumeRecording?: () => void | Promise<void>;
   onStopRecording: () => Promise<RecordingResult>;
+  onFinalizingChange?: (finalizing: boolean) => void;
   onCancelRecording?: () => void | Promise<void>;
   onUploadRecording?: (input: RecordingServerUploadInput) => Promise<RecordingUploadSummary>;
   onDownloadRecordingExportArtifact?: (input: RecordingServerExportArtifactInput) => Promise<BlobExportDownload>;
@@ -2433,6 +2435,7 @@ export function RecordingPanel({
   onPauseRecording,
   onResumeRecording,
   onStopRecording,
+  onFinalizingChange,
   onCancelRecording,
   onUploadRecording,
   onDownloadRecordingExportArtifact,
@@ -2541,6 +2544,7 @@ export function RecordingPanel({
     sessions,
     isLoading: libraryLoading,
     error: libraryError,
+    refresh: refreshLibrary,
     saveSession,
     deleteSession,
     loadFiles,
@@ -2663,6 +2667,7 @@ export function RecordingPanel({
   }, [isRecordingPaused, onPauseRecording, onResumeRecording, recordingControlAction]);
 
   const handleStop = useCallback(async () => {
+    onFinalizingChange?.(true);
     setIsStopping(true);
     setRecordingControlAction('stop');
     const durationSeconds = parseDurationSeconds(formattedTime);
@@ -2763,11 +2768,13 @@ export function RecordingPanel({
       }
     } catch (err) {
       console.error('Error stopping recording:', err);
+      setMediaUploadError('Could not finish saving. Keep this studio open and download the available tracks. Any saved browser fragments will be offered for recovery after reloading.');
     } finally {
+      onFinalizingChange?.(false);
       setIsStopping(false);
       setRecordingControlAction(null);
     }
-  }, [browserRecordingFallbackMessage, formattedTime, mediaServerExportBlockMessage, normalizeExportAudio, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
+  }, [onFinalizingChange, browserRecordingFallbackMessage, formattedTime, mediaServerExportBlockMessage, normalizeExportAudio, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
 
   const confirmDiscardActiveRecording = useCallback((action: 'cancel' | 'restart'): boolean => {
     if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
@@ -4720,6 +4727,7 @@ export function RecordingPanel({
         )}
 
         <div style={styles.librarySection}>
+          <RecordingRecoveryNotice onRecovered={refreshLibrary} />
           <div style={styles.filesHeader}>
             <span style={styles.filesTitle}>Recording Library</span>
             <div style={styles.libraryHeaderActions}>

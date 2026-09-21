@@ -1,0 +1,11 @@
+.recording-recovery { padding: 20px 0; border-bottom: 1px solid var(--border-strong); margin-bottom: 20px; }
+.recording-recovery h3 { font-size: 15px; font-weight: 600; margin: 0 0 7px; color: var(--text-primary); }
+.recording-recovery p { font-size: 12px; line-height: 1.6; color: var(--text-secondary); margin: 0 0 14px; max-width: 620px; }
+.recording-recovery ul { list-style: none; padding: 0; margin: 0; }
+.recording-recovery li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 0; }
+.recording-recovery li > div { flex: 1 1 180px; min-width: 0; }
+.recording-recovery strong { display: block; font-size: 12px; font-weight: 550; overflow-wrap: anywhere; color: var(--text-primary); }
+.recording-recovery span { display: block; font-size: 11px; color: var(--text-secondary); margin-top: 5px; }
+.recording-recovery button { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--border-strong); border-radius: 7px; padding: 9px 12px; font-size: 12px; }
+.recording-recovery [role='alert'] { color: var(--danger); }
+.workspace-app .recording-recovery { --text-primary: #292832; --text-secondary: #737180; --accent: #6851b7; --accent-subtle: #f0ecf8; --border-strong: #e5e2ec; }

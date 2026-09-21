@@ -3,11 +3,12 @@ export interface ProductionExitGuardState {
   isMixedRecording: boolean;
   isLocalRecording: boolean;
   isSessionRecording: boolean;
+  isFinalizingRecording?: boolean;
 }
 
 export interface ProductionExitGuardDecision {
   shouldBlock: boolean;
-  reason: 'live-and-recording' | 'live' | 'recording' | null;
+  reason: 'live-and-recording' | 'live' | 'recording' | 'saving' | null;
   message: string;
 }
 
@@ -37,6 +38,14 @@ export function getProductionExitGuardDecision(
       shouldBlock: true,
       reason: 'recording',
       message: 'A recording is active. Leaving now may lose recording chunks.',
+    };
+  }
+
+  if (state.isFinalizingRecording) {
+    return {
+      shouldBlock: true,
+      reason: 'saving',
+      message: 'Recording files are still being saved or uploaded. Keep this tab open until they finish.',
     };
   }
 

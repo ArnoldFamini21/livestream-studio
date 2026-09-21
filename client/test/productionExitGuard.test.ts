@@ -59,3 +59,13 @@ describe('production exit guard', () => {
     });
   });
 });
+
+it('protects completed recordings while their files are still being saved or uploaded', () => {
+  assert.deepEqual(getProductionExitGuardDecision({
+    isLive: false, isMixedRecording: false, isLocalRecording: false,
+    isSessionRecording: false, isFinalizingRecording: true,
+  }), {
+    shouldBlock: true, reason: 'saving',
+    message: 'Recording files are still being saved or uploaded. Keep this tab open until they finish.',
+  });
+});

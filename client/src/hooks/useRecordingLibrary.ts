@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { RecordingExportJobResponse } from '@studio/shared';
+import { acknowledgeRecordingBackups } from '../utils/recordingRecovery.ts';
 import {
   normalizeRecordingCaptureMetadata,
   type RecordingCaptureMetadata,
@@ -80,6 +81,8 @@ export interface LocalRecordingSession {
 }
 
 export interface SaveRecordingSessionInput {
+  id?: string;
+  createdAt?: string;
   roomName: string;
   durationSeconds?: number | null;
   files: LocalRecordingFileInput[];
@@ -180,7 +183,7 @@ async function listRecordingSessions(): Promise<LocalRecordingSession[]> {
 export async function persistRecordingSession(input: SaveRecordingSessionInput): Promise<LocalRecordingSession> {
   const db = await openRecordingDb();
   try {
-    const sessionId = makeId('recording');
+    const sessionId = input.id || makeId('recording');
     const files: LocalRecordingFileMetadata[] = input.files.map((file, index) => ({
       id: `${sessionId}-track-${index + 1}`,
       label: file.label,
@@ -193,7 +196,7 @@ export async function persistRecordingSession(input: SaveRecordingSessionInput):
     const session: LocalRecordingSession = {
       id: sessionId,
       roomName: input.roomName,
-      createdAt: new Date().toISOString(),
+      createdAt: input.createdAt || new Date().toISOString(),
       trackCount: files.length,
       totalBytes: files.reduce((total, file) => total + file.size, 0),
       durationSeconds: input.durationSeconds ?? null,
@@ -220,6 +223,7 @@ export async function persistRecordingSession(input: SaveRecordingSessionInput):
       fileStore.put(record);
     });
     await transactionDone(transaction);
+    await acknowledgeRecordingBackups(input.files.map(file => file.blob));
     return session;
   } finally {
     db.close();
