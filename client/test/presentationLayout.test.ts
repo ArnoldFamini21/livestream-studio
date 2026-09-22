@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LayoutMode } from '@studio/shared';
-import { getPresentationGeometry, type PresentationRect, type PresentationCorner } from '../src/utils/presentationLayout.ts';
+import { getPresentationGeometry, type PresentationRect, type PresentationCorner, type PresentationCameraSize, normalizePresentationCameraSize } from '../src/utils/presentationLayout.ts';
 import { selectVisibleStageItems } from '../src/utils/mediaShareLayouts.ts';
 
 const layouts: LayoutMode[] = ['single', 'grid', 'spotlight', 'side-by-side', 'pip', 'featured'];
+const sizes: PresentationCameraSize[] = ['small', 'medium', 'large'];
 const corners: PresentationCorner[] = ['TL', 'TR', 'BL', 'BR'];
 const overlaps = (a: PresentationRect, b: PresentationRect) =>
   a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
@@ -18,8 +19,8 @@ const assertInsideCanvas = (rect: PresentationRect) => {
 
 describe('presentation composition', () => {
   it('keeps all camera tiles within the canvas, at 16:9, without overlapping each other', () => {
-    for (const layout of layouts) for (const corner of corners) for (let count = 0; count <= 12; count++) {
-      const geometry = getPresentationGeometry(layout, count, corner);
+    for (const size of sizes) for (const layout of layouts) for (const corner of corners) for (let count = 0; count <= 12; count++) {
+      const geometry = getPresentationGeometry(layout, count, corner, size);
       assertInsideCanvas(geometry.media);
       assert.equal(geometry.participants.length, geometry.visibleParticipantCount);
       geometry.participants.forEach((tile, index) => {
@@ -56,6 +57,17 @@ describe('presentation composition', () => {
     assert.equal(tl.y, tr.y);
     assert.equal(bl.y, br.y);
     assert.ok(tr.x > tl.x && bl.y > tl.y);
+  });
+
+  it('gives hosts a useful presenter size range without changing floating media framing', () => {
+    for (const layout of layouts.filter(layout => layout !== 'single')) {
+      const frames = sizes.map(size => getPresentationGeometry(layout, 1, 'BR', size));
+      assert.ok(frames[0].participants[0].width < frames[1].participants[0].width);
+      assert.ok(frames[1].participants[0].width < frames[2].participants[0].width);
+      if (frames[0].usesFloatingParticipant) frames.forEach(frame => assert.deepEqual(frame.media, frames[0].media));
+    }
+    assert.equal(normalizePresentationCameraSize('large'), 'large');
+    for (const value of [null, undefined, 'invalid', 42]) assert.equal(normalizePresentationCameraSize(value), 'medium');
   });
 
   it('handles invalid counts without producing invalid geometry', () => {

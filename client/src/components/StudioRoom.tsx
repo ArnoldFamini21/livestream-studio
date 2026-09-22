@@ -1,5 +1,6 @@
+import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
 import { withLocalJoinMedia } from '../utils/joinMediaState.ts';
-import { getPresentationLayout } from '../utils/presentationLayout.ts';
+import { getPresentationLayout, normalizePresentationCameraSize, type PresentationCameraSize } from '../utils/presentationLayout.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { getAutoGridColumnCount } from '../utils/layoutPresets.ts';
@@ -103,6 +104,7 @@ import {
 } from '../utils/virtualBackgrounds.ts';
 import {
   mergeSharedMediaParticipantItems,
+  splitScreenShareStageItems,
   selectVisibleStageItems,
 } from '../utils/mediaShareLayouts.ts';
 import { buildGuestInviteUrl, buildSecureGuestInviteUrl } from '../utils/inviteLinks.ts';
@@ -337,6 +339,7 @@ interface PersistedStudioState {
   version: typeof STUDIO_STATE_VERSION;
   layout: LayoutMode;
   presentationLayout?: LayoutMode;
+  presentationCameraSize?: PresentationCameraSize;
   studioTheme?: StudioThemeId;
   stageBackground: StageBackground;
   brandColor: string;
@@ -723,12 +726,6 @@ function getWaitingRoomBackgroundStyle(
   };
 }
 
-function isTextEntryTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tagName = target.tagName.toLowerCase();
-  return target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select';
-}
-
 function MediaDocumentCard({ media }: { media: ActiveMedia }) {
   return (
     <div style={styles.mediaDocumentCard}>
@@ -1013,6 +1010,8 @@ export function StudioRoom() {
   // Layout
   const [layout, setLayout] = useState<LayoutMode>('grid');
   const [presentationLayout, setPresentationLayout] = useState<LayoutMode>('grid');
+  const [presentationCameraSize, setPresentationCameraSize] = useState<PresentationCameraSize>('medium');
+  const [selectedScreenShareId, setSelectedScreenShareId] = useState<string | null>(null);
   const layoutRef = useRef<LayoutMode>('grid');
   const [layoutTransition, setLayoutTransition] = useState<StageLayoutTransition | null>(null);
 
@@ -1074,14 +1073,7 @@ export function StudioRoom() {
     if (slideCount <= 1) return;
 
     const handlePresentationKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTextEntryTarget(event.target)) return;
-      if (event.target instanceof HTMLElement && event.target.closest('button, summary, a, video, [role="button"]')
-        && (event.key === ' ' || !event.target.closest('.presentation-toolbar'))) return;
-      const direction = event.key === 'ArrowLeft' || event.key === 'PageUp'
-        ? 'previous'
-        : event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' '
-          ? 'next'
-          : null;
+      const direction = getPresentationShortcut(event);
       if (!direction) return;
 
       event.preventDefault();
@@ -1861,6 +1853,7 @@ export function StudioRoom() {
         if (parsed.version === STUDIO_STATE_VERSION) {
           if (parsed.layout) applyLayout(parsed.layout, { animate: false });
           if (parsed.presentationLayout) setPresentationLayout(parsed.presentationLayout);
+          setPresentationCameraSize(normalizePresentationCameraSize(parsed.presentationCameraSize));
           setStudioTheme(normalizeStudioThemeId(parsed.studioTheme));
           if (parsed.stageBackground) setStageBackground(parsed.stageBackground);
           if (parsed.brandColor) setBrandColor(parsed.brandColor);
@@ -1921,6 +1914,7 @@ export function StudioRoom() {
         version: STUDIO_STATE_VERSION,
         layout,
         presentationLayout,
+        presentationCameraSize,
         studioTheme,
         stageBackground: getPersistableStageBackground(stageBackground),
         brandColor,
@@ -1957,7 +1951,7 @@ export function StudioRoom() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [roomId, layout, presentationLayout, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoPosition, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers, widgets]);
+  }, [roomId, layout, presentationLayout, presentationCameraSize, studioTheme, stageBackground, brandColor, logoUrl, waitingRoomBranding, streamScreenConfig, logoPlacement, logoPosition, logoSize, logoOpacity, cameraShape, nameTagStyle, pipCorner, stageItemOrder, mediaAssets, scenes, activeSceneId, sceneTransitionPreset, sceneStingerClip, lowerThirds, autoSpeakerLowerThirds, audioDuckingEnabled, banners, timers, tickers, widgets]);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -4788,20 +4782,17 @@ export function StudioRoom() {
     stagePresenceItems.map((presence) => presence.item)
   ), [stagePresenceItems]);
 
-  const screenShareStageSplit = useMemo(() => {
-    let screenShareItem: StagePresenceTrackedItem<StageVideoItem> | null = null;
-    const participantItems: Array<StagePresenceTrackedItem<StageVideoItem>> = [];
-
-    for (const presence of stagePresenceItems) {
-      if (presence.item.isScreenShare) {
-        screenShareItem = screenShareItem || presence;
-        continue;
-      }
-      participantItems.push(presence);
-    }
-
-    return { screenShareItem, participantItems };
-  }, [stagePresenceItems]);
+  const screenShareStageSplit = useMemo(() => splitScreenShareStageItems(
+    stagePresenceItems
+      .filter(presence => !presence.item.isScreenShare || presence.phase !== 'leaving')
+      .map(presence => ({ ...presence, id: presence.item.id, isScreenShare: presence.item.isScreenShare })),
+    selectedScreenShareId,
+  ), [stagePresenceItems, selectedScreenShareId]);
+  const displayedScreenShareId = screenShareStageSplit.screenShareItem?.id || null;
+  useEffect(() => {
+    // Keep the chosen source stable when another guest starts sharing; fall back if it ends.
+    setSelectedScreenShareId(displayedScreenShareId);
+  }, [displayedScreenShareId]);
 
   const sharedContentScreenShare = !activeMedia ? screenShareStageSplit.screenShareItem : null;
   const sharedContentParticipantPresenceItems = activeMedia || sharedContentScreenShare
@@ -5159,9 +5150,9 @@ export function StudioRoom() {
 
   const sharedContentLayoutResult = useMemo(() => (
     sharedContentIsActive
-      ? getPresentationLayout(presentationLayout, sharedContentParticipantPresenceItems.length, pipCorner)
+      ? getPresentationLayout(presentationLayout, sharedContentParticipantPresenceItems.length, pipCorner, presentationCameraSize)
       : null
-  ), [presentationLayout, pipCorner, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
+  ), [presentationLayout, pipCorner, presentationCameraSize, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
@@ -5698,7 +5689,10 @@ export function StudioRoom() {
               slideIndex={activeMediaSlideIndex}
               onSlideIndexChange={setActiveMediaSlideIndex}
               screenName={sharedContentScreenShare?.item.name}
-              canStopScreen={isScreenSharing}
+              screens={screenShareStageSplit.screenShareItems.map(source => ({ id: source.id, name: source.item.name }))}
+              selectedScreenId={displayedScreenShareId}
+              onScreenChange={setSelectedScreenShareId}
+              canStopScreen={isScreenSharing && Boolean(sharedContentScreenShare?.item.isLocal)}
               onStop={activeMedia ? onStopMedia : onToggleScreenShare}
             />
           }>
@@ -6058,6 +6052,8 @@ export function StudioRoom() {
           {isHostOrCoHost && (
             <div className="studio-layoutBar" style={styles.layoutBar}>
               <LayoutSwitcher
+                cameraSize={presentationCameraSize}
+                onCameraSizeChange={setPresentationCameraSize}
                 currentLayout={effectiveLayout}
                 onLayoutChange={changeVisibleLayout}
                 pipCorner={pipCorner}

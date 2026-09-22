@@ -1,3 +1,30 @@
+# Presentation workflow review — September 22, 2026
+
+## Layouts, shared screens, and files
+
+This pass focuses on readable shared content and deliberate presenter control, with a small default interface.
+
+- **Select the shared screen on stage.** When more than one on-stage participant shares, the footer offers a source selector. The selected source stays selected when other sources arrive; an ended share falls back to an available source. Non-selected screens never become camera tiles. Stop sharing is offered only for the displayed local source, so it cannot accidentally stop a hidden local share while a guest's screen is displayed.
+- **Adjust presenter size.** Small, medium, and large options sit behind Layout options. Floating presenter positions are in the same disclosure. Geometry is bounded in fixed 960×540 broadcast coordinates; camera tiles retain 16:9 and shared content remains contained. The chosen size is saved with the local studio setup. Large sizes are capped when the guest count would otherwise overflow.
+- **Choose slides and PDF pages privately.** The footer's slide counter opens a modal with thumbnails, a full preview, and available speaker notes. Arrow keys browse the private selection; only Show slide/page changes the stage. The dialog and notes live outside the compositor's broadcast surface. Escape closes the dialog and focus returns to its trigger.
+- **Publish a preview from an already shared deck.** The media library now lets hosts preview and show another slide in an active deck. Previously that preview only offered Stop sharing. Preview errors reset when navigating to another slide.
+
+## Verification
+
+763 client tests pass. Geometry checks cover all six presentation layouts, three presenter sizes, four corners, and participant counts from zero through twelve. The production build passes.
+
+The checked-in browser fixture `client/test/browser/presentation.html` passes 61 checks using the actual stage, media library, layout controls, keyboard handler, and compositor with generated media. It checks private PowerPoint/PDF cueing, explicit publication, source selection and fallback, stop-button ownership, keyboard/focus behavior, and panel-width changes. Broadcast pixel comparisons confirm opening and browsing private slides does not alter the output; publishing a slide does. The separate fixed-canvas fixture passes 270 rendered-frame checks, including camera-resolution changes and idle stability. The private picker was also checked at a 390px viewport.
+
+## Remaining priorities
+
+1. Separate camera and screen tracks for each remote guest. The current transport replaces the guest camera track with a screen stream that can contain an embedded camera. This release selects available screen sources; it does not make that embedded camera independently positionable.
+2. End-to-end rehearsals with several real guests, screen audio, changing network conditions, and production broadcast destinations. Generated local sources do not establish remote broadcast reliability or competitor parity.
+3. Saved presentation arrangements per scene, and broader document rendering beyond the existing PDF/PowerPoint workflows. Document animation and embedded media still need screen sharing or a separately shared video.
+
+Benchmark: StreamYard's [layouts](https://support.streamyard.com/hc/en-us/articles/13828085960724-Layouts-and-Custom-Layouts), [screen sharing](https://support.streamyard.com/hc/en-us/articles/360043726731-Share-a-Screen), and [built-in slide sharing](https://support.streamyard.com/hc/en-us/articles/4411356469396-Sharing-Slides-and-Presentations-Built-in-Feature). Full parity has not been established.
+
+---
+
 # Studio reliability review — September 21, 2026
 
 The next useful step toward StreamYard and Riverside is protecting recorded footage through interruptions. A clean interface is not enough when a reload can discard a program recording.
