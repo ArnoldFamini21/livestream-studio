@@ -1,4 +1,4 @@
-import type { PresentationCorner } from '../utils/presentationLayout.ts';
+import type { PresentationCorner, PresentationCameraSize } from '../utils/presentationLayout.ts';
 import '../styles/presentation.css';
 import type { LayoutMode } from '@studio/shared';
 import {
@@ -20,6 +20,8 @@ interface LayoutSwitcherProps {
   isMediaActive?: boolean;
   mediaParticipantCount?: number;
   pipCorner?: PresentationCorner;
+  cameraSize?: PresentationCameraSize;
+  onCameraSizeChange?: (size: PresentationCameraSize) => void;
   onPipCornerChange?: (corner: PresentationCorner) => void;
 }
 
@@ -92,6 +94,8 @@ export function LayoutSwitcher({
   isMediaActive = false,
   mediaParticipantCount,
   pipCorner = 'BR',
+  cameraSize = 'medium',
+  onCameraSizeChange,
   onPipCornerChange,
 }: LayoutSwitcherProps) {
   const activeMediaParticipantCount = normalizeCount(mediaParticipantCount ?? Math.max(0, participantCount - 1));
@@ -114,11 +118,23 @@ export function LayoutSwitcher({
           <option value="" disabled>More</option><option value="side-by-side">Split</option><option value="featured">Stack</option>
         </select>
       </div>
-      {(showHiddenCount || currentLayout === 'pip' || currentLayout === 'featured') && <div className="presentation-layout-meta">
+      {currentLayout !== 'single' && activeMediaParticipantCount > 0 && <div className="presentation-layout-meta">
         {showHiddenCount && <span>{formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)}</span>}
-        {(currentLayout === 'pip' || currentLayout === 'featured') && onPipCornerChange && <select aria-label="Presenter position" value={pipCorner} onChange={event => onPipCornerChange(event.target.value as PresentationCorner)}>
-          <option value="TL">Top left</option><option value="TR">Top right</option><option value="BL">Bottom left</option><option value="BR">Bottom right</option>
-        </select>}
+        <details className="presentation-layout-settings">
+          <summary>Layout options</summary>
+          <div className="presentation-layout-settings-body">
+            {onCameraSizeChange && <label>Presenter size
+              <select value={cameraSize} onChange={event => onCameraSizeChange(event.target.value as PresentationCameraSize)}>
+                <option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option>
+              </select>
+            </label>}
+            {(currentLayout === 'pip' || currentLayout === 'featured') && onPipCornerChange && <label>Position
+              <select value={pipCorner} onChange={event => onPipCornerChange(event.target.value as PresentationCorner)}>
+                <option value="TL">Top left</option><option value="TR">Top right</option><option value="BL">Bottom left</option><option value="BR">Bottom right</option>
+              </select>
+            </label>}
+          </div>
+        </details>
       </div>}
     </div>;
   }

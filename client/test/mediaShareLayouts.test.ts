@@ -159,3 +159,23 @@ describe('media share layouts', () => {
     );
   });
 });
+
+// Hosts choose one shared source; other shared sources never become camera tiles.
+describe('shared screen selection', () => {
+  const items = [{ id: 'host' }, { id: 'screen-a', isScreenShare: true }, { id: 'guest' }, { id: 'screen-b', isScreenShare: true }];
+  it('selects the requested screen without disturbing participant order', () => {
+    const split = splitScreenShareStageItems(items, 'screen-b');
+    assert.equal(split.screenShareItem?.id, 'screen-b');
+    assert.deepEqual(split.screenShareItems.map(item => item.id), ['screen-a', 'screen-b']);
+    assert.deepEqual(split.participantItems.map(item => item.id), ['host', 'guest']);
+  });
+  it('keeps the selected screen when another source is added or reordered', () => {
+    assert.equal(splitScreenShareStageItems([...items].reverse(), 'screen-b').screenShareItem?.id, 'screen-b');
+  });
+  it('falls back safely when the selected share ends and ignores camera ids', () => {
+    for (const id of ['screen-b', 'guest', null]) {
+      assert.equal(splitScreenShareStageItems(items.slice(0, 3), id).screenShareItem?.id, 'screen-a');
+    }
+    assert.equal(splitScreenShareStageItems([{ id: 'host' }], 'screen-b').screenShareItem, null);
+  });
+});

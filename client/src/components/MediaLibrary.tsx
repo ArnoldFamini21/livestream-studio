@@ -163,6 +163,7 @@ function MediaPreview({ asset, isActive, onShow, onStop }: { asset: StudioMediaA
   const [failed, setFailed] = useState(false);
   const slides = asset.preview?.slides || [];
   const image = slides[page]?.imageUrl || (asset.type === 'image' ? asset.url : null);
+  useEffect(() => setFailed(false), [image, asset.url]);
   return <div className="media-preview-view" onKeyDown={event => {
     if (!slides.length || event.altKey || event.metaKey || event.ctrlKey) return;
     const direction = ['ArrowLeft', 'PageUp'].includes(event.key) ? -1 : ['ArrowRight', 'PageDown'].includes(event.key) ? 1 : 0;
@@ -181,7 +182,8 @@ function MediaPreview({ asset, isActive, onShow, onStop }: { asset: StudioMediaA
       <button type="button" aria-label="Preview next slide" disabled={page === slides.length - 1} onClick={() => setPage(page + 1)}>→</button>
     </div>}
     <p className="media-preview-note">Only you see this preview.</p>
-    <button type="button" className="media-primary" disabled={!isActive && (!canPlayMediaAsset(asset) || failed)} onClick={isActive ? onStop : () => onShow(page)}>{isActive ? 'Stop sharing' : 'Show on stage'}</button>
+    <button type="button" className="media-primary" disabled={!(isActive && !slides.length) && (!canPlayMediaAsset(asset) || failed)} onClick={isActive && !slides.length ? onStop : () => onShow(page)}>{isActive && !slides.length ? 'Stop sharing' : slides.length ? `Show ${asset.type === 'pdf' ? 'page' : 'slide'} ${page + 1}` : 'Show on stage'}</button>
+    {isActive && slides.length > 0 && <button type="button" className="media-preview-stop" onClick={onStop}>Stop sharing</button>}
     <p className={asset.processingStatus === 'error' ? 'media-error' : 'media-format-hint'}>{getMediaAssetStatusLabel(asset)}</p>
   </div>;
 }
