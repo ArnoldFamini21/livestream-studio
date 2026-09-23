@@ -736,6 +736,24 @@ function getWaitingRoomBackgroundStyle(
   };
 }
 
+/**
+ * Keeps the local camera attached to one element for the whole session. Stage
+ * tiles come and go as the layout changes (Content hides cameras), and Safari
+ * restarts the camera preview when nothing shows it, which drops macOS video
+ * effects such as Background. Sits outside the stage, so it is never composited.
+ */
+function CameraKeepAlive({ stream }: { stream: MediaStream | null }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.srcObject = stream;
+    return () => { video.srcObject = null; };
+  }, [stream]);
+  if (!stream || stream.getVideoTracks().length === 0) return null;
+  return <video ref={videoRef} data-camera-keepalive aria-hidden="true" muted playsInline autoPlay style={styles.cameraKeepAlive} />;
+}
+
 function MediaDocumentCard({ media }: { media: ActiveMedia }) {
   return (
     <div style={styles.mediaDocumentCard}>
@@ -6056,6 +6074,8 @@ export function StudioRoom() {
         </div>
       )}
 
+      <CameraKeepAlive stream={localStream} />
+
       {/* Main Area */}
       <div className="studio-main" style={styles.main}>
         {/* Stage */}
@@ -6191,11 +6211,10 @@ export function StudioRoom() {
                     });
                     return (
                       <div
-                        // A fresh box when the stage switches between the presenting
-                        // layout (absolute, explicit height) and the normal one (16:9 by
-                        // aspect-ratio). Safari keeps the old explicit height when it is
-                        // removed mid-transition, which left "Me" as a thin strip.
-                        key={`${item.id}:${sharedContentLayoutResult ? 'presenting' : 'stage'}`}
+                        // Keep the same element across layouts: rebuilding it restarts the
+                        // camera preview, and Safari then drops macOS video effects such
+                        // as Background.
+                        key={item.id}
                         data-stage-item-id={item.id}
                         draggable={canDragStageTile}
                         style={{
@@ -6204,6 +6223,10 @@ export function StudioRoom() {
                           ...(canDragStageTile ? styles.tileWrapperDraggable : {}),
                           ...(isDraggedStageTile ? styles.tileWrapperDragging : {}),
                           ...(isStageDropTarget ? styles.tileWrapperDropTarget : {}),
+                          // The presenting layout sizes tiles with an explicit height; the
+                          // normal one uses aspect-ratio. Reset height to auto so Safari
+                          // does not keep the presenting height (a thin strip in "Me").
+                          ...(sharedContentLayoutResult ? {} : { height: 'auto' }),
                           ...((sharedContentLayoutResult?.participantStyles[i] || layoutResult.tileStyles[i]) || {}),
                           ...getStagePresenceWrapperStyle(presence.phase),
                         }}
@@ -7523,7 +7546,9 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     borderRadius: 16,
     position: 'relative',
-    transition: 'width 0.3s ease, height 0.3s ease, flex-basis 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease',
+    // No height transition: normal tiles size by aspect-ratio (height auto),
+    // which cannot be animated, and Safari can get stuck on the old height.
+    transition: 'width 0.3s ease, flex-basis 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease',
   },
   tileWrapperFocused: {
     outline: '2px solid var(--accent)',
@@ -7755,6 +7780,15 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   // Shared media tile
+  cameraKeepAlive: {
+    position: 'fixed',
+    left: 0,
+    bottom: 0,
+    width: 2,
+    height: 2,
+    opacity: 0,
+    pointerEvents: 'none',
+  },
   mediaOverlay: {
     position: 'relative',
     background: 'transparent',
