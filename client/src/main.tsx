@@ -9,6 +9,7 @@ import { PrivacyPolicy } from './components/PrivacyPolicy.tsx';
 import { TermsOfService } from './components/TermsOfService.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { ToastProvider } from './components/Toast.tsx';
+import { installClientErrorReporting } from './utils/clientErrorReporter.ts';
 import './styles/global.css';
 import './styles/recording-recovery.css';
 
@@ -21,6 +22,8 @@ function RouteFallback() {
     </div>
   );
 }
+
+installClientErrorReporting();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

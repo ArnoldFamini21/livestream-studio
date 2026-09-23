@@ -27,6 +27,7 @@ import {
   type ProgressiveUploadState,
   type ProgressiveUploadTrackCompletion,
 } from '../utils/progressiveRecordingUpload.ts';
+import { reportClientError } from '../utils/clientErrorReporter.ts';
 
 export interface RecordingResult {
   audio: Blob;
@@ -377,6 +378,7 @@ export function useLocalRecording(roomName = 'Studio') {
 
     recorder.onerror = (e) => {
       console.error(`Recording error for ${source.label}:`, e);
+      reportClientError('recording', `A local recording track (${source.kind}) was interrupted.`);
       setStorageWarning('A recording track was interrupted. Stop and save the available footage.');
     };
 

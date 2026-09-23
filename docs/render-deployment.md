@@ -92,6 +92,12 @@ When `TURN_STATIC_AUTH_SECRET` and `TURN_URLS` are both set (and `ICE_SERVERS_JS
 
 `/health` and `/api/ice-config` expose non-secret ICE readiness metadata. `ice.turnReady: true` means the signaling server is using configured TURN credentials rather than the fallback.
 
+### Production readiness and error reporting
+
+The signaling server's `/health` includes `readiness`: `ready` is `false` while any **blocking** issue remains. Blocking issues are a missing database URL, a store that fell back to memory because Postgres was unreachable, a `LIVE_STREAM_TOKEN_SECRET` shorter than 32 characters, and a missing TURN configuration. A missing `CLIENT_URL` or `YOUTUBE_API_KEY` is only a warning. In production, each issue is also logged at startup. Set `PRODUCTION_STRICT=true` to make a production server exit at startup instead of serving traffic while a blocking issue remains.
+
+Production browsers send uncaught errors, React crashes, failed live relays, and interrupted recording tracks to `POST /api/client-errors`. Before logging, the server strips query strings and fragments, which can carry invite and media tokens. Each report is logged as one `{"event":"client_error",...}` JSON line and counted in `/metrics` as `livestream_studio_client_errors_total{kind=...}`. Browsers fold repeats of the same error into one counted report and send at most 20 reports per page load. Set `VITE_CLIENT_ERROR_REPORTING=false` at build time to turn reporting off, or `true` to enable it in development builds. `VITE_RELEASE` tags each report with a build identifier.
+
 The media server can also copy recording export artifacts to S3-compatible object storage. Set these on `livestream-studio-media-server` when durable recording handoff is needed:
 
 ```sh

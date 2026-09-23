@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { reportClientError } from '../utils/clientErrorReporter.ts';
 
 interface Props {
   children: ReactNode;
@@ -21,6 +22,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('[ErrorBoundary] Uncaught error:', error, errorInfo);
+    reportClientError('react', error);
   }
 
   handleReset = () => {

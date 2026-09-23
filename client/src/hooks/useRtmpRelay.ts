@@ -23,6 +23,7 @@ import {
 } from '../utils/rtmpRelayOutput.ts';
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
+import { reportClientError } from '../utils/clientErrorReporter.ts';
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -725,7 +726,10 @@ export function useRtmpRelay({
               message,
               MAX_RELAY_RECONNECT_ATTEMPTS
             );
-            if (!plan) return false;
+            if (!plan) {
+              reportClientError('stream', `Live relay stopped after ${reconnectAttemptsRef.current} reconnect attempt(s): ${message}`);
+              return false;
+            }
 
             reconnectAttemptsRef.current = plan.attempt;
             stopActiveRelayTransport(false);
@@ -813,6 +817,7 @@ export function useRtmpRelay({
             };
 
             recorder.onerror = () => {
+              reportClientError('stream', 'Browser MediaRecorder failed during the live relay.');
               setRelayStatus('error');
               activeDestinationIdsRef.current.forEach((id) => {
                 onDestinationStatus(id, 'error', 'Browser recording failed.');
