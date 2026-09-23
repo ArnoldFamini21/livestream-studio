@@ -8,6 +8,8 @@ import {
   getStudioLayoutDescription,
   getStudioLayoutLabel,
   isMultiParticipantLayout,
+  MEDIA_SHARE_LAYOUT_ORDER,
+  normalizeMediaShareLayout,
   STUDIO_LAYOUT_PRESET_ORDER,
 } from '../src/utils/layoutPresets.ts';
 
@@ -59,4 +61,19 @@ it('gives a solo host the full grid width and scales for additional guests', () 
   assert.deepEqual([2, 4, 5, 9, 10, 12].map(getAutoGridColumnCount), [2, 2, 3, 3, 4, 4]);
   assert.equal(getAutoGridColumnCount(0), 1);
   assert.equal(getAutoGridColumnCount(NaN), 1);
+});
+
+describe('presenting layouts', () => {
+  it('offers only Content, Beside, and Stack', () => {
+    assert.deepEqual(MEDIA_SHARE_LAYOUT_ORDER, ['single', 'grid', 'featured']);
+  });
+
+  it('opens retired layouts in Beside', () => {
+    assert.equal(normalizeMediaShareLayout('spotlight'), 'grid');
+    assert.equal(normalizeMediaShareLayout('pip'), 'grid');
+    assert.equal(normalizeMediaShareLayout('side-by-side'), 'grid');
+    assert.equal(normalizeMediaShareLayout(undefined), 'grid');
+    assert.equal(normalizeMediaShareLayout('single'), 'single');
+    assert.equal(normalizeMediaShareLayout('featured'), 'featured');
+  });
 });

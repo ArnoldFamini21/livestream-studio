@@ -9,8 +9,16 @@ export const STUDIO_LAYOUT_PRESET_ORDER: LayoutMode[] = [
   'featured',
 ];
 
-/** The order of the layout bar while media or a screen share is on stage. */
-export const MEDIA_SHARE_LAYOUT_ORDER: LayoutMode[] = ['single', 'grid', 'spotlight', 'pip', 'side-by-side', 'featured'];
+/** The layouts offered while media or a screen share is on stage, in bar order. */
+export const MEDIA_SHARE_LAYOUT_ORDER: LayoutMode[] = ['single', 'grid', 'featured'];
+
+/**
+ * Presenting uses only Content, Beside, and Stack. Studios and scenes saved
+ * with a retired layout (Below, PiP, Split) open in Beside.
+ */
+export function normalizeMediaShareLayout(layout: LayoutMode | undefined | null): LayoutMode {
+  return layout && MEDIA_SHARE_LAYOUT_ORDER.includes(layout) ? layout : 'grid';
+}
 
 export const MEDIA_SHARE_LAYOUT_SHORT_LABELS: Record<LayoutMode, string> = {
   single: 'Content',

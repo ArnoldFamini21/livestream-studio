@@ -8,6 +8,9 @@ import {
   clampTurnCredentialTtlSeconds,
   generateTurnRestCredential,
   normalizeIceServer,
+  parseCloudflareIceServers,
+  resetCloudflareTurnCache,
+  resolveIceConfigWithStatus,
 } from '../dist/services/ice-config.js';
 
 describe('ICE configuration', () => {
@@ -179,5 +182,72 @@ describe('ICE configuration', () => {
       TURN_STATIC_AUTH_SECRET: 'shared-secret',
     });
     assert.notEqual(status.source, 'turn_rest_secret');
+  });
+});
+
+describe('default relay', () => {
+  it('mints Open Relay credentials from its published secret instead of the retired static password', () => {
+    const config = buildIceConfigFromEnv({}, { nowSeconds: 1_000, userId: 'guest-1' });
+    const relay = config.iceServers.find((server) => [server.urls].flat().some((url) => url.startsWith('turn')));
+    assert.ok(relay);
+    assert.ok([relay.urls].flat().every((url) => url.includes('staticauth.openrelay.metered.ca')));
+    assert.equal(relay.username, `${1_000 + 86_400}:guest-1`);
+    assert.equal(relay.credential, createHmac('sha1', 'openrelayprojectsecret').update(relay.username).digest('base64'));
+    assert.notEqual(relay.credential, 'openrelayproject');
+  });
+});
+
+describe('Cloudflare TURN', () => {
+  const env = { CLOUDFLARE_TURN_KEY_ID: 'key-id', CLOUDFLARE_TURN_API_TOKEN: 'api-token-123456' };
+  const cloudflareBody = {
+    iceServers: [
+      { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:53'] },
+      {
+        urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turn:turn.cloudflare.com:53?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'],
+        username: 'cf-user',
+        credential: 'cf-pass',
+      },
+    ],
+  };
+
+  it('drops port 53, which browsers block', () => {
+    const servers = parseCloudflareIceServers(cloudflareBody);
+    assert.ok(servers.every((server) => [server.urls].flat().every((url) => !url.includes(':53'))));
+    assert.equal(servers.length, 2);
+  });
+
+  it('fetches relay credentials once and reuses them', async () => {
+    resetCloudflareTurnCache();
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify(cloudflareBody), { status: 201 });
+    };
+    const first = await resolveIceConfigWithStatus(env, { fetchImpl, now: 0 });
+    const second = await resolveIceConfigWithStatus(env, { fetchImpl, now: 60_000 });
+    assert.equal(first.status.source, 'cloudflare');
+    assert.equal(first.status.turnReady, true);
+    assert.deepEqual(second.iceServers, first.iceServers);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/turn\/keys\/key-id\/credentials\/generate-ice-servers$/);
+    assert.equal(calls[0].init.headers.Authorization, 'Bearer api-token-123456');
+  });
+
+  it('falls back to the default relay when Cloudflare fails', async () => {
+    resetCloudflareTurnCache();
+    const errors = [];
+    const result = await resolveIceConfigWithStatus(env, {
+      fetchImpl: async () => new Response('nope', { status: 401 }),
+      onError: (error) => errors.push(error),
+    });
+    assert.equal(result.status.source, 'default');
+    assert.equal(errors.length, 1);
+  });
+
+  it('reports Cloudflare as a ready relay in health', () => {
+    const status = buildIceConfigStatusFromEnv(env);
+    assert.equal(status.source, 'cloudflare');
+    assert.equal(status.turnReady, true);
+    assert.equal(status.usingFallbackTurn, false);
   });
 });

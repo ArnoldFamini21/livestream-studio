@@ -360,6 +360,7 @@ export type SignalMessage =
   | { type: 'stage-action'; payload: StageActionPayload }
   | { type: 'participant-notification'; payload: ParticipantNotificationPayload }
   | { type: 'studio-branding-updated'; payload: StudioBrandingPayload }
+  | { type: 'stage-content-updated'; payload: StageContentPayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   | { type: 'recording-upload-token-request'; payload: RecordingUploadTokenRequestPayload }
   | { type: 'recording-upload-token-issued'; payload: RecordingUploadTokenIssuedPayload }
@@ -407,9 +408,33 @@ export interface RoomJoinedPayload {
   recordingState?: RecordingStatePayload;
   liveStreamState?: LiveStreamStatePayload;
   studioBranding?: StudioBrandingPayload;
+  /** What the host has on stage (a slide, an image), mirrored to everyone. */
+  stageContent?: StageContentPayload;
+  /** Hosts and co-hosts only: authorizes uploads to `/api/rooms/:id/stage-images`. */
+  stageUploadToken?: string;
   features?: {
     chatTyping?: boolean;
   };
+}
+
+/**
+ * The media on stage, so guests see what the host presents. Pictures are too
+ * large for signaling, so the host uploads each one over HTTP and this names it.
+ */
+export interface StageContentPayload {
+  media: StageContentMedia | null;
+  /** The presenting layout the host chose. */
+  layout?: LayoutMode;
+}
+
+export interface StageContentMedia {
+  id: string;
+  type: StudioMediaType;
+  name: string;
+  /** Uploaded picture of the current slide or image; absent for videos and documents. */
+  imageId?: string;
+  slideIndex?: number;
+  slideCount?: number;
 }
 
 export interface SDPPayload {

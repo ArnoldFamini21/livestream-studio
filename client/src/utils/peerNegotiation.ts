@@ -15,7 +15,16 @@ export class PeerNegotiation {
     private readonly send: (description: RTCSessionDescriptionInit) => void,
     private readonly isCurrent: () => boolean,
     private readonly recoveryDelayMs = 5_000,
-  ) {}
+  ) {
+    // The answering side's camera sits on its own transceiver (simulcast uses
+    // addTransceiver, which an incoming offer cannot adopt), so it only starts
+    // sending after a follow-up offer. Without this, whoever answered was never
+    // seen: the host could not see a guest, or a guest could not see the host
+    // or their screen share. Collisions are resolved by the polite/impolite roles.
+    pc.addEventListener?.('negotiationneeded', () => {
+      void this.offer().catch(() => {});
+    });
+  }
 
   private active() {
     return !this.disposed && this.isCurrent() && this.pc.signalingState !== 'closed';

@@ -38,13 +38,21 @@ describe('ICE configuration helpers', () => {
     assert.equal(normalizeIceConfig({ iceServers: [{ urls: 'https://not-ice.example.com' }] }), null);
   });
 
-  it('keeps the default fallback TURN-capable', () => {
-    assert.ok(DEFAULT_ICE_CONFIG.iceServers?.some((server) => {
-      const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-      return urls.some((url) => url.startsWith('turn:') || url.startsWith('turns:'));
-    }));
+  it('ships no static relay password in the offline fallback', () => {
+    // Relay credentials are short-lived and minted by the server.
+    assert.ok(DEFAULT_ICE_CONFIG.iceServers?.every((server) => !server.username && !server.credential));
+    assert.ok(DEFAULT_ICE_CONFIG.iceServers?.some((server) => String(server.urls).startsWith('stun:')));
     assert.equal(DEFAULT_ICE_CONFIG_STATUS.turnReady, false);
-    assert.equal(DEFAULT_ICE_CONFIG_STATUS.usingFallbackTurn, true);
+    assert.equal(DEFAULT_ICE_CONFIG_STATUS.hasTurn, false);
+  });
+
+  it('accepts Cloudflare as a configured relay source', () => {
+    const result = normalizeIceConfigWithStatus({
+      iceServers: [{ urls: 'turn:turn.cloudflare.com:3478', username: 'u', credential: 'c' }],
+      status: { source: 'cloudflare', hasTurn: true, hasConfiguredTurn: true, turnReady: true, usingFallbackTurn: false },
+    });
+    assert.equal(result?.status.source, 'cloudflare');
+    assert.equal(result?.status.turnReady, true);
   });
 
   it('preserves server-provided production TURN readiness metadata', () => {

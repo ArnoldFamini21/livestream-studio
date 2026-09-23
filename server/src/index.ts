@@ -5,8 +5,11 @@ import { WebSocketServer } from 'ws';
 import { buildServiceHealthPayload } from '@studio/shared';
 import {
   configureRoomSnapshotStore,
+  getStageImage,
   restoreRoomSnapshots,
   setupSignalingServer,
+  STAGE_IMAGE_MAX_BYTES,
+  storeStageImage,
 } from './services/signaling.js';
 import { authRouter, configureAccountAuthStore } from './routes/auth.js';
 import { roomRouter } from './routes/rooms.js';
@@ -18,7 +21,7 @@ import { transcriptionRouter } from './routes/transcriptions.js';
 import { highlightRouter } from './routes/highlights.js';
 import { episodeContentRouter } from './routes/episodeContent.js';
 import { captionTranslationRouter } from './routes/captionTranslation.js';
-import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
+import { buildIceConfigStatusFromEnv, resolveIceConfigWithStatus } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { buildProductionReadiness, getStrictStartupFailure } from './services/productionReadiness.js';
 import { parseClientErrorReport, recordClientError } from './services/clientErrors.js';
@@ -276,9 +279,49 @@ app.post(
   }
 );
 
-app.get('/api/ice-config', (_req, res) => {
+// Pictures of the host's stage (slides, images) for guests. The upload is
+// authorized by the per-join token the host or co-host received on join.
+app.post(
+  '/api/rooms/:roomId/stage-images',
+  express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: STAGE_IMAGE_MAX_BYTES }),
+  (req, res) => {
+    const header = (name: string) => {
+      const value = req.headers[name];
+      return (Array.isArray(value) ? value[0] : value) || '';
+    };
+    const result = storeStageImage({
+      roomId: req.params.roomId,
+      participantId: header('x-participant-id'),
+      token: header('x-stage-token'),
+      contentType: header('content-type'),
+      data: Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.status(201).json({ imageId: result.imageId });
+  }
+);
+
+app.get('/api/rooms/:roomId/stage-images/:imageId', (req, res) => {
+  const image = getStageImage(req.params.roomId, req.params.imageId);
+  if (!image) {
+    res.status(404).end();
+    return;
+  }
+  // Ids are random and never reused, so the picture can be cached for good.
+  res.setHeader('Content-Type', image.contentType);
+  res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.send(image.data);
+});
+
+app.get('/api/ice-config', async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json(buildIceConfigWithStatusFromEnv());
+  res.json(await resolveIceConfigWithStatus(process.env, {
+    onError: (error) => console.warn('Cloudflare TURN unavailable; using the fallback relay:', error instanceof Error ? error.message : error),
+  }));
 });
 
 // Error-handling middleware (must be last in the middleware chain)

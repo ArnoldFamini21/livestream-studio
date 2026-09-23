@@ -59,7 +59,18 @@ FACEBOOK_ACCESS_TOKEN=<Facebook Page/User access token with live video comment a
 
 Hosts and co-hosts paste a YouTube live chat ID or Facebook live video ID in the Chat panel. The signaling server polls YouTube's `liveChat/messages` endpoint and Facebook Graph API live video comments server-side, then relays imported comments into the existing public chat feed with platform badges so they can be starred, pinned, shown, or flashed on stream. Facebook polling defaults to 10 seconds and can be tuned with `FACEBOOK_COMMENTS_POLL_INTERVAL_MS`.
 
-For production-grade WebRTC connectivity, configure a provider-backed TURN service on `livestream-studio-server`. The built-in OpenRelay fallback is useful for local demos, but it is not treated as production ready by the health metadata.
+For production-grade WebRTC connectivity, configure a provider-backed TURN service on `livestream-studio-server`. Without one, guests who cannot connect directly, which includes most mobile and many home networks, cannot see or hear the host.
+
+**Cloudflare (recommended).** Cloudflare Realtime TURN has a generous free allowance. In the Cloudflare dashboard, open **Realtime → TURN Server**, create a TURN key, and copy its key ID and API token into the server's environment:
+
+```bash
+CLOUDFLARE_TURN_KEY_ID=<turn key id>
+CLOUDFLARE_TURN_API_TOKEN=<turn key api token>
+```
+
+The server requests 24-hour credentials from Cloudflare, reuses them for 12 hours, and drops the port-53 URLs that browsers block. If Cloudflare cannot be reached, it falls back to the configuration below. `/health` reports `ice.source: "cloudflare"`.
+
+**Fallback.** With no TURN settings at all, the server uses Metered's free Open Relay (`staticauth.openrelay.metered.ca`) and mints short-lived credentials from its published secret. The old static `openrelayproject` password no longer works. The free relay is shared by everyone and capped at 20 GB a month, so it is not treated as production ready by the health metadata.
 
 Use either a complete JSON config:
 

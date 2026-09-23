@@ -75,7 +75,7 @@ export function buildProductionReadiness(
     issues.push({
       id: 'turn-missing',
       severity: 'blocking',
-      message: 'No TURN server is configured; guests on corporate or mobile networks may fail to connect.',
+      message: 'No dedicated TURN relay is configured, so guests fall back to a shared free relay and may fail to connect. Set CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN.',
     });
   }
 
