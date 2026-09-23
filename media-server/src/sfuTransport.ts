@@ -128,6 +128,10 @@ export class SfuMediaTransport {
   private newPeerConnection(withRidExtension: boolean): RTCPeerConnection {
     return new RTCPeerConnection({
       codecs: { audio: AUDIO_CODECS, video: VIDEO_CODECS },
+      // One transport from the start. With werift's default "max-compat", each
+      // m-line gets its own ICE transport; once the answer bundles them, the
+      // extra one is orphaned and pc.close() never releases its UDP socket.
+      bundlePolicy: 'max-bundle',
       ...(withRidExtension ? { headerExtensions: { video: [useSdesRTPStreamId()] } } : {}),
     });
   }
