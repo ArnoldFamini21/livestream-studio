@@ -1493,11 +1493,12 @@ function handleStudioBrandingUpdate(ws: WebSocket, payload: StudioBrandingPayloa
 
 function normalizeStageContent(payload: unknown, roomState: RoomState): StageContentPayload | null {
   if (!payload || typeof payload !== 'object') return null;
-  const raw = payload as { media?: unknown; layout?: unknown };
+  const raw = payload as { media?: unknown; layout?: unknown; contentHidden?: unknown };
   const layout = typeof raw.layout === 'string' && STAGE_LAYOUTS.has(raw.layout as LayoutMode)
     ? raw.layout as LayoutMode
     : undefined;
-  if (raw.media === null || raw.media === undefined) return { media: null, ...(layout ? { layout } : {}) };
+  const hidden = raw.contentHidden === true ? { contentHidden: true } : {};
+  if (raw.media === null || raw.media === undefined) return { media: null, ...(layout ? { layout } : {}), ...hidden };
   if (typeof raw.media !== 'object') return null;
   const media = raw.media as Record<string, unknown>;
   const id = typeof media.id === 'string' ? media.id.slice(0, 128) : '';
@@ -1514,7 +1515,7 @@ function normalizeStageContent(payload: unknown, roomState: RoomState): StageCon
     ...(count(media.slideIndex) !== undefined ? { slideIndex: count(media.slideIndex) } : {}),
     ...(count(media.slideCount) !== undefined ? { slideCount: count(media.slideCount) } : {}),
   };
-  return { media: normalized, ...(layout ? { layout } : {}) };
+  return { media: normalized, ...(layout ? { layout } : {}), ...hidden };
 }
 
 function handleStageContentUpdate(ws: WebSocket, payload: StageContentPayload) {

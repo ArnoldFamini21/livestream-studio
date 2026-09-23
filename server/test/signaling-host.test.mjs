@@ -2370,6 +2370,14 @@ describe('stage content sync', () => {
         payload: { media: { id: 'img-2', type: 'image', name: 'Photo', imageId: 'not-uploaded' } },
       });
       assert.equal((await cleared).payload.media.imageId, undefined);
+
+      // The "Me" view during a screen share: nothing staged, content hidden.
+      const hidden = waitForMessage(guest, 'stage-content-updated', (message) => message.payload.contentHidden === true);
+      sendSignal(host, { type: 'stage-content-updated', payload: { media: null, contentHidden: true } });
+      assert.deepEqual((await hidden).payload, { media: null, contentHidden: true });
+      const shown = waitForMessage(guest, 'stage-content-updated', (message) => message.payload.media === null && !('contentHidden' in message.payload));
+      sendSignal(host, { type: 'stage-content-updated', payload: { media: null, contentHidden: 'yes' } });
+      await shown;
     } finally {
       await harness.close();
     }

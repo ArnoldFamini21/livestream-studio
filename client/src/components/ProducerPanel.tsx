@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import type { Participant, ParticipantStatus, LayoutMode, StageActionPayload } from '@studio/shared';
-import { getStudioLayoutLabel, STUDIO_LAYOUT_PRESET_ORDER } from '../utils/layoutPresets.ts';
+import { getStudioLayoutLabel, PRESENTING_VIEW_LABELS, PRESENTING_VIEWS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
 
 interface ProducerPanelProps {
   participants: Map<string, Participant>;
@@ -16,6 +16,9 @@ interface ProducerPanelProps {
 
   currentLayout: LayoutMode;
   onLayoutChange: (layout: LayoutMode) => void;
+  /** While something is shared: the same Me / Content / Content + Me views as the stage bar. */
+  presentingView?: PresentingView;
+  onPresentingViewChange?: (view: PresentingView) => void;
   focusedParticipantId: string | null;
   onSpotlightParticipant: (participantId: string | null) => void;
 
@@ -313,6 +316,8 @@ export function ProducerPanel({
   formattedTime,
   currentLayout,
   onLayoutChange,
+  presentingView,
+  onPresentingViewChange,
   focusedParticipantId,
   onSpotlightParticipant,
   onClose,
@@ -475,7 +480,24 @@ export function ProducerPanel({
           <div style={styles.layoutSection}>
             <span style={styles.sectionTitle}>Layout</span>
             <div style={styles.layoutGrid}>
-              {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
+              {presentingView && onPresentingViewChange ? PRESENTING_VIEWS.map((view) => {
+                const isActive = presentingView === view;
+                return (
+                  <button
+                    key={view}
+                    onClick={() => onPresentingViewChange(view)}
+                    title={PRESENTING_VIEW_LABELS[view]}
+                    aria-pressed={isActive}
+                    style={{
+                      ...styles.layoutBtn,
+                      ...(isActive ? styles.layoutBtnActive : {}),
+                    }}
+                  >
+                    {layoutIcons[view === 'me' ? 'grid' : view === 'content' ? 'single' : 'side-by-side']}
+                    <span style={styles.layoutLabel}>{PRESENTING_VIEW_LABELS[view]}</span>
+                  </button>
+                );
+              }) : STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
                 const label = getStudioLayoutLabel(mode);
                 const isActive = currentLayout === mode;
                 return (

@@ -1,4 +1,5 @@
 import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
+import { countUnreadChatMessages } from '../utils/chatUnread.ts';
 import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
 import { withLocalJoinMedia } from '../utils/joinMediaState.ts';
 import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraSize } from '../utils/presentationLayout.ts';
@@ -1025,6 +1026,35 @@ export function StudioRoom() {
   const [showPolls, setShowPolls] = useState(false);
   const [showCaptionsPanel, setShowCaptionsPanel] = useState(false);
   const [showHealthPanel, setShowHealthPanel] = useState(false);
+  // Tool panels share the same space, so only one is open at a time (the
+  // teleprompter is separate: it is read alongside other tools).
+  const toolPanelSetters = useMemo(() => ({
+    streamDest: setShowStreamDest,
+    soundBoard: setShowSoundBoard,
+    backgroundMusic: setShowBackgroundMusic,
+    recording: setShowRecordingPanel,
+    producer: setShowProducerPanel,
+    webinarQA: setShowWebinarQA,
+    polls: setShowPolls,
+    captions: setShowCaptionsPanel,
+    health: setShowHealthPanel,
+  }), []);
+  type ToolPanel = keyof typeof toolPanelSetters;
+  const toggleToolPanel = useCallback((panel: ToolPanel, open?: boolean) => {
+    const setter = toolPanelSetters[panel];
+    setter((current) => {
+      const next = open ?? !current;
+      if (next) {
+        for (const [name, other] of Object.entries(toolPanelSetters)) {
+          if (name !== panel) other(false);
+        }
+      }
+      return next;
+    });
+  }, [toolPanelSetters]);
+  const closeToolPanels = useCallback(() => {
+    for (const setter of Object.values(toolPanelSetters)) setter(false);
+  }, [toolPanelSetters]);
   const [showGuestChat, setShowGuestChat] = useState(false);
   const broadcastAudioBus = useBroadcastAudioBus();
   const [showInvitePanel, setShowInvitePanel] = useState(false);
@@ -5052,8 +5082,9 @@ export function StudioRoom() {
   // New or stopped content always starts visible.
   const sharedContentIdentity = activeMedia ? `media:${activeMedia.assetId || activeMedia.url}` : screenShareStageSplit.screenShareItem?.id || null;
   useEffect(() => {
-    setContentHidden(false);
-  }, [sharedContentIdentity]);
+    // Guests follow the host's choice, which arrives with the stage content.
+    if (isHostOrCoHost) setContentHidden(false);
+  }, [isHostOrCoHost, sharedContentIdentity]);
   const effectiveLayout = sharedContentIsActive ? presentationLayout : layout;
   const changeVisibleLayout = useCallback((next: LayoutMode) => {
     if (sharedContentIsActive) setPresentationLayout(next); else applyLayout(next);
@@ -5143,6 +5174,14 @@ export function StudioRoom() {
     return () => window.clearInterval(interval);
   }, [autoDirectorEnabled, isHostOrCoHost, onSpotlightParticipant]);
 
+  // Unread chat: messages from others since the chat was last open.
+  const chatOpen = isHostOrCoHost ? showSidebar && sidebarActiveTab === 'chat' : showGuestChat;
+  const [chatSeenAt, setChatSeenAt] = useState(() => Date.now());
+  useEffect(() => {
+    if (chatOpen) setChatSeenAt(Date.now());
+  }, [chatOpen, chatMessages.length]);
+  const unreadChatCount = chatOpen ? 0 : countUnreadChatMessages(chatMessages, myParticipant?.id, chatSeenAt);
+
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const roleShortcuts = useMemo(() => getShortcutsForRole(isHostOrCoHost), [isHostOrCoHost]);
   // Keys 1-6 follow the bar on screen: the three views while presenting, else the studio layouts.
@@ -5190,7 +5229,7 @@ export function StudioRoom() {
         if (!canControlRecording) return false;
         void onToggleRecording();
         return true;
-      case 'open-go-live': setShowStreamDest(true); return true;
+      case 'open-go-live': toggleToolPanel('streamDest', true); return true;
       case 'admit-all': {
         const waiting = Array.from(participants.values()).filter((participant) => participant.status === 'green-room');
         if (waiting.length === 0) {
@@ -5223,6 +5262,8 @@ export function StudioRoom() {
       if (event.repeat || event.defaultPrevented) return;
       if (event.key === 'Escape') {
         setShowShortcutHelp(false);
+        // Confirmations and other dialogs handle their own Escape first.
+        if (!document.querySelector('[data-confirm-dialog]')) closeToolPanels();
         return;
       }
       if (shouldIgnoreShortcutTarget(event.target as { tagName?: string; isContentEditable?: boolean } | null)) return;
@@ -5234,7 +5275,7 @@ export function StudioRoom() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [roleShortcuts]);
+  }, [closeToolPanels, roleShortcuts]);
 
   // Hosts and co-hosts: tell guests what is on stage. Each slide or image is
   // uploaded once as a small JPEG; the signaling message only names it. In the
@@ -5267,6 +5308,8 @@ export function StudioRoom() {
         if (cancelled) return;
         content = buildStageContent(stagedMedia, { imageId, slideIndex, slideCount, layout: presentationLayout });
       }
+      // In the "Me" view a screen share stays live but off stage; tell guests.
+      if (contentHidden && sharedContentAvailable) content = { ...content, contentHidden: true };
       const signature = JSON.stringify(content);
       if (signature === lastStageContentSignatureRef.current) return;
       lastStageContentSignatureRef.current = signature;
@@ -5276,7 +5319,7 @@ export function StudioRoom() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [stagedMedia, activeMediaSlideIndex, isHostOrCoHost, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
+  }, [contentHidden, sharedContentAvailable, stagedMedia, activeMediaSlideIndex, isHostOrCoHost, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
 
   // Guests: show what the host has on stage. The next picture is loaded before
   // it replaces the current one, so slides change without a blank frame.
@@ -5286,6 +5329,7 @@ export function StudioRoom() {
     const apply = () => {
       setActiveMedia(next);
       setActiveMediaSlideIndex(0);
+      setContentHidden(Boolean(remoteStageContent?.contentHidden));
       if (remoteStageContent?.layout) setPresentationLayout(remoteStageContent.layout);
     };
     if (!next || next.type !== 'image') {
@@ -5751,7 +5795,7 @@ export function StudioRoom() {
                 borderColor: getHealthColor(sessionHealth.status),
                 color: getHealthColor(sessionHealth.status),
               }}
-              onClick={() => setShowHealthPanel(true)}
+              onClick={() => toggleToolPanel('health', true)}
               title="Session health"
               aria-label={`Session health: ${sessionHealth.label}, ${sessionHealth.score}`}
             >
@@ -5947,7 +5991,7 @@ export function StudioRoom() {
               borderColor: getHealthColor(sessionHealth.status),
               color: getHealthColor(sessionHealth.status),
             }}
-            onClick={() => setShowHealthPanel(true)}
+            onClick={() => toggleToolPanel('health', true)}
             title="Session health"
             aria-label={`Session health: ${sessionHealth.label}, ${sessionHealth.score}`}
           >
@@ -6605,6 +6649,7 @@ export function StudioRoom() {
         {isHostOrCoHost && showSidebar && (
           <Sidebar
             activeTab={sidebarActiveTab}
+            tabBadges={{ chat: unreadChatCount }}
             onActiveTabChange={setSidebarActiveTab}
             lowerThirds={lowerThirds}
             onAddLowerThird={onAddLowerThird}
@@ -6854,19 +6899,20 @@ export function StudioRoom() {
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={onToggleScreenShare}
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
+        unreadChatCount={unreadChatCount}
         onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
         onOpenInvitePanel={isHostOrCoHost ? () => setShowInvitePanel(true) : undefined}
-        onOpenStreamDestinations={() => setShowStreamDest(!showStreamDest)}
-        onOpenSoundBoard={() => setShowSoundBoard(!showSoundBoard)}
+        onOpenStreamDestinations={() => toggleToolPanel('streamDest')}
+        onOpenSoundBoard={() => toggleToolPanel('soundBoard')}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
         onOpenMediaPanel={() => { setShowSidebar(true); setSidebarActiveTab('media'); }}
-        onOpenBackgroundMusic={() => setShowBackgroundMusic(!showBackgroundMusic)}
-        onOpenRecordingPanel={canControlRecording ? () => setShowRecordingPanel(!showRecordingPanel) : undefined}
-        onOpenProducerPanel={() => setShowProducerPanel(!showProducerPanel)}
-        onOpenWebinarQA={() => setShowWebinarQA(!showWebinarQA)}
-        onOpenPolls={() => setShowPolls(!showPolls)}
-        onOpenCaptions={isHostOrCoHost ? () => setShowCaptionsPanel(!showCaptionsPanel) : undefined}
-        onOpenHealthPanel={() => setShowHealthPanel(true)}
+        onOpenBackgroundMusic={() => toggleToolPanel('backgroundMusic')}
+        onOpenRecordingPanel={canControlRecording ? () => toggleToolPanel('recording') : undefined}
+        onOpenProducerPanel={() => toggleToolPanel('producer')}
+        onOpenWebinarQA={() => toggleToolPanel('webinarQA')}
+        onOpenPolls={() => toggleToolPanel('polls')}
+        onOpenCaptions={isHostOrCoHost ? () => toggleToolPanel('captions') : undefined}
+        onOpenHealthPanel={() => toggleToolPanel('health', true)}
         participantCount={allParticipantsMap.size}
         isLive={isLive}
         captionsActive={captionsEnabled}
@@ -6886,6 +6932,8 @@ export function StudioRoom() {
             formattedTime={recordingStatus.formattedTime}
             currentLayout={effectiveLayout}
             onLayoutChange={applyLayout}
+            presentingView={sharedContentAvailable ? presentingView : undefined}
+            onPresentingViewChange={changePresentingView}
             focusedParticipantId={focusedVideoItemId}
             onSpotlightParticipant={onSpotlightParticipant}
             onClose={() => setShowProducerPanel(false)}

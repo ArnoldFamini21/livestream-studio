@@ -89,6 +89,7 @@ export function ConfirmDialog({
       onClick={handleOverlayClick}
       role="dialog"
       aria-modal="true"
+      data-confirm-dialog
       aria-labelledby="confirm-dialog-title"
       aria-describedby="confirm-dialog-message"
     >

@@ -150,7 +150,8 @@ const typeIcons: Record<ToastType, string> = {
 const styles: Record<string, React.CSSProperties> = {
   container: {
     position: 'fixed',
-    bottom: 24,
+    // Above the studio control bar, so notices never cover Go Live or End.
+    bottom: 96,
     right: 24,
     display: 'flex',
     flexDirection: 'column',
