@@ -311,6 +311,8 @@ export type SignalMessage =
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   | { type: 'recording-upload-token-request'; payload: RecordingUploadTokenRequestPayload }
   | { type: 'recording-upload-token-issued'; payload: RecordingUploadTokenIssuedPayload }
+  | { type: 'recording-upload-progress'; payload: RecordingUploadProgressPayload }
+  | { type: 'recording-upload-control'; payload: RecordingUploadControlPayload }
   | { type: 'sfu-token-request'; payload: SfuTokenRequestPayload }
   | { type: 'sfu-token-issued'; payload: SfuTokenIssuedPayload }
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
@@ -431,6 +433,45 @@ export interface RecordingUploadTokenIssuedPayload {
   token: string;
   expiresAt: string;
 }
+
+export type RecordingUploadProgressStatus =
+  | 'uploading'
+  | 'paused'
+  | 'finishing'
+  | 'complete'
+  | 'error';
+
+/**
+ * Progressive upload report. Participants send it to the server; the server
+ * stamps the sender's identity and relays it to hosts and co-hosts only.
+ */
+export interface RecordingUploadProgressPayload {
+  sessionId: string;
+  participantId?: string;
+  participantName?: string;
+  status: RecordingUploadProgressStatus;
+  recordedBytes: number;
+  uploadedBytes: number;
+  trackCount: number;
+  completedTrackCount: number;
+  message?: string;
+  updatedAt?: string;
+}
+
+/** Host/co-host request to pause or resume a participant's background upload. */
+export interface RecordingUploadControlPayload {
+  targetParticipantId: string;
+  action: 'pause' | 'resume';
+  performedBy?: string;
+}
+
+export const RECORDING_UPLOAD_PROGRESS_STATUSES: readonly RecordingUploadProgressStatus[] = [
+  'uploading',
+  'paused',
+  'finishing',
+  'complete',
+  'error',
+];
 
 /** Request a short-lived token for the media-server SFU socket. */
 export interface SfuTokenRequestPayload {

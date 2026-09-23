@@ -128,6 +128,7 @@ export function createRecoverableRecordingStore(
   return {
     append: store.append,
     flush: store.flush,
+    snapshot: (mimeType = input.mimeType): Promise<Blob> => store.snapshot(mimeType),
     finish(mimeType = input.mimeType): Promise<Blob> {
       return finishing ??= (async () => {
         const blob = await store.finish(mimeType);

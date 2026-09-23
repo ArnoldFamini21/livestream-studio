@@ -902,7 +902,8 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
       const [, uploadId] = completeMatch;
       const session = recordingUploads.getSession(uploadId);
       authenticateRecordingUpload(req, session.roomId, undefined, session.sessionId, session.participantId);
-      writeJson(res, 200, recordingUploads.completeSession(uploadId));
+      const completion = await readOptionalJsonBody(req);
+      writeJson(res, 200, recordingUploads.completeSession(uploadId, Date.now(), completion));
       return true;
     }
 

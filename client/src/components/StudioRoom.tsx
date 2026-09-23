@@ -8,7 +8,7 @@ import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -116,6 +116,8 @@ import {
   type LiveSessionSummary,
 } from '../utils/liveStreamStatus.ts';
 import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
+import { resolveMediaHttpUrl } from '../utils/apiClient.ts';
+import { toRecordingUploadProgressPayload } from '../utils/recordingUploadProgress.ts';
 import {
   getProductionScenePackTemplateIds,
   getProductionSceneTemplateConfig,
@@ -1270,6 +1272,10 @@ export function StudioRoom() {
     pauseRecording,
     resumeRecording,
     stopRecording,
+    uploadState: programUploadState,
+    pauseUpload: pauseProgramUpload,
+    resumeUpload: resumeProgramUpload,
+    takeProgressiveUpload: takeProgramProgressiveUpload,
   } = useRecording(room?.name || 'Studio');
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
   const {
@@ -1292,7 +1298,21 @@ export function StudioRoom() {
     pauseRecording: pauseParticipantLocalRecording,
     resumeRecording: resumeParticipantLocalRecording,
     stopRecording: stopParticipantLocalRecording,
+    uploadState: participantUploadState,
+    pauseUpload: pauseParticipantUpload,
+    resumeUpload: resumeParticipantUpload,
   } = useLocalRecording(room?.name || 'Studio');
+  // Hosts see each participant's background upload; guests act on host pause/resume requests.
+  const [participantRecordingUploads, setParticipantRecordingUploads] = useState<Record<string, RecordingUploadProgressPayload>>({});
+  const participantUploadControlRef = useRef({ pause: pauseParticipantUpload, resume: resumeParticipantUpload });
+  participantUploadControlRef.current = { pause: pauseParticipantUpload, resume: resumeParticipantUpload };
+  const addToastRef = useRef(addToast);
+  addToastRef.current = addToast;
+  const uploadProgressReportRef = useRef<{ sentAt: number; status: string | null; timer: number | null }>({
+    sentAt: 0,
+    status: null,
+    timer: null,
+  });
 
   useEffect(() => {
     const warning = programStorageWarning || localStorageWarning || participantStorageWarning;
@@ -2673,6 +2693,23 @@ export function StudioRoom() {
             }
           }
           break;
+        case 'recording-upload-progress': {
+          const report = message.payload;
+          if (!report.participantId) break;
+          setParticipantRecordingUploads((current) => ({ ...current, [report.participantId as string]: report }));
+          break;
+        }
+        case 'recording-upload-control': {
+          if (message.payload.targetParticipantId !== myParticipantRef.current?.id) break;
+          if (message.payload.action === 'pause') {
+            participantUploadControlRef.current.pause();
+            addToastRef.current('The host paused your recording upload to protect the live connection. It resumes later.', 'info');
+          } else {
+            participantUploadControlRef.current.resume();
+            addToastRef.current('Your recording upload resumed.', 'info');
+          }
+          break;
+        }
         // Client-to-server messages: not expected here but listed for exhaustive check
         case 'join-room':
         case 'stage-action':
@@ -2955,6 +2992,7 @@ export function StudioRoom() {
         setSessionRecordingPaused(false);
         try {
           const recordings = await stopRecording();
+          const programUpload = takeProgramProgressiveUpload();
           if (recordings.size > 0) {
             const files = buildToolbarRecordingUploadFiles(recordings, timestamp);
             if (files.length === 0) {
@@ -2979,17 +3017,28 @@ export function StudioRoom() {
                 throw new Error(mediaServerHealth.message || 'Media-server is unavailable.');
               }
               addToast('Finalizing MP4 recording export...', 'info');
+              let programUploaded = false;
+              if (programUpload) {
+                try {
+                  await programUpload.finish();
+                  programUploaded = true;
+                } catch (err) {
+                  console.warn('Progressive program upload could not finish; sending the full program instead:', err);
+                }
+              }
               const token = await requestLiveStreamToken();
               const exportBasename = `${room?.name || 'Studio'} Recording ${timestamp}`;
-              await uploadRecordingToMediaServer({
-                token,
-                roomId: roomId || '',
-                sessionId: recordingSessionId,
-                participantId: myParticipant.id,
-                participantName: `${myParticipant.name} program`,
-                files,
-                startExport: false,
-              });
+              if (!programUploaded) {
+                await uploadRecordingToMediaServer({
+                  token,
+                  roomId: roomId || '',
+                  sessionId: recordingSessionId,
+                  participantId: myParticipant.id,
+                  participantName: `${myParticipant.name} program`,
+                  files,
+                  startExport: false,
+                });
+              }
               const distributed = await waitForDistributedRecordingSession({
                 token,
                 roomId: roomId || '',
@@ -3069,10 +3118,24 @@ export function StudioRoom() {
           }
         }
         if (streams.size === 0) return;
-        const started = startRecording(streams);
+        const recordingSessionId = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const mediaHttpUrl = roomId && mediaServerHealth.status !== 'unavailable' ? resolveMediaHttpUrl() : '';
+        const started = startRecording(streams, {
+          progressiveUpload: mediaHttpUrl && roomId
+            ? {
+                mediaHttpUrl,
+                roomId,
+                sessionId: recordingSessionId,
+                participantId: myParticipant.id,
+                participantName: `${myParticipant.name} program`,
+                getToken: () => requestLiveStreamToken(),
+                // Host live tokens expire after five minutes.
+                tokenRefreshMs: 4 * 60_000,
+              }
+            : undefined,
+        });
         if (!started) return;
         const startedAt = new Date().toISOString();
-        const recordingSessionId = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         const localCaptureCount = myParticipant.status === 'on-stage' && (myParticipant.audioEnabled || myParticipant.videoEnabled) ? 1 : 0;
         const remoteCaptureCount = Array.from(participants.values()).filter((participant) => (
           participant.status === 'on-stage' && (participant.audioEnabled || participant.videoEnabled)
@@ -3605,10 +3668,28 @@ export function StudioRoom() {
     });
     if (sources.length === 0) return;
 
-    void startParticipantLocalRecording(sources)
-      .then(() => requestRecordingUploadToken(sessionRecordingSessionId))
+    const sessionId = sessionRecordingSessionId;
+    const mediaHttpUrl = roomId ? resolveMediaHttpUrl() : '';
+    // Riverside-style: upload committed footage in the background while recording,
+    // so the cloud copy is nearly complete when the host stops.
+    const progressiveUpload = mediaHttpUrl && roomId
+      ? {
+          mediaHttpUrl,
+          roomId,
+          sessionId,
+          participantId: myParticipant.id,
+          participantName: myParticipant.name,
+          getToken: ({ forceRefresh }: { forceRefresh: boolean }) => {
+            if (forceRefresh && recordingUploadTokenRef.current?.sessionId === sessionId) {
+              recordingUploadTokenRef.current = null;
+            }
+            return requestRecordingUploadToken(sessionId);
+          },
+        }
+      : undefined;
+    void startParticipantLocalRecording(sources, null, { progressiveUpload })
       .catch((err) => {
-        console.warn('Participant local recording could not start or authorize upload:', err);
+        console.warn('Participant local recording could not start:', err);
       });
   }, [
     isParticipantLocalRecording,
@@ -3617,6 +3698,7 @@ export function StudioRoom() {
     myParticipant,
     participantRecordingFinalizing,
     requestRecordingUploadToken,
+    roomId,
     screenStream,
     sessionRecordingSessionId,
     sessionRecordingStartedAt,
@@ -3677,6 +3759,16 @@ export function StudioRoom() {
           files,
         });
 
+        if (result.progressiveUpload) {
+          try {
+            await result.progressiveUpload.finish();
+            addToast('Your recording is safely uploaded.', 'success');
+            return;
+          } catch (err) {
+            console.warn('Progressive recording upload could not finish; sending the full recording instead:', err);
+          }
+        }
+
         try {
           const token = await requestRecordingUploadToken(sessionId);
           await uploadRecordingToMediaServer({
@@ -3712,6 +3804,56 @@ export function StudioRoom() {
     sessionRecordingStartedAt,
     stopParticipantLocalRecording,
   ]);
+
+  // Report background upload progress to hosts, throttled to one report every
+  // two seconds, plus an immediate report whenever the status changes.
+  useEffect(() => {
+    const sessionId = sessionRecordingSessionId;
+    const payload = sessionId && participantUploadState
+      ? toRecordingUploadProgressPayload(sessionId, participantUploadState)
+      : null;
+    const report = uploadProgressReportRef.current;
+    if (report.timer !== null) {
+      window.clearTimeout(report.timer);
+      report.timer = null;
+    }
+    if (!payload) return;
+    const sendReport = () => {
+      report.timer = null;
+      report.sentAt = Date.now();
+      report.status = payload.status;
+      send({ type: 'recording-upload-progress', payload });
+    };
+    const elapsed = Date.now() - report.sentAt;
+    if (report.status !== payload.status || elapsed >= 2_000) sendReport();
+    else report.timer = window.setTimeout(sendReport, 2_000 - elapsed);
+  }, [participantUploadState, send, sessionRecordingSessionId]);
+
+  useEffect(() => () => {
+    const report = uploadProgressReportRef.current;
+    if (report.timer !== null) window.clearTimeout(report.timer);
+  }, []);
+
+  // The program recorder runs at up to 20 Mbps. While live, its upload waits so
+  // it cannot compete with the broadcast for the host's upstream bandwidth; it
+  // catches up after the stream ends or when recording stops.
+  useEffect(() => {
+    if (!programUploadState) return;
+    if (isLive) pauseProgramUpload();
+    else resumeProgramUpload();
+  }, [isLive, pauseProgramUpload, programUploadState, resumeProgramUpload]);
+
+  const controlParticipantRecordingUpload = useCallback((participantId: string, action: 'pause' | 'resume') => {
+    send({ type: 'recording-upload-control', payload: { targetParticipantId: participantId, action } });
+  }, [send]);
+
+  // A new take starts with a clean upload board.
+  useEffect(() => {
+    setParticipantRecordingUploads((current) => {
+      const entries = Object.entries(current).filter(([, report]) => report.sessionId === sessionRecordingSessionId);
+      return entries.length === Object.keys(current).length ? current : Object.fromEntries(entries);
+    });
+  }, [sessionRecordingSessionId]);
 
   const uploadLocalRecordingToMediaServer = useCallback(async (input: RecordingServerUploadInput) => {
     if (!roomId) throw new Error('Room id is required for recording upload.');
@@ -6297,6 +6439,8 @@ export function StudioRoom() {
             onSpotlightParticipant={onSpotlightParticipant}
             remoteStreams={remoteStreams}
             peerBandwidthHealth={peerBandwidthHealth}
+            recordingUploads={canControlRecording ? participantRecordingUploads : undefined}
+            onRecordingUploadControl={canControlRecording ? controlParticipantRecordingUpload : undefined}
             localStream={localStream}
             participantVolumes={participantVolumes}
             onParticipantVolumeChange={handleParticipantVolumeChange}

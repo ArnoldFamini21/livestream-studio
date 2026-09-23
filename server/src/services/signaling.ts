@@ -16,6 +16,7 @@ import type {
   StageActionPayload,
   StageBackground,
   RecordingStatePayload,
+  RecordingUploadProgressPayload,
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
   RecordingUploadTokenClaims,
@@ -28,6 +29,7 @@ import type {
   ExternalChatStatusPayload,
 } from '@studio/shared';
 import {
+  RECORDING_UPLOAD_PROGRESS_STATUSES,
   ROOM_NOT_OPEN_ERROR_CODE,
   SCHEDULED_GUEST_ACCESS_MESSAGE,
   canExchangeStudioMedia,
@@ -126,6 +128,8 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'studio-branding-updated',
   'recording-state-changed',
   'recording-upload-token-request',
+  'recording-upload-progress',
+  'recording-upload-control',
   'sfu-token-request',
   'live-stream-state-changed',
   'live-stream-token-request',
@@ -215,6 +219,9 @@ const MAX_REGISTRANT_NAME_LENGTH = 80;
 const MAX_REGISTRANT_EMAIL_LENGTH = 254;
 const LIVE_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
 const RECORDING_UPLOAD_TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_RECORDING_UPLOAD_REPORT_BYTES = 64 * 1024 * 1024 * 1024;
+const MAX_RECORDING_UPLOAD_REPORT_TRACKS = 64;
+const MAX_RECORDING_UPLOAD_REPORT_MESSAGE_LENGTH = 160;
 const SFU_TOKEN_TTL_MS = 15 * 60 * 1000;
 const GUEST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_GUEST_INVITE_TOKENS_PER_ROOM = 40;
@@ -995,6 +1002,12 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'recording-upload-token-request':
       handleRecordingUploadTokenRequest(ws, message.payload);
       break;
+    case 'recording-upload-progress':
+      handleRecordingUploadProgress(ws, message.payload);
+      break;
+    case 'recording-upload-control':
+      handleRecordingUploadControl(ws, message.payload);
+      break;
     case 'sfu-token-request':
       handleSfuTokenRequest(ws, message.payload);
       break;
@@ -1526,6 +1539,119 @@ function handleRecordingUploadTokenRequest(
       sessionId: payload.sessionId,
       token: signMediaToken(claims, secret),
       expiresAt: new Date(expiresAtMs).toISOString(),
+    },
+  });
+}
+
+function isRoomOperator(participant: Participant): boolean {
+  return (participant.role === 'host' || participant.role === 'co-host') && participant.status !== 'green-room';
+}
+
+function normalizeUploadByteCount(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > MAX_RECORDING_UPLOAD_REPORT_BYTES) {
+    return null;
+  }
+  return value;
+}
+
+function normalizeUploadTrackCount(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > MAX_RECORDING_UPLOAD_REPORT_TRACKS) {
+    return null;
+  }
+  return value;
+}
+
+/** Relay a participant's background upload progress to hosts and co-hosts only. */
+function handleRecordingUploadProgress(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'recording-upload-progress' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  const sender = roomState?.participants.get(mapping.participantId);
+  if (!roomState || !sender) return;
+  if (sender.participant.status === 'green-room') return;
+
+  if (!isRecord(payload) || !isValidRecordingSessionId(payload.sessionId)) {
+    sendError(ws, 'Invalid recording upload progress', 'VALIDATION_ERROR');
+    return;
+  }
+  // Reports for an older take are ignored rather than rejected: a participant
+  // can still be finishing a previous upload when the host starts a new take.
+  if (roomState.recordingSessionId !== payload.sessionId) return;
+
+  const recordedBytes = normalizeUploadByteCount(payload.recordedBytes);
+  const uploadedBytes = normalizeUploadByteCount(payload.uploadedBytes);
+  const trackCount = normalizeUploadTrackCount(payload.trackCount);
+  const completedTrackCount = normalizeUploadTrackCount(payload.completedTrackCount);
+  if (
+    recordedBytes === null ||
+    uploadedBytes === null ||
+    trackCount === null ||
+    completedTrackCount === null ||
+    completedTrackCount > trackCount ||
+    !RECORDING_UPLOAD_PROGRESS_STATUSES.includes(payload.status)
+  ) {
+    sendError(ws, 'Invalid recording upload progress', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const message = typeof payload.message === 'string'
+    ? payload.message.replace(/[\x00-\x1F\x7F]/g, ' ').trim().slice(0, MAX_RECORDING_UPLOAD_REPORT_MESSAGE_LENGTH)
+    : '';
+  const authoritativePayload: RecordingUploadProgressPayload = {
+    sessionId: payload.sessionId,
+    participantId: mapping.participantId,
+    participantName: sender.participant.name,
+    status: payload.status,
+    recordedBytes,
+    uploadedBytes: Math.min(uploadedBytes, recordedBytes),
+    trackCount,
+    completedTrackCount,
+    ...(message ? { message } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+
+  for (const [id, entry] of roomState.participants) {
+    if (id === mapping.participantId || !isRoomOperator(entry.participant)) continue;
+    send(entry.ws, { type: 'recording-upload-progress', payload: authoritativePayload });
+  }
+}
+
+/** Let hosts and co-hosts pause a participant's background upload to free their bandwidth. */
+function handleRecordingUploadControl(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'recording-upload-control' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  const performer = roomState?.participants.get(mapping.participantId);
+  if (!roomState || !performer) return;
+  if (!isRoomOperator(performer.participant)) {
+    sendError(ws, 'Only hosts and co-hosts can control recording uploads', 'UNAUTHORIZED');
+    return;
+  }
+  if (
+    !isRecord(payload) ||
+    typeof payload.targetParticipantId !== 'string' ||
+    (payload.action !== 'pause' && payload.action !== 'resume')
+  ) {
+    sendError(ws, 'Invalid recording upload control', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const target = roomState.participants.get(payload.targetParticipantId);
+  if (!target) return;
+  send(target.ws, {
+    type: 'recording-upload-control',
+    payload: {
+      targetParticipantId: target.participant.id,
+      action: payload.action,
+      performedBy: mapping.participantId,
     },
   });
 }

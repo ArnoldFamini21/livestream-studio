@@ -121,6 +121,19 @@
 .people-name > .people-link-warning {
   color: var(--warning);
 }
+.people-name > .people-upload {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.people-name > .people-upload.is-active {
+  color: var(--accent);
+}
+.people-name > .people-upload.is-complete {
+  color: var(--success);
+}
+.people-name > .people-upload.is-warning {
+  color: var(--warning);
+}
 .people-admit {
   border: 1px solid var(--border-strong);
   border-radius: 6px;

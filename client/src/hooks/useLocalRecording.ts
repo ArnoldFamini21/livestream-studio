@@ -17,6 +17,16 @@ import {
   getPreferredAudioRecordingMimeType,
   getPreferredVideoRecordingMimeType,
 } from '../utils/recordingMimeTypes.ts';
+import {
+  createProgressiveRecordingUploader,
+  isProgressiveUploadMimeType,
+  toProgressiveUploadTrackId,
+  type ProgressiveRecordingUploader,
+  type ProgressiveRecordingUploaderOptions,
+  type ProgressiveUploadResult,
+  type ProgressiveUploadState,
+  type ProgressiveUploadTrackCompletion,
+} from '../utils/progressiveRecordingUpload.ts';
 
 export interface RecordingResult {
   audio: Blob;
@@ -24,6 +34,10 @@ export interface RecordingResult {
   screen?: Blob;
   program?: Blob;
   files: LocalRecordingFileResult[];
+  /** Present when the take was uploaded progressively; finishes the remaining bytes. */
+  progressiveUpload?: {
+    finish(): Promise<ProgressiveUploadResult>;
+  };
 }
 
 export interface LocalRecordingFileResult {
@@ -31,7 +45,25 @@ export interface LocalRecordingFileResult {
   blob: Blob;
   kind: LocalRecordingSource['kind'];
   capture?: RecordingCaptureMetadata;
+  /** Recorder source id; set on primary tracks (not WebCodecs sidecars). */
+  sourceId?: string;
 }
+
+/** Everything the progressive uploader needs except the tracks, which the hook supplies. */
+export type LocalProgressiveUploadConfig = Pick<
+  ProgressiveRecordingUploaderOptions,
+  'mediaHttpUrl' | 'roomId' | 'sessionId' | 'participantId' | 'participantName' | 'getToken' | 'tokenRefreshMs'
+>;
+
+export interface StartLocalRecordingOptions {
+  progressiveUpload?: LocalProgressiveUploadConfig;
+}
+
+interface ActiveProgressiveUpload {
+  uploader: ProgressiveRecordingUploader;
+  trackIds: Map<string, string>;
+}
+
 
 export interface LocalRecordingSource {
   id: string;
@@ -80,7 +112,9 @@ export function useLocalRecording(roomName = 'Studio') {
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [recordingLabels, setRecordingLabels] = useState<string[]>([]);
 
+  const [uploadState, setUploadState] = useState<ProgressiveUploadState | null>(null);
   const recordersRef = useRef<TrackRecorder[]>([]);
+  const progressiveUploadRef = useRef<ActiveProgressiveUpload | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
   const pausedAtRef = useRef<number | null>(null);
@@ -399,8 +433,50 @@ export function useLocalRecording(roomName = 'Studio') {
     return sources;
   };
 
+  const startProgressiveUpload = (recorders: TrackRecorder[], config: LocalProgressiveUploadConfig) => {
+    const mimeTypes = recorders.map((recorder) => recorder.recorder.mimeType || '');
+    if (mimeTypes.some((mimeType) => !isProgressiveUploadMimeType(mimeType))) {
+      // The media server accepts WebM/MP4 only; the finished files use the regular upload path.
+      setUploadState(null);
+      return;
+    }
+    const seen = new Set<string>();
+    const trackIds = new Map<string, string>();
+    const sources = recorders.map((recorder, index) => {
+      const id = toProgressiveUploadTrackId(recorder.id, index, seen);
+      trackIds.set(recorder.id, id);
+      const mimeType = recorder.recorder.mimeType;
+      return {
+        id,
+        label: recorder.label,
+        kind: recorder.kind,
+        mimeType,
+        capture: recorder.capture as unknown as Record<string, unknown>,
+        snapshot: () => recorder.chunkStore.snapshot(mimeType),
+      };
+    });
+    const uploader = createProgressiveRecordingUploader({
+      ...config,
+      onChange: (state) => setUploadState(state),
+    });
+    progressiveUploadRef.current = { uploader, trackIds };
+    uploader.start(sources);
+  };
+
+  const pauseUpload = useCallback(() => {
+    progressiveUploadRef.current?.uploader.pause();
+  }, []);
+
+  const resumeUpload = useCallback(() => {
+    progressiveUploadRef.current?.uploader.resume();
+  }, []);
+
   const startRecording = useCallback(
-    async (input: MediaStream | LocalRecordingSource[], screenStream?: MediaStream | null) => {
+    async (
+      input: MediaStream | LocalRecordingSource[],
+      screenStream?: MediaStream | null,
+      options?: StartLocalRecordingOptions
+    ) => {
       // Guard against double-start
       if (startingRef.current || recordersRef.current.length || stoppingRef.current) return;
       startingRef.current = true;
@@ -462,6 +538,16 @@ export function useLocalRecording(roomName = 'Studio') {
         }
         recordersRef.current = recorders;
         setRecordingLabels(recorders.map((recorder) => recorder.label));
+        progressiveUploadRef.current?.uploader.stop();
+        progressiveUploadRef.current = null;
+        setUploadState(null);
+        if (options?.progressiveUpload) {
+          try {
+            startProgressiveUpload(recorders, options.progressiveUpload);
+          } catch (err) {
+            console.warn('Progressive recording upload could not start; the take uploads after it ends:', err);
+          }
+        }
 
         // Start timer
         startTimeRef.current = Date.now();
@@ -584,6 +670,10 @@ export function useLocalRecording(roomName = 'Studio') {
     accumulatedPausedMsRef.current = 0;
 
     const activeRecorders = [...recordersRef.current];
+    const activeUpload = progressiveUploadRef.current;
+    progressiveUploadRef.current = null;
+    // Halt background cycles; finish() still uploads the remainder when the caller asks.
+    activeUpload?.uploader.stop();
     const stopPromises = activeRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder));
 
     stopPromiseRef.current = Promise.all(stopPromises).then(
@@ -591,7 +681,7 @@ export function useLocalRecording(roomName = 'Studio') {
         const files = activeRecorders.flatMap((recorder, index): LocalRecordingFileResult[] => {
           const result = results[index];
           const primary = result.blob && result.blob.size > 0
-            ? [{ label: recorder.label, kind: recorder.kind, blob: result.blob, capture: recorder.capture }]
+            ? [{ label: recorder.label, kind: recorder.kind, blob: result.blob, capture: recorder.capture, sourceId: recorder.id }]
             : [];
           return [...primary, ...recorder.sidecarResults, ...result.sidecars];
         });
@@ -610,6 +700,23 @@ export function useLocalRecording(roomName = 'Studio') {
         }
         if (programBlob && programBlob.size > 0) {
           result.program = programBlob;
+        }
+
+        if (activeUpload) {
+          const finalBlobs = new Map<string, Blob>();
+          const metadata = new Map<string, ProgressiveUploadTrackCompletion>();
+          activeRecorders.forEach((recorder, index) => {
+            const trackId = activeUpload.trackIds.get(recorder.id);
+            if (!trackId) return;
+            finalBlobs.set(trackId, results[index].blob || new Blob([], { type: recorder.recorder.mimeType }));
+            metadata.set(trackId, {
+              durationMs: recorder.capture.durationMs,
+              capture: recorder.capture as unknown as Record<string, unknown>,
+            });
+          });
+          result.progressiveUpload = {
+            finish: () => activeUpload.uploader.finish(finalBlobs, metadata),
+          };
         }
 
         console.log('Local recording stopped completely.');
@@ -659,6 +766,9 @@ export function useLocalRecording(roomName = 'Studio') {
     accumulatedPausedMsRef.current = 0;
 
     const activeRecorders = [...recordersRef.current];
+    progressiveUploadRef.current?.uploader.stop();
+    progressiveUploadRef.current = null;
+    setUploadState(null);
     await Promise.all(activeRecorders.map(discardSingleRecorder));
 
     recordersRef.current = [];
@@ -682,6 +792,8 @@ export function useLocalRecording(roomName = 'Studio') {
   useEffect(() => {
     return () => {
       generationRef.current++;
+      progressiveUploadRef.current?.uploader.stop();
+      progressiveUploadRef.current = null;
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -713,6 +825,9 @@ export function useLocalRecording(roomName = 'Studio') {
     formattedTime: formatTime(recordingDuration),
     storageWarning,
     recordingLabels,
+    uploadState,
+    pauseUpload,
+    resumeUpload,
     startRecording,
     pauseRecording,
     resumeRecording,

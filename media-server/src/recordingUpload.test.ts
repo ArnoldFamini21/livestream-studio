@@ -275,6 +275,68 @@ describe('recording upload store', () => {
     assert.equal(new Set(source.tracks.map((track) => track.id)).size, 2);
   });
 
+  it('applies final track metadata when a progressive upload completes', async () => {
+    const { store } = await createStore();
+    const session = await store.createSession({
+      roomId: 'room-progressive',
+      sessionId: 'recording-progressive-1',
+      tracks: [{ id: 'camera', label: 'Camera', kind: 'video', mimeType: 'video/webm' }],
+    });
+    await store.appendChunk({ uploadId: session.uploadId, trackId: 'camera', sequence: 0, data: Buffer.from('frames') });
+
+    store.completeSession(session.uploadId, Date.now(), {
+      tracks: [
+        { id: 'camera', durationMs: 61_500, capture: { sourceId: 'local-video', stoppedAt: '2026-09-23T01:00:00.000Z' } },
+        { id: 'unknown-track', durationMs: 5 },
+      ],
+    });
+    const source = store.getExportSource(session.uploadId);
+    assert.equal(source.tracks[0].durationMs, 61_500);
+    assert.equal(source.tracks[0].complete, true);
+
+    assert.throws(
+      () => store.completeSession(session.uploadId, Date.now(), { tracks: [{ id: 'camera', durationMs: -1 }] }),
+      (err) => err instanceof RecordingUploadError && err.code === 'INVALID_RECORDING_UPLOAD'
+    );
+  });
+
+  it('exports a participant whose declared screen track never produced media', async () => {
+    const { store } = await createStore();
+    const guest = await store.createSession({
+      roomId: 'room-empty-track',
+      sessionId: 'recording-empty-track-1',
+      participantId: 'guest-1',
+      tracks: [
+        { id: 'camera', label: 'Camera', kind: 'video', mimeType: 'video/webm' },
+        { id: 'screen', label: 'Screen', kind: 'screen', mimeType: 'video/webm' },
+      ],
+    });
+    await store.appendChunk({ uploadId: guest.uploadId, trackId: 'camera', sequence: 0, data: Buffer.from('camera') });
+
+    assert.equal(store.getDistributedSessionStatus('room-empty-track', 'recording-empty-track-1').completedUploadCount, 0);
+    store.completeSession(guest.uploadId);
+
+    const summary = store.getDistributedSessionStatus('room-empty-track', 'recording-empty-track-1');
+    assert.equal(summary.completedUploadCount, 1);
+    const source = store.getDistributedExportSource('room-empty-track', 'recording-empty-track-1');
+    assert.deepEqual(source.tracks.map((track) => track.label), ['Camera']);
+  });
+
+  it('does not count a finalized upload with no media as ready', async () => {
+    const { store } = await createStore();
+    const empty = await store.createSession({
+      roomId: 'room-no-media',
+      sessionId: 'recording-no-media-1',
+      tracks: [{ id: 'camera', label: 'Camera', kind: 'video', mimeType: 'video/webm' }],
+    });
+    store.completeSession(empty.uploadId);
+    assert.equal(store.getDistributedSessionStatus('room-no-media', 'recording-no-media-1').completedUploadCount, 0);
+    assert.throws(
+      () => store.getDistributedExportSource('room-no-media', 'recording-no-media-1'),
+      (err) => err instanceof RecordingUploadError && err.code === 'RECORDING_SESSION_UPLOADS_PENDING'
+    );
+  });
+
   it('cleans up session files when an upload is deleted', async () => {
     const { store } = await createStore();
     const session = await store.createSession(baseRequest);
