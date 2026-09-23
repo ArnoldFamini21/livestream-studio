@@ -62,6 +62,7 @@ import {
   redactFfmpegLine,
   validateDestinations,
 } from './rtmp.js';
+import { WebmSinkFeed, WebmStreamTracker } from './webmStream.js';
 
 const PORT = Number(process.env.PORT || process.env.MEDIA_SERVER_PORT || 3002);
 const MAX_WS_PAYLOAD_BYTES = 4 * 1024 * 1024;
@@ -74,13 +75,17 @@ const isProduction = process.env.NODE_ENV === 'production';
 interface RelayProcess {
   destination: RtmpRelayDestination;
   process: ChildProcessByStdio<Writable, null, Readable>;
+  feed: WebmSinkFeed;
   live: boolean;
+  /** Spawned after media began, so it resumes from the cached init segment. */
+  joinedMidStream: boolean;
   exited: boolean;
 }
 
 interface BackupProcess {
   recording: LiveBackupRecording;
   process: ChildProcessByStdio<Writable, null, Readable>;
+  feed: WebmSinkFeed;
   exited: boolean;
 }
 
@@ -89,6 +94,7 @@ interface RelaySession {
   stopping: boolean;
   claims: LiveStreamTokenClaims | null;
   destinations: RtmpRelayDestination[];
+  webm: WebmStreamTracker;
   relays: Map<string, RelayProcess>;
   backup: BackupProcess | null;
   backupStopTimer: ReturnType<typeof setTimeout> | null;
@@ -280,10 +286,21 @@ function spawnRelay(
     audio: normalizeAudioConfig(payload.audio),
   });
   const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
+  const feed = new WebmSinkFeed(child.stdin, (err) => {
+    console.warn(`ffmpeg ${destination.name} input closed: ${err.message}`);
+  });
+  // A respawn joins mid-stream: FFmpeg gets the init segment first, then live
+  // media from the next Cluster boundary. Other destinations are untouched.
+  const join = feed.join(session.webm);
+  if (join === 'no-init') {
+    console.warn(`RTMP relay ${destination.name} restarted without a WebM init segment; FFmpeg may reject the stream`);
+  }
   const relay: RelayProcess = {
     destination,
     process: child,
+    feed,
     live: false,
+    joinedMidStream: join !== 'from-start',
     exited: false,
   };
   session.relays.set(destination.id, relay);
@@ -323,7 +340,8 @@ function spawnRelay(
       : `FFmpeg exited with code ${code ?? 'unknown'}`;
 
     const attempts = session.restartAttempts.get(destination.id) || 0;
-    if (relay.live && attempts < MAX_DESTINATION_RESTARTS) {
+    // A respawn that dies before its first Cluster was still a live destination.
+    if ((relay.live || relay.joinedMidStream) && attempts < MAX_DESTINATION_RESTARTS) {
       const nextAttempt = attempts + 1;
       session.restartAttempts.set(destination.id, nextAttempt);
       sendJson(ws, {
@@ -385,9 +403,14 @@ async function spawnLiveBackup(
       maxBytes: getLiveBackupMaxBytes(),
     });
     const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
+    const feed = new WebmSinkFeed(child.stdin, (err) => {
+      console.warn(`ffmpeg live backup ${recording.backupId} input closed: ${err.message}`);
+    });
+    feed.join(session.webm);
     const backup: BackupProcess = {
       recording,
       process: child,
+      feed,
       exited: false,
     };
     session.backup = backup;
@@ -523,20 +546,18 @@ function handleBinaryChunk(ws: WebSocket, session: RelaySession, data: RawData) 
     : Array.isArray(data)
       ? Buffer.concat(data)
       : Buffer.from(data);
+  const info = session.webm.push(chunk);
   for (const relay of session.relays.values()) {
-    if (relay.exited || !relay.process.stdin.writable) continue;
-    relay.process.stdin.write(chunk);
-    if (!relay.live) {
-      relay.live = true;
-      sendJson(ws, {
-        type: 'destination-status',
-        payload: { destinationId: relay.destination.id, status: 'live' },
-      });
-    }
+    if (relay.exited || !relay.feed.write(chunk, info) || relay.live) continue;
+    relay.live = true;
+    sendJson(ws, {
+      type: 'destination-status',
+      payload: { destinationId: relay.destination.id, status: 'live' },
+    });
   }
   const backup = session.backup;
-  if (backup && !backup.exited && backup.process.stdin.writable) {
-    backup.process.stdin.write(chunk);
+  if (backup && !backup.exited) {
+    backup.feed.write(chunk, info);
   }
 }
 
@@ -1186,6 +1207,7 @@ wss.on('connection', (ws) => {
     stopping: false,
     claims: null,
     destinations: [],
+    webm: new WebmStreamTracker(),
     relays: new Map(),
     backup: null,
     backupStopTimer: null,
