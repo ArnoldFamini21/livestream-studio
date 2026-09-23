@@ -872,6 +872,19 @@ export interface StreamDestination {
   enabled: boolean;
   status: 'idle' | 'connecting' | 'live' | 'error';
   statusMessage?: string;
+  /** Keep the stream key when this destination is remembered on the device. */
+  rememberStreamKey?: boolean;
+  /** Present when the studio created the broadcast through a connected account. */
+  connection?: StreamDestinationConnection;
+}
+
+export interface StreamDestinationConnection {
+  provider: 'youtube';
+  broadcastId: string;
+  watchUrl: string;
+  studioUrl: string;
+  privacyStatus: 'public' | 'unlisted' | 'private';
+  liveChatId?: string;
 }
 
 // ============ RTMP Relay Protocol Types ============

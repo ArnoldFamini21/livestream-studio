@@ -118,6 +118,8 @@ import {
 } from '../utils/liveStreamStatus.ts';
 import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
 import { resolveMediaHttpUrl } from '../utils/apiClient.ts';
+import { loadSavedStreamDestinations, saveStreamDestinations, serializeStreamDestinations } from '../utils/streamDestinationStorage.ts';
+import type { YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
 import { toRecordingUploadProgressPayload } from '../utils/recordingUploadProgress.ts';
 import {
   getProductionScenePackTemplateIds,
@@ -1029,7 +1031,15 @@ export function StudioRoom() {
   const [timers, setTimers] = useState<TimerData[]>([]);
 
   // Stream destinations
-  const [destinations, setDestinations] = useState<StreamDestination[]>([]);
+  // Destinations are remembered on this device; stream keys only when the host opts in.
+  const [destinations, setDestinations] = useState<StreamDestination[]>(() => (
+    loadSavedStreamDestinations().map((destination, index) => ({
+      ...destination,
+      id: `saved-${index + 1}`,
+      status: 'idle' as const,
+    }))
+  ));
+  const savedDestinationsRef = useRef<string | null>(null);
   const [broadcastOrientation, setBroadcastOrientation] = useState<BroadcastOrientation>('landscape');
   const [rtmpRelayOutputPreset, setRtmpRelayOutputPreset] = useState<RtmpRelayOutputPresetId>(DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID);
   const [isLive, setIsLive] = useState(false);
@@ -4026,6 +4036,24 @@ export function StudioRoom() {
   }, [inviteUrl, send]);
 
   // Stream destinations
+  useEffect(() => {
+    if (!isHostOrCoHost) return;
+    const serialized = JSON.stringify(serializeStreamDestinations(destinations));
+    if (savedDestinationsRef.current === null) {
+      // The first pass restores what is already stored; nothing to write yet.
+      savedDestinationsRef.current = serialized;
+      return;
+    }
+    if (serialized === savedDestinationsRef.current) return;
+    savedDestinationsRef.current = saveStreamDestinations(destinations) ?? savedDestinationsRef.current;
+  }, [destinations, isHostOrCoHost]);
+
+  const onYouTubeBroadcastCreated = (broadcast: YouTubeConnectedBroadcast) => {
+    addToast('YouTube broadcast created. It goes live on YouTube when you press Go Live.', 'success');
+    // Bring the new broadcast's chat into the studio chat automatically.
+    if (broadcast.liveChatId) onConnectExternalChat('youtube', broadcast.liveChatId);
+  };
+
   const onAddDestination = (dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => {
     setDestinations((prev) => [...prev, { ...dest, id: `dest-${++idCounters.current.dest}`, status: 'idle', statusMessage: undefined }]);
   };
@@ -6311,6 +6339,8 @@ export function StudioRoom() {
               onGoLive={onGoLive}
               onStopLive={onStopLive}
               onClose={() => setShowStreamDest(false)}
+              defaultBroadcastTitle={room?.name || 'Live stream'}
+              onYouTubeBroadcastCreated={onYouTubeBroadcastCreated}
             />
           </Suspense>
         )}
