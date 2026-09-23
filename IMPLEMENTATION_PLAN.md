@@ -1,6 +1,8 @@
 # LiveStream Studio — Full Implementation Plan
 ## Goal: Feature parity with StreamYard + Riverside.fm
 
+> This file is the feature inventory. For the verified review of reliability and architecture gaps and the phased roadmap to production parity, see [`docs/MASTERPLAN.md`](docs/MASTERPLAN.md).
+
 ---
 
 ## Phase 1: Recording Engine (Priority: Critical)
