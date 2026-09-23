@@ -1,6 +1,6 @@
 import { getJson } from './apiClient.ts';
 
-export type ClientIceConfigSource = 'ice_servers_json' | 'turn_rest_secret' | 'split_env' | 'default' | 'unknown';
+export type ClientIceConfigSource = 'ice_servers_json' | 'cloudflare' | 'turn_rest_secret' | 'split_env' | 'default' | 'unknown';
 
 export interface ClientIceConfigStatus {
   source: ClientIceConfigSource;
@@ -19,36 +19,24 @@ export interface ClientIceConfigWithStatus {
   status: ClientIceConfigStatus;
 }
 
+// Used only when the studio server cannot be reached; relay credentials are
+// minted by the server, so this offline fallback carries STUN only.
 export const DEFAULT_ICE_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    {
-      urls: [
-        'turn:openrelay.metered.ca:80',
-        'turn:openrelay.metered.ca:443',
-        'turn:openrelay.metered.ca:443?transport=tcp',
-      ],
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turns:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
   ],
   iceTransportPolicy: 'all',
 };
 
 export const DEFAULT_ICE_CONFIG_STATUS: ClientIceConfigStatus = {
   source: 'default',
-  serverCount: 4,
+  serverCount: 2,
   stunServerCount: 2,
-  turnServerCount: 2,
-  hasTurn: true,
+  turnServerCount: 0,
+  hasTurn: false,
   hasConfiguredTurn: false,
-  usingFallbackTurn: true,
+  usingFallbackTurn: false,
   turnReady: false,
   iceTransportPolicy: 'all',
 };
@@ -138,7 +126,7 @@ function buildDerivedIceConfigStatus(config: RTCConfiguration): ClientIceConfigS
 function normalizeIceConfigStatus(value: unknown, config: RTCConfiguration): ClientIceConfigStatus | null {
   if (!isRecord(value)) return null;
   const derived = buildDerivedIceConfigStatus(config);
-  const source = value.source === 'ice_servers_json' || value.source === 'turn_rest_secret'
+  const source = value.source === 'ice_servers_json' || value.source === 'cloudflare' || value.source === 'turn_rest_secret'
     || value.source === 'split_env' || value.source === 'default'
     ? value.source
     : 'unknown';
