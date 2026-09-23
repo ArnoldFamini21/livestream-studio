@@ -74,8 +74,27 @@ jobs:
       - name: Test deployment scripts
         run: node --test scripts/*.test.mjs
 
+      # The server and media-server tests import @studio/shared from its dist
+      # output, so build it before any workspace tests run.
       - name: Build shared workspace
         run: npm run -w shared build
+
+      # Keep these test steps in sync with .github/workflows/ci.yml. They run
+      # before every build and deploy step so a failing suite stops the release.
+      - name: Test shared workspace
+        run: npm run -w shared test
+
+      - name: Test server
+        run: npm run -w server test
+
+      - name: Test media server
+        run: npm run -w media-server test
+
+      - name: Typecheck client
+        run: npm run -w client lint
+
+      - name: Test client
+        run: npm run -w client test
 
       - name: Build server
         run: npm run -w server build

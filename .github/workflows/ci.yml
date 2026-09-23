@@ -1,0 +1,55 @@
+name: CI
+
+# Runs the same test steps as deploy.yml on pull requests, without building
+# for production or deploying anything.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test deployment scripts
+        run: node --test scripts/*.test.mjs
+
+      # The server and media-server tests import @studio/shared from its dist
+      # output, so build it before any workspace tests run.
+      - name: Build shared workspace
+        run: npm run -w shared build
+
+      # Keep these test steps in sync with .github/workflows/deploy.yml.
+      - name: Test shared workspace
+        run: npm run -w shared test
+
+      - name: Test server
+        run: npm run -w server test
+
+      - name: Test media server
+        run: npm run -w media-server test
+
+      - name: Typecheck client
+        run: npm run -w client lint
+
+      - name: Test client
+        run: npm run -w client test
