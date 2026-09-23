@@ -2723,6 +2723,8 @@ export function StudioRoom() {
           break;
         }
         // Client-to-server messages: not expected here but listed for exhaustive check
+        case 'heartbeat':
+        case 'heartbeat-ack':
         case 'join-room':
         case 'stage-action':
         case 'chat-star-update':

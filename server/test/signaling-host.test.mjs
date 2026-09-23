@@ -893,6 +893,44 @@ describe('live stream state synchronization', () => {
     }
   });
 
+  it('keeps the studio open when the host drops, so waiting guests can still be admitted', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Host reconnect test', 'Arnold', {
+      creatorIp: `host-reconnect-${Date.now()}`,
+    });
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Pastor Guest', role: 'guest' });
+      const guestJoin = await guestJoined;
+      assert.equal(guestJoin.payload.participant.status, 'green-room');
+
+      // The host's connection drops (Wi-Fi blip, laptop sleep).
+      const guestNotEnded = expectNoMessage(guest, 'room-ended', () => true, 800);
+      host.terminate();
+      await guestNotEnded;
+      assert.ok(getRooms().get(room.id), 'the studio is still open');
+
+      // The host reconnects and sees the guest still waiting.
+      const returning = await connectClient(harness.url);
+      const rejoined = waitForMessage(returning, 'room-joined');
+      joinRoom(returning, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const rejoin = await rejoined;
+      const waitingGuest = rejoin.payload.participants.find((person) => person.name === 'Pastor Guest');
+      assert.equal(waitingGuest?.status, 'green-room');
+      assert.equal(getRooms().get(room.id).hostReconnectTimer, undefined, 'the end-of-studio countdown is cancelled');
+      returning.close();
+      guest.close();
+    } finally {
+      await harness.close();
+    }
+  });
+
   it('clears live state when the streaming host disconnects during co-host handoff', async () => {
     const harness = await createSignalingHarness();
     const { room, hostToken } = createRoom('Live host disconnect test', 'Arnold', {

@@ -332,6 +332,9 @@ export function canExchangeStudioMedia(
 // ============ Signaling Types ============
 
 export type SignalMessage =
+  /** Client liveness check; the server answers with `heartbeat-ack`. */
+  | { type: 'heartbeat'; payload: { sentAt: number } }
+  | { type: 'heartbeat-ack'; payload: { sentAt: number; receivedAt: number } }
   | { type: 'join-room'; payload: JoinRoomPayload }
   | { type: 'room-joined'; payload: RoomJoinedPayload }
   | { type: 'participant-joined'; payload: Participant }
