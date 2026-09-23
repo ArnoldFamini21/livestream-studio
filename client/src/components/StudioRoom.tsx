@@ -4,7 +4,7 @@ import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, normalizePresentationCam
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
-import { getAutoGridColumnCount } from '../utils/layoutPresets.ts';
+import { getAutoGridColumnCount, getLayoutBarLabel, getLayoutBarOrder, isLayoutBarOptionDisabled } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
@@ -57,7 +57,7 @@ import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
 import {
-  buildPresentationPreview,
+  buildProgressivePresentationPreview,
   getPowerPointRenderStrategy,
   hasRenderedPresentationSlides,
   type PresentationServerRenderFailure,
@@ -74,6 +74,9 @@ import { LayoutSwitcher } from './LayoutSwitcher.tsx';
 import { createActiveSpeakerTracker } from '../utils/activeSpeaker.ts';
 import { planMeshCapacity } from '../utils/meshCapacityPlanner.ts';
 import {
+  formatShortcutKey,
+  getLayoutShortcutIndex,
+  getShortcutsForRole,
   groupShortcutsByCategory,
   resolveShortcutId,
   shouldIgnoreShortcutTarget,
@@ -2723,6 +2726,8 @@ export function StudioRoom() {
           break;
         }
         // Client-to-server messages: not expected here but listed for exhaustive check
+        case 'heartbeat':
+        case 'heartbeat-ack':
         case 'join-room':
         case 'stage-action':
         case 'chat-star-update':
@@ -4220,56 +4225,76 @@ export function StudioRoom() {
       setMediaAssets((prev) => [...uploads.map((upload) => upload.asset), ...prev]);
     }
 
-    // A single render at a time prevents large decks from exhausting the browser's
-    // canvas/DOM memory while keeping every queued file visible in the library.
-    for (const { file, type, isDeck, asset, preparationError } of uploads) {
-      if (preparationError) continue;
-      if (type === 'image' || type === 'video') {
+    const updateAsset = (id: string, patch: Partial<StudioMediaAsset>) => {
+      setMediaAssets((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
+      // A deck shown before all its pages were ready keeps gaining pages on stage.
+      const { preview } = patch;
+      if (preview) setActiveMedia((current) => current?.assetId === id ? { ...current, preview } : current);
+    };
+
+    // Images and videos only need a quick decode check, so they run together
+    // and never wait behind a deck.
+    const quickChecks = Promise.all(uploads
+      .filter(({ type, preparationError }) => !preparationError && (type === 'image' || type === 'video'))
+      .map(async ({ file, type, asset }) => {
         try {
-          await probeMediaAsset(asset.url, type);
-          setMediaAssets(prev => prev.map(item => item.id === asset.id ? { ...item, processingStatus: 'ready', processingMessage: undefined } : item));
+          await probeMediaAsset(asset.url, type as 'image' | 'video');
+          updateAsset(asset.id, { processingStatus: 'ready', processingMessage: undefined });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'This media file could not be opened.';
           failures.push({ name: file.name, message });
-          setMediaAssets(prev => prev.map(item => item.id === asset.id ? { ...item, processingStatus: 'error', processingMessage: message } : item));
+          updateAsset(asset.id, { processingStatus: 'error', processingMessage: message });
         }
-        continue;
-      }
-      if (!isDeck) continue;
-      setMediaAssets((prev) => prev.map((item) => item.id === asset.id
-        ? { ...item, processingMessage: getDeckPreparationMessage(type) }
-        : item));
-      try {
-        let serverRenderFailure: PresentationServerRenderFailure | undefined;
-        const powerPointRenderStrategy = type === 'presentation'
-          ? getPowerPointRenderStrategy(file)
-          : null;
-        const skipUnavailableServerRender = mediaServerHealth.status === 'unavailable' ||
-          mediaServerHealth.presentationRenderer?.ready === false;
-        if (skipUnavailableServerRender) {
-          serverRenderFailure = getUnavailableMediaServerPresentationFailure(type, mediaServerHealth);
+      }));
+
+    // Decks render one at a time so large ones cannot exhaust the browser's
+    // canvas memory. Each can go on stage as soon as its first page is ready;
+    // the rest keep rendering in the background.
+    const deckRenders = (async () => {
+      for (const { file, type, isDeck, asset, preparationError } of uploads) {
+        if (preparationError || !isDeck) continue;
+        updateAsset(asset.id, { processingMessage: getDeckPreparationMessage(type) });
+        try {
+          let serverRenderFailure: PresentationServerRenderFailure | undefined;
+          const powerPointRenderStrategy = type === 'presentation'
+            ? getPowerPointRenderStrategy(file)
+            : null;
+          const skipUnavailableServerRender = mediaServerHealth.status === 'unavailable' ||
+            mediaServerHealth.presentationRenderer?.ready === false;
+          if (skipUnavailableServerRender) {
+            serverRenderFailure = getUnavailableMediaServerPresentationFailure(type, mediaServerHealth);
+          }
+          const preview = await buildProgressivePresentationPreview(file, {
+            requireRenderedSlides: true,
+            requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
+            allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
+            skipServerRender: skipUnavailableServerRender,
+            onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
+            onProgress: ({ preview: partial, renderedCount, totalCount }) => {
+              updateAsset(asset.id, {
+                preview: partial,
+                processingStatus: 'ready',
+                processingMessage: renderedCount < totalCount
+                  ? `Ready to show · preparing page ${renderedCount + 1} of ${totalCount}`
+                  : undefined,
+              });
+            },
+          });
+          const message = preview ? undefined : getDeckRenderFailureMessage(type, serverRenderFailure);
+          if (message) failures.push({ name: file.name, message });
+          updateAsset(asset.id, preview
+            ? { preview, processingStatus: 'ready', processingMessage: undefined }
+            : { processingStatus: 'error', processingMessage: message });
+        } catch (err) {
+          console.error('Failed to render presentation media:', err);
+          const message = getDeckRenderFailureMessage(type);
+          failures.push({ name: file.name, message });
+          updateAsset(asset.id, { processingStatus: 'error', processingMessage: message });
         }
-        const preview = await buildPresentationPreview(file, {
-          requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
-          allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
-          skipServerRender: skipUnavailableServerRender,
-          onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
-        });
-        const message = preview ? undefined : getDeckRenderFailureMessage(type, serverRenderFailure);
-        if (message) failures.push({ name: file.name, message });
-        setMediaAssets((prev) => prev.map((item) => item.id === asset.id
-          ? { ...item, preview, processingStatus: preview ? 'ready' : 'error', processingMessage: message }
-          : item));
-      } catch (err) {
-        console.error('Failed to render presentation media:', err);
-        const message = getDeckRenderFailureMessage(type);
-        failures.push({ name: file.name, message });
-        setMediaAssets((prev) => prev.map((item) => item.id === asset.id
-          ? { ...item, processingStatus: 'error', processingMessage: message }
-          : item));
       }
-    }
+    })();
+
+    await Promise.all([quickChecks, deckRenders]);
     if (failures.length > 0) throw new Error(getMediaBatchFailureMessage(failures, uploads.length));
   };
 
@@ -5062,31 +5087,90 @@ export function StudioRoom() {
   }, [autoDirectorEnabled, isHostOrCoHost, onSpotlightParticipant]);
 
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+  const roleShortcuts = useMemo(() => getShortcutsForRole(isHostOrCoHost), [isHostOrCoHost]);
+  const layoutBarOrder = getLayoutBarOrder(sharedContentIsActive);
+  const layoutBarParticipantCount = sharedContentIsActive ? sharedContentStageItemCount : displayedStageVideoItems.length;
+  const layoutBarMediaParticipantCount = sharedContentIsActive ? sharedContentParticipantPresenceItems.length : undefined;
+
+  // The latest state and actions for the keyboard listener, so it is bound once.
+  const shortcutContextRef = useRef<{ run: (shortcutId: string) => boolean }>({ run: () => false });
+  shortcutContextRef.current.run = (shortcutId: string) => {
+    const layoutIndex = getLayoutShortcutIndex(shortcutId);
+    if (layoutIndex !== null) {
+      const next = layoutBarOrder[layoutIndex];
+      if (!next) return false;
+      if (isLayoutBarOptionDisabled(next, {
+        isMediaActive: sharedContentIsActive,
+        participantCount: layoutBarParticipantCount,
+        mediaParticipantCount: layoutBarMediaParticipantCount,
+      })) {
+        addToast(`${getLayoutBarLabel(next, sharedContentIsActive)} needs someone else on stage.`, 'info');
+        return true;
+      }
+      changeVisibleLayout(next);
+      return true;
+    }
+    const openSidebarTab = (tab: SidebarTab) => {
+      if (showSidebar && sidebarActiveTab === tab) {
+        setShowSidebar(false);
+      } else {
+        setShowSidebar(true);
+        setSidebarActiveTab(tab);
+      }
+    };
+    switch (shortcutId) {
+      case 'toggle-mic': onToggleAudio(); return true;
+      case 'toggle-camera': onToggleVideo(); return true;
+      case 'toggle-screen-share': void onToggleScreenShare(); return true;
+      case 'toggle-recording':
+        if (!canControlRecording) return false;
+        void onToggleRecording();
+        return true;
+      case 'open-go-live': setShowStreamDest(true); return true;
+      case 'admit-all': {
+        const waiting = Array.from(participants.values()).filter((participant) => participant.status === 'green-room');
+        if (waiting.length === 0) {
+          addToast('No one is waiting in the green room.', 'info');
+          return true;
+        }
+        waiting.forEach((participant) => onStageAction('move-to-stage', participant.id));
+        addToast(waiting.length === 1 ? `Admitted ${waiting[0].name}.` : `Admitted ${waiting.length} guests.`, 'success');
+        return true;
+      }
+      case 'toggle-auto-director': setAutoDirectorEnabled((current) => !current); return true;
+      case 'stop-presenting':
+        if (!activeMedia) return false;
+        onStopMedia();
+        return true;
+      case 'open-people': openSidebarTab('people'); return true;
+      case 'open-chat': openSidebarTab('chat'); return true;
+      case 'open-media': openSidebarTab('media'); return true;
+      case 'open-overlays': openSidebarTab('overlays'); return true;
+      case 'open-brand': openSidebarTab('brand'); return true;
+      case 'open-scenes': openSidebarTab('scenes'); return true;
+      case 'open-invite': setShowInvitePanel(true); return true;
+      case 'show-shortcuts': setShowShortcutHelp((current) => !current); return true;
+      default: return false;
+    }
+  };
 
   useEffect(() => {
-    if (!isHostOrCoHost) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) return;
-      if (shouldIgnoreShortcutTarget(event.target as { tagName?: string; isContentEditable?: boolean } | null)) return;
-      const shortcutId = resolveShortcutId(event);
-      if (!shortcutId) return;
-      switch (shortcutId) {
-        case 'layout-grid': changeVisibleLayout('grid'); break;
-        case 'layout-spotlight': changeVisibleLayout('spotlight'); break;
-        case 'layout-side-by-side': changeVisibleLayout('side-by-side'); break;
-        case 'layout-pip': changeVisibleLayout('pip'); break;
-        case 'layout-single': changeVisibleLayout('single'); break;
-        case 'toggle-auto-director': setAutoDirectorEnabled((current) => !current); break;
-        case 'toggle-mic': onToggleAudio(); break;
-        case 'toggle-camera': onToggleVideo(); break;
-        case 'show-shortcuts': setShowShortcutHelp((current) => !current); break;
-        default: return;
+      if (event.repeat || event.defaultPrevented) return;
+      if (event.key === 'Escape') {
+        setShowShortcutHelp(false);
+        return;
       }
-      event.preventDefault();
+      if (shouldIgnoreShortcutTarget(event.target as { tagName?: string; isContentEditable?: boolean } | null)) return;
+      // Other dialogs (confirmations, settings) keep their own keys.
+      if (event.target instanceof Element && event.target.closest('[role="dialog"]:not([data-shortcut-help])')) return;
+      const shortcutId = resolveShortcutId(event, roleShortcuts);
+      if (!shortcutId) return;
+      if (shortcutContextRef.current.run(shortcutId)) event.preventDefault();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [changeVisibleLayout, isHostOrCoHost, onToggleAudio, onToggleVideo]);
+  }, [roleShortcuts]);
 
   const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
     if (action === 'cycle-pip-corner') {
@@ -6264,24 +6348,26 @@ export function StudioRoom() {
                   }}
                 />
                 Auto
-              </button>
+              </button></>}
               <button
                 type="button"
                 onClick={() => setShowShortcutHelp((current) => !current)}
                 title="Keyboard shortcuts (press ?)"
                 aria-label="Keyboard shortcuts"
+                aria-keyshortcuts="?"
                 style={styles.shortcutHelpBtn}
               >
                 ?
-              </button></>}
+              </button>
             </div>
           )}
 
-          {showShortcutHelp && isHostOrCoHost && (
+          {showShortcutHelp && (
             <div
               style={styles.shortcutOverlay}
               role="dialog"
               aria-label="Keyboard shortcuts"
+              data-shortcut-help
               onClick={() => setShowShortcutHelp(false)}
             >
               <div style={styles.shortcutCard} onClick={(event) => event.stopPropagation()}>
@@ -6291,17 +6377,25 @@ export function StudioRoom() {
                     Close
                   </button>
                 </div>
-                {groupShortcutsByCategory().map((group) => (
-                  <div key={group.category} style={styles.shortcutGroup}>
-                    <span style={styles.shortcutGroupTitle}>{group.category}</span>
-                    {group.shortcuts.map((shortcut) => (
-                      <div key={shortcut.id} style={styles.shortcutRow}>
-                        <span style={styles.shortcutLabel}>{shortcut.label}</span>
-                        <kbd style={styles.shortcutKey}>{shortcut.key === '?' ? '?' : shortcut.key.toUpperCase()}</kbd>
-                      </div>
-                    ))}
-                  </div>
-                ))}
+                <p style={styles.shortcutIntro}>Shortcuts work anywhere in the studio except while you type. Shift is needed for anything that changes the broadcast.</p>
+                <div style={styles.shortcutColumns}>
+                  {groupShortcutsByCategory(roleShortcuts).map((group) => (
+                    <div key={group.category} style={styles.shortcutGroup}>
+                      <span style={styles.shortcutGroupTitle}>{group.category}</span>
+                      {group.shortcuts.map((shortcut) => {
+                        const layoutIndex = getLayoutShortcutIndex(shortcut.id);
+                        const layoutMode = layoutIndex === null ? undefined : layoutBarOrder[layoutIndex];
+                        const label = layoutMode ? getLayoutBarLabel(layoutMode, sharedContentIsActive) : shortcut.label;
+                        return (
+                          <div key={shortcut.id} style={styles.shortcutRow}>
+                            <span style={styles.shortcutLabel}>{label}</span>
+                            <kbd style={styles.shortcutKey}>{formatShortcutKey(shortcut)}</kbd>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -7439,8 +7533,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 20,
   },
   shortcutCard: {
-    width: 'min(420px, 100%)',
-    maxHeight: '80vh',
+    width: 'min(720px, 100%)',
+    maxHeight: '85vh',
     overflowY: 'auto',
     background: 'var(--bg-secondary)',
     border: '1px solid var(--border)',
@@ -7469,6 +7563,17 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     padding: '5px 12px',
     cursor: 'pointer',
+  },
+  shortcutIntro: {
+    margin: 0,
+    fontSize: 12,
+    lineHeight: 1.5,
+    color: 'var(--text-muted)',
+  },
+  shortcutColumns: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+    gap: '16px 28px',
   },
   shortcutGroup: {
     display: 'flex',
@@ -7503,6 +7608,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     fontWeight: 700,
     fontFamily: 'inherit',
+    whiteSpace: 'nowrap',
   },
   // Screen share banner
   screenShareBanner: {

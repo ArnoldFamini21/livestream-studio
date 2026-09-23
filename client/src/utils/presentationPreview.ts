@@ -886,64 +886,150 @@ function buildPdfPagePreview(pageNumber: number, imageUrl: string): Presentation
   };
 }
 
-function configurePdfWorker(pdfjs: typeof import('pdfjs-dist')) {
+function configurePdfWorker(pdfjs: typeof import('pdfjs-dist/legacy/build/pdf.mjs')) {
   if (pdfWorkerConfigured || typeof window === 'undefined') return;
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url).toString();
   pdfWorkerConfigured = true;
 }
 
-async function renderPdfPagesToImages(arrayBuffer: ArrayBuffer): Promise<PresentationSlidePreview[]> {
-  if (!canUseCanvasPdfRenderer()) return [];
+// Pages are rasterized for a 1080p broadcast: at most 1920x1080, as JPEG,
+// which encodes several times faster than PNG and is a fraction of the size.
+const BROADCAST_PAGE_WIDTH = 1920;
+const BROADCAST_PAGE_HEIGHT = 1080;
+const BROADCAST_PAGE_SCALE_LIMIT = 4;
+const BROADCAST_PAGE_JPEG_QUALITY = 0.9;
+
+export interface PresentationRenderProgress {
+  /** Every page rendered so far, in order; usable on stage right away. */
+  preview: StudioMediaAssetPreview;
+  renderedCount: number;
+  totalCount: number;
+}
+
+const yieldToBrowser = () => new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+
+/**
+ * Render a PDF page by page in this browser, reporting after each page so the
+ * deck can go on stage as soon as its first page is ready. `metadataSlides`
+ * (titles, notes) from a PowerPoint are merged by page order.
+ */
+export async function renderPdfDocumentProgressively(
+  data: ArrayBuffer,
+  options: {
+    sourceFormat?: 'pdf' | 'pptx';
+    metadataSlides?: PresentationSlidePreview[];
+    onProgress?: (progress: PresentationRenderProgress) => void;
+  } = {}
+): Promise<StudioMediaAssetPreview | undefined> {
+  if (!canUseCanvasPdfRenderer()) return undefined;
+  const sourceFormat = options.sourceFormat || 'pdf';
 
   try {
-    const pdfjs = await import('pdfjs-dist');
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     configurePdfWorker(pdfjs);
     const loadingTask = pdfjs.getDocument({
-      data: new Uint8Array(arrayBuffer.slice(0)),
+      data: new Uint8Array(data.slice(0)),
       disableAutoFetch: true,
       disableStream: true,
     });
     try {
       const pdf = await loadingTask.promise;
-      const pageCount = Math.min(pdf.numPages, MAX_PREVIEW_SLIDES);
+      const totalCount = Math.min(pdf.numPages, MAX_PREVIEW_SLIDES);
       const slides: PresentationSlidePreview[] = [];
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) return undefined;
 
-      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      for (let pageNumber = 1; pageNumber <= totalCount; pageNumber += 1) {
         const page = await pdf.getPage(pageNumber);
         const viewport = page.getViewport({ scale: 1 });
         const scale = Math.min(
-          PDF_RENDER_SCALE_LIMIT,
-          RENDERED_SLIDE_WIDTH / viewport.width,
-          RENDERED_SLIDE_HEIGHT / viewport.height
+          BROADCAST_PAGE_SCALE_LIMIT,
+          BROADCAST_PAGE_WIDTH / viewport.width,
+          BROADCAST_PAGE_HEIGHT / viewport.height
         );
         const renderViewport = page.getViewport({ scale });
-        const canvas = document.createElement('canvas');
         canvas.width = Math.ceil(renderViewport.width);
         canvas.height = Math.ceil(renderViewport.height);
-        const ctx = canvas.getContext('2d', { alpha: false });
-        if (!ctx) {
-          page.cleanup();
-          continue;
-        }
-
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        await page.render({
-          canvas,
-          viewport: renderViewport,
-          background: '#ffffff',
-        }).promise;
-        slides.push(buildPdfPagePreview(pageNumber, canvas.toDataURL('image/png')));
+        await page.render({ canvas, viewport: renderViewport, background: '#ffffff' }).promise;
+        const imageUrl = canvas.toDataURL('image/jpeg', BROADCAST_PAGE_JPEG_QUALITY);
         page.cleanup();
+
+        const metadata = options.metadataSlides?.[pageNumber - 1];
+        slides.push(metadata
+          ? { ...metadata, imageUrl, rendered: true }
+          : sourceFormat === 'pptx'
+            ? { id: `pptx-slide-${pageNumber}`, title: `Slide ${pageNumber}`, lines: [], imageUrl, rendered: true }
+            : buildPdfPagePreview(pageNumber, imageUrl));
+        options.onProgress?.({
+          preview: { kind: 'presentation-slides', sourceFormat, slides: [...slides] },
+          renderedCount: slides.length,
+          totalCount,
+        });
+        // Let the studio repaint (and the host click Show) between pages.
+        await yieldToBrowser();
       }
 
-      return slides;
+      return slides.length > 0 ? { kind: 'presentation-slides', sourceFormat, slides } : undefined;
     } finally {
       await loadingTask.destroy().catch(() => undefined);
     }
   } catch (err) {
     console.warn('Failed to render PDF page visuals:', err);
-    return [];
+    return undefined;
+  }
+}
+
+async function renderPdfPagesToImages(arrayBuffer: ArrayBuffer): Promise<PresentationSlidePreview[]> {
+  const preview = await renderPdfDocumentProgressively(arrayBuffer);
+  return preview?.slides || [];
+}
+
+/**
+ * Ask the media server to convert a PowerPoint to PDF (LibreOffice, cached by
+ * content). Returns undefined when the server is unavailable or predates the
+ * endpoint, so callers can fall back to the full server render.
+ */
+export async function fetchServerPresentationPdf(
+  file: File,
+  options: PresentationPreviewOptions = {}
+): Promise<ArrayBuffer | undefined> {
+  if (options.skipServerRender || !canTryServerRender(options) || file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
+  const mediaHttpUrl = (options.mediaHttpUrl || resolveMediaHttpUrl()).trim();
+  const fetchImpl = options.fetchImpl || fetch;
+  if (!mediaHttpUrl || typeof fetchImpl !== 'function') return undefined;
+
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(
+    () => controller.abort(),
+    Math.max(1_000, options.serverRenderTimeoutMs || SERVER_RENDER_TIMEOUT_MS)
+  );
+  try {
+    const response = await fetchImpl(buildMediaServerUrl(mediaHttpUrl, '/presentation-pdf'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-File-Name': getSafeFileNameHeader(file.name),
+      },
+      body: file,
+      signal: controller.signal,
+    });
+    if (response.status === 404 || response.status === 405) return undefined;
+    if (!response.ok) {
+      options.onServerRenderFailure?.(await readServerRenderFailure(response));
+      return undefined;
+    }
+    const pdf = await response.arrayBuffer();
+    return pdf.byteLength > 0 ? pdf : undefined;
+  } catch (err) {
+    options.onServerRenderFailure?.((err as { name?: string })?.name === 'AbortError'
+      ? { message: 'Media server presentation rendering timed out.', code: 'PRESENTATION_RENDER_TIMEOUT', timedOut: true }
+      : { message: err instanceof Error ? err.message : 'Media server presentation render is unavailable.', code: 'PRESENTATION_RENDER_UNAVAILABLE' });
+    return undefined;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
   }
 }
 
@@ -974,6 +1060,74 @@ function getSortedSlidePaths(zip: JSZip): string[] {
     .slice(0, MAX_PREVIEW_SLIDES);
 }
 
+/**
+ * Read slide titles, text, notes, and embedded slide pictures from a PPTX. A
+ * slide whose whole face is one picture is already fully rendered.
+ */
+export async function extractPptxPreviewSlides(arrayBuffer: ArrayBuffer): Promise<PresentationSlidePreview[]> {
+  const { default: JSZip } = await import('jszip');
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const slideSize = await getPptxSlideSize(zip);
+  const slidePaths = getSortedSlidePaths(zip);
+  const slides: PresentationSlidePreview[] = [];
+
+  for (const [index, path] of slidePaths.entries()) {
+    const entry = zip.file(path);
+    if (!entry) continue;
+    const xml = await entry.async('text');
+    const textRuns = extractPptxSlideText(xml);
+    const relsXml = await zip.file(getSlideRelationshipPath(path))?.async('text');
+    const fullSlideImageTarget = relsXml ? extractPptxFullSlideImageTarget(xml, relsXml, slideSize) : null;
+    const imageUrl = fullSlideImageTarget
+      ? await buildSlideImageDataUrl(zip, fullSlideImageTarget)
+      : (relsXml
+          ? await buildBestSlideImageDataUrl(zip, extractPptxSlideImageTargets(relsXml))
+          : undefined);
+    const notesPath = relsXml ? extractPptxSlideNotesTarget(relsXml) : null;
+    const notesXml = notesPath ? await zip.file(notesPath)?.async('text') : undefined;
+    const notes = notesXml ? extractPptxSpeakerNotes(notesXml, textRuns) : [];
+    slides.push(buildSlidePreview(path, textRuns, index, imageUrl, notes, Boolean(fullSlideImageTarget && imageUrl)));
+  }
+  return slides;
+}
+
+/**
+ * The fast path for decks. PDFs render in this browser page by page; the
+ * deck can be shown after page one. PowerPoint is converted to PDF on the
+ * media server (only LibreOffice can match its layout; cached per deck) and
+ * then rendered the same way here. Anything that fails falls back to the full
+ * server render.
+ */
+export async function buildProgressivePresentationPreview(
+  file: File,
+  options: PresentationPreviewOptions & { onProgress?: (progress: PresentationRenderProgress) => void } = {}
+): Promise<StudioMediaAssetPreview | undefined> {
+  if (file.size > MAX_PRESENTATION_PREVIEW_BYTES) return undefined;
+
+  if (isPdfFile(file)) {
+    const rendered = await renderPdfDocumentProgressively(await file.arrayBuffer(), { onProgress: options.onProgress });
+    if (rendered) return rendered;
+    return buildPresentationPreview(file, options);
+  }
+
+  if (!isPowerPointFile(file)) return undefined;
+  let metadataSlides: PresentationSlidePreview[] = [];
+  if (!isLegacyPowerPointFile(file)) {
+    metadataSlides = await extractPptxPreviewSlides(await file.arrayBuffer()).catch(() => []);
+    const extracted: StudioMediaAssetPreview = { kind: 'presentation-slides', sourceFormat: 'pptx', slides: metadataSlides };
+    // Decks exported as one picture per slide need no rendering at all.
+    if (hasRenderedPresentationSlides(extracted)) return extracted;
+  }
+
+  const pdf = await fetchServerPresentationPdf(file, options);
+  if (pdf) {
+    const metadata = metadataSlides.map(({ imageUrl: _imageUrl, rendered: _rendered, ...slide }) => slide);
+    const rendered = await renderPdfDocumentProgressively(pdf, { sourceFormat: 'pptx', metadataSlides: metadata, onProgress: options.onProgress });
+    if (rendered) return rendered;
+  }
+  return buildPresentationPreview(file, options);
+}
+
 export async function buildPresentationPreview(
   file: File,
   options: PresentationPreviewOptions = {}
@@ -996,30 +1150,8 @@ export async function buildPresentationPreview(
   }
 
   try {
-    const { default: JSZip } = await import('jszip');
     const arrayBuffer = await file.arrayBuffer();
-    const zip = await JSZip.loadAsync(arrayBuffer);
-    const slideSize = await getPptxSlideSize(zip);
-    const slidePaths = getSortedSlidePaths(zip);
-    const slides: PresentationSlidePreview[] = [];
-
-    for (const [index, path] of slidePaths.entries()) {
-      const entry = zip.file(path);
-      if (!entry) continue;
-      const xml = await entry.async('text');
-      const textRuns = extractPptxSlideText(xml);
-      const relsXml = await zip.file(getSlideRelationshipPath(path))?.async('text');
-      const fullSlideImageTarget = relsXml ? extractPptxFullSlideImageTarget(xml, relsXml, slideSize) : null;
-      const imageUrl = fullSlideImageTarget
-        ? await buildSlideImageDataUrl(zip, fullSlideImageTarget)
-        : (relsXml
-            ? await buildBestSlideImageDataUrl(zip, extractPptxSlideImageTargets(relsXml))
-            : undefined);
-      const notesPath = relsXml ? extractPptxSlideNotesTarget(relsXml) : null;
-      const notesXml = notesPath ? await zip.file(notesPath)?.async('text') : undefined;
-      const notes = notesXml ? extractPptxSpeakerNotes(notesXml, textRuns) : [];
-      slides.push(buildSlidePreview(path, textRuns, index, imageUrl, notes, Boolean(fullSlideImageTarget && imageUrl)));
-    }
+    const slides = await extractPptxPreviewSlides(arrayBuffer);
 
     const extractedRenderedPreview: StudioMediaAssetPreview | undefined = slides.length > 0
       ? { kind: 'presentation-slides', sourceFormat: 'pptx', slides }

@@ -51,6 +51,7 @@ import {
   PresentationRenderError,
   getPresentationRendererHealth,
   renderPresentationPreview,
+  convertPresentationToPdf,
   type PresentationRendererHealth,
 } from './presentationRender.js';
 import {
@@ -1263,7 +1264,8 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
 }
 
 async function handlePresentationPreviewRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  if (url.pathname !== '/presentation-preview') return false;
+  const wantsPdf = url.pathname === '/presentation-pdf';
+  if (url.pathname !== '/presentation-preview' && !wantsPdf) return false;
 
   if (!applyCorsHeaders(req, res)) {
     writeJson(res, 403, { error: 'Forbidden: origin not allowed' });
@@ -1288,12 +1290,27 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
     const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
     const data = await readRequestBody(req, MAX_PRESENTATION_RENDER_BYTES);
 
-    const preview = await renderPresentationPreview({
+    const input = {
       fileName: fileName || 'presentation',
       contentType: contentType || 'application/octet-stream',
       data,
-    });
+    };
 
+    if (wantsPdf) {
+      // The browser renders the pages; the server only runs LibreOffice.
+      const { pdf, cached } = await convertPresentationToPdf(input);
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Length': String(pdf.byteLength),
+        'Cache-Control': 'no-store',
+        'X-Presentation-Cache': cached ? 'hit' : 'miss',
+        'Access-Control-Expose-Headers': 'X-Presentation-Cache',
+      });
+      res.end(pdf);
+      return true;
+    }
+
+    const preview = await renderPresentationPreview(input);
     writeJson(res, 200, preview);
     return true;
   } catch (err) {

@@ -6,7 +6,9 @@ import {
   getMediaShareLayoutLabel,
   getStudioLayoutDescription,
   getStudioLayoutLabel,
-  isMultiParticipantLayout,
+  isLayoutBarOptionDisabled,
+  MEDIA_SHARE_LAYOUT_ORDER,
+  MEDIA_SHARE_LAYOUT_SHORT_LABELS,
   STUDIO_LAYOUT_PRESET_ORDER,
 } from '../utils/layoutPresets.ts';
 import {
@@ -67,15 +69,6 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
   ),
 };
 
-const MEDIA_LAYOUT_ORDER: LayoutMode[] = ['single', 'grid', 'spotlight', 'pip', 'side-by-side', 'featured'];
-const MEDIA_LAYOUT_LABELS: Record<LayoutMode, string> = {
-  single: 'Content',
-  grid: 'Beside',
-  spotlight: 'Below',
-  pip: 'PiP',
-  'side-by-side': 'Split',
-  featured: 'Stack',
-};
 const PRESENTER_SIZES: Array<{ value: PresentationCameraSize; label: string; short: string }> = [
   { value: 'small', label: 'Small', short: 'S' },
   { value: 'medium', label: 'Medium', short: 'M' },
@@ -146,12 +139,14 @@ export function LayoutSwitcher({
     const floating = currentLayout === 'pip' || currentLayout === 'featured';
     return <div className="presentation-layouts">
       <div className="presentation-layout-options" role="group" aria-label="Presentation layout">
-        {MEDIA_LAYOUT_ORDER.map(mode => <button type="button" key={mode} aria-pressed={currentLayout === mode}
+        {MEDIA_SHARE_LAYOUT_ORDER.map((mode, index) => <button type="button" key={mode} aria-pressed={currentLayout === mode}
           aria-label={`${getMediaShareLayoutLabel(mode)} layout`}
-          title={getMediaShareLayoutDescription(mode)} disabled={mode !== 'single' && activeMediaParticipantCount === 0}
+          aria-keyshortcuts={String(index + 1)}
+          title={`${getMediaShareLayoutDescription(mode)} (${index + 1})`}
+          disabled={isLayoutBarOptionDisabled(mode, { isMediaActive: true, participantCount, mediaParticipantCount: activeMediaParticipantCount })}
           onClick={() => onLayoutChange(mode)}>
           <MediaLayoutGlyph mode={mode} />
-          <span>{MEDIA_LAYOUT_LABELS[mode]}</span>
+          <span>{MEDIA_SHARE_LAYOUT_SHORT_LABELS[mode]}</span>
         </button>)}
       </div>
       {hasPresenters && (onCameraSizeChange || (floating && onPipCornerChange)) && <div className="presentation-layout-tuning">
@@ -194,11 +189,11 @@ export function LayoutSwitcher({
       `}</style>
       <div style={styles.controlRow}>
         <div style={styles.bar} role="radiogroup" aria-label="Layout switcher">
-          {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
+          {STUDIO_LAYOUT_PRESET_ORDER.map((mode, index) => {
             const label = getStudioLayoutLabel(mode);
             const description = getStudioLayoutDescription(mode);
             const isActive = currentLayout === mode;
-            const isDisabled = participantCount < 2 && isMultiParticipantLayout(mode);
+            const isDisabled = isLayoutBarOptionDisabled(mode, { isMediaActive: false, participantCount });
             return (
               <button
                 key={mode}
@@ -208,7 +203,8 @@ export function LayoutSwitcher({
                 aria-label={`${label} layout - ${description}`}
                 onClick={() => onLayoutChange(mode)}
                 disabled={isDisabled}
-                title={isDisabled ? `${label} (Requires 2+ people)` : `${label} - ${description}`}
+                aria-keyshortcuts={String(index + 1)}
+                title={isDisabled ? `${label} (Requires 2+ people)` : `${label} - ${description} (${index + 1})`}
                 style={{
                   ...styles.btn,
                   ...(isDisabled ? styles.btnDisabled : {}),

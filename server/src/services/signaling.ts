@@ -87,6 +87,23 @@ interface RoomState {
   // True once any participant successfully joined; used for shorter idle expiry.
   hasBeenJoined: boolean;
   emptyRoomTimer?: ReturnType<typeof setTimeout>;
+  // Set while the host's connection is gone; the room ends if it fires.
+  hostReconnectTimer?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * How long a studio waits for its host to reconnect before ending. A host's
+ * connection drops for ordinary reasons (Wi-Fi blip, laptop sleep, a server
+ * restart); ending the studio at once stranded guests in the waiting room
+ * and left the reconnected host in a studio that no longer existed.
+ */
+export const HOST_RECONNECT_GRACE_MS = 2 * 60_000;
+
+function clearHostReconnectTimer(roomState: RoomState): void {
+  if (roomState.hostReconnectTimer) {
+    clearTimeout(roomState.hostReconnectTimer);
+    roomState.hostReconnectTimer = undefined;
+  }
 }
 
 interface ExternalChatConnectionState {
@@ -108,6 +125,7 @@ interface AliveWebSocket extends WebSocket {
 
 // Known message types for validation (fix #10)
 const KNOWN_MESSAGE_TYPES = new Set([
+  'heartbeat',
   'join-room',
   'offer',
   'answer',
@@ -438,6 +456,7 @@ function deleteRoom(roomId: string) {
     clearTimeout(state.emptyRoomTimer);
     state.emptyRoomTimer = undefined;
   }
+  clearHostReconnectTimer(state);
   const endingTimer = endingTimers.get(roomId);
   if (endingTimer) {
     clearTimeout(endingTimer);
@@ -946,6 +965,13 @@ export function setupSignalingServer(wss: WebSocketServer) {
 
 function handleMessage(ws: WebSocket, message: SignalMessage) {
   switch (message.type) {
+    case 'heartbeat': {
+      // Lets the browser notice a dead connection (a server restart or a
+      // sleeping laptop can leave it looking open) and reconnect quickly.
+      const sentAt = Number(message.payload?.sentAt);
+      send(ws, { type: 'heartbeat-ack', payload: { sentAt: Number.isFinite(sentAt) ? sentAt : 0, receivedAt: Date.now() } });
+      break;
+    }
     case 'join-room':
       handleJoinRoom(ws, message.payload);
       break;
@@ -1157,6 +1183,8 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
 
   // Host and server-issued co-host invites go directly on-stage.
   if (effectiveRole === 'host') {
+    if (roomState.hostReconnectTimer) console.log(`Host returned to room ${roomId}; keeping it open.`);
+    clearHostReconnectTimer(roomState);
     roomState.room.hostId = participant.id;
     participant.status = 'on-stage';
   } else if (effectiveRole === 'co-host') {
@@ -3227,6 +3255,7 @@ const END_ROOM_GRACE_MS = 10_000;
 function endRoomImmediately(roomId: string) {
   const state = rooms.get(roomId);
   if (!state) return;
+  clearHostReconnectTimer(state);
 
   broadcastToRoom(roomId, { type: 'room-ended', payload: {} });
 
@@ -3344,10 +3373,19 @@ function handleDisconnect(ws: WebSocket) {
           });
         }
       } else if (roomState.participants.size > 0) {
-        // No co-host to inherit — end the room rather than crowning a random guest.
-        console.log(`Host of room ${roomId} disconnected with no co-host. Ending room.`);
-        endRoomImmediately(roomId);
-        return;
+        // No co-host to inherit. Never crown a random guest; hold the room
+        // for the host to come back, and end it only if they do not.
+        clearHostReconnectTimer(roomState);
+        roomState.hostReconnectTimer = setTimeout(() => {
+          const current = rooms.get(roomId);
+          if (current !== roomState) return;
+          roomState.hostReconnectTimer = undefined;
+          if (roomState.participants.has(roomState.room.hostId)) return;
+          console.log(`Host of room ${roomId} did not return within ${HOST_RECONNECT_GRACE_MS / 1000}s. Ending room.`);
+          endRoomImmediately(roomId);
+        }, HOST_RECONNECT_GRACE_MS);
+        roomState.hostReconnectTimer.unref?.();
+        console.log(`Host of room ${roomId} disconnected with no co-host; holding the room for ${HOST_RECONNECT_GRACE_MS / 1000}s.`);
       }
     }
 

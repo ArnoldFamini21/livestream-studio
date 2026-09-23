@@ -9,6 +9,18 @@ export const STUDIO_LAYOUT_PRESET_ORDER: LayoutMode[] = [
   'featured',
 ];
 
+/** The order of the layout bar while media or a screen share is on stage. */
+export const MEDIA_SHARE_LAYOUT_ORDER: LayoutMode[] = ['single', 'grid', 'spotlight', 'pip', 'side-by-side', 'featured'];
+
+export const MEDIA_SHARE_LAYOUT_SHORT_LABELS: Record<LayoutMode, string> = {
+  single: 'Content',
+  grid: 'Beside',
+  spotlight: 'Below',
+  pip: 'PiP',
+  'side-by-side': 'Split',
+  featured: 'Stack',
+};
+
 export const STUDIO_LAYOUT_LABELS: Record<LayoutMode, string> = {
   grid: 'Grid',
   spotlight: 'Spotlight',
@@ -71,4 +83,24 @@ export function getAutoGridColumnCount(count: number): number {
   if (count <= 9) return 3;
   if (count <= 16) return 4;
   return Math.ceil(Math.sqrt(count * 16 / 9));
+}
+
+/** The layouts on the layout bar, in the order shown; keys 1-6 follow it. */
+export function getLayoutBarOrder(isMediaActive: boolean): LayoutMode[] {
+  return isMediaActive ? MEDIA_SHARE_LAYOUT_ORDER : STUDIO_LAYOUT_PRESET_ORDER;
+}
+
+export function getLayoutBarLabel(layout: LayoutMode, isMediaActive: boolean): string {
+  return isMediaActive ? MEDIA_SHARE_LAYOUT_SHORT_LABELS[layout] : STUDIO_LAYOUT_LABELS[layout];
+}
+
+export function isLayoutBarOptionDisabled(
+  layout: LayoutMode,
+  options: { isMediaActive: boolean; participantCount: number; mediaParticipantCount?: number }
+): boolean {
+  if (options.isMediaActive) {
+    const presenters = options.mediaParticipantCount ?? Math.max(0, options.participantCount - 1);
+    return layout !== 'single' && presenters <= 0;
+  }
+  return options.participantCount < 2 && isMultiParticipantLayout(layout);
 }
