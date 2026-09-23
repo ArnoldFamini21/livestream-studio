@@ -87,7 +87,6 @@ export function useSignaling() {
 
       ws.onopen = () => {
         if (wsRef.current !== ws) return;
-        console.log('WebSocket connected');
         setConnected(true);
         setReconnectFailed(false);
         lastMessageAtRef.current = Date.now();
@@ -123,7 +122,6 @@ export function useSignaling() {
 
       ws.onclose = (event) => {
         if (wsRef.current !== ws) return;
-        console.log('WebSocket disconnected');
         stopHeartbeat();
         setConnected(false);
 
@@ -138,7 +136,7 @@ export function useSignaling() {
 
         const baseDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
         const delay = baseDelay * (0.5 + Math.random() * 0.5); // 50-100% of base delay (jitter)
-        console.log(`Scheduling reconnection in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+        console.info(`Scheduling reconnection in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})`);
         reconnectTimerRef.current = setTimeout(() => {
           reconnectTimerRef.current = null;
           reconnectAttemptsRef.current++;

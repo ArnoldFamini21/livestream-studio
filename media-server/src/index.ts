@@ -188,7 +188,19 @@ async function healthPayload() {
           dependencies: presentationRenderer.dependencies,
         },
       },
+      recordingStorage: getRecordingStorageHealth(),
     },
+  };
+}
+
+/** Whether uploaded recordings survive a restart (object storage) or not (temp folder). */
+function getRecordingStorageHealth() {
+  const persistent = Boolean(getRecordingObjectStorageConfig(process.env));
+  return {
+    ready: persistent,
+    message: persistent
+      ? 'Uploaded recordings are saved to object storage.'
+      : 'Uploaded recordings are kept in a temporary folder and are lost when the media server restarts or sleeps. Set the RECORDING_STORAGE_* variables to keep them.',
   };
 }
 

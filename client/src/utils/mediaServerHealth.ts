@@ -22,6 +22,8 @@ export interface MediaServerHealth {
   httpStatus?: number;
   renderRouting?: string;
   presentationRenderer?: MediaServerCapabilityHealth;
+  /** Absent on older media servers, which do not report it. */
+  recordingStorage?: MediaServerCapabilityHealth;
 }
 
 export type MediaServerParityFeatureStatus = 'ready' | 'checking' | 'degraded' | 'blocked';
@@ -198,16 +200,26 @@ export function buildMediaServerParityDiagnostics(health: MediaServerHealth | nu
 
   const deckReady = health.presentationRenderer?.ready === true;
   const deckDetail = health.presentationRenderer?.message || 'Exact deck-renderer capability metadata is missing.';
+  // Recordings kept only in a temp folder are lost on restart; flag it.
+  const storageReady = health.recordingStorage ? health.recordingStorage.ready : true;
+  const allReady = deckReady && storageReady;
 
   return {
-    status: deckReady ? 'ready' : 'degraded',
-    headline: deckReady ? 'Media-server features ready' : 'Media-server partially ready',
-    detail: deckReady
+    status: allReady ? 'ready' : 'degraded',
+    headline: allReady ? 'Media-server features ready' : 'Media-server partially ready',
+    detail: allReady
       ? health.message
-      : 'RTMP relay and MP4 export are reachable, but exact deck rendering still needs attention.',
+      : !storageReady
+        ? 'Uploaded recordings are not kept in lasting storage; download them before the media server restarts.'
+        : 'RTMP relay and MP4 export are reachable, but exact deck rendering still needs attention.',
     features: [
       createMediaServerFeature('rtmp-relay', 'RTMP multistreaming', 'ready', 'Go Live relay endpoint is reachable.'),
-      createMediaServerFeature('mp4-export', 'Final MP4 export', 'ready', 'Recording upload and MP4 export endpoint is reachable.'),
+      createMediaServerFeature(
+        'mp4-export',
+        'Final MP4 export',
+        storageReady ? 'ready' : 'degraded',
+        storageReady ? 'Recording upload and MP4 export endpoint is reachable.' : (health.recordingStorage?.message || 'Uploaded recordings are temporary.')
+      ),
       createMediaServerFeature('live-backup', 'Live backup recording', 'ready', 'Server-side live backup status and download routes are reachable.'),
       createMediaServerFeature(
         'exact-deck-rendering',
@@ -216,12 +228,15 @@ export function buildMediaServerParityDiagnostics(health: MediaServerHealth | nu
         deckReady ? deckDetail : `${deckDetail} Redeploy the Docker media-server with LibreOffice and Poppler available.`
       ),
     ],
-    actions: deckReady
-      ? []
-      : [
-          { id: 'install-renderer-deps', label: 'Redeploy the Docker media-server with LibreOffice and Poppler installed.' },
-          { id: 'verify-deck-capability', label: 'Confirm /health reports presentationRenderer.ready: true.' },
-        ],
+    actions: [
+      ...(deckReady ? [] : [
+        { id: 'install-renderer-deps', label: 'Redeploy the Docker media-server with LibreOffice and Poppler installed.' },
+        { id: 'verify-deck-capability', label: 'Confirm /health reports presentationRenderer.ready: true.' },
+      ]),
+      ...(storageReady ? [] : [
+        { id: 'configure-recording-storage', label: 'Set RECORDING_STORAGE_ENDPOINT, BUCKET, ACCESS_KEY_ID, and SECRET_ACCESS_KEY on the Render media-server.' },
+      ]),
+    ],
   };
 }
 
@@ -262,6 +277,7 @@ export function normalizeMediaServerHealthPayload(
   const commit = readString(value.commit);
   const environment = readString(value.environment);
   const reportedPresentationRenderer = getCapability(value, 'presentationRenderer');
+  const recordingStorage = getCapability(value, 'recordingStorage');
 
   if (value.status !== 'ok') {
     return failure('Media server health did not report ready status.', input);
@@ -290,6 +306,7 @@ export function normalizeMediaServerHealthPayload(
     ...(commit ? { commit } : {}),
     ...(environment ? { environment } : {}),
     ...(presentationRenderer ? { presentationRenderer } : {}),
+    ...(recordingStorage ? { recordingStorage } : {}),
   };
 }
 

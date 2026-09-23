@@ -198,8 +198,6 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       };
 
       pc.onconnectionstatechange = () => {
-        console.log(`Peer ${remoteParticipantId} connection: ${pc.connectionState}`);
-
         if (peersRef.current.get(remoteParticipantId) !== peerState) return;
         peerState.negotiation.connectionStateChanged();
         if (pc.connectionState === 'closed') {

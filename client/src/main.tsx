@@ -11,6 +11,11 @@ import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { ToastProvider } from './components/Toast.tsx';
 import { installClientErrorReporting } from './utils/clientErrorReporter.ts';
 import { prewarmStudioServers } from './utils/studioServerWake.ts';
+// Inter is served with the app (no request to Google, no render-blocking @import).
+import '@fontsource/inter/latin-400.css';
+import '@fontsource/inter/latin-500.css';
+import '@fontsource/inter/latin-600.css';
+import '@fontsource/inter/latin-700.css';
 import './styles/global.css';
 import './styles/recording-recovery.css';
 
