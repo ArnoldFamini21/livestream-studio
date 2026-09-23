@@ -19,13 +19,14 @@ import {
   upsertSavedHostStudio,
   type SavedHostStudio,
 } from '../utils/hostSession.ts';
-import { getApiErrorMessage, getJson, postJson } from '../utils/apiClient.ts';
+import { getApiErrorMessage, getJson } from '../utils/apiClient.ts';
 import {
   fetchAccountSession,
   loginAccount,
   logoutAccount,
   registerAccount,
 } from '../utils/accountAuth.ts';
+import { postWhenStudioServerReady } from '../utils/studioServerWake.ts';
 import { AccountSecurity, ForgotPasswordForm } from './AccountSecurity.tsx';
 import {
   hasCreatedRoomDetails,
@@ -90,7 +91,6 @@ import {
 } from '../utils/workspaceTeam.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
-const CREATE_STUDIO_TIMEOUT_MS = 90_000;
 const SERVER_WAKE_NOTICE_DELAY_MS = 6_000;
 const SAVED_HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing for this studio. Create a new studio to get a fresh private host link.';
 const INVITE_QR_OPTIONS = {
@@ -358,13 +358,13 @@ export function HomePage() {
     }, SERVER_WAKE_NOTICE_DELAY_MS);
 
     try {
-      const createdRoom = await postJson<CreatedRoomResponse>('/api/rooms', {
+      const createdRoom = await postWhenStudioServerReady<CreatedRoomResponse>('/api/rooms', {
         name: roomName,
         hostName,
         password: roomPassword.trim() || undefined,
         registrationEnabled,
       }, {
-        timeoutMs: CREATE_STUDIO_TIMEOUT_MS,
+        onWaiting: () => setProgressMessage('Still creating. The studio server is restarting; trying again.'),
       });
       if (!hasCreatedRoomDetails(createdRoom)) {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
@@ -408,14 +408,14 @@ export function HomePage() {
     }, SERVER_WAKE_NOTICE_DELAY_MS);
 
     try {
-      const createdRoom = await postJson<CreatedRoomResponse>('/api/rooms/schedule', {
+      const createdRoom = await postWhenStudioServerReady<CreatedRoomResponse>('/api/rooms/schedule', {
         name: roomName,
         hostName,
         scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
         password: roomPassword.trim() || undefined,
         registrationEnabled,
       }, {
-        timeoutMs: CREATE_STUDIO_TIMEOUT_MS,
+        onWaiting: () => setProgressMessage('Still scheduling. The studio server is restarting; trying again.'),
       });
       if (!hasCreatedRoomDetails(createdRoom)) {
         setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
