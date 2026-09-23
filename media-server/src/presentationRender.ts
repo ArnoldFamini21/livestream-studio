@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -521,46 +522,128 @@ async function buildPreviewFromRasterImages(
   };
 }
 
-export async function renderPresentationPreview(
-  input: PresentationRenderInput,
-  options: RenderOptions = {}
-): Promise<StudioMediaAssetPreview> {
+/**
+ * Converted PDFs by content hash. LibreOffice is the slow step (tens of
+ * seconds on a small instance), and hosts often re-add the same deck, so a
+ * repeat costs nothing.
+ */
+export class PresentationPdfCache {
+  private readonly entries = new Map<string, Buffer>();
+  private bytes = 0;
+
+  constructor(private readonly maxEntries = 12, private readonly maxBytes = 200 * 1024 * 1024) {}
+
+  get(key: string): Buffer | undefined {
+    const value = this.entries.get(key);
+    if (!value) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, value);
+    return value;
+  }
+
+  set(key: string, value: Buffer): void {
+    if (value.byteLength > this.maxBytes) return;
+    const existing = this.entries.get(key);
+    if (existing) {
+      this.bytes -= existing.byteLength;
+      this.entries.delete(key);
+    }
+    this.entries.set(key, value);
+    this.bytes += value.byteLength;
+    while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.bytes -= this.entries.get(oldest)?.byteLength || 0;
+      this.entries.delete(oldest);
+    }
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+}
+
+const sharedPresentationPdfCache = new PresentationPdfCache();
+
+function validatePresentationInput(input: PresentationRenderInput): PresentationRenderSourceFormat {
   if (input.data.byteLength === 0) {
     throw new PresentationRenderError(400, 'PRESENTATION_EMPTY', 'Presentation file is empty');
   }
   if (input.data.byteLength > MAX_PRESENTATION_RENDER_BYTES) {
     throw new PresentationRenderError(413, 'PRESENTATION_TOO_LARGE', 'Presentation file is too large');
   }
-
   const sourceFormat = getPresentationRenderSourceFormat(input.fileName, input.contentType);
   if (!sourceFormat) {
     throw new PresentationRenderError(415, 'PRESENTATION_UNSUPPORTED', 'Only PDF and PowerPoint files can be rendered');
   }
+  return sourceFormat;
+}
+
+export interface PresentationPdfResult {
+  pdf: Buffer;
+  sourceFormat: PresentationRenderSourceFormat;
+  cached: boolean;
+}
+
+/**
+ * Convert a PowerPoint to PDF with LibreOffice (a PDF passes through). The
+ * browser rasterizes the pages itself, which is far faster than doing it on
+ * the media server and avoids sending every slide back as base64.
+ */
+export async function convertPresentationToPdf(
+  input: PresentationRenderInput,
+  options: RenderOptions & { cache?: PresentationPdfCache | null } = {}
+): Promise<PresentationPdfResult> {
+  const sourceFormat = validatePresentationInput(input);
+  if (sourceFormat === 'pdf') return { pdf: input.data, sourceFormat, cached: false };
+
+  const cache = options.cache === undefined ? sharedPresentationPdfCache : options.cache;
+  const key = createHash('sha256').update(input.data).digest('hex');
+  const hit = cache?.get(key);
+  if (hit) return { pdf: hit, sourceFormat, cached: true };
 
   const workspace = await mkdtemp(path.join(tmpdir(), 'studio-presentation-'));
   const outputDir = path.join(workspace, 'output');
   const commandRunner = options.commandRunner || defaultCommandRunner;
-  let metadataSlides: PresentationSlidePreview[] = [];
-
   try {
     await mkdir(outputDir, { recursive: true });
     const inputPath = path.join(workspace, `source${getInputExtension(input.fileName, sourceFormat)}`);
     await writeFile(inputPath, input.data);
-
-    let pdfPath = inputPath;
-    if (sourceFormat === 'pptx') {
-      metadataSlides = await extractPptxSlideMetadata(input.data).catch(() => []);
-      const sofficePath = options.sofficePath || getLibreOfficePath();
-      const libreOfficeProfileDir = path.join(workspace, 'lo-profile');
-      await mkdir(libreOfficeProfileDir, { recursive: true });
-      await commandRunner(
-        sofficePath,
-        createLibreOfficePdfArgs(inputPath, outputDir, pathToFileURL(libreOfficeProfileDir).href),
-        { timeoutMs: COMMAND_TIMEOUT_MS }
-      );
-      pdfPath = path.join(outputDir, 'source.pdf');
+    const sofficePath = options.sofficePath || getLibreOfficePath();
+    const libreOfficeProfileDir = path.join(workspace, 'lo-profile');
+    await mkdir(libreOfficeProfileDir, { recursive: true });
+    await commandRunner(
+      sofficePath,
+      createLibreOfficePdfArgs(inputPath, outputDir, pathToFileURL(libreOfficeProfileDir).href),
+      { timeoutMs: COMMAND_TIMEOUT_MS }
+    );
+    const pdf = await readFile(path.join(outputDir, 'source.pdf')).catch(() => null);
+    if (!pdf || pdf.byteLength === 0) {
+      throw new PresentationRenderError(422, 'PRESENTATION_RENDER_EMPTY', 'The presentation could not be converted');
     }
+    cache?.set(key, pdf);
+    return { pdf, sourceFormat, cached: false };
+  } finally {
+    await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
 
+export async function renderPresentationPreview(
+  input: PresentationRenderInput,
+  options: RenderOptions & { cache?: PresentationPdfCache | null } = {}
+): Promise<StudioMediaAssetPreview> {
+  const { pdf, sourceFormat } = await convertPresentationToPdf(input, options);
+  const metadataSlides = sourceFormat === 'pptx'
+    ? await extractPptxSlideMetadata(input.data).catch(() => [])
+    : [];
+
+  const workspace = await mkdtemp(path.join(tmpdir(), 'studio-presentation-'));
+  const outputDir = path.join(workspace, 'output');
+  const commandRunner = options.commandRunner || defaultCommandRunner;
+  try {
+    await mkdir(outputDir, { recursive: true });
+    const pdfPath = path.join(workspace, 'source.pdf');
+    await writeFile(pdfPath, pdf);
     const pdftoppmPath = options.pdftoppmPath || getPdftoppmPath();
     await commandRunner(pdftoppmPath, createPdfToRasterArgs(pdfPath, path.join(outputDir, 'slide')), { timeoutMs: COMMAND_TIMEOUT_MS });
     const imagePaths = await getRenderedRasterPaths(outputDir);

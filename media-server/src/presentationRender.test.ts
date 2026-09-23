@@ -14,6 +14,8 @@ import {
   getPresentationRendererHealth,
   PresentationRenderError,
   renderPresentationPreview,
+  convertPresentationToPdf,
+  PresentationPdfCache,
 } from './presentationRender.js';
 
 describe('presentation rendering', () => {
@@ -232,5 +234,45 @@ describe('presentation rendering', () => {
         return true;
       }
     );
+  });
+
+  it('converts PowerPoint to PDF once and serves repeats from the cache', async () => {
+    const cache = new PresentationPdfCache();
+    let conversions = 0;
+    const options = {
+      sofficePath: 'soffice-test',
+      cache,
+      commandRunner: async (command: string, args: string[]) => {
+        conversions += 1;
+        const outDir = args[args.indexOf('--outdir') + 1];
+        await writeFile(path.join(outDir, 'source.pdf'), Buffer.from('%PDF-1.7 converted'));
+      },
+    };
+    const input = {
+      fileName: 'sermon.pptx',
+      contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      data: Buffer.from('pptx-for-cache'),
+    };
+    const first = await convertPresentationToPdf(input, options);
+    const second = await convertPresentationToPdf(input, options);
+    assert.equal(first.pdf.toString(), '%PDF-1.7 converted');
+    assert.deepEqual([first.cached, second.cached], [false, true]);
+    assert.equal(conversions, 1, 'LibreOffice runs once for the same deck');
+
+    const pdf = await convertPresentationToPdf({ fileName: 'notes.pdf', contentType: 'application/pdf', data: Buffer.from('%PDF-1.4') }, options);
+    assert.equal(pdf.pdf.toString(), '%PDF-1.4', 'PDFs pass through untouched');
+    assert.equal(conversions, 1);
+  });
+
+  it('evicts the least recently used conversions', () => {
+    const cache = new PresentationPdfCache(2, 1024);
+    cache.set('a', Buffer.alloc(10));
+    cache.set('b', Buffer.alloc(10));
+    cache.get('a');
+    cache.set('c', Buffer.alloc(10));
+    assert.ok(cache.get('a'));
+    assert.equal(cache.get('b'), undefined);
+    cache.set('big', Buffer.alloc(2048));
+    assert.equal(cache.get('big'), undefined, 'oversized PDFs are not cached');
   });
 });

@@ -304,6 +304,8 @@ export function getMediaAssetStatusLabel(asset: StudioMediaAsset): string {
   if (asset.processingStatus === 'error') {
     return asset.processingMessage || 'This asset could not be prepared for broadcast.';
   }
+  // A deck that can already be shown while later pages finish rendering.
+  if (asset.processingMessage) return asset.processingMessage;
   return getAssetLabel(asset);
 }
 

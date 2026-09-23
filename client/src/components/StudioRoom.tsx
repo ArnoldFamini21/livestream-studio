@@ -57,7 +57,7 @@ import { ChatPanel } from './ChatPanel.tsx';
 import { LowerThirdOverlay, type LowerThirdData } from './LowerThird.tsx';
 import { canPlayMediaAsset, detectMediaType } from './MediaLibrary.tsx';
 import {
-  buildPresentationPreview,
+  buildProgressivePresentationPreview,
   getPowerPointRenderStrategy,
   hasRenderedPresentationSlides,
   type PresentationServerRenderFailure,
@@ -4222,56 +4222,73 @@ export function StudioRoom() {
       setMediaAssets((prev) => [...uploads.map((upload) => upload.asset), ...prev]);
     }
 
-    // A single render at a time prevents large decks from exhausting the browser's
-    // canvas/DOM memory while keeping every queued file visible in the library.
-    for (const { file, type, isDeck, asset, preparationError } of uploads) {
-      if (preparationError) continue;
-      if (type === 'image' || type === 'video') {
+    const updateAsset = (id: string, patch: Partial<StudioMediaAsset>) => {
+      setMediaAssets((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
+    };
+
+    // Images and videos only need a quick decode check, so they run together
+    // and never wait behind a deck.
+    const quickChecks = Promise.all(uploads
+      .filter(({ type, preparationError }) => !preparationError && (type === 'image' || type === 'video'))
+      .map(async ({ file, type, asset }) => {
         try {
-          await probeMediaAsset(asset.url, type);
-          setMediaAssets(prev => prev.map(item => item.id === asset.id ? { ...item, processingStatus: 'ready', processingMessage: undefined } : item));
+          await probeMediaAsset(asset.url, type as 'image' | 'video');
+          updateAsset(asset.id, { processingStatus: 'ready', processingMessage: undefined });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'This media file could not be opened.';
           failures.push({ name: file.name, message });
-          setMediaAssets(prev => prev.map(item => item.id === asset.id ? { ...item, processingStatus: 'error', processingMessage: message } : item));
+          updateAsset(asset.id, { processingStatus: 'error', processingMessage: message });
         }
-        continue;
-      }
-      if (!isDeck) continue;
-      setMediaAssets((prev) => prev.map((item) => item.id === asset.id
-        ? { ...item, processingMessage: getDeckPreparationMessage(type) }
-        : item));
-      try {
-        let serverRenderFailure: PresentationServerRenderFailure | undefined;
-        const powerPointRenderStrategy = type === 'presentation'
-          ? getPowerPointRenderStrategy(file)
-          : null;
-        const skipUnavailableServerRender = mediaServerHealth.status === 'unavailable' ||
-          mediaServerHealth.presentationRenderer?.ready === false;
-        if (skipUnavailableServerRender) {
-          serverRenderFailure = getUnavailableMediaServerPresentationFailure(type, mediaServerHealth);
+      }));
+
+    // Decks render one at a time so large ones cannot exhaust the browser's
+    // canvas memory. Each can go on stage as soon as its first page is ready;
+    // the rest keep rendering in the background.
+    const deckRenders = (async () => {
+      for (const { file, type, isDeck, asset, preparationError } of uploads) {
+        if (preparationError || !isDeck) continue;
+        updateAsset(asset.id, { processingMessage: getDeckPreparationMessage(type) });
+        try {
+          let serverRenderFailure: PresentationServerRenderFailure | undefined;
+          const powerPointRenderStrategy = type === 'presentation'
+            ? getPowerPointRenderStrategy(file)
+            : null;
+          const skipUnavailableServerRender = mediaServerHealth.status === 'unavailable' ||
+            mediaServerHealth.presentationRenderer?.ready === false;
+          if (skipUnavailableServerRender) {
+            serverRenderFailure = getUnavailableMediaServerPresentationFailure(type, mediaServerHealth);
+          }
+          const preview = await buildProgressivePresentationPreview(file, {
+            requireRenderedSlides: true,
+            requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
+            allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
+            skipServerRender: skipUnavailableServerRender,
+            onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
+            onProgress: ({ preview: partial, renderedCount, totalCount }) => {
+              updateAsset(asset.id, {
+                preview: partial,
+                processingStatus: 'ready',
+                processingMessage: renderedCount < totalCount
+                  ? `Ready to show · preparing page ${renderedCount + 1} of ${totalCount}`
+                  : undefined,
+              });
+            },
+          });
+          const message = preview ? undefined : getDeckRenderFailureMessage(type, serverRenderFailure);
+          if (message) failures.push({ name: file.name, message });
+          updateAsset(asset.id, preview
+            ? { preview, processingStatus: 'ready', processingMessage: undefined }
+            : { processingStatus: 'error', processingMessage: message });
+        } catch (err) {
+          console.error('Failed to render presentation media:', err);
+          const message = getDeckRenderFailureMessage(type);
+          failures.push({ name: file.name, message });
+          updateAsset(asset.id, { processingStatus: 'error', processingMessage: message });
         }
-        const preview = await buildPresentationPreview(file, {
-          requireRenderedSlides: true,
-          requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
-          allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
-          skipServerRender: skipUnavailableServerRender,
-          onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
-        });
-        const message = preview ? undefined : getDeckRenderFailureMessage(type, serverRenderFailure);
-        if (message) failures.push({ name: file.name, message });
-        setMediaAssets((prev) => prev.map((item) => item.id === asset.id
-          ? { ...item, preview, processingStatus: preview ? 'ready' : 'error', processingMessage: message }
-          : item));
-      } catch (err) {
-        console.error('Failed to render presentation media:', err);
-        const message = getDeckRenderFailureMessage(type);
-        failures.push({ name: file.name, message });
-        setMediaAssets((prev) => prev.map((item) => item.id === asset.id
-          ? { ...item, processingStatus: 'error', processingMessage: message }
-          : item));
       }
-    }
+    })();
+
+    await Promise.all([quickChecks, deckRenders]);
     if (failures.length > 0) throw new Error(getMediaBatchFailureMessage(failures, uploads.length));
   };
 
