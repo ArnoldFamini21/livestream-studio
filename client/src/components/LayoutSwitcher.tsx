@@ -1,15 +1,15 @@
-import type { PresentationCorner } from '../utils/presentationLayout.ts';
 import '../styles/presentation.css';
 import type { LayoutMode } from '@studio/shared';
 import {
-  getMediaShareLayoutDescription,
-  getMediaShareLayoutLabel,
   getStudioLayoutDescription,
   getStudioLayoutLabel,
-  isLayoutBarOptionDisabled,
-  MEDIA_SHARE_LAYOUT_ORDER,
-  MEDIA_SHARE_LAYOUT_SHORT_LABELS,
+  isPresentingViewDisabled,
+  isStudioLayoutDisabled,
+  PRESENTING_VIEW_DESCRIPTIONS,
+  PRESENTING_VIEW_LABELS,
+  PRESENTING_VIEWS,
   STUDIO_LAYOUT_PRESET_ORDER,
+  type PresentingView,
 } from '../utils/layoutPresets.ts';
 import {
   getMediaShareLayoutVisibilitySummary,
@@ -21,8 +21,9 @@ interface LayoutSwitcherProps {
   participantCount: number;
   isMediaActive?: boolean;
   mediaParticipantCount?: number;
-  pipCorner?: PresentationCorner;
-  onPipCornerChange?: (corner: PresentationCorner) => void;
+  /** While presenting: which view is on stage, and how to change it. */
+  presentingView?: PresentingView;
+  onPresentingViewChange?: (view: PresentingView) => void;
 }
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
@@ -67,28 +68,19 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
   ),
 };
 
-const PRESENTER_CORNERS: Array<{ value: PresentationCorner; label: string }> = [
-  { value: 'TL', label: 'Top left' },
-  { value: 'TR', label: 'Top right' },
-  { value: 'BL', label: 'Bottom left' },
-  { value: 'BR', label: 'Bottom right' },
-];
 
 /** Miniature of the broadcast: the light block is the content, accent blocks are presenters. */
-function MediaLayoutGlyph({ mode }: { mode: LayoutMode }) {
+function PresentingViewGlyph({ view }: { view: PresentingView }) {
   const content = (x: number, y: number, w: number, h: number) => <rect x={x} y={y} width={w} height={h} rx="1.5" fill="currentColor" opacity="0.55" />;
-  const presenter = (x: number, y: number, w: number, h: number) => <rect key={`${x}-${y}`} x={x} y={y} width={w} height={h} rx="1" className="presentation-glyph-presenter" />;
-  const shapes: Record<LayoutMode, React.ReactNode> = {
-    single: content(2, 2, 28, 16),
-    grid: <>{content(2, 3, 19, 14)}{presenter(23, 7.5, 7, 5)}</>,
-    spotlight: <>{content(6, 1.5, 20, 11)}{[7, 13.5, 20].map(x => presenter(x, 14, 5, 4))}</>,
-    pip: <>{content(2, 2, 28, 16)}{presenter(21, 11.5, 7.5, 5)}</>,
-    'side-by-side': <>{content(2, 4, 16, 12)}{presenter(19.5, 6, 10.5, 8)}</>,
-    featured: <>{content(2, 2, 28, 16)}{presenter(23, 4, 5.5, 3.5)}{presenter(23, 8.5, 5.5, 3.5)}{presenter(23, 13, 5.5, 3.5)}</>,
+  const presenter = (x: number, y: number, w: number, h: number) => <rect x={x} y={y} width={w} height={h} rx="1" className="presentation-glyph-presenter" />;
+  const shapes: Record<PresentingView, React.ReactNode> = {
+    me: presenter(2, 2, 28, 16),
+    content: content(2, 2, 28, 16),
+    'content-me': <>{content(2, 3, 19, 14)}{presenter(23, 7.5, 7, 5)}</>,
   };
   return <svg width="32" height="20" viewBox="0 0 32 20" aria-hidden="true" className="presentation-glyph">
     <rect x="0.5" y="0.5" width="31" height="19" rx="3" fill="none" stroke="currentColor" opacity="0.35" />
-    {shapes[mode]}
+    {shapes[view]}
   </svg>;
 }
 
@@ -118,36 +110,28 @@ export function LayoutSwitcher({
   participantCount,
   isMediaActive = false,
   mediaParticipantCount,
-  pipCorner = 'BR',
-  onPipCornerChange,
+  presentingView = 'content-me',
+  onPresentingViewChange,
 }: LayoutSwitcherProps) {
   const activeMediaParticipantCount = normalizeCount(mediaParticipantCount ?? Math.max(0, participantCount - 1));
 
   if (isMediaActive) {
     const summary = getMediaShareLayoutVisibilitySummary(currentLayout, activeMediaParticipantCount);
-    const showHiddenCount = currentLayout !== 'single' && summary.hiddenParticipantCount > 0;
-    const hasPresenters = currentLayout !== 'single' && activeMediaParticipantCount > 0;
-    const floating = currentLayout === 'pip' || currentLayout === 'featured';
+    const showHiddenCount = presentingView === 'content-me' && summary.hiddenParticipantCount > 0;
     return <div className="presentation-layouts">
-      <div className="presentation-layout-options" role="group" aria-label="Presentation layout">
-        {MEDIA_SHARE_LAYOUT_ORDER.map((mode, index) => <button type="button" key={mode} aria-pressed={currentLayout === mode}
-          aria-label={`${getMediaShareLayoutLabel(mode)} layout`}
+      <div className="presentation-layout-options" role="group" aria-label="Presentation view">
+        {PRESENTING_VIEWS.map((view, index) => <button type="button" key={view} aria-pressed={presentingView === view}
+          aria-label={`${PRESENTING_VIEW_LABELS[view]} view`}
           aria-keyshortcuts={String(index + 1)}
-          title={`${getMediaShareLayoutDescription(mode)} (${index + 1})`}
-          disabled={isLayoutBarOptionDisabled(mode, { isMediaActive: true, participantCount, mediaParticipantCount: activeMediaParticipantCount })}
-          onClick={() => onLayoutChange(mode)}>
-          <MediaLayoutGlyph mode={mode} />
-          <span>{MEDIA_SHARE_LAYOUT_SHORT_LABELS[mode]}</span>
+          title={`${PRESENTING_VIEW_DESCRIPTIONS[view]} (${index + 1})`}
+          disabled={isPresentingViewDisabled(view, activeMediaParticipantCount)}
+          onClick={() => onPresentingViewChange?.(view)}>
+          <PresentingViewGlyph view={view} />
+          <span>{PRESENTING_VIEW_LABELS[view]}</span>
         </button>)}
       </div>
-      {hasPresenters && ((floating && onPipCornerChange) || showHiddenCount) && <div className="presentation-layout-tuning">
-        {floating && onPipCornerChange && <div className="presentation-corners" role="group" aria-label="Presenter position">
-          {PRESENTER_CORNERS.map(option => <button type="button" key={option.value} aria-pressed={pipCorner === option.value}
-            aria-label={option.label} title={option.label} onClick={() => onPipCornerChange(option.value)}>
-            <span />
-          </button>)}
-        </div>}
-        {showHiddenCount && <span className="presentation-layout-hint">{formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)}</span>}
+      {showHiddenCount && <div className="presentation-layout-tuning">
+        <span className="presentation-layout-hint">{formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)}</span>
       </div>}
     </div>;
   }
@@ -178,7 +162,7 @@ export function LayoutSwitcher({
             const label = getStudioLayoutLabel(mode);
             const description = getStudioLayoutDescription(mode);
             const isActive = currentLayout === mode;
-            const isDisabled = isLayoutBarOptionDisabled(mode, { isMediaActive: false, participantCount });
+            const isDisabled = isStudioLayoutDisabled(mode, participantCount);
             return (
               <button
                 key={mode}
