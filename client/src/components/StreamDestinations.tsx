@@ -21,6 +21,7 @@ import {
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
 import { formatRelayLatency } from '../utils/rtmpRelayLatency.ts';
+import { RELAY_BACKLOG_WARNING_SECONDS, formatRelayBacklog } from '../utils/rtmpRelayBackpressure.ts';
 import { buildLivePreflightChecklist, type LivePreflightStatus } from '../utils/livePreflight.ts';
 import { isYouTubeConnectionConfigured, type YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
 import { YouTubeConnectForm } from './YouTubeConnectForm.tsx';
@@ -541,6 +542,10 @@ export function StreamDestinations({
                 <span style={styles.healthCaption}>Relay RTT</span>
               </div>
               <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{formatRelayBacklog(relayStats.sendBacklogSeconds)}</span>
+                <span style={styles.healthCaption}>Upload Backlog</span>
+              </div>
+              <div style={styles.healthMetric}>
                 <span style={styles.healthValue}>{relayStats.droppedChunks}</span>
                 <span style={styles.healthCaption}>Dropped Chunks</span>
               </div>
@@ -954,6 +959,16 @@ function getRelayQuality(stats: RtmpRelayStats, targetKbps: number, outputLabel:
       color: '#fca5a5',
       background: 'rgba(239, 68, 68, 0.12)',
       border: 'rgba(239, 68, 68, 0.25)',
+    };
+  }
+
+  if (stats.sendBacklogSeconds >= RELAY_BACKLOG_WARNING_SECONDS) {
+    return {
+      label: 'Behind',
+      detail: `Your upload is ${formatRelayBacklog(stats.sendBacklogSeconds)} behind live. Choose a lower output quality or pause other uploads on this network.`,
+      color: '#fcd34d',
+      background: 'rgba(245, 158, 11, 0.12)',
+      border: 'rgba(245, 158, 11, 0.25)',
     };
   }
 
