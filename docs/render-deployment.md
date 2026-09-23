@@ -98,6 +98,28 @@ The signaling server's `/health` includes `readiness`: `ready` is `false` while 
 
 Production browsers send uncaught errors, React crashes, failed live relays, and interrupted recording tracks to `POST /api/client-errors`. Before logging, the server strips query strings and fragments, which can carry invite and media tokens. Each report is logged as one `{"event":"client_error",...}` JSON line and counted in `/metrics` as `livestream_studio_client_errors_total{kind=...}`. Browsers fold repeats of the same error into one counted report and send at most 20 reports per page load. Set `VITE_CLIENT_ERROR_REPORTING=false` at build time to turn reporting off, or `true` to enable it in development builds. `VITE_RELEASE` tags each report with a build identifier.
 
+### Account security and password reset email
+
+Signed-in hosts can manage their account under **Settings & account**:
+
+- **Change password.** Requires the current password and signs out every other device.
+- **Where you're signed in.** Lists each device's browser, platform, last activity, and sign-in date. Any device can be signed out individually, or all devices except the current one at once.
+- **Forgot password?** On the sign-in form, it emails a single-use link that expires after one hour. Using the link signs out every device and cancels every other outstanding link.
+
+Reset requests never reveal whether an email has an account. The response is identical and is sent before the lookup. Each account receives at most three reset emails per hour.
+
+To send reset emails, set `ACCOUNT_EMAIL_FROM` to a sender verified with one of these providers, together with that provider's key:
+
+```sh
+ACCOUNT_EMAIL_FROM="Livestream Studio <studio@arnoldfamini.com>"
+RESEND_API_KEY=<Resend API key>          # or
+POSTMARK_SERVER_TOKEN=<Postmark server token>
+```
+
+Reset links point to `ACCOUNT_RESET_URL_BASE` if it is set, and otherwise to the first `CLIENT_URL`. They are never built from request headers. In production without a provider, the sign-in form explains that email reset is unavailable, and `/health` lists the `account-email-missing` warning. In development without a provider, the reset link is printed to the signaling server's console.
+
+Sign-in, registration, password change, and reset endpoints are limited to 10 attempts per minute per IP address. On startup, the Postgres store adds the `last_seen_at` and `user_agent` session columns and the `studio_account_password_resets` table. Existing sessions stay valid.
+
 ### Live relay: one encode, bounded buffering
 
 The media server encodes the studio's program once and shares the result with every destination. A single FFmpeg process encodes the browser's WebM to H.264/AAC FLV. Each destination then gets a lightweight copy-only FFmpeg process that pushes that FLV to its RTMP server. As a result, CPU cost no longer grows with the number of destinations.

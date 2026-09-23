@@ -87,6 +87,15 @@ export function buildProductionReadiness(
     });
   }
 
+  const emailSender = env.ACCOUNT_EMAIL_FROM?.trim();
+  if (!emailSender || (!env.RESEND_API_KEY?.trim() && !env.POSTMARK_SERVER_TOKEN?.trim())) {
+    issues.push({
+      id: 'account-email-missing',
+      severity: 'warning',
+      message: 'No account email provider (ACCOUNT_EMAIL_FROM with RESEND_API_KEY or POSTMARK_SERVER_TOKEN); password reset by email is unavailable.',
+    });
+  }
+
   if (!env.YOUTUBE_API_KEY?.trim()) {
     issues.push({
       id: 'youtube-chat-disabled',

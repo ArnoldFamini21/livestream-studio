@@ -139,6 +139,7 @@ const RATE_LIMIT_MAX = 30; // 30 requests per minute per IP (general)
 const ROOM_CREATE_LIMIT_MAX = 10; // 10 room-create attempts per minute per IP
 const TRANSCRIPTION_LIMIT_MAX = 5; // 5 audio transcription attempts per minute per IP
 const CLIENT_ERROR_LIMIT_MAX = 20; // 20 browser error reports per minute per IP
+const ACCOUNT_CREDENTIAL_LIMIT_MAX = 10; // 10 sign-in/password attempts per minute per IP
 
 interface RateEntry {
   count: number;
@@ -191,6 +192,7 @@ const generalLimiter = makeRateLimiter(RATE_LIMIT_MAX);
 const roomCreateLimiter = makeRateLimiter(ROOM_CREATE_LIMIT_MAX);
 const transcriptionLimiter = makeRateLimiter(TRANSCRIPTION_LIMIT_MAX);
 const clientErrorLimiter = makeRateLimiter(CLIENT_ERROR_LIMIT_MAX);
+const accountCredentialLimiter = makeRateLimiter(ACCOUNT_CREDENTIAL_LIMIT_MAX);
 
 app.use(generalLimiter.middleware);
 
@@ -200,10 +202,20 @@ const rateLimitSweepTimer = setInterval(() => {
   roomCreateLimiter.sweep();
   transcriptionLimiter.sweep();
   clientErrorLimiter.sweep();
+  accountCredentialLimiter.sweep();
 }, 5 * 60_000);
 
 // REST API routes — room creation gets its own tighter cap.
-app.use('/api/auth', authRouter);
+// Endpoints that take a password or send email get a tighter cap than the
+// general limiter, to slow password guessing and reset-email floods.
+const ACCOUNT_CREDENTIAL_PATHS = new Set(['/login', '/register', '/password', '/password-reset/request', '/password-reset/confirm']);
+app.use('/api/auth', (req, res, next) => {
+  if (req.method === 'POST' && ACCOUNT_CREDENTIAL_PATHS.has(req.path)) {
+    accountCredentialLimiter.middleware(req, res, next);
+    return;
+  }
+  next();
+}, authRouter);
 
 app.use('/api/rooms', (req, res, next) => {
   if (req.method === 'POST') {

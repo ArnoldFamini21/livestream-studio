@@ -77,6 +77,55 @@ export interface AccountLoginRequest {
   password: string;
 }
 
+export interface AccountChangePasswordRequest {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export interface AccountChangePasswordResponse {
+  ok: true;
+  /** Other devices signed out because the password changed. */
+  signedOutSessions: number;
+}
+
+/** One place the account is signed in. Never carries the session token. */
+export interface AccountSessionSummary {
+  id: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  userAgent: string;
+  current: boolean;
+}
+
+export interface AccountSessionsResponse {
+  sessions: AccountSessionSummary[];
+}
+
+export interface AccountRevokeSessionsResponse {
+  ok: true;
+  revoked: number;
+}
+
+export interface AccountPasswordResetRequest {
+  email: string;
+}
+
+export interface AccountPasswordResetRequestResponse {
+  /** Always true: the response never reveals whether the email has an account. */
+  ok: true;
+}
+
+export interface AccountPasswordResetConfirmRequest {
+  token: string;
+  newPassword: string;
+}
+
+export interface AccountCapabilitiesResponse {
+  /** Whether this server can email password reset links. */
+  passwordReset: boolean;
+}
+
 function firstNonEmptyEnv(env: Record<string, string | undefined>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = env[key]?.trim();

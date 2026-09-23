@@ -19,6 +19,8 @@ const READY_ENV = {
   LIVE_STREAM_TOKEN_SECRET: 'x'.repeat(32),
   CLIENT_URL: 'https://studio.example.test',
   YOUTUBE_API_KEY: 'key',
+  ACCOUNT_EMAIL_FROM: 'Studio <studio@example.test>',
+  RESEND_API_KEY: 're_test',
 };
 
 describe('production readiness', () => {
