@@ -91,7 +91,7 @@ import {
 } from '../utils/workspaceTeam.ts';
 
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
-const SERVER_WAKE_NOTICE_DELAY_MS = 6_000;
+const SERVER_WAKE_NOTICE_DELAY_MS = 3_000;
 const SAVED_HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing for this studio. Create a new studio to get a fresh private host link.';
 const INVITE_QR_OPTIONS = {
   errorCorrectionLevel: 'M',
@@ -354,7 +354,7 @@ export function HomePage() {
     setError(null);
     setProgressMessage(null);
     const progressTimer = window.setTimeout(() => {
-      setProgressMessage('Still creating. The studio server is waking up and may need a moment.');
+      setProgressMessage('Waking up the studio server. After it has been idle this takes about 30 seconds; your studio opens as soon as it is ready.');
     }, SERVER_WAKE_NOTICE_DELAY_MS);
 
     try {
@@ -404,7 +404,7 @@ export function HomePage() {
     setError(null);
     setProgressMessage(null);
     const progressTimer = window.setTimeout(() => {
-      setProgressMessage('Still scheduling. The studio server is waking up and may need a moment.');
+      setProgressMessage('Waking up the studio server. After it has been idle this takes about 30 seconds; your invite link appears as soon as it is ready.');
     }, SERVER_WAKE_NOTICE_DELAY_MS);
 
     try {

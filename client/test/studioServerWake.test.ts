@@ -81,3 +81,28 @@ describe('studio server wake-up', () => {
     assert.equal(attempts, 1);
   });
 });
+
+describe('studio server prewarm', () => {
+  it('wakes every server once and not again within five minutes', async () => {
+    const { prewarmStudioServers, resetStudioServerPrewarm } = await import('../src/utils/studioServerWake.ts');
+    resetStudioServerPrewarm();
+    const hits: string[] = [];
+    const fetchImpl = (async (url: string) => { hits.push(url); return new Response('{}'); }) as unknown as typeof fetch;
+    let time = 1_000_000;
+    const deps = { fetchImpl, now: () => time, urls: ['https://api.test/health', 'https://media.test/health'] };
+    assert.equal(prewarmStudioServers(deps), true);
+    assert.deepEqual(hits, ['https://api.test/health', 'https://media.test/health']);
+    time += 60_000;
+    assert.equal(prewarmStudioServers(deps), false);
+    time += 5 * 60_000;
+    assert.equal(prewarmStudioServers(deps), true);
+    assert.equal(hits.length, 4);
+  });
+
+  it('never throws when a server cannot be reached', async () => {
+    const { prewarmStudioServers, resetStudioServerPrewarm } = await import('../src/utils/studioServerWake.ts');
+    resetStudioServerPrewarm();
+    const fetchImpl = (async () => { throw new TypeError('offline'); }) as unknown as typeof fetch;
+    assert.doesNotThrow(() => prewarmStudioServers({ fetchImpl, urls: ['https://api.test/health'] }));
+  });
+});

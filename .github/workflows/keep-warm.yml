@@ -1,0 +1,22 @@
+name: Keep studio server warm
+
+# Render's free plan puts the signaling server to sleep after 15 minutes
+# without traffic, and the next visitor waits about 30 seconds for it to wake.
+# Pinging /health every 10 minutes keeps it awake from 06:00 to 23:00
+# Philippine time (22:00-14:59 UTC). Free instance hours are capped at 750 a
+# month per workspace, so the server is allowed to sleep overnight, and the
+# media server is not kept awake (the studio wakes it when opened).
+on:
+  schedule:
+    - cron: '*/10 22,23,0-14 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping the signaling server
+        run: curl --fail --silent --show-error --max-time 90 --retry 2 --retry-delay 5 https://livestream-studio-server.onrender.com/health > /dev/null

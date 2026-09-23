@@ -6,7 +6,7 @@
  * restart.
  */
 
-import { ApiRequestError, buildApiUrl, postJson } from './apiClient.ts';
+import { ApiRequestError, buildApiUrl, postJson, resolveMediaHttpUrl } from './apiClient.ts';
 
 const HEALTH_REQUEST_TIMEOUT_MS = 10_000;
 const HEALTH_POLL_INTERVAL_MS = 3_000;
@@ -82,4 +82,42 @@ export async function postWhenStudioServerReady<T>(
     await waitForStudioServer(DEFAULT_WAKE_TIMEOUT_MS, deps);
     return post<T>(path, body, { timeoutMs: REQUEST_TIMEOUT_MS });
   }
+}
+
+const PREWARM_REFRESH_MS = 5 * 60_000;
+let lastPrewarmAt = 0;
+
+/**
+ * Wake both servers in the background as soon as the app opens. Free hosting
+ * puts them to sleep after 15 idle minutes and waking takes about 30 seconds;
+ * starting now means that time passes while the host fills in the form
+ * instead of after they press Create.
+ */
+export function prewarmStudioServers(
+  deps: { fetchImpl?: typeof fetch; now?: () => number; urls?: string[] } = {}
+): boolean {
+  const now = (deps.now || Date.now)();
+  if (now - lastPrewarmAt < PREWARM_REFRESH_MS) return false;
+  lastPrewarmAt = now;
+  const fetchImpl = deps.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  if (!fetchImpl) return false;
+  let urls = deps.urls;
+  if (!urls) {
+    urls = [buildApiUrl('/health')];
+    try {
+      const media = resolveMediaHttpUrl();
+      if (media) urls.push(`${media.replace(/\/+$/, '')}/health`);
+    } catch {
+      // No media server configured; the studio server alone is enough to create studios.
+    }
+  }
+  for (const url of urls) {
+    void fetchImpl(url, { cache: 'no-store', keepalive: true }).catch(() => undefined);
+  }
+  return true;
+}
+
+/** Test hook: forget the last prewarm time. */
+export function resetStudioServerPrewarm(): void {
+  lastPrewarmAt = 0;
 }
