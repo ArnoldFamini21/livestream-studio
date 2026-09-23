@@ -6191,7 +6191,11 @@ export function StudioRoom() {
                     });
                     return (
                       <div
-                        key={item.id}
+                        // A fresh box when the stage switches between the presenting
+                        // layout (absolute, explicit height) and the normal one (16:9 by
+                        // aspect-ratio). Safari keeps the old explicit height when it is
+                        // removed mid-transition, which left "Me" as a thin strip.
+                        key={`${item.id}:${sharedContentLayoutResult ? 'presenting' : 'stage'}`}
                         data-stage-item-id={item.id}
                         draggable={canDragStageTile}
                         style={{
