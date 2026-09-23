@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { ActiveMedia } from '@studio/shared';
 
 import {
+  getSharedContentLabel,
   clampPresentationSlideIndex,
   getPresentationDeckUnitLabel,
   getPresentationItemDisplayTitle,
@@ -180,5 +181,29 @@ describe('presentation deck controls', () => {
         isCurrent: true,
       },
     ]);
+  });
+});
+
+describe('shared content labels', () => {
+  it('shows clean titles without file extensions', () => {
+    assert.deepEqual(
+      getSharedContentLabel({ name: 'The Book of Ruth - Act 4 and Epilogue.pptx', type: 'presentation', preview: undefined }),
+      { kind: 'deck', title: 'The Book of Ruth - Act 4 and Epilogue', kindLabel: 'Presentation' }
+    );
+    assert.equal(getSharedContentLabel({ name: 'Handout.PDF', type: 'pdf', preview: undefined }).title, 'Handout');
+    assert.equal(getSharedContentLabel({ name: 'photo.jpeg', type: 'image', preview: undefined }).kindLabel, 'Image');
+    assert.equal(getSharedContentLabel({ name: 'intro.mp4', type: 'video', preview: undefined }).kind, 'video');
+    assert.equal(getSharedContentLabel({ name: '.pptx', type: 'presentation', preview: undefined }).title, '.pptx');
+  });
+
+  it('labels PDF decks and shared screens', () => {
+    const pdfDeck = getSharedContentLabel({
+      name: 'Sermon notes.pdf',
+      type: 'presentation',
+      preview: { kind: 'presentation-slides', sourceFormat: 'pdf', slides: [] },
+    });
+    assert.equal(pdfDeck.kindLabel, 'PDF');
+    assert.deepEqual(getSharedContentLabel(null, "Arnold's Screen"), { kind: 'screen', title: "Arnold's Screen", kindLabel: 'Screen share' });
+    assert.equal(getSharedContentLabel(null).title, 'Shared screen');
   });
 });

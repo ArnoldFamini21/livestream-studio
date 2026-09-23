@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Participant, StageActionPayload } from '@studio/shared';
+import type { Participant, RecordingUploadProgressPayload, StageActionPayload } from '@studio/shared';
 import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
 import { formatPeerBandwidthHealthTitle } from '../utils/peerBandwidthDisplay.ts';
+import { describeRecordingUploadProgress } from '../utils/recordingUploadProgress.ts';
 import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import { StudioIcon } from './StudioIcon.tsx';
 import '../styles/people-panel.css';
@@ -24,6 +25,9 @@ export interface PeoplePanelProps {
   audioDuckingEnabled: boolean;
   onAudioDuckingEnabledChange: (enabled: boolean) => void;
   onMessageParticipant: (participantId: string) => void;
+  /** Latest background recording upload report per participant (hosts only). */
+  recordingUploads?: Record<string, RecordingUploadProgressPayload>;
+  onRecordingUploadControl?: (participantId: string, action: 'pause' | 'resume') => void;
 }
 
 export function PeoplePanel(props: PeoplePanelProps) {
@@ -150,6 +154,12 @@ function PersonRow({
     ? props.localStream
     : props.remoteStreams.get(person.id) || null;
   const health = props.peerBandwidthHealth.get(person.id);
+  const upload = host ? props.recordingUploads?.[person.id] : undefined;
+  const uploadSummary = upload ? describeRecordingUploadProgress(upload) : null;
+  const uploadControllable = Boolean(
+    upload && !isMe && props.onRecordingUploadControl &&
+    (upload.status === 'uploading' || upload.status === 'paused')
+  );
   const spotlight = props.focusedParticipantId === person.id;
   const canMix = host && person.status === 'on-stage';
   const value = props.participantVolumes[person.id] ?? 1;
@@ -210,6 +220,14 @@ function PersonRow({
                 Weak connection
               </span>
             )}
+          {uploadSummary && (
+            <span
+              className={`people-upload is-${uploadSummary.tone}`}
+              title={uploadSummary.detail}
+            >
+              {uploadSummary.label}
+            </span>
+          )}
         </div>
         {manageable &&
           (person.status === 'on-stage' ? (
@@ -314,6 +332,25 @@ function PersonRow({
                 }}
               >
                 Message privately
+              </button>
+            )}
+            {uploadControllable && upload && (
+              <button
+                type="button"
+                title={
+                  upload.status === 'paused'
+                    ? 'Continue sending this recording to the cloud'
+                    : 'Free this guest’s bandwidth; the upload finishes after recording'
+                }
+                onClick={() => {
+                  props.onRecordingUploadControl?.(
+                    person.id,
+                    upload.status === 'paused' ? 'resume' : 'pause'
+                  );
+                  close();
+                }}
+              >
+                {upload.status === 'paused' ? 'Resume upload' : 'Pause upload'}
               </button>
             )}
             {manageable && (

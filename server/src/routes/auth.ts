@@ -1,15 +1,36 @@
 import { Router, type Request, type Response } from 'express';
-import type { AccountLogoutResponse, AccountSessionResponse } from '@studio/shared';
+import type {
+  AccountCapabilitiesResponse,
+  AccountLogoutResponse,
+  AccountPasswordResetRequestResponse,
+  AccountSessionResponse,
+  AccountSessionsResponse,
+} from '@studio/shared';
 import {
   AccountAuthError,
+  changeAccountPassword,
+  confirmPasswordReset,
   getAccountSession,
   getValidAccountSessionToken,
   InMemoryAccountAuthStore,
+  listAccountSessions,
   loginAccount,
   logoutAccount,
+  normalizeAccountEmail,
   registerAccount,
+  requestPasswordReset,
+  revokeAccountSession,
+  revokeOtherAccountSessions,
   type AccountAuthStore,
+  type AccountRequestContext,
 } from '../services/accountAuth.js';
+import {
+  buildPasswordResetEmail,
+  buildPasswordResetLink,
+  createAccountMailerFromEnv,
+  getPasswordResetUrlBase,
+  type AccountMailer,
+} from '../services/accountMailer.js';
 
 const ACCOUNT_SESSION_COOKIE = 'studio_account_session';
 const SESSION_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -20,6 +41,24 @@ let accountAuthStore: AccountAuthStore = new InMemoryAccountAuthStore();
 
 export function configureAccountAuthStore(store: AccountAuthStore | null) {
   accountAuthStore = store || new InMemoryAccountAuthStore();
+}
+
+let accountMailer: AccountMailer | null | undefined;
+let resetUrlBase = '';
+
+/** Override the email sender (tests); `null` disables password reset emails. */
+export function configureAccountMailer(mailer: AccountMailer | null, urlBase?: string) {
+  accountMailer = mailer;
+  resetUrlBase = urlBase || '';
+}
+
+function getAccountMailer(): AccountMailer | null {
+  if (accountMailer === undefined) accountMailer = createAccountMailerFromEnv(process.env);
+  return accountMailer;
+}
+
+function requestContext(req: Request): AccountRequestContext {
+  return { userAgent: req.get('user-agent') || '' };
 }
 
 function isSecureRequest(req: Request): boolean {
@@ -86,7 +125,7 @@ function sendAccountAuthError(res: Response, err: unknown) {
 
 authRouter.post('/register', async (req, res) => {
   try {
-    const result = await registerAccount(accountAuthStore, req.body);
+    const result = await registerAccount(accountAuthStore, req.body, new Date(), requestContext(req));
     setAccountSessionCookie(req, res, result.session.token);
     res.status(201).json(result);
   } catch (err) {
@@ -96,7 +135,7 @@ authRouter.post('/register', async (req, res) => {
 
 authRouter.post('/login', async (req, res) => {
   try {
-    const result = await loginAccount(accountAuthStore, req.body);
+    const result = await loginAccount(accountAuthStore, req.body, new Date(), requestContext(req));
     setAccountSessionCookie(req, res, result.session.token);
     res.json(result);
   } catch (err) {
@@ -120,6 +159,84 @@ authRouter.post('/logout', async (req, res) => {
     clearAccountSessionCookie(req, res);
     const response: AccountLogoutResponse = { ok: true };
     res.json(response);
+  } catch (err) {
+    sendAccountAuthError(res, err);
+  }
+});
+
+authRouter.get('/capabilities', (_req, res) => {
+  const response: AccountCapabilitiesResponse = { passwordReset: Boolean(getAccountMailer()) };
+  res.json(response);
+});
+
+authRouter.post('/password', async (req, res) => {
+  try {
+    res.json(await changeAccountPassword(accountAuthStore, readAccountSessionToken(req), req.body || {}));
+  } catch (err) {
+    sendAccountAuthError(res, err);
+  }
+});
+
+authRouter.get('/sessions', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const response: AccountSessionsResponse = {
+      sessions: await listAccountSessions(accountAuthStore, readAccountSessionToken(req)),
+    };
+    res.json(response);
+  } catch (err) {
+    sendAccountAuthError(res, err);
+  }
+});
+
+authRouter.post('/sessions/revoke-others', async (req, res) => {
+  try {
+    res.json(await revokeOtherAccountSessions(accountAuthStore, readAccountSessionToken(req)));
+  } catch (err) {
+    sendAccountAuthError(res, err);
+  }
+});
+
+authRouter.delete('/sessions/:sessionId', async (req, res) => {
+  try {
+    const result = await revokeAccountSession(accountAuthStore, readAccountSessionToken(req), req.params.sessionId);
+    if (result.revokedCurrent) clearAccountSessionCookie(req, res);
+    res.json({ ok: true, revokedCurrent: result.revokedCurrent });
+  } catch (err) {
+    sendAccountAuthError(res, err);
+  }
+});
+
+authRouter.post('/password-reset/request', (req, res) => {
+  const mailer = getAccountMailer();
+  if (!mailer) {
+    res.status(503).json({ error: 'Password reset by email is not set up on this server.', code: 'ACCOUNT_RESET_UNAVAILABLE' });
+    return;
+  }
+  const email = normalizeAccountEmail(req.body?.email);
+  if (!email) {
+    res.status(400).json({ error: 'Enter a valid email address.', code: 'ACCOUNT_EMAIL_INVALID' });
+    return;
+  }
+
+  // Answer before looking the email up, so neither the response nor its
+  // timing reveals whether the address has an account.
+  const response: AccountPasswordResetRequestResponse = { ok: true };
+  res.json(response);
+
+  const base = resetUrlBase || getPasswordResetUrlBase(process.env);
+  void requestPasswordReset(accountAuthStore, { email }, async (delivery) => {
+    await mailer.send(buildPasswordResetEmail(delivery, buildPasswordResetLink(base, delivery.token)));
+  }).catch((err) => {
+    console.error('Password reset email failed:', err instanceof Error ? err.message : err);
+  });
+});
+
+authRouter.post('/password-reset/confirm', async (req, res) => {
+  try {
+    const result = await confirmPasswordReset(accountAuthStore, req.body || {}, new Date(), requestContext(req));
+    setAccountSessionCookie(req, res, result.session.token);
+    res.json(result);
   } catch (err) {
     sendAccountAuthError(res, err);
   }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LayoutMode } from '@studio/shared';
-import { getPresentationGeometry, type PresentationRect, type PresentationCorner, type PresentationCameraSize, normalizePresentationCameraSize } from '../src/utils/presentationLayout.ts';
+import { DEFAULT_CONTENT_ASPECT, getPresentationGeometry, normalizeContentAspect, type PresentationRect, type PresentationCorner, type PresentationCameraSize, normalizePresentationCameraSize } from '../src/utils/presentationLayout.ts';
 import { selectVisibleStageItems } from '../src/utils/mediaShareLayouts.ts';
 
 const layouts: LayoutMode[] = ['single', 'grid', 'spotlight', 'side-by-side', 'pip', 'featured'];
@@ -68,6 +68,53 @@ describe('presentation composition', () => {
     }
     assert.equal(normalizePresentationCameraSize('large'), 'large');
     for (const value of [null, undefined, 'invalid', 42]) assert.equal(normalizePresentationCameraSize(value), 'medium');
+  });
+
+  it('frames content at its own shape so slides and screens never letterbox', () => {
+    for (const aspect of [16 / 9, 4 / 3, 21 / 9, 9 / 16, 1]) for (const layout of layouts) for (let count = 0; count <= 6; count++) {
+      const { media, participants, usesFloatingParticipant } = getPresentationGeometry(layout, count, 'BR', 'medium', aspect);
+      assertInsideCanvas(media);
+      assert.ok(Math.abs(media.width / media.height - aspect) < 0.01, `${layout}/${count}/${aspect}`);
+      if (!usesFloatingParticipant) participants.forEach(tile => assert.equal(overlaps(tile, media), false));
+    }
+  });
+
+  it('centers content and cameras as one balanced group', () => {
+    const beside = getPresentationGeometry('grid', 1);
+    const [camera] = beside.participants;
+    const left = beside.media.x;
+    const right = 960 - (camera.x + camera.width);
+    assert.ok(Math.abs(left - right) < 0.001, 'equal side margins');
+    assert.ok(Math.abs((beside.media.y + beside.media.height / 2) - 270) < 0.001, 'content vertically centered');
+    assert.ok(Math.abs((camera.y + camera.height / 2) - 270) < 0.001, 'camera column vertically centered');
+    assert.ok(beside.media.width > 600, 'content stays dominant');
+    assert.ok(camera.width >= 220, 'presenter is large enough to read expressions');
+
+    const below = getPresentationGeometry('spotlight', 3);
+    const top = below.media.y;
+    const bottom = 540 - (below.participants[0].y + below.participants[0].height);
+    assert.ok(Math.abs(top - bottom) < 0.001, 'equal top and bottom margins');
+    const rowLeft = below.participants[0].x;
+    const rowRight = 960 - (below.participants[2].x + below.participants[2].width);
+    assert.ok(Math.abs(rowLeft - rowRight) < 0.001, 'camera row centered');
+  });
+
+  it('rounds framed content and keeps full-frame content square-edged', () => {
+    assert.equal(getPresentationGeometry('grid', 1).mediaRadius, 10);
+    assert.equal(getPresentationGeometry('spotlight', 2).mediaRadius, 10);
+    assert.equal(getPresentationGeometry('pip', 1).mediaRadius, 0);
+    assert.equal(getPresentationGeometry('single', 3).mediaRadius, 0);
+    assert.deepEqual(getPresentationGeometry('pip', 1).media, { x: 0, y: 0, width: 960, height: 540 });
+  });
+
+  it('normalizes unknown and extreme content shapes', () => {
+    assert.equal(normalizeContentAspect(undefined), DEFAULT_CONTENT_ASPECT);
+    assert.equal(normalizeContentAspect(0), DEFAULT_CONTENT_ASPECT);
+    assert.equal(normalizeContentAspect(Number.NaN), DEFAULT_CONTENT_ASPECT);
+    assert.equal(normalizeContentAspect(100), 3.2);
+    assert.equal(normalizeContentAspect(0.1), 0.5);
+    assert.equal(normalizeContentAspect(4 / 3), 4 / 3);
+    assert.equal(normalizeContentAspect(1366 / 768), DEFAULT_CONTENT_ASPECT);
   });
 
   it('handles invalid counts without producing invalid geometry', () => {

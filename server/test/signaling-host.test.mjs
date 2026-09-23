@@ -485,6 +485,156 @@ describe('participant recording upload authorization', () => {
   });
 });
 
+describe('progressive recording upload reporting', () => {
+  async function joinRecordingRoom(harness, label) {
+    const { room, hostToken } = createRoom(`Upload progress ${label}`, 'Arnold', {
+      creatorIp: `upload-progress-${label}-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    const host = await connectClient(harness.url);
+    const hostJoined = waitForMessage(host, 'room-joined');
+    joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+    await hostJoined;
+
+    const guest = await connectClient(harness.url);
+    const guestJoined = waitForMessage(guest, 'room-joined');
+    joinRoom(guest, { roomId: room.id, name: 'Nica', role: 'guest' });
+    const joinedGuest = await guestJoined;
+
+    const observer = await connectClient(harness.url);
+    const observerJoined = waitForMessage(observer, 'room-joined');
+    joinRoom(observer, { roomId: room.id, name: 'Observer', role: 'guest' });
+    await observerJoined;
+
+    const started = waitForMessage(guest, 'recording-state-changed', (message) => message.payload.recording);
+    sendSignal(host, {
+      type: 'recording-state-changed',
+      payload: { recording: true, sessionId: 'recording-progress-123', performedBy: 'client-host' },
+    });
+    await started;
+    return { host, guest, observer, guestId: joinedGuest.payload.participant.id };
+  }
+
+  it('relays stamped participant progress to hosts but not to other guests', async () => {
+    const harness = await createSignalingHarness();
+    try {
+      const { host, guest, observer, guestId } = await joinRecordingRoom(harness, 'relay');
+      const hostReport = waitForMessage(host, 'recording-upload-progress');
+      const observerSilent = expectNoMessage(observer, 'recording-upload-progress');
+      sendSignal(guest, {
+        type: 'recording-upload-progress',
+        payload: {
+          sessionId: 'recording-progress-123',
+          participantId: 'spoofed-participant',
+          participantName: 'Spoofed',
+          status: 'uploading',
+          recordedBytes: 5_000_000,
+          uploadedBytes: 9_000_000,
+          trackCount: 2,
+          completedTrackCount: 0,
+          message: 'Uploading\nin background',
+        },
+      });
+      const report = await hostReport;
+      await observerSilent;
+      assert.equal(report.payload.participantId, guestId);
+      assert.equal(report.payload.participantName, 'Nica');
+      assert.equal(report.payload.status, 'uploading');
+      assert.equal(report.payload.recordedBytes, 5_000_000);
+      assert.equal(report.payload.uploadedBytes, 5_000_000, 'uploaded bytes are clamped to recorded bytes');
+      assert.equal(report.payload.message, 'Uploading in background');
+      assert.ok(Date.parse(report.payload.updatedAt));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects malformed reports and ignores reports for another take', async () => {
+    const harness = await createSignalingHarness();
+    try {
+      const { host, guest } = await joinRecordingRoom(harness, 'validation');
+      const rejected = waitForMessage(guest, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(guest, {
+        type: 'recording-upload-progress',
+        payload: {
+          sessionId: 'recording-progress-123',
+          status: 'uploading',
+          recordedBytes: -1,
+          uploadedBytes: 0,
+          trackCount: 1,
+          completedTrackCount: 0,
+        },
+      });
+      await rejected;
+
+      const invalidCount = waitForMessage(guest, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(guest, {
+        type: 'recording-upload-progress',
+        payload: {
+          sessionId: 'recording-progress-123',
+          status: 'complete',
+          recordedBytes: 10,
+          uploadedBytes: 10,
+          trackCount: 1,
+          completedTrackCount: 2,
+        },
+      });
+      await invalidCount;
+
+      const hostSilent = expectNoMessage(host, 'recording-upload-progress');
+      sendSignal(guest, {
+        type: 'recording-upload-progress',
+        payload: {
+          sessionId: 'recording-progress-old',
+          status: 'uploading',
+          recordedBytes: 10,
+          uploadedBytes: 5,
+          trackCount: 1,
+          completedTrackCount: 0,
+        },
+      });
+      await hostSilent;
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('lets only hosts pause or resume a participant upload', async () => {
+    const harness = await createSignalingHarness();
+    try {
+      const { host, guest, observer, guestId } = await joinRecordingRoom(harness, 'control');
+      const unauthorized = waitForMessage(observer, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(observer, {
+        type: 'recording-upload-control',
+        payload: { targetParticipantId: guestId, action: 'pause' },
+      });
+      await unauthorized;
+
+      const control = waitForMessage(guest, 'recording-upload-control');
+      sendSignal(host, {
+        type: 'recording-upload-control',
+        payload: { targetParticipantId: guestId, action: 'pause', performedBy: 'spoofed' },
+      });
+      const received = await control;
+      assert.equal(received.payload.targetParticipantId, guestId);
+      assert.equal(received.payload.action, 'pause');
+      assert.notEqual(received.payload.performedBy, 'spoofed');
+
+      const invalid = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'recording-upload-control',
+        payload: { targetParticipantId: guestId, action: 'delete' },
+      });
+      await invalid;
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('secure guest invite token authorization', () => {
   it('lets a password-protected guest join with a one-time secure guest link', async () => {
     const harness = await createSignalingHarness();

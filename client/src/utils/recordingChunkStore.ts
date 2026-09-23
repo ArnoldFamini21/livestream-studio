@@ -58,6 +58,11 @@ export function createRecordingChunkStore(
   return {
     append,
     flush: () => pending,
+    /** Committed bytes so far, in capture order; equal to a prefix of finish(). */
+    async snapshot(mimeType: string): Promise<Blob> {
+      await pending;
+      return new Blob(parts, { type: mimeType });
+    },
     async finish(mimeType: string): Promise<Blob> {
       await pending;
       return new Blob(parts, { type: mimeType });

@@ -15,6 +15,12 @@ const DEFAULT_PPTX_SLIDE_WIDTH_EMU = 12192000;
 const DEFAULT_PPTX_SLIDE_HEIGHT_EMU = 6858000;
 const FULL_SLIDE_IMAGE_TOLERANCE_EMU = 90_000;
 const RENDER_SETTLE_FRAMES = 3;
+// Browser-rendered slides match the media-server renderer: 1920px JPEG at q92,
+// so full-frame slides stay sharp in a 1080p broadcast.
+const SLIDE_CAPTURE_PIXEL_RATIO = 1.5;
+const SLIDE_CAPTURE_JPEG_QUALITY = 0.92;
+const MIN_TEXT_FIT_SCALE = 0.5;
+const TEXT_FIT_ATTEMPTS = 7;
 const RENDER_SETTLE_TIMEOUT_MS = 320;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
@@ -710,6 +716,76 @@ function getVisibleSlideNode(host: HTMLElement, slideIndex: number): HTMLElement
   return renderedSlides[renderedSlides.length - 1] || null;
 }
 
+function measureTextBlockHeight(textRoot: HTMLElement): number {
+  let top = Number.POSITIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const block of Array.from(textRoot.querySelectorAll('p, li, span'))) {
+    if (!block.textContent?.trim()) continue;
+    const rect = block.getBoundingClientRect();
+    if (rect.height <= 0) continue;
+    top = Math.min(top, rect.top);
+    bottom = Math.max(bottom, rect.bottom);
+  }
+  return Number.isFinite(top) && Number.isFinite(bottom) ? bottom - top : 0;
+}
+
+interface TextStyleSnapshot {
+  element: HTMLElement;
+  fontSize: number;
+  lineHeight: number | null;
+}
+
+function snapshotTextStyles(textRoot: HTMLElement): TextStyleSnapshot[] {
+  // Read every computed size before any write, so inherited sizes never compound.
+  return [textRoot, ...Array.from(textRoot.querySelectorAll<HTMLElement>('*'))].map((element) => {
+    const style = getComputedStyle(element);
+    return {
+      element,
+      fontSize: parseFloat(style.fontSize),
+      lineHeight: style.lineHeight.endsWith('px') ? parseFloat(style.lineHeight) : null,
+    };
+  });
+}
+
+function applyTextScale(snapshot: TextStyleSnapshot[], scale: number): void {
+  for (const { element, fontSize, lineHeight } of snapshot) {
+    if (Number.isFinite(fontSize) && fontSize > 0) element.style.fontSize = `${fontSize * scale}px`;
+    if (lineHeight !== null && Number.isFinite(lineHeight)) element.style.lineHeight = `${lineHeight * scale}px`;
+  }
+}
+
+/**
+ * PowerPoint shrinks text that would overflow its box; the browser renderer
+ * does not, and substituted fonts are often wider than the originals. Without
+ * this, long verses spill into the next text box (e.g. the scripture
+ * reference). Find the largest text scale that fits each overflowing shape —
+ * text re-wraps as it shrinks, so a single proportional step would overshoot.
+ */
+export function fitOverflowingSlideText(slideNode: HTMLElement): number {
+  let adjustedShapes = 0;
+  for (const shape of Array.from(slideNode.querySelectorAll<HTMLElement>('.shape-wrapper'))) {
+    const textRoot = shape.querySelector<HTMLElement>('.text-wrapper');
+    if (!textRoot) continue;
+    const boxHeight = shape.getBoundingClientRect().height;
+    if (boxHeight <= 0) continue;
+    const limit = boxHeight + Math.max(2, boxHeight * 0.02);
+    if (measureTextBlockHeight(textRoot) <= limit) continue;
+
+    const snapshot = snapshotTextStyles(textRoot);
+    let fits = MIN_TEXT_FIT_SCALE;
+    let overflows = 1;
+    for (let attempt = 0; attempt < TEXT_FIT_ATTEMPTS; attempt += 1) {
+      const scale = (fits + overflows) / 2;
+      applyTextScale(snapshot, scale);
+      if (measureTextBlockHeight(textRoot) <= limit) fits = scale;
+      else overflows = scale;
+    }
+    applyTextScale(snapshot, fits);
+    adjustedShapes += 1;
+  }
+  return adjustedShapes;
+}
+
 function prepareSlideNodeForCapture(slideNode: HTMLElement): { width: number; height: number } | null {
   slideNode.style.margin = '0';
   slideNode.style.boxSizing = 'border-box';
@@ -769,14 +845,15 @@ async function renderPptxSlidesToImages(arrayBuffer: ArrayBuffer, expectedSlideC
       }
 
       await waitForPresentationRender(slideNode);
+      fitOverflowingSlideText(slideNode);
       const captureOptions = {
         width: dimensions.width,
         height: dimensions.height,
-        pixelRatio: 1,
+        pixelRatio: SLIDE_CAPTURE_PIXEL_RATIO,
         backgroundColor: '#ffffff',
       };
-      const imageUrl = await toPng(slideNode, captureOptions)
-        .catch(() => toJpeg(slideNode, { ...captureOptions, quality: 0.94 }));
+      const imageUrl = await toJpeg(slideNode, { ...captureOptions, quality: SLIDE_CAPTURE_JPEG_QUALITY })
+        .catch(() => toPng(slideNode, captureOptions));
       imageUrls.push(isRenderedSlideImageUrl(imageUrl) ? imageUrl : '');
     }
 

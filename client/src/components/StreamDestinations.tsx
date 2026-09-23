@@ -21,7 +21,10 @@ import {
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
 import { formatRelayLatency } from '../utils/rtmpRelayLatency.ts';
+import { RELAY_BACKLOG_WARNING_SECONDS, formatRelayBacklog } from '../utils/rtmpRelayBackpressure.ts';
 import { buildLivePreflightChecklist, type LivePreflightStatus } from '../utils/livePreflight.ts';
+import { isYouTubeConnectionConfigured, type YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
+import { YouTubeConnectForm } from './YouTubeConnectForm.tsx';
 import {
   MAX_STREAM_SCREEN_COUNTDOWN_SECONDS,
   normalizeStreamScreenConfig,
@@ -54,6 +57,9 @@ interface StreamDestinationsProps {
   onGoLive: () => void | Promise<void>;
   onStopLive: () => void | Promise<void>;
   onClose: () => void;
+  /** Suggested title for broadcasts created through a connected account. */
+  defaultBroadcastTitle?: string;
+  onYouTubeBroadcastCreated?: (broadcast: YouTubeConnectedBroadcast) => void;
 }
 
 const STALE_CHUNK_MS = 5_000;
@@ -88,7 +94,12 @@ export function StreamDestinations({
   onGoLive,
   onStopLive,
   onClose,
+  defaultBroadcastTitle = 'Live stream',
+  onYouTubeBroadcastCreated,
 }: StreamDestinationsProps) {
+  const youTubeConnectAvailable = isYouTubeConnectionConfigured();
+  const [youTubeMode, setYouTubeMode] = useState<'connect' | 'key'>(youTubeConnectAvailable ? 'connect' : 'key');
+  const [rememberStreamKey, setRememberStreamKey] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [platform, setPlatform] = useState<StreamDestination['platform']>('youtube');
   const [name, setName] = useState('');
@@ -111,6 +122,8 @@ export function StreamDestinations({
     setRtmpUrl('');
     setStreamKey('');
     setFormError(null);
+    setRememberStreamKey(false);
+    setYouTubeMode(youTubeConnectAvailable ? 'connect' : 'key');
   };
 
   const openCreateForm = () => {
@@ -121,6 +134,29 @@ export function StreamDestinations({
     setRtmpUrl(getDefaultRtmpUrl('youtube'));
     setStreamKey('');
     setFormError(null);
+    setRememberStreamKey(false);
+    setYouTubeMode(youTubeConnectAvailable ? 'connect' : 'key');
+  };
+
+  const addConnectedYouTubeBroadcast = (broadcast: YouTubeConnectedBroadcast) => {
+    const enabledSlots = destinations.filter((destination) => destination.enabled).length;
+    onAdd({
+      platform: 'youtube',
+      name: broadcast.title,
+      rtmpUrl: broadcast.rtmpUrl,
+      streamKey: broadcast.streamKey,
+      enabled: enabledSlots < MAX_ENABLED_DESTINATIONS,
+      connection: {
+        provider: 'youtube',
+        broadcastId: broadcast.broadcastId,
+        watchUrl: broadcast.watchUrl,
+        studioUrl: broadcast.studioUrl,
+        privacyStatus: broadcast.privacyStatus,
+        ...(broadcast.liveChatId ? { liveChatId: broadcast.liveChatId } : {}),
+      },
+    });
+    onYouTubeBroadcastCreated?.(broadcast);
+    resetForm();
   };
 
   const openEditForm = (destination: StreamDestination) => {
@@ -131,6 +167,8 @@ export function StreamDestinations({
     setRtmpUrl(destination.rtmpUrl);
     setStreamKey('');
     setFormError(null);
+    setRememberStreamKey(Boolean(destination.rememberStreamKey));
+    setYouTubeMode('key');
   };
 
   const handleSave = () => {
@@ -149,6 +187,7 @@ export function StreamDestinations({
       rtmpUrl: finalRtmp,
       streamKey: finalStreamKey,
       enabled: true,
+      rememberStreamKey,
     };
 
     if (editingDestinationId) {
@@ -503,6 +542,10 @@ export function StreamDestinations({
                 <span style={styles.healthCaption}>Relay RTT</span>
               </div>
               <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{formatRelayBacklog(relayStats.sendBacklogSeconds)}</span>
+                <span style={styles.healthCaption}>Upload Backlog</span>
+              </div>
+              <div style={styles.healthMetric}>
                 <span style={styles.healthValue}>{relayStats.droppedChunks}</span>
                 <span style={styles.healthCaption}>Dropped Chunks</span>
               </div>
@@ -536,7 +579,10 @@ export function StreamDestinations({
                 <div style={{ ...styles.platformDot, background: platformInfo.color }} />
                 <div style={styles.destInfo}>
                   <span style={styles.destName}>{dest.name}</span>
-                  <span style={styles.destPlatform}>{platformInfo.label}</span>
+                  <span style={styles.destPlatform}>
+                    {platformInfo.label}
+                    {dest.connection && <span style={styles.connectedBadge}>Connected · {dest.connection.privacyStatus}</span>}
+                  </span>
                 </div>
                 <div style={styles.destActions}>
                   <span style={{
@@ -554,7 +600,7 @@ export function StreamDestinations({
 	                  >
 	                    {dest.enabled ? 'ON' : 'OFF'}
 	                  </button>
-                  <button
+                  {!dest.connection && <button
                     type="button"
                     className="participant-action-btn"
                     style={{ ...styles.editBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }}
@@ -566,7 +612,7 @@ export function StreamDestinations({
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M17 3a2.83 2.83 0 014 4L8 20l-5 1 1-5 13-13z" />
                     </svg>
-                  </button>
+                  </button>}
 	                  <button type="button" className="participant-action-btn" style={{ ...styles.removeBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={() => onRemove(dest.id)} disabled={isLive} aria-label="Remove destination">
 	                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
 	                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
@@ -574,10 +620,19 @@ export function StreamDestinations({
                   </button>
                 </div>
               </div>
-              <div style={styles.destKey}>
-                Key: {maskStreamKey(dest.streamKey)}
-              </div>
-              <div style={styles.destRtmp}>{dest.rtmpUrl}</div>
+              {dest.connection ? (
+                <div style={styles.destLinks}>
+                  <a href={dest.connection.watchUrl} target="_blank" rel="noopener noreferrer" style={styles.keyLink}>Watch page</a>
+                  <a href={dest.connection.studioUrl} target="_blank" rel="noopener noreferrer" style={styles.keyLink}>YouTube Studio</a>
+                </div>
+              ) : (
+                <>
+                  <div style={styles.destKey}>
+                    Key: {maskStreamKey(dest.streamKey)}{dest.rememberStreamKey ? ' · saved on this device' : ''}
+                  </div>
+                  <div style={styles.destRtmp}>{dest.rtmpUrl}</div>
+                </>
+              )}
               {dest.statusMessage && !issue && <div style={styles.destStatusMessage}>{dest.statusMessage}</div>}
               {issue && <div style={styles.destIssue}>{issue}</div>}
             </div>
@@ -589,7 +644,7 @@ export function StreamDestinations({
           <form style={styles.form} onSubmit={(e) => { e.preventDefault(); handleSave(); }}>
             <div style={styles.formHeader}>
               <span style={styles.formTitle}>{editingDestinationId ? 'Edit Destination' : 'Add Destination'}</span>
-              {editingDestinationId && <span style={styles.formMode}>Session only</span>}
+              {editingDestinationId && <span style={styles.formMode}>Saved on this device</span>}
             </div>
             <div style={styles.platformGrid}>
               {STREAM_PLATFORM_GUIDES.map((p) => (
@@ -607,6 +662,7 @@ export function StreamDestinations({
                     setPlatform(p.platform);
                     setRtmpUrl(getDefaultRtmpUrl(p.platform));
                     setFormError(null);
+                    if (p.platform === 'youtube' && youTubeConnectAvailable && !editingDestinationId) setYouTubeMode('connect');
                   }}
                 >
                   {p.label}
@@ -614,114 +670,134 @@ export function StreamDestinations({
               ))}
             </div>
 
-            <div style={styles.platformGuide}>
-              <div style={styles.platformGuideHeader}>
-                <span style={{ ...styles.platformGuideDot, background: platformGuide.color }} />
-                <div style={styles.platformGuideTitleBlock}>
-                  <span style={styles.platformGuideTitle}>{platformGuide.label} setup</span>
-                  <span style={styles.platformGuideDetail}>
-                    {platformGuide.recommendedOrientation
-                      ? `${platformGuide.recommendedOrientation === 'portrait' ? '9:16 portrait' : '16:9 landscape'} recommended`
-                      : 'Use destination settings'}
-                  </span>
-                </div>
-              </div>
-              <div style={styles.platformSteps}>
-                {platformGuide.setupSteps.map((step, index) => (
-                  <div key={step} style={styles.platformStep}>
-                    <span style={styles.platformStepNumber}>{index + 1}</span>
-                    <span style={styles.platformStepText}>{step}</span>
+            {platform === 'youtube' && youTubeMode === 'connect' && !editingDestinationId ? (
+              <YouTubeConnectForm
+                defaultTitle={defaultBroadcastTitle}
+                disabled={isLive}
+                onCreated={addConnectedYouTubeBroadcast}
+                onUseStreamKey={() => setYouTubeMode('key')}
+              />
+            ) : (
+              <>
+              <div style={styles.platformGuide}>
+                <div style={styles.platformGuideHeader}>
+                  <span style={{ ...styles.platformGuideDot, background: platformGuide.color }} />
+                  <div style={styles.platformGuideTitleBlock}>
+                    <span style={styles.platformGuideTitle}>{platformGuide.label} setup</span>
+                    <span style={styles.platformGuideDetail}>
+                      {platformGuide.recommendedOrientation
+                        ? `${platformGuide.recommendedOrientation === 'portrait' ? '9:16 portrait' : '16:9 landscape'} recommended`
+                        : 'Use destination settings'}
+                    </span>
                   </div>
-                ))}
-              </div>
-              {platformOrientationWarning && (
-                <div style={styles.orientationWarning}>
-                  <span style={styles.orientationWarningText}>{platformOrientationWarning}</span>
-                  {platformGuide.recommendedOrientation && !isLive && (
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      style={styles.orientationSwitchBtn}
-                      onClick={() => onBroadcastOrientationChange(platformGuide.recommendedOrientation as BroadcastOrientation)}
-                    >
-                      Switch
-                    </button>
-                  )}
                 </div>
-              )}
-            </div>
-
-            <div style={styles.inputGroup}>
-              <label style={styles.inputLabel}>Name (optional)</label>
-              <input
-                style={styles.input}
-                placeholder={`e.g. My ${platformGuide.label} Channel`}
-                value={name}
-                onChange={(e) => { setName(e.target.value); setFormError(null); }}
-              />
-            </div>
-
-            <div style={styles.inputGroup}>
-              <label style={styles.inputLabel}>RTMP Server URL</label>
-              <input
-                style={{
-                  ...styles.input,
-                  ...(!platformGuide.rtmpUrlEditable ? { background: 'rgba(255,255,255,0.03)', color: 'var(--text-muted)' } : {}),
-                }}
-                placeholder="rtmp://"
-                value={rtmpUrl || getDefaultRtmpUrl(platform)}
-                onChange={(e) => { setRtmpUrl(e.target.value); setFormError(null); }}
-                readOnly={!platformGuide.rtmpUrlEditable}
-              />
-              <span style={styles.inputHint}>{platformGuide.orientationDetail}</span>
-            </div>
-
-            <div style={styles.inputGroup}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
-                <label style={{...styles.inputLabel, margin: 0}}>{platformGuide.streamKeyLabel}</label>
-                {platformGuide.dashUrl && (
-                  <a
-                    href={platformGuide.dashUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={styles.keyLink}
-                  >
-                    Open {platformGuide.dashboardLabel}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginLeft: 4 }}>
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                      <polyline points="15 3 21 3 21 9" />
-                      <line x1="10" y1="14" x2="21" y2="3" />
-                    </svg>
-                  </a>
+                <div style={styles.platformSteps}>
+                  {platformGuide.setupSteps.map((step, index) => (
+                    <div key={step} style={styles.platformStep}>
+                      <span style={styles.platformStepNumber}>{index + 1}</span>
+                      <span style={styles.platformStepText}>{step}</span>
+                    </div>
+                  ))}
+                </div>
+                {platformOrientationWarning && (
+                  <div style={styles.orientationWarning}>
+                    <span style={styles.orientationWarningText}>{platformOrientationWarning}</span>
+                    {platformGuide.recommendedOrientation && !isLive && (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={styles.orientationSwitchBtn}
+                        onClick={() => onBroadcastOrientationChange(platformGuide.recommendedOrientation as BroadcastOrientation)}
+                      >
+                        Switch
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
-              <input
-                style={styles.input}
-                placeholder={canKeepExistingStreamKey ? 'Leave blank to keep current key' : platformGuide.streamKeyPlaceholder}
-                type="password"
-                autoComplete="off"
-                value={streamKey}
-                onChange={(e) => { setStreamKey(e.target.value); setFormError(null); }}
-              />
-              {canKeepExistingStreamKey && (
-                <span style={styles.inputHint}>Leave blank to keep the current stream key.</span>
-              )}
-              {editingDestinationId && !canKeepExistingStreamKey && (
-                <span style={styles.inputHint}>Paste a new key because the destination platform changed.</span>
-              )}
-              {!editingDestinationId && (
-                <span style={styles.inputHint}>{platformGuide.keyHelp}</span>
-              )}
-            </div>
 
-            {formError && <div style={styles.formError}>{formError}</div>}
+              <div style={styles.inputGroup}>
+                <label style={styles.inputLabel}>Name (optional)</label>
+                <input
+                  style={styles.input}
+                  placeholder={`e.g. My ${platformGuide.label} Channel`}
+                  value={name}
+                  onChange={(e) => { setName(e.target.value); setFormError(null); }}
+                />
+              </div>
 
-            <div style={styles.formActions}>
-              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={resetForm}>Cancel</button>
-              <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={(!streamKey.trim() && !canKeepExistingStreamKey) || isLive}>
-                {editingDestinationId ? 'Save Destination' : 'Add Destination'}
-              </button>
-            </div>
+              <div style={styles.inputGroup}>
+                <label style={styles.inputLabel}>RTMP Server URL</label>
+                <input
+                  style={{
+                    ...styles.input,
+                    ...(!platformGuide.rtmpUrlEditable ? { background: 'rgba(255,255,255,0.03)', color: 'var(--text-muted)' } : {}),
+                  }}
+                  placeholder="rtmp://"
+                  value={rtmpUrl || getDefaultRtmpUrl(platform)}
+                  onChange={(e) => { setRtmpUrl(e.target.value); setFormError(null); }}
+                  readOnly={!platformGuide.rtmpUrlEditable}
+                />
+                <span style={styles.inputHint}>{platformGuide.orientationDetail}</span>
+              </div>
+
+              <div style={styles.inputGroup}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
+                  <label style={{...styles.inputLabel, margin: 0}}>{platformGuide.streamKeyLabel}</label>
+                  {platformGuide.dashUrl && (
+                    <a
+                      href={platformGuide.dashUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={styles.keyLink}
+                    >
+                      Open {platformGuide.dashboardLabel}
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginLeft: 4 }}>
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" />
+                        <line x1="10" y1="14" x2="21" y2="3" />
+                      </svg>
+                    </a>
+                  )}
+                </div>
+                <input
+                  style={styles.input}
+                  placeholder={canKeepExistingStreamKey ? 'Leave blank to keep current key' : platformGuide.streamKeyPlaceholder}
+                  type="password"
+                  autoComplete="off"
+                  value={streamKey}
+                  onChange={(e) => { setStreamKey(e.target.value); setFormError(null); }}
+                />
+                {canKeepExistingStreamKey && (
+                  <span style={styles.inputHint}>Leave blank to keep the current stream key.</span>
+                )}
+                {editingDestinationId && !canKeepExistingStreamKey && (
+                  <span style={styles.inputHint}>Paste a new key because the destination platform changed.</span>
+                )}
+                {!editingDestinationId && (
+                  <span style={styles.inputHint}>{platformGuide.keyHelp}</span>
+                )}
+              </div>
+
+              <label style={styles.rememberRow}>
+                <input
+                  type="checkbox"
+                  checked={rememberStreamKey}
+                  onChange={(event) => setRememberStreamKey(event.target.checked)}
+                />
+                <span>Remember stream key on this device</span>
+              </label>
+
+              {formError && <div style={styles.formError}>{formError}</div>}
+
+              <div style={styles.formActions}>
+                <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={resetForm}>Cancel</button>
+                <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={(!streamKey.trim() && !canKeepExistingStreamKey) || isLive}>
+                  {editingDestinationId ? 'Save Destination' : 'Add Destination'}
+                </button>
+              </div>
+              </>
+            )}
           </form>
         ) : (
           <button type="button" className="btn-secondary" style={{ ...styles.addBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={openCreateForm} disabled={isLive}>
@@ -883,6 +959,16 @@ function getRelayQuality(stats: RtmpRelayStats, targetKbps: number, outputLabel:
       color: '#fca5a5',
       background: 'rgba(239, 68, 68, 0.12)',
       border: 'rgba(239, 68, 68, 0.25)',
+    };
+  }
+
+  if (stats.sendBacklogSeconds >= RELAY_BACKLOG_WARNING_SECONDS) {
+    return {
+      label: 'Behind',
+      detail: `Your upload is ${formatRelayBacklog(stats.sendBacklogSeconds)} behind live. Choose a lower output quality or pause other uploads on this network.`,
+      color: '#fcd34d',
+      background: 'rgba(245, 158, 11, 0.12)',
+      border: 'rgba(245, 158, 11, 0.25)',
     };
   }
 
@@ -1083,6 +1169,9 @@ const styles: Record<string, React.CSSProperties> = {
   destRtmp: { fontSize: 10, color: 'var(--text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' },
   destStatusMessage: { fontSize: 10, color: '#93c5fd', marginTop: 5, lineHeight: 1.35 },
   destIssue: { fontSize: 10, color: '#ef4444', marginTop: 5, lineHeight: 1.3 },
+  connectedBadge: { marginLeft: 6, padding: '1px 6px', borderRadius: 999, fontSize: 9, fontWeight: 700, textTransform: 'capitalize', color: '#86efac', background: 'rgba(34,197,94,0.12)' },
+  destLinks: { display: 'flex', gap: 12, marginTop: 6 },
+  rememberRow: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer' },
   form: { background: 'var(--bg-tertiary)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 12, border: '1px solid var(--border)' },
   formHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   formTitle: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },

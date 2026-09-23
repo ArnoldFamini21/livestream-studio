@@ -267,15 +267,49 @@ export class WebmStreamTracker {
 
 export type WebmJoinResult = 'from-start' | 'resync' | 'no-init';
 
+export interface SinkBackpressureOptions {
+  /**
+   * Bytes queued for the consumer (a slow or stalled FFmpeg) before the feed
+   * stops writing. Unset means unbounded, the pre-backpressure behavior.
+   */
+  maxBufferedBytes?: number;
+  /** Called once each time the feed starts skipping media to catch up. */
+  onOverflow?: () => void;
+  /** Called when the feed resumes live media after skipping. */
+  onRecover?: (droppedBytes: number) => void;
+}
+
+type FeedState = 'flowing' | 'cutting' | 'dropping' | 'awaiting-cluster';
+
 /**
  * Writes a live WebM stream into one consumer. A consumer that joins mid-stream
  * gets the init segment first and then live data from the next Cluster on.
+ *
+ * With `maxBufferedBytes`, a consumer that falls behind is not allowed to
+ * queue media without bound: the feed finishes the current Cluster, skips
+ * whole Clusters until the queue drains to half the limit, and resumes at the
+ * next Cluster boundary, so the consumer stays at the live edge.
  */
 export class WebmSinkFeed {
-  private waitingForCluster = false;
+  private state: FeedState = 'flowing';
   private broken = false;
+  private readonly maxBufferedBytes: number;
+  private readonly onOverflow?: () => void;
+  private readonly onRecover?: (droppedBytes: number) => void;
+  private dropping = 0;
+  /** Times the feed skipped ahead to catch up. */
+  overflowCount = 0;
+  /** Total media bytes skipped to catch up. */
+  droppedBytes = 0;
 
-  constructor(private readonly output: Writable, onError?: (err: Error) => void) {
+  constructor(
+    private readonly output: Writable,
+    onError?: (err: Error) => void,
+    options: SinkBackpressureOptions = {}
+  ) {
+    this.maxBufferedBytes = options.maxBufferedBytes && options.maxBufferedBytes > 0 ? options.maxBufferedBytes : 0;
+    this.onOverflow = options.onOverflow;
+    this.onRecover = options.onRecover;
     // A consumer that dies mid-write raises EPIPE here; unhandled, it would
     // crash the process and every other destination with it.
     output.on('error', (err) => {
@@ -285,30 +319,83 @@ export class WebmSinkFeed {
   }
 
   get awaitingCluster(): boolean {
-    return this.waitingForCluster;
+    return this.state === 'awaiting-cluster' || this.state === 'dropping';
+  }
+
+  get skipping(): boolean {
+    return this.state === 'cutting' || this.state === 'dropping';
   }
 
   join(tracker: WebmStreamTracker): WebmJoinResult {
     const joinPoint = tracker.joinPoint();
     if (!joinPoint) return 'no-init';
     if (joinPoint.bytes.length) this.output.write(joinPoint.bytes);
-    this.waitingForCluster = joinPoint.awaitCluster;
+    this.state = joinPoint.awaitCluster ? 'awaiting-cluster' : 'flowing';
     return joinPoint.awaitCluster ? 'resync' : 'from-start';
+  }
+
+  private isOverLimit(): boolean {
+    return this.maxBufferedBytes > 0 && this.output.writableLength > this.maxBufferedBytes;
+  }
+
+  private isDrained(): boolean {
+    return this.maxBufferedBytes <= 0 || this.output.writableLength <= this.maxBufferedBytes / 2;
+  }
+
+  private drop(chunk: Buffer): false {
+    this.dropping += chunk.length;
+    this.droppedBytes += chunk.length;
+    return false;
   }
 
   /** Returns true when any media from this chunk reached the consumer. */
   write(chunk: Buffer, info: WebmChunkInfo): boolean {
     if (this.broken || !this.output.writable) return false;
-    if (!this.waitingForCluster) {
-      this.output.write(chunk);
-      return true;
+
+    if (this.state === 'flowing' && this.isOverLimit()) {
+      this.state = 'cutting';
+      this.overflowCount += 1;
+      this.dropping = 0;
+      this.onOverflow?.();
     }
 
-    const start = info.clusterStart;
-    if (!start) return false;
-    this.waitingForCluster = false;
-    if (start.prefix.length) this.output.write(start.prefix);
-    this.output.write(start.offset ? chunk.subarray(start.offset) : chunk);
-    return true;
+    switch (this.state) {
+      case 'flowing':
+        this.output.write(chunk);
+        return true;
+
+      case 'cutting': {
+        // Finish the Cluster in progress so the consumer never sees a torn
+        // block. A Cluster header split across chunks has already been partly
+        // written, so wait for the next clean boundary in that case.
+        const start = info.clusterStart;
+        if (!start || start.prefix.length) {
+          this.output.write(chunk);
+          return true;
+        }
+        if (start.offset > 0) this.output.write(chunk.subarray(0, start.offset));
+        this.state = 'dropping';
+        this.dropping += chunk.length - start.offset;
+        this.droppedBytes += chunk.length - start.offset;
+        return start.offset > 0;
+      }
+
+      case 'dropping':
+      case 'awaiting-cluster': {
+        const start = info.clusterStart;
+        if (!start || (this.state === 'dropping' && !this.isDrained())) return this.drop(chunk);
+        const recovered = this.state === 'dropping';
+        this.state = 'flowing';
+        if (start.prefix.length) this.output.write(start.prefix);
+        this.output.write(start.offset ? chunk.subarray(start.offset) : chunk);
+        if (recovered) {
+          this.dropping += start.offset;
+          this.droppedBytes += start.offset;
+          this.onRecover?.(this.dropping);
+          this.dropping = 0;
+        }
+        return true;
+      }
+    }
   }
 }

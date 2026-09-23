@@ -67,6 +67,45 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
   ),
 };
 
+const MEDIA_LAYOUT_ORDER: LayoutMode[] = ['single', 'grid', 'spotlight', 'pip', 'side-by-side', 'featured'];
+const MEDIA_LAYOUT_LABELS: Record<LayoutMode, string> = {
+  single: 'Content',
+  grid: 'Beside',
+  spotlight: 'Below',
+  pip: 'PiP',
+  'side-by-side': 'Split',
+  featured: 'Stack',
+};
+const PRESENTER_SIZES: Array<{ value: PresentationCameraSize; label: string; short: string }> = [
+  { value: 'small', label: 'Small', short: 'S' },
+  { value: 'medium', label: 'Medium', short: 'M' },
+  { value: 'large', label: 'Large', short: 'L' },
+];
+const PRESENTER_CORNERS: Array<{ value: PresentationCorner; label: string }> = [
+  { value: 'TL', label: 'Top left' },
+  { value: 'TR', label: 'Top right' },
+  { value: 'BL', label: 'Bottom left' },
+  { value: 'BR', label: 'Bottom right' },
+];
+
+/** Miniature of the broadcast: the light block is the content, accent blocks are presenters. */
+function MediaLayoutGlyph({ mode }: { mode: LayoutMode }) {
+  const content = (x: number, y: number, w: number, h: number) => <rect x={x} y={y} width={w} height={h} rx="1.5" fill="currentColor" opacity="0.55" />;
+  const presenter = (x: number, y: number, w: number, h: number) => <rect key={`${x}-${y}`} x={x} y={y} width={w} height={h} rx="1" className="presentation-glyph-presenter" />;
+  const shapes: Record<LayoutMode, React.ReactNode> = {
+    single: content(2, 2, 28, 16),
+    grid: <>{content(2, 3, 19, 14)}{presenter(23, 7.5, 7, 5)}</>,
+    spotlight: <>{content(6, 1.5, 20, 11)}{[7, 13.5, 20].map(x => presenter(x, 14, 5, 4))}</>,
+    pip: <>{content(2, 2, 28, 16)}{presenter(21, 11.5, 7.5, 5)}</>,
+    'side-by-side': <>{content(2, 4, 16, 12)}{presenter(19.5, 6, 10.5, 8)}</>,
+    featured: <>{content(2, 2, 28, 16)}{presenter(23, 4, 5.5, 3.5)}{presenter(23, 8.5, 5.5, 3.5)}{presenter(23, 13, 5.5, 3.5)}</>,
+  };
+  return <svg width="32" height="20" viewBox="0 0 32 20" aria-hidden="true" className="presentation-glyph">
+    <rect x="0.5" y="0.5" width="31" height="19" rx="3" fill="none" stroke="currentColor" opacity="0.35" />
+    {shapes[mode]}
+  </svg>;
+}
+
 function normalizeCount(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 }
@@ -103,38 +142,32 @@ export function LayoutSwitcher({
   if (isMediaActive) {
     const summary = getMediaShareLayoutVisibilitySummary(currentLayout, activeMediaParticipantCount);
     const showHiddenCount = currentLayout !== 'single' && summary.hiddenParticipantCount > 0;
-    const primary: LayoutMode[] = ['single', 'grid', 'spotlight', 'pip'];
-    const labels = { single: 'Content only', grid: 'Beside', spotlight: 'Below', pip: 'PiP' };
+    const hasPresenters = currentLayout !== 'single' && activeMediaParticipantCount > 0;
+    const floating = currentLayout === 'pip' || currentLayout === 'featured';
     return <div className="presentation-layouts">
       <div className="presentation-layout-options" role="group" aria-label="Presentation layout">
-        {primary.map(mode => <button type="button" key={mode} aria-pressed={currentLayout === mode}
+        {MEDIA_LAYOUT_ORDER.map(mode => <button type="button" key={mode} aria-pressed={currentLayout === mode}
           aria-label={`${getMediaShareLayoutLabel(mode)} layout`}
           title={getMediaShareLayoutDescription(mode)} disabled={mode !== 'single' && activeMediaParticipantCount === 0}
           onClick={() => onLayoutChange(mode)}>
-          {labels[mode as keyof typeof labels]}
+          <MediaLayoutGlyph mode={mode} />
+          <span>{MEDIA_LAYOUT_LABELS[mode]}</span>
         </button>)}
-        <select aria-label="More presentation layouts" value={primary.includes(currentLayout) ? '' : currentLayout}
-          onChange={event => { if (event.target.value) onLayoutChange(event.target.value as LayoutMode); }} disabled={activeMediaParticipantCount === 0}>
-          <option value="" disabled>More</option><option value="side-by-side">Split</option><option value="featured">Stack</option>
-        </select>
       </div>
-      {currentLayout !== 'single' && activeMediaParticipantCount > 0 && <div className="presentation-layout-meta">
-        {showHiddenCount && <span>{formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)}</span>}
-        <details className="presentation-layout-settings">
-          <summary>Layout options</summary>
-          <div className="presentation-layout-settings-body">
-            {onCameraSizeChange && <label>Presenter size
-              <select value={cameraSize} onChange={event => onCameraSizeChange(event.target.value as PresentationCameraSize)}>
-                <option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option>
-              </select>
-            </label>}
-            {(currentLayout === 'pip' || currentLayout === 'featured') && onPipCornerChange && <label>Position
-              <select value={pipCorner} onChange={event => onPipCornerChange(event.target.value as PresentationCorner)}>
-                <option value="TL">Top left</option><option value="TR">Top right</option><option value="BL">Bottom left</option><option value="BR">Bottom right</option>
-              </select>
-            </label>}
-          </div>
-        </details>
+      {hasPresenters && (onCameraSizeChange || (floating && onPipCornerChange)) && <div className="presentation-layout-tuning">
+        {onCameraSizeChange && <div className="presentation-segment" role="group" aria-label="Presenter size">
+          {PRESENTER_SIZES.map(option => <button type="button" key={option.value} aria-pressed={cameraSize === option.value}
+            aria-label={`${option.label} presenter`} title={`${option.label} presenter`} onClick={() => onCameraSizeChange(option.value)}>
+            {option.short}
+          </button>)}
+        </div>}
+        {floating && onPipCornerChange && <div className="presentation-corners" role="group" aria-label="Presenter position">
+          {PRESENTER_CORNERS.map(option => <button type="button" key={option.value} aria-pressed={pipCorner === option.value}
+            aria-label={option.label} title={option.label} onClick={() => onPipCornerChange(option.value)}>
+            <span />
+          </button>)}
+        </div>}
+        {showHiddenCount && <span className="presentation-layout-hint">{formatMediaVisibilityLabel(currentLayout, activeMediaParticipantCount)}</span>}
       </div>}
     </div>;
   }

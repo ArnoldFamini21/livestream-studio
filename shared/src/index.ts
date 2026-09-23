@@ -77,6 +77,55 @@ export interface AccountLoginRequest {
   password: string;
 }
 
+export interface AccountChangePasswordRequest {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export interface AccountChangePasswordResponse {
+  ok: true;
+  /** Other devices signed out because the password changed. */
+  signedOutSessions: number;
+}
+
+/** One place the account is signed in. Never carries the session token. */
+export interface AccountSessionSummary {
+  id: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  userAgent: string;
+  current: boolean;
+}
+
+export interface AccountSessionsResponse {
+  sessions: AccountSessionSummary[];
+}
+
+export interface AccountRevokeSessionsResponse {
+  ok: true;
+  revoked: number;
+}
+
+export interface AccountPasswordResetRequest {
+  email: string;
+}
+
+export interface AccountPasswordResetRequestResponse {
+  /** Always true: the response never reveals whether the email has an account. */
+  ok: true;
+}
+
+export interface AccountPasswordResetConfirmRequest {
+  token: string;
+  newPassword: string;
+}
+
+export interface AccountCapabilitiesResponse {
+  /** Whether this server can email password reset links. */
+  passwordReset: boolean;
+}
+
 function firstNonEmptyEnv(env: Record<string, string | undefined>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = env[key]?.trim();
@@ -311,6 +360,8 @@ export type SignalMessage =
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   | { type: 'recording-upload-token-request'; payload: RecordingUploadTokenRequestPayload }
   | { type: 'recording-upload-token-issued'; payload: RecordingUploadTokenIssuedPayload }
+  | { type: 'recording-upload-progress'; payload: RecordingUploadProgressPayload }
+  | { type: 'recording-upload-control'; payload: RecordingUploadControlPayload }
   | { type: 'sfu-token-request'; payload: SfuTokenRequestPayload }
   | { type: 'sfu-token-issued'; payload: SfuTokenIssuedPayload }
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
@@ -431,6 +482,45 @@ export interface RecordingUploadTokenIssuedPayload {
   token: string;
   expiresAt: string;
 }
+
+export type RecordingUploadProgressStatus =
+  | 'uploading'
+  | 'paused'
+  | 'finishing'
+  | 'complete'
+  | 'error';
+
+/**
+ * Progressive upload report. Participants send it to the server; the server
+ * stamps the sender's identity and relays it to hosts and co-hosts only.
+ */
+export interface RecordingUploadProgressPayload {
+  sessionId: string;
+  participantId?: string;
+  participantName?: string;
+  status: RecordingUploadProgressStatus;
+  recordedBytes: number;
+  uploadedBytes: number;
+  trackCount: number;
+  completedTrackCount: number;
+  message?: string;
+  updatedAt?: string;
+}
+
+/** Host/co-host request to pause or resume a participant's background upload. */
+export interface RecordingUploadControlPayload {
+  targetParticipantId: string;
+  action: 'pause' | 'resume';
+  performedBy?: string;
+}
+
+export const RECORDING_UPLOAD_PROGRESS_STATUSES: readonly RecordingUploadProgressStatus[] = [
+  'uploading',
+  'paused',
+  'finishing',
+  'complete',
+  'error',
+];
 
 /** Request a short-lived token for the media-server SFU socket. */
 export interface SfuTokenRequestPayload {
@@ -831,6 +921,19 @@ export interface StreamDestination {
   enabled: boolean;
   status: 'idle' | 'connecting' | 'live' | 'error';
   statusMessage?: string;
+  /** Keep the stream key when this destination is remembered on the device. */
+  rememberStreamKey?: boolean;
+  /** Present when the studio created the broadcast through a connected account. */
+  connection?: StreamDestinationConnection;
+}
+
+export interface StreamDestinationConnection {
+  provider: 'youtube';
+  broadcastId: string;
+  watchUrl: string;
+  studioUrl: string;
+  privacyStatus: 'public' | 'unlisted' | 'private';
+  liveChatId?: string;
 }
 
 // ============ RTMP Relay Protocol Types ============
@@ -1017,6 +1120,11 @@ export interface RecordingExportClipSettings {
   aspect?: RecordingExportClipAspect;
 }
 
+/** Keep only these ranges of the recording, joined in order (transcript cleanup). */
+export interface RecordingExportEditSettings {
+  keepRanges: Array<{ startSeconds: number; endSeconds: number }>;
+}
+
 export interface RecordingExportSessionRequest {
   token?: string;
   basename?: string;
@@ -1025,6 +1133,7 @@ export interface RecordingExportSessionRequest {
   video?: RecordingExportVideoSettings;
   audio?: RecordingExportAudioSettings;
   clip?: RecordingExportClipSettings;
+  edit?: RecordingExportEditSettings;
 }
 
 export type RecordingExportJobStatusValue = 'queued' | 'running' | 'ready' | 'error';

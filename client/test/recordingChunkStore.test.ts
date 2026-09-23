@@ -46,6 +46,24 @@ describe('recording chunk storage', () => {
     assert.equal(await (await store.finish('audio/webm')).text(), 'abc');
     assert.equal(storage.files.size, 3);
   });
+  it('snapshots committed bytes as a prefix of the finished recording', async () => {
+    for (const storage of [disk(), disk(1)]) {
+      const store = createRecordingChunkStore(storage.directory, 'video', () => {});
+      store.append(new Blob(['header']));
+      store.append(new Blob(['-frame1']));
+      const early = await store.snapshot('video/webm');
+      assert.equal(await early.text(), 'header-frame1', 'a snapshot waits for queued writes');
+      assert.equal(early.type, 'video/webm');
+      store.append(new Blob(['-frame2']));
+      const finished = await store.finish('video/webm');
+      assert.equal(await finished.text(), 'header-frame1-frame2');
+      assert.equal(
+        await finished.slice(0, early.size).text(),
+        await early.text(),
+        'uploaded progressive bytes stay valid after a storage fallback'
+      );
+    }
+  });
   it('supports browsers without disk storage', async () => {
     const store = createRecordingChunkStore();
     store.append(new Blob(['complete'])); store.append(new Blob());

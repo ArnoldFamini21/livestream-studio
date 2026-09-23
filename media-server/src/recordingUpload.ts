@@ -239,6 +239,44 @@ function sessionStatus(session: RecordingUploadSession): RecordingUploadSessionR
   };
 }
 
+/**
+ * An upload is ready once every declared track is finalized and at least one
+ * carries media. Progressive uploads declare tracks when recording starts, so
+ * a track that never produced data (for example, a screen share that was
+ * never started) must not hold back the participant's other tracks.
+ */
+function isUploadReadyForExport(upload: RecordingUploadSessionResponse): boolean {
+  return (
+    upload.tracks.length > 0 &&
+    upload.tracks.every((track) => track.complete) &&
+    upload.tracks.some((track) => track.bytesReceived > 0)
+  );
+}
+
+export interface RecordingUploadTrackCompletion {
+  id: string;
+  durationMs?: number;
+  capture?: Record<string, unknown>;
+}
+
+function normalizeCompletionUpdates(input: unknown): RecordingUploadTrackCompletion[] {
+  if (!isRecord(input) || input.tracks === undefined) return [];
+  if (!Array.isArray(input.tracks) || input.tracks.length > MAX_RECORDING_UPLOAD_TRACKS) {
+    throw new RecordingUploadError(400, 'INVALID_RECORDING_UPLOAD', 'Invalid recording completion tracks');
+  }
+  return input.tracks.map((track) => {
+    if (!isRecord(track) || !isValidId(track.id)) {
+      throw new RecordingUploadError(400, 'INVALID_RECORDING_UPLOAD', 'Invalid recording completion track');
+    }
+    const durationMs = normalizeOptionalSize(track.durationMs, `${track.id} durationMs`);
+    return {
+      id: track.id,
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(isRecord(track.capture) ? { capture: track.capture } : {}),
+    };
+  });
+}
+
 function defaultUploadRoot(): string {
   return path.join(os.tmpdir(), 'livestream-studio-recordings');
 }
@@ -305,12 +343,18 @@ export class RecordingUploadStore {
 
   getExportSource(uploadId: string, nowMs = Date.now()): RecordingUploadExportSource {
     const session = this.getSession(uploadId, nowMs);
+    // Finalized tracks without media are omitted while another track has media,
+    // so a never-started screen share cannot block the camera and microphone.
+    // An upload with no media at all keeps its tracks and fails validation clearly.
+    const declaredTracks = Array.from(session.tracks.values());
+    const tracksWithMedia = declaredTracks.filter((track) => !(track.complete && track.bytesReceived === 0));
+    const exportTracks = tracksWithMedia.length > 0 ? tracksWithMedia : declaredTracks;
     return {
       uploadId: session.uploadId,
       roomId: session.roomId,
       sessionId: session.sessionId,
       rootDir: session.rootDir,
-      tracks: Array.from(session.tracks.values()).map((track) => ({
+      tracks: exportTracks.map((track) => ({
         id: track.id,
         label: track.label,
         kind: track.kind,
@@ -344,7 +388,7 @@ export class RecordingUploadStore {
       roomId,
       sessionId,
       uploadCount: statuses.length,
-      completedUploadCount: statuses.filter((upload) => upload.tracks.length > 0 && upload.tracks.every((track) => track.complete)).length,
+      completedUploadCount: statuses.filter(isUploadReadyForExport).length,
       trackCount: statuses.reduce((total, upload) => total + upload.tracks.length, 0),
       bytesReceived: statuses.reduce((total, upload) => total + upload.bytesReceived, 0),
       uploads: statuses,
@@ -360,9 +404,7 @@ export class RecordingUploadStore {
     if (summary.uploads.length === 0) {
       throw new RecordingUploadError(404, 'RECORDING_SESSION_NOT_FOUND', 'Recording session has no uploaded tracks');
     }
-    const completedUploads = summary.uploads.filter((upload) => (
-      upload.tracks.length > 0 && upload.tracks.every((track) => track.complete && track.bytesReceived > 0)
-    ));
+    const completedUploads = summary.uploads.filter(isUploadReadyForExport);
     if (completedUploads.length === 0) {
       throw new RecordingUploadError(409, 'RECORDING_SESSION_UPLOADS_PENDING', 'Recording session has no completed uploads yet');
     }
@@ -437,8 +479,18 @@ export class RecordingUploadStore {
     };
   }
 
-  completeSession(uploadId: string, nowMs = Date.now()): RecordingUploadSessionResponse {
+  /**
+   * Finalize every track. Progressive uploads declare tracks before recording
+   * ends, so final durations and capture metadata may arrive here.
+   */
+  completeSession(uploadId: string, nowMs = Date.now(), completion?: unknown): RecordingUploadSessionResponse {
     const session = this.getSession(uploadId, nowMs);
+    for (const update of normalizeCompletionUpdates(completion)) {
+      const track = session.tracks.get(update.id);
+      if (!track) continue;
+      if (update.durationMs !== undefined) track.durationMs = update.durationMs;
+      if (update.capture) track.capture = update.capture;
+    }
     for (const track of session.tracks.values()) {
       track.complete = true;
     }

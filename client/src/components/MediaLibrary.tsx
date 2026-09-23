@@ -5,6 +5,7 @@ import {
   getPresentationDeckStatus,
   getPresentationPresenterCards,
   getPresentationSlidePickerItems,
+  getSharedContentLabel,
 } from '../utils/presentationDeckControls.ts';
 import { canBrowserRenderPowerPointFile, hasRenderedPresentationSlides } from '../utils/presentationPreview.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
@@ -94,8 +95,9 @@ export function MediaLibrary({ assets, activeMedia, activeMediaSlideIndex, onAct
       {busy && <p className="media-progress" role="status"><span className="media-spinner" /> Preparing media…</p>}
       {error && <p className="media-error" role="alert">{error}</p>}
       {activeMedia && <section className="media-onstage" aria-label="Media on stage">
-        <div className="media-onstage-heading"><span><i /> On stage</span><button type="button" onClick={onStop}>Stop sharing</button></div>
-        <p title={activeMedia.name}>{activeMedia.name}</p>
+        <div className="media-onstage-heading"><span><i /> On stage</span><button type="button" onClick={onStop}>Stop presenting</button></div>
+        <OnStageThumbnail media={activeMedia} imageUrl={deckStatus.currentSlide?.imageUrl} />
+        <p title={activeMedia.name}>{getSharedContentLabel(activeMedia).title}</p>
         {deckStatus.hasDeck && <ActiveDeckControls status={deckStatus} onSlideIndexChange={onActiveMediaSlideIndexChange} />}
       </section>}
       {(assets.length > 5 || query) && <label className="media-search"><StudioIcon name="search" />
@@ -114,7 +116,7 @@ export function MediaLibrary({ assets, activeMedia, activeMediaSlideIndex, onAct
             <button type="button" className="media-asset-preview" onClick={showPreview} aria-label={`Preview ${asset.name}`}>
               <MediaThumbnail asset={asset} />
             </button>
-            <div className="media-asset-copy"><button type="button" onClick={showPreview} title={asset.name}>{asset.name}</button>
+            <div className="media-asset-copy"><button type="button" onClick={showPreview} title={asset.name}>{getSharedContentLabel(asset).title}</button>
               <span className={asset.processingStatus === 'error' ? 'media-error-copy' : ''}>
                 {asset.processingStatus === 'processing' && <span className="media-spinner" />}{getMediaAssetStatusLabel(asset)}
               </span>
@@ -151,6 +153,20 @@ export function MediaLibrary({ assets, activeMedia, activeMediaSlideIndex, onAct
   </div>;
 }
 
+function OnStageThumbnail({ media, imageUrl }: { media: ActiveMedia; imageUrl?: string }) {
+  const src = imageUrl || (media.type === 'image' ? media.url : undefined);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  if (!src || failed) return null;
+  return <div className="media-onstage-frame"><img src={src} alt="" onError={() => setFailed(true)} /></div>;
+}
+
+function ChevronIcon({ direction }: { direction: 'left' | 'right' }) {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d={direction === 'left' ? 'm15 6-6 6 6 6' : 'm9 6 6 6-6 6'} />
+  </svg>;
+}
+
 function MediaThumbnail({ asset }: { asset: StudioMediaAsset }) {
   const src = asset.type === 'image' ? asset.url : asset.preview?.slides[0]?.imageUrl;
   const [failed, setFailed] = useState(false);
@@ -177,9 +193,9 @@ function MediaPreview({ asset, isActive, onShow, onStop }: { asset: StudioMediaA
       {failed ? <p>Preview unavailable. Try uploading the file again.</p> : asset.type === 'video' ? <video src={asset.url} controls playsInline preload="metadata" onError={() => setFailed(true)} /> : image ? <img src={image} alt={slides[page]?.title || asset.name} onError={() => setFailed(true)} /> : <MediaTypeIcon type={asset.type} />}
     </div>
     {slides.length > 1 && <div className="media-slide-navigation">
-      <button type="button" aria-label="Preview previous slide" disabled={page === 0} onClick={() => setPage(page - 1)}>←</button>
+      <button type="button" aria-label="Preview previous slide" disabled={page === 0} onClick={() => setPage(page - 1)}><ChevronIcon direction="left" /></button>
       <span>{page + 1} / {slides.length}</span>
-      <button type="button" aria-label="Preview next slide" disabled={page === slides.length - 1} onClick={() => setPage(page + 1)}>→</button>
+      <button type="button" aria-label="Preview next slide" disabled={page === slides.length - 1} onClick={() => setPage(page + 1)}><ChevronIcon direction="right" /></button>
     </div>}
     <p className="media-preview-note">Only you see this preview.</p>
     <button type="button" className="media-primary" disabled={!(isActive && !slides.length) && (!canPlayMediaAsset(asset) || failed)} onClick={isActive && !slides.length ? onStop : () => onShow(page)}>{isActive && !slides.length ? 'Stop sharing' : slides.length ? `Show ${asset.type === 'pdf' ? 'page' : 'slide'} ${page + 1}` : 'Show on stage'}</button>
@@ -195,13 +211,13 @@ function ActiveDeckControls({ status, onSlideIndexChange }: {
   const next = getPresentationPresenterCards(status).find(card => card.kind === 'next');
   return <div className="media-deck-controls">
     <div className="media-slide-navigation">
-      <button type="button" aria-label="Show previous slide" disabled={!status.canGoPrevious} onClick={() => onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'previous'))}>←</button>
+      <button type="button" aria-label="Show previous slide" disabled={!status.canGoPrevious} onClick={() => onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'previous'))}><ChevronIcon direction="left" /></button>
       <select aria-label="Jump to slide" value={status.currentIndex} onChange={event => onSlideIndexChange(Number(event.target.value))}>
         {items.map(item => <option key={item.index} value={item.index}>{item.label} of {status.total}</option>)}
       </select>
-      <button type="button" aria-label="Show next slide" disabled={!status.canGoNext} onClick={() => onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'))}>→</button>
+      <button type="button" aria-label="Show next slide" disabled={!status.canGoNext} onClick={() => onSlideIndexChange(getNextPresentationSlideIndex(status.currentIndex, status.total, 'next'))}><ChevronIcon direction="right" /></button>
     </div>
-    <details className="media-disclosure"><summary>Presenter view</summary>
+    <details className="media-disclosure media-presenter-view"><summary>Presenter view <small>next slide, notes, all slides</small></summary>
       {next && <div className="media-next-slide"><span>Up next</span>{next.imageUrl && <img src={next.imageUrl} alt="" loading="lazy" />}<p>{next.title}</p></div>}
       {!!status.currentSlide?.notes?.length && <div className="media-speaker-notes"><span>Speaker notes · only you</span>{status.currentSlide.notes.map((note, index) => <p key={index}>{note}</p>)}</div>}
       <div className="media-filmstrip" aria-label="Slides in presentation">{items.map(item => <button type="button" key={item.index} aria-pressed={item.isCurrent} aria-label={`Show ${item.label}: ${item.title}`} onClick={() => onSlideIndexChange(item.index)}>
@@ -296,16 +312,16 @@ function getAssetLabel(asset: StudioMediaAsset): string {
     video: 'Video',
     image: 'Image',
     pdf: 'PDF',
-    presentation: 'Deck',
+    presentation: 'Presentation',
     file: 'File',
   }[asset.type];
   let slideCount = '';
   if (asset.preview?.kind === 'presentation-slides') {
     const unit = asset.preview.sourceFormat === 'pdf' ? 'page' : 'slide';
     const total = asset.preview.slides.length;
-    slideCount = ` / ${total} ${unit}${total === 1 ? '' : 's'}`;
+    slideCount = ` · ${total} ${unit}${total === 1 ? '' : 's'}`;
   }
-  const size = asset.sizeBytes ? ` / ${formatBytes(asset.sizeBytes)}` : '';
+  const size = asset.sizeBytes ? ` · ${formatBytes(asset.sizeBytes)}` : '';
   return `${typeLabel}${slideCount}${size}`;
 }
 

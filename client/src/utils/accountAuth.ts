@@ -1,11 +1,18 @@
 import type {
   AccountAuthResponse,
+  AccountCapabilitiesResponse,
+  AccountChangePasswordRequest,
+  AccountChangePasswordResponse,
   AccountLoginRequest,
   AccountLogoutResponse,
+  AccountPasswordResetConfirmRequest,
+  AccountPasswordResetRequestResponse,
   AccountRegisterRequest,
+  AccountRevokeSessionsResponse,
   AccountSessionResponse,
+  AccountSessionsResponse,
 } from '@studio/shared';
-import { postJson, getJson } from './apiClient.ts';
+import { postJson, getJson, requestJson } from './apiClient.ts';
 
 export const ACCOUNT_SESSION_STORAGE_KEY = 'livestream-studio:account-session-token';
 
@@ -91,4 +98,58 @@ export async function logoutAccount(): Promise<AccountLogoutResponse> {
   } finally {
     clearAccountSessionToken();
   }
+}
+
+export function fetchAccountCapabilities(): Promise<AccountCapabilitiesResponse> {
+  return getJson<AccountCapabilitiesResponse>('/api/auth/capabilities', { credentials: 'include' });
+}
+
+export function changeAccountPassword(input: AccountChangePasswordRequest): Promise<AccountChangePasswordResponse> {
+  return postJson<AccountChangePasswordResponse>('/api/auth/password', input, {
+    credentials: 'include',
+    headers: accountHeaders(),
+  });
+}
+
+export function fetchAccountSessions(): Promise<AccountSessionsResponse> {
+  return getJson<AccountSessionsResponse>('/api/auth/sessions', {
+    credentials: 'include',
+    headers: accountHeaders(),
+  });
+}
+
+export async function revokeAccountSession(sessionId: string): Promise<{ ok: true; revokedCurrent: boolean }> {
+  const result = await requestJson<{ ok: true; revokedCurrent: boolean }>(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: accountHeaders(),
+  });
+  if (result.revokedCurrent) clearAccountSessionToken();
+  return result;
+}
+
+export function revokeOtherAccountSessions(): Promise<AccountRevokeSessionsResponse> {
+  return postJson<AccountRevokeSessionsResponse>('/api/auth/sessions/revoke-others', {}, {
+    credentials: 'include',
+    headers: accountHeaders(),
+  });
+}
+
+export function requestPasswordReset(email: string): Promise<AccountPasswordResetRequestResponse> {
+  return postJson<AccountPasswordResetRequestResponse>('/api/auth/password-reset/request', { email }, {
+    credentials: 'include',
+  });
+}
+
+export async function confirmPasswordReset(input: AccountPasswordResetConfirmRequest): Promise<AccountAuthResponse> {
+  return storeAuthResponse(await postJson<AccountAuthResponse>('/api/auth/password-reset/confirm', input, {
+    credentials: 'include',
+  }));
+}
+
+/** Read the reset token from a `#token=` fragment (never sent to servers or in Referer). */
+export function readPasswordResetToken(hash: string): string {
+  const params = new URLSearchParams(hash.replace(/^#/, ''));
+  const token = (params.get('token') || '').trim();
+  return isValidAccountSessionToken(token) ? token : '';
 }

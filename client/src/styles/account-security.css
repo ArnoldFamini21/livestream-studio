@@ -1,0 +1,251 @@
+.account-security {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.account-security__tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.account-security__tab {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--glass-bg);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.account-security__tab:hover {
+  background: var(--glass-bg-hover);
+  color: var(--text-primary);
+}
+
+.account-security__tab[aria-expanded='true'] {
+  border-color: var(--accent-glow);
+  background: var(--accent-subtle);
+  color: var(--accent-hover);
+}
+
+.account-security__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.account-security__input {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.account-security__input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+.account-security__hint,
+.account-security__error,
+.account-security__notice {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.account-security__hint { color: var(--text-muted); }
+.account-security__error { color: var(--danger); }
+.account-security__notice { color: var(--success); }
+
+.account-security__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.account-security__primary,
+.account-security__ghost,
+.account-security__danger,
+.account-security__signOut {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.account-security__primary {
+  border: 1px solid var(--accent-solid);
+  background: var(--accent-solid);
+  color: #fff;
+}
+
+.account-security__ghost {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.account-security__danger,
+.account-security__signOut {
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--danger);
+}
+
+.account-security__primary:disabled,
+.account-security__danger:disabled,
+.account-security__signOut:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.account-security__sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.account-security__session {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-security__session:last-child { border-bottom: 0; }
+
+.account-security__device {
+  flex: 0 0 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--glass-bg);
+  color: var(--text-secondary);
+}
+
+.account-security__sessionText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account-security__sessionName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.account-security__sessionMeta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.account-security__badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--success-subtle);
+  color: var(--success);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.account-security__signOut {
+  flex: 0 0 auto;
+}
+
+.account-security__forgot {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.account-security__forgot:hover { color: var(--accent-hover); }
+
+.ws-accountFormGrid .account-security__forgot {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.reset-password-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background: var(--bg-primary);
+}
+
+.reset-password-card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-md);
+}
+
+.reset-password-card h1 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.reset-password-card .account-security__primary {
+  min-height: 38px;
+  font-size: 13px;
+}
+
+.reset-password-card .account-security__input {
+  min-height: 38px;
+  font-size: 13px;
+}
+
+/* The workspace is a light surface with its own palette; use darker status colors there. */
+.workspace-app .account-security__notice { color: #047857; }
+.workspace-app .account-security__error { color: #b91c1c; }
+.workspace-app .account-security__badge { background: #ecfdf5; color: #047857; }
+.workspace-app .account-security__danger,
+.workspace-app .account-security__signOut { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }

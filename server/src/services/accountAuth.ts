@@ -2,7 +2,10 @@ import { randomBytes, randomUUID, scryptSync, createHash, timingSafeEqual } from
 import pg from 'pg';
 import type {
   AccountAuthResponse,
+  AccountChangePasswordResponse,
+  AccountRevokeSessionsResponse,
   AccountSessionResponse,
+  AccountSessionSummary,
   AccountUser,
 } from '@studio/shared';
 
@@ -15,6 +18,13 @@ const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 128;
 const MAX_NAME_LENGTH = 80;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
+const MAX_USER_AGENT_LENGTH = 256;
+/** Last-seen times are refreshed at most this often, to keep reads cheap. */
+const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+export const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
+/** Reset emails one account may be sent per hour. */
+const MAX_PASSWORD_RESETS_PER_HOUR = 3;
+const MAX_SESSIONS_LISTED = 50;
 
 export class AccountAuthError extends Error {
   constructor(
@@ -35,7 +45,24 @@ export interface AccountAuthStore {
   saveSession(record: AccountSessionRecord): Promise<void>;
   findSession(tokenHash: string): Promise<AccountSessionRecord | null>;
   deleteSession(tokenHash: string): Promise<void>;
+  touchSession(tokenHash: string, lastSeenAt: string): Promise<void>;
+  listSessionsForUser(userId: string): Promise<AccountSessionRecord[]>;
+  /** Delete every session of a user except `keepTokenHash`; returns how many were removed. */
+  deleteSessionsForUser(userId: string, keepTokenHash?: string): Promise<number>;
+  updateUserPassword(userId: string, verifier: { passwordHash: string; passwordSalt: string }, updatedAt: string): Promise<void>;
+  saveResetToken(record: AccountResetTokenRecord): Promise<void>;
+  /** Remove and return a reset token; each token works once. */
+  consumeResetToken(tokenHash: string): Promise<AccountResetTokenRecord | null>;
+  countResetTokensSince(userId: string, since: string): Promise<number>;
+  deleteResetTokensForUser(userId: string): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface AccountResetTokenRecord {
+  tokenHash: string;
+  userId: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export interface AccountUserRecord extends AccountUser {
@@ -48,6 +75,13 @@ export interface AccountSessionRecord {
   userId: string;
   createdAt: string;
   expiresAt: string;
+  lastSeenAt?: string;
+  userAgent?: string;
+}
+
+/** Request details recorded with a session so the owner can recognize it later. */
+export interface AccountRequestContext {
+  userAgent?: string;
 }
 
 interface PgQueryable {
@@ -148,7 +182,12 @@ function publicUser(record: AccountUserRecord): AccountUser {
   };
 }
 
-function makeSession(now: Date, userId: string, token = createAccountSessionToken()): { token: string; record: AccountSessionRecord } {
+function makeSession(
+  now: Date,
+  userId: string,
+  context: AccountRequestContext = {},
+  token = createAccountSessionToken()
+): { token: string; record: AccountSessionRecord } {
   return {
     token,
     record: {
@@ -156,14 +195,25 @@ function makeSession(now: Date, userId: string, token = createAccountSessionToke
       userId,
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
+      lastSeenAt: now.toISOString(),
+      userAgent: safeText(context.userAgent, MAX_USER_AGENT_LENGTH),
     },
   };
+}
+
+/**
+ * The id shown for a session. It is derived from the token hash, so the
+ * listing never exposes anything that could authenticate a request.
+ */
+export function getAccountSessionPublicId(tokenHash: string): string {
+  return createHash('sha256').update(`account-session:${tokenHash}`).digest('base64url').slice(0, 22);
 }
 
 export async function registerAccount(
   store: AccountAuthStore,
   input: { email: unknown; name: unknown; password: unknown },
-  now = new Date()
+  now = new Date(),
+  context: AccountRequestContext = {}
 ): Promise<AccountAuthResponse> {
   const email = normalizeAccountEmail(input.email);
   const password = normalizePassword(input.password);
@@ -188,7 +238,7 @@ export async function registerAccount(
     updatedAt: now.toISOString(),
     ...verifier,
   });
-  const session = makeSession(now, user.id);
+  const session = makeSession(now, user.id, context);
   await store.saveSession(session.record);
   return {
     user: publicUser(user),
@@ -202,7 +252,8 @@ export async function registerAccount(
 export async function loginAccount(
   store: AccountAuthStore,
   input: { email: unknown; password: unknown },
-  now = new Date()
+  now = new Date(),
+  context: AccountRequestContext = {}
 ): Promise<AccountAuthResponse> {
   const email = normalizeAccountEmail(input.email);
   const password = normalizePassword(input.password);
@@ -215,7 +266,7 @@ export async function loginAccount(
     throw new AccountAuthError(401, 'ACCOUNT_CREDENTIALS_INVALID', 'Email or password is incorrect.');
   }
 
-  const session = makeSession(now, user.id);
+  const session = makeSession(now, user.id, context);
   await store.saveSession(session.record);
   return {
     user: publicUser(user),
@@ -246,10 +297,194 @@ export async function getAccountSession(
     return { user: null };
   }
 
+  const lastSeen = Date.parse(session.lastSeenAt || session.createdAt);
+  if (!Number.isFinite(lastSeen) || now.getTime() - lastSeen >= SESSION_TOUCH_INTERVAL_MS) {
+    await store.touchSession(session.tokenHash, now.toISOString());
+  }
+
   return {
     user: publicUser(user),
     session: {
       expiresAt: session.expiresAt,
+    },
+  };
+}
+
+interface AuthenticatedAccount {
+  user: AccountUserRecord;
+  session: AccountSessionRecord;
+}
+
+async function requireAccount(store: AccountAuthStore, token: string, now: Date): Promise<AuthenticatedAccount> {
+  const sessionToken = getValidAccountSessionToken(token);
+  const session = sessionToken ? await store.findSession(hashAccountSessionToken(sessionToken)) : null;
+  const user = session && Date.parse(session.expiresAt) > now.getTime()
+    ? await store.findUserById(session.userId)
+    : null;
+  if (!session || !user) {
+    throw new AccountAuthError(401, 'ACCOUNT_SIGNED_OUT', 'Sign in to manage your account.');
+  }
+  return { user, session };
+}
+
+/**
+ * Change the password of the signed-in account. The current password is
+ * required, and every other device is signed out; this one stays signed in.
+ */
+export async function changeAccountPassword(
+  store: AccountAuthStore,
+  token: string,
+  input: { currentPassword: unknown; newPassword: unknown },
+  now = new Date()
+): Promise<AccountChangePasswordResponse> {
+  const { user, session } = await requireAccount(store, token, now);
+  const currentPassword = typeof input.currentPassword === 'string' ? input.currentPassword : '';
+  if (!currentPassword || !verifyAccountPassword(user, currentPassword)) {
+    throw new AccountAuthError(403, 'ACCOUNT_PASSWORD_INCORRECT', 'Current password is incorrect.');
+  }
+  const newPassword = normalizePassword(input.newPassword);
+  if (!newPassword) {
+    throw new AccountAuthError(400, 'ACCOUNT_PASSWORD_INVALID', `New password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`);
+  }
+  if (newPassword === currentPassword) {
+    throw new AccountAuthError(400, 'ACCOUNT_PASSWORD_UNCHANGED', 'Choose a password different from the current one.');
+  }
+
+  await store.updateUserPassword(user.id, createPasswordVerifier(newPassword), now.toISOString());
+  await store.deleteResetTokensForUser(user.id);
+  const signedOutSessions = await store.deleteSessionsForUser(user.id, session.tokenHash);
+  return { ok: true, signedOutSessions };
+}
+
+export async function listAccountSessions(
+  store: AccountAuthStore,
+  token: string,
+  now = new Date()
+): Promise<AccountSessionSummary[]> {
+  const { user, session: current } = await requireAccount(store, token, now);
+  const sessions = await store.listSessionsForUser(user.id);
+  return sessions
+    .filter((session) => Date.parse(session.expiresAt) > now.getTime())
+    .map((session) => ({
+      id: getAccountSessionPublicId(session.tokenHash),
+      createdAt: session.createdAt,
+      lastSeenAt: session.lastSeenAt || session.createdAt,
+      expiresAt: session.expiresAt,
+      userAgent: session.userAgent || '',
+      current: session.tokenHash === current.tokenHash,
+    }))
+    .sort((a, b) => Number(b.current) - Number(a.current) || b.lastSeenAt.localeCompare(a.lastSeenAt))
+    .slice(0, MAX_SESSIONS_LISTED);
+}
+
+/** Sign out one session of the signed-in account, found by its public id. */
+export async function revokeAccountSession(
+  store: AccountAuthStore,
+  token: string,
+  sessionId: unknown,
+  now = new Date()
+): Promise<{ revokedCurrent: boolean }> {
+  const { user, session: current } = await requireAccount(store, token, now);
+  const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+  const target = id
+    ? (await store.listSessionsForUser(user.id)).find((session) => getAccountSessionPublicId(session.tokenHash) === id)
+    : undefined;
+  if (!target) {
+    throw new AccountAuthError(404, 'ACCOUNT_SESSION_NOT_FOUND', 'That session has already ended.');
+  }
+  await store.deleteSession(target.tokenHash);
+  return { revokedCurrent: target.tokenHash === current.tokenHash };
+}
+
+export async function revokeOtherAccountSessions(
+  store: AccountAuthStore,
+  token: string,
+  now = new Date()
+): Promise<AccountRevokeSessionsResponse> {
+  const { user, session } = await requireAccount(store, token, now);
+  return { ok: true, revoked: await store.deleteSessionsForUser(user.id, session.tokenHash) };
+}
+
+export function hashPasswordResetToken(token: string): string {
+  return createHash('sha256').update(`password-reset:${token}`).digest('base64url');
+}
+
+export interface PasswordResetDelivery {
+  email: string;
+  name: string;
+  token: string;
+  expiresAt: string;
+}
+
+/**
+ * Start a password reset. The outcome never reveals whether the email has an
+ * account: unknown emails and rate-limited accounts return exactly as a
+ * delivered reset does. `deliver` sends the link (by email).
+ */
+export async function requestPasswordReset(
+  store: AccountAuthStore,
+  input: { email: unknown },
+  deliver: (delivery: PasswordResetDelivery) => Promise<void>,
+  now = new Date()
+): Promise<{ delivered: boolean }> {
+  const email = normalizeAccountEmail(input.email);
+  if (!email) {
+    throw new AccountAuthError(400, 'ACCOUNT_EMAIL_INVALID', 'Enter a valid email address.');
+  }
+  const user = await store.findUserByEmail(email);
+  if (!user) return { delivered: false };
+
+  const since = new Date(now.getTime() - PASSWORD_RESET_TTL_MS).toISOString();
+  if (await store.countResetTokensSince(user.id, since) >= MAX_PASSWORD_RESETS_PER_HOUR) {
+    return { delivered: false };
+  }
+
+  const token = createAccountSessionToken();
+  const record: AccountResetTokenRecord = {
+    tokenHash: hashPasswordResetToken(token),
+    userId: user.id,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + PASSWORD_RESET_TTL_MS).toISOString(),
+  };
+  await store.saveResetToken(record);
+  await deliver({ email: user.email, name: user.name, token, expiresAt: record.expiresAt });
+  return { delivered: true };
+}
+
+/**
+ * Finish a password reset with the emailed token. The token works once and
+ * expires after an hour. Every existing session and outstanding reset link is
+ * cancelled, and the caller is signed in with a fresh session.
+ */
+export async function confirmPasswordReset(
+  store: AccountAuthStore,
+  input: { token: unknown; newPassword: unknown },
+  now = new Date(),
+  context: AccountRequestContext = {}
+): Promise<AccountAuthResponse> {
+  const invalid = new AccountAuthError(400, 'ACCOUNT_RESET_INVALID', 'This reset link is invalid or has expired. Request a new one.');
+  const token = getValidAccountSessionToken(input.token);
+  if (!token) throw invalid;
+  const newPassword = normalizePassword(input.newPassword);
+  if (!newPassword) {
+    throw new AccountAuthError(400, 'ACCOUNT_PASSWORD_INVALID', `New password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`);
+  }
+
+  const reset = await store.consumeResetToken(hashPasswordResetToken(token));
+  if (!reset || Date.parse(reset.expiresAt) <= now.getTime()) throw invalid;
+  const user = await store.findUserById(reset.userId);
+  if (!user) throw invalid;
+
+  await store.updateUserPassword(user.id, createPasswordVerifier(newPassword), now.toISOString());
+  await store.deleteResetTokensForUser(user.id);
+  await store.deleteSessionsForUser(user.id);
+  const session = makeSession(now, user.id, context);
+  await store.saveSession(session.record);
+  return {
+    user: publicUser({ ...user, updatedAt: now.toISOString() }),
+    session: {
+      token: session.token,
+      expiresAt: session.record.expiresAt,
     },
   };
 }
@@ -264,6 +499,9 @@ export class InMemoryAccountAuthStore implements AccountAuthStore {
   private readonly usersById = new Map<string, AccountUserRecord>();
   private readonly userIdsByEmail = new Map<string, string>();
   private readonly sessionsByTokenHash = new Map<string, AccountSessionRecord>();
+  private readonly resetTokensByHash = new Map<string, AccountResetTokenRecord>();
+  /** Reset requests are counted even after their tokens are used or cancelled. */
+  private resetRequestLog: Array<{ userId: string; createdAt: string }> = [];
 
   async init(): Promise<void> {}
 
@@ -297,6 +535,54 @@ export class InMemoryAccountAuthStore implements AccountAuthStore {
     this.sessionsByTokenHash.delete(tokenHash);
   }
 
+  async touchSession(tokenHash: string, lastSeenAt: string): Promise<void> {
+    const session = this.sessionsByTokenHash.get(tokenHash);
+    if (session) session.lastSeenAt = lastSeenAt;
+  }
+
+  async listSessionsForUser(userId: string): Promise<AccountSessionRecord[]> {
+    return Array.from(this.sessionsByTokenHash.values())
+      .filter((session) => session.userId === userId)
+      .map((session) => ({ ...session }));
+  }
+
+  async deleteSessionsForUser(userId: string, keepTokenHash?: string): Promise<number> {
+    let removed = 0;
+    for (const [tokenHash, session] of this.sessionsByTokenHash) {
+      if (session.userId !== userId || tokenHash === keepTokenHash) continue;
+      this.sessionsByTokenHash.delete(tokenHash);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  async updateUserPassword(userId: string, verifier: { passwordHash: string; passwordSalt: string }, updatedAt: string): Promise<void> {
+    const user = this.usersById.get(userId);
+    if (user) this.usersById.set(userId, { ...user, ...verifier, updatedAt });
+  }
+
+  async saveResetToken(record: AccountResetTokenRecord): Promise<void> {
+    this.resetTokensByHash.set(record.tokenHash, { ...record });
+    this.resetRequestLog.push({ userId: record.userId, createdAt: record.createdAt });
+  }
+
+  async consumeResetToken(tokenHash: string): Promise<AccountResetTokenRecord | null> {
+    const record = this.resetTokensByHash.get(tokenHash) || null;
+    this.resetTokensByHash.delete(tokenHash);
+    return record;
+  }
+
+  async countResetTokensSince(userId: string, since: string): Promise<number> {
+    this.resetRequestLog = this.resetRequestLog.filter((entry) => entry.createdAt >= since);
+    return this.resetRequestLog.filter((entry) => entry.userId === userId).length;
+  }
+
+  async deleteResetTokensForUser(userId: string): Promise<void> {
+    for (const [tokenHash, record] of this.resetTokensByHash) {
+      if (record.userId === userId) this.resetTokensByHash.delete(tokenHash);
+    }
+  }
+
   async close(): Promise<void> {}
 }
 
@@ -326,6 +612,25 @@ export class PostgresAccountAuthStore implements AccountAuthStore {
     await this.db.query(`
       CREATE INDEX IF NOT EXISTS studio_account_sessions_user_expires_at_idx
         ON studio_account_sessions (user_id, expires_at DESC)
+    `);
+    // Added with session management; existing rows keep NULL until next use.
+    await this.db.query(`
+      ALTER TABLE studio_account_sessions
+        ADD COLUMN IF NOT EXISTS last_seen_at timestamptz,
+        ADD COLUMN IF NOT EXISTS user_agent text
+    `);
+    await this.db.query(`
+      CREATE TABLE IF NOT EXISTS studio_account_password_resets (
+        token_hash text PRIMARY KEY,
+        user_id text NOT NULL REFERENCES studio_accounts(id) ON DELETE CASCADE,
+        created_at timestamptz NOT NULL,
+        expires_at timestamptz NOT NULL,
+        used_at timestamptz
+      )
+    `);
+    await this.db.query(`
+      CREATE INDEX IF NOT EXISTS studio_account_password_resets_user_created_at_idx
+        ON studio_account_password_resets (user_id, created_at DESC)
     `);
   }
 
@@ -386,18 +691,24 @@ export class PostgresAccountAuthStore implements AccountAuthStore {
         token_hash,
         user_id,
         created_at,
-        expires_at
+        expires_at,
+        last_seen_at,
+        user_agent
       )
-      VALUES ($1, $2, $3::timestamptz, $4::timestamptz)
+      VALUES ($1, $2, $3::timestamptz, $4::timestamptz, $5::timestamptz, $6)
       ON CONFLICT (token_hash) DO UPDATE SET
         user_id = EXCLUDED.user_id,
         created_at = EXCLUDED.created_at,
-        expires_at = EXCLUDED.expires_at
+        expires_at = EXCLUDED.expires_at,
+        last_seen_at = EXCLUDED.last_seen_at,
+        user_agent = EXCLUDED.user_agent
     `, [
       record.tokenHash,
       record.userId,
       record.createdAt,
       record.expiresAt,
+      record.lastSeenAt || record.createdAt,
+      record.userAgent || null,
     ]);
   }
 
@@ -413,6 +724,85 @@ export class PostgresAccountAuthStore implements AccountAuthStore {
 
   async deleteSession(tokenHash: string): Promise<void> {
     await this.db.query('DELETE FROM studio_account_sessions WHERE token_hash = $1', [tokenHash]);
+  }
+
+  async touchSession(tokenHash: string, lastSeenAt: string): Promise<void> {
+    await this.db.query(
+      'UPDATE studio_account_sessions SET last_seen_at = $2::timestamptz WHERE token_hash = $1',
+      [tokenHash, lastSeenAt]
+    );
+  }
+
+  async listSessionsForUser(userId: string): Promise<AccountSessionRecord[]> {
+    const result = await this.db.query(`
+      SELECT *
+      FROM studio_account_sessions
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 200
+    `, [userId]);
+    return result.rows
+      .map((row) => normalizeStoredSession(row))
+      .filter((session): session is AccountSessionRecord => Boolean(session));
+  }
+
+  async deleteSessionsForUser(userId: string, keepTokenHash?: string): Promise<number> {
+    const result = await this.db.query(`
+      DELETE FROM studio_account_sessions
+      WHERE user_id = $1 AND token_hash <> $2
+      RETURNING token_hash
+    `, [userId, keepTokenHash || '']);
+    return result.rows.length;
+  }
+
+  async updateUserPassword(userId: string, verifier: { passwordHash: string; passwordSalt: string }, updatedAt: string): Promise<void> {
+    await this.db.query(`
+      UPDATE studio_accounts
+      SET password_hash = $2, password_salt = $3, updated_at = $4::timestamptz
+      WHERE id = $1
+    `, [userId, verifier.passwordHash, verifier.passwordSalt, updatedAt]);
+  }
+
+  async saveResetToken(record: AccountResetTokenRecord): Promise<void> {
+    // Rows are kept for a day after creation so the hourly limit still
+    // counts links that were used or cancelled.
+    await this.db.query(`
+      DELETE FROM studio_account_password_resets
+      WHERE created_at < $1::timestamptz - interval '1 day'
+    `, [record.createdAt]);
+    await this.db.query(`
+      INSERT INTO studio_account_password_resets (token_hash, user_id, created_at, expires_at)
+      VALUES ($1, $2, $3::timestamptz, $4::timestamptz)
+    `, [record.tokenHash, record.userId, record.createdAt, record.expiresAt]);
+  }
+
+  async consumeResetToken(tokenHash: string): Promise<AccountResetTokenRecord | null> {
+    // One statement marks the token used, so two concurrent redemptions
+    // cannot both succeed.
+    const result = await this.db.query(`
+      UPDATE studio_account_password_resets
+      SET used_at = now()
+      WHERE token_hash = $1 AND used_at IS NULL
+      RETURNING *
+    `, [tokenHash]);
+    return normalizeStoredResetToken(result.rows[0]);
+  }
+
+  async countResetTokensSince(userId: string, since: string): Promise<number> {
+    const result = await this.db.query(`
+      SELECT count(*)::int AS count
+      FROM studio_account_password_resets
+      WHERE user_id = $1 AND created_at >= $2::timestamptz
+    `, [userId, since]);
+    return Number(result.rows[0]?.count) || 0;
+  }
+
+  async deleteResetTokensForUser(userId: string): Promise<void> {
+    await this.db.query(`
+      UPDATE studio_account_password_resets
+      SET used_at = now()
+      WHERE user_id = $1 AND used_at IS NULL
+    `, [userId]);
   }
 
   async close(): Promise<void> {
@@ -448,12 +838,26 @@ function normalizeStoredSession(value: Record<string, unknown> | undefined): Acc
   const createdAt = safeIsoDate(value.created_at ?? value.createdAt);
   const expiresAt = safeIsoDate(value.expires_at ?? value.expiresAt);
   if (!tokenHash || !userId || !createdAt || !expiresAt) return null;
+  const lastSeenAt = safeIsoDate(value.last_seen_at ?? value.lastSeenAt);
+  const userAgent = safeText(value.user_agent ?? value.userAgent, MAX_USER_AGENT_LENGTH);
   return {
     tokenHash,
     userId,
     createdAt,
     expiresAt,
+    ...(lastSeenAt ? { lastSeenAt } : {}),
+    ...(userAgent ? { userAgent } : {}),
   };
+}
+
+function normalizeStoredResetToken(value: Record<string, unknown> | undefined): AccountResetTokenRecord | null {
+  if (!value) return null;
+  const tokenHash = safeText(value.token_hash ?? value.tokenHash, 128);
+  const userId = safeText(value.user_id ?? value.userId, 80);
+  const createdAt = safeIsoDate(value.created_at ?? value.createdAt);
+  const expiresAt = safeIsoDate(value.expires_at ?? value.expiresAt);
+  if (!tokenHash || !userId || !createdAt || !expiresAt) return null;
+  return { tokenHash, userId, createdAt, expiresAt };
 }
 
 export function getPostgresAccountAuthConfig(env: Record<string, string | undefined>) {

@@ -20,6 +20,8 @@ import { episodeContentRouter } from './routes/episodeContent.js';
 import { captionTranslationRouter } from './routes/captionTranslation.js';
 import { buildIceConfigStatusFromEnv, buildIceConfigWithStatusFromEnv } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
+import { buildProductionReadiness, getStrictStartupFailure } from './services/productionReadiness.js';
+import { parseClientErrorReport, recordClientError } from './services/clientErrors.js';
 import { createAccountAuthStoreFromEnv } from './services/accountAuth.js';
 import { createRoomSnapshotStoreFromEnv } from './services/roomPersistence.js';
 import { createRecordingCatalogStoreFromEnv } from './services/recordingCatalog.js';
@@ -30,9 +32,16 @@ import { createWorkspaceTeamCatalogStoreFromEnv } from './services/workspaceTeam
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
+const persistenceFallbacks: string[] = [];
+const readiness = () => buildProductionReadiness(
+  process.env,
+  buildIceConfigStatusFromEnv(process.env),
+  { persistenceFallbacks }
+);
 const healthPayload = () => ({
   ...buildServiceHealthPayload('signaling-server', process.env),
   ice: buildIceConfigStatusFromEnv(process.env),
+  readiness: readiness(),
 });
 
 // Allowed origins for CORS (HTTP) and WebSocket origin checking.
@@ -129,6 +138,8 @@ const RATE_LIMIT_WINDOW = 60_000; // 1 minute
 const RATE_LIMIT_MAX = 30; // 30 requests per minute per IP (general)
 const ROOM_CREATE_LIMIT_MAX = 10; // 10 room-create attempts per minute per IP
 const TRANSCRIPTION_LIMIT_MAX = 5; // 5 audio transcription attempts per minute per IP
+const CLIENT_ERROR_LIMIT_MAX = 20; // 20 browser error reports per minute per IP
+const ACCOUNT_CREDENTIAL_LIMIT_MAX = 10; // 10 sign-in/password attempts per minute per IP
 
 interface RateEntry {
   count: number;
@@ -180,6 +191,8 @@ function makeRateLimiter(maxPerWindow: number) {
 const generalLimiter = makeRateLimiter(RATE_LIMIT_MAX);
 const roomCreateLimiter = makeRateLimiter(ROOM_CREATE_LIMIT_MAX);
 const transcriptionLimiter = makeRateLimiter(TRANSCRIPTION_LIMIT_MAX);
+const clientErrorLimiter = makeRateLimiter(CLIENT_ERROR_LIMIT_MAX);
+const accountCredentialLimiter = makeRateLimiter(ACCOUNT_CREDENTIAL_LIMIT_MAX);
 
 app.use(generalLimiter.middleware);
 
@@ -188,10 +201,21 @@ const rateLimitSweepTimer = setInterval(() => {
   generalLimiter.sweep();
   roomCreateLimiter.sweep();
   transcriptionLimiter.sweep();
+  clientErrorLimiter.sweep();
+  accountCredentialLimiter.sweep();
 }, 5 * 60_000);
 
 // REST API routes — room creation gets its own tighter cap.
-app.use('/api/auth', authRouter);
+// Endpoints that take a password or send email get a tighter cap than the
+// general limiter, to slow password guessing and reset-email floods.
+const ACCOUNT_CREDENTIAL_PATHS = new Set(['/login', '/register', '/password', '/password-reset/request', '/password-reset/confirm']);
+app.use('/api/auth', (req, res, next) => {
+  if (req.method === 'POST' && ACCOUNT_CREDENTIAL_PATHS.has(req.path)) {
+    accountCredentialLimiter.middleware(req, res, next);
+    return;
+  }
+  next();
+}, authRouter);
 
 app.use('/api/rooms', (req, res, next) => {
   if (req.method === 'POST') {
@@ -226,6 +250,31 @@ app.get('/api/health', (_req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Browser error reports. navigator.sendBeacon posts text/plain to avoid a CORS
+// preflight, so the body is parsed here rather than by express.json().
+app.post(
+  '/api/client-errors',
+  clientErrorLimiter.middleware,
+  express.text({ type: ['text/plain', 'application/json'], limit: '16kb' }),
+  (req, res) => {
+    let body: unknown = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        body = null;
+      }
+    }
+    const report = parseClientErrorReport(body, req.get('user-agent'));
+    if (!report) {
+      res.status(400).json({ error: 'Invalid error report.' });
+      return;
+    }
+    recordClientError(report);
+    res.status(204).end();
+  }
+);
 
 app.get('/api/ice-config', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -286,6 +335,7 @@ async function initializeRoomPersistence() {
     console.log(`Room snapshot persistence enabled; restored ${restored} room(s).`);
   } catch (err) {
     configureRoomSnapshotStore(null);
+    persistenceFallbacks.push('room snapshot');
     console.warn(
       'Room snapshot persistence disabled:',
       err instanceof Error ? err.message : err
@@ -306,6 +356,7 @@ async function initializeAccountAuthPersistence() {
     console.log('Account auth persistence enabled.');
   } catch (err) {
     configureAccountAuthStore(null);
+    persistenceFallbacks.push('account auth');
     console.warn(
       'Account auth persistence disabled:',
       err instanceof Error ? err.message : err
@@ -326,6 +377,7 @@ async function initializeRecordingCatalogPersistence() {
     console.log('Recording catalog persistence enabled.');
   } catch (err) {
     configureRecordingCatalogStore(null);
+    persistenceFallbacks.push('recording catalog');
     console.warn(
       'Recording catalog persistence disabled:',
       err instanceof Error ? err.message : err
@@ -346,6 +398,7 @@ async function initializeBrandKitCatalogPersistence() {
     console.log('Brand kit catalog persistence enabled.');
   } catch (err) {
     configureBrandKitCatalogStore(null);
+    persistenceFallbacks.push('brand kit catalog');
     console.warn(
       'Brand kit catalog persistence disabled:',
       err instanceof Error ? err.message : err
@@ -366,6 +419,7 @@ async function initializeWorkspaceStudioCatalogPersistence() {
     console.log('Workspace studio catalog persistence enabled.');
   } catch (err) {
     configureWorkspaceStudioCatalogStore(null);
+    persistenceFallbacks.push('workspace studio catalog');
     console.warn(
       'Workspace studio catalog persistence disabled:',
       err instanceof Error ? err.message : err
@@ -386,6 +440,7 @@ async function initializeWorkspaceTeamCatalogPersistence() {
     console.log('Workspace team catalog persistence enabled.');
   } catch (err) {
     configureWorkspaceTeamCatalogStore(null);
+    persistenceFallbacks.push('workspace team catalog');
     console.warn(
       'Workspace team catalog persistence disabled:',
       err instanceof Error ? err.message : err
@@ -399,6 +454,18 @@ await initializeRecordingCatalogPersistence();
 await initializeBrandKitCatalogPersistence();
 await initializeWorkspaceStudioCatalogPersistence();
 await initializeWorkspaceTeamCatalogPersistence();
+
+const serverReadiness = readiness();
+const strictFailure = getStrictStartupFailure(serverReadiness);
+if (strictFailure) {
+  console.error(strictFailure);
+  process.exit(1);
+}
+if (serverReadiness.production) {
+  for (const issue of serverReadiness.issues) {
+    console.warn(`Production readiness (${issue.severity}): ${issue.message}`);
+  }
+}
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

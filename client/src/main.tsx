@@ -9,9 +9,11 @@ import { PrivacyPolicy } from './components/PrivacyPolicy.tsx';
 import { TermsOfService } from './components/TermsOfService.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { ToastProvider } from './components/Toast.tsx';
+import { installClientErrorReporting } from './utils/clientErrorReporter.ts';
 import './styles/global.css';
 import './styles/recording-recovery.css';
 
+const ResetPassword = React.lazy(() => import('./components/ResetPassword.tsx').then((module) => ({ default: module.ResetPassword })));
 const PopoutChat = React.lazy(() => import('./components/PopoutChat.tsx').then((module) => ({ default: module.PopoutChat })));
 
 function RouteFallback() {
@@ -21,6 +23,8 @@ function RouteFallback() {
     </div>
   );
 }
+
+installClientErrorReporting();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -32,6 +36,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/studio/:roomId" element={<React.Suspense fallback={<RouteFallback />}><StudioRoom /></React.Suspense>} />
             <Route path="/studio/:roomId/popout-chat" element={<React.Suspense fallback={<RouteFallback />}><PopoutChat /></React.Suspense>} />
             <Route path="/join/:roomId" element={<React.Suspense fallback={<RouteFallback />}><JoinRoom /></React.Suspense>} />
+            <Route path="/reset-password" element={<React.Suspense fallback={<RouteFallback />}><ResetPassword /></React.Suspense>} />
             <Route path="/privacy" element={<PrivacyPolicy />} />
             <Route path="/terms" element={<TermsOfService />} />
             <Route path="*" element={<NotFound />} />

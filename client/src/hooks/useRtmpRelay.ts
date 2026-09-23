@@ -8,6 +8,7 @@ import type {
   RtmpRelayVideoConfig,
 } from '@studio/shared';
 import { resolveMediaWsUrl } from '../utils/apiClient.ts';
+import { getRelaySendBacklog } from '../utils/rtmpRelayBackpressure.ts';
 import {
   getRelayReconnectPlan,
   MAX_RELAY_RECONNECT_ATTEMPTS,
@@ -22,6 +23,7 @@ import {
 } from '../utils/rtmpRelayOutput.ts';
 import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
+import { reportClientError } from '../utils/clientErrorReporter.ts';
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -75,6 +77,8 @@ export interface RtmpRelayStats {
   droppedFrames: number;
   reconnectAttempts: number;
   relayLatencyMs: number | null;
+  /** Seconds of video queued in the browser because the uplink is behind. */
+  sendBacklogSeconds: number;
 }
 
 export interface RtmpRelayReadiness {
@@ -108,6 +112,7 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
   droppedFrames: 0,
   reconnectAttempts: 0,
   relayLatencyMs: null,
+  sendBacklogSeconds: 0,
 };
 
 const BITRATE_WINDOW_MS = 5_000;
@@ -447,7 +452,7 @@ export function useRtmpRelay({
     }));
   }, []);
 
-  const markChunkSent = useCallback((bytes: number) => {
+  const markChunkSent = useCallback((bytes: number, sendBacklogSeconds = 0) => {
     const now = Date.now();
     sentBytesRef.current += bytes;
     bitrateSamplesRef.current.push({ at: now, bytes });
@@ -462,6 +467,7 @@ export function useRtmpRelay({
       chunksSent: current.chunksSent + 1,
       lastChunkAt: now,
       updatedAt: now,
+      sendBacklogSeconds,
       bitrateKbps,
       bitrateHistory: [
         ...current.bitrateHistory,
@@ -720,7 +726,10 @@ export function useRtmpRelay({
               message,
               MAX_RELAY_RECONNECT_ATTEMPTS
             );
-            if (!plan) return false;
+            if (!plan) {
+              reportClientError('stream', `Live relay stopped after ${reconnectAttemptsRef.current} reconnect attempt(s): ${message}`);
+              return false;
+            }
 
             reconnectAttemptsRef.current = plan.attempt;
             stopActiveRelayTransport(false);
@@ -764,6 +773,7 @@ export function useRtmpRelay({
             fail(new Error('Timed out while starting the RTMP relay.'));
           }, 12_000);
 
+          let backlogReconnectRequested = false;
           const startRecorder = () => {
             const estimatedFramesPerChunk = estimateDroppedFrames(
               videoConfig.frameRate,
@@ -786,7 +796,19 @@ export function useRtmpRelay({
                 .then((buffer) => {
                   if (ws.readyState === WebSocket.OPEN) {
                     ws.send(buffer);
-                    markChunkSent(buffer.byteLength);
+                    const backlog = getRelaySendBacklog(
+                      ws.bufferedAmount,
+                      videoConfig.videoBitsPerSecond + RELAY_AUDIO.audioBitsPerSecond
+                    );
+                    markChunkSent(buffer.byteLength, backlog.seconds);
+                    if (backlog.level === 'critical' && !backlogReconnectRequested) {
+                      // Viewers would be watching the past; restart at the live edge
+                      // instead of queueing without bound.
+                      backlogReconnectRequested = true;
+                      if (!scheduleReconnect('Upload could not keep up; reconnecting at the live edge.')) {
+                        reportFinalStop('Upload could not keep up with the stream.');
+                      }
+                    }
                   } else {
                     markDroppedChunk(estimatedFramesPerChunk);
                   }
@@ -795,6 +817,7 @@ export function useRtmpRelay({
             };
 
             recorder.onerror = () => {
+              reportClientError('stream', 'Browser MediaRecorder failed during the live relay.');
               setRelayStatus('error');
               activeDestinationIdsRef.current.forEach((id) => {
                 onDestinationStatus(id, 'error', 'Browser recording failed.');

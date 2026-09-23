@@ -4,7 +4,7 @@ import { StudioChat } from './StudioChat.tsx';
 import '../styles/overlay-panel.css';
 import '../styles/media-library.css';
 import { useState, useRef, useEffect } from 'react';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform } from '@studio/shared';
+import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, StageBackground, Scene, ChatMessage, ChatReactionType, Participant, StageActionPayload, CameraShape, NameTagStyle, StudioMediaAsset, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
 import { LowerThirdManager, type LowerThirdData } from './LowerThird.tsx';
 import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
@@ -179,6 +179,8 @@ interface SidebarProps {
   onParticipantVolumeChange: (participantId: string, volume: number) => void;
   audioDuckingEnabled: boolean;
   onAudioDuckingEnabledChange: (enabled: boolean) => void;
+  recordingUploads?: Record<string, RecordingUploadProgressPayload>;
+  onRecordingUploadControl?: (participantId: string, action: 'pause' | 'resume') => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +430,8 @@ export function Sidebar(props: SidebarProps) {
               onParticipantVolumeChange={props.onParticipantVolumeChange}
               audioDuckingEnabled={props.audioDuckingEnabled}
               onAudioDuckingEnabledChange={props.onAudioDuckingEnabledChange}
+              recordingUploads={props.recordingUploads}
+              onRecordingUploadControl={props.onRecordingUploadControl}
             />
           )}
 

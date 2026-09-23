@@ -57,6 +57,13 @@ describe('recording transcription service', () => {
         text: 'Welcome to the show.',
         language: 'en',
         duration: 12.5,
+        words: [
+          { word: 'Welcome', start: 0.5, end: 0.9 },
+          { word: 'to', start: 0.9, end: 1.0 },
+          { word: 'the', start: 0.95, end: 1.1 },
+          { word: '', start: 1.1, end: 1.2 },
+          { word: 'show.', start: 1.2, end: 1.6 },
+        ],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
@@ -73,13 +80,36 @@ describe('recording transcription service', () => {
     assert.equal(capturedAuth, 'Bearer secret-key');
     assert.equal(capturedForm.get('model'), 'whisper-1');
     assert.equal(capturedForm.get('language'), 'en');
-    assert.equal(capturedForm.get('response_format'), 'json');
+    assert.equal(capturedForm.get('response_format'), 'verbose_json');
+    assert.deepEqual(capturedForm.getAll('timestamp_granularities[]'), ['word', 'segment']);
+    assert.match(capturedForm.get('prompt'), /Umm/);
     assert.equal(capturedForm.get('file').name, 'host.webm');
     assert.deepEqual(result, {
       text: 'Welcome to the show.',
       model: 'whisper-1',
+      words: [
+        { word: 'Welcome', start: 0.5, end: 0.9 },
+        { word: 'to', start: 0.9, end: 1 },
+        { word: 'the', start: 1, end: 1.1 },
+        { word: 'show.', start: 1.2, end: 1.6 },
+      ],
       language: 'en',
       durationSeconds: 12.5,
     });
+  });
+
+  it('asks other models for plain JSON and skips the English prompt for other languages', async () => {
+    const forms = [];
+    const fetchImpl = async (_url, init) => {
+      forms.push(init.body);
+      return new Response(JSON.stringify({ text: 'Hola.' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    const base = { apiKey: 'k', buffer: Buffer.from('a'), mimeType: 'audio/webm', fileName: 'a.webm', fetchImpl };
+    await createOpenAITranscription({ ...base, model: 'gpt-4o-transcribe' });
+    await createOpenAITranscription({ ...base, language: 'es' });
+    assert.equal(forms[0].get('response_format'), 'json');
+    assert.equal(forms[0].get('prompt'), null);
+    assert.equal(forms[1].get('response_format'), 'verbose_json');
+    assert.equal(forms[1].get('prompt'), null);
   });
 });

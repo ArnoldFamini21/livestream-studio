@@ -21,6 +21,7 @@ import {
 } from '../utils/compositorVideo.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
 import { getLogoCanvasRect } from '../utils/logoPosition.ts';
+import { applyCompositorClipShapes, getCompositorClipShapes, type CompositorClipShape } from '../utils/compositorClip.ts';
 import type { ActiveStreamScreen } from '../utils/streamScreens.ts';
 import type { LiveCaptionSegment } from './useLiveCaptions.ts';
 
@@ -510,12 +511,14 @@ function drawActiveMediaOverlay(
   scaleY: number,
   presentationSlideImage: HTMLImageElement | null,
   brandColor: string,
-  slideIndex: number
+  slideIndex: number,
+  clipShapes: CompositorClipShape[] = []
 ) {
   const rect = getScaledNodeRect(mediaNode, containerBounds, scaleX, scaleY);
   ctx.save();
-  ctx.fillStyle = '#000';
-  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  // The content frame matches the content's shape, so it needs no letterbox fill;
+  // rounded corners follow the stage exactly.
+  applyCompositorClipShapes(ctx, clipShapes);
 
   const image = mediaNode?.querySelector('img');
   if (media.type === 'image' && image instanceof HTMLImageElement && canDrawMediaImage(image, window.location.href)) {
@@ -1360,16 +1363,18 @@ export function useCompositor({
 
     // 2. Draw shared media first so participant PiP tiles can remain visible above it.
     if (activeMedia) {
+      const mediaNode = containerRef.current.querySelector('.studio-active-media');
       drawActiveMediaOverlay(
         ctx,
         activeMedia,
-        containerRef.current.querySelector('.studio-active-media'),
+        mediaNode,
         containerBounds,
         scaleX,
         scaleY,
         activePresentationSlideImageRef.current,
         brandColor,
-        activeMediaSlideIndex
+        activeMediaSlideIndex,
+        mediaNode ? getCompositorClipShapes(mediaNode, containerRef.current, containerBounds, scales) : []
       );
     }
 
@@ -1386,7 +1391,16 @@ export function useCompositor({
       const w = rect.width * scaleX;
       const h = rect.height * scaleY;
 
-      drawVideoElementFrame(ctx, video, x, y, w, h);
+      // Mirror rounded and circular tile masks so the output matches the preview.
+      const clipShapes = getCompositorClipShapes(video, containerRef.current!, containerBounds, scales);
+      if (clipShapes.length > 0) {
+        ctx.save();
+        applyCompositorClipShapes(ctx, clipShapes);
+        drawVideoElementFrame(ctx, video, x, y, w, h);
+        ctx.restore();
+      } else {
+        drawVideoElementFrame(ctx, video, x, y, w, h);
+      }
       
     });
     drawParticipantCards(ctx, containerRef.current, containerBounds, scaleX, scaleY, logicalScaleX, logicalScaleY);

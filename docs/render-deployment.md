@@ -92,6 +92,45 @@ When `TURN_STATIC_AUTH_SECRET` and `TURN_URLS` are both set (and `ICE_SERVERS_JS
 
 `/health` and `/api/ice-config` expose non-secret ICE readiness metadata. `ice.turnReady: true` means the signaling server is using configured TURN credentials rather than the fallback.
 
+### Production readiness and error reporting
+
+The signaling server's `/health` includes `readiness`: `ready` is `false` while any **blocking** issue remains. Blocking issues are a missing database URL, a store that fell back to memory because Postgres was unreachable, a `LIVE_STREAM_TOKEN_SECRET` shorter than 32 characters, and a missing TURN configuration. A missing `CLIENT_URL` or `YOUTUBE_API_KEY` is only a warning. In production, each issue is also logged at startup. Set `PRODUCTION_STRICT=true` to make a production server exit at startup instead of serving traffic while a blocking issue remains.
+
+Production browsers send uncaught errors, React crashes, failed live relays, and interrupted recording tracks to `POST /api/client-errors`. Before logging, the server strips query strings and fragments, which can carry invite and media tokens. Each report is logged as one `{"event":"client_error",...}` JSON line and counted in `/metrics` as `livestream_studio_client_errors_total{kind=...}`. Browsers fold repeats of the same error into one counted report and send at most 20 reports per page load. Set `VITE_CLIENT_ERROR_REPORTING=false` at build time to turn reporting off, or `true` to enable it in development builds. `VITE_RELEASE` tags each report with a build identifier.
+
+### Account security and password reset email
+
+Signed-in hosts can manage their account under **Settings & account**:
+
+- **Change password.** Requires the current password and signs out every other device.
+- **Where you're signed in.** Lists each device's browser, platform, last activity, and sign-in date. Any device can be signed out individually, or all devices except the current one at once.
+- **Forgot password?** On the sign-in form, it emails a single-use link that expires after one hour. Using the link signs out every device and cancels every other outstanding link.
+
+Reset requests never reveal whether an email has an account. The response is identical and is sent before the lookup. Each account receives at most three reset emails per hour.
+
+To send reset emails, set `ACCOUNT_EMAIL_FROM` to a sender verified with one of these providers, together with that provider's key:
+
+```sh
+ACCOUNT_EMAIL_FROM="Livestream Studio <studio@arnoldfamini.com>"
+RESEND_API_KEY=<Resend API key>          # or
+POSTMARK_SERVER_TOKEN=<Postmark server token>
+```
+
+Reset links point to `ACCOUNT_RESET_URL_BASE` if it is set, and otherwise to the first `CLIENT_URL`. They are never built from request headers. In production without a provider, the sign-in form explains that email reset is unavailable, and `/health` lists the `account-email-missing` warning. In development without a provider, the reset link is printed to the signaling server's console.
+
+Sign-in, registration, password change, and reset endpoints are limited to 10 attempts per minute per IP address. On startup, the Postgres store adds the `last_seen_at` and `user_agent` session columns and the `studio_account_password_resets` table. Existing sessions stay valid.
+
+### Live relay: one encode, bounded buffering
+
+The media server encodes the studio's program once and shares the result with every destination. A single FFmpeg process encodes the browser's WebM to H.264/AAC FLV. Each destination then gets a lightweight copy-only FFmpeg process that pushes that FLV to its RTMP server. As a result, CPU cost no longer grows with the number of destinations.
+
+- **A failed destination restarts on its own.** It rejoins the shared stream at the next keyframe without re-encoding and without interrupting the other destinations.
+- **A crashed encoder restarts at most twice.** It resumes from the cached WebM header, and every destination reconnects to the new encode.
+- **No input can queue more than about 6 seconds of media.** This applies to the encoder, each destination, and the live backup, which gets twice the allowance. A slow upload to one platform, or an overloaded encoder, now makes that input skip ahead to the live edge at a clean boundary (a WebM Cluster or an H.264 keyframe) instead of growing server memory and delaying viewers. The studio's destination card reports "falling behind; skipping ahead" and then "Caught up".
+- **Monitoring.** `/metrics` exposes `livestream_studio_media_shared_encoders_total`, `livestream_studio_media_skipping_feeds_total`, and `livestream_studio_media_skip_events_total`. `/health` reports `capabilities.liveRelay`.
+
+Set `RTMP_ENCODE_ONCE=false` to return to one full encode per destination. The byte limits still apply in that mode.
+
 The media server can also copy recording export artifacts to S3-compatible object storage. Set these on `livestream-studio-media-server` when durable recording handoff is needed:
 
 ```sh

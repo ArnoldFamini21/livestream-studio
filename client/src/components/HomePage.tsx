@@ -26,6 +26,7 @@ import {
   logoutAccount,
   registerAccount,
 } from '../utils/accountAuth.ts';
+import { AccountSecurity, ForgotPasswordForm } from './AccountSecurity.tsx';
 import {
   hasCreatedRoomDetails,
   resolveCreatedRoomHostAccess,
@@ -313,6 +314,7 @@ export function HomePage() {
   const [accountPassword, setAccountPassword] = useState('');
   const [accountLoading, setAccountLoading] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
   const [serverWorkspaceStudioCatalog, setServerWorkspaceStudioCatalog] = useState<WorkspaceStudioCatalogEntry[]>([]);
   const [serverWorkspaceStudioCatalogLoading, setServerWorkspaceStudioCatalogLoading] = useState(false);
   const [serverWorkspaceStudioCatalogError, setServerWorkspaceStudioCatalogError] = useState<string | null>(null);
@@ -1328,19 +1330,23 @@ export function HomePage() {
     }
   };
 
+  const clearSignedInAccount = (notice: string) => {
+    setAccountUser(null);
+    setAccountSessionExpiresAt('');
+    setAccountWorkspaceStudioCatalog([]);
+    setAccountWorkspaceStudioCatalogError(null);
+    lastAccountWorkspaceStudioCatalogSyncKey.current = '';
+    setAccountPassword('');
+    setDashboardNotice(notice);
+  };
+
   const signOutAccount = async () => {
     setAccountError(null);
     setDashboardNotice(null);
     setAccountLoading(true);
     try {
       await logoutAccount();
-      setAccountUser(null);
-      setAccountSessionExpiresAt('');
-      setAccountWorkspaceStudioCatalog([]);
-      setAccountWorkspaceStudioCatalogError(null);
-      lastAccountWorkspaceStudioCatalogSyncKey.current = '';
-      setAccountPassword('');
-      setDashboardNotice('Signed out.');
+      clearSignedInAccount('Signed out.');
     } catch (err) {
       setAccountError(getApiErrorMessage(err, 'Could not sign out. Please try again.'));
     } finally {
@@ -1620,6 +1626,8 @@ export function HomePage() {
                       Session active{accountSessionExpiresAt ? ` until ${formatDashboardDate(accountSessionExpiresAt)}` : ''}
                     </span>
                   </div>
+                ) : forgotPasswordOpen ? (
+                  <ForgotPasswordForm defaultEmail={accountEmail} onClose={() => setForgotPasswordOpen(false)} />
                 ) : (
                   <div className="ws-accountFormGrid" style={styles.accountFormGrid}>
                     {accountMode === 'register' && (
@@ -1660,7 +1668,18 @@ export function HomePage() {
                     >
                       {accountLoading ? 'Working...' : accountMode === 'register' ? 'Create Account' : 'Log in'}
                     </button>
+                    {accountMode === 'login' && (
+                      <button type="button" className="account-security__forgot" onClick={() => setForgotPasswordOpen(true)}>
+                        Forgot password?
+                      </button>
+                    )}
                   </div>
+                )}
+                {accountUser && (
+                  <AccountSecurity
+                    email={accountUser.email}
+                    onSignedOut={() => clearSignedInAccount('Signed out on this device.')}
+                  />
                 )}
                 {accountError && <p className="ws-workspaceError" style={styles.workspaceError}>{accountError}</p>}
               </div>

@@ -62,7 +62,9 @@ export interface GetRecordingExportJobInput {
 export interface RequestRecordingClipExportInput {
   token: string;
   uploadId: string;
-  clip: { startSeconds: number; endSeconds: number; aspect?: 'source' | 'vertical' | 'square' };
+  /** One range to cut out as a clip; or use `edit` to keep several ranges. */
+  clip?: { startSeconds: number; endSeconds: number; aspect?: 'source' | 'vertical' | 'square' };
+  edit?: { keepRanges: Array<{ startSeconds: number; endSeconds: number }> };
   basename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
   includeAudioStems?: boolean;
@@ -385,11 +387,16 @@ export async function requestRecordingClipExport(
       video: {
         codec: input.exportVideoCodec || 'h264',
       },
-      clip: {
-        startSeconds: input.clip.startSeconds,
-        endSeconds: input.clip.endSeconds,
-        aspect: input.clip.aspect || undefined,
-      },
+      ...(input.clip
+        ? {
+          clip: {
+            startSeconds: input.clip.startSeconds,
+            endSeconds: input.clip.endSeconds,
+            aspect: input.clip.aspect || undefined,
+          },
+        }
+        : {}),
+      ...(input.edit ? { edit: { keepRanges: input.edit.keepRanges } } : {}),
     }
   );
   return pollRecordingExportJob({

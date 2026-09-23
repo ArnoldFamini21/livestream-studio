@@ -5,6 +5,15 @@ import {
   getPreferredVideoRecordingMimeType,
   getRecordingFileExtension,
 } from '../utils/recordingMimeTypes.ts';
+import {
+  createProgressiveRecordingUploader,
+  isProgressiveUploadMimeType,
+  toProgressiveUploadTrackId,
+  type ProgressiveRecordingUploader,
+  type ProgressiveUploadResult,
+  type ProgressiveUploadState,
+} from '../utils/progressiveRecordingUpload.ts';
+import type { LocalProgressiveUploadConfig } from './useLocalRecording.ts';
 
 export interface RecordingStreamInput {
   stream: MediaStream;
@@ -19,6 +28,20 @@ export interface RecordingTrackResult {
   blob: Blob;
   kind?: RecordingUploadTrackKind;
 }
+
+export interface StartProgramRecordingOptions {
+  progressiveUpload?: LocalProgressiveUploadConfig;
+}
+
+export interface ProgramProgressiveUploadHandle {
+  finish(): Promise<ProgressiveUploadResult>;
+}
+
+interface ActiveProgramUpload {
+  uploader: ProgressiveRecordingUploader;
+  trackIds: Map<string, string>;
+}
+
 
 interface RecordingTrack {
   participantId: string;
@@ -37,6 +60,9 @@ export function useRecording(roomName = 'Studio') {
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const tracksRef = useRef<Map<string, RecordingTrack>>(new Map());
+  const [uploadState, setUploadState] = useState<ProgressiveUploadState | null>(null);
+  const progressiveUploadRef = useRef<ActiveProgramUpload | null>(null);
+  const finishedUploadRef = useRef<ProgramProgressiveUploadHandle | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
   const pausedAtRef = useRef<number | null>(null);
@@ -64,8 +90,48 @@ export function useRecording(roomName = 'Studio') {
     return Math.max(0, Math.floor((endTime - startTimeRef.current - accumulatedPausedMsRef.current) / 1000));
   }, []);
 
+  const startProgressiveUpload = (config: LocalProgressiveUploadConfig) => {
+    const tracks = [...tracksRef.current.entries()];
+    if (tracks.some(([, track]) => !isProgressiveUploadMimeType(track.recorder.mimeType || ''))) return;
+    const seen = new Set<string>();
+    const trackIds = new Map<string, string>();
+    const sources = tracks.map(([id, track], index) => {
+      const uploadTrackId = toProgressiveUploadTrackId(id, index, seen);
+      trackIds.set(id, uploadTrackId);
+      const mimeType = track.recorder.mimeType;
+      return {
+        id: uploadTrackId,
+        label: track.name,
+        kind: track.kind || 'iso',
+        mimeType,
+        snapshot: () => track.chunkStore.snapshot(mimeType),
+      };
+    });
+    const uploader = createProgressiveRecordingUploader({
+      ...config,
+      onChange: (state) => setUploadState(state),
+    });
+    progressiveUploadRef.current = { uploader, trackIds };
+    uploader.start(sources);
+  };
+
+  const pauseUpload = useCallback(() => {
+    progressiveUploadRef.current?.uploader.pause();
+  }, []);
+
+  const resumeUpload = useCallback(() => {
+    progressiveUploadRef.current?.uploader.resume();
+  }, []);
+
+  /** Returns the finished take's progressive upload once, after stopRecording() resolves. */
+  const takeProgressiveUpload = useCallback((): ProgramProgressiveUploadHandle | null => {
+    const handle = finishedUploadRef.current;
+    finishedUploadRef.current = null;
+    return handle;
+  }, []);
+
   const startRecording = useCallback(
-    (streams: Map<string, RecordingStreamInput>) => {
+    (streams: Map<string, RecordingStreamInput>, options?: StartProgramRecordingOptions) => {
       // Bug fix #10: Guard against double-start
       if (tracksRef.current.size > 0 || stoppingRef.current) {
         streams.forEach((input) => input.cleanup?.());
@@ -134,6 +200,18 @@ export function useRecording(roomName = 'Studio') {
         setRecordingTime(getElapsedSeconds());
       }, 1000);
 
+      progressiveUploadRef.current?.uploader.stop();
+      progressiveUploadRef.current = null;
+      finishedUploadRef.current = null;
+      setUploadState(null);
+      if (options?.progressiveUpload) {
+        try {
+          startProgressiveUpload(options.progressiveUpload);
+        } catch (err) {
+          console.warn('Progressive program upload could not start; the program uploads after it ends:', err);
+        }
+      }
+
       setIsRecording(true);
       setIsPaused(false);
       console.log(`Recording started: ${streams.size} track(s)`);
@@ -192,6 +270,10 @@ export function useRecording(roomName = 'Studio') {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
     const tracks = [...tracksRef.current.entries()];
+    const activeUpload = progressiveUploadRef.current;
+    progressiveUploadRef.current = null;
+    // Halt background cycles; finish() still uploads the remainder when the caller asks.
+    activeUpload?.uploader.stop();
     stopPromiseRef.current = (async () => {
       try {
         const results = await Promise.all(tracks.map(async ([id, track]) => {
@@ -202,6 +284,14 @@ export function useRecording(roomName = 'Studio') {
           const blob = await track.finished;
           return [id, { name: track.name, kind: track.kind, blob }] as const;
         }));
+        if (activeUpload) {
+          const finalBlobs = new Map<string, Blob>();
+          for (const [id, result] of results) {
+            const uploadTrackId = activeUpload.trackIds.get(id);
+            if (uploadTrackId) finalBlobs.set(uploadTrackId, result.blob);
+          }
+          finishedUploadRef.current = { finish: () => activeUpload.uploader.finish(finalBlobs) };
+        }
         return new Map(results);
       } finally {
         tracks.forEach(([, track]) => cleanupTrack(track));
@@ -240,6 +330,8 @@ export function useRecording(roomName = 'Studio') {
   // Bug fix #9: Cleanup on unmount - clear interval, stop recorders, clear tracks
   useEffect(() => {
     return () => {
+      progressiveUploadRef.current?.uploader.stop();
+      progressiveUploadRef.current = null;
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -266,6 +358,10 @@ export function useRecording(roomName = 'Studio') {
     storageWarning,
     recordingTime,
     formattedTime: formatTime(recordingTime),
+    uploadState,
+    pauseUpload,
+    resumeUpload,
+    takeProgressiveUpload,
     startRecording,
     pauseRecording,
     resumeRecording,

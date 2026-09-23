@@ -1,4 +1,5 @@
 import { getRooms } from './signaling.js';
+import { getClientErrorCounts } from './clientErrors.js';
 
 type LabelSet = Record<string, string>;
 
@@ -138,6 +139,11 @@ export function buildSignalingPrometheusMetrics(rooms: SignalingRoomsMap = getRo
     formatGauge('livestream_studio_signaling_active_polls_total', 'Open live polls across active rooms.', [
       { value: snapshot.activePollsTotal },
     ]),
+    [
+      '# HELP livestream_studio_client_errors_total Browser errors reported by studio clients since the server started.',
+      '# TYPE livestream_studio_client_errors_total counter',
+      ...Object.entries(getClientErrorCounts()).map(([kind, value]) => `livestream_studio_client_errors_total${formatLabels({ kind })} ${value}`),
+    ].join('\n'),
   ];
   return `${lines.join('\n')}\n`;
 }

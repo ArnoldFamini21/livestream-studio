@@ -158,3 +158,32 @@ export function getPresentationPresenterCards(status: PresentationDeckStatus): P
         },
   ];
 }
+
+export type SharedContentKind = 'deck' | 'pdf' | 'image' | 'video' | 'screen' | 'file';
+
+export interface SharedContentLabel {
+  kind: SharedContentKind;
+  title: string;
+  kindLabel: string;
+}
+
+const MEDIA_EXTENSION_PATTERN = /\.(pptx?|key|pdf|png|jpe?g|gif|webp|avif|svg|mp4|m4v|mov|webm|mkv)$/i;
+
+/** Audience-friendly name for the content on stage: no file extension, with its type. */
+export function getSharedContentLabel(
+  media: Pick<ActiveMedia, 'name' | 'type' | 'preview'> | null | undefined,
+  screenName?: string
+): SharedContentLabel {
+  if (!media) {
+    return { kind: 'screen', title: screenName?.trim() || 'Shared screen', kindLabel: 'Screen share' };
+  }
+  const title = media.name.trim().replace(MEDIA_EXTENSION_PATTERN, '').trim() || media.name.trim() || 'Shared file';
+  if (media.type === 'presentation') {
+    const sourceFormat = media.preview?.kind === 'presentation-slides' ? media.preview.sourceFormat : null;
+    return { kind: 'deck', title, kindLabel: sourceFormat === 'pdf' ? 'PDF' : 'Presentation' };
+  }
+  if (media.type === 'pdf') return { kind: 'pdf', title, kindLabel: 'PDF' };
+  if (media.type === 'image') return { kind: 'image', title, kindLabel: 'Image' };
+  if (media.type === 'video') return { kind: 'video', title, kindLabel: 'Video' };
+  return { kind: 'file', title, kindLabel: 'File' };
+}
