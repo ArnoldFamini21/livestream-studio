@@ -4,7 +4,13 @@ export interface MediaRelayMetricsSession {
   started: boolean;
   stopping: boolean;
   destinations: unknown[];
-  relays: Map<string, { live: boolean; exited: boolean }>;
+  relays: Map<string, {
+    live: boolean;
+    exited: boolean;
+    feed?: { overflowCount: number; skipping: boolean } | null;
+    flvFeed?: { overflowCount: number; skipping: boolean } | null;
+  }>;
+  encoder?: { exited: boolean; feed: { overflowCount: number; skipping: boolean } } | null;
   stopTimers: Map<string, unknown>;
   restartTimers: Map<string, unknown>;
   restartAttempts: Map<string, number>;
@@ -23,6 +29,9 @@ export interface MediaRelayMetricsSnapshot {
   restartingRelaysTotal: number;
   stopTimersTotal: number;
   restartAttemptsTotal: number;
+  encodersTotal: number;
+  skippingFeedsTotal: number;
+  skipEventsTotal: number;
 }
 
 function escapePrometheusLabelValue(value: string): string {
@@ -57,6 +66,9 @@ export function buildMediaRelayMetricsSnapshot(sessions: MediaRelaySessionsMap):
     restartingRelaysTotal: 0,
     stopTimersTotal: 0,
     restartAttemptsTotal: 0,
+    encodersTotal: 0,
+    skippingFeedsTotal: 0,
+    skipEventsTotal: 0,
   };
 
   for (const session of sessions.values()) {
@@ -69,9 +81,20 @@ export function buildMediaRelayMetricsSnapshot(sessions: MediaRelaySessionsMap):
     for (const attempts of session.restartAttempts.values()) {
       snapshot.restartAttemptsTotal += attempts;
     }
+    const feeds = [];
+    if (session.encoder && !session.encoder.exited) {
+      snapshot.encodersTotal++;
+      feeds.push(session.encoder.feed);
+    }
     for (const relay of session.relays.values()) {
       if (relay.live) snapshot.liveRelaysTotal++;
       if (relay.exited) snapshot.exitedRelaysTotal++;
+      const feed = relay.flvFeed ?? relay.feed;
+      if (feed) feeds.push(feed);
+    }
+    for (const feed of feeds) {
+      if (feed.skipping) snapshot.skippingFeedsTotal++;
+      snapshot.skipEventsTotal += feed.overflowCount;
     }
   }
 
@@ -112,6 +135,15 @@ export function buildMediaRelayPrometheusMetrics(sessions: MediaRelaySessionsMap
     ]),
     formatGauge('livestream_studio_media_restart_attempts_total', 'Destination restart attempts across active sessions.', [
       { value: snapshot.restartAttemptsTotal },
+    ]),
+    formatGauge('livestream_studio_media_shared_encoders_total', 'Shared live encoders feeding every destination of a session.', [
+      { value: snapshot.encodersTotal },
+    ]),
+    formatGauge('livestream_studio_media_skipping_feeds_total', 'FFmpeg inputs currently skipping media to catch up with the live edge.', [
+      { value: snapshot.skippingFeedsTotal },
+    ]),
+    formatGauge('livestream_studio_media_skip_events_total', 'Times an FFmpeg input fell behind and skipped ahead, across active sessions.', [
+      { value: snapshot.skipEventsTotal },
     ]),
   ];
   return `${lines.join('\n')}\n`;

@@ -133,7 +133,7 @@ export function normalizeAudioConfig(config: RtmpRelayAudioConfig): RtmpRelayAud
   };
 }
 
-export function createFfmpegArgs(destination: RtmpRelayDestination, options: FfmpegRelayOptions): string[] {
+function createEncodeArgs(options: FfmpegRelayOptions): string[] {
   const video = normalizeVideoConfig(options.video);
   const audio = normalizeAudioConfig(options.audio);
   const videoBitrateKbps = Math.round(video.videoBitsPerSecond / 1000);
@@ -160,7 +160,56 @@ export function createFfmpegArgs(destination: RtmpRelayDestination, options: Ffm
     '-b:a', `${audioBitrateKbps}k`,
     '-ar', String(audio.sampleRate),
     '-ac', String(audio.channelCount),
+  ];
+}
+
+export function createFfmpegArgs(destination: RtmpRelayDestination, options: FfmpegRelayOptions): string[] {
+  return [
+    ...createEncodeArgs(options),
     '-f', 'flv',
     buildRtmpOutputUrl(destination.rtmpUrl, destination.streamKey),
   ];
+}
+
+/**
+ * The one shared encode for all destinations: WebM in, H.264/AAC FLV out on
+ * stdout. Packets are flushed immediately so destinations stay live.
+ */
+export function createFfmpegEncoderArgs(options: FfmpegRelayOptions): string[] {
+  return [
+    ...createEncodeArgs(options),
+    '-flush_packets', '1',
+    '-flvflags', 'no_duration_filesize',
+    '-f', 'flv',
+    'pipe:1',
+  ];
+}
+
+/** A destination's uploader: pushes the shared FLV to RTMP without re-encoding. */
+export function createFfmpegPushArgs(destination: RtmpRelayDestination): string[] {
+  return [
+    '-hide_banner',
+    '-loglevel', 'warning',
+    '-f', 'flv',
+    '-i', 'pipe:0',
+    '-c', 'copy',
+    '-flvflags', 'no_duration_filesize',
+    '-f', 'flv',
+    buildRtmpOutputUrl(destination.rtmpUrl, destination.streamKey),
+  ];
+}
+
+/** Bytes that hold `seconds` of media at the given bitrates. */
+export function bytesForSeconds(seconds: number, options: FfmpegRelayOptions): number {
+  const video = normalizeVideoConfig(options.video);
+  const audio = normalizeAudioConfig(options.audio);
+  return Math.round(((video.videoBitsPerSecond + audio.audioBitsPerSecond) / 8) * seconds);
+}
+
+/**
+ * Encode-once is the default. RTMP_ENCODE_ONCE=false restores one full
+ * encode per destination.
+ */
+export function isEncodeOnceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !['0', 'false', 'no', 'off'].includes((env.RTMP_ENCODE_ONCE || '').trim().toLowerCase());
 }

@@ -54,8 +54,12 @@ import {
   type PresentationRendererHealth,
 } from './presentationRender.js';
 import {
+  bytesForSeconds,
   createFfmpegArgs,
+  createFfmpegEncoderArgs,
+  createFfmpegPushArgs,
   hasRemainingRelayWork,
+  isEncodeOnceEnabled,
   normalizeAudioConfig,
   normalizeVideoConfig,
   redactDestinationUrl,
@@ -63,6 +67,7 @@ import {
   validateDestinations,
 } from './rtmp.js';
 import { WebmSinkFeed, WebmStreamTracker } from './webmStream.js';
+import { FlvSinkFeed, FlvTagStream } from './flvStream.js';
 
 const PORT = Number(process.env.PORT || process.env.MEDIA_SERVER_PORT || 3002);
 const MAX_WS_PAYLOAD_BYTES = 4 * 1024 * 1024;
@@ -70,15 +75,32 @@ const SHUTDOWN_TIMEOUT_MS = 5_000;
 const MAX_DESTINATION_RESTARTS = 2;
 const DESTINATION_RESTART_DELAY_MS = 1_500;
 const MEDIA_HEALTH_CAPABILITY_CACHE_MS = 60_000;
+const MAX_ENCODER_RESTARTS = 2;
+// Seconds of media an FFmpeg input may queue before its feed skips ahead to
+// the live edge. Without a bound, a slow destination or a CPU-starved encoder
+// grows server memory without limit and viewers fall further behind.
+const RELAY_INPUT_BACKLOG_SECONDS = 6;
 const isProduction = process.env.NODE_ENV === 'production';
 
 interface RelayProcess {
   destination: RtmpRelayDestination;
   process: ChildProcessByStdio<Writable, null, Readable>;
-  feed: WebmSinkFeed;
+  /** Per-destination encode: the studio's WebM goes straight in. */
+  feed: WebmSinkFeed | null;
+  /** Encode-once: the shared encoder's FLV goes in and is copied to RTMP. */
+  flvFeed: FlvSinkFeed | null;
   live: boolean;
   /** Spawned after media began, so it resumes from the cached init segment. */
   joinedMidStream: boolean;
+  /** Replaced because the shared encoder restarted; its exit is expected. */
+  retired: boolean;
+  exited: boolean;
+}
+
+interface EncoderProcess {
+  process: ChildProcessByStdio<Writable, Readable, Readable>;
+  feed: WebmSinkFeed;
+  flv: FlvTagStream;
   exited: boolean;
 }
 
@@ -95,6 +117,12 @@ interface RelaySession {
   claims: LiveStreamTokenClaims | null;
   destinations: RtmpRelayDestination[];
   webm: WebmStreamTracker;
+  /** One H.264 encode shared by every destination (RTMP_ENCODE_ONCE). */
+  encodeOnce: boolean;
+  encoder: EncoderProcess | null;
+  encoderRestartAttempts: number;
+  encoderRestartTimer: ReturnType<typeof setTimeout> | null;
+  relaysStopRequested: boolean;
   relays: Map<string, RelayProcess>;
   backup: BackupProcess | null;
   backupStopTimer: ReturnType<typeof setTimeout> | null;
@@ -147,6 +175,10 @@ async function healthPayload() {
   return {
     ...buildServiceHealthPayload('media-server', process.env),
     capabilities: {
+      liveRelay: {
+        encodeOnce: isEncodeOnceEnabled(),
+        backlogSeconds: RELAY_INPUT_BACKLOG_SECONDS,
+      },
       presentationRenderer: {
         ready: presentationRenderer.ready,
         message: presentationRenderer.message,
@@ -246,6 +278,26 @@ function stopBackupProcess(ws: WebSocket, session: RelaySession) {
   }, SHUTDOWN_TIMEOUT_MS);
 }
 
+function stopRelays(session: RelaySession) {
+  if (session.relaysStopRequested) return;
+  session.relaysStopRequested = true;
+  for (const relay of session.relays.values()) {
+    stopRelayProcess(session, relay);
+  }
+}
+
+/** End an FFmpeg input and kill the process if it does not exit on its own. */
+function endProcess(child: ChildProcessByStdio<Writable, Readable | null, Readable>, isExited: () => boolean) {
+  try {
+    child.stdin.end();
+  } catch {
+    // Process may already be exiting.
+  }
+  setTimeout(() => {
+    if (!isExited()) child.kill('SIGTERM');
+  }, SHUTDOWN_TIMEOUT_MS);
+}
+
 function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
   if (session.stopping) return;
   session.stopping = true;
@@ -253,9 +305,23 @@ function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
     clearTimeout(timer);
   }
   session.restartTimers.clear();
+  if (session.encoderRestartTimer) {
+    clearTimeout(session.encoderRestartTimer);
+    session.encoderRestartTimer = null;
+  }
   stopBackupProcess(ws, session);
+
+  const encoder = session.encoder;
+  if (encoder && !encoder.exited) {
+    // Let the encoder flush its last frames into the destinations first; they
+    // are stopped when its output ends, or after the shutdown timeout.
+    endProcess(encoder.process, () => encoder.exited);
+    setTimeout(() => stopRelays(session), SHUTDOWN_TIMEOUT_MS);
+  } else {
+    stopRelays(session);
+  }
+
   for (const relay of session.relays.values()) {
-    stopRelayProcess(session, relay);
     sendJson(ws, {
       type: 'destination-status',
       payload: { destinationId: relay.destination.id, status: 'idle' },
@@ -265,7 +331,7 @@ function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
 }
 
 function stopSessionIfNoRelayWork(ws: WebSocket, session: RelaySession) {
-  if (!session.started || session.stopping) return;
+  if (!session.started || session.stopping || session.encoderRestartTimer) return;
   const relayWork = Array.from(session.relays.entries()).map(([destinationId, relay]) => ({
     exited: relay.exited,
     restartPending: session.restartTimers.has(destinationId),
@@ -281,26 +347,68 @@ function spawnRelay(
   destination: RtmpRelayDestination,
   payload: RtmpRelayStartPayload
 ) {
-  const args = createFfmpegArgs(destination, {
+  const options = {
     video: normalizeVideoConfig(payload.video),
     audio: normalizeAudioConfig(payload.audio),
-  });
+  };
+  const encoder = session.encodeOnce ? session.encoder : null;
+  const args = encoder ? createFfmpegPushArgs(destination) : createFfmpegArgs(destination, options);
   const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
-  const feed = new WebmSinkFeed(child.stdin, (err) => {
+  const onInputError = (err: Error) => {
     console.warn(`ffmpeg ${destination.name} input closed: ${err.message}`);
-  });
-  // A respawn joins mid-stream: FFmpeg gets the init segment first, then live
-  // media from the next Cluster boundary. Other destinations are untouched.
-  const join = feed.join(session.webm);
-  if (join === 'no-init') {
-    console.warn(`RTMP relay ${destination.name} restarted without a WebM init segment; FFmpeg may reject the stream`);
+  };
+  const backpressure = {
+    maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS, options),
+    onOverflow: () => {
+      console.warn(`RTMP relay ${destination.name} fell ${RELAY_INPUT_BACKLOG_SECONDS}s behind; skipping ahead to the live edge`);
+      sendJson(ws, {
+        type: 'destination-status',
+        payload: {
+          destinationId: destination.id,
+          status: 'live',
+          message: 'Upload to this destination is falling behind; skipping ahead to stay live.',
+        },
+      });
+    },
+    onRecover: (droppedBytes: number) => {
+      const seconds = Math.max(1, Math.round(droppedBytes / Math.max(1, bytesForSeconds(1, options))));
+      sendJson(ws, {
+        type: 'destination-status',
+        payload: {
+          destinationId: destination.id,
+          status: 'live',
+          message: `Caught up: skipped about ${seconds}s to stay live.`,
+        },
+      });
+    },
+  };
+
+  let feed: WebmSinkFeed | null = null;
+  let flvFeed: FlvSinkFeed | null = null;
+  let joinedMidStream: boolean;
+  if (encoder) {
+    // Copy-only uploader: a restart rejoins the shared encode at the next
+    // keyframe, without re-encoding and without touching other destinations.
+    flvFeed = new FlvSinkFeed(child.stdin, encoder.flv, { ...backpressure, onError: onInputError });
+    joinedMidStream = flvFeed.join() === 'resync';
+  } else {
+    feed = new WebmSinkFeed(child.stdin, onInputError, backpressure);
+    // A respawn joins mid-stream: FFmpeg gets the init segment first, then live
+    // media from the next Cluster boundary. Other destinations are untouched.
+    const join = feed.join(session.webm);
+    if (join === 'no-init') {
+      console.warn(`RTMP relay ${destination.name} restarted without a WebM init segment; FFmpeg may reject the stream`);
+    }
+    joinedMidStream = join !== 'from-start';
   }
   const relay: RelayProcess = {
     destination,
     process: child,
     feed,
+    flvFeed,
     live: false,
-    joinedMidStream: join !== 'from-start',
+    joinedMidStream,
+    retired: false,
     exited: false,
   };
   session.relays.set(destination.id, relay);
@@ -319,6 +427,7 @@ function spawnRelay(
 
   child.on('error', (err) => {
     relay.exited = true;
+    if (relay.retired) return;
     sendJson(ws, {
       type: 'destination-status',
       payload: { destinationId: destination.id, status: 'error', message: err.message },
@@ -327,6 +436,7 @@ function spawnRelay(
 
   child.on('close', (code, signal) => {
     relay.exited = true;
+    if (relay.retired) return;
     const timer = session.stopTimers.get(destination.id);
     if (timer) {
       clearTimeout(timer);
@@ -369,6 +479,134 @@ function spawnRelay(
   });
 }
 
+/**
+ * Start the shared encoder. Its FLV output fans out to every destination's
+ * copy-only uploader, so CPU cost no longer grows with the destination count.
+ */
+function spawnEncoder(
+  ws: WebSocket,
+  session: RelaySession,
+  ffmpegPath: string,
+  payload: RtmpRelayStartPayload
+): EncoderProcess {
+  const options = {
+    video: normalizeVideoConfig(payload.video),
+    audio: normalizeAudioConfig(payload.audio),
+  };
+  const child = spawn(ffmpegPath, createFfmpegEncoderArgs(options), { stdio: ['pipe', 'pipe', 'pipe'] });
+  const flv = new FlvTagStream();
+  const feed = new WebmSinkFeed(child.stdin, (err) => {
+    console.warn(`ffmpeg encoder input closed: ${err.message}`);
+  }, {
+    maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS, options),
+    onOverflow: () => {
+      console.warn(`Live encoder fell ${RELAY_INPUT_BACKLOG_SECONDS}s behind; skipping ahead to the live edge`);
+      for (const relay of session.relays.values()) {
+        if (relay.exited || relay.retired) continue;
+        sendJson(ws, {
+          type: 'destination-status',
+          payload: {
+            destinationId: relay.destination.id,
+            status: 'live',
+            message: 'The server encoder is overloaded; skipping ahead to stay live.',
+          },
+        });
+      }
+    },
+  });
+  const join = feed.join(session.webm);
+  if (join === 'no-init') {
+    console.warn('Live encoder restarted without a WebM init segment; FFmpeg may reject the stream');
+  }
+  const encoder: EncoderProcess = { process: child, feed, flv, exited: false };
+  session.encoder = encoder;
+  console.log(`Live encoder starting for ${session.destinations.length} destination(s)`);
+
+  child.stdout.on('data', (data: Buffer) => {
+    const chunk = flv.push(data);
+    if (!chunk) return;
+    for (const relay of session.relays.values()) {
+      if (relay.exited || relay.retired || !relay.flvFeed) continue;
+      if (!relay.flvFeed.write(chunk) || relay.live) continue;
+      relay.live = true;
+      sendJson(ws, {
+        type: 'destination-status',
+        payload: { destinationId: relay.destination.id, status: 'live' },
+      });
+    }
+  });
+  child.stdout.on('end', () => {
+    if (session.stopping) stopRelays(session);
+  });
+
+  child.stderr.on('data', (chunk: Buffer) => {
+    const line = redactFfmpegLine(chunk.toString('utf8').trim(), session.destinations);
+    if (line) console.warn(`ffmpeg encoder: ${line}`);
+  });
+
+  let handled = false;
+  const onExit = (message: string) => {
+    encoder.exited = true;
+    if (handled) return;
+    handled = true;
+    if (session.stopping) {
+      stopRelays(session);
+      return;
+    }
+    if (session.encoder !== encoder) return;
+
+    // Every uploader was fed by this encode. Retire them; a new encoder
+    // starts a new FLV stream, and they are respawned against it.
+    for (const timer of session.restartTimers.values()) clearTimeout(timer);
+    session.restartTimers.clear();
+    for (const relay of session.relays.values()) {
+      if (relay.exited) continue;
+      relay.retired = true;
+      endProcess(relay.process, () => relay.exited);
+    }
+
+    const canResume = session.webm.joinPoint() !== null;
+    if (canResume && session.encoderRestartAttempts < MAX_ENCODER_RESTARTS) {
+      session.encoderRestartAttempts += 1;
+      const attempt = session.encoderRestartAttempts;
+      console.warn(`Live encoder stopped (${message}); restarting ${attempt}/${MAX_ENCODER_RESTARTS}`);
+      for (const destination of session.destinations) {
+        sendJson(ws, {
+          type: 'destination-status',
+          payload: {
+            destinationId: destination.id,
+            status: 'connecting',
+            message: `Restarting the encoder (${attempt}/${MAX_ENCODER_RESTARTS})`,
+          },
+        });
+      }
+      session.encoderRestartTimer = setTimeout(() => {
+        session.encoderRestartTimer = null;
+        if (session.stopping || ws.readyState !== WebSocket.OPEN) return;
+        spawnEncoder(ws, session, ffmpegPath, payload);
+        for (const destination of session.destinations) {
+          spawnRelay(ws, session, ffmpegPath, destination, payload);
+        }
+      }, DESTINATION_RESTART_DELAY_MS);
+      return;
+    }
+
+    for (const destination of session.destinations) {
+      sendJson(ws, {
+        type: 'destination-status',
+        payload: { destinationId: destination.id, status: 'error', message: `Live encoder stopped: ${message}` },
+      });
+    }
+    stopSession(ws, session, 'The live encoder stopped.');
+  };
+
+  child.on('error', (err) => onExit(err.message));
+  child.on('close', (code, signal) => {
+    onExit(signal ? `FFmpeg exited from ${signal}` : `FFmpeg exited with code ${code ?? 'unknown'}`);
+  });
+  return encoder;
+}
+
 async function spawnLiveBackup(
   ws: WebSocket,
   session: RelaySession,
@@ -405,6 +643,14 @@ async function spawnLiveBackup(
     const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
     const feed = new WebmSinkFeed(child.stdin, (err) => {
       console.warn(`ffmpeg live backup ${recording.backupId} input closed: ${err.message}`);
+    }, {
+      maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS * 2, {
+        video: normalizeVideoConfig(payload.video),
+        audio: normalizeAudioConfig(payload.audio),
+      }),
+      onOverflow: () => {
+        console.warn(`Live backup ${recording.backupId} fell behind; skipping ahead`);
+      },
     });
     feed.join(session.webm);
     const backup: BackupProcess = {
@@ -519,8 +765,12 @@ async function handleStart(ws: WebSocket, session: RelaySession, payload: RtmpRe
   session.started = true;
   session.claims = claims;
   session.destinations = payload.destinations;
+  session.encodeOnce = isEncodeOnceEnabled();
 
   await spawnLiveBackup(ws, session, ffmpegPath, claims, payload);
+  if (session.stopping) return;
+
+  if (session.encodeOnce) spawnEncoder(ws, session, ffmpegPath, payload);
 
   for (const destination of payload.destinations) {
     spawnRelay(ws, session, ffmpegPath, destination, payload);
@@ -547,13 +797,19 @@ function handleBinaryChunk(ws: WebSocket, session: RelaySession, data: RawData) 
       ? Buffer.concat(data)
       : Buffer.from(data);
   const info = session.webm.push(chunk);
-  for (const relay of session.relays.values()) {
-    if (relay.exited || !relay.feed.write(chunk, info) || relay.live) continue;
-    relay.live = true;
-    sendJson(ws, {
-      type: 'destination-status',
-      payload: { destinationId: relay.destination.id, status: 'live' },
-    });
+  if (session.encodeOnce) {
+    // Destinations go live when the encoder's output reaches them.
+    const encoder = session.encoder;
+    if (encoder && !encoder.exited) encoder.feed.write(chunk, info);
+  } else {
+    for (const relay of session.relays.values()) {
+      if (relay.exited || !relay.feed || !relay.feed.write(chunk, info) || relay.live) continue;
+      relay.live = true;
+      sendJson(ws, {
+        type: 'destination-status',
+        payload: { destinationId: relay.destination.id, status: 'live' },
+      });
+    }
   }
   const backup = session.backup;
   if (backup && !backup.exited) {
@@ -1208,6 +1464,11 @@ wss.on('connection', (ws) => {
     claims: null,
     destinations: [],
     webm: new WebmStreamTracker(),
+    encodeOnce: false,
+    encoder: null,
+    encoderRestartAttempts: 0,
+    encoderRestartTimer: null,
+    relaysStopRequested: false,
     relays: new Map(),
     backup: null,
     backupStopTimer: null,

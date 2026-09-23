@@ -98,6 +98,17 @@ The signaling server's `/health` includes `readiness`: `ready` is `false` while 
 
 Production browsers send uncaught errors, React crashes, failed live relays, and interrupted recording tracks to `POST /api/client-errors`. Before logging, the server strips query strings and fragments, which can carry invite and media tokens. Each report is logged as one `{"event":"client_error",...}` JSON line and counted in `/metrics` as `livestream_studio_client_errors_total{kind=...}`. Browsers fold repeats of the same error into one counted report and send at most 20 reports per page load. Set `VITE_CLIENT_ERROR_REPORTING=false` at build time to turn reporting off, or `true` to enable it in development builds. `VITE_RELEASE` tags each report with a build identifier.
 
+### Live relay: one encode, bounded buffering
+
+The media server encodes the studio's program once and shares the result with every destination. A single FFmpeg process encodes the browser's WebM to H.264/AAC FLV. Each destination then gets a lightweight copy-only FFmpeg process that pushes that FLV to its RTMP server. As a result, CPU cost no longer grows with the number of destinations.
+
+- **A failed destination restarts on its own.** It rejoins the shared stream at the next keyframe without re-encoding and without interrupting the other destinations.
+- **A crashed encoder restarts at most twice.** It resumes from the cached WebM header, and every destination reconnects to the new encode.
+- **No input can queue more than about 6 seconds of media.** This applies to the encoder, each destination, and the live backup, which gets twice the allowance. A slow upload to one platform, or an overloaded encoder, now makes that input skip ahead to the live edge at a clean boundary (a WebM Cluster or an H.264 keyframe) instead of growing server memory and delaying viewers. The studio's destination card reports "falling behind; skipping ahead" and then "Caught up".
+- **Monitoring.** `/metrics` exposes `livestream_studio_media_shared_encoders_total`, `livestream_studio_media_skipping_feeds_total`, and `livestream_studio_media_skip_events_total`. `/health` reports `capabilities.liveRelay`.
+
+Set `RTMP_ENCODE_ONCE=false` to return to one full encode per destination. The byte limits still apply in that mode.
+
 The media server can also copy recording export artifacts to S3-compatible object storage. Set these on `livestream-studio-media-server` when durable recording handoff is needed:
 
 ```sh
