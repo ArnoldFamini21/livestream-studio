@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PeerNegotiation } from '../src/utils/peerNegotiation.ts';
 
-class FakePeer {
+class FakePeer extends EventTarget {
   signalingState = 'stable';
   connectionState = 'connected';
   localDescription: RTCSessionDescriptionInit | null = null;
@@ -156,4 +156,32 @@ test('brief disconnect and disposal both cancel recovery', async t => {
   t.mock.timers.tick(10_000);
   await settle();
   assert.equal(pc.offers.length, 0);
+});
+
+test('sends a follow-up offer when the connection needs renegotiation', async () => {
+  const { pc, negotiation, sent } = setup();
+  // The answerer's own camera needs a new m-line after the first exchange.
+  await negotiation.receiveOffer(remoteOffer);
+  assert.deepEqual(sent.map((d) => d.type), ['answer']);
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  await settle();
+  assert.deepEqual(sent.map((d) => d.type), ['answer', 'offer']);
+  assert.equal(pc.signalingState, 'have-local-offer');
+});
+
+test('queues a renegotiation behind an offer being answered', async () => {
+  const { pc, negotiation, sent } = setup();
+  const answering = negotiation.receiveOffer(remoteOffer);
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  await answering;
+  await settle();
+  assert.deepEqual(sent.map((d) => d.type), ['answer', 'offer']);
+});
+
+test('ignores renegotiation after the peer is replaced', async () => {
+  const { pc, sent, replace } = setup();
+  replace();
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  await settle();
+  assert.equal(sent.length, 0);
 });
