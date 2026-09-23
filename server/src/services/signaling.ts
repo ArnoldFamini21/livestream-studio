@@ -22,6 +22,10 @@ import type {
   RecordingUploadTokenClaims,
   SfuTokenClaims,
   StudioBrandingPayload,
+  StageContentPayload,
+  StageContentMedia,
+  LayoutMode,
+  StudioMediaType,
   RoomRegistrant,
   RoomRegistrantListResponse,
   RoomRegistrantResponse,
@@ -59,7 +63,7 @@ type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'i
 // In-memory store (replace with Redis/PostgreSQL later)
 interface RoomState {
   room: Room;
-  participants: Map<string, { participant: Participant; ws: WebSocket; joinSessionId?: string }>;
+  participants: Map<string, { participant: Participant; ws: WebSocket; joinSessionId?: string; stageUploadToken?: string }>;
   bannedJoinSessionIds: Set<string>;
   chatMessages: Map<string, ChatMessage>;
   chatReactions: Map<string, Map<ChatReactionType, Set<string>>>;
@@ -70,6 +74,9 @@ interface RoomState {
   registrants: Map<string, RoomRegistrant>;
   externalChatConnections: Map<ExternalChatPlatform, ExternalChatConnectionState>;
   studioBranding?: StudioBrandingPayload;
+  stageContent?: StageContentPayload;
+  /** Pictures of what is on stage, newest last; served to guests by id. */
+  stageImages?: Map<string, StageImage>;
   guestInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   recordingStartedAt?: string;
@@ -99,6 +106,20 @@ interface RoomState {
  */
 export const HOST_RECONNECT_GRACE_MS = 2 * 60_000;
 
+export interface StageImage {
+  data: Buffer;
+  contentType: string;
+  createdAt: number;
+}
+
+// A 720p JPEG is about 150 KB; these caps bound what one studio can hold.
+export const STAGE_IMAGE_MAX_BYTES = 1024 * 1024;
+const STAGE_IMAGE_LIMIT_PER_ROOM = 60;
+const STAGE_IMAGE_BYTES_PER_ROOM = 20 * 1024 * 1024;
+const STAGE_IMAGE_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const STAGE_MEDIA_TYPES = new Set<StudioMediaType>(['video', 'image', 'pdf', 'presentation', 'file']);
+const STAGE_LAYOUTS = new Set<LayoutMode>(['grid', 'spotlight', 'side-by-side', 'pip', 'single', 'featured']);
+
 function clearHostReconnectTimer(roomState: RoomState): void {
   if (roomState.hostReconnectTimer) {
     clearTimeout(roomState.hostReconnectTimer);
@@ -126,6 +147,7 @@ interface AliveWebSocket extends WebSocket {
 // Known message types for validation (fix #10)
 const KNOWN_MESSAGE_TYPES = new Set([
   'heartbeat',
+  'stage-content-updated',
   'join-room',
   'offer',
   'answer',
@@ -1022,6 +1044,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'studio-branding-updated':
       handleStudioBrandingUpdate(ws, message.payload);
       break;
+    case 'stage-content-updated':
+      handleStageContentUpdate(ws, message.payload);
+      break;
     case 'recording-state-changed':
       handleRecordingStateChange(ws, message.payload);
       break;
@@ -1202,7 +1227,10 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   cancelEmptyRoomDeletion(roomId, roomState);
 
   // Store participant
-  roomState.participants.set(participant.id, { participant, ws, joinSessionId });
+  const stageUploadToken = effectiveRole === 'host' || effectiveRole === 'co-host'
+    ? randomBytes(24).toString('base64url')
+    : undefined;
+  roomState.participants.set(participant.id, { participant, ws, joinSessionId, stageUploadToken });
   wsToParticipant.set(ws, { roomId, participantId: participant.id });
   roomState.hasBeenJoined = true;
   persistRoomSnapshot(roomId);
@@ -1244,6 +1272,8 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
         : undefined,
       liveStreamState,
       studioBranding: roomState.studioBranding,
+      stageContent: roomState.stageContent,
+      stageUploadToken,
       features: {
         chatTyping: true,
       },
@@ -1459,6 +1489,97 @@ function handleStudioBrandingUpdate(ws: WebSocket, payload: StudioBrandingPayloa
     type: 'studio-branding-updated',
     payload: branding,
   });
+}
+
+function normalizeStageContent(payload: unknown, roomState: RoomState): StageContentPayload | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const raw = payload as { media?: unknown; layout?: unknown };
+  const layout = typeof raw.layout === 'string' && STAGE_LAYOUTS.has(raw.layout as LayoutMode)
+    ? raw.layout as LayoutMode
+    : undefined;
+  if (raw.media === null || raw.media === undefined) return { media: null, ...(layout ? { layout } : {}) };
+  if (typeof raw.media !== 'object') return null;
+  const media = raw.media as Record<string, unknown>;
+  const id = typeof media.id === 'string' ? media.id.slice(0, 128) : '';
+  const type = media.type as StudioMediaType;
+  const name = typeof media.name === 'string' ? media.name.slice(0, 200) : '';
+  if (!id || !STAGE_MEDIA_TYPES.has(type)) return null;
+  const imageId = typeof media.imageId === 'string' && roomState.stageImages?.has(media.imageId) ? media.imageId : undefined;
+  const count = (value: unknown) => (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < 10_000 ? value : undefined);
+  const normalized: StageContentMedia = {
+    id,
+    type,
+    name,
+    ...(imageId ? { imageId } : {}),
+    ...(count(media.slideIndex) !== undefined ? { slideIndex: count(media.slideIndex) } : {}),
+    ...(count(media.slideCount) !== undefined ? { slideCount: count(media.slideCount) } : {}),
+  };
+  return { media: normalized, ...(layout ? { layout } : {}) };
+}
+
+function handleStageContentUpdate(ws: WebSocket, payload: StageContentPayload) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can change what is on stage', 'UNAUTHORIZED');
+    return;
+  }
+  const content = normalizeStageContent(payload, roomState);
+  if (!content) {
+    sendError(ws, 'Invalid stage content', 'INVALID_PAYLOAD');
+    return;
+  }
+  roomState.stageContent = content;
+  broadcastToRoom(mapping.roomId, { type: 'stage-content-updated', payload: content }, mapping.participantId);
+}
+
+export type StoreStageImageResult =
+  | { ok: true; imageId: string }
+  | { ok: false; status: number; error: string };
+
+/** Keep a picture of what a host or co-host has on stage, for guests to load. */
+export function storeStageImage(input: {
+  roomId: string;
+  participantId: string;
+  token: string;
+  contentType: string;
+  data: Buffer;
+}): StoreStageImageResult {
+  const roomState = rooms.get(input.roomId);
+  if (!roomState) return { ok: false, status: 404, error: 'Studio not found' };
+  const entry = roomState.participants.get(input.participantId);
+  const expected = entry?.stageUploadToken;
+  const matches = Boolean(expected)
+    && expected!.length === input.token.length
+    && timingSafeEqual(Buffer.from(expected!), Buffer.from(input.token));
+  if (!matches) return { ok: false, status: 403, error: 'Not allowed to update the stage' };
+  const contentType = input.contentType.split(';')[0].trim().toLowerCase();
+  if (!STAGE_IMAGE_CONTENT_TYPES.has(contentType)) return { ok: false, status: 415, error: 'Stage images must be JPEG, PNG, or WebP' };
+  if (input.data.length === 0 || input.data.length > STAGE_IMAGE_MAX_BYTES) {
+    return { ok: false, status: 413, error: 'Stage image is too large' };
+  }
+  const images = roomState.stageImages ?? (roomState.stageImages = new Map());
+  const imageId = randomBytes(16).toString('base64url');
+  images.set(imageId, { data: input.data, contentType, createdAt: Date.now() });
+  // Evict the oldest pictures, never the one on stage or the one just added.
+  const onStage = roomState.stageContent?.media?.imageId;
+  let totalBytes = 0;
+  for (const image of images.values()) totalBytes += image.data.length;
+  for (const [id, image] of images) {
+    if (images.size <= STAGE_IMAGE_LIMIT_PER_ROOM && totalBytes <= STAGE_IMAGE_BYTES_PER_ROOM) break;
+    if (id === onStage || id === imageId) continue;
+    images.delete(id);
+    totalBytes -= image.data.length;
+  }
+  return { ok: true, imageId };
+}
+
+export function getStageImage(roomId: string, imageId: string): StageImage | undefined {
+  return rooms.get(roomId)?.stageImages?.get(imageId);
 }
 
 function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayload) {

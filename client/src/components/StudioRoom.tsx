@@ -1,16 +1,17 @@
 import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
+import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
 import { withLocalJoinMedia } from '../utils/joinMediaState.ts';
-import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, normalizePresentationCameraSize, type PresentationCameraSize } from '../utils/presentationLayout.ts';
+import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraSize } from '../utils/presentationLayout.ts';
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
-import { getAutoGridColumnCount, getLayoutBarLabel, getLayoutBarOrder, isLayoutBarOptionDisabled } from '../utils/layoutPresets.ts';
+import { getAutoGridColumnCount, getLayoutBarLabel, getLayoutBarOrder, isLayoutBarOptionDisabled, normalizeMediaShareLayout } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
+import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
 
 function assertNever(value: never): never {
@@ -1018,8 +1019,10 @@ export function StudioRoom() {
 
   // Layout
   const [layout, setLayout] = useState<LayoutMode>('grid');
-  const [presentationLayout, setPresentationLayout] = useState<LayoutMode>('grid');
-  const [presentationCameraSize, setPresentationCameraSize] = useState<PresentationCameraSize>('medium');
+  const [presentationLayout, setStoredPresentationLayout] = useState<LayoutMode>('grid');
+  const setPresentationLayout = useCallback((next: LayoutMode) => setStoredPresentationLayout(normalizeMediaShareLayout(next)), []);
+  // Presenters always appear at the large size beside or over shared content.
+  const presentationCameraSize: PresentationCameraSize = 'large';
   const [selectedScreenShareId, setSelectedScreenShareId] = useState<string | null>(null);
   const layoutRef = useRef<LayoutMode>('grid');
   const [layoutTransition, setLayoutTransition] = useState<StageLayoutTransition | null>(null);
@@ -1107,6 +1110,13 @@ export function StudioRoom() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [waitingRoomBranding, setWaitingRoomBranding] = useState<WaitingRoomBranding>(DEFAULT_WAITING_ROOM_BRANDING);
   const [remoteStudioBranding, setRemoteStudioBranding] = useState<StudioBrandingPayload | null>(null);
+  // What the host has on stage, as received by guests.
+  const [remoteStageContent, setRemoteStageContent] = useState<StageContentPayload | null>(null);
+  const stageUploadTokenRef = useRef<string | null>(null);
+  const stageImageIdsRef = useRef(new Map<string, string>());
+  const lastStageContentSignatureRef = useRef(EMPTY_STAGE_CONTENT_SIGNATURE);
+  // Bumped on every join so the stage is re-sent to a server that restarted.
+  const [stageMirrorEpoch, setStageMirrorEpoch] = useState(0);
   const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>('top-right');
   const [logoPosition, setLogoPosition] = useState<LogoPosition | null>(null);
   const [logoSize, setLogoSize] = useState<LogoSize>('medium');
@@ -1888,7 +1898,6 @@ export function StudioRoom() {
         if (parsed.version === STUDIO_STATE_VERSION) {
           if (parsed.layout) applyLayout(parsed.layout, { animate: false });
           if (parsed.presentationLayout) setPresentationLayout(parsed.presentationLayout);
-          setPresentationCameraSize(normalizePresentationCameraSize(parsed.presentationCameraSize));
           setStudioTheme(normalizeStudioThemeId(parsed.studioTheme));
           if (parsed.stageBackground) setStageBackground(parsed.stageBackground);
           if (parsed.brandColor) setBrandColor(parsed.brandColor);
@@ -2348,6 +2357,14 @@ export function StudioRoom() {
           setQAQuestions(existingQuestions);
           setPolls(existingPolls);
           setRemoteStudioBranding(studioBranding || null);
+          setRemoteStageContent(message.payload.stageContent || null);
+          stageUploadTokenRef.current = message.payload.stageUploadToken || null;
+          // Uploaded pictures do not survive a server restart; upload afresh after every join.
+          stageImageIdsRef.current.clear();
+          lastStageContentSignatureRef.current = message.payload.stageContent
+            ? JSON.stringify(message.payload.stageContent)
+            : EMPTY_STAGE_CONTENT_SIGNATURE;
+          setStageMirrorEpoch((epoch) => epoch + 1);
           setSessionRecordingStartedAt(recordingStartedAt);
           setSessionRecordingSessionId(recordingSessionId);
           setSessionRecordingPaused(Boolean(recordingState?.recording && recordingState.paused));
@@ -2496,6 +2513,9 @@ export function StudioRoom() {
           break;
         case 'studio-branding-updated':
           setRemoteStudioBranding(message.payload);
+          break;
+        case 'stage-content-updated':
+          setRemoteStageContent(message.payload);
           break;
         case 'room-ending': {
           const endsAt = Date.parse(message.payload.endsAt);
@@ -5172,6 +5192,69 @@ export function StudioRoom() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [roleShortcuts]);
 
+  // Hosts and co-hosts: tell guests what is on stage. Each slide or image is
+  // uploaded once as a small JPEG; the signaling message only names it.
+  const stageMirrorParticipantId = myParticipant?.id;
+  const stageMirrorAdmitted = myParticipant?.status !== 'green-room';
+  useEffect(() => {
+    if (!isHostOrCoHost || !roomId || !stageMirrorParticipantId || !stageMirrorAdmitted) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      let content: StageContentPayload;
+      if (!activeMedia) {
+        content = buildStageContent(null, {});
+      } else {
+        const { source, slideIndex, slideCount } = getStageMirrorSource(activeMedia, activeMediaSlideIndex);
+        let imageId: string | undefined;
+        const token = stageUploadTokenRef.current;
+        if (source && token) {
+          const key = getStageMirrorSourceKey(activeMedia.assetId || activeMedia.url, source);
+          imageId = stageImageIdsRef.current.get(key);
+          if (!imageId) {
+            try {
+              imageId = await uploadStageImage(source, { roomId, participantId: stageMirrorParticipantId, token });
+              stageImageIdsRef.current.set(key, imageId);
+            } catch (error) {
+              console.warn('Guests will see the file name only; the stage picture did not upload:', error);
+            }
+          }
+        }
+        if (cancelled) return;
+        content = buildStageContent(activeMedia, { imageId, slideIndex, slideCount, layout: presentationLayout });
+      }
+      const signature = JSON.stringify(content);
+      if (signature === lastStageContentSignatureRef.current) return;
+      lastStageContentSignatureRef.current = signature;
+      send({ type: 'stage-content-updated', payload: content });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeMedia, activeMediaSlideIndex, isHostOrCoHost, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
+
+  // Guests: show what the host has on stage. The next picture is loaded before
+  // it replaces the current one, so slides change without a blank frame.
+  useEffect(() => {
+    if (isHostOrCoHost || !roomId) return;
+    const next = stageContentToActiveMedia(remoteStageContent, roomId);
+    const apply = () => {
+      setActiveMedia(next);
+      setActiveMediaSlideIndex(0);
+      if (remoteStageContent?.layout) setPresentationLayout(remoteStageContent.layout);
+    };
+    if (!next || next.type !== 'image') {
+      apply();
+      return;
+    }
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => { if (!cancelled) apply(); };
+    image.onerror = () => { if (!cancelled) apply(); };
+    image.src = next.url;
+    return () => { cancelled = true; };
+  }, [isHostOrCoHost, remoteStageContent, roomId]);
+
   const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
     if (action === 'cycle-pip-corner') {
       setPipCorner((prev) => {
@@ -6321,8 +6404,6 @@ export function StudioRoom() {
           {isHostOrCoHost && (
             <div className="studio-layoutBar" style={styles.layoutBar}>
               <LayoutSwitcher
-                cameraSize={presentationCameraSize}
-                onCameraSizeChange={setPresentationCameraSize}
                 currentLayout={effectiveLayout}
                 onLayoutChange={changeVisibleLayout}
                 pipCorner={pipCorner}
@@ -6385,6 +6466,8 @@ export function StudioRoom() {
                       {group.shortcuts.map((shortcut) => {
                         const layoutIndex = getLayoutShortcutIndex(shortcut.id);
                         const layoutMode = layoutIndex === null ? undefined : layoutBarOrder[layoutIndex];
+                        // Only the layouts on the bar right now; presenting offers fewer.
+                        if (layoutIndex !== null && !layoutMode) return null;
                         const label = layoutMode ? getLayoutBarLabel(layoutMode, sharedContentIsActive) : shortcut.label;
                         return (
                           <div key={shortcut.id} style={styles.shortcutRow}>

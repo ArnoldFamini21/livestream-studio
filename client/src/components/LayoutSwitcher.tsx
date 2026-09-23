@@ -1,4 +1,4 @@
-import type { PresentationCorner, PresentationCameraSize } from '../utils/presentationLayout.ts';
+import type { PresentationCorner } from '../utils/presentationLayout.ts';
 import '../styles/presentation.css';
 import type { LayoutMode } from '@studio/shared';
 import {
@@ -22,8 +22,6 @@ interface LayoutSwitcherProps {
   isMediaActive?: boolean;
   mediaParticipantCount?: number;
   pipCorner?: PresentationCorner;
-  cameraSize?: PresentationCameraSize;
-  onCameraSizeChange?: (size: PresentationCameraSize) => void;
   onPipCornerChange?: (corner: PresentationCorner) => void;
 }
 
@@ -69,11 +67,6 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
   ),
 };
 
-const PRESENTER_SIZES: Array<{ value: PresentationCameraSize; label: string; short: string }> = [
-  { value: 'small', label: 'Small', short: 'S' },
-  { value: 'medium', label: 'Medium', short: 'M' },
-  { value: 'large', label: 'Large', short: 'L' },
-];
 const PRESENTER_CORNERS: Array<{ value: PresentationCorner; label: string }> = [
   { value: 'TL', label: 'Top left' },
   { value: 'TR', label: 'Top right' },
@@ -126,8 +119,6 @@ export function LayoutSwitcher({
   isMediaActive = false,
   mediaParticipantCount,
   pipCorner = 'BR',
-  cameraSize = 'medium',
-  onCameraSizeChange,
   onPipCornerChange,
 }: LayoutSwitcherProps) {
   const activeMediaParticipantCount = normalizeCount(mediaParticipantCount ?? Math.max(0, participantCount - 1));
@@ -149,13 +140,7 @@ export function LayoutSwitcher({
           <span>{MEDIA_SHARE_LAYOUT_SHORT_LABELS[mode]}</span>
         </button>)}
       </div>
-      {hasPresenters && (onCameraSizeChange || (floating && onPipCornerChange)) && <div className="presentation-layout-tuning">
-        {onCameraSizeChange && <div className="presentation-segment" role="group" aria-label="Presenter size">
-          {PRESENTER_SIZES.map(option => <button type="button" key={option.value} aria-pressed={cameraSize === option.value}
-            aria-label={`${option.label} presenter`} title={`${option.label} presenter`} onClick={() => onCameraSizeChange(option.value)}>
-            {option.short}
-          </button>)}
-        </div>}
+      {hasPresenters && ((floating && onPipCornerChange) || showHiddenCount) && <div className="presentation-layout-tuning">
         {floating && onPipCornerChange && <div className="presentation-corners" role="group" aria-label="Presenter position">
           {PRESENTER_CORNERS.map(option => <button type="button" key={option.value} aria-pressed={pipCorner === option.value}
             aria-label={option.label} title={option.label} onClick={() => onPipCornerChange(option.value)}>

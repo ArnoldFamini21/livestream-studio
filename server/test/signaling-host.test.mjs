@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { describe, it } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
-import { createRoom, getRooms, setupSignalingServer } from '../dist/services/signaling.js';
+import { createRoom, getRooms, getStageImage, setupSignalingServer, storeStageImage } from '../dist/services/signaling.js';
 
 async function createSignalingHarness() {
   const wss = new WebSocketServer({ port: 0 });
@@ -2301,6 +2301,95 @@ describe('studio branding sync', () => {
       const error = await errorMessage;
       assert.match(error.payload.message, /Only hosts and co-hosts/);
       assert.equal(getRooms().get(room.id)?.studioBranding, undefined);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('stage content sync', () => {
+  it('lets the host share the on-stage picture with guests and replays it to late joiners', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Stage sync test', 'Arnold', {
+      creatorIp: `stage-sync-${Date.now()}`,
+    });
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostSession = await hostJoined;
+      const hostId = hostSession.payload.participant.id;
+      const token = hostSession.payload.stageUploadToken;
+      assert.equal(typeof token, 'string');
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest' });
+      const guestSession = await guestJoined;
+      assert.equal(guestSession.payload.stageUploadToken, undefined);
+
+      const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+      assert.deepEqual(
+        storeStageImage({ roomId: room.id, participantId: hostId, token: 'wrong-token-wrong-token-wrong-tok', contentType: 'image/jpeg', data: jpeg }),
+        { ok: false, status: 403, error: 'Not allowed to update the stage' }
+      );
+      assert.equal(
+        storeStageImage({ roomId: room.id, participantId: guestSession.payload.participant.id, token: token, contentType: 'image/jpeg', data: jpeg }).ok,
+        false
+      );
+      assert.equal(storeStageImage({ roomId: room.id, participantId: hostId, token, contentType: 'text/html', data: jpeg }).status, 415);
+      const stored = storeStageImage({ roomId: room.id, participantId: hostId, token, contentType: 'image/jpeg', data: jpeg });
+      assert.equal(stored.ok, true);
+      assert.deepEqual(getStageImage(room.id, stored.imageId).data, jpeg);
+
+      const guestUpdate = waitForMessage(guest, 'stage-content-updated');
+      sendSignal(host, {
+        type: 'stage-content-updated',
+        payload: {
+          media: { id: 'deck-1', type: 'pdf', name: 'His Purpose', imageId: stored.imageId, slideIndex: 2, slideCount: 21 },
+          layout: 'grid',
+        },
+      });
+      const update = await guestUpdate;
+      assert.deepEqual(update.payload, {
+        media: { id: 'deck-1', type: 'pdf', name: 'His Purpose', imageId: stored.imageId, slideIndex: 2, slideCount: 21 },
+        layout: 'grid',
+      });
+
+      const lateGuest = await connectClient(harness.url);
+      const lateJoined = waitForMessage(lateGuest, 'room-joined');
+      joinRoom(lateGuest, { roomId: room.id, name: 'Late Guest', role: 'guest' });
+      const late = await lateJoined;
+      assert.equal(late.payload.stageContent.media.imageId, stored.imageId);
+
+      // An image id that was never uploaded is dropped rather than relayed.
+      const cleared = waitForMessage(guest, 'stage-content-updated', (message) => message.payload.media?.id === 'img-2');
+      sendSignal(host, {
+        type: 'stage-content-updated',
+        payload: { media: { id: 'img-2', type: 'image', name: 'Photo', imageId: 'not-uploaded' } },
+      });
+      assert.equal((await cleared).payload.media.imageId, undefined);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects guests changing what is on stage', async () => {
+    const harness = await createSignalingHarness();
+    const { room } = createRoom('Stage guest test', 'Arnold', {
+      creatorIp: `stage-guest-${Date.now()}`,
+    });
+
+    try {
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest' });
+      await guestJoined;
+
+      const errorMessage = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, { type: 'stage-content-updated', payload: { media: null } });
+      await errorMessage;
     } finally {
       await harness.close();
     }
