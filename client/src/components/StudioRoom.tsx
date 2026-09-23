@@ -7,6 +7,7 @@ import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePr
 import { getAutoGridColumnCount } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
+import '../styles/transcript-cleanup.css';
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { ActiveMedia, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
@@ -3917,6 +3918,7 @@ export function StudioRoom() {
       token,
       uploadId: input.uploadId,
       clip: input.clip,
+      edit: input.edit,
       basename: input.basename,
       exportVideoCodec: input.exportVideoCodec,
       normalizeAudio: input.normalizeAudio,

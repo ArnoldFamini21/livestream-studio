@@ -1120,6 +1120,11 @@ export interface RecordingExportClipSettings {
   aspect?: RecordingExportClipAspect;
 }
 
+/** Keep only these ranges of the recording, joined in order (transcript cleanup). */
+export interface RecordingExportEditSettings {
+  keepRanges: Array<{ startSeconds: number; endSeconds: number }>;
+}
+
 export interface RecordingExportSessionRequest {
   token?: string;
   basename?: string;
@@ -1128,6 +1133,7 @@ export interface RecordingExportSessionRequest {
   video?: RecordingExportVideoSettings;
   audio?: RecordingExportAudioSettings;
   clip?: RecordingExportClipSettings;
+  edit?: RecordingExportEditSettings;
 }
 
 export type RecordingExportJobStatusValue = 'queued' | 'running' | 'ready' | 'error';

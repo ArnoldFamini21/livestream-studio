@@ -13,9 +13,11 @@ import type {
 import {
   createRecordingExportCommands,
   getRecordingExportClipIssue,
+  getRecordingExportEditIssue,
   normalizeRecordingExportClipRange,
   sanitizeExportBasename,
   type RecordingExportClipRange,
+  type RecordingExportEdit,
   type RecordingExportCommand,
   type RecordingExportTrack,
 } from './recordingExport.js';
@@ -55,6 +57,7 @@ interface RecordingExportJob {
   createdAt: string;
   updatedAt: string;
   clip?: RecordingExportClipRange | null;
+  edit?: { keptRanges: number; keptSeconds: number } | null;
   normalizeAudio?: boolean;
   tracks: RecordingExportManifestTrack[];
   artifacts: RecordingExportArtifact[];
@@ -218,6 +221,7 @@ function buildExportManifest(job: RecordingExportJob): string {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       clip: job.clip ?? null,
+      edit: job.edit ?? null,
       normalizeAudio: job.normalizeAudio === true,
     },
     tracks: job.tracks,
@@ -273,21 +277,34 @@ export class RecordingExportJobStore {
       throw new RecordingExportJobError(400, 'RECORDING_EXPORT_INVALID_CLIP', clipIssue);
     }
     const clip = normalizeRecordingExportClipRange(request.clip as RecordingExportClipRange | null | undefined);
+    const editIssue = getRecordingExportEditIssue(request.edit ?? null)
+      || (request.edit && clip ? 'An export can use a clip range or an edit, not both' : null);
+    if (editIssue) {
+      throw new RecordingExportJobError(400, 'RECORDING_EXPORT_INVALID_EDIT', editIssue);
+    }
+    const edit = (request.edit as RecordingExportEdit | undefined) || null;
     const exportId = randomUUID();
     const basename = sanitizeExportBasename(request.basename || source.sessionId || source.uploadId);
     const outputDirectory = path.join(source.rootDir, 'exports', exportId);
     await mkdir(outputDirectory, { recursive: true });
 
     const normalizeAudio = request.normalizeAudio === true;
-    const commands = createRecordingExportCommands({
-      tracks: source.tracks.map(toExportTrack),
-      outputDirectory,
-      basename,
-      video: request.video,
-      audio: request.audio,
-      clip,
-      normalizeAudio,
-    });
+    let commands: ReturnType<typeof createRecordingExportCommands>;
+    try {
+      commands = createRecordingExportCommands({
+        tracks: source.tracks.map(toExportTrack),
+        outputDirectory,
+        basename,
+        video: request.video,
+        audio: request.audio,
+        clip,
+        edit,
+        normalizeAudio,
+      });
+    } catch (err) {
+      if (!edit) throw err;
+      throw new RecordingExportJobError(400, 'RECORDING_EXPORT_INVALID_EDIT', errorMessage(err));
+    }
     const artifacts = buildArtifacts([commands.mp4, ...commands.isolatedVideos, ...commands.stems], request.includeAudioStems !== false);
     const createdAt = new Date(nowMs).toISOString();
     const job: RecordingExportJob = {
@@ -300,6 +317,12 @@ export class RecordingExportJobStore {
       createdAt,
       updatedAt: createdAt,
       clip,
+      edit: edit
+        ? {
+          keptRanges: edit.keepRanges.length,
+          keptSeconds: Math.round(edit.keepRanges.reduce((total, range) => total + range.endSeconds - range.startSeconds, 0) * 1000) / 1000,
+        }
+        : null,
       normalizeAudio,
       tracks: source.tracks.map(toManifestTrack),
       artifacts,
@@ -346,6 +369,9 @@ export class RecordingExportJobStore {
         if (artifact.generated === 'manifest') {
           await writeFile(artifact.outputPath, buildExportManifest(job), 'utf8');
         } else if (artifact.command) {
+          if (artifact.command.filterScript) {
+            await writeFile(artifact.command.filterScript.path, artifact.command.filterScript.content, 'utf8');
+          }
           await this.runner(artifact.command);
         } else {
           throw new Error('Recording export artifact has no command');

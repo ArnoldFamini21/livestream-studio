@@ -1,5 +1,6 @@
 import { ApiRequestError, buildApiUrl } from './apiClient.ts';
 import type { LocalRecordingFileResult } from '../hooks/useLocalRecording.ts';
+import type { TranscriptWord } from './transcriptCleanup.ts';
 
 export interface RecordingTranscriptionSourceFile {
   label: string;
@@ -16,6 +17,8 @@ export interface RecordingTranscriptionResult {
   sourceLabel: string;
   language?: string;
   durationSeconds?: number;
+  /** Word timings (seconds into the source track) used by transcript cleanup. */
+  words?: TranscriptWord[];
 }
 
 type FetchLike = typeof fetch;
@@ -101,12 +104,14 @@ export async function requestRecordingTranscription(
     model?: unknown;
     language?: unknown;
     durationSeconds?: unknown;
+    words?: unknown;
   } | null;
   const text = typeof data?.text === 'string' ? data.text.trim() : '';
   const model = typeof data?.model === 'string' && data.model.trim() ? data.model.trim() : 'whisper-1';
   if (!text) throw new ApiRequestError('Transcript generation returned no text.');
 
   const durationSeconds = Number(data?.durationSeconds);
+  const words = parseTranscriptWords(data?.words);
   return {
     text,
     model,
@@ -115,5 +120,19 @@ export async function requestRecordingTranscription(
     sourceLabel: file.label,
     ...(typeof data?.language === 'string' && data.language.trim() ? { language: data.language.trim() } : {}),
     ...(Number.isFinite(durationSeconds) && durationSeconds >= 0 ? { durationSeconds } : {}),
+    ...(words.length ? { words } : {}),
   };
+}
+
+export function parseTranscriptWords(value: unknown): TranscriptWord[] {
+  if (!Array.isArray(value)) return [];
+  const words: TranscriptWord[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const { word, start, end } = item as { word?: unknown; start?: unknown; end?: unknown };
+    if (typeof word !== 'string' || !word.trim()) continue;
+    if (typeof start !== 'number' || typeof end !== 'number' || !Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
+    words.push({ word: word.trim(), start, end });
+  }
+  return words;
 }

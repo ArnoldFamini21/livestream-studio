@@ -22,6 +22,10 @@ import {
   selectRecordingTranscriptionCandidate,
   type RecordingTranscriptionResult,
 } from '../utils/recordingTranscription.ts';
+import { encodePcm16Wav } from '../utils/wavEncoder.ts';
+import { TranscriptCleanup, type TranscriptCleanupServerExport } from './TranscriptCleanup.tsx';
+
+export { encodePcm16Wav };
 import type { RecordingUploadSummary } from '../utils/recordingUpload.ts';
 import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
 import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
@@ -112,7 +116,9 @@ export interface RecordingServerExportRefreshInput {
 
 export interface RecordingServerClipExportInput {
   uploadId: string;
-  clip: { startSeconds: number; endSeconds: number; aspect?: ClipAspectPreset };
+  clip?: { startSeconds: number; endSeconds: number; aspect?: ClipAspectPreset };
+  /** Keep only these ranges (transcript cleanup) instead of one clip range. */
+  edit?: { keepRanges: Array<{ startSeconds: number; endSeconds: number }> };
   basename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
   normalizeAudio?: boolean;
@@ -788,52 +794,6 @@ export function buildRecordingLibraryDashboardSummary(
         }
       : null,
   };
-}
-
-export function encodePcm16Wav(channels: Float32Array[], sampleRate: number): Blob {
-  if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
-    throw new Error('A valid sample rate is required for WAV export');
-  }
-
-  const channelCount = Math.max(1, channels.length);
-  const frameCount = channels.reduce((max, channel) => Math.max(max, channel.length), 0);
-  const bytesPerSample = 2;
-  const blockAlign = channelCount * bytesPerSample;
-  const byteRate = sampleRate * blockAlign;
-  const dataSize = frameCount * blockAlign;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  const writeAscii = (offset: number, value: string) => {
-    for (let i = 0; i < value.length; i++) {
-      view.setUint8(offset + i, value.charCodeAt(i));
-    }
-  };
-
-  writeAscii(0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
-  writeAscii(8, 'WAVE');
-  writeAscii(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, channelCount, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, 16, true);
-  writeAscii(36, 'data');
-  view.setUint32(40, dataSize, true);
-
-  let offset = 44;
-  for (let frame = 0; frame < frameCount; frame++) {
-    for (let channel = 0; channel < channelCount; channel++) {
-      const sample = Math.max(-1, Math.min(1, channels[channel]?.[frame] || 0));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += bytesPerSample;
-    }
-  }
-
-  return new Blob([buffer], { type: 'audio/wav' });
 }
 
 type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
@@ -3016,6 +2976,38 @@ export function RecordingPanel({
     }
   }, [captionLanguage, transcriptionCandidate]);
 
+  // Transcript cleanup exports through the same media-server job as clips,
+  // using the upload of the recording that was just made.
+  const cleanupUploadId = useMemo(() => {
+    if (mediaExportJob?.uploadId) return mediaExportJob.uploadId;
+    const session = activeSessionId ? sessions.find((item) => item.id === activeSessionId) : null;
+    return session?.mediaExport?.uploadId || null;
+  }, [activeSessionId, mediaExportJob?.uploadId, sessions]);
+
+  const cleanupServerExport = useMemo<TranscriptCleanupServerExport | null>(() => {
+    if (!onRequestRecordingClipExport || !cleanupUploadId) return null;
+    return {
+      run: (keepRanges) => onRequestRecordingClipExport({
+        uploadId: cleanupUploadId,
+        edit: { keepRanges },
+        basename: `${roomName} cleaned`,
+        exportVideoCodec: recordingExportVideoCodec,
+        normalizeAudio: normalizeExportAudio,
+      }),
+      download: async (job, artifact) => {
+        if (!onDownloadRecordingExportArtifact) throw new Error('Downloads from the media server are unavailable.');
+        const download = await onDownloadRecordingExportArtifact({ uploadId: job.uploadId, exportId: job.exportId, artifact });
+        downloadBlob(download.blob, download.fileName);
+      },
+    };
+  }, [cleanupUploadId, normalizeExportAudio, onDownloadRecordingExportArtifact, onRequestRecordingClipExport, recordingExportVideoCodec, roomName]);
+
+  const cleanupServerExportUnavailableReason = !onRequestRecordingClipExport
+    ? 'Cleaned video export needs the media server.'
+    : !cleanupUploadId
+      ? 'Upload this recording to the media server to export cleaned video.'
+      : undefined;
+
   const episodeContentTranscript = useMemo(() => {
     if (generatedTranscript?.text.trim()) return generatedTranscript.text.trim();
     return buildTranscriptFromCaptions(getFinalCaptionSegments(captionSegments).map((segment) => ({
@@ -4312,6 +4304,20 @@ export function RecordingPanel({
                   <p style={styles.transcriptPreview}>{generatedTranscript.text}</p>
                 </div>
               )}
+              {generatedTranscript?.words?.length ? (
+                <TranscriptCleanup
+                  key={generatedTranscript.createdAt}
+                  words={generatedTranscript.words}
+                  durationSeconds={generatedTranscript.durationSeconds ?? lastRecordingDurationSeconds ?? 0}
+                  source={transcriptionCandidate ? { blob: transcriptionCandidate.blob, label: transcriptionCandidate.label } : null}
+                  baseName={roomName}
+                  onDownload={downloadBlob}
+                  serverExport={cleanupServerExport}
+                  serverExportUnavailableReason={cleanupServerExportUnavailableReason}
+                />
+              ) : generatedTranscript ? (
+                <div style={styles.transcriptPreview}>Regenerate the transcript to clean up filler words and pauses; this transcript has no word timings.</div>
+              ) : null}
               {canGenerateEpisodeContent && (
                 <button
                   className="hover-lift"

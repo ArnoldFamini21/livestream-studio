@@ -49,11 +49,54 @@ export interface OpenAITranscriptionInput {
   fetchImpl?: FetchLike;
 }
 
+export interface TranscriptWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
 export interface RecordingTranscriptionResponse {
   text: string;
   language?: string;
   model: string;
   durationSeconds?: number;
+  /** Word-level timings, when the model provides them; they drive transcript cleanup. */
+  words?: TranscriptWord[];
+}
+
+/** Models that return word timestamps through `verbose_json`. */
+const WORD_TIMESTAMP_MODELS = new Set(['whisper-1']);
+const MAX_TRANSCRIPT_WORDS = 60_000;
+
+/**
+ * Whisper tends to drop disfluencies from its output. A prompt written in the
+ * same style keeps "um" and "uh" in the transcript, which cleanup needs to see.
+ * (Suggested in OpenAI's speech-to-text prompting guide.)
+ */
+export const FILLER_PRESERVING_PROMPT = 'Umm, let me think like, hmm... Okay, here\'s what I\'m, like, thinking. Uh, so, you know, I mean.';
+
+export function supportsWordTimestamps(model: string): boolean {
+  return WORD_TIMESTAMP_MODELS.has(model);
+}
+
+export function normalizeTranscriptWords(value: unknown): TranscriptWord[] {
+  if (!Array.isArray(value)) return [];
+  const words: TranscriptWord[] = [];
+  let lastEnd = 0;
+  for (const item of value.slice(0, MAX_TRANSCRIPT_WORDS)) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as { word?: unknown; start?: unknown; end?: unknown };
+    const word = typeof raw.word === 'string' ? raw.word.trim() : '';
+    const start = Number(raw.start);
+    const end = Number(raw.end);
+    if (!word || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) continue;
+    // Keep timings monotonic so cut ranges never overlap backwards.
+    const safeStart = Math.max(start, lastEnd);
+    const safeEnd = Math.max(end, safeStart);
+    words.push({ word: word.slice(0, 64), start: Math.round(safeStart * 1000) / 1000, end: Math.round(safeEnd * 1000) / 1000 });
+    lastEnd = safeEnd;
+  }
+  return words;
 }
 
 function getFileExtension(fileName: string): string {
@@ -106,9 +149,19 @@ export function validateTranscriptionUpload(input: TranscriptionUploadValidation
 
 export async function createOpenAITranscription(input: OpenAITranscriptionInput): Promise<RecordingTranscriptionResponse> {
   const model = input.model?.trim() || DEFAULT_TRANSCRIPTION_MODEL;
+  const wordTimestamps = supportsWordTimestamps(model);
   const form = new FormData();
   form.set('model', model);
-  form.set('response_format', 'json');
+  if (wordTimestamps) {
+    form.set('response_format', 'verbose_json');
+    form.append('timestamp_granularities[]', 'word');
+    form.append('timestamp_granularities[]', 'segment');
+    // The prompt nudges toward keeping fillers; it is English-styled, so only
+    // send it when the language is English or unspecified.
+    if (!input.language || input.language === 'en') form.set('prompt', FILLER_PRESERVING_PROMPT);
+  } else {
+    form.set('response_format', 'json');
+  }
   if (input.language) form.set('language', input.language);
   const bytes = new Uint8Array(input.buffer.byteLength);
   bytes.set(input.buffer);
@@ -130,14 +183,17 @@ export async function createOpenAITranscription(input: OpenAITranscriptionInput)
     text?: unknown;
     language?: unknown;
     duration?: unknown;
+    words?: unknown;
   } | null;
   const text = typeof data?.text === 'string' ? data.text.trim() : '';
   if (!text) throw new Error('OpenAI transcription response did not include transcript text');
 
   const durationSeconds = Number(data?.duration);
+  const words = normalizeTranscriptWords(data?.words);
   return {
     text,
     model,
+    ...(words.length ? { words } : {}),
     ...(typeof data?.language === 'string' && data.language.trim() ? { language: data.language.trim() } : {}),
     ...(Number.isFinite(durationSeconds) && durationSeconds >= 0 ? { durationSeconds } : {}),
   };

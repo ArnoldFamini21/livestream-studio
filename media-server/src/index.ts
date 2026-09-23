@@ -72,6 +72,7 @@ import { FlvSinkFeed, FlvTagStream } from './flvStream.js';
 const PORT = Number(process.env.PORT || process.env.MEDIA_SERVER_PORT || 3002);
 const MAX_WS_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
+const EXPORT_REQUEST_MAX_BYTES = 256 * 1024;
 const MAX_DESTINATION_RESTARTS = 2;
 const DESTINATION_RESTART_DELAY_MS = 1_500;
 const MEDIA_HEALTH_CAPABILITY_CACHE_MS = 60_000;
@@ -961,8 +962,8 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   }
 }
 
-async function readOptionalJsonBody(req: IncomingMessage): Promise<unknown> {
-  const body = await readRequestBody(req, 32 * 1024);
+async function readOptionalJsonBody(req: IncomingMessage, maxBytes = 32 * 1024): Promise<unknown> {
+  const body = await readRequestBody(req, maxBytes);
   if (body.length === 0) return {};
   try {
     return JSON.parse(body.toString('utf8'));
@@ -1118,7 +1119,8 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
     if (distributedExportMatch && req.method === 'POST') {
       const [, roomId, sessionId] = distributedExportMatch.map((value) => decodeURIComponent(value));
       authenticateHostRecordingRequest(req, roomId);
-      const body = await readOptionalJsonBody(req);
+      // Export requests can carry a cleanup edit with up to 2000 kept ranges.
+      const body = await readOptionalJsonBody(req, EXPORT_REQUEST_MAX_BYTES);
       const request = isRecord(body) ? body as RecordingExportSessionRequest : {};
       const exportStore = getRecordingExportStore();
       const job = await exportStore.createJob(
@@ -1189,7 +1191,8 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
       const [, uploadId] = exportMatch;
       const session = recordingUploads.getSession(uploadId);
       authenticateHostRecordingRequest(req, session.roomId);
-      const body = await readOptionalJsonBody(req);
+      // Export requests can carry a cleanup edit with up to 2000 kept ranges.
+      const body = await readOptionalJsonBody(req, EXPORT_REQUEST_MAX_BYTES);
       const request = isRecord(body) ? body as RecordingExportSessionRequest : {};
       const exportStore = getRecordingExportStore();
       const job = await exportStore.createJob(recordingUploads.getExportSource(uploadId), request);
