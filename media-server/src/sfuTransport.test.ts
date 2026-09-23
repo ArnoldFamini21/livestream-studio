@@ -192,4 +192,14 @@ describe('SfuMediaTransport', { timeout: 60_000 }, () => {
     await delay(300);
     assert.equal(received.length, 0, 'no packets after the producer is removed');
   });
+
+  it('releases every UDP socket once negotiated participants close', async () => {
+    await transport.closeAll();
+    await subscriberClient?.close();
+    subscriberClient = null;
+    // Closed sockets leave the active-handle list a loop turn later; a leaked
+    // one never does, and it would keep the media server (and this run) alive.
+    const openUdpSockets = () => process.getActiveResourcesInfo().filter((resource) => resource === 'UDPWrap').length;
+    await waitFor(() => openUdpSockets() === 0, 2_000, 'every UDP socket to close');
+  });
 });
