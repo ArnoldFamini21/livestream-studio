@@ -376,7 +376,7 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
             </svg>
             <span style={styles.headerTitle}>Background Music</span>
           </div>
-          <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} title="Close">
+          <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} title="Close" aria-label="Close background music">
             <svg
               width="16"
               height="16"
@@ -545,6 +545,7 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
             min="0"
             max="100"
             step="1"
+            aria-label="Music volume"
             value={volume}
             onChange={(e) => setVolume(parseInt(e.target.value, 10))}
             style={styles.volumeSlider}
@@ -606,6 +607,7 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
                 min="0"
                 max="5"
                 step="0.1"
+                aria-label="Fade duration in seconds"
                 value={fadeDuration}
                 onChange={(e) => setFadeDuration(parseFloat(e.target.value))}
                 style={styles.volumeSlider}

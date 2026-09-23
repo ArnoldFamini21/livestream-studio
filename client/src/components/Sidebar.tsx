@@ -488,7 +488,7 @@ export function Sidebar(props: SidebarProps) {
           {activeTab === 'brand' && (
             <div style={st.scrollContent}>
               <div style={st.section}>
-                <h4 style={st.sectionTitle}>Brand Kit</h4>
+                <h2 style={st.sectionTitle}>Brand Kit</h2>
                 <BrandPreview
                   studioTheme={props.studioTheme}
                   brandColor={props.brandColor}

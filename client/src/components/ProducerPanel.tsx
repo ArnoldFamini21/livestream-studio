@@ -189,7 +189,7 @@ function ParticipantRow({
           {canSpotlight && (
             <button
               className="participant-action-btn"
-              style={{ ...rowStyles.actionBtn, color: isSpotlighted ? 'white' : 'var(--accent)', borderColor: 'rgba(124, 58, 237, 0.28)', background: isSpotlighted ? 'var(--accent)' : undefined, '--btn-hover-bg': isSpotlighted ? 'var(--accent)' : 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
+              style={{ ...rowStyles.actionBtn, color: isSpotlighted ? 'white' : 'var(--accent-hover)', borderColor: 'rgba(124, 58, 237, 0.28)', background: isSpotlighted ? 'var(--accent-solid)' : 'transparent', '--btn-hover-bg': isSpotlighted ? 'var(--accent-solid)' : 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
               onClick={() => onSpotlightParticipant(isSpotlighted ? null : participant.id)}
               title={isSpotlighted ? 'Clear spotlight' : 'Make main stage tile'}
             >
@@ -202,7 +202,7 @@ function ParticipantRow({
           {canUseModerationActions && (participant.status === 'backstage' || participant.status === 'green-room') && (
             <button
               className="participant-action-btn"
-              style={{ ...rowStyles.actionBtn, color: 'var(--accent)', borderColor: 'rgba(124, 58, 237, 0.25)', '--btn-hover-bg': 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
+              style={{ ...rowStyles.actionBtn, color: 'var(--accent-hover)', borderColor: 'rgba(124, 58, 237, 0.25)', '--btn-hover-bg': 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
               onClick={() => onStageAction('notify-next', participant.id)}
               title="Notify this guest they are next"
             >
@@ -691,7 +691,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 7px',
     borderRadius: 4,
     background: 'var(--accent-subtle)',
-    color: 'var(--accent)',
+    color: 'var(--accent-hover)',
     textTransform: 'uppercase',
     letterSpacing: '0.06em',
   },
@@ -863,9 +863,9 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 56,
   },
   layoutBtnActive: {
-    background: 'var(--accent)',
+    background: 'var(--accent-solid)',
     color: 'white',
-    borderColor: 'var(--accent)',
+    borderColor: 'var(--accent-solid)',
     boxShadow: '0 1px 6px rgba(124, 58, 237, 0.3)',
   },
   layoutLabel: {
@@ -964,7 +964,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     border: '1px solid rgba(124, 58, 237, 0.28)',
     background: 'rgba(124, 58, 237, 0.1)',
-    color: 'var(--accent)',
+    color: 'var(--accent-hover)',
     fontSize: 12,
     fontWeight: 800,
     cursor: 'pointer',
@@ -1168,7 +1168,7 @@ const rowStyles: Record<string, React.CSSProperties> = {
     padding: '0px 4px',
     borderRadius: 3,
     background: 'var(--accent-subtle)',
-    color: 'var(--accent)',
+    color: 'var(--accent-hover)',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
   },

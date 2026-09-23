@@ -28,3 +28,13 @@ describe('brand theme variables', () => {
     assert.equal(variables['--accent-solid'], '#6d33d1');
   });
 });
+
+describe('accessible solid accent', () => {
+  it('darkens light brand colors until white text is readable', async () => {
+    const { buildBrandThemeVariables, contrastWithWhite } = await import('../src/utils/brandTheme.ts');
+    for (const brand of ['#a78bfa', '#fbbf24', '#22d3ee', '#ffffff', '#2563eb']) {
+      const solid = Object.fromEntries(buildBrandThemeVariables(brand))['--accent-solid'];
+      assert.ok(contrastWithWhite(solid) >= 4.5, `${brand} -> ${solid} contrast ${contrastWithWhite(solid).toFixed(2)}`);
+    }
+  });
+});

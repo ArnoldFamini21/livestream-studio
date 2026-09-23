@@ -6121,7 +6121,8 @@ export function StudioRoom() {
       <CameraKeepAlive stream={localStream} />
 
       {/* Main Area */}
-      <div className="studio-main" style={styles.main}>
+      <main className="studio-main" style={styles.main}>
+        <h1 style={styles.visuallyHidden}>{room?.name || 'Studio'}</h1>
         {/* Stage */}
         <div className="studio-stage" style={styles.stage}>
           <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : 'Stage preview'}</span><span>{liveStatus.active ? 'Your audience can see this stage' : recordingStatus.active ? recordingStatus.paused ? 'Resume when you are ready' : 'Recording session in progress' : 'Prepare your stage before going live'}</span></div>
@@ -6877,7 +6878,7 @@ export function StudioRoom() {
             />
           </Suspense>
         )}
-      </div>
+      </main>
 
       {/* Control Bar */}
       <ControlBar
@@ -7828,6 +7829,17 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   // Shared media tile
+  visuallyHidden: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    padding: 0,
+    margin: -1,
+    overflow: 'hidden',
+    clip: 'rect(0 0 0 0)',
+    whiteSpace: 'nowrap',
+    border: 0,
+  },
   cameraKeepAlive: {
     position: 'fixed',
     left: 0,
