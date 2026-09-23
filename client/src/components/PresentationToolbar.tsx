@@ -1,7 +1,20 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ActiveMedia } from '@studio/shared';
-import { clampPresentationSlideIndex, getPresentationDeckStatus, getPresentationItemDisplayTitle } from '../utils/presentationDeckControls.ts';
+import { clampPresentationSlideIndex, getPresentationDeckStatus, getPresentationItemDisplayTitle, getSharedContentLabel, type SharedContentKind } from '../utils/presentationDeckControls.ts';
 import '../styles/presentation.css';
+
+const KIND_ICONS: Record<SharedContentKind, JSX.Element> = {
+  deck: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M12 16v4M8 20h8" /></>,
+  pdf: <><path d="M7 3h7l4 4v14H7z" /><path d="M14 3v4h4M10 12h5M10 16h5" /></>,
+  image: <><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="10" r="1.5" /><path d="m21 16-5-5-8 8" /></>,
+  video: <><rect x="3" y="6" width="13" height="12" rx="2" /><path d="m16 10 5-3v10l-5-3" /></>,
+  screen: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /><path d="m10 8 4 2-4 2z" /></>,
+  file: <><path d="M7 3h7l4 4v14H7z" /><path d="M14 3v4h4" /></>,
+};
+
+function ToolbarIcon({ children }: { children: JSX.Element }) {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>;
+}
 
 export function PresentationToolbar({ media, slideIndex, onSlideIndexChange, screenName, screens = [], selectedScreenId, onScreenChange, canStopScreen, onStop }: {
   media: ActiveMedia | null;
@@ -15,22 +28,40 @@ export function PresentationToolbar({ media, slideIndex, onSlideIndexChange, scr
   onStop: () => void;
 }) {
   const deck = getPresentationDeckStatus(media, slideIndex);
+  const label = getSharedContentLabel(media, screenName);
   const [pickerOpen, setPickerOpen] = useState(false);
   useEffect(() => setPickerOpen(false), [media?.assetId]);
+  const subtitle = deck.hasDeck
+    ? `${label.kindLabel} · ${deck.unitLabel} ${deck.currentIndex + 1} of ${deck.total}`
+    : label.kindLabel;
   return <div className="presentation-toolbar" role="group" aria-label="Presentation controls">
-    {!media && screens.length > 1 && onScreenChange
-      ? <select className="presentation-source" aria-label="Screen on stage" value={selectedScreenId || screens[0].id} onChange={event => onScreenChange(event.target.value)}>
-          {screens.map(screen => <option key={screen.id} value={screen.id}>{screen.name}</option>)}
-        </select>
-      : <span className="presentation-title" title={media?.name || screenName}>{media?.name || screenName || 'Shared screen'}</span>}
+    <div className="presentation-identity">
+      <span className="presentation-kind" aria-hidden="true"><ToolbarIcon>{KIND_ICONS[label.kind]}</ToolbarIcon></span>
+      <div className="presentation-identity-text">
+        {!media && screens.length > 1 && onScreenChange
+          ? <select className="presentation-source" aria-label="Screen on stage" value={selectedScreenId || screens[0].id} onChange={event => onScreenChange(event.target.value)}>
+              {screens.map(screen => <option key={screen.id} value={screen.id}>{screen.name}</option>)}
+            </select>
+          : <span className="presentation-title" title={media?.name || screenName}>{label.title}</span>}
+        <span className="presentation-subtitle">{subtitle}</span>
+      </div>
+    </div>
     {deck.hasDeck && <div className="presentation-navigation">
-      <button type="button" aria-label="Previous slide" title="Previous slide (←)" disabled={!deck.canGoPrevious} onClick={() => onSlideIndexChange(deck.currentIndex - 1)}>←</button>
-      <button type="button" className="presentation-slide-picker-trigger" aria-label={`Choose ${deck.unitLabel.toLowerCase()} · ${deck.currentIndex + 1} of ${deck.total}`} aria-haspopup="dialog" title="Preview slides and speaker notes" onClick={() => setPickerOpen(true)}>
-        <span aria-live="polite" aria-atomic="true">{deck.currentIndex + 1} / {deck.total}</span><span aria-hidden="true">⌄</span>
+      <button type="button" className="presentation-step" aria-label={`Previous ${deck.unitLabel.toLowerCase()}`} title="Previous (←)" disabled={!deck.canGoPrevious} onClick={() => onSlideIndexChange(deck.currentIndex - 1)}>
+        <ToolbarIcon><path d="m15 6-6 6 6 6" /></ToolbarIcon>
       </button>
-      <button type="button" aria-label="Next slide" title="Next slide (→)" disabled={!deck.canGoNext} onClick={() => onSlideIndexChange(deck.currentIndex + 1)}>→</button>
+      <button type="button" className="presentation-slide-picker-trigger" aria-label={`Choose ${deck.unitLabel.toLowerCase()} · ${deck.currentIndex + 1} of ${deck.total}`} aria-haspopup="dialog" title="Preview slides and speaker notes" onClick={() => setPickerOpen(true)}>
+        <span aria-live="polite" aria-atomic="true">{deck.currentIndex + 1} <small>/ {deck.total}</small></span>
+        <ToolbarIcon><path d="m8 10 4 4 4-4" /></ToolbarIcon>
+      </button>
+      <button type="button" className="presentation-step" aria-label={`Next ${deck.unitLabel.toLowerCase()}`} title="Next (→)" disabled={!deck.canGoNext} onClick={() => onSlideIndexChange(deck.currentIndex + 1)}>
+        <ToolbarIcon><path d="m9 6 6 6-6 6" /></ToolbarIcon>
+      </button>
     </div>}
-    {(media || canStopScreen) && <button type="button" className="presentation-stop" onClick={onStop}>Stop sharing</button>}
+    {(media || canStopScreen) && <button type="button" className="presentation-stop" onClick={onStop}>
+      <ToolbarIcon><rect x="6" y="6" width="12" height="12" rx="2" /></ToolbarIcon>
+      <span>Stop presenting</span>
+    </button>}
     {pickerOpen && deck.hasDeck && media && <PresentationSlidePicker key={media.assetId} media={media} slideIndex={slideIndex} onShow={onSlideIndexChange} onClose={() => setPickerOpen(false)} />}
   </div>;
 }

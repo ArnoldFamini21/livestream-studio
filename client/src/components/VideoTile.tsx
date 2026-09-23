@@ -214,7 +214,8 @@ export function VideoTile({
 
   const tileStyle: React.CSSProperties = {
     ...tileStyles.tile,
-    ...(isScreenShare ? { borderRadius: 0, aspectRatio: 'auto' } : getShapeStyle()),
+    // Shared screens fill the content frame edge to edge; the frame owns corners.
+    ...(isScreenShare ? { borderRadius: 0, aspectRatio: 'auto', border: 'none', background: 'transparent' } : getShapeStyle()),
     boxShadow: isSpeaking
       ? `0 0 0 3px ${brandColor}, 0 0 ${Math.min(speakingLevel / 4, 20)}px ${brandColor}88`
       : 'none',

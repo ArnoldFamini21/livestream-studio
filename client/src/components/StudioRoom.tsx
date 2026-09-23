@@ -1,6 +1,7 @@
 import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
 import { withLocalJoinMedia } from '../utils/joinMediaState.ts';
-import { getPresentationLayout, normalizePresentationCameraSize, type PresentationCameraSize } from '../utils/presentationLayout.ts';
+import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, normalizePresentationCameraSize, type PresentationCameraSize } from '../utils/presentationLayout.ts';
+import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { getAutoGridColumnCount } from '../utils/layoutPresets.ts';
@@ -5290,11 +5291,23 @@ export function StudioRoom() {
     }
   }, [layout, pipCorner, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout]);
 
+  const sharedContentKey = activeMedia
+    ? `media:${activeMedia.assetId || activeMedia.url}`
+    : sharedContentScreenShare
+      ? `screen:${sharedContentScreenShare.item.id}`
+      : null;
+  const sharedContentAspect = useSharedContentAspect(stageRef, sharedContentKey);
   const sharedContentLayoutResult = useMemo(() => (
     sharedContentIsActive
-      ? getPresentationLayout(presentationLayout, sharedContentParticipantPresenceItems.length, pipCorner, presentationCameraSize)
+      ? getPresentationLayout(
+          presentationLayout,
+          sharedContentParticipantPresenceItems.length,
+          pipCorner,
+          presentationCameraSize,
+          sharedContentAspect ?? DEFAULT_CONTENT_ASPECT
+        )
       : null
-  ), [presentationLayout, pipCorner, presentationCameraSize, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
+  ), [presentationLayout, pipCorner, presentationCameraSize, sharedContentAspect, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
@@ -7492,7 +7505,7 @@ const styles: Record<string, React.CSSProperties> = {
   // Shared media tile
   mediaOverlay: {
     position: 'relative',
-    background: '#000',
+    background: 'transparent',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
