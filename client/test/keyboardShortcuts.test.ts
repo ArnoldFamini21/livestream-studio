@@ -10,12 +10,7 @@ import {
   shouldIgnoreShortcutTarget,
   withShortcutHint,
 } from '../src/utils/keyboardShortcuts.ts';
-import {
-  getLayoutBarOrder,
-  isLayoutBarOptionDisabled,
-  MEDIA_SHARE_LAYOUT_ORDER,
-  STUDIO_LAYOUT_PRESET_ORDER,
-} from '../src/utils/layoutPresets.ts';
+import { isStudioLayoutDisabled } from '../src/utils/layoutPresets.ts';
 
 describe('resolveShortcutId', () => {
   it('maps number keys to layout bar slots', () => {
@@ -124,18 +119,10 @@ describe('shortcut definitions', () => {
   });
 });
 
-describe('layout bar order', () => {
-  it('follows the bar that is on screen', () => {
-    assert.deepEqual(getLayoutBarOrder(false), STUDIO_LAYOUT_PRESET_ORDER);
-    assert.deepEqual(getLayoutBarOrder(true), MEDIA_SHARE_LAYOUT_ORDER);
-    assert.equal(MEDIA_SHARE_LAYOUT_ORDER[0], 'single');
-  });
-
-  it('disables the same layouts the bar disables', () => {
-    assert.equal(isLayoutBarOptionDisabled('single', { isMediaActive: true, participantCount: 1, mediaParticipantCount: 0 }), false);
-    assert.equal(isLayoutBarOptionDisabled('grid', { isMediaActive: true, participantCount: 1, mediaParticipantCount: 0 }), true);
-    assert.equal(isLayoutBarOptionDisabled('grid', { isMediaActive: true, participantCount: 2, mediaParticipantCount: 1 }), false);
-    assert.equal(isLayoutBarOptionDisabled('spotlight', { isMediaActive: false, participantCount: 1 }), true);
-    assert.equal(isLayoutBarOptionDisabled('grid', { isMediaActive: false, participantCount: 1 }), false);
+describe('studio layout bar', () => {
+  it('disables multi-person layouts until someone else is on stage', () => {
+    assert.equal(isStudioLayoutDisabled('spotlight', 1), true);
+    assert.equal(isStudioLayoutDisabled('grid', 1), false);
+    assert.equal(isStudioLayoutDisabled('spotlight', 2), false);
   });
 });

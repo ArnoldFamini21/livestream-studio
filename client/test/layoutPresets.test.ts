@@ -8,8 +8,13 @@ import {
   getStudioLayoutDescription,
   getStudioLayoutLabel,
   isMultiParticipantLayout,
+  getPresentingView,
+  getPresentingViewLayout,
+  isPresentingViewDisabled,
   MEDIA_SHARE_LAYOUT_ORDER,
   normalizeMediaShareLayout,
+  PRESENTING_VIEW_LABELS,
+  PRESENTING_VIEWS,
   STUDIO_LAYOUT_PRESET_ORDER,
 } from '../src/utils/layoutPresets.ts';
 
@@ -63,17 +68,35 @@ it('gives a solo host the full grid width and scales for additional guests', () 
   assert.equal(getAutoGridColumnCount(NaN), 1);
 });
 
-describe('presenting layouts', () => {
-  it('offers only Content, Beside, and Stack', () => {
-    assert.deepEqual(MEDIA_SHARE_LAYOUT_ORDER, ['single', 'grid', 'featured']);
+describe('presenting views', () => {
+  it('offers Me, Content, and Content + Me, in that order', () => {
+    assert.deepEqual(PRESENTING_VIEWS, ['me', 'content', 'content-me']);
+    assert.deepEqual(PRESENTING_VIEWS.map((view) => PRESENTING_VIEW_LABELS[view]), ['Me', 'Content', 'Content + Me']);
   });
 
-  it('opens retired layouts in Beside', () => {
-    assert.equal(normalizeMediaShareLayout('spotlight'), 'grid');
-    assert.equal(normalizeMediaShareLayout('pip'), 'grid');
-    assert.equal(normalizeMediaShareLayout('side-by-side'), 'grid');
+  it('maps views to content layouts and back', () => {
+    assert.equal(getPresentingViewLayout('content'), 'single');
+    assert.equal(getPresentingViewLayout('content-me'), 'grid');
+    assert.equal(getPresentingViewLayout('me'), null);
+    assert.equal(getPresentingView(true, 'single'), 'me');
+    assert.equal(getPresentingView(false, 'single'), 'content');
+    assert.equal(getPresentingView(false, 'grid'), 'content-me');
+  });
+
+  it('needs a camera for views that show one', () => {
+    assert.equal(isPresentingViewDisabled('me', 0), true);
+    assert.equal(isPresentingViewDisabled('content-me', 0), true);
+    assert.equal(isPresentingViewDisabled('content', 0), false);
+    assert.equal(isPresentingViewDisabled('me', 1), false);
+  });
+
+  it('opens retired presenting layouts beside the content', () => {
+    assert.deepEqual(MEDIA_SHARE_LAYOUT_ORDER, ['single', 'grid']);
+    for (const retired of ['spotlight', 'pip', 'side-by-side', 'featured'] as const) {
+      assert.equal(normalizeMediaShareLayout(retired), 'grid');
+      assert.equal(getPresentingView(false, retired), 'content-me');
+    }
     assert.equal(normalizeMediaShareLayout(undefined), 'grid');
     assert.equal(normalizeMediaShareLayout('single'), 'single');
-    assert.equal(normalizeMediaShareLayout('featured'), 'featured');
   });
 });

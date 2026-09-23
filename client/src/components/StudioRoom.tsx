@@ -5,7 +5,7 @@ import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraS
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
-import { getAutoGridColumnCount, getLayoutBarLabel, getLayoutBarOrder, isLayoutBarOptionDisabled, normalizeMediaShareLayout } from '../utils/layoutPresets.ts';
+import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, PRESENTING_VIEW_LABELS, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
@@ -1021,6 +1021,8 @@ export function StudioRoom() {
   const [layout, setLayout] = useState<LayoutMode>('grid');
   const [presentationLayout, setStoredPresentationLayout] = useState<LayoutMode>('grid');
   const setPresentationLayout = useCallback((next: LayoutMode) => setStoredPresentationLayout(normalizeMediaShareLayout(next)), []);
+  // The "Me" view: shared content stays loaded but off stage, so it can return instantly.
+  const [contentHidden, setContentHidden] = useState(false);
   // Presenters always appear at the large size beside or over shared content.
   const presentationCameraSize: PresentationCameraSize = 'large';
   const [selectedScreenShareId, setSelectedScreenShareId] = useState<string | null>(null);
@@ -1075,6 +1077,8 @@ export function StudioRoom() {
   // Media overlay
   const [activeMedia, setActiveMedia] = useState<ActiveMedia | null>(null);
   const [activeMediaSlideIndex, setActiveMediaSlideIndex] = useState(0);
+  /** The media actually on stage (and in the broadcast): none in the "Me" view. */
+  const stagedMedia = contentHidden ? null : activeMedia;
   const [mediaAssets, setMediaAssets] = useState<StudioMediaAsset[]>([]);
 
   const onStageMediaError = (media: ActiveMedia, message: string) => {
@@ -1569,7 +1573,7 @@ export function StudioRoom() {
     timers,
     tickers,
     widgets,
-    activeMedia,
+    activeMedia: stagedMedia,
     activeMediaSlideIndex,
     highlightedComment,
     highlightedQA: qaQuestions.find((question) => question.highlighted) || null,
@@ -4997,8 +5001,10 @@ export function StudioRoom() {
   }, [stagePresenceItems]);
 
   const renderedVideoItems = useMemo(() => (
-    stagePresenceItems.map((presence) => presence.item)
-  ), [stagePresenceItems]);
+    stagePresenceItems
+      .filter((presence) => !(contentHidden && presence.item.isScreenShare))
+      .map((presence) => presence.item)
+  ), [contentHidden, stagePresenceItems]);
 
   const screenShareStageSplit = useMemo(() => splitScreenShareStageItems(
     stagePresenceItems
@@ -5012,11 +5018,24 @@ export function StudioRoom() {
     setSelectedScreenShareId(displayedScreenShareId);
   }, [displayedScreenShareId]);
 
-  const sharedContentScreenShare = !activeMedia ? screenShareStageSplit.screenShareItem : null;
-  const sharedContentParticipantPresenceItems = activeMedia || sharedContentScreenShare
+  // Something is shared (a file or a screen), whether or not the "Me" view hides it.
+  const sharedContentAvailable = Boolean(activeMedia || screenShareStageSplit.screenShareItem);
+  const sharedContentScreenShare = !activeMedia && !contentHidden ? screenShareStageSplit.screenShareItem : null;
+  const sharedContentParticipantPresenceItems = sharedContentAvailable
     ? screenShareStageSplit.participantItems
     : stagePresenceItems;
-  const sharedContentIsActive = Boolean(activeMedia || sharedContentScreenShare);
+  const sharedContentIsActive = Boolean(stagedMedia || sharedContentScreenShare);
+  const presentingView = getPresentingView(contentHidden, presentationLayout);
+  const changePresentingView = useCallback((view: PresentingView) => {
+    setContentHidden(view === 'me');
+    const nextLayout = getPresentingViewLayout(view);
+    if (nextLayout) setPresentationLayout(nextLayout);
+  }, [setPresentationLayout]);
+  // New or stopped content always starts visible.
+  const sharedContentIdentity = activeMedia ? `media:${activeMedia.assetId || activeMedia.url}` : screenShareStageSplit.screenShareItem?.id || null;
+  useEffect(() => {
+    setContentHidden(false);
+  }, [sharedContentIdentity]);
   const effectiveLayout = sharedContentIsActive ? presentationLayout : layout;
   const changeVisibleLayout = useCallback((next: LayoutMode) => {
     if (sharedContentIsActive) setPresentationLayout(next); else applyLayout(next);
@@ -5108,23 +5127,30 @@ export function StudioRoom() {
 
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const roleShortcuts = useMemo(() => getShortcutsForRole(isHostOrCoHost), [isHostOrCoHost]);
-  const layoutBarOrder = getLayoutBarOrder(sharedContentIsActive);
-  const layoutBarParticipantCount = sharedContentIsActive ? sharedContentStageItemCount : displayedStageVideoItems.length;
-  const layoutBarMediaParticipantCount = sharedContentIsActive ? sharedContentParticipantPresenceItems.length : undefined;
+  // Keys 1-6 follow the bar on screen: the three views while presenting, else the studio layouts.
+  const layoutBarLabels = sharedContentAvailable
+    ? PRESENTING_VIEWS.map((view) => PRESENTING_VIEW_LABELS[view])
+    : STUDIO_LAYOUT_PRESET_ORDER.map((mode) => STUDIO_LAYOUT_LABELS[mode]);
 
   // The latest state and actions for the keyboard listener, so it is bound once.
   const shortcutContextRef = useRef<{ run: (shortcutId: string) => boolean }>({ run: () => false });
   shortcutContextRef.current.run = (shortcutId: string) => {
     const layoutIndex = getLayoutShortcutIndex(shortcutId);
     if (layoutIndex !== null) {
-      const next = layoutBarOrder[layoutIndex];
+      if (sharedContentAvailable) {
+        const view = PRESENTING_VIEWS[layoutIndex];
+        if (!view) return false;
+        if (isPresentingViewDisabled(view, sharedContentParticipantPresenceItems.length)) {
+          addToast(`${PRESENTING_VIEW_LABELS[view]} needs a camera on stage.`, 'info');
+          return true;
+        }
+        changePresentingView(view);
+        return true;
+      }
+      const next = STUDIO_LAYOUT_PRESET_ORDER[layoutIndex];
       if (!next) return false;
-      if (isLayoutBarOptionDisabled(next, {
-        isMediaActive: sharedContentIsActive,
-        participantCount: layoutBarParticipantCount,
-        mediaParticipantCount: layoutBarMediaParticipantCount,
-      })) {
-        addToast(`${getLayoutBarLabel(next, sharedContentIsActive)} needs someone else on stage.`, 'info');
+      if (isStudioLayoutDisabled(next, displayedStageVideoItems.length)) {
+        addToast(`${STUDIO_LAYOUT_LABELS[next]} needs someone else on stage.`, 'info');
         return true;
       }
       changeVisibleLayout(next);
@@ -5193,7 +5219,8 @@ export function StudioRoom() {
   }, [roleShortcuts]);
 
   // Hosts and co-hosts: tell guests what is on stage. Each slide or image is
-  // uploaded once as a small JPEG; the signaling message only names it.
+  // uploaded once as a small JPEG; the signaling message only names it. In the
+  // "Me" view nothing is staged, so guests see the cameras too.
   const stageMirrorParticipantId = myParticipant?.id;
   const stageMirrorAdmitted = myParticipant?.status !== 'green-room';
   useEffect(() => {
@@ -5201,14 +5228,14 @@ export function StudioRoom() {
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       let content: StageContentPayload;
-      if (!activeMedia) {
+      if (!stagedMedia) {
         content = buildStageContent(null, {});
       } else {
-        const { source, slideIndex, slideCount } = getStageMirrorSource(activeMedia, activeMediaSlideIndex);
+        const { source, slideIndex, slideCount } = getStageMirrorSource(stagedMedia, activeMediaSlideIndex);
         let imageId: string | undefined;
         const token = stageUploadTokenRef.current;
         if (source && token) {
-          const key = getStageMirrorSourceKey(activeMedia.assetId || activeMedia.url, source);
+          const key = getStageMirrorSourceKey(stagedMedia.assetId || stagedMedia.url, source);
           imageId = stageImageIdsRef.current.get(key);
           if (!imageId) {
             try {
@@ -5220,7 +5247,7 @@ export function StudioRoom() {
           }
         }
         if (cancelled) return;
-        content = buildStageContent(activeMedia, { imageId, slideIndex, slideCount, layout: presentationLayout });
+        content = buildStageContent(stagedMedia, { imageId, slideIndex, slideCount, layout: presentationLayout });
       }
       const signature = JSON.stringify(content);
       if (signature === lastStageContentSignatureRef.current) return;
@@ -5231,7 +5258,7 @@ export function StudioRoom() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeMedia, activeMediaSlideIndex, isHostOrCoHost, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
+  }, [stagedMedia, activeMediaSlideIndex, isHostOrCoHost, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
 
   // Guests: show what the host has on stage. The next picture is loaded before
   // it replaces the current one, so slides change without a blank frame.
@@ -5488,8 +5515,8 @@ export function StudioRoom() {
     }
   }, [layout, pipCorner, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout]);
 
-  const sharedContentKey = activeMedia
-    ? `media:${activeMedia.assetId || activeMedia.url}`
+  const sharedContentKey = stagedMedia
+    ? `media:${stagedMedia.assetId || stagedMedia.url}`
     : sharedContentScreenShare
       ? `screen:${sharedContentScreenShare.item.id}`
       : null;
@@ -6036,7 +6063,7 @@ export function StudioRoom() {
           <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : 'Stage preview'}</span><span>{liveStatus.active ? 'Your audience can see this stage' : recordingStatus.active ? recordingStatus.paused ? 'Resume when you are ready' : 'Recording session in progress' : 'Prepare your stage before going live'}</span></div>
           {/* Scale the complete broadcast composition; panels never reflow it. */}
           <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }} footer={
-            isHostOrCoHost && sharedContentIsActive && <PresentationToolbar
+            isHostOrCoHost && sharedContentAvailable && <PresentationToolbar
               media={activeMedia}
               slideIndex={activeMediaSlideIndex}
               onSlideIndexChange={setActiveMediaSlideIndex}
@@ -6069,7 +6096,7 @@ export function StudioRoom() {
                   position: 'relative',
                 }}
               >
-                {activeMedia && (
+                {stagedMedia && (
                   <div
                     className="studio-active-media"
                     style={{
@@ -6077,39 +6104,39 @@ export function StudioRoom() {
                       ...(sharedContentLayoutResult?.mediaStyle || {}),
                     }}
                   >
-                    {activeMedia.preview?.kind === 'presentation-slides' ? (
+                    {stagedMedia.preview?.kind === 'presentation-slides' ? (
                       <PresentationDeckStage
-                        media={activeMedia}
+                        media={stagedMedia}
                         slideIndex={activeMediaSlideIndex}
                       />
-                    ) : activeMedia.type === 'video' ? (
+                    ) : stagedMedia.type === 'video' ? (
                       <StudioMediaVideo
-                        key={activeMedia.assetId || activeMedia.url}
-                        url={activeMedia.url}
-                        name={activeMedia.name}
+                        key={stagedMedia.assetId || stagedMedia.url}
+                        url={stagedMedia.url}
+                        name={stagedMedia.name}
                         style={styles.mediaContent}
                         broadcastAudio={broadcastAudioBus}
-                        onError={(message) => onStageMediaError(activeMedia, message)}
+                        onError={(message) => onStageMediaError(stagedMedia, message)}
                       />
-                    ) : activeMedia.type === 'image' ? (
+                    ) : stagedMedia.type === 'image' ? (
                       <img
                         crossOrigin="anonymous"
-                        src={activeMedia.url}
-                        alt={activeMedia.name}
+                        src={stagedMedia.url}
+                        alt={stagedMedia.name}
                         style={styles.mediaContent}
-                        onError={() => onStageMediaError(activeMedia, 'This image could not load. Upload the image or use a direct link that allows sharing.')}
+                        onError={() => onStageMediaError(stagedMedia, 'This image could not load. Upload the image or use a direct link that allows sharing.')}
                       />
-                    ) : activeMedia.type === 'pdf' ? (
-                      <object data={`${activeMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
-                        <iframe src={`${activeMedia.url}#view=FitH`} style={styles.mediaContent} title={activeMedia.name} />
+                    ) : stagedMedia.type === 'pdf' ? (
+                      <object data={`${stagedMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
+                        <iframe src={`${stagedMedia.url}#view=FitH`} style={styles.mediaContent} title={stagedMedia.name} />
                       </object>
                     ) : (
-                      <MediaDocumentCard media={activeMedia} />
+                      <MediaDocumentCard media={stagedMedia} />
                     )}
 
                   </div>
                 )}
-                {!activeMedia && sharedContentScreenShare && (
+                {!stagedMedia && sharedContentScreenShare && (
                   <div
                     className="studio-active-media"
                     style={{
@@ -6137,7 +6164,7 @@ export function StudioRoom() {
 
                 {/* Render tiles based on layout engine */}
                 {(() => {
-                  const stageItemsForLayout = sharedContentIsActive
+                  const stageItemsForLayout = sharedContentAvailable
                     ? sharedContentParticipantPresenceItems
                     : stagePresenceItems;
                   const itemsToRender = selectVisibleStageItems(stageItemsForLayout, effectiveLayout, {
@@ -6406,13 +6433,13 @@ export function StudioRoom() {
               <LayoutSwitcher
                 currentLayout={effectiveLayout}
                 onLayoutChange={changeVisibleLayout}
-                pipCorner={pipCorner}
-                onPipCornerChange={setPipCorner}
-                participantCount={sharedContentIsActive ? sharedContentStageItemCount : displayedStageVideoItems.length}
-                isMediaActive={sharedContentIsActive}
-                mediaParticipantCount={sharedContentIsActive ? sharedContentParticipantPresenceItems.length : undefined}
+                participantCount={sharedContentAvailable ? sharedContentStageItemCount : displayedStageVideoItems.length}
+                isMediaActive={sharedContentAvailable}
+                presentingView={presentingView}
+                onPresentingViewChange={changePresentingView}
+                mediaParticipantCount={sharedContentAvailable ? sharedContentParticipantPresenceItems.length : undefined}
               />
-              {!sharedContentIsActive && <><button
+              {!sharedContentAvailable && <><button
                 type="button"
                 onClick={() => setAutoDirectorEnabled((current) => !current)}
                 title="Auto-spotlight whoever is speaking"
@@ -6465,10 +6492,10 @@ export function StudioRoom() {
                       <span style={styles.shortcutGroupTitle}>{group.category}</span>
                       {group.shortcuts.map((shortcut) => {
                         const layoutIndex = getLayoutShortcutIndex(shortcut.id);
-                        const layoutMode = layoutIndex === null ? undefined : layoutBarOrder[layoutIndex];
-                        // Only the layouts on the bar right now; presenting offers fewer.
-                        if (layoutIndex !== null && !layoutMode) return null;
-                        const label = layoutMode ? getLayoutBarLabel(layoutMode, sharedContentIsActive) : shortcut.label;
+                        const layoutLabel = layoutIndex === null ? undefined : layoutBarLabels[layoutIndex];
+                        // Only the options on the bar right now; presenting offers fewer.
+                        if (layoutIndex !== null && !layoutLabel) return null;
+                        const label = layoutLabel || shortcut.label;
                         return (
                           <div key={shortcut.id} style={styles.shortcutRow}>
                             <span style={styles.shortcutLabel}>{label}</span>

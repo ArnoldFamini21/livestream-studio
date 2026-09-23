@@ -9,25 +9,53 @@ export const STUDIO_LAYOUT_PRESET_ORDER: LayoutMode[] = [
   'featured',
 ];
 
-/** The layouts offered while media or a screen share is on stage, in bar order. */
-export const MEDIA_SHARE_LAYOUT_ORDER: LayoutMode[] = ['single', 'grid', 'featured'];
+/** The content layouts used while media or a screen share is on stage. */
+export const MEDIA_SHARE_LAYOUT_ORDER: LayoutMode[] = ['single', 'grid'];
 
 /**
- * Presenting uses only Content, Beside, and Stack. Studios and scenes saved
- * with a retired layout (Below, PiP, Split) open in Beside.
+ * Presenting uses only Content (full) and Content + Me (beside). Studios and
+ * scenes saved with a retired layout (Below, PiP, Split, Stack) open beside.
  */
 export function normalizeMediaShareLayout(layout: LayoutMode | undefined | null): LayoutMode {
   return layout && MEDIA_SHARE_LAYOUT_ORDER.includes(layout) ? layout : 'grid';
 }
 
-export const MEDIA_SHARE_LAYOUT_SHORT_LABELS: Record<LayoutMode, string> = {
-  single: 'Content',
-  grid: 'Beside',
-  spotlight: 'Below',
-  pip: 'PiP',
-  'side-by-side': 'Split',
-  featured: 'Stack',
+/**
+ * What the stage shows while something is shared. "Me" hides the content
+ * without unloading it, so switching back is instant.
+ */
+export type PresentingView = 'me' | 'content' | 'content-me';
+
+export const PRESENTING_VIEWS: PresentingView[] = ['me', 'content', 'content-me'];
+
+export const PRESENTING_VIEW_LABELS: Record<PresentingView, string> = {
+  me: 'Me',
+  content: 'Content',
+  'content-me': 'Content + Me',
 };
+
+export const PRESENTING_VIEW_DESCRIPTIONS: Record<PresentingView, string> = {
+  me: 'Cameras full screen; the shared content stays ready',
+  content: 'The shared content full screen',
+  'content-me': 'The shared content with cameras beside it',
+};
+
+export function getPresentingView(contentHidden: boolean, layout: LayoutMode): PresentingView {
+  if (contentHidden) return 'me';
+  return normalizeMediaShareLayout(layout) === 'single' ? 'content' : 'content-me';
+}
+
+/** The content layout a view uses; "me" keeps the current one for when content returns. */
+export function getPresentingViewLayout(view: PresentingView): LayoutMode | null {
+  if (view === 'content') return 'single';
+  if (view === 'content-me') return 'grid';
+  return null;
+}
+
+/** Views with cameras need someone on camera. */
+export function isPresentingViewDisabled(view: PresentingView, presenterCount: number): boolean {
+  return view !== 'content' && presenterCount <= 0;
+}
 
 export const STUDIO_LAYOUT_LABELS: Record<LayoutMode, string> = {
   grid: 'Grid',
@@ -93,22 +121,7 @@ export function getAutoGridColumnCount(count: number): number {
   return Math.ceil(Math.sqrt(count * 16 / 9));
 }
 
-/** The layouts on the layout bar, in the order shown; keys 1-6 follow it. */
-export function getLayoutBarOrder(isMediaActive: boolean): LayoutMode[] {
-  return isMediaActive ? MEDIA_SHARE_LAYOUT_ORDER : STUDIO_LAYOUT_PRESET_ORDER;
-}
-
-export function getLayoutBarLabel(layout: LayoutMode, isMediaActive: boolean): string {
-  return isMediaActive ? MEDIA_SHARE_LAYOUT_SHORT_LABELS[layout] : STUDIO_LAYOUT_LABELS[layout];
-}
-
-export function isLayoutBarOptionDisabled(
-  layout: LayoutMode,
-  options: { isMediaActive: boolean; participantCount: number; mediaParticipantCount?: number }
-): boolean {
-  if (options.isMediaActive) {
-    const presenters = options.mediaParticipantCount ?? Math.max(0, options.participantCount - 1);
-    return layout !== 'single' && presenters <= 0;
-  }
-  return options.participantCount < 2 && isMultiParticipantLayout(layout);
+/** Whether the studio (not presenting) layout bar disables this layout. */
+export function isStudioLayoutDisabled(layout: LayoutMode, participantCount: number): boolean {
+  return participantCount < 2 && isMultiParticipantLayout(layout);
 }
