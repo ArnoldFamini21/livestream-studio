@@ -381,7 +381,6 @@ export function useGoogleDriveUpload() {
             if (typeof data?.id !== 'string') throw new Error('Invalid response from Google Drive API');
             clearDriveUploadResumeState(resumeKey);
             setUploadProgress((prev) => ({ ...prev, [fileName]: 100 }));
-            console.log(`Uploaded ${fileName} to Google Drive (${data.id})`);
             return data.id;
           }
 

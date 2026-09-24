@@ -39,6 +39,22 @@ function mixRgb(from: RgbColor, to: RgbColor, amount: number): RgbColor {
   };
 }
 
+function relativeLuminance({ r, g, b }: RgbColor): number {
+  const channel = (value: number) => {
+    const c = clampChannel(value) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+/** WCAG contrast ratio of white text on this color. */
+export function contrastWithWhite(color: RgbColor | string): number {
+  const rgb = typeof color === 'string' ? hexToRgb(color) : color;
+  return 1.05 / (relativeLuminance(rgb) + 0.05);
+}
+
+const MIN_TEXT_CONTRAST = 4.5;
+
 export function normalizeBrandColor(value: unknown, fallback = '#a78bfa'): string {
   if (typeof value !== 'string') return fallback;
   const match = value.trim().match(HEX_COLOR_PATTERN);
@@ -56,7 +72,15 @@ export function buildBrandThemeVariables(
   const hover = theme === 'light'
     ? rgbToHex(mixRgb(rgb, { r: 0, g: 0, b: 0 }, 0.16))
     : rgbToHex(mixRgb(rgb, { r: 255, g: 255, b: 255 }, 0.28));
-  const solid = rgbToHex(mixRgb(rgb, { r: 0, g: 0, b: 0 }, theme === 'light' ? 0.06 : 0.12));
+  // Solid fills carry white text (Go Live, Send), so darken light brand
+  // colors just enough for readable text (WCAG AA, 4.5:1).
+  let darken = theme === 'light' ? 0.06 : 0.12;
+  let solidRgb = mixRgb(rgb, { r: 0, g: 0, b: 0 }, darken);
+  while (contrastWithWhite(solidRgb) < MIN_TEXT_CONTRAST && darken < 0.9) {
+    darken += 0.02;
+    solidRgb = mixRgb(rgb, { r: 0, g: 0, b: 0 }, darken);
+  }
+  const solid = rgbToHex(solidRgb);
 
   return [
     ['--accent', accent],

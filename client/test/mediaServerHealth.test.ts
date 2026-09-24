@@ -230,3 +230,33 @@ describe('media-server health readiness', () => {
     assert.match(diagnostics.actions.map((action) => action.label).join(' '), /LibreOffice and Poppler/);
   });
 });
+
+describe('recording storage readiness', () => {
+  const base = {
+    status: 'ok',
+    service: 'media-server',
+    capabilities: { presentationRenderer: { ready: true, message: 'Renderer ready.' } },
+  };
+  const input = { mediaHttpUrl: 'https://media.example.com', checkedAt: 1 };
+
+  it('flags recordings kept only in a temporary folder', () => {
+    const health = normalizeMediaServerHealthPayload({
+      ...base,
+      capabilities: { ...base.capabilities, recordingStorage: { ready: false, message: 'Temporary folder.' } },
+    }, input);
+    const diagnostics = buildMediaServerParityDiagnostics(health);
+    assert.equal(diagnostics.status, 'degraded');
+    assert.equal(diagnostics.features.find((feature) => feature.id === 'mp4-export')?.status, 'degraded');
+    assert.ok(diagnostics.actions.some((action) => action.id === 'configure-recording-storage'));
+  });
+
+  it('stays ready with object storage, or when an older server does not report storage', () => {
+    for (const capabilities of [
+      { ...base.capabilities, recordingStorage: { ready: true, message: 'Object storage.' } },
+      base.capabilities,
+    ]) {
+      const diagnostics = buildMediaServerParityDiagnostics(normalizeMediaServerHealthPayload({ ...base, capabilities }, input));
+      assert.equal(diagnostics.status, 'ready');
+    }
+  });
+});

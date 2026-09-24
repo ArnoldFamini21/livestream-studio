@@ -425,6 +425,8 @@ export interface StageContentPayload {
   media: StageContentMedia | null;
   /** The presenting layout the host chose. */
   layout?: LayoutMode;
+  /** The host chose the "Me" view: shared content (including a screen share) is off stage. */
+  contentHidden?: boolean;
 }
 
 export interface StageContentMedia {

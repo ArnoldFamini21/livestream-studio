@@ -496,7 +496,7 @@ export function useMediaDevices() {
             (d) => d.kind === 'audioinput' && d.deviceId !== audioTrack.getSettings().deviceId
           );
           if (fallbackAudio) {
-            console.log('Audio device disconnected, switching to fallback:', fallbackAudio.label);
+            console.info('Audio device disconnected, switching to fallback:', fallbackAudio.label);
             const audioProcessing = audioProcessingOptionsRef.current;
             try {
               const newStream = await navigator.mediaDevices.getUserMedia({
@@ -546,7 +546,7 @@ export function useMediaDevices() {
             (d) => d.kind === 'videoinput' && d.deviceId !== videoTrack.getSettings().deviceId
           );
           if (fallbackVideo) {
-            console.log('Video device disconnected, switching to fallback:', fallbackVideo.label);
+            console.info('Video device disconnected, switching to fallback:', fallbackVideo.label);
             try {
               const newStream = await navigator.mediaDevices.getUserMedia({
                 video: createVideoTrackConstraints(fallbackVideo.deviceId, videoQualityRef.current),

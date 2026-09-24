@@ -1,4 +1,5 @@
 import type { ChatTranscriptScope } from '../utils/chatTranscript.ts';
+import { formatUnreadBadge } from '../utils/chatUnread.ts';
 import { PeoplePanel } from './PeoplePanel.tsx';
 import { StudioChat } from './StudioChat.tsx';
 import '../styles/overlay-panel.css';
@@ -56,6 +57,8 @@ export type SidebarTab = 'people' | 'chat' | 'media' | 'overlays' | 'brand' | 's
 // ---------------------------------------------------------------------------
 interface SidebarProps {
   activeTab?: SidebarTab | null;
+  /** Counts shown on the rail buttons, e.g. unread chat messages. */
+  tabBadges?: Partial<Record<SidebarTab, number>>;
   onActiveTabChange?: (tab: SidebarTab | null) => void;
   // Overlay props
   lowerThirds: LowerThirdData[];
@@ -409,7 +412,7 @@ export function Sidebar(props: SidebarProps) {
   };
 
   return (
-    <div className="studio-sidebar" style={st.wrapper}>
+    <div className="studio-sidebar" role="complementary" aria-label="Studio side panel" style={st.wrapper}>
       {/* Content panel — only visible when a tab is active */}
       {activeTab && (
         <div className="studio-sidebar-panel" style={st.contentPanel}>
@@ -485,7 +488,7 @@ export function Sidebar(props: SidebarProps) {
           {activeTab === 'brand' && (
             <div style={st.scrollContent}>
               <div style={st.section}>
-                <h4 style={st.sectionTitle}>Brand Kit</h4>
+                <h2 style={st.sectionTitle}>Brand Kit</h2>
                 <BrandPreview
                   studioTheme={props.studioTheme}
                   brandColor={props.brandColor}
@@ -858,11 +861,14 @@ export function Sidebar(props: SidebarProps) {
             style={{ ...st.iconBtn, ...(activeTab === tab.id ? st.iconBtnActive : {}) }}
             onClick={() => handleTabClick(tab.id)}
             title={tab.label}
-            aria-label={tab.label}
+            aria-label={props.tabBadges?.[tab.id] ? `${tab.label}, ${props.tabBadges[tab.id]} unread` : tab.label}
             aria-expanded={activeTab === tab.id}
           >
             {tab.icon}
             <span style={st.iconLabel}>{tab.label}</span>
+            {Boolean(props.tabBadges?.[tab.id]) && (
+              <span style={st.iconBadge} aria-hidden="true">{formatUnreadBadge(props.tabBadges![tab.id]!)}</span>
+            )}
           </button>
         ))}
       </nav>
@@ -1126,7 +1132,8 @@ const st: Record<string, React.CSSProperties> = {
   contentPanel: { width: 340, display: 'flex', flexDirection: 'column', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border)', height: '100%', overflow: 'hidden', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)' },
   scrollContent: { flex: 1, overflowY: 'auto' },
   iconStrip: { width: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, gap: 2, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%', flexShrink: 0 },
-  iconBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, width: 48, height: 48, borderRadius: 10, background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.15s ease' },
+  iconBadge: { position: 'absolute', top: 2, right: 4, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: 'var(--danger, #ef4444)', color: '#fff', fontSize: 10, fontWeight: 700, lineHeight: '16px', textAlign: 'center', boxSizing: 'border-box' },
+  iconBtn: { position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, width: 48, height: 48, borderRadius: 10, background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.15s ease' },
   iconBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
   iconLabel: { fontSize: 9, fontWeight: 500, lineHeight: 1 },
   section: { padding: 16 },

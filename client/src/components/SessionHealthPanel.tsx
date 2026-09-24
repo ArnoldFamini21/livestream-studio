@@ -33,11 +33,14 @@ function mediaTransportLabel(status: SfuTransportStatus | undefined, meshStatus:
   return meshStatus === 'comfortable' ? 'Comfortable' : meshStatus === 'tight' ? 'Tight' : 'Over budget';
 }
 
+// The brand red is too dark for small text on this dark panel (3.8:1).
+const READABLE_DANGER = '#f87171';
+
 function statusColor(status: HealthStatus): string {
   switch (status) {
     case 'good': return 'var(--success)';
     case 'warning': return 'var(--warning)';
-    case 'bad': return 'var(--danger)';
+    case 'bad': return READABLE_DANGER;
   }
 }
 
@@ -96,7 +99,7 @@ function diagnosticStatusColor(status: MediaServerParityDiagnostics['status']): 
     case 'ready': return 'var(--success)';
     case 'checking': return 'var(--warning)';
     case 'degraded': return 'var(--warning)';
-    case 'blocked': return 'var(--danger)';
+    case 'blocked': return READABLE_DANGER;
   }
 }
 
@@ -114,7 +117,7 @@ function featureStatusColor(status: MediaServerParityFeatureStatus): string {
     case 'ready': return 'var(--success)';
     case 'checking': return 'var(--warning)';
     case 'degraded': return 'var(--warning)';
-    case 'blocked': return 'var(--danger)';
+    case 'blocked': return READABLE_DANGER;
   }
 }
 
@@ -300,7 +303,7 @@ export function SessionHealthPanel({ summary, meshCapacity, sfuMediaStatus, onCl
           <MediaServerDiagnosticsCard diagnostics={mediaServerDiagnostics} />
         </div>
 
-        <div style={styles.list}>
+        <div style={styles.list} tabIndex={0} role="region" aria-label="Readiness checks">
           {summary.checks.map((check) => (
             <CheckRow key={check.id} check={check} />
           ))}

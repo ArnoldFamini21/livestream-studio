@@ -2,6 +2,14 @@ RewriteEngine On
 RewriteBase /
 
 <IfModule mod_headers.c>
+  # Security headers. A full Content-Security-Policy is left out on purpose:
+  # the studio talks to WebRTC relays, Render services, and Google APIs.
+  Header always set Strict-Transport-Security "max-age=31536000"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "geolocation=(), payment=(), usb=()"
+
   Header set Cache-Control "no-cache, no-store, must-revalidate"
   Header set Pragma "no-cache"
 

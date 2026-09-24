@@ -561,7 +561,6 @@ export function useLocalRecording(roomName = 'Studio') {
 
         setIsRecording(true);
         setIsPaused(false);
-        console.log(`Local recording started on disk/RAM: ${recorders.length} track(s)`);
       } finally { startingRef.current = false; }
     },
     [getElapsedSeconds, roomName]
@@ -721,7 +720,6 @@ export function useLocalRecording(roomName = 'Studio') {
           };
         }
 
-        console.log('Local recording stopped completely.');
         return result;
       }
     ).finally(() => {

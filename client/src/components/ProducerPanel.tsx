@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import type { Participant, ParticipantStatus, LayoutMode, StageActionPayload } from '@studio/shared';
-import { getStudioLayoutLabel, STUDIO_LAYOUT_PRESET_ORDER } from '../utils/layoutPresets.ts';
+import { getStudioLayoutLabel, PRESENTING_VIEW_LABELS, PRESENTING_VIEWS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
 
 interface ProducerPanelProps {
   participants: Map<string, Participant>;
@@ -16,6 +16,9 @@ interface ProducerPanelProps {
 
   currentLayout: LayoutMode;
   onLayoutChange: (layout: LayoutMode) => void;
+  /** While something is shared: the same Me / Content / Content + Me views as the stage bar. */
+  presentingView?: PresentingView;
+  onPresentingViewChange?: (view: PresentingView) => void;
   focusedParticipantId: string | null;
   onSpotlightParticipant: (participantId: string | null) => void;
 
@@ -186,7 +189,7 @@ function ParticipantRow({
           {canSpotlight && (
             <button
               className="participant-action-btn"
-              style={{ ...rowStyles.actionBtn, color: isSpotlighted ? 'white' : 'var(--accent)', borderColor: 'rgba(124, 58, 237, 0.28)', background: isSpotlighted ? 'var(--accent)' : undefined, '--btn-hover-bg': isSpotlighted ? 'var(--accent)' : 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
+              style={{ ...rowStyles.actionBtn, color: isSpotlighted ? 'white' : 'var(--accent-hover)', borderColor: 'rgba(124, 58, 237, 0.28)', background: isSpotlighted ? 'var(--accent-solid)' : 'transparent', '--btn-hover-bg': isSpotlighted ? 'var(--accent-solid)' : 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
               onClick={() => onSpotlightParticipant(isSpotlighted ? null : participant.id)}
               title={isSpotlighted ? 'Clear spotlight' : 'Make main stage tile'}
             >
@@ -199,7 +202,7 @@ function ParticipantRow({
           {canUseModerationActions && (participant.status === 'backstage' || participant.status === 'green-room') && (
             <button
               className="participant-action-btn"
-              style={{ ...rowStyles.actionBtn, color: 'var(--accent)', borderColor: 'rgba(124, 58, 237, 0.25)', '--btn-hover-bg': 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
+              style={{ ...rowStyles.actionBtn, color: 'var(--accent-hover)', borderColor: 'rgba(124, 58, 237, 0.25)', '--btn-hover-bg': 'rgba(124, 58, 237, 0.12)' } as React.CSSProperties}
               onClick={() => onStageAction('notify-next', participant.id)}
               title="Notify this guest they are next"
             >
@@ -313,6 +316,8 @@ export function ProducerPanel({
   formattedTime,
   currentLayout,
   onLayoutChange,
+  presentingView,
+  onPresentingViewChange,
   focusedParticipantId,
   onSpotlightParticipant,
   onClose,
@@ -475,7 +480,24 @@ export function ProducerPanel({
           <div style={styles.layoutSection}>
             <span style={styles.sectionTitle}>Layout</span>
             <div style={styles.layoutGrid}>
-              {STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
+              {presentingView && onPresentingViewChange ? PRESENTING_VIEWS.map((view) => {
+                const isActive = presentingView === view;
+                return (
+                  <button
+                    key={view}
+                    onClick={() => onPresentingViewChange(view)}
+                    title={PRESENTING_VIEW_LABELS[view]}
+                    aria-pressed={isActive}
+                    style={{
+                      ...styles.layoutBtn,
+                      ...(isActive ? styles.layoutBtnActive : {}),
+                    }}
+                  >
+                    {layoutIcons[view === 'me' ? 'grid' : view === 'content' ? 'single' : 'side-by-side']}
+                    <span style={styles.layoutLabel}>{PRESENTING_VIEW_LABELS[view]}</span>
+                  </button>
+                );
+              }) : STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {
                 const label = getStudioLayoutLabel(mode);
                 const isActive = currentLayout === mode;
                 return (
@@ -669,7 +691,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 7px',
     borderRadius: 4,
     background: 'var(--accent-subtle)',
-    color: 'var(--accent)',
+    color: 'var(--accent-hover)',
     textTransform: 'uppercase',
     letterSpacing: '0.06em',
   },
@@ -841,9 +863,9 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 56,
   },
   layoutBtnActive: {
-    background: 'var(--accent)',
+    background: 'var(--accent-solid)',
     color: 'white',
-    borderColor: 'var(--accent)',
+    borderColor: 'var(--accent-solid)',
     boxShadow: '0 1px 6px rgba(124, 58, 237, 0.3)',
   },
   layoutLabel: {
@@ -942,7 +964,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     border: '1px solid rgba(124, 58, 237, 0.28)',
     background: 'rgba(124, 58, 237, 0.1)',
-    color: 'var(--accent)',
+    color: 'var(--accent-hover)',
     fontSize: 12,
     fontWeight: 800,
     cursor: 'pointer',
@@ -1146,7 +1168,7 @@ const rowStyles: Record<string, React.CSSProperties> = {
     padding: '0px 4px',
     borderRadius: 3,
     background: 'var(--accent-subtle)',
-    color: 'var(--accent)',
+    color: 'var(--accent-hover)',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
   },

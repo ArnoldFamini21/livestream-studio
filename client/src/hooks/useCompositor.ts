@@ -1509,7 +1509,6 @@ export function useCompositor({
 
   useEffect(() => {
     if (isActive) {
-      console.log('Compositor started for streaming or recording');
       cancelAnimationFrame(rAF.current); // Guard against multi-ticks
       rAF.current = requestAnimationFrame(drawLoop);
     } else {

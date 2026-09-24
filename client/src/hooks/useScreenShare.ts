@@ -35,7 +35,7 @@ export function useScreenShare() {
     } catch (err) {
       // User cancelled the screen share dialog (or browser denied permission).
       if (err instanceof DOMException && err.name === 'NotAllowedError') {
-        console.log('Screen share cancelled by user');
+        // Nothing to report: the user chose not to share.
       } else {
         console.error('Screen share error:', err);
       }

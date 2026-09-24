@@ -214,7 +214,6 @@ export function useRecording(roomName = 'Studio') {
 
       setIsRecording(true);
       setIsPaused(false);
-      console.log(`Recording started: ${streams.size} track(s)`);
       return true;
     },
     [getElapsedSeconds, roomName]
