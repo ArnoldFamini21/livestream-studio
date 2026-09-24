@@ -1,6 +1,9 @@
 import { Router, type Response } from 'express';
 import type { Room } from '@studio/shared';
+import { getAccountMailer } from './auth.js';
+import { buildInviteEmail, InviteEmailError, validateInviteEmailRequest } from '../services/inviteEmail.js';
 import {
+  assertRegistrationHostAccess,
   createRoom,
   getRoomRegistrantList,
   getRooms,
@@ -199,6 +202,41 @@ roomRouter.get('/:id/registrants', (req, res) => {
       return;
     }
     res.status(500).json({ error: 'Failed to get registrants' });
+  }
+});
+
+// Origins an emailed invite link may point at; set from the CORS allowlist.
+let inviteEmailOrigins: Set<string> = new Set();
+export function configureInviteEmailOrigins(origins: Iterable<string>) {
+  inviteEmailOrigins = new Set(origins);
+}
+
+// Host-only: email an invite link through the configured provider (Resend or
+// Postmark). Without one, the client falls back to the mail app.
+roomRouter.post('/:id/invites/email', async (req, res) => {
+  try {
+    const roomState = getRooms().get(req.params.id);
+    if (!roomState) {
+      res.status(404).json({ error: 'Room not found', code: 'ROOM_NOT_FOUND' });
+      return;
+    }
+    const hostToken = req.headers['x-host-token'];
+    assertRegistrationHostAccess(roomState, Array.isArray(hostToken) ? hostToken[0] : hostToken);
+    const mailer = getAccountMailer();
+    if (!mailer) {
+      res.status(503).json({ error: 'Email sending is not set up on this server', code: 'EMAIL_NOT_CONFIGURED' });
+      return;
+    }
+    const request = validateInviteEmailRequest({ ...(req.body as object), roomName: roomState.room.name, hostName: roomState.room.hostName }, inviteEmailOrigins);
+    await mailer.send(buildInviteEmail(request));
+    res.json({ sent: true, to: request.to, provider: mailer.provider });
+  } catch (err) {
+    if (err instanceof InviteEmailError || err instanceof RoomRegistrationError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    console.error('Invite email failed:', err);
+    res.status(502).json({ error: 'The invite email could not be sent', code: 'EMAIL_SEND_FAILED' });
   }
 });
 

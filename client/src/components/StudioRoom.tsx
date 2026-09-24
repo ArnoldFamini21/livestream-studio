@@ -123,7 +123,7 @@ import {
   type LiveSessionSummary,
 } from '../utils/liveStreamStatus.ts';
 import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
-import { resolveMediaHttpUrl } from '../utils/apiClient.ts';
+import { buildApiUrl, resolveMediaHttpUrl } from '../utils/apiClient.ts';
 import { loadSavedStreamDestinations, saveStreamDestinations, serializeStreamDestinations } from '../utils/streamDestinationStorage.ts';
 import type { YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
 import { toRecordingUploadProgressPayload } from '../utils/recordingUploadProgress.ts';
@@ -1018,7 +1018,9 @@ export function StudioRoom() {
   const urlHostToken = roomId ? getUrlHostToken() : '';
   const hostSession = useMemo(() => (roomId ? getHostSession(roomId, urlHostToken) : null), [roomId, urlHostToken]);
   const storedUserRole = getStoredParticipantRole();
-  const userName = hostSession?.hostName || getStoredUserName() || savedHostStudio?.hostName || 'Anonymous';
+  const initialUserName = hostSession?.hostName || getStoredUserName() || savedHostStudio?.hostName || 'Anonymous';
+  // Editable in Device Settings; the server confirms a rename with participant-updated.
+  const [userName, setUserName] = useState(initialUserName);
   const roomHostToken = hostSession?.hostToken || '';
   const popoutChatSessionId = useMemo(() => (roomId ? createPopoutChatSessionId() : ''), [roomId]);
   const missingHostAccess = Boolean(roomId && !hostSession && storedUserRole === 'host');
@@ -1303,6 +1305,11 @@ export function StudioRoom() {
 
   // Hooks
   const { connect, disconnect, send, addHandler, connected, reconnectFailed, retry: retryConnection } = useSignaling();
+  const onDisplayNameChange = useCallback((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === userName) return;
+    send({ type: 'update-name', payload: { name: trimmed } });
+  }, [send, userName]);
   const {
     localStream: rawLocalStream, audioEnabled, videoEnabled,
     error: mediaError,
@@ -2500,6 +2507,10 @@ export function StudioRoom() {
           // Update self if it's our participant (use ref to avoid stale closure)
           if (myParticipantRef.current && updated.id === myParticipantRef.current.id) {
             setMyParticipant(updated);
+            if (updated.name !== myParticipantRef.current.name) {
+              setUserName(updated.name);
+              try { sessionStorage.setItem('userName', updated.name); } catch { /* Storage can be unavailable. */ }
+            }
           }
           break;
         }
@@ -2860,6 +2871,7 @@ export function StudioRoom() {
         case 'external-chat-disconnect':
         case 'guest-invite-token-request':
         case 'co-host-invite-token-request':
+        case 'update-name':
         case 'end-room':
           break;
         default:
@@ -4150,6 +4162,20 @@ export function StudioRoom() {
       setLiveBackupDownloading(false);
     }
   }, [addToast, liveBackupRecording, requestLiveStreamToken]);
+
+  const sendInviteEmail = useCallback(async (input: { to: string; role: 'guest' | 'co-host'; inviteUrl: string; expiresAt?: string }) => {
+    const hostToken = hostSession?.hostToken;
+    if (!roomId || !hostToken) throw new Error('Only the host can email invites.');
+    const response = await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomId)}/invites/email`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-host-token': hostToken },
+      body: JSON.stringify({ ...input, scheduledFor: room?.scheduledFor, passwordProtected: Boolean(room?.settings.passwordProtected) }),
+    });
+    const body = await response.json().catch(() => ({})) as { error?: string; code?: string; sent?: boolean };
+    if (response.status === 503 && body.code === 'EMAIL_NOT_CONFIGURED') return { sent: false as const, configured: false as const };
+    if (!response.ok || !body.sent) throw new Error(body.error || 'The invite email could not be sent.');
+    return { sent: true as const, configured: true as const };
+  }, [hostSession?.hostToken, room?.scheduledFor, room?.settings.passwordProtected, roomId]);
 
   const requestCoHostInvite = useCallback(async (): Promise<{ inviteUrl: string; expiresAt: string }> => {
     const requestId = `cohost-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -6033,6 +6059,8 @@ export function StudioRoom() {
             onAudioOutputDeviceChange={onAudioOutputDeviceChange}
             audioProcessing={audioProcessing}
             onAudioProcessingChange={onAudioProcessingChange}
+            displayName={userName}
+            onDisplayNameChange={onDisplayNameChange}
             videoQuality={videoQuality}
             recommendedVideoQuality={recommendedVideoQuality}
             onVideoQualityChange={onVideoQualityChange}
@@ -6962,6 +6990,7 @@ export function StudioRoom() {
               isLive={isLive}
               onCreateGuestInvite={requestGuestInvite}
               onCreateCoHostInvite={requestCoHostInvite}
+              onSendInviteEmail={hostSession?.hostToken ? sendInviteEmail : undefined}
               onClose={() => setShowInvitePanel(false)}
             />
           </Suspense>
@@ -7109,6 +7138,8 @@ export function StudioRoom() {
           onAudioOutputDeviceChange={onAudioOutputDeviceChange}
           audioProcessing={audioProcessing}
           onAudioProcessingChange={onAudioProcessingChange}
+          displayName={userName}
+          onDisplayNameChange={onDisplayNameChange}
           videoQuality={videoQuality}
           recommendedVideoQuality={recommendedVideoQuality}
           onVideoQualityChange={onVideoQualityChange}

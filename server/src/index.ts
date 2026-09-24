@@ -12,7 +12,7 @@ import {
   storeStageImage,
 } from './services/signaling.js';
 import { authRouter, configureAccountAuthStore } from './routes/auth.js';
-import { roomRouter } from './routes/rooms.js';
+import { configureInviteEmailOrigins, roomRouter } from './routes/rooms.js';
 import { configureRecordingCatalogStore, recordingRouter } from './routes/recordings.js';
 import { brandKitRouter, configureBrandKitCatalogStore } from './routes/brandKits.js';
 import { configureWorkspaceStudioCatalogStore, workspaceStudioRouter } from './routes/workspaceStudios.js';
@@ -72,6 +72,7 @@ function addAllowedOrigins(value?: string) {
 
 addAllowedOrigins(process.env.CLIENT_URL);
 addAllowedOrigins(process.env.CLIENT_URLS);
+configureInviteEmailOrigins(allowedOrigins);
 
 function isAllowedOrigin(origin?: string): boolean {
   if (!origin) return true;
@@ -245,7 +246,8 @@ app.use('/api/auth', (req, res, next) => {
 
 app.use('/api/rooms', (req, res, next) => {
   if (req.method === 'POST') {
-    roomCreateLimiter.middleware(req, res, next);
+    // Emailing invites shares the tight credential budget, not the room budget.
+    (/\/invites\/email$/.test(req.path) ? accountCredentialLimiter : roomCreateLimiter).middleware(req, res, next);
     return;
   }
   next();
