@@ -86,3 +86,13 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
 .recording-readiness > summary::-webkit-details-marker { display: none; }
 .recording-readiness > summary > div > span:first-child::after { content: ' ›'; display: inline-block; transform: rotate(90deg); margin-left: 2px; transition: transform 0.15s; color: var(--text-muted); }
 .recording-readiness[open] > summary > div > span:first-child::after { transform: rotate(-90deg); }
+
+/* Guests on a phone held upright: content on top, cameras stacked below,
+   instead of a shrunken 16:9 program mirror. */
+.studio-stage:has(> .studio-mobile-stage) { justify-content: flex-start !important; padding: 10px !important; }
+.studio-mobile-stage { width: 100%; flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-bottom: 8px; -webkit-overflow-scrolling: touch; }
+.studio-mobile-content { position: relative; width: 100%; aspect-ratio: 16 / 9; flex-shrink: 0; border-radius: 12px; overflow: hidden; background: #000; }
+.studio-mobile-content > * { width: 100%; height: 100%; }
+.studio-mobile-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.studio-mobile-grid.is-two-col { grid-template-columns: 1fr 1fr; }
+.studio-mobile-tile { position: relative; aspect-ratio: 16 / 9; min-width: 0; border-radius: 12px; overflow: hidden; background: #0f172a; }
