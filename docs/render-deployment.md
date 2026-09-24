@@ -183,6 +183,10 @@ RTMP_BACKUP_RECORDING_MAX_BYTES=8589934592
 
 Set `RTMP_BACKUP_RECORDING_ENABLED=false` to disable this safety recording on constrained media-server instances.
 
+## Public watch page
+
+Every studio has a public watch page at `https://studio.arnoldfamini.com/watch/<room id>` (the Invite panel shows the link). While the host is live, the media server writes the shared H.264/AAC encode as HLS (2-second segments, a rolling 6-segment playlist, no re-encode) under `HLS_OUTPUT_DIR` (default: the temp folder) and serves it at `/watch/<room id>/status`, `/watch/<room id>/stream.m3u8`, and the segments. The page plays it with hls.js (Safari plays HLS natively), shows LIVE with a viewer estimate (distinct addresses that fetched the playlist in the last 20 s), and reports when the broadcast ends. Segments are deleted 15 s after the session stops. When the studio has registration enabled, viewers register (name and email) before the player appears, and they show up in the host's registrant list. Latency is about 6-10 s. The watch page needs encode-once mode (the default); with `RTMP_ENCODE_ONCE=false` it stays "Not live".
+
 ## Static Client CDN Caching
 
 The Hostinger client deploy includes `client/public/.htaccess`, which is copied into `client/dist` by Vite. It sets:

@@ -1,6 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
@@ -78,6 +79,17 @@ import {
 } from './rtmp.js';
 import { WebmSinkFeed, WebmStreamTracker } from './webmStream.js';
 import { FlvSinkFeed, FlvTagStream } from './flvStream.js';
+import {
+  HLS_PLAYLIST_NAME,
+  HlsViewerCounter,
+  createFfmpegHlsArgs,
+  getHlsContentType,
+  getHlsRoomDir,
+  isServableHlsFile,
+  isValidWatchRoomId,
+  prepareHlsRoomDir,
+  removeHlsRoomDir,
+} from './hlsOutput.js';
 
 const PORT = Number(process.env.PORT || process.env.MEDIA_SERVER_PORT || 3002);
 const MAX_WS_PAYLOAD_BYTES = 4 * 1024 * 1024;
@@ -115,6 +127,15 @@ interface EncoderProcess {
   exited: boolean;
 }
 
+/** The watch page's HLS writer: a copy of the shared encode, no re-encode. */
+interface HlsProcess {
+  roomId: string;
+  dir: string;
+  process: ChildProcessByStdio<Writable, null, Readable>;
+  feed: FlvSinkFeed;
+  exited: boolean;
+}
+
 interface BackupProcess {
   recording: LiveBackupRecording;
   process: ChildProcessByStdio<Writable, null, Readable>;
@@ -137,6 +158,7 @@ interface RelaySession {
   relays: Map<string, RelayProcess>;
   backup: BackupProcess | null;
   backupStopTimer: ReturnType<typeof setTimeout> | null;
+  hls: HlsProcess | null;
   stopTimers: Map<string, ReturnType<typeof setTimeout>>;
   restartTimers: Map<string, ReturnType<typeof setTimeout>>;
   restartAttempts: Map<string, number>;
@@ -145,6 +167,8 @@ interface RelaySession {
 const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
 const sessions = new Map<WebSocket, RelaySession>();
 const liveBackups = new Map<string, LiveBackupRecording>();
+/** Rooms with a live HLS program, by room id. */
+const liveWatchRooms = new Map<string, { dir: string; startedAt: string; viewers: HlsViewerCounter }>();
 const recordingUploads = new RecordingUploadStore();
 let recordingExports: RecordingExportJobStore | null = null;
 let recordingExportsFfmpegPath = '';
@@ -333,6 +357,7 @@ function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
     session.encoderRestartTimer = null;
   }
   stopBackupProcess(ws, session);
+  stopHlsWriter(session);
 
   const encoder = session.encoder;
   if (encoder && !encoder.exited) {
@@ -361,6 +386,133 @@ function stopSessionIfNoRelayWork(ws: WebSocket, session: RelaySession) {
   }));
   if (hasRemainingRelayWork(relayWork)) return;
   stopSession(ws, session, 'All RTMP destinations stopped.');
+}
+
+async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload: RtmpRelayStartPayload) {
+  const encoder = session.encoder;
+  const roomId = session.claims?.roomId;
+  if (!encoder || encoder.exited || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
+  let dir: string;
+  try {
+    dir = await prepareHlsRoomDir(roomId);
+  } catch (err) {
+    console.warn('Watch page HLS folder could not be prepared:', err instanceof Error ? err.message : err);
+    return;
+  }
+  if (session.stopping || session.hls) return;
+  const child = spawn(ffmpegPath, createFfmpegHlsArgs(dir), { stdio: ['pipe', 'ignore', 'pipe'] });
+  const options = { video: normalizeVideoConfig(payload.video), audio: normalizeAudioConfig(payload.audio) };
+  const feed = new FlvSinkFeed(child.stdin, encoder.flv, {
+    maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS, options),
+    onOverflow: () => console.warn('Watch page HLS writer fell behind; skipping ahead'),
+    onError: (err) => console.warn(`Watch page HLS input closed: ${err.message}`),
+  });
+  feed.join();
+  const hls: HlsProcess = { roomId, dir, process: child, feed, exited: false };
+  session.hls = hls;
+  liveWatchRooms.set(roomId, { dir, startedAt: new Date().toISOString(), viewers: new HlsViewerCounter() });
+  child.stderr.on('data', (chunk: Buffer) => {
+    const line = chunk.toString('utf8').trim();
+    if (line) console.warn(`ffmpeg watch-page hls: ${line}`);
+  });
+  child.on('error', (err) => {
+    hls.exited = true;
+    console.warn('Watch page HLS writer failed:', err.message);
+  });
+  child.on('close', () => {
+    hls.exited = true;
+    if (liveWatchRooms.get(roomId)?.dir === dir) liveWatchRooms.delete(roomId);
+    // Viewers get a moment to see the last segments before the folder goes.
+    setTimeout(() => { void removeHlsRoomDir(roomId); }, 15_000);
+  });
+}
+
+function stopHlsWriter(session: RelaySession) {
+  const hls = session.hls;
+  if (!hls) return;
+  session.hls = null;
+  if (liveWatchRooms.get(hls.roomId)?.dir === hls.dir) liveWatchRooms.delete(hls.roomId);
+  if (hls.exited) return;
+  try {
+    hls.process.stdin.end();
+  } catch {
+    // Already closed.
+  }
+  setTimeout(() => {
+    if (!hls.exited) hls.process.kill('SIGTERM');
+  }, SHUTDOWN_TIMEOUT_MS);
+}
+
+/**
+ * Public watch page endpoints. The room id is the capability, like an
+ * unlisted video: status, the playlist, and its segments.
+ */
+async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  const match = url.pathname.match(/^\/watch\/([^/]+)\/([^/]+)$/);
+  if (!match) return false;
+  const [, roomId, file] = match;
+
+  // Public endpoints: a page on the studio origin gets CORS headers; a plain
+  // media request with no Origin (Safari's native HLS, VLC) is served as is.
+  if (getRequestOrigin(req) && !applyCorsHeaders(req, res)) {
+    writeJson(res, 403, { error: 'Forbidden: origin not allowed' });
+    return true;
+  }
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    writeJson(res, 405, { error: 'Method not allowed' });
+    return true;
+  }
+  if (!isValidWatchRoomId(roomId)) {
+    writeJson(res, 404, { error: 'Not found' });
+    return true;
+  }
+  const live = liveWatchRooms.get(roomId);
+
+  if (file === 'status') {
+    res.setHeader('Cache-Control', 'no-store');
+    writeJson(res, 200, live
+      ? { live: true, startedAt: live.startedAt, playlistPath: `/watch/${encodeURIComponent(roomId)}/${HLS_PLAYLIST_NAME}`, viewers: live.viewers.count() }
+      : { live: false, viewers: 0 });
+    return true;
+  }
+  if (!isServableHlsFile(file)) {
+    writeJson(res, 404, { error: 'Not found' });
+    return true;
+  }
+  const filePath = path.join(live?.dir || getHlsRoomDir(roomId), file);
+  let size = 0;
+  try {
+    size = (await stat(filePath)).size;
+  } catch {
+    writeJson(res, 404, { error: live ? 'Not ready yet' : 'This broadcast is not live' });
+    return true;
+  }
+  if (file === HLS_PLAYLIST_NAME && live) {
+    const forwarded = req.headers['x-forwarded-for'];
+    const viewerKey = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+    live.viewers.record(viewerKey);
+  }
+  res.writeHead(200, {
+    'Content-Type': getHlsContentType(file),
+    'Content-Length': String(size),
+    'Cache-Control': file === HLS_PLAYLIST_NAME ? 'no-store' : 'public, max-age=60',
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+    return true;
+  }
+  createReadStream(filePath)
+    .on('error', (err) => {
+      console.error('Watch page file stream failed:', err);
+      res.destroy(err);
+    })
+    .pipe(res);
+  return true;
 }
 
 function spawnRelay(
@@ -547,6 +699,9 @@ function spawnEncoder(
 
   child.stdout.on('data', (data: Buffer) => {
     const chunk = flv.push(data);
+    // The watch page's HLS writer takes the same tags as the destinations.
+    const hls = session.hls;
+    if (chunk && hls && !hls.exited) hls.feed.write(chunk);
     if (!chunk) return;
     for (const relay of session.relays.values()) {
       if (relay.exited || relay.retired || !relay.flvFeed) continue;
@@ -819,6 +974,7 @@ async function handleStart(ws: WebSocket, session: RelaySession, payload: RtmpRe
   for (const destination of payload.destinations) {
     spawnRelay(ws, session, ffmpegPath, destination, payload);
   }
+  if (session.encodeOnce) await spawnHlsWriter(session, ffmpegPath, payload);
 
   sendJson(ws, {
     type: 'session-started',
@@ -1457,6 +1613,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   }
 
   if (await handleLiveBackupRequest(req, res, url)) return;
+  if (await handleWatchRequest(req, res, url)) return;
   if (await handleRecordingUploadRequest(req, res, url)) return;
   if (await handlePresentationPreviewRequest(req, res, url)) return;
 
@@ -1594,6 +1751,7 @@ wss.on('connection', (ws) => {
     relays: new Map(),
     backup: null,
     backupStopTimer: null,
+    hls: null,
     stopTimers: new Map(),
     restartTimers: new Map(),
     restartAttempts: new Map(),
