@@ -241,7 +241,7 @@ export function LiveCaptionsPanel({
     <div style={styles.panel}>
       <div style={styles.header}>
         <div>
-          <h3 style={styles.title}>Live Captions</h3>
+          <h2 style={styles.title}>Live Captions</h2>
           <div style={styles.statusRow}>
             <span style={{
               ...styles.statusDot,

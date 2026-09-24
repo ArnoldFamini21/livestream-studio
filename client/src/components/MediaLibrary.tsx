@@ -133,7 +133,7 @@ export function MediaLibrary({ assets, activeMedia, activeMediaSlideIndex, onAct
       </ul>}
     </> : <>
       <div className="media-view-heading"><button type="button" data-view-focus aria-label="Back to media library" onClick={() => { setError(''); setView('library'); }}>←</button>
-        <h3>{view === 'add' ? 'Add media' : 'Preview'}</h3></div>
+        <h2>{view === 'add' ? 'Add media' : 'Preview'}</h2></div>
       {view === 'add' ? <div className="media-add-view">
         <button type="button" className="media-upload-target" disabled={busy} onClick={() => inputRef.current?.click()}>
           <UploadIcon /><strong>Upload files</strong><span>or drag and drop here</span>

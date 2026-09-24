@@ -331,7 +331,7 @@ export function StreamDestinations({
     <div style={styles.panel}>
       <div style={styles.header}>
         <div>
-          <h3 style={styles.title}>Stream Destinations</h3>
+          <h2 style={styles.title}>Stream Destinations</h2>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
             <p style={styles.subtitle}>{destinations.length} destination{destinations.length !== 1 ? 's' : ''}</p>
             {enabledCount > 1 && (

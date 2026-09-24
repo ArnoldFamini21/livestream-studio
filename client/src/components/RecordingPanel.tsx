@@ -3737,7 +3737,7 @@ export function RecordingPanel({
       {/* Header */}
       <div style={styles.header}>
         <div>
-          <h3 style={styles.title}>Local Recording</h3>
+          <h2 style={styles.title}>Local Recording</h2>
           <p style={styles.subtitle}>Multi-track recording</p>
         </div>
         <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} aria-label="Close recordings">
@@ -3989,9 +3989,15 @@ export function RecordingPanel({
           </div>
         )}
 
+        {/* The checks stay one click away: only a blocking problem opens them
+            by itself, so the panel leads with recording, not diagnostics. */}
         {!isRecording && recordingReadiness && (
-          <div style={styles.readinessCard}>
-            <div style={styles.readinessHeader}>
+          <details
+            className="recording-readiness"
+            style={styles.readinessCard}
+            open={Boolean(recordingReadiness.blockingIssue)}
+          >
+            <summary style={styles.readinessHeader} aria-label={`Recording readiness: ${recordingReadiness.label}`}>
               <div>
                 <span style={styles.readinessTitle}>Recording Readiness</span>
                 <p style={styles.readinessSubtitle}>
@@ -4006,7 +4012,7 @@ export function RecordingPanel({
               }}>
                 {recordingReadiness.label}
               </span>
-            </div>
+            </summary>
             {recordingReadiness.blockingIssue && (
               <p style={styles.readinessBlocking}>{recordingReadiness.blockingIssue}</p>
             )}
@@ -4036,7 +4042,7 @@ export function RecordingPanel({
                 </div>
               ))}
             </div>
-          </div>
+          </details>
         )}
 
         {/* Idle State - No recordings, not recording */}

@@ -18,6 +18,10 @@ interface ChatPanelProps {
   placeholder?: string;
   emptyText?: string;
   emptyHint?: string;
+  /** Start the composer on this recipient (a waiting guest writes to the host). */
+  defaultRecipientId?: string;
+  /** Private messages only: hide the "Everyone" option. */
+  directOnly?: boolean;
 }
 
 const TYPING_IDLE_MS = 2_500;
@@ -27,9 +31,11 @@ export function ChatPanel({
   directRecipients = [], typingUsers = [], title = 'Chat',
   placeholder = 'Type a message...', emptyText = 'No messages yet',
   emptyHint = 'Start the conversation!',
+  defaultRecipientId = '',
+  directOnly = false,
 }: ChatPanelProps) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [recipientId, setRecipientId] = useState('');
+  const [recipientId, setRecipientId] = useState(defaultRecipientId);
   const draftKey = getChatDraftKey(recipientId ? 'direct' : 'public', recipientId);
   const input = drafts[draftKey] || '';
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -118,7 +124,7 @@ export function ChatPanel({
       </div>
       <div className="chat-composer">
         {(directRecipients.length > 0 || recipientId) && <select className="chat-channel-select" value={recipientId} onChange={(event) => { stopTyping(); setRecipientId(event.target.value); }} aria-label="Chat recipient">
-          <option value="">Everyone</option>
+          {!directOnly && <option value="">Everyone</option>}
           {recipientUnavailable && <option value={recipientId} disabled>Participant left</option>}
           {directRecipients.map((recipient) => <option key={recipient.id} value={recipient.id}>{recipient.name}{recipient.role ? ` (${recipient.role})` : ''}</option>)}
         </select>}
