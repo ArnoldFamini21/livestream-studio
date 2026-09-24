@@ -171,9 +171,9 @@ RECORDING_STORAGE_FORCE_PATH_STYLE=true
 RECORDING_STORAGE_PREFIX=livestream-studio
 ```
 
-Live backup recordings (below) are not copied to object storage.
+Live backup recordings (below) are copied here too.
 
-The RTMP relay also writes a server-side MP4 backup recording for every live session by default. The host/co-host client polls the media server after Go Live stops and exposes an authenticated backup download in the post-live notice. These backups are local to the media-server filesystem unless the service is deployed with persistent storage:
+The RTMP relay also writes a server-side MP4 backup recording for every live session by default. The host/co-host client polls the media server after Go Live stops and exposes an authenticated backup download in the post-live notice. When object storage is configured, each finished backup is uploaded to `<prefix>/rooms/<room>/live-backups/`, with a small record under `<prefix>/live-backups/<backupId>.json` so it can be found after a restart or sleep. The local copy is then deleted, and **Download Backup** fetches a one-hour presigned link and downloads straight from the bucket. Without object storage, backups stay on the media-server filesystem and are lost on restart unless the service has persistent storage:
 
 ```sh
 RTMP_BACKUP_RECORDING_ENABLED=true

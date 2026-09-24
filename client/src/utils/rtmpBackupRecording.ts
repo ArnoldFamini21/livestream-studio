@@ -10,6 +10,8 @@ export interface PollRtmpBackupRecordingInput {
   mediaHttpUrl?: string;
   intervalMs?: number;
   timeoutMs?: number;
+  /** Keep polling a ready backup until its cloud copy finishes. */
+  waitForStorage?: boolean;
 }
 
 export interface DownloadRtmpBackupRecordingInput {
@@ -112,13 +114,55 @@ export async function pollRtmpBackupRecording(
 
   while (Date.now() <= deadline) {
     latest = await getLatestBackupStatus(token, roomId, mediaHttpUrl);
-    if (!latest || latest.status === 'ready' || latest.status === 'error' || latest.status === 'disabled') {
+    const uploading = input.waitForStorage && latest?.status === 'ready' && latest.storageStatus === 'uploading';
+    if (!latest || (!uploading && (latest.status === 'ready' || latest.status === 'error' || latest.status === 'disabled'))) {
       return latest;
     }
     await delay(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
   }
 
   return latest;
+}
+
+export interface RtmpBackupDownloadLink {
+  url: string;
+  fileName: string;
+}
+
+/**
+ * A short-lived link to the backup in cloud storage (R2/S3). Returns null when
+ * the backup is not in storage (yet), so the caller downloads it from the
+ * media server instead.
+ */
+export async function requestRtmpBackupDownloadLink(
+  input: DownloadRtmpBackupRecordingInput
+): Promise<RtmpBackupDownloadLink | null> {
+  const token = input.token.trim();
+  const mediaHttpUrl = (input.mediaHttpUrl || resolveMediaHttpUrl()).trim();
+  const backupId = input.backup.backupId?.trim();
+  if (!token || !mediaHttpUrl || !backupId || input.backup.status !== 'ready') return null;
+
+  const response = await fetch(
+    buildMediaUrl(mediaHttpUrl, `/rtmp/backups/${encodeURIComponent(backupId)}/download-link`),
+    { method: 'GET', headers: { Authorization: `Bearer ${token}` } }
+  );
+  // 404: an older media server or an unknown backup. 409: not in storage yet.
+  if (response.status === 404 || response.status === 409) return null;
+  const body = await response.text();
+  let json: unknown = null;
+  try {
+    json = body ? JSON.parse(body) : null;
+  } catch {
+    // Reported below.
+  }
+  const link = json as Partial<RtmpBackupDownloadLink> & { error?: unknown } | null;
+  if (!response.ok || !link || typeof link.url !== 'string' || !/^https?:\/\//i.test(link.url)) {
+    throw new Error(typeof link?.error === 'string' ? link.error : `Media server returned HTTP ${response.status}`);
+  }
+  return {
+    url: link.url,
+    fileName: safeFileName(typeof link.fileName === 'string' ? link.fileName : input.backup.fileName || `${backupId}.mp4`, 'live-backup.mp4'),
+  };
 }
 
 export async function downloadRtmpBackupRecording(

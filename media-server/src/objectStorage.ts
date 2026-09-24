@@ -162,8 +162,40 @@ export function buildRecordingExportObjectKey(input: RecordingExportObjectKeyInp
   ].filter(Boolean).join('/'));
 }
 
+export interface LiveBackupObjectKeys {
+  /** The MP4 recording. */
+  video: string;
+  /** The backup's record, found by backup id. */
+  record: string;
+  /** The room's most recent backup record. */
+  latest: string;
+}
+
+export function buildLiveBackupObjectKeys(input: {
+  prefix?: string;
+  roomId: string;
+  backupId: string;
+  fileName: string;
+}): LiveBackupObjectKeys {
+  const prefix = normalizePrefix(input.prefix);
+  const roomDir = [prefix, 'rooms', sanitizeObjectKeySegment(input.roomId), 'live-backups'].filter(Boolean).join('/');
+  return {
+    video: normalizeObjectKey(`${roomDir}/${sanitizeObjectKeySegment(path.basename(input.fileName))}`),
+    record: buildLiveBackupRecordKey(prefix, input.backupId),
+    latest: buildLiveBackupLatestKey(prefix, input.roomId),
+  };
+}
+
+export function buildLiveBackupRecordKey(prefix: string | undefined, backupId: string): string {
+  return normalizeObjectKey([normalizePrefix(prefix), 'live-backups', `${sanitizeObjectKeySegment(backupId)}.json`].filter(Boolean).join('/'));
+}
+
+export function buildLiveBackupLatestKey(prefix: string | undefined, roomId: string): string {
+  return normalizeObjectKey([normalizePrefix(prefix), 'rooms', sanitizeObjectKeySegment(roomId), 'live-backups', 'latest.json'].filter(Boolean).join('/'));
+}
+
 interface SignedObjectStorageRequestInput {
-  method: 'PUT' | 'POST' | 'DELETE';
+  method: 'GET' | 'PUT' | 'POST' | 'DELETE';
   key: string;
   query?: Record<string, string>;
   payloadSha256: string;
@@ -227,6 +259,64 @@ export function signObjectStorageRequest(
       'X-Amz-Date': amzDate,
     },
   };
+}
+
+export interface PresignedGetUrlInput {
+  key: string;
+  expiresInSeconds: number;
+  /** Makes browsers save the file under this name. */
+  downloadFileName?: string;
+  contentType?: string;
+}
+
+/**
+ * A time-limited GET link (SigV4 query signing). The browser downloads
+ * straight from storage, so no credentials leave the server and the file
+ * does not pass through it.
+ */
+export function createObjectStoragePresignedGetUrl(
+  config: ObjectStorageConfig,
+  input: PresignedGetUrlInput,
+  now = new Date()
+): string {
+  const key = normalizeObjectKey(input.key);
+  const url = buildStorageUrl(config, key);
+  const amzDate = toAmzDate(now);
+  const dateStamp = toDateStamp(now);
+  const credentialScope = `${dateStamp}/${config.region}/s3/aws4_request`;
+  // S3 caps presigned links at 7 days.
+  const expires = Math.min(604_800, Math.max(1, Math.floor(input.expiresInSeconds)));
+  const query: Record<string, string> = {
+    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+    'X-Amz-Credential': `${config.accessKeyId}/${credentialScope}`,
+    'X-Amz-Date': amzDate,
+    'X-Amz-Expires': String(expires),
+    'X-Amz-SignedHeaders': 'host',
+  };
+  if (input.downloadFileName) {
+    const fileName = input.downloadFileName.replace(/["\\\r\n]/g, '_');
+    query['response-content-disposition'] = `attachment; filename="${fileName}"`;
+  }
+  if (input.contentType) query['response-content-type'] = input.contentType;
+  const canonicalQuery = Object.entries(query)
+    .map(([name, value]) => [encodeRfc3986(name), encodeRfc3986(value)] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([name, value]) => `${name}=${value}`)
+    .join('&');
+  const canonicalRequest = [
+    'GET',
+    url.pathname,
+    canonicalQuery,
+    `host:${url.host}\n`,
+    'host',
+    'UNSIGNED-PAYLOAD',
+  ].join('\n');
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credentialScope, sha256Hex(canonicalRequest)].join('\n');
+  const signature = createHmac('sha256', getSigningKey(config.secretAccessKey, dateStamp, config.region))
+    .update(stringToSign)
+    .digest('hex');
+  url.search = `${canonicalQuery}&X-Amz-Signature=${signature}`;
+  return url.toString();
 }
 
 export function createObjectStoragePutRequest(
@@ -410,6 +500,40 @@ async function uploadMultipart(
     }, clock()), 'DELETE').catch(() => undefined);
     throw error;
   }
+}
+
+/** Store a small text object, such as a JSON record. */
+export async function putObjectStorageText(
+  config: ObjectStorageConfig,
+  key: string,
+  body: string,
+  contentType = 'application/json',
+  now = new Date()
+): Promise<void> {
+  const response = await sendStorageRequest(signObjectStorageRequest(config, {
+    method: 'PUT',
+    key,
+    payloadSha256: sha256Hex(body),
+    contentType,
+    contentLength: Buffer.byteLength(body),
+  }, now), 'PUT', body);
+  assertStorageOk(response, 'upload');
+}
+
+/** Read a small text object (at most 64 KB); null when it does not exist. */
+export async function getObjectStorageText(
+  config: ObjectStorageConfig,
+  key: string,
+  now = new Date()
+): Promise<string | null> {
+  const response = await sendStorageRequest(signObjectStorageRequest(config, {
+    method: 'GET',
+    key,
+    payloadSha256: EMPTY_PAYLOAD_SHA256,
+  }, now), 'GET');
+  if (response.statusCode === 404) return null;
+  assertStorageOk(response, 'read');
+  return response.body;
 }
 
 export async function uploadFileToObjectStorage(
