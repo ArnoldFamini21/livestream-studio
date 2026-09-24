@@ -138,11 +138,19 @@ app.get('/metrics', (_req, res) => {
 // Bounded map size so an attacker spreading requests across many IPs cannot exhaust memory.
 const RATE_LIMIT_MAP_MAX = 50_000;
 const RATE_LIMIT_WINDOW = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 30; // 30 requests per minute per IP (general)
+// General REST budget per IP. A church or office shares one public IP, so
+// this allows a team opening the studio together; password and room-create
+// endpoints keep their own tight limits below.
+const RATE_LIMIT_MAX = 120; // requests per minute per IP (general)
 const ROOM_CREATE_LIMIT_MAX = 10; // 10 room-create attempts per minute per IP
 const TRANSCRIPTION_LIMIT_MAX = 5; // 5 audio transcription attempts per minute per IP
 const CLIENT_ERROR_LIMIT_MAX = 20; // 20 browser error reports per minute per IP
 const ACCOUNT_CREDENTIAL_LIMIT_MAX = 10; // 10 sign-in/password attempts per minute per IP
+// Studio traffic that scales with the number of people in a room. Guests at
+// one venue share a public IP, so these get their own, larger budgets instead
+// of the general 30/min: every guest loads every slide the host shows.
+const STAGE_IMAGE_LIMIT_MAX = 600; // slide pictures read and uploaded per minute per IP
+const ICE_CONFIG_LIMIT_MAX = 120; // connection setups per minute per IP
 
 interface RateEntry {
   count: number;
@@ -196,8 +204,21 @@ const roomCreateLimiter = makeRateLimiter(ROOM_CREATE_LIMIT_MAX);
 const transcriptionLimiter = makeRateLimiter(TRANSCRIPTION_LIMIT_MAX);
 const clientErrorLimiter = makeRateLimiter(CLIENT_ERROR_LIMIT_MAX);
 const accountCredentialLimiter = makeRateLimiter(ACCOUNT_CREDENTIAL_LIMIT_MAX);
+const stageImageLimiter = makeRateLimiter(STAGE_IMAGE_LIMIT_MAX);
+const iceConfigLimiter = makeRateLimiter(ICE_CONFIG_LIMIT_MAX);
 
-app.use(generalLimiter.middleware);
+const STAGE_IMAGE_PATH = /^\/api\/rooms\/[^/]+\/stage-images(\/[^/]+)?$/;
+app.use((req, res, next) => {
+  if (STAGE_IMAGE_PATH.test(req.path)) {
+    stageImageLimiter.middleware(req, res, next);
+    return;
+  }
+  if (req.path === '/api/ice-config') {
+    iceConfigLimiter.middleware(req, res, next);
+    return;
+  }
+  generalLimiter.middleware(req, res, next);
+});
 
 // Clean up rate-limit entries every 5 minutes
 const rateLimitSweepTimer = setInterval(() => {
@@ -206,6 +227,8 @@ const rateLimitSweepTimer = setInterval(() => {
   transcriptionLimiter.sweep();
   clientErrorLimiter.sweep();
   accountCredentialLimiter.sweep();
+  stageImageLimiter.sweep();
+  iceConfigLimiter.sweep();
 }, 5 * 60_000);
 
 // REST API routes — room creation gets its own tighter cap.

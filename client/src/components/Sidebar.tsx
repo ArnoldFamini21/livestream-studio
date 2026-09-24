@@ -412,7 +412,7 @@ export function Sidebar(props: SidebarProps) {
   };
 
   return (
-    <div className="studio-sidebar" style={st.wrapper}>
+    <div className="studio-sidebar" role="complementary" aria-label="Studio side panel" style={st.wrapper}>
       {/* Content panel — only visible when a tab is active */}
       {activeTab && (
         <div className="studio-sidebar-panel" style={st.contentPanel}>

@@ -32,7 +32,7 @@ export function StudioToolMenu({ items, onDismiss }: { items: StudioTool[]; onDi
     <div className="studio-tools-results">
       {groups.map(group => {
         const matches = visible.filter(item => group.labels.includes(item.label));
-        return matches.length > 0 && <section key={group.title}><h3>{group.title}</h3><div>{matches.map(item => <button key={item.label} onClick={item.onClick}>{item.icon}<span>{item.label}</span></button>)}</div></section>;
+        return matches.length > 0 && <section key={group.title}><h2>{group.title}</h2><div>{matches.map(item => <button key={item.label} onClick={item.onClick}>{item.icon}<span>{item.label}</span></button>)}</div></section>;
       })}
       {visible.length === 0 && <p role="status">No tools found. Try “audio” or “recording”.</p>}
     </div>

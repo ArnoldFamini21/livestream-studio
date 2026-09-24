@@ -5766,7 +5766,7 @@ export function StudioRoom() {
   if (isHeldOffStageGuest) {
     return (
       <div className="studio-container" style={styles.container}>
-        <div className="studio-header" style={styles.header}>
+        <div className="studio-header" role="banner" style={styles.header}>
           <div className="studio-headerLeft" style={styles.headerLeft}>
             <div style={styles.logoMark}>
               {waitingLogoUrl ? (
@@ -5806,7 +5806,7 @@ export function StudioRoom() {
           </div>
         </div>
 
-        <div style={{ ...styles.waitingMain, ...waitingRoomBackgroundStyle }}>
+        <div role="main" style={{ ...styles.waitingMain, ...waitingRoomBackgroundStyle }}>
           <div style={styles.waitingStack}>
             <div style={styles.waitingShell}>
               <div style={{ ...styles.waitingPreview, borderColor: `${waitingBrandColor}55` }}>
@@ -5932,7 +5932,7 @@ export function StudioRoom() {
   return (
     <div className="studio-container" style={styles.container}>
       {/* Header */}
-      <div className="studio-header" style={styles.header}>
+      <div className="studio-header" role="banner" style={styles.header}>
         <div className="studio-headerLeft" style={styles.headerLeft}>
           <div style={styles.logoMark}>
             <svg width="22" height="22" viewBox="0 0 32 32" fill="none">

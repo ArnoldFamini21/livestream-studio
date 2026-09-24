@@ -38,7 +38,7 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
 .studio-tools-search input:focus { outline: none; box-shadow: none; }
 .studio-tools-search:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .studio-tools-results { overflow-y: auto; padding-bottom: 10px; }
-.studio-tools-results h3 { font-size: 9px; font-weight: 500; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-muted); margin: 19px 0 7px; }
+.studio-tools-results h2 { font-size: 9px; font-weight: 500; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-muted); margin: 19px 0 7px; }
 .studio-tools-results section > div { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 .studio-tools-results button { display: flex; align-items: center; gap: 9px; background: transparent; padding: 10px 8px; border-radius: 6px; color: var(--text-secondary); font-size: 11px; text-align: left; }
 .studio-tools-results button:hover, .studio-tools-results button:focus-visible { background: var(--bg-tertiary); color: var(--text-primary); }

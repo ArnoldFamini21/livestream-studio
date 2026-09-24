@@ -169,7 +169,7 @@ export function ControlBar({
   // ====== Guest Layout ======
   if (!isHost) {
     return (
-      <div className="studio-control-bar" style={styles.bar}>
+      <div className="studio-control-bar" role="region" aria-label="Studio controls" style={styles.bar}>
         <style>{focusStyles}</style>
         <div style={styles.barInner}>
           {/* Mic with device selector */}
@@ -377,7 +377,7 @@ export function ControlBar({
   });
 
   return (
-    <div className="studio-control-bar" style={styles.bar}>
+    <div className="studio-control-bar" role="region" aria-label="Studio controls" style={styles.bar}>
       <style>{focusStyles}</style>
       {/* Left: Media controls */}
       <div className="studio-control-devices" style={styles.leftGroup}>
