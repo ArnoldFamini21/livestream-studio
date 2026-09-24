@@ -37,6 +37,7 @@ import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
 import { useMediaServerHealth } from '../hooks/useMediaServerHealth.ts';
+import { useIsPortraitPhone } from '../hooks/usePortraitPhone.ts';
 import type { SessionPeerHealthParticipant } from '../utils/sessionPeerHealth.ts';
 import {
   clearUrlHostToken,
@@ -1048,6 +1049,7 @@ export function StudioRoom() {
   // A short on-stage countdown before a recording starts. Escape or Cancel
   // stops it, so a misclick never produces a stray take.
   const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
+  const isPortraitPhone = useIsPortraitPhone();
   const recordingCountdownCancelRef = useRef<(() => void) | null>(null);
   const runRecordingCountdown = useCallback(() => new Promise<boolean>((resolve) => {
     let remaining = RECORDING_COUNTDOWN_SECONDS;
@@ -6112,6 +6114,41 @@ export function StudioRoom() {
     );
   }
 
+  // The shared file, rendered the same way on the broadcast canvas and the phone stage.
+  const stagedMediaContent = stagedMedia ? (
+    stagedMedia.preview?.kind === 'presentation-slides' ? (
+                      <PresentationDeckStage
+                        media={stagedMedia}
+                        slideIndex={activeMediaSlideIndex}
+                      />
+                    ) : stagedMedia.type === 'video' ? (
+                      <StudioMediaVideo
+                        key={stagedMedia.assetId || stagedMedia.url}
+                        url={stagedMedia.url}
+                        name={stagedMedia.name}
+                        style={styles.mediaContent}
+                        broadcastAudio={broadcastAudioBus}
+                        onError={(message) => onStageMediaError(stagedMedia, message)}
+                      />
+                    ) : stagedMedia.type === 'image' ? (
+                      <img
+                        crossOrigin="anonymous"
+                        src={stagedMedia.url}
+                        alt={stagedMedia.name}
+                        style={styles.mediaContent}
+                        onError={() => onStageMediaError(stagedMedia, 'This image could not load. Upload the image or use a direct link that allows sharing.')}
+                      />
+                    ) : stagedMedia.type === 'pdf' ? (
+                      <object data={`${stagedMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
+                        <iframe src={`${stagedMedia.url}#view=FitH`} style={styles.mediaContent} title={stagedMedia.name} />
+                      </object>
+                    ) : (
+                      <MediaDocumentCard media={stagedMedia} />
+                    )
+  ) : null;
+  // Guests on a phone held upright get a stacked stage instead of a tiny 16:9 mirror.
+  const useMobileStage = !isHostOrCoHost && isPortraitPhone;
+
   return (
     <div className="studio-container" style={styles.container}>
       {/* Header */}
@@ -6317,6 +6354,50 @@ export function StudioRoom() {
             </div>
           )}
           {/* Scale the complete broadcast composition; panels never reflow it. */}
+          {useMobileStage ? (
+            <div className="studio-mobile-stage" role="region" aria-label="Stage">
+              {(stagedMedia || sharedContentScreenShare) && (
+                <div className="studio-mobile-content studio-active-media">
+                  {stagedMedia ? stagedMediaContent : sharedContentScreenShare && (
+                    <VideoTile
+                      participantId={sharedContentScreenShare.item.id}
+                      stream={sharedContentScreenShare.item.stream}
+                      name={sharedContentScreenShare.item.name}
+                      isLocal={sharedContentScreenShare.item.isLocal}
+                      isScreenShare
+                      audioEnabled={false}
+                      videoEnabled={sharedContentScreenShare.item.videoEnabled}
+                      volume={sharedContentScreenShare.item.volume}
+                      brandColor={brandColor}
+                      cameraShape={cameraShape}
+                      nameTagStyle={nameTagStyle}
+                      connectionHealth={sharedContentScreenShare.item.connectionHealth}
+                    />
+                  )}
+                </div>
+              )}
+              <div className={`studio-mobile-grid${renderedVideoItems.filter((item) => !item.isScreenShare).length > 2 ? ' is-two-col' : ''}`}>
+                {renderedVideoItems.filter((item) => !item.isScreenShare).map((item) => (
+                  <div key={item.id} className="studio-mobile-tile" data-stage-item-id={item.id}>
+                    <VideoTile
+                      participantId={item.id}
+                      stream={item.stream}
+                      name={item.name}
+                      isLocal={item.isLocal}
+                      audioEnabled={item.audioEnabled}
+                      videoEnabled={item.videoEnabled}
+                      volume={item.volume}
+                      brandColor={brandColor}
+                      cameraShape={cameraShape}
+                      nameTagStyle={nameTagStyle}
+                      connectionHealth={item.connectionHealth}
+                      onAudioLevelChange={handleStageAudioLevelChange}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
           <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }} footer={
             isHostOrCoHost && sharedContentAvailable && <PresentationToolbar
               media={activeMedia}
@@ -6359,35 +6440,7 @@ export function StudioRoom() {
                       ...(sharedContentLayoutResult?.mediaStyle || {}),
                     }}
                   >
-                    {stagedMedia.preview?.kind === 'presentation-slides' ? (
-                      <PresentationDeckStage
-                        media={stagedMedia}
-                        slideIndex={activeMediaSlideIndex}
-                      />
-                    ) : stagedMedia.type === 'video' ? (
-                      <StudioMediaVideo
-                        key={stagedMedia.assetId || stagedMedia.url}
-                        url={stagedMedia.url}
-                        name={stagedMedia.name}
-                        style={styles.mediaContent}
-                        broadcastAudio={broadcastAudioBus}
-                        onError={(message) => onStageMediaError(stagedMedia, message)}
-                      />
-                    ) : stagedMedia.type === 'image' ? (
-                      <img
-                        crossOrigin="anonymous"
-                        src={stagedMedia.url}
-                        alt={stagedMedia.name}
-                        style={styles.mediaContent}
-                        onError={() => onStageMediaError(stagedMedia, 'This image could not load. Upload the image or use a direct link that allows sharing.')}
-                      />
-                    ) : stagedMedia.type === 'pdf' ? (
-                      <object data={`${stagedMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
-                        <iframe src={`${stagedMedia.url}#view=FitH`} style={styles.mediaContent} title={stagedMedia.name} />
-                      </object>
-                    ) : (
-                      <MediaDocumentCard media={stagedMedia} />
-                    )}
+                    {stagedMediaContent}
 
                   </div>
                 )}
@@ -6675,6 +6728,7 @@ export function StudioRoom() {
                 </div>
               )}
           </StageCanvas>
+          )}
 
 
           {isHostOrCoHost && backstagePrivateItems.length > 0 && (
