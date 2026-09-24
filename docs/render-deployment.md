@@ -157,6 +157,22 @@ RECORDING_STORAGE_PUBLIC_BASE_URL=<optional CDN/public base URL>
 
 The export job still streams downloads from the media server, but job status and manifest JSON include the durable `s3` bucket/key for every uploaded artifact.
 
+Files larger than 100 MB are uploaded in 64 MB parts (S3 multipart upload), because single uploads are capped at 5 GiB and a one-hour export at the default 12 Mbps is about 5.4 GB. A failed part aborts the upload, so no partial parts are left billing. `/health` reports `capabilities.recordingStorage.ready`, and Session Health warns when storage is not configured.
+
+**Cloudflare R2 (recommended; 10 GB-month free, no download fees).** In the Cloudflare dashboard, create an R2 bucket, then create an R2 API token with **Object Read & Write** on that bucket. Use the S3 endpoint shown with the token:
+
+```sh
+RECORDING_STORAGE_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+RECORDING_STORAGE_REGION=auto
+RECORDING_STORAGE_BUCKET=livestream-studio-recordings
+RECORDING_STORAGE_ACCESS_KEY_ID=<R2 access key id>
+RECORDING_STORAGE_SECRET_ACCESS_KEY=<R2 secret access key>
+RECORDING_STORAGE_FORCE_PATH_STYLE=true
+RECORDING_STORAGE_PREFIX=livestream-studio
+```
+
+Live backup recordings (below) are not copied to object storage.
+
 The RTMP relay also writes a server-side MP4 backup recording for every live session by default. The host/co-host client polls the media server after Go Live stops and exposes an authenticated backup download in the post-live notice. These backups are local to the media-server filesystem unless the service is deployed with persistent storage:
 
 ```sh
