@@ -3,6 +3,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   downloadRtmpBackupRecording,
   pollRtmpBackupRecording,
+  requestRtmpBackupDownloadLink,
 } from '../src/utils/rtmpBackupRecording.ts';
 
 const originalFetch = globalThis.fetch;
@@ -92,5 +93,53 @@ describe('RTMP live backup recording client helpers', () => {
     assert.equal(download.fileName, 'backup.mp4');
     assert.equal(download.contentType, 'video/mp4');
     assert.equal(download.blob.size, 3);
+  });
+
+  const readyBackup = {
+    backupId: 'backup-1',
+    roomId: 'room-1',
+    fileName: 'room-1-live-backup.mp4',
+    startedAt: '2026-07-01T21:00:00.000Z',
+    status: 'ready' as const,
+    downloadPath: '/rtmp/backups/backup-1/download',
+  };
+
+  it('keeps polling a ready backup until its cloud copy finishes when asked', async () => {
+    let attempt = 0;
+    globalThis.fetch = async () => {
+      attempt += 1;
+      return jsonResponse({ ...readyBackup, storageStatus: attempt < 3 ? 'uploading' : 'stored' });
+    };
+    const quick = await pollRtmpBackupRecording({ token: 't', roomId: 'room-1', mediaHttpUrl: 'https://media.example.com', intervalMs: 1, timeoutMs: 1_000 });
+    assert.equal(quick?.storageStatus, 'uploading');
+
+    attempt = 0;
+    const stored = await pollRtmpBackupRecording({ token: 't', roomId: 'room-1', mediaHttpUrl: 'https://media.example.com', intervalMs: 1, timeoutMs: 1_000, waitForStorage: true });
+    assert.equal(stored?.storageStatus, 'stored');
+    assert.equal(attempt, 3);
+  });
+
+  it('gets a cloud download link for a stored backup', async () => {
+    globalThis.fetch = async (url, init) => {
+      assert.equal(String(url), 'https://media.example.com/rtmp/backups/backup-1/download-link');
+      assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer token-123');
+      return jsonResponse({ url: 'https://bucket.r2.example/key?X-Amz-Signature=abc', fileName: 'show live.mp4' });
+    };
+    const link = await requestRtmpBackupDownloadLink({ token: 'token-123', backup: readyBackup, mediaHttpUrl: 'https://media.example.com' });
+    assert.deepEqual(link, { url: 'https://bucket.r2.example/key?X-Amz-Signature=abc', fileName: 'show_live.mp4' });
+  });
+
+  it('falls back to the media-server download when the backup is not in cloud storage', async () => {
+    for (const status of [404, 409]) {
+      globalThis.fetch = async () => jsonResponse({ error: 'not stored' }, status);
+      assert.equal(await requestRtmpBackupDownloadLink({ token: 't', backup: readyBackup, mediaHttpUrl: 'https://media.example.com' }), null);
+    }
+    globalThis.fetch = async () => jsonResponse({ error: 'Live backup token does not match this room' }, 403);
+    await assert.rejects(
+      requestRtmpBackupDownloadLink({ token: 't', backup: readyBackup, mediaHttpUrl: 'https://media.example.com' }),
+      /does not match this room/
+    );
+    globalThis.fetch = async () => jsonResponse({ url: 'javascript:alert(1)' });
+    await assert.rejects(requestRtmpBackupDownloadLink({ token: 't', backup: readyBackup, mediaHttpUrl: 'https://media.example.com' }));
   });
 });

@@ -1053,6 +1053,8 @@ export interface RtmpRelayBackupRecordingPayload {
   sizeBytes?: number;
   downloadPath?: string;
   error?: string;
+  /** Copy to object storage (R2/S3), when it is configured. */
+  storageStatus?: 'uploading' | 'stored' | 'failed';
 }
 
 export type RtmpRelayServerMessage =

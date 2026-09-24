@@ -166,6 +166,7 @@ import { syncRecordingCatalogEntry } from '../utils/recordingCatalog.ts';
 import {
   downloadRtmpBackupRecording,
   pollRtmpBackupRecording,
+  requestRtmpBackupDownloadLink,
 } from '../utils/rtmpBackupRecording.ts';
 import {
   buildToolbarRecordingUploadFiles,
@@ -684,7 +685,14 @@ function getLiveBackupNoticeText(backup: RtmpRelayBackupRecordingPayload | null)
   if (backup.status === 'finalizing') return 'Server backup recording is finalizing.';
   if (backup.status === 'ready') {
     const size = formatFileSize(backup.sizeBytes);
-    return `Server backup recording is ready${size ? ` (${size})` : ''}.`;
+    const storage = backup.storageStatus === 'stored'
+      ? ' Saved to cloud storage.'
+      : backup.storageStatus === 'uploading'
+        ? ' Saving a copy to cloud storage…'
+        : backup.storageStatus === 'failed'
+          ? ' The cloud copy failed, so download it before the server restarts.'
+          : '';
+    return `Server backup recording is ready${size ? ` (${size})` : ''}.${storage}`;
   }
   return backup.error ? `Server backup recording failed: ${backup.error}` : 'Server backup recording failed.';
 }
@@ -921,6 +929,18 @@ function downloadBlobFile(blob: Blob, fileName: string) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** Download from a link whose server marks the file as an attachment. */
+function startLinkDownload(url: string, fileName: string) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.rel = 'noopener';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 async function downloadToolbarRecordingFallbackFiles(
@@ -4011,6 +4031,31 @@ export function StudioRoom() {
     });
   }, [roomHostToken, roomId]);
 
+  // The relay socket closes when the stream stops, so the cloud copy's
+  // progress is followed by polling (a long backup can take minutes).
+  const followLiveBackupStorage = useCallback(async (backupId: string) => {
+    if (!roomId) return;
+    const deadline = Date.now() + 20 * 60_000;
+    while (Date.now() < deadline) {
+      try {
+        // Fresh token each round: tokens are short-lived.
+        const token = await requestLiveStreamToken();
+        const latest = await pollRtmpBackupRecording({
+          token,
+          roomId,
+          waitForStorage: true,
+          intervalMs: 5_000,
+          timeoutMs: 4 * 60_000,
+        });
+        if (!latest || latest.backupId !== backupId) return;
+        setLiveBackupRecording((current) => (current?.backupId === backupId ? latest : current));
+        if (latest.storageStatus !== 'uploading') return;
+      } catch {
+        return;
+      }
+    }
+  }, [requestLiveStreamToken, roomId]);
+
   const finalizeLiveBackupRecording = useCallback(async () => {
     if (!roomId || !isHostOrCoHost) return;
     if (liveBackupRecording?.status === 'disabled') return;
@@ -4030,6 +4075,9 @@ export function StudioRoom() {
       const backup = await pollRtmpBackupRecording({ token, roomId });
       if (backup) {
         setLiveBackupRecording(backup);
+        if (backup.status === 'ready' && backup.storageStatus === 'uploading') {
+          void followLiveBackupStorage(backup.backupId);
+        }
       } else {
         setLiveBackupRecording({
           backupId: '',
@@ -4052,13 +4100,20 @@ export function StudioRoom() {
       });
       console.error('Failed to finalize live backup recording:', err);
     }
-  }, [isHostOrCoHost, liveBackupRecording?.status, requestLiveStreamToken, roomId]);
+  }, [followLiveBackupStorage, isHostOrCoHost, liveBackupRecording?.status, requestLiveStreamToken, roomId]);
 
   const onDownloadLiveBackupRecording = useCallback(async () => {
     if (!liveBackupRecording || liveBackupRecording.status !== 'ready') return;
     setLiveBackupDownloading(true);
     try {
       const token = await requestLiveStreamToken();
+      // Backups in cloud storage download straight from there, without
+      // holding a large file in this tab's memory.
+      const link = await requestRtmpBackupDownloadLink({ token, backup: liveBackupRecording });
+      if (link) {
+        startLinkDownload(link.url, link.fileName);
+        return;
+      }
       const download = await downloadRtmpBackupRecording({
         token,
         backup: liveBackupRecording,

@@ -1,6 +1,6 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
@@ -17,8 +17,14 @@ import { buildServiceHealthPayload } from '@studio/shared';
 import { getLiveStreamTokenSecret, verifyLiveStreamToken, verifyRecordingUploadToken } from './auth.js';
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
 import {
+  buildLiveBackupLatestKey,
+  buildLiveBackupObjectKeys,
+  buildLiveBackupRecordKey,
   buildRecordingExportObjectKey,
+  createObjectStoragePresignedGetUrl,
+  getObjectStorageText,
   getRecordingObjectStorageConfig,
+  putObjectStorageText,
   uploadFileToObjectStorage,
   type ObjectStorageConfig,
 } from './objectStorage.js';
@@ -30,9 +36,12 @@ import { SfuMediaTransport } from './sfuTransport.js';
 import {
   createFfmpegLiveBackupArgs,
   createLiveBackupRecording,
+  fromStoredLiveBackupRecord,
   getLiveBackupMaxBytes,
   isLiveBackupRecordingEnabled,
+  parseStoredLiveBackupRecord,
   refreshLiveBackupSize,
+  storeLiveBackupRecording,
   toLiveBackupPublicStatus,
   type LiveBackupRecording,
 } from './liveBackupRecording.js';
@@ -708,6 +717,27 @@ async function spawnLiveBackup(
       void refreshLiveBackupSize(recording).then(() => {
         if (code === 0 && !signal && (recording.sizeBytes || 0) > 0) {
           recording.status = 'ready';
+          const storageConfig = getRecordingObjectStorageConfig();
+          if (storageConfig) {
+            void storeLiveBackupRecording(recording, {
+              keys: buildLiveBackupObjectKeys({
+                prefix: storageConfig.prefix,
+                roomId: recording.roomId,
+                backupId: recording.backupId,
+                fileName: recording.fileName,
+              }),
+              uploadFile: (input) => uploadFileToObjectStorage(storageConfig, input),
+              putText: (key, body) => putObjectStorageText(storageConfig, key, body),
+            }).then(() => {
+              if (recording.storageStatus === 'failed') {
+                console.warn(`Live backup ${recording.backupId} upload failed: ${recording.storageError}`);
+              }
+              sendJson(ws, {
+                type: 'backup-recording-status',
+                payload: toLiveBackupPublicStatus(recording),
+              });
+            });
+          }
         } else {
           recording.status = 'error';
           recording.error = signal
@@ -927,6 +957,14 @@ function authenticateHostRecordingRequest(req: IncomingMessage, roomId: string):
 }
 
 function authenticateLiveBackupRequest(req: IncomingMessage, roomId: string) {
+  const claims = authenticateLiveBackupToken(req);
+  if (claims.roomId !== roomId) {
+    throw new RecordingUploadError(403, 'ROOM_TOKEN_MISMATCH', 'Live backup token does not match this room');
+  }
+  return claims;
+}
+
+function authenticateLiveBackupToken(req: IncomingMessage): LiveStreamTokenClaims {
   const secret = getLiveStreamTokenSecret();
   if (!secret) {
     throw new RecordingUploadError(503, 'LIVE_STREAM_NOT_CONFIGURED', 'Live backup downloads are not configured on this server');
@@ -942,10 +980,16 @@ function authenticateLiveBackupRequest(req: IncomingMessage, roomId: string) {
     const message = err instanceof Error ? err.message : 'Invalid live backup download token';
     throw new RecordingUploadError(401, 'UNAUTHORIZED', message);
   }
-  if (claims.roomId !== roomId) {
-    throw new RecordingUploadError(403, 'ROOM_TOKEN_MISMATCH', 'Live backup token does not match this room');
-  }
   return claims;
+}
+
+/** Load a backup from its record in object storage, after a restart or sleep. */
+async function loadStoredLiveBackup(config: ObjectStorageConfig, recordKey: string): Promise<LiveBackupRecording | null> {
+  const record = parseStoredLiveBackupRecord(await getObjectStorageText(config, recordKey));
+  if (!record) return null;
+  const backup = liveBackups.get(record.backupId) || fromStoredLiveBackupRecord(record, '');
+  liveBackups.set(backup.backupId, backup);
+  return backup;
 }
 
 async function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
@@ -1040,7 +1084,14 @@ async function handleLiveBackupRequest(req: IncomingMessage, res: ServerResponse
         throw new RecordingUploadError(400, 'INVALID_ROOM_ID', 'roomId is required');
       }
       authenticateLiveBackupRequest(req, roomId);
-      const latest = findLatestLiveBackup(roomId);
+      const storageConfig = getRecordingObjectStorageConfig();
+      const latest = findLatestLiveBackup(roomId) || (storageConfig
+        ? await loadStoredLiveBackup(storageConfig, buildLiveBackupLatestKey(storageConfig.prefix, roomId)).catch((err) => {
+          // A storage outage must not turn "no backup" into an error.
+          console.warn('Live backup storage lookup failed:', err instanceof Error ? err.message : err);
+          return null;
+        })
+        : null);
       if (!latest) {
         writeJson(res, 404, { error: 'No live backup recording found', code: 'LIVE_BACKUP_NOT_FOUND' });
         return true;
@@ -1063,6 +1114,11 @@ async function handleLiveBackupRequest(req: IncomingMessage, res: ServerResponse
         writeJson(res, 409, { error: 'Live backup recording is not ready', code: 'LIVE_BACKUP_NOT_READY' });
         return true;
       }
+      if (!backup.filePath || !existsSync(backup.filePath)) {
+        // Moved to object storage; download-link serves it from there.
+        writeJson(res, 409, { error: 'Live backup recording is in storage; request a download link', code: 'LIVE_BACKUP_STORED' });
+        return true;
+      }
       await refreshLiveBackupSize(backup);
       res.writeHead(200, {
         'Content-Type': 'video/mp4',
@@ -1075,6 +1131,40 @@ async function handleLiveBackupRequest(req: IncomingMessage, res: ServerResponse
           res.destroy(err);
         })
         .pipe(res);
+      return true;
+    }
+
+    const linkMatch = url.pathname.match(/^\/rtmp\/backups\/([^/]+)\/download-link$/);
+    if (linkMatch && req.method === 'GET') {
+      const [, backupId] = linkMatch;
+      // Check the token before touching storage.
+      const claims = authenticateLiveBackupToken(req);
+      const storageConfig = getRecordingObjectStorageConfig();
+      const backup = liveBackups.get(backupId) || (storageConfig
+        ? await loadStoredLiveBackup(storageConfig, buildLiveBackupRecordKey(storageConfig.prefix, backupId))
+        : null);
+      if (!backup) {
+        writeJson(res, 404, { error: 'Live backup recording not found', code: 'LIVE_BACKUP_NOT_FOUND' });
+        return true;
+      }
+      if (claims.roomId !== backup.roomId) {
+        throw new RecordingUploadError(403, 'ROOM_TOKEN_MISMATCH', 'Live backup token does not match this room');
+      }
+      if (!storageConfig || backup.storageStatus !== 'stored' || !backup.storageKey) {
+        writeJson(res, 409, { error: 'Live backup recording is not in storage yet', code: 'LIVE_BACKUP_NOT_STORED' });
+        return true;
+      }
+      const expiresInSeconds = 60 * 60;
+      writeJson(res, 200, {
+        url: createObjectStoragePresignedGetUrl(storageConfig, {
+          key: backup.storageKey,
+          expiresInSeconds,
+          downloadFileName: attachmentName(backup.fileName),
+          contentType: 'video/mp4',
+        }),
+        fileName: attachmentName(backup.fileName),
+        expiresAt: new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
+      });
       return true;
     }
 

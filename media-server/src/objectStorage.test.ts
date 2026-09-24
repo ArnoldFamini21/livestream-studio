@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  buildLiveBackupObjectKeys,
   buildRecordingExportObjectKey,
+  createObjectStoragePresignedGetUrl,
   createObjectStoragePutRequest,
   getRecordingObjectStorageConfig,
   signObjectStorageRequest,
@@ -243,5 +245,53 @@ describe('recording object storage', () => {
     } finally {
       await close(server);
     }
+  });
+
+  it('presigns GET links that match the AWS SigV4 reference example', () => {
+    // From the AWS "Authenticating Requests: Using Query Parameters" example.
+    const url = createObjectStoragePresignedGetUrl({
+      endpoint: 'https://s3.amazonaws.com',
+      region: 'us-east-1',
+      bucket: 'examplebucket',
+      accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+      secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      forcePathStyle: false,
+      prefix: '',
+    }, { key: 'test.txt', expiresInSeconds: 86_400 }, new Date('2013-05-24T00:00:00Z'));
+    assert.equal(url, 'https://examplebucket.s3.amazonaws.com/test.txt'
+      + '?X-Amz-Algorithm=AWS4-HMAC-SHA256'
+      + '&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request'
+      + '&X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host'
+      + '&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404');
+  });
+
+  it('asks storage to send presigned downloads as named attachments', () => {
+    const url = new URL(createObjectStoragePresignedGetUrl(baseConfig(), {
+      key: 'studio/rooms/r1/live-backups/show.mp4',
+      expiresInSeconds: 3600,
+      downloadFileName: 'show "final".mp4',
+      contentType: 'video/mp4',
+    }, new Date('2026-01-01T00:00:00Z')));
+    assert.equal(url.pathname, '/recordings/studio/rooms/r1/live-backups/show.mp4');
+    assert.equal(url.searchParams.get('response-content-disposition'), 'attachment; filename="show _final_.mp4"');
+    assert.equal(url.searchParams.get('response-content-type'), 'video/mp4');
+    assert.equal(url.searchParams.get('X-Amz-Expires'), '3600');
+    assert.match(url.searchParams.get('X-Amz-Signature') || '', /^[0-9a-f]{64}$/);
+    // Presigned links cannot outlive S3's 7-day limit.
+    const capped = new URL(createObjectStoragePresignedGetUrl(baseConfig(), { key: 'a.mp4', expiresInSeconds: 10 ** 9 }));
+    assert.equal(capped.searchParams.get('X-Amz-Expires'), '604800');
+  });
+
+  it('keeps live backups under the room with records findable by id', () => {
+    assert.deepEqual(buildLiveBackupObjectKeys({
+      prefix: '/studio/',
+      roomId: 'room one',
+      backupId: 'backup-123',
+      fileName: '/tmp/x/room-one-live-backup.mp4',
+    }), {
+      video: 'studio/rooms/room_one/live-backups/room-one-live-backup.mp4',
+      record: 'studio/live-backups/backup-123.json',
+      latest: 'studio/rooms/room_one/live-backups/latest.json',
+    });
   });
 });

@@ -1,7 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   createFfmpegLiveBackupArgs,
+  fromStoredLiveBackupRecord,
+  parseStoredLiveBackupRecord,
+  storeLiveBackupRecording,
   getLiveBackupMaxBytes,
   isLiveBackupRecordingEnabled,
   sanitizeLiveBackupFilePart,
@@ -63,5 +70,90 @@ describe('live backup recording utilities', () => {
     assert.equal(toLiveBackupPublicStatus(recording).downloadPath, '/rtmp/backups/backup-123/download');
     recording.status = 'finalizing';
     assert.equal(toLiveBackupPublicStatus(recording).downloadPath, undefined);
+  });
+});
+
+describe('live backup cloud storage', () => {
+  const keys = { video: 'p/rooms/r/live-backups/show.mp4', record: 'p/live-backups/b1.json', latest: 'p/rooms/r/live-backups/latest.json' };
+
+  async function readyRecording(): Promise<LiveBackupRecording> {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'live-backup-store-'));
+    const filePath = path.join(dir, 'show.mp4');
+    await writeFile(filePath, 'mp4 bytes');
+    return {
+      backupId: 'b1',
+      roomId: 'r',
+      fileName: 'show.mp4',
+      filePath,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      stoppedAt: '2026-01-01T01:00:00.000Z',
+      status: 'ready',
+      sizeBytes: 9,
+    };
+  }
+
+  it('uploads the MP4, saves findable records, and frees the local copy', async () => {
+    const recording = await readyRecording();
+    const uploads: string[] = [];
+    const texts = new Map<string, string>();
+    const pending = storeLiveBackupRecording(recording, {
+      keys,
+      uploadFile: async (input) => { uploads.push(`${input.key} ${input.contentType}`); },
+      putText: async (key, body) => { texts.set(key, body); },
+    });
+    assert.equal(toLiveBackupPublicStatus(recording).storageStatus, 'uploading');
+    await pending;
+
+    assert.deepEqual(uploads, ['p/rooms/r/live-backups/show.mp4 video/mp4']);
+    assert.equal(recording.storageStatus, 'stored');
+    assert.equal(recording.storageKey, keys.video);
+    assert.equal(existsSync(recording.filePath), false);
+    assert.equal(texts.get(keys.record), texts.get(keys.latest));
+    const record = parseStoredLiveBackupRecord(texts.get(keys.record) || null);
+    assert.deepEqual(record, {
+      backupId: 'b1',
+      roomId: 'r',
+      fileName: 'show.mp4',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      stoppedAt: '2026-01-01T01:00:00.000Z',
+      sizeBytes: 9,
+      storageKey: keys.video,
+    });
+
+    // After a restart the record alone describes a ready, stored backup.
+    const restored = toLiveBackupPublicStatus(fromStoredLiveBackupRecord(record!, ''));
+    assert.equal(restored.status, 'ready');
+    assert.equal(restored.storageStatus, 'stored');
+    assert.equal(restored.downloadPath, '/rtmp/backups/b1/download');
+  });
+
+  it('keeps the local copy when the upload fails', async () => {
+    const recording = await readyRecording();
+    await storeLiveBackupRecording(recording, {
+      keys,
+      uploadFile: async () => { throw new Error('storage down'); },
+      putText: async () => { throw new Error('unreachable'); },
+    });
+    assert.equal(recording.storageStatus, 'failed');
+    assert.equal(recording.storageError, 'storage down');
+    assert.equal(recording.storageKey, undefined);
+    assert.equal(existsSync(recording.filePath), true);
+  });
+
+  it('keeps a stored backup stored when only its records fail', async () => {
+    const recording = await readyRecording();
+    await storeLiveBackupRecording(recording, {
+      keys,
+      uploadFile: async () => undefined,
+      putText: async () => { throw new Error('records down'); },
+    });
+    assert.equal(recording.storageStatus, 'stored');
+    assert.equal(recording.storageKey, keys.video);
+  });
+
+  it('rejects damaged records', () => {
+    assert.equal(parseStoredLiveBackupRecord(null), null);
+    assert.equal(parseStoredLiveBackupRecord('not json'), null);
+    assert.equal(parseStoredLiveBackupRecord(JSON.stringify({ backupId: 'b1', roomId: 'r' })), null);
   });
 });
