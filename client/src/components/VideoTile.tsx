@@ -167,6 +167,9 @@ export function VideoTile({
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.srcObject = stream || null;
+      // autoplay only covers the first source. A stream attached later (a
+      // guest's screen arriving on a mounted tile) needs an explicit play.
+      if (stream) void videoRef.current.play().catch(() => { /* Retried by autoplay on the next user gesture. */ });
     }
     return () => {
       if (videoRef.current) {

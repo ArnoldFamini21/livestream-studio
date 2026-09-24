@@ -23,6 +23,10 @@ interface PeerState {
   stream: MediaStream | null;
   senders: Map<'audio' | 'video', RTCRtpSender>;
   negotiation: PeerNegotiation;
+  /** The peer's screen, sent as a second video track beside its camera. */
+  screenStream: MediaStream | null;
+  /** Our screen track on this connection, when we are sharing. */
+  screenSender: RTCRtpSender | null;
 }
 
 interface UseWebRTCProps {
@@ -38,6 +42,11 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   const generationRef = useRef(0);
   const removedPeersRef = useRef(new Map<string, number>());
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [remoteScreenStreams, setRemoteScreenStreams] = useState<Map<string, MediaStream>>(new Map());
+  // Screen stream ids announced by peers (media-state-changed), so an incoming
+  // track can be told apart from the camera even before the camera arrives.
+  const remoteScreenStreamIdsRef = useRef<Map<string, string>>(new Map());
+  const publishedScreenRef = useRef<{ track: MediaStreamTrack; stream: MediaStream } | null>(null);
   const [peerBandwidthHealth, setPeerBandwidthHealth] = useState<Map<string, PeerBandwidthHealth>>(new Map());
 
   // Use refs to avoid stale closures in setTimeout callbacks
@@ -85,12 +94,15 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
   const updateRemoteStreams = useCallback(() => {
     const streams = new Map<string, MediaStream>();
+    const screens = new Map<string, MediaStream>();
     for (const [id, peer] of peersRef.current) {
       if (peer.stream) {
         streams.set(id, peer.stream);
       }
+      if (peer.screenStream) screens.set(id, peer.screenStream);
     }
     setRemoteStreams(new Map(streams));
+    setRemoteScreenStreams(screens);
   }, []);
 
   const publishPeerBandwidthHealth = useCallback(() => {
@@ -137,6 +149,8 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         connection: pc,
         stream: null,
         senders: new Map(),
+        screenStream: null,
+        screenSender: null,
         negotiation: new PeerNegotiation(
           pc,
           (myParticipantIdRef.current || '') < remoteParticipantId,
@@ -173,10 +187,34 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         }
       }
 
+      // A screen we are already sharing goes to this new peer as well.
+      const publishedScreen = publishedScreenRef.current;
+      if (publishedScreen) {
+        peerState.screenSender = pc.addTrack(publishedScreen.track, publishedScreen.stream);
+      }
+
       // Handle incoming remote tracks
       pc.ontrack = (event) => {
         const [remoteStream] = event.streams;
         if (peersRef.current.get(remoteParticipantId) !== peerState) return;
+        // The screen arrives in its own MediaStream: the id the peer announced,
+        // or a second video stream beside the camera one.
+        const announcedScreenId = remoteScreenStreamIdsRef.current.get(remoteParticipantId);
+        const isScreen = Boolean(remoteStream) && event.track.kind === 'video' && (
+          remoteStream.id === announcedScreenId ||
+          (peerState.stream !== null && peerState.stream.id !== remoteStream.id && peerState.stream.getVideoTracks().length > 0)
+        );
+        if (isScreen) {
+          peerState.screenStream = remoteStream;
+          event.track.addEventListener('ended', () => {
+            if (peerState.screenStream === remoteStream) {
+              peerState.screenStream = null;
+              updateRemoteStreams();
+            }
+          });
+          updateRemoteStreams();
+          return;
+        }
         peerState.stream = remoteStream || peerState.stream || new MediaStream();
         if (!peerState.stream.getTracks().includes(event.track)) peerState.stream.addTrack(event.track);
         updateRemoteStreams();
@@ -301,6 +339,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         removePeerBandwidthState(participantId);
         updateRemoteStreams();
       }
+      remoteScreenStreamIdsRef.current.delete(participantId);
     },
     [removePeerBandwidthState, updateRemoteStreams]
   );
@@ -340,6 +379,45 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     }
     if (updatedHealth) publishPeerBandwidthHealth();
   }, [applyPeerBandwidthMode, publishPeerBandwidthHealth]);
+
+  /**
+   * Send (or stop sending) our screen as a second video track on every peer,
+   * so our camera stays on stage while we share. Each call renegotiates
+   * through PeerNegotiation's negotiationneeded handling.
+   */
+  const publishScreenTrack = useCallback(async (track: MediaStreamTrack | null, stream?: MediaStream) => {
+    publishedScreenRef.current = track && stream ? { track, stream } : null;
+    for (const [participantId, peer] of peersRef.current) {
+      try {
+        if (track && stream) {
+          if (peer.screenSender) await peer.screenSender.replaceTrack(track);
+          else peer.screenSender = peer.connection.addTrack(track, stream);
+        } else if (peer.screenSender) {
+          peer.connection.removeTrack(peer.screenSender);
+          peer.screenSender = null;
+        }
+      } catch (err) {
+        console.warn(`Failed to ${track ? 'send' : 'stop'} screen track for peer ${participantId}:`, err);
+      }
+    }
+  }, []);
+
+  /** Remember (or forget) which of a peer's streams is its screen. */
+  const setRemoteScreenStreamId = useCallback((participantId: string, streamId: string | null) => {
+    if (streamId) remoteScreenStreamIdsRef.current.set(participantId, streamId);
+    else remoteScreenStreamIdsRef.current.delete(participantId);
+    const peer = peersRef.current.get(participantId);
+    if (!peer) return;
+    if (!streamId && peer.screenStream) {
+      peer.screenStream = null;
+      updateRemoteStreams();
+    } else if (streamId && !peer.screenStream && peer.stream?.id === streamId) {
+      // The screen track arrived before the announcement and was taken for the camera.
+      peer.screenStream = peer.stream;
+      peer.stream = null;
+      updateRemoteStreams();
+    }
+  }, [updateRemoteStreams]);
 
   // Replace a track on all active peer connections (used when switching devices)
   const replaceTrack = useCallback(
@@ -438,8 +516,10 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     }
     peersRef.current.clear();
     pendingCandidatesRef.current.clear();
+    remoteScreenStreamIdsRef.current.clear();
     clearPeerBandwidthStates();
     setRemoteStreams(new Map());
+    setRemoteScreenStreams(new Map());
   }, [clearPeerBandwidthStates]);
 
   // A signaling rejoin assigns a new participant ID. Negotiations and callbacks
@@ -452,6 +532,9 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
   return {
     remoteStreams,
+    remoteScreenStreams,
+    publishScreenTrack,
+    setRemoteScreenStreamId,
     peerBandwidthHealth,
     connectToPeer,
     handleOffer,

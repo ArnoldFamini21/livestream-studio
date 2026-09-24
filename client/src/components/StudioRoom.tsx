@@ -1357,6 +1357,9 @@ export function StudioRoom() {
 
   const {
     remoteStreams: meshRemoteStreams,
+    remoteScreenStreams: meshRemoteScreenStreams,
+    publishScreenTrack,
+    setRemoteScreenStreamId,
     peerBandwidthHealth,
     connectToPeer,
     handleOffer,
@@ -1659,6 +1662,11 @@ export function StudioRoom() {
 
   // Refs for onToggleScreenShare dependencies
   const replaceTrackRef = useRef(replaceTrack);
+  const publishScreenTrackRef = useRef(publishScreenTrack);
+  const setRemoteScreenStreamIdRef = useRef(setRemoteScreenStreamId);
+  // True while our screen goes out as a second track (mesh); false when it
+  // replaces the camera (SFU).
+  const separateScreenTrackRef = useRef(false);
   const startScreenShareRef = useRef(startScreenShare);
   const sendRef = useRef(send);
 
@@ -2290,6 +2298,8 @@ export function StudioRoom() {
   }, [stopScreenShare]);
   useEffect(() => { navigateRef.current = navigate; }, [navigate]);
   useEffect(() => { replaceTrackRef.current = replaceTrack; }, [replaceTrack]);
+  useEffect(() => { publishScreenTrackRef.current = publishScreenTrack; }, [publishScreenTrack]);
+  useEffect(() => { setRemoteScreenStreamIdRef.current = setRemoteScreenStreamId; }, [setRemoteScreenStreamId]);
   useEffect(() => { startScreenShareRef.current = startScreenShare; }, [startScreenShare]);
   useEffect(() => { sendRef.current = send; }, [send]);
 
@@ -2524,7 +2534,8 @@ export function StudioRoom() {
           handleIceCandidateRef.current(message.payload.from, message.payload.candidate).catch(err => console.error('Failed to handle ICE candidate:', err));
           break;
         case 'media-state-changed': {
-          const { participantId, audioEnabled: a, videoEnabled: v, screenSharing: s } = message.payload;
+          const { participantId, audioEnabled: a, videoEnabled: v, screenSharing: s, screenStreamId } = message.payload;
+          setRemoteScreenStreamIdRef.current(participantId, s && screenStreamId ? screenStreamId : null);
           setParticipants((prev) => {
             const next = new Map(prev);
             const e = next.get(participantId);
@@ -3000,8 +3011,12 @@ export function StudioRoom() {
   // Screen sharing publishes a screen+camera PiP track when possible so remote
   // viewers keep seeing the presenter while screen content is shared.
   const onToggleScreenShare = useCallback(async () => {
-    if (isScreenSharingRef.current) {
-      stopPublishedScreenShareRef.current();
+    const restoreCameraAfterScreen = async () => {
+      if (separateScreenTrackRef.current) {
+        separateScreenTrackRef.current = false;
+        await publishScreenTrackRef.current(null);
+        return;
+      }
       const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
       if (cameraTrack) {
         publishedVideoTrackRef.current = cameraTrack;
@@ -3012,49 +3027,64 @@ export function StudioRoom() {
         publishedVideoTrackRef.current = null;
         sfuSessionRef.current?.setLocalVideoTrack(null);
       }
-      if (myParticipantRef.current) sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: false } });
-    } else {
-      try {
-        const stream = await startScreenShareRef.current();
-        if (stream && myParticipantRef.current) {
-          const screenTrack = stream.getVideoTracks()[0];
-          if (screenTrack) {
-            const screenPip = createScreenPictureInPictureStream({
-              screenStream: stream,
-              cameraStream: localStreamRef.current,
-              frameRate: 30,
-            });
-            publishedScreenShareCleanupRef.current?.();
-            publishedScreenShareCleanupRef.current = screenPip?.cleanup || null;
-            const publishedVideoTrack = screenPip?.videoTrack || screenTrack;
-            try { publishedVideoTrack.contentHint = 'detail'; } catch { /* Optional encoder hint. */ }
-            publishedVideoTrackRef.current = publishedVideoTrack;
-            await replaceTrackRef.current(publishedVideoTrack);
-            sfuSessionRef.current?.setLocalVideoTrack(publishedVideoTrack);
-            publishedTrackIdsRef.current.video = publishedVideoTrack.id;
-            screenTrack.addEventListener('ended', async () => {
-              stopPublishedScreenShareRef.current();
-              const camTrack = localStreamRef.current?.getVideoTracks()[0];
-              if (camTrack) {
-                publishedVideoTrackRef.current = camTrack;
-                await replaceTrackRef.current(camTrack);
-                sfuSessionRef.current?.setLocalVideoTrack(camTrack);
-                publishedTrackIdsRef.current.video = camTrack.id;
-              } else {
-                publishedVideoTrackRef.current = null;
-                sfuSessionRef.current?.setLocalVideoTrack(null);
-              }
-              if (myParticipantRef.current) {
-                sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: false } });
-              }
-            });
-          }
-          sendRef.current({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: videoEnabledRef.current, screenSharing: true } });
+    };
+    const announce = (screenSharing: boolean, screenStreamId?: string) => {
+      if (!myParticipantRef.current) return;
+      sendRef.current({ type: 'media-state-changed', payload: {
+        participantId: myParticipantRef.current.id,
+        audioEnabled: audioEnabledRef.current,
+        videoEnabled: videoEnabledRef.current,
+        screenSharing,
+        ...(screenSharing && screenStreamId ? { screenStreamId } : {}),
+      } });
+    };
+
+    if (isScreenSharingRef.current) {
+      stopPublishedScreenShareRef.current();
+      await restoreCameraAfterScreen();
+      announce(false);
+      return;
+    }
+    try {
+      const stream = await startScreenShareRef.current();
+      if (!stream || !myParticipantRef.current) return;
+      const screenTrack = stream.getVideoTracks()[0];
+      if (screenTrack) {
+        // Mesh peers take the screen as a second video track, so the camera
+        // stays on stage beside it. The SFU carries one video per publisher,
+        // so there the screen replaces the camera with a camera inset.
+        const separate = !sfuSessionRef.current;
+        separateScreenTrackRef.current = separate;
+        try { screenTrack.contentHint = 'detail'; } catch { /* Optional encoder hint. */ }
+        if (separate) {
+          await publishScreenTrackRef.current(screenTrack, stream);
+        } else {
+          const screenPip = createScreenPictureInPictureStream({
+            screenStream: stream,
+            cameraStream: localStreamRef.current,
+            frameRate: 30,
+          });
+          publishedScreenShareCleanupRef.current?.();
+          publishedScreenShareCleanupRef.current = screenPip?.cleanup || null;
+          const publishedVideoTrack = screenPip?.videoTrack || screenTrack;
+          try { publishedVideoTrack.contentHint = 'detail'; } catch { /* Optional encoder hint. */ }
+          publishedVideoTrackRef.current = publishedVideoTrack;
+          await replaceTrackRef.current(publishedVideoTrack);
+          sfuSessionRef.current?.setLocalVideoTrack(publishedVideoTrack);
+          publishedTrackIdsRef.current.video = publishedVideoTrack.id;
         }
-      } catch (err) {
-        // User cancelled screen share dialog or permission denied
-        console.warn('Screen share cancelled or failed:', err);
+        screenTrack.addEventListener('ended', async () => {
+          stopPublishedScreenShareRef.current();
+          await restoreCameraAfterScreen();
+          announce(false);
+        });
+        announce(true, separate ? stream.id : undefined);
+      } else {
+        announce(true);
       }
+    } catch (err) {
+      // User cancelled screen share dialog or permission denied
+      console.warn('Screen share cancelled or failed:', err);
     }
   }, []); // All mutable values accessed via refs
 
@@ -3323,6 +3353,7 @@ export function StudioRoom() {
       localStream,
       participants,
       remoteStreams,
+      remoteScreenStreams: meshRemoteScreenStreams,
       screenStream,
       isScreenSharing,
       programSource,
@@ -3345,6 +3376,7 @@ export function StudioRoom() {
     participants,
     recordingReadiness.canStart,
     remoteStreams,
+    meshRemoteScreenStreams,
     screenStream,
     stageAudioLevels,
     startLocalRecording,
@@ -5028,11 +5060,16 @@ export function StudioRoom() {
     }
     for (const [id, p] of participants) {
       if (p.status === 'on-stage') {
-        items.push({ id, name: p.screenSharing ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.screenSharing ? false : p.audioEnabled, videoEnabled: p.screenSharing ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: p.screenSharing || false, connectionHealth: peerBandwidthHealth.get(id) || null });
+        // A separate screen stream keeps the camera on stage beside the screen;
+        // otherwise (SFU) the screen has replaced the camera.
+        const separateScreen = p.screenSharing ? meshRemoteScreenStreams.get(id) || null : null;
+        const screenReplacesCamera = Boolean(p.screenSharing) && !separateScreen;
+        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: screenReplacesCamera ? false : p.audioEnabled, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null });
+        if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: false, videoEnabled: true, volume: 1, isScreenShare: true });
       }
     }
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, isScreenSharing, screenStream, participantVolumes, peerBandwidthHealth]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, meshRemoteScreenStreams, isScreenSharing, screenStream, participantVolumes, peerBandwidthHealth]);
 
   const localPresenterCameraItem = useMemo((): StageVideoItem | null => {
     if (!myParticipant || !isStudioOperator(myParticipant) || myParticipant.status === 'green-room') return null;
