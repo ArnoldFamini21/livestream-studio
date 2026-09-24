@@ -1,6 +1,9 @@
 RewriteEngine On
 RewriteBase /
 
+# Module scripts must be served as JavaScript; browsers refuse text/plain.
+AddType text/javascript .js .mjs
+
 <IfModule mod_headers.c>
   # Security headers. A full Content-Security-Policy is left out on purpose:
   # the studio talks to WebRTC relays, Render services, and Google APIs.
