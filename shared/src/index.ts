@@ -343,6 +343,8 @@ export type SignalMessage =
   | { type: 'answer'; payload: SDPPayload }
   | { type: 'ice-candidate'; payload: ICEPayload }
   | { type: 'media-state-changed'; payload: MediaStatePayload }
+  /** A participant renames themself; the server answers everyone with `participant-updated`. */
+  | { type: 'update-name'; payload: UpdateNamePayload }
   | { type: 'chat-message'; payload: ChatMessage }
   | { type: 'chat-message-updated'; payload: ChatMessage }
   | { type: 'chat-typing'; payload: ChatTypingPayload }
@@ -456,6 +458,10 @@ export interface MediaStatePayload {
   audioEnabled: boolean;
   videoEnabled: boolean;
   screenSharing: boolean;
+}
+
+export interface UpdateNamePayload {
+  name: string;
 }
 
 export interface StageActionPayload {

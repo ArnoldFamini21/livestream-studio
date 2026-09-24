@@ -52,7 +52,7 @@ export function configureAccountMailer(mailer: AccountMailer | null, urlBase?: s
   resetUrlBase = urlBase || '';
 }
 
-function getAccountMailer(): AccountMailer | null {
+export function getAccountMailer(): AccountMailer | null {
   if (accountMailer === undefined) accountMailer = createAccountMailerFromEnv(process.env);
   return accountMailer;
 }

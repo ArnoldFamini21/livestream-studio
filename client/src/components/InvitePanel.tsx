@@ -15,6 +15,8 @@ interface InvitePanelProps {
   isLive: boolean;
   onCreateGuestInvite: () => Promise<{ inviteUrl: string; expiresAt: string }>;
   onCreateCoHostInvite: () => Promise<{ inviteUrl: string; expiresAt: string }>;
+  /** Email an invite from the server. `configured: false` means no provider is set up. */
+  onSendInviteEmail?: (input: { to: string; role: 'guest' | 'co-host'; inviteUrl: string; expiresAt?: string }) => Promise<{ sent: boolean; configured: boolean }>;
   onClose: () => void;
 }
 
@@ -88,8 +90,31 @@ export function InvitePanel({
   isLive,
   onCreateGuestInvite,
   onCreateCoHostInvite,
+  onSendInviteEmail,
   onClose,
 }: InvitePanelProps) {
+  const [emailSending, setEmailSending] = useState<'guest' | 'co-host' | null>(null);
+  const [emailNotice, setEmailNotice] = useState<{ tone: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [coHostEmail, setCoHostEmail] = useState('');
+  const emailLooksValid = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value.trim());
+  const sendEmail = async (role: 'guest' | 'co-host', to: string, link: string, expiresAt: string | undefined, fallbackHref: string) => {
+    if (!onSendInviteEmail) return;
+    setEmailSending(role);
+    setEmailNotice(null);
+    try {
+      const result = await onSendInviteEmail({ to: to.trim(), role, inviteUrl: link, expiresAt });
+      if (result.sent) {
+        setEmailNotice({ tone: 'success', text: `Invite sent to ${to.trim()}.` });
+      } else {
+        setEmailNotice({ tone: 'info', text: 'Email sending is not set up on the server yet, so your mail app will open instead.' });
+        window.location.href = fallbackHref;
+      }
+    } catch (error) {
+      setEmailNotice({ tone: 'error', text: error instanceof Error ? error.message : 'The invite email could not be sent.' });
+    } finally {
+      setEmailSending(null);
+    }
+  };
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -480,14 +505,38 @@ export function InvitePanel({
               placeholder="guest@example.com"
               onChange={(event) => setGuestEmail(event.target.value)}
             />
-            <a style={styles.emailButton} href={mailtoHref}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="4" width="20" height="16" rx="2" />
-                <path d="m22 7-10 6L2 7" />
-              </svg>
-              Compose
-            </a>
+            {onSendInviteEmail ? (
+              <button
+                type="button"
+                style={{ ...styles.emailButton, ...(emailSending === 'guest' || !emailLooksValid(guestEmail) ? styles.emailButtonDisabled : {}) }}
+                disabled={emailSending === 'guest' || !emailLooksValid(guestEmail)}
+                onClick={() => void sendEmail('guest', guestEmail, guestInvite?.inviteUrl || inviteUrl, guestInvite?.expiresAt, guestInvite ? guestInviteMailtoHref : mailtoHref)}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 2 11 13" />
+                  <path d="m22 2-7 20-4-9-9-4 20-7z" />
+                </svg>
+                {emailSending === 'guest' ? 'Sending…' : 'Send invite'}
+              </button>
+            ) : (
+              <a style={styles.emailButton} href={mailtoHref}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="m22 7-10 6L2 7" />
+                </svg>
+                Compose
+              </a>
+            )}
           </div>
+          {onSendInviteEmail && (
+            <p style={styles.emailHint}>
+              {guestInvite ? 'Sends the one-time secure link above.' : 'Sends the studio invite link.'}{' '}
+              <a style={styles.emailFallbackLink} href={guestInvite ? guestInviteMailtoHref : mailtoHref}>Use my mail app instead</a>
+            </p>
+          )}
+          {emailNotice && (
+            <p role="status" style={{ ...styles.emailNotice, ...(emailNotice.tone === 'error' ? styles.emailNoticeError : emailNotice.tone === 'success' ? styles.emailNoticeSuccess : {}) }}>{emailNotice.text}</p>
+          )}
         </div>
 
         <div style={styles.qrCard}>
@@ -569,6 +618,28 @@ export function InvitePanel({
               </button>
             </div>
           )}
+          {coHostInvite && onSendInviteEmail && (
+            <div style={styles.emailRow}>
+              <input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                style={styles.emailInput}
+                value={coHostEmail}
+                placeholder="cohost@example.com"
+                aria-label="Co-host email address"
+                onChange={(event) => setCoHostEmail(event.target.value)}
+              />
+              <button
+                type="button"
+                style={{ ...styles.emailButton, ...(emailSending === 'co-host' || !emailLooksValid(coHostEmail) ? styles.emailButtonDisabled : {}) }}
+                disabled={emailSending === 'co-host' || !emailLooksValid(coHostEmail)}
+                onClick={() => void sendEmail('co-host', coHostEmail, coHostInvite.inviteUrl, coHostInvite.expiresAt, coHostMailtoHref)}
+              >
+                {emailSending === 'co-host' ? 'Sending…' : 'Send invite'}
+              </button>
+            </div>
+          )}
           {coHostInvite && (
             <div style={styles.coHostActions}>
               <a style={styles.coHostActionBtn} href={coHostMailtoHref}>
@@ -621,6 +692,12 @@ export function InvitePanel({
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  emailButtonDisabled: { opacity: 0.5, cursor: 'default' },
+  emailHint: { margin: '6px 0 0', fontSize: 11, color: 'var(--text-muted)' },
+  emailFallbackLink: { color: 'var(--text-secondary)', textDecoration: 'underline' },
+  emailNotice: { margin: '8px 0 0', fontSize: 12, color: 'var(--text-secondary)' },
+  emailNoticeSuccess: { color: '#57d38c' },
+  emailNoticeError: { color: 'var(--danger)' },
   overlay: {
     position: 'fixed',
     inset: 0,

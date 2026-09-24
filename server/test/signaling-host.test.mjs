@@ -2459,3 +2459,38 @@ describe('green room chat', () => {
     }
   });
 });
+
+describe('participant rename', () => {
+  it('lets a participant change their own name and tells everyone', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Rename test', 'Arnold', { creatorIp: `rename-${Date.now()}` });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      await hostJoined;
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Nica', role: 'guest' });
+      const guestId = (await guestJoined).payload.participant.id;
+
+      const hostSaw = waitForMessage(host, 'participant-updated', (m) => m.payload.id === guestId);
+      const guestSaw = waitForMessage(guest, 'participant-updated', (m) => m.payload.id === guestId);
+      sendSignal(guest, { type: 'update-name', payload: { name: '  Dr. Nica\u0007 ' } });
+      const [a, b] = await Promise.all([hostSaw, guestSaw]);
+      assert.equal(a.payload.name, 'Dr. Nica');
+      assert.equal(b.payload.name, 'Dr. Nica');
+      assert.equal(roomState.participants.get(guestId).participant.name, 'Dr. Nica');
+
+      const rejected = waitForMessage(guest, 'error', (m) => m.payload.code === 'VALIDATION_ERROR');
+      sendSignal(guest, { type: 'update-name', payload: { name: '   ' } });
+      assert.match((await rejected).payload.message, /Enter a name/);
+      host.close(); guest.close();
+    } finally {
+      await harness.close();
+    }
+  });
+});

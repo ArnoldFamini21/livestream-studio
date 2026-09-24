@@ -8,6 +8,7 @@ import type {
   Participant,
   JoinRoomPayload,
   MediaStatePayload,
+  UpdateNamePayload,
   ChatMessage,
   ChatTypingPayload,
   ChatReactionType,
@@ -153,6 +154,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'answer',
   'ice-candidate',
   'media-state-changed',
+  'update-name',
   'chat-message',
   'chat-typing',
   'chat-reaction',
@@ -668,7 +670,7 @@ function normalizeRegistrantEmail(value: unknown): string {
   return email;
 }
 
-function assertRegistrationHostAccess(roomState: RoomState, hostToken: unknown) {
+export function assertRegistrationHostAccess(roomState: RoomState, hostToken: unknown) {
   if (typeof hostToken !== 'string' || !safeEqual(hostToken, roomState.hostToken)) {
     throw new RoomRegistrationError(403, 'HOST_TOKEN_INVALID', 'Host access is required to view registrants.');
   }
@@ -1004,6 +1006,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'media-state-changed':
       handleMediaStateChange(ws, message.payload);
+      break;
+    case 'update-name':
+      handleUpdateName(ws, message.payload);
       break;
     case 'chat-message':
       handleChatMessage(ws, message.payload);
@@ -2170,6 +2175,30 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
     type: 'media-state-changed',
     payload: authoritativePayload,
   }, mapping.participantId);
+}
+
+/** A participant changes their own display name; everyone gets the updated participant. */
+function handleUpdateName(ws: WebSocket, payload: UpdateNamePayload) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+  const entry = roomState.participants.get(mapping.participantId);
+  if (!entry) return;
+
+  const name = sanitizeParticipantName(payload?.name);
+  if (!name) {
+    sendError(ws, 'Enter a name to use in the studio', 'VALIDATION_ERROR');
+    return;
+  }
+  if (name === entry.participant.name) return;
+  entry.participant.name = name;
+  broadcastToRoom(mapping.roomId, { type: 'participant-updated', payload: entry.participant });
+}
+
+/** Trim, strip control characters, and cap the length; empty when nothing usable remains. */
+export function sanitizeParticipantName(value: unknown): string {
+  return (typeof value === 'string' ? value : '').replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, MAX_PARTICIPANT_NAME_LENGTH);
 }
 
 /** Whether `participantId` names a host or co-host in the room. */

@@ -119,7 +119,7 @@ Signed-in hosts can manage their account under **Settings & account**:
 
 Reset requests never reveal whether an email has an account. The response is identical and is sent before the lookup. Each account receives at most three reset emails per hour.
 
-To send reset emails, set `ACCOUNT_EMAIL_FROM` to a sender verified with one of these providers, together with that provider's key:
+To send password-reset emails and studio invites (the Invite panel's **Send invite**), set `ACCOUNT_EMAIL_FROM` to a sender verified with one of these providers, together with that provider's key:
 
 ```sh
 ACCOUNT_EMAIL_FROM="Livestream Studio <studio@arnoldfamini.com>"

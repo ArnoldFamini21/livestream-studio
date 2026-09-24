@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MediaDeviceInfo } from '../hooks/useMediaDevices.ts';
 import type { VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
 import {
@@ -20,6 +20,9 @@ interface DeviceSelectorProps {
   onAudioOutputDeviceChange: (deviceId: string) => void;
   audioProcessing?: AudioProcessingPreferences;
   onAudioProcessingChange?: (next: AudioProcessingPreferences) => void;
+  /** The name shown on this participant's tile; editable when a handler is given. */
+  displayName?: string;
+  onDisplayNameChange?: (name: string) => void;
   videoQuality?: VideoQualityPresetId;
   recommendedVideoQuality?: VideoQualityPresetId;
   onVideoQualityChange?: (next: VideoQualityPresetId) => void;
@@ -43,6 +46,8 @@ export function DeviceSelector({
   onAudioOutputDeviceChange,
   audioProcessing,
   onAudioProcessingChange,
+  displayName,
+  onDisplayNameChange,
   videoQuality,
   recommendedVideoQuality,
   onVideoQualityChange,
@@ -53,6 +58,11 @@ export function DeviceSelector({
   virtualBackgroundError,
 }: DeviceSelectorProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const [nameDraft, setNameDraft] = useState(displayName || '');
+  useEffect(() => { setNameDraft(displayName || ''); }, [displayName]);
+  const nameChanged = Boolean(onDisplayNameChange) && nameDraft.trim().length > 0 && nameDraft.trim() !== (displayName || '');
+  const saveName = () => { if (nameChanged) onDisplayNameChange?.(nameDraft.trim()); };
+
   const updateAudioProcessing = (key: keyof AudioProcessingPreferences, value: boolean) => {
     if (!audioProcessing || !onAudioProcessingChange) return;
     onAudioProcessingChange({ ...audioProcessing, [key]: value });
@@ -97,6 +107,24 @@ export function DeviceSelector({
             </svg>
           </button>
         </div>
+
+        {onDisplayNameChange && (
+          <div style={styles.nameRow}>
+            <label htmlFor="device-settings-name" style={styles.nameLabel}>Your name on stage</label>
+            <div style={styles.nameControls}>
+              <input
+                id="device-settings-name"
+                style={styles.nameInput}
+                value={nameDraft}
+                maxLength={60}
+                onChange={(event) => setNameDraft(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); saveName(); } }}
+                autoComplete="name"
+              />
+              <button type="button" style={{ ...styles.nameSave, ...(nameChanged ? {} : styles.nameSaveDisabled) }} onClick={saveName} disabled={!nameChanged}>Save</button>
+            </div>
+          </div>
+        )}
 
         {/* Body */}
         <div style={styles.body}>
@@ -284,6 +312,12 @@ function DeviceGroup({
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  nameRow: { padding: '12px 18px 4px', display: 'flex', flexDirection: 'column', gap: 6 },
+  nameLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' },
+  nameControls: { display: 'flex', gap: 8 },
+  nameInput: { flex: 1, minWidth: 0, padding: '9px 11px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: 13 },
+  nameSave: { padding: '9px 14px', borderRadius: 8, border: 0, background: 'var(--accent)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' },
+  nameSaveDisabled: { opacity: 0.45, cursor: 'default' },
   backdrop: {
     position: 'fixed',
     inset: 0,
