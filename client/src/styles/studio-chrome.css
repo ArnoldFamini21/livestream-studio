@@ -122,3 +122,5 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
 .watch-form button { padding: 12px 18px; border-radius: 10px; border: 0; background: #6d5dfc; color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; }
 .watch-form button:disabled { opacity: 0.5; cursor: default; }
 .watch-error { margin: 0; color: #ffb4bd; font-size: 13px; }
+.watch-header .entry-wordmark { display: inline-flex; align-items: center; gap: 8px; color: #f4f4f8; text-decoration: none; font-weight: 700; font-size: 14px; }
+.watch-header .entry-wordmark svg { width: 18px; height: 18px; }
