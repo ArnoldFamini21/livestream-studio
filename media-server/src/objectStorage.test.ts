@@ -8,6 +8,7 @@ import {
   buildRecordingExportObjectKey,
   createObjectStoragePutRequest,
   getRecordingObjectStorageConfig,
+  signObjectStorageRequest,
   uploadFileToObjectStorage,
   type ObjectStorageConfig,
 } from './objectStorage.js';
@@ -142,6 +143,103 @@ describe('recording object storage', () => {
         url: 'https://cdn.example.com/recordings/studio/rooms/room-123/Launch%20Demo.mp4',
         uploadedAt: '2026-07-01T20:00:00.000Z',
       });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('signs query parameters in canonical order', () => {
+    const request = signObjectStorageRequest(baseConfig(), {
+      method: 'PUT',
+      key: 'studio/a.mp4',
+      query: { uploadId: 'abc/+=', partNumber: '2' },
+      payloadSha256: 'b'.repeat(64),
+    }, new Date('2026-07-01T20:00:00.000Z'));
+    assert.equal(request.url.search, '?partNumber=2&uploadId=abc%2F%2B%3D');
+  });
+
+  it('never puts + in object keys', () => {
+    assert.equal(
+      buildRecordingExportObjectKey({ roomId: 'r', uploadId: 'u', exportId: 'e', artifactId: 'a', fileName: 'Big+Part.mp4' }),
+      'rooms/r/uploads/u/exports/e/a-Big_Part.mp4'
+    );
+  });
+
+  it('uploads large files in parts and completes the upload', async () => {
+    const calls: string[] = [];
+    const partSizes: number[] = [];
+    let completeBody = '';
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url || '/', 'http://x');
+      calls.push(`${req.method} ${url.search}`);
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        if (req.method === 'POST' && url.searchParams.has('uploads')) {
+          res.writeHead(200, { 'Content-Type': 'application/xml' });
+          res.end('<InitiateMultipartUploadResult><UploadId>up&amp;1</UploadId></InitiateMultipartUploadResult>');
+        } else if (req.method === 'PUT') {
+          assert.equal(url.searchParams.get('uploadId'), 'up&1');
+          partSizes.push(Buffer.concat(chunks).length);
+          res.writeHead(200, { ETag: `"etag-${url.searchParams.get('partNumber')}"` });
+          res.end();
+        } else {
+          completeBody = Buffer.concat(chunks).toString('utf8');
+          res.writeHead(200);
+          res.end('<CompleteMultipartUploadResult></CompleteMultipartUploadResult>');
+        }
+      });
+    });
+    const port = await listen(server);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'recording-storage-multipart-'));
+    const filePath = path.join(dir, 'long.mp4');
+    const partSize = 5 * 1024 * 1024;
+    await writeFile(filePath, Buffer.alloc(partSize * 2 + 100, 7));
+    try {
+      await uploadFileToObjectStorage(baseConfig(`http://127.0.0.1:${port}`), {
+        filePath, key: 'studio/long.mp4', contentType: 'video/mp4',
+      }, new Date(), { multipartThresholdBytes: 1024, partSizeBytes: partSize });
+      assert.deepEqual(partSizes, [partSize, partSize, 100]);
+      assert.equal(calls.length, 5);
+      assert.match(completeBody, /<Part><PartNumber>1<\/PartNumber><ETag>&quot;etag-1&quot;<\/ETag><\/Part>/);
+      assert.match(completeBody, /<PartNumber>3<\/PartNumber>/);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('aborts the multipart upload when a part fails, so no partial parts are billed', async () => {
+    const methods: string[] = [];
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url || '/', 'http://x');
+      methods.push(req.method || '');
+      req.resume();
+      req.on('end', () => {
+        if (req.method === 'POST') {
+          res.writeHead(200);
+          res.end('<InitiateMultipartUploadResult><UploadId>up-2</UploadId></InitiateMultipartUploadResult>');
+        } else if (req.method === 'PUT') {
+          res.writeHead(500);
+          res.end('<Error><Code>InternalError</Code></Error>');
+        } else {
+          assert.equal(url.searchParams.get('uploadId'), 'up-2');
+          res.writeHead(204);
+          res.end();
+        }
+      });
+    });
+    const port = await listen(server);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'recording-storage-abort-'));
+    const filePath = path.join(dir, 'long.mp4');
+    await writeFile(filePath, Buffer.alloc(6 * 1024 * 1024, 1));
+    try {
+      await assert.rejects(
+        uploadFileToObjectStorage(baseConfig(`http://127.0.0.1:${port}`), {
+          filePath, key: 'studio/long.mp4', contentType: 'video/mp4',
+        }, new Date(), { multipartThresholdBytes: 1024 }),
+        /part 1 upload failed with status 500/
+      );
+      assert.deepEqual(methods, ['POST', 'PUT', 'DELETE']);
     } finally {
       await close(server);
     }
