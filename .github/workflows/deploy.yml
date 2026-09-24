@@ -95,6 +95,16 @@ jobs:
           VITE_MEDIA_HTTP_URL: https://livestream-studio-media-server.onrender.com
           VITE_INVITE_BASE_URL: https://studio.arnoldfamini.com
 
+      - name: Check client assets for Hostinger
+        # Hostinger serves .mjs as text/plain, which browsers refuse to run
+        # as a module script (this broke PDF rendering).
+        run: |
+          if find client/dist -name '*.mjs' | grep -q .; then
+            echo "::error::client/dist contains .mjs files, which Hostinger serves as text/plain."
+            find client/dist -name '*.mjs'
+            exit 1
+          fi
+
       - name: Trigger Render deploys
         id: render-deploys
         continue-on-error: true

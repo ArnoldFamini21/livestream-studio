@@ -4331,8 +4331,13 @@ export function StudioRoom() {
           const powerPointRenderStrategy = type === 'presentation'
             ? getPowerPointRenderStrategy(file)
             : null;
-          const skipUnavailableServerRender = mediaServerHealth.status === 'unavailable' ||
-            mediaServerHealth.presentationRenderer?.ready === false;
+          // A PDF renders in this browser; the server is only its fallback, so
+          // always try it. The free media server may still be waking up, and
+          // the request wakes it.
+          const skipUnavailableServerRender = type === 'presentation' && (
+            mediaServerHealth.status === 'unavailable' ||
+            mediaServerHealth.presentationRenderer?.ready === false
+          );
           if (skipUnavailableServerRender) {
             serverRenderFailure = getUnavailableMediaServerPresentationFailure(type, mediaServerHealth);
           }
