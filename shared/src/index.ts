@@ -458,6 +458,12 @@ export interface MediaStatePayload {
   audioEnabled: boolean;
   videoEnabled: boolean;
   screenSharing: boolean;
+  /** Id of the separate screen MediaStream when the screen is sent beside the camera. */
+  screenStreamId?: string;
+}
+
+export interface UpdateNamePayload {
+  name: string;
 }
 
 export interface UpdateNamePayload {

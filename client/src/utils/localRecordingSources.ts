@@ -13,6 +13,8 @@ export interface BuildLocalRecordingSourcesOptions {
   localStream: MediaStream | null;
   participants: Map<string, Participant>;
   remoteStreams: Map<string, MediaStream>;
+  /** Screens sent beside a camera (mesh peers); the camera stays in remoteStreams. */
+  remoteScreenStreams?: Map<string, MediaStream>;
   screenStream: MediaStream | null;
   isScreenSharing: boolean;
   programSource?: LocalRecordingSource | null;
@@ -128,7 +130,18 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
     const remoteId = getRecordingSourceId(id);
     const remoteAudioTracks = liveTracks(remoteStream.getAudioTracks());
     const remoteVideoTracks = liveTracks(remoteStream.getVideoTracks());
-    const isRemoteScreen = participant.screenSharing;
+    const separateScreenTracks = liveTracks(options.remoteScreenStreams?.get(id)?.getVideoTracks() || []);
+    // With a separate screen stream the main stream is still the camera.
+    const isRemoteScreen = participant.screenSharing && separateScreenTracks.length === 0;
+    if (separateScreenTracks.length > 0) {
+      sources.push({
+        id: `${remoteId}-screen`,
+        label: `${participant.name} screen`,
+        kind: 'screen',
+        stream: createStream(separateScreenTracks),
+        bitsPerSecond: 8_000_000,
+      });
+    }
 
     if (!isRemoteScreen && remoteAudioTracks.length > 0 && remoteVideoTracks.length > 0) {
       sources.push({

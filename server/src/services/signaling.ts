@@ -2164,11 +2164,15 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
     entry.participant.screenSharing = screenSharing;
   }
 
+  const screenStreamId = screenSharing && typeof payload.screenStreamId === 'string' && /^[\w-]{1,80}$/.test(payload.screenStreamId)
+    ? payload.screenStreamId
+    : undefined;
   const authoritativePayload: MediaStatePayload = {
     participantId: mapping.participantId,
     audioEnabled: payload.audioEnabled,
     videoEnabled: payload.videoEnabled,
     screenSharing,
+    ...(screenStreamId ? { screenStreamId } : {}),
   };
 
   broadcastToRoom(mapping.roomId, {
