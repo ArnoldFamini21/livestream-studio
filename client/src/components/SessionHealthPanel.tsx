@@ -198,7 +198,7 @@ export function SessionHealthPanel({ summary, meshCapacity, sfuMediaStatus, onCl
       <div style={styles.panel}>
         <div style={styles.header}>
           <div>
-            <h3 style={styles.title}>Session Health</h3>
+            <h2 style={styles.title}>Session Health</h2>
             <p style={styles.subtitle}>Broadcast and recording readiness</p>
           </div>
           <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} aria-label="Close session health">

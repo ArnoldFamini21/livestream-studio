@@ -77,3 +77,4 @@
 .chat-platform p, .chat-connection-details { font-size: 10px; line-height: 1.7; color: var(--text-muted); margin-top: 11px; overflow-wrap: anywhere; }
 .chat-platform .chat-error { color: var(--danger); }
 .chat-connection-details { display: flex; flex-direction: column; gap: 5px; }
+.chat-direct-notice { color: var(--accent); font-weight: 600; }

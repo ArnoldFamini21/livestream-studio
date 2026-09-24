@@ -74,6 +74,9 @@ export function StudioChat({
   const [connectionIds, setConnectionIds] = useState({ youtube: '', facebook: '' });
   const [directRecipientId, setDirectRecipientId] = useState(initialRecipientId);
   const [hasNewMessages, setHasNewMessages] = useState(false);
+  // Private messages land in their own channel. Until the host has read one
+  // there, a notice in whichever channel is open points to it.
+  const [seenDirectIds, setSeenDirectIds] = useState<Set<string>>(() => new Set());
   const containerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDetailsElement>(null);
   const backRef = useRef<HTMLButtonElement>(null);
@@ -121,6 +124,16 @@ export function StudioChat({
   };
   const handleModeChange = (nextMode: ChatTranscriptScope) => { stopTyping(); nearBottom.current = true; setHasNewMessages(false); setMode(nextMode); onConversationChange?.(nextMode, directRecipientId); };
   const handleRecipientChange = (id: string) => { stopTyping(); nearBottom.current = true; setHasNewMessages(false); setDirectRecipientId(id); onConversationChange?.(mode, id); };
+  const directToMe = useMemo(() => messages.filter(message => message.recipientId === myParticipantId), [messages, myParticipantId]);
+  useEffect(() => {
+    if (mode !== 'direct' || !directRecipientId) return;
+    const unseen = directToMe.filter(message => message.senderId === directRecipientId && !seenDirectIds.has(message.id));
+    if (unseen.length === 0) return;
+    setSeenDirectIds(current => { const next = new Set(current); unseen.forEach(message => next.add(message.id)); return next; });
+  }, [directRecipientId, directToMe, mode, seenDirectIds]);
+  const pendingDirect = directToMe.filter(message => !seenDirectIds.has(message.id) && !(mode === 'direct' && message.senderId === directRecipientId));
+  const latestPendingDirect = pendingDirect[pendingDirect.length - 1];
+  const openPendingDirect = () => { if (!latestPendingDirect) return; stopTyping(); nearBottom.current = true; setHasNewMessages(false); setMode('direct'); setDirectRecipientId(latestPendingDirect.senderId); onConversationChange?.('direct', latestPendingDirect.senderId); };
   const handleSend = () => {
     if (!preparedMessage) return;
     stopTyping();
@@ -171,6 +184,7 @@ export function StudioChat({
         </details>
       </div>
       {errorCount > 0 && <button type="button" className="chat-connection-notice" onClick={openConnections}>A chat connection needs attention <span>→</span></button>}
+      {latestPendingDirect && <button type="button" className="chat-connection-notice chat-direct-notice" onClick={openPendingDirect}>New private message from {latestPendingDirect.senderName}{pendingDirect.length > 1 ? ` (+${pendingDirect.length - 1})` : ''} <span>→</span></button>}
       {mode === 'direct' && <div className="chat-recipient-row"><select className="chat-channel-select" aria-label="Private message recipient" value={directRecipientId} onChange={event => handleRecipientChange(event.target.value)}>
         <option value="">{directRecipients.length ? 'Choose a recipient' : 'No other participants'}</option>
         {directRecipientId && !selectedRecipient && <option value={directRecipientId} disabled>Recipient unavailable</option>}

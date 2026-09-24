@@ -65,7 +65,7 @@ export function LivePollsPanel({
     <div style={styles.panel}>
       <div style={styles.header}>
         <div>
-          <h3 style={styles.title}>Polls</h3>
+          <h2 style={styles.title}>Polls</h2>
           <p style={styles.subtitle}>{polls.length} poll{polls.length === 1 ? '' : 's'}</p>
         </div>
         <button type="button" className="panel-close-btn" style={styles.closeBtn} onClick={onClose} aria-label="Close polls">

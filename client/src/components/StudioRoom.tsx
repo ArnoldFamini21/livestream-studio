@@ -271,6 +271,8 @@ const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.
 const MAX_PERSISTED_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_STUDIO_SCENES = 12;
 const SCENE_TRANSITION_DURATION_MS = 520;
+/** Seconds between Start recording and the first frame, so everyone can settle. */
+const RECORDING_COUNTDOWN_SECONDS = 3;
 const STINGER_TRANSITION_DURATION_MS = 1200;
 const GUEST_JOIN_SESSION_STORAGE_KEY = 'livestream-studio:guest-join-session-id';
 const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing or expired. Reopen this studio from the saved host entry on the home screen.';
@@ -1041,6 +1043,27 @@ export function StudioRoom() {
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [showBackgroundMusic, setShowBackgroundMusic] = useState(false);
   const [showRecordingPanel, setShowRecordingPanel] = useState(false);
+  // A short on-stage countdown before a recording starts. Escape or Cancel
+  // stops it, so a misclick never produces a stray take.
+  const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
+  const recordingCountdownCancelRef = useRef<(() => void) | null>(null);
+  const runRecordingCountdown = useCallback(() => new Promise<boolean>((resolve) => {
+    let remaining = RECORDING_COUNTDOWN_SECONDS;
+    setRecordingCountdown(remaining);
+    const finish = (started: boolean) => {
+      window.clearInterval(timer);
+      recordingCountdownCancelRef.current = null;
+      setRecordingCountdown(null);
+      resolve(started);
+    };
+    const timer = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) finish(true);
+      else setRecordingCountdown(remaining);
+    }, 1000);
+    recordingCountdownCancelRef.current = () => finish(false);
+  }), []);
+  useEffect(() => () => recordingCountdownCancelRef.current?.(), []);
   const [showProducerPanel, setShowProducerPanel] = useState(false);
   const [showWebinarQA, setShowWebinarQA] = useState(false);
   const [showPolls, setShowPolls] = useState(false);
@@ -3194,6 +3217,7 @@ export function StudioRoom() {
           addToast(err instanceof Error ? err.message : 'Failed to stop recording.', 'error');
         }
       } else {
+        if (!(await runRecordingCountdown())) return;
         const streams = new Map<string, RecordingStreamInput>();
         const programSource = createProgramRecordingSource({
           compositeStream: compositeStreamRef.current,
@@ -5321,6 +5345,10 @@ export function StudioRoom() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.defaultPrevented) return;
       if (event.key === 'Escape') {
+        if (recordingCountdownCancelRef.current) {
+          recordingCountdownCancelRef.current();
+          return;
+        }
         setShowShortcutHelp(false);
         // Confirmations and other dialogs handle their own Escape first.
         if (!document.querySelector('[data-confirm-dialog]')) closeToolPanels();
@@ -5866,6 +5894,7 @@ export function StudioRoom() {
           </div>
         </div>
 
+        <div style={styles.waitingBody}>
         <div role="main" style={{ ...styles.waitingMain, ...waitingRoomBackgroundStyle }}>
           <div style={styles.waitingStack}>
             <div style={styles.waitingShell}>
@@ -5921,6 +5950,34 @@ export function StudioRoom() {
           </div>
         </div>
 
+        {/* A waiting guest can reach the host (and read the public chat) before
+            being brought on stage, so nobody sits in the green room in silence. */}
+        {offStageGuestStatus === 'green-room' && showGuestChat && (
+          <ChatPanel
+            messages={chatMessages.filter((msg) => !msg.isBackstage)}
+            onSend={(content, recipientId) => onSendChat(content, false, recipientId)}
+            onReact={onReactChat}
+            onTypingChange={(typing, recipientId) => onChatTypingChange(typing, false, recipientId)}
+            onClose={() => setShowGuestChat(false)}
+            senderName={userName}
+            typingUsers={guestChatTypingNames}
+            directRecipients={Array.from(allParticipantsMap.values())
+              .filter((participant) => (
+                participant.id !== myParticipant?.id &&
+                (participant.role === 'host' || participant.role === 'co-host')
+              ))
+              .map((participant) => ({ id: participant.id, name: participant.name, role: participant.role }))}
+            defaultRecipientId={Array.from(allParticipantsMap.values()).find((participant) => participant.role === 'host')?.id
+              || Array.from(allParticipantsMap.values()).find((participant) => participant.role === 'co-host')?.id
+              || ''}
+            directOnly
+            title="Chat"
+            placeholder="Message the host..."
+            emptyText="No messages yet"
+            emptyHint="Let the host know you're ready, or ask a question while you wait."
+          />
+        )}
+        </div>
         <ControlBar
           audioEnabled={effectiveAudioEnabled}
           videoEnabled={effectiveVideoEnabled}
@@ -5932,7 +5989,7 @@ export function StudioRoom() {
           roomName={room?.name || 'Studio'}
           isHost={false}
           isScreenSharing={false}
-          onOpenChat={offStageGuestStatus === 'backstage' ? () => setShowGuestChat(!showGuestChat) : undefined}
+          onOpenChat={isHeldOffStageGuest ? () => setShowGuestChat(!showGuestChat) : undefined}
           participantCount={allParticipantsMap.size}
           isLive={isLive}
         />
@@ -5952,6 +6009,7 @@ export function StudioRoom() {
             emptyHint="Coordinate with the host and backstage guests."
           />
         )}
+
 
         {showHealthPanel && (
           <SessionHealthPanel
@@ -6185,7 +6243,14 @@ export function StudioRoom() {
         <h1 style={styles.visuallyHidden}>{room?.name || 'Studio'}</h1>
         {/* Stage */}
         <div className="studio-stage" style={styles.stage}>
-          <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : 'Stage preview'}</span><span>{liveStatus.active ? 'Your audience can see this stage' : recordingStatus.active ? recordingStatus.paused ? 'Resume when you are ready' : 'Recording session in progress' : 'Prepare your stage before going live'}</span></div>
+          <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : isHostOrCoHost ? 'Stage preview' : 'On stage'}</span><span>{liveStatus.active ? (isHostOrCoHost ? 'Your audience can see this stage' : 'You are live with the audience') : recordingStatus.active ? recordingStatus.paused ? (isHostOrCoHost ? 'Resume when you are ready' : 'The host paused the recording') : 'Recording session in progress' : isHostOrCoHost ? 'Prepare your stage before going live' : 'The host controls the layout'}</span></div>
+          {recordingCountdown !== null && (
+            <div className="studio-recording-countdown" role="status" aria-live="assertive">
+              <span className="studio-recording-countdown-number">{recordingCountdown}</span>
+              <span className="studio-recording-countdown-label">Recording starts</span>
+              <button type="button" onClick={() => recordingCountdownCancelRef.current?.()}>Cancel</button>
+            </div>
+          )}
           {/* Scale the complete broadcast composition; panels never reflow it. */}
           <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }} footer={
             isHostOrCoHost && sharedContentAvailable && <PresentationToolbar
@@ -7289,6 +7354,11 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     display: 'flex',
     overflow: 'hidden',
+  },
+  waitingBody: {
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
   },
   waitingMain: {
     flex: 1,

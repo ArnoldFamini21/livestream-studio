@@ -2172,6 +2172,13 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
   }, mapping.participantId);
 }
 
+/** Whether `participantId` names a host or co-host in the room. */
+function isOperatorParticipant(roomState: RoomState, participantId: unknown): boolean {
+  if (typeof participantId !== 'string' || !participantId.trim()) return false;
+  const role = roomState.participants.get(participantId.trim())?.participant.role;
+  return role === 'host' || role === 'co-host';
+}
+
 function canSeeChatMessage(message: ChatMessage, participant: Participant, participantId: string): boolean {
   if (message.recipientId) {
     return participantId === message.senderId || participantId === message.recipientId;
@@ -2630,7 +2637,7 @@ function handleChatTyping(ws: WebSocket, payload: ChatTypingPayload) {
 
   const senderEntry = roomState.participants.get(mapping.participantId);
   if (!senderEntry) return;
-  if (senderEntry.participant.status === 'green-room') {
+  if (senderEntry.participant.status === 'green-room' && !isOperatorParticipant(roomState, payload.recipientId)) {
     sendError(ws, 'Wait until you are admitted before sending studio chat updates', 'PARTICIPANT_NOT_ADMITTED');
     return;
   }
@@ -2696,8 +2703,9 @@ function handleChatMessage(ws: WebSocket, payload: ChatMessage) {
   // Fix #8: Override senderId and senderName with server-authoritative values
   const senderEntry = roomState.participants.get(mapping.participantId);
   if (!senderEntry) return;
-  if (senderEntry.participant.status === 'green-room') {
-    sendError(ws, 'Wait until you are admitted before sending studio chat messages', 'PARTICIPANT_NOT_ADMITTED');
+  if (senderEntry.participant.status === 'green-room' && !isOperatorParticipant(roomState, payload.recipientId)) {
+    // A waiting guest can message the host privately, but not the whole studio.
+    sendError(ws, 'Message the host directly while you wait in the green room', 'PARTICIPANT_NOT_ADMITTED');
     return;
   }
   const isBackstageMessage = payload.isBackstage === true;

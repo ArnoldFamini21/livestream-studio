@@ -2403,3 +2403,59 @@ describe('stage content sync', () => {
     }
   });
 });
+
+describe('green room chat', () => {
+  it('lets a waiting guest message the host privately, but not the whole studio', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Green room chat test', 'Arnold', {
+      creatorIp: `green-room-chat-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = true;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostId = (await hostJoined).payload.participant.id;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Nica', role: 'guest' });
+      assert.equal((await guestJoined).payload.participant.status, 'green-room');
+
+      // Public chat from the green room is still refused.
+      const refused = waitForMessage(guest, 'error', (message) => message.payload.code === 'PARTICIPANT_NOT_ADMITTED');
+      sendSignal(guest, {
+        type: 'chat-message',
+        payload: { id: 'g1', senderId: 'x', senderName: 'x', content: 'Hello everyone', timestamp: new Date().toISOString(), isBackstage: false },
+      });
+      assert.match((await refused).payload.message, /Message the host directly/);
+
+      // A private message to the host goes through, and only the host sees it.
+      const hostChat = waitForMessage(host, 'chat-message');
+      sendSignal(guest, {
+        type: 'chat-message',
+        payload: { id: 'g2', senderId: 'x', senderName: 'x', content: 'Ready when you are', timestamp: new Date().toISOString(), isBackstage: false, recipientId: hostId },
+      });
+      const received = await hostChat;
+      assert.equal(received.payload.content, 'Ready when you are');
+      assert.equal(received.payload.senderName, 'Nica');
+      assert.equal(received.payload.recipientId, hostId);
+
+      // Typing indicators to the host are allowed from the green room too.
+      const typing = waitForMessage(host, 'chat-typing');
+      sendSignal(guest, {
+        type: 'chat-typing',
+        payload: { participantId: 'x', participantName: 'x', typing: true, isBackstage: false, recipientId: hostId, timestamp: new Date().toISOString() },
+      });
+      assert.equal((await typing).payload.typing, true);
+
+      host.close();
+      guest.close();
+    } finally {
+      await harness.close();
+    }
+  });
+});

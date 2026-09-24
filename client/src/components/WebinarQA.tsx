@@ -82,7 +82,7 @@ export function WebinarQAPanel({
       {/* Header */}
       <div style={panelStyles.header}>
         <div style={panelStyles.headerLeft}>
-          <h3 style={panelStyles.title}>Q&A</h3>
+          <h2 style={panelStyles.title}>Q&A</h2>
           <span style={panelStyles.badge}>
             {totalCount}
           </span>
