@@ -6328,10 +6328,8 @@ export function StudioRoom() {
                           ...(canDragStageTile ? styles.tileWrapperDraggable : {}),
                           ...(isDraggedStageTile ? styles.tileWrapperDragging : {}),
                           ...(isStageDropTarget ? styles.tileWrapperDropTarget : {}),
-                          // The presenting layout sizes tiles with an explicit height; the
-                          // normal one uses aspect-ratio. Reset height to auto so Safari
-                          // does not keep the presenting height (a thin strip in "Me").
-                          ...(sharedContentLayoutResult ? {} : { height: 'auto' }),
+                          // Both layouts size tiles by width and aspect-ratio, never an
+                          // explicit height, which Safari can keep across a layout switch.
                           ...((sharedContentLayoutResult?.participantStyles[i] || layoutResult.tileStyles[i]) || {}),
                           ...getStagePresenceWrapperStyle(presence.phase),
                         }}
