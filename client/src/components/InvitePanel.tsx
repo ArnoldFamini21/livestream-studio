@@ -20,7 +20,7 @@ interface InvitePanelProps {
   onClose: () => void;
 }
 
-type CopyTarget = 'link' | 'details' | 'guest-secure' | 'co-host' | 'qr-image' | null;
+type CopyTarget = 'link' | 'details' | 'guest-secure' | 'co-host' | 'qr-image' | 'watch' | null;
 
 async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
@@ -146,6 +146,14 @@ export function InvitePanel({
       passwordProtected,
     });
   }, [hostName, inviteUrl, isLive, passwordProtected, roomName, scheduledLabel]);
+
+  const watchUrl = useMemo(() => {
+    try {
+      return `${new URL(inviteUrl).origin}/watch/${encodeURIComponent(roomId)}`;
+    } catch {
+      return `${window.location.origin}/watch/${encodeURIComponent(roomId)}`;
+    }
+  }, [inviteUrl, roomId]);
 
   const mailtoHref = useMemo(() => {
     return buildGuestInviteEmailHref({
@@ -350,6 +358,31 @@ export function InvitePanel({
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           </button>
+        </div>
+
+        {/* Public watch page: the program as a plain video page, no YouTube needed. */}
+        <div style={styles.emailBox}>
+          <label style={styles.linkLabel} htmlFor="studio-watch-link">Watch page</label>
+          <div style={styles.linkRow}>
+            <input
+              id="studio-watch-link"
+              style={styles.linkInput}
+              value={watchUrl}
+              readOnly
+              onFocus={(event) => event.currentTarget.select()}
+              aria-label="Public watch page link"
+            />
+            <button
+              type="button"
+              style={{ ...styles.copyBtn, ...(copied === 'watch' ? styles.copyBtnDone : {}) }}
+              onClick={() => void handleCopy('watch', watchUrl)}
+            >
+              {copied === 'watch' ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <p style={styles.secureInviteText}>
+            Anyone with this link can watch the live program in their browser once you go live. When registration is enabled for this studio, viewers register first.
+          </p>
         </div>
 
         <div style={styles.metaGrid}>
