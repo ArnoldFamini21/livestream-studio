@@ -128,6 +128,19 @@ export function getPresentationLayout(
       borderRadius: geometry.mediaRadius,
       transition: 'left 0.3s ease, top 0.3s ease, width 0.3s ease, height 0.3s ease, border-radius 0.3s ease',
     } as CSSProperties,
-    participantStyles: geometry.participants.map(rect => ({ ...rectStyle(rect), zIndex: 6, borderRadius: 10, overflow: 'hidden', boxSizing: 'border-box' } as CSSProperties)),
+    participantStyles: geometry.participants.map(rect => ({
+      ...rectStyle(rect),
+      // Camera boxes are 16:9, so size them like the normal stage does: by
+      // width and aspect-ratio, never an explicit height. The same box moves
+      // between layouts (rebuilding it restarts the camera and loses macOS
+      // effects), and Safari kept a leftover explicit height after switching
+      // to "Me", leaving the camera as a thin strip.
+      height: 'auto',
+      aspectRatio: '16 / 9',
+      zIndex: 6,
+      borderRadius: 10,
+      overflow: 'hidden',
+      boxSizing: 'border-box',
+    } as CSSProperties)),
   };
 }
