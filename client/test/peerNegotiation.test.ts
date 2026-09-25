@@ -13,6 +13,8 @@ class FakePeer extends EventTarget {
   releaseOffer: (() => void) | undefined;
   pauseOffer = false;
   rejectRemote = false;
+  pauseRemote = false;
+  releaseRemote: (() => void) | undefined;
   async createOffer(options?: RTCOfferOptions) {
     this.offers.push(options);
     if (this.pauseOffer) await new Promise<void>(resolve => { this.releaseOffer = resolve; });
@@ -20,11 +22,13 @@ class FakePeer extends EventTarget {
   }
   async createAnswer() { return { type: 'answer', sdp: 'local answer' } as RTCSessionDescriptionInit; }
   async setLocalDescription(sdp: RTCSessionDescriptionInit) {
+    if (sdp.type === 'rollback') { this.signalingState = 'stable'; return; }
     this.localDescription = sdp;
     this.signalingState = sdp.type === 'offer' ? 'have-local-offer' : 'stable';
   }
   async setRemoteDescription(sdp: RTCSessionDescriptionInit) {
     this.remoteCalls++;
+    if (this.pauseRemote) await new Promise<void>(resolve => { this.releaseRemote = resolve; });
     if (this.rejectRemote) throw new Error('stale SDP');
     this.remoteDescription = sdp;
     this.signalingState = sdp.type === 'offer' ? 'have-remote-offer' : 'stable';
@@ -184,4 +188,40 @@ test('ignores renegotiation after the peer is replaced', async () => {
   pc.dispatchEvent(new Event('negotiationneeded'));
   await settle();
   assert.equal(sent.length, 0);
+});
+
+test('impolite peer answers an offer that arrives while the previous answer is still being applied', async () => {
+  // Seen with relayed connections: the polite peer answers our offer, then sends
+  // its own offer; it arrives while our side is still applying that answer.
+  // Checking for a collision on arrival dropped it, and neither side recovered.
+  const { pc, negotiation, sent } = setup(false);
+  await negotiation.offer();
+  pc.pauseRemote = true;
+  const applyingAnswer = negotiation.receiveAnswer(remoteAnswer);
+  await settle();
+  assert.equal(pc.signalingState, 'have-local-offer');
+  const followUp = negotiation.receiveOffer({ ...remoteOffer, sdp: 'follow-up offer' });
+  pc.pauseRemote = false;
+  pc.releaseRemote!();
+  await Promise.all([applyingAnswer, followUp]);
+  assert.deepEqual(sent.map(d => d.type), ['offer', 'answer']);
+  assert.equal(pc.remoteDescription?.sdp, 'follow-up offer');
+  assert.equal(pc.signalingState, 'stable');
+});
+
+test('recovery re-offers when the previous offer was never answered', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pc = new FakePeer();
+  const sent: RTCSessionDescriptionInit[] = [];
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, true, d => sent.push(d), () => true, 10);
+  await negotiation.offer();
+  assert.equal(pc.signalingState, 'have-local-offer');
+  pc.connectionState = 'failed';
+  negotiation.connectionStateChanged();
+  t.mock.timers.tick(10);
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['offer', 'offer']);
+  assert.deepEqual(pc.offers.at(-1), { iceRestart: true });
+  assert.equal(pc.signalingState, 'have-local-offer');
+  negotiation.dispose();
 });

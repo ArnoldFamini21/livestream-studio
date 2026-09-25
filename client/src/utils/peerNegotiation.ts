@@ -41,6 +41,12 @@ export class PeerNegotiation {
 
   offer(iceRestart = false) {
     return this.enqueue(async () => {
+      if (this.pc.signalingState === 'have-local-offer' && iceRestart) {
+        // Recovery with our last offer still unanswered (lost, or dropped by the
+        // peer): take it back and offer again rather than wait forever.
+        await this.pc.setLocalDescription({ type: 'rollback' });
+        if (!this.active()) return;
+      }
       if (this.pc.signalingState !== 'stable') return;
       this.makingOffer = true;
       try {
@@ -55,11 +61,13 @@ export class PeerNegotiation {
   }
 
   receiveOffer(sdp: RTCSessionDescriptionInit) {
-    // Check at arrival as well as inside the queue: signalingState can still be
-    // stable while createOffer is pending.
-    const collisionAtArrival = this.makingOffer || this.pc.signalingState !== 'stable';
     return this.enqueue(async () => {
-      const collision = collisionAtArrival || this.pc.signalingState !== 'stable';
+      // Decide here, not on arrival: operations run in order, so an offer we are
+      // still creating has been set by now (a real collision), and an answer
+      // queued ahead of this offer has been applied (not a collision). Checking
+      // on arrival dropped an offer that came in while the previous answer was
+      // being applied, and the peer then waited forever for our answer.
+      const collision = this.makingOffer || this.pc.signalingState !== 'stable';
       this.ignoreOffer = !this.polite && collision;
       if (this.ignoreOffer) return;
       // Modern WebRTC rolls back a pending local offer when applying this offer.
