@@ -253,6 +253,16 @@ describe('recording media-server upload helper', () => {
     ]);
   });
 
+  it('rejects malformed successful responses instead of returning a null export job', async () => {
+    for (const body of ['', '<html>Starting</html>', 'null', '[]']) {
+      globalThis.fetch = async () => new Response(body, { status: 200 });
+      await assert.rejects(getRecordingExportJob({
+        token: 'test-token', uploadId: 'upload-test', exportId: 'export-test',
+        mediaHttpUrl: 'https://media.example.com',
+      }), /unexpected response/);
+    }
+  });
+
   it('fetches one recording export status for manual library refresh', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     globalThis.fetch = async (url, init) => {

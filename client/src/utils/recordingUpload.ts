@@ -240,6 +240,9 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
     throw new Error(message);
   }
 
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Media server returned an unexpected response. Please try again.');
+  }
   return parsed as T;
 }
 

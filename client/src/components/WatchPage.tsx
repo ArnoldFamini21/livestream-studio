@@ -3,7 +3,8 @@ import { useParams } from 'react-router-dom';
 import Hls from 'hls.js';
 import '../styles/studio-chrome.css';
 import { StudioIcon } from './StudioIcon.tsx';
-import { buildApiUrl, resolveMediaHttpUrl } from '../utils/apiClient.ts';
+import { ApiRequestError, requestJson, resolveMediaHttpUrl } from '../utils/apiClient.ts';
+import { pollWatchStatus, type WatchStatus } from '../utils/watchStatus.ts';
 
 /**
  * The public watch page: the live program as HLS from the media server,
@@ -18,15 +19,6 @@ interface WatchRoom {
   registration?: { enabled: boolean };
 }
 
-interface WatchStatus {
-  live: boolean;
-  startedAt?: string;
-  playlistPath?: string;
-  viewers?: number;
-}
-
-const STATUS_POLL_MS = 5_000;
-
 function registrationKey(roomId: string): string {
   return `livestream-studio:watch-registered:${roomId}`;
 }
@@ -40,10 +32,17 @@ function formatSchedule(iso?: string): string {
 
 export function WatchPage() {
   const { roomId = '' } = useParams<{ roomId: string }>();
+  return <WatchRoomPage key={roomId} roomId={roomId} />;
+}
+
+function WatchRoomPage({ roomId }: { roomId: string }) {
   const mediaHttpUrl = useMemo(() => resolveMediaHttpUrl().replace(/\/+$/, ''), []);
   const [room, setRoom] = useState<WatchRoom | null>(null);
   const [roomError, setRoomError] = useState<'missing' | 'failed' | null>(null);
   const [status, setStatus] = useState<WatchStatus | null>(null);
+  const [retry, setRetry] = useState(0);
+  const [statusFailed, setStatusFailed] = useState(false);
+  const [playerError, setPlayerError] = useState('');
   const [wasLive, setWasLive] = useState(false);
   const [registered, setRegistered] = useState(() => {
     try { return Boolean(roomId && localStorage.getItem(registrationKey(roomId))); } catch { return false; }
@@ -58,49 +57,43 @@ export function WatchPage() {
   // Room details: name, host, schedule, and whether registration gates the page.
   useEffect(() => {
     if (!roomId) { setRoomError('missing'); return; }
-    let cancelled = false;
-    fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomId)}`))
-      .then(async (response) => {
-        if (response.status === 404) { if (!cancelled) setRoomError('missing'); return; }
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json() as WatchRoom;
-        if (!cancelled) setRoom({ id: data.id, name: data.name, hostName: data.hostName, scheduledFor: data.scheduledFor, registration: data.registration });
+    const controller = new AbortController();
+    setRoomError(null);
+    requestJson<WatchRoom>(`/api/rooms/${encodeURIComponent(roomId)}`, { signal: controller.signal })
+      .then((data) => {
+        if (!data || typeof data.id !== 'string' || typeof data.name !== 'string') throw new Error('Invalid room response');
+        if (!controller.signal.aborted) setRoom(data);
       })
-      .catch(() => { if (!cancelled) setRoomError('failed'); });
-    return () => { cancelled = true; };
-  }, [roomId]);
+      .catch((error) => {
+        if (!controller.signal.aborted) setRoomError(error instanceof ApiRequestError && error.status === 404 ? 'missing' : 'failed');
+      });
+    return () => controller.abort();
+  }, [roomId, retry]);
 
   const gated = Boolean(room?.registration?.enabled) && !registered;
+  const ready = Boolean(room) && !roomError && !gated;
 
-  // Live status from the media server. Polling also wakes a sleeping free instance.
+  // Wait for room details and registration before requesting any live media.
   useEffect(() => {
-    if (!roomId || !mediaHttpUrl || gated) return;
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const response = await fetch(`${mediaHttpUrl}/watch/${encodeURIComponent(roomId)}/status`, { cache: 'no-store' });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const next = await response.json() as WatchStatus;
-        if (cancelled) return;
-        setStatus(next);
-        if (next.live) setWasLive(true);
-      } catch {
-        if (!cancelled) setStatus((current) => current ?? { live: false });
-      }
-    };
-    void poll();
-    const timer = window.setInterval(() => { void poll(); }, STATUS_POLL_MS);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [gated, mediaHttpUrl, roomId]);
+    if (!ready || !mediaHttpUrl) return;
+    return pollWatchStatus(`${mediaHttpUrl}/watch/${encodeURIComponent(roomId)}/status`, (next) => {
+      setStatus(next);
+      setStatusFailed(false);
+      if (next.live) setWasLive(true);
+    }, () => setStatusFailed(true));
+  }, [ready, mediaHttpUrl, roomId, retry]);
 
-  const playlistUrl = status?.live && status.playlistPath ? `${mediaHttpUrl}${status.playlistPath}` : '';
+  const playlistUrl = ready && status?.live && status.playlistPath ? `${mediaHttpUrl}${status.playlistPath}` : '';
 
   // Attach the player while live; tear it down when the broadcast ends.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !playlistUrl) return;
+    let cancelled = false;
     let hls: Hls | null = null;
-    const tryPlay = () => { video.play().then(() => setNeedsTap(false)).catch(() => setNeedsTap(true)); };
+    setNeedsTap(false);
+    setPlayerError('');
+    const tryPlay = () => { video.play().then(() => { if (!cancelled) setNeedsTap(false); }).catch(() => { if (!cancelled) setNeedsTap(true); }); };
     if (Hls.isSupported()) {
       hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 3, enableWorker: true });
       hlsRef.current = hls;
@@ -112,32 +105,35 @@ export function WatchPage() {
         // Network hiccups (a segment not written yet) recover on their own; media errors need a nudge.
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
         else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        else { setPlayerError('Playback stopped. Please retry.'); hls.destroy(); }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       // Safari plays HLS natively.
       video.src = playlistUrl;
       video.addEventListener('loadedmetadata', tryPlay, { once: true });
+    } else {
+      setPlayerError('This browser cannot play this broadcast. Please use a browser with HLS support.');
     }
     return () => {
+      cancelled = true;
+      video.removeEventListener('loadedmetadata', tryPlay);
       hls?.destroy();
       hlsRef.current = null;
       video.removeAttribute('src');
       video.load();
     };
-  }, [playlistUrl]);
+  }, [playlistUrl, retry]);
 
   const submitRegistration = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
     setFormBusy(true);
     setFormError('');
     try {
-      const response = await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomId)}/registrants`), {
+      await requestJson(`/api/rooms/${encodeURIComponent(roomId)}/registrants`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name: form.name.trim(), email: form.email.trim() }),
       });
-      const body = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(body.error || 'Registration failed. Please try again.');
       try { localStorage.setItem(registrationKey(roomId), form.email.trim()); } catch { /* Private mode. */ }
       setRegistered(true);
     } catch (error) {
@@ -149,7 +145,7 @@ export function WatchPage() {
 
   const title = room?.name || 'Live broadcast';
   const schedule = formatSchedule(room?.scheduledFor);
-  const live = Boolean(status?.live);
+  const live = ready && Boolean(status?.live);
   const ended = !live && wasLive;
 
   return (
@@ -163,6 +159,12 @@ export function WatchPage() {
           <section className="watch-card" role="alert">
             <h1>Broadcast not found</h1>
             <p>This link doesn't point to a studio. Check the link you were given.</p>
+          </section>
+        ) : roomError === 'failed' ? (
+          <section className="watch-card" role="alert">
+            <h1>Unable to connect</h1>
+            <p>The studio server could not be reached. Please try again.</p>
+            <button type="button" onClick={() => setRetry((value) => value + 1)}>Retry connection</button>
           </section>
         ) : gated ? (
           <section className="watch-card">
@@ -179,19 +181,23 @@ export function WatchPage() {
         ) : (
           <>
             <div className={`watch-player${live ? ' is-live' : ''}`}>
-              <video ref={videoRef} playsInline controls={live} muted={false} aria-label={`${title} live video`} />
+              <video ref={videoRef} playsInline controls={live} muted={false} aria-hidden={!live} aria-label={`${title} live video`} />
               {!live && (
                 <div className="watch-placeholder">
-                  {ended ? (
+                  {statusFailed ? (
+                    <><h2>Connection interrupted</h2><p>Trying to reconnect to the broadcast…</p></>
+                  ) : ended ? (
                     <><h2>This broadcast has ended</h2><p>Thank you for watching.</p></>
-                  ) : roomError === 'failed' || status === null ? (
+                  ) : !room || status === null ? (
                     <><h2>Connecting…</h2><p>Checking whether the broadcast is live.</p></>
                   ) : (
                     <><h2>Not live yet</h2><p>{schedule ? `Scheduled for ${schedule}. ` : ''}This page starts playing on its own when the host goes live.</p></>
                   )}
                 </div>
               )}
-              {live && needsTap && (
+              {live && playerError && <div className="watch-placeholder" role="alert"><p>{playerError}</p><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry playback</button></div>}
+              {live && statusFailed && <p className="watch-error" role="status">Connection interrupted. Reconnecting…</p>}
+              {live && needsTap && !playerError && (
                 <button type="button" className="watch-tap" onClick={() => videoRef.current?.play().then(() => setNeedsTap(false)).catch(() => undefined)}>
                   Tap to play
                 </button>

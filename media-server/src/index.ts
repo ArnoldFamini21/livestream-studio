@@ -88,7 +88,7 @@ import {
   isServableHlsFile,
   isValidWatchRoomId,
   prepareHlsRoomDir,
-  removeHlsRoomDir,
+  removeHlsWriterDir,
 } from './hlsOutput.js';
 
 const PORT = Number(process.env.PORT || process.env.MEDIA_SERVER_PORT || 3002);
@@ -399,7 +399,10 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
     console.warn('Watch page HLS folder could not be prepared:', err instanceof Error ? err.message : err);
     return;
   }
-  if (session.stopping || session.hls) return;
+  if (session.stopping || session.hls || session.encoder !== encoder || encoder.exited) {
+    await removeHlsWriterDir(dir);
+    return;
+  }
   const child = spawn(ffmpegPath, createFfmpegHlsArgs(dir), { stdio: ['pipe', 'ignore', 'pipe'] });
   const options = { video: normalizeVideoConfig(payload.video), audio: normalizeAudioConfig(payload.audio) };
   const feed = new FlvSinkFeed(child.stdin, encoder.flv, {
@@ -421,9 +424,10 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
   });
   child.on('close', () => {
     hls.exited = true;
+    if (session.hls === hls) session.hls = null;
     if (liveWatchRooms.get(roomId)?.dir === dir) liveWatchRooms.delete(roomId);
     // Viewers get a moment to see the last segments before the folder goes.
-    setTimeout(() => { void removeHlsRoomDir(roomId); }, 15_000);
+    setTimeout(() => { void removeHlsWriterDir(dir); }, 15_000);
   });
 }
 
@@ -476,7 +480,7 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
   if (file === 'status') {
     res.setHeader('Cache-Control', 'no-store');
     writeJson(res, 200, live
-      ? { live: true, startedAt: live.startedAt, playlistPath: `/watch/${encodeURIComponent(roomId)}/${HLS_PLAYLIST_NAME}`, viewers: live.viewers.count() }
+      ? { live: true, startedAt: live.startedAt, playlistPath: `/watch/${encodeURIComponent(roomId)}/${HLS_PLAYLIST_NAME}?generation=${encodeURIComponent(path.basename(live.dir))}`, viewers: live.viewers.count() }
       : { live: false, viewers: 0 });
     return true;
   }
@@ -500,7 +504,8 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
   res.writeHead(200, {
     'Content-Type': getHlsContentType(file),
     'Content-Length': String(size),
-    'Cache-Control': file === HLS_PLAYLIST_NAME ? 'no-store' : 'public, max-age=60',
+    // Do not retain live footage in intermediary caches.
+    'Cache-Control': 'no-store',
   });
   if (req.method === 'HEAD') {
     res.end();
@@ -733,6 +738,8 @@ function spawnEncoder(
     }
     if (session.encoder !== encoder) return;
 
+    stopHlsWriter(session);
+
     // Every uploader was fed by this encode. Retire them; a new encoder
     // starts a new FLV stream, and they are respawned against it.
     for (const timer of session.restartTimers.values()) clearTimeout(timer);
@@ -762,6 +769,7 @@ function spawnEncoder(
         session.encoderRestartTimer = null;
         if (session.stopping || ws.readyState !== WebSocket.OPEN) return;
         spawnEncoder(ws, session, ffmpegPath, payload);
+        void spawnHlsWriter(session, ffmpegPath, payload);
         for (const destination of session.destinations) {
           spawnRelay(ws, session, ffmpegPath, destination, payload);
         }
