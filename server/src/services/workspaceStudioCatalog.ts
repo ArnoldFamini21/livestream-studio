@@ -251,6 +251,7 @@ export class PostgresWorkspaceStudioCatalogStore implements WorkspaceStudioCatal
       VALUES ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz)
       ON CONFLICT (room_id, studio_id) DO UPDATE SET
         studio = EXCLUDED.studio,
+        created_at = EXCLUDED.created_at,
         updated_at = EXCLUDED.updated_at
     `, [
       roomId,
@@ -295,6 +296,7 @@ export class PostgresWorkspaceStudioCatalogStore implements WorkspaceStudioCatal
       VALUES ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz)
       ON CONFLICT (account_id, studio_id) DO UPDATE SET
         studio = EXCLUDED.studio,
+        created_at = EXCLUDED.created_at,
         updated_at = EXCLUDED.updated_at
     `, [
       accountId,
