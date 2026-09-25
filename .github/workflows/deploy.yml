@@ -195,7 +195,8 @@ jobs:
         run: npm run production:check
         env:
           PRODUCTION_CHECK_SCOPE: services
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_SIGNALING_COMMIT: ${{ (steps.changed-paths.outputs.signaling_changed == 'true' || (github.event_name == 'workflow_dispatch' && inputs.deploy_signaling)) && github.sha || '' }}
+          EXPECTED_MEDIA_COMMIT: ${{ (steps.changed-paths.outputs.media_changed == 'true' || (github.event_name == 'workflow_dispatch' && inputs.deploy_media)) && github.sha || '' }}
           PRODUCTION_CHECK_WAIT_MS: 900000
           PRODUCTION_CHECK_INTERVAL_MS: 15000
           PRODUCTION_REQUIRE_TURN: ${{ vars.PRODUCTION_REQUIRE_TURN }}

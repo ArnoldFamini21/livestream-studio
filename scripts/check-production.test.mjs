@@ -5,6 +5,7 @@ import { once } from 'node:events';
 
 import {
   checkHealth,
+  getExpectedServiceCommit,
   describeHttpFailure,
   describeServiceCapabilityFailure,
   describeServiceHealthMetadataFailure,
@@ -209,4 +210,16 @@ test('health checks send the configured website origin through fetch and curl fa
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+
+test('checks the new commit only for services actually deployed', () => {
+  const mediaOnly = { EXPECTED_COMMIT: 'abc1234', EXPECTED_MEDIA_COMMIT: 'abc1234', EXPECTED_SIGNALING_COMMIT: '' };
+  assert.equal(getExpectedServiceCommit('media-server', mediaOnly), 'abc1234');
+  assert.equal(getExpectedServiceCommit('signaling-server', mediaOnly), '');
+  const signalingOnly = { GITHUB_SHA: 'def1234', EXPECTED_MEDIA_COMMIT: '', EXPECTED_SIGNALING_COMMIT: 'def1234' };
+  assert.equal(getExpectedServiceCommit('media-server', signalingOnly), '');
+  assert.equal(getExpectedServiceCommit('signaling-server', signalingOnly), 'def1234');
+  assert.equal(getExpectedServiceCommit('media-server', { EXPECTED_COMMIT: 'abc1234' }), 'abc1234');
+  assert.equal(getExpectedServiceCommit('signaling-server', { GITHUB_SHA: 'def1234' }), 'def1234');
 });
