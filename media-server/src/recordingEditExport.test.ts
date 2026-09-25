@@ -62,7 +62,7 @@ describe('recording export edits', () => {
     assert.equal(commands.mp4.label, 'Final MP4 (cleaned)');
     const script = commands.mp4.filterScript!;
     assert.equal(script.path, '/tmp/out/Episode_12_cleaned.mp4.filtergraph.txt');
-    assert.ok(commands.mp4.args.includes('-/filter_complex'));
+    assert.ok(commands.mp4.args.includes('-filter_complex_script'));
     assert.ok(!commands.mp4.args.includes('-ss'), 'edits do not also seek');
     assert.match(script.content, /fps=30,select='gte\(t,-0\.016667\)\*lt\(t,0\.983333\)\+gte\(t,1\.983333\)\*lt\(t,3\.983333\)'/);
     // The program mix carries its own audio, which is cut with the same ranges.
@@ -123,6 +123,24 @@ describe('edited export with real FFmpeg', { skip: !ffmpegAvailable && 'FFmpeg i
 
   after(async () => {
     if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it('exports an edited audio-only recording to playable WAV and MP3', async () => {
+    const audioPath = path.join(dir, 'audio-only.webm');
+    const converted = await run(['-v', 'error', '-i', programPath, '-vn', '-c:a', 'copy', audioPath]);
+    assert.equal(converted.code, 0, converted.stderr);
+    const store = new RecordingExportJobStore(createFfmpegExportRunner(ffmpegPath));
+    const job = await store.createJob({
+      uploadId: 'audio-upload', roomId: 'audio-room', rootDir: dir,
+      tracks: [{ id: 'mic', label: 'Microphone', kind: 'audio', mimeType: 'audio/webm', filePath: audioPath, bytesReceived: (await stat(audioPath)).size, complete: true }],
+    }, { includeAudioStems: false, edit: { keepRanges: [{ startSeconds: 1, endSeconds: 3 }] } });
+    await store.startJob(job.exportId);
+    const done = store.getJob(job.exportId);
+    assert.equal(done.status, 'ready', done.error);
+    assert.deepEqual(done.artifacts.map((artifact) => artifact.format), ['wav', 'mp3', 'json']);
+    for (const artifact of done.artifacts.filter((item) => item.format !== 'json')) {
+      assert.ok(Math.abs(await mediaDuration(store.getArtifact(job.exportId, artifact.id).path, 'a') - 2) < 0.1);
+    }
   });
 
   it('removes the cut ranges and keeps picture and sound in sync', { timeout: 120_000 }, async () => {

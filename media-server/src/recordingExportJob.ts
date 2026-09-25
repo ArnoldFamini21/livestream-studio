@@ -12,6 +12,8 @@ import type {
 } from '@studio/shared';
 import {
   createRecordingExportCommands,
+  createRecordingAudioStemArgs,
+  validateRecordingExportTracks,
   getRecordingExportClipIssue,
   getRecordingExportEditIssue,
   normalizeRecordingExportClipRange,
@@ -289,23 +291,35 @@ export class RecordingExportJobStore {
     await mkdir(outputDirectory, { recursive: true });
 
     const normalizeAudio = request.normalizeAudio === true;
-    let commands: ReturnType<typeof createRecordingExportCommands>;
+    const tracks = source.tracks.map(toExportTrack);
+    const audioOnly = tracks.every((track) => track.kind === 'audio');
+    let artifactCommands: RecordingExportCommand[];
     try {
-      commands = createRecordingExportCommands({
-        tracks: source.tracks.map(toExportTrack),
-        outputDirectory,
-        basename,
-        video: request.video,
-        audio: request.audio,
-        clip,
-        edit,
-        normalizeAudio,
-      });
+      if (audioOnly) {
+        const issue = validateRecordingExportTracks(tracks);
+        if (issue) throw new Error(issue);
+        artifactCommands = tracks.flatMap((track) => (['wav', 'mp3'] as const).map((format) =>
+          createRecordingAudioStemArgs(track, outputDirectory, basename, format, request.audio, clip, normalizeAudio, edit, request.video?.frameRate)
+        ));
+      } else {
+        const commands = createRecordingExportCommands({
+          tracks,
+          outputDirectory,
+          basename,
+          video: request.video,
+          audio: request.audio,
+          clip,
+          edit,
+          normalizeAudio,
+        });
+        artifactCommands = [commands.mp4, ...commands.isolatedVideos, ...commands.stems];
+      }
     } catch (err) {
-      if (!edit) throw err;
-      throw new RecordingExportJobError(400, 'RECORDING_EXPORT_INVALID_EDIT', errorMessage(err));
+      throw new RecordingExportJobError(400, edit ? 'RECORDING_EXPORT_INVALID_EDIT' : 'RECORDING_EXPORT_INVALID_TRACKS', errorMessage(err));
     }
-    const artifacts = buildArtifacts([commands.mp4, ...commands.isolatedVideos, ...commands.stems], request.includeAudioStems !== false);
+    // Audio is the primary deliverable for audio-only sessions, even if the
+    // caller disabled optional stems for normal video exports.
+    const artifacts = buildArtifacts(artifactCommands, audioOnly || request.includeAudioStems !== false);
     const createdAt = new Date(nowMs).toISOString();
     const job: RecordingExportJob = {
       exportId,

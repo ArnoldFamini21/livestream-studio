@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -15,7 +15,7 @@ export const HLS_PLAYLIST_NAME = 'stream.m3u8';
 export const HLS_VIEWER_WINDOW_MS = 20_000;
 
 const ROOM_ID_PATTERN = /^[\w-]{1,80}$/;
-const SEGMENT_PATTERN = /^seg\d{5}\.ts$/;
+const SEGMENT_PATTERN = /^seg(?:-[\w-]{1,90}-)?\d{5,12}\.ts$/;
 
 export function isValidWatchRoomId(value: unknown): value is string {
   return typeof value === 'string' && ROOM_ID_PATTERN.test(value);
@@ -39,15 +39,15 @@ export function getHlsRoomDir(roomId: string, rootDir = getHlsRootDir()): string
 }
 
 export async function prepareHlsRoomDir(roomId: string, rootDir = getHlsRootDir()): Promise<string> {
-  const dir = getHlsRoomDir(roomId, rootDir);
-  // A fresh folder: stale segments from an earlier session must not play.
-  await rm(dir, { recursive: true, force: true });
-  await mkdir(dir, { recursive: true });
-  return dir;
+  if (!isValidWatchRoomId(roomId)) throw new Error('Invalid watch room id');
+  await mkdir(rootDir, { recursive: true });
+  // Each writer owns a separate folder. Delayed cleanup from a previous
+  // broadcast must never remove segments belonging to its replacement.
+  return mkdtemp(path.join(rootDir, `${roomId}-`));
 }
 
-export async function removeHlsRoomDir(roomId: string, rootDir = getHlsRootDir()): Promise<void> {
-  await rm(getHlsRoomDir(roomId, rootDir), { recursive: true, force: true }).catch(() => undefined);
+export async function removeHlsWriterDir(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true }).catch(() => undefined);
 }
 
 /** FFmpeg: shared FLV on stdin, HLS segments in `dir`, no re-encode. */
@@ -64,7 +64,7 @@ export function createFfmpegHlsArgs(dir: string): string[] {
     // Old segments are deleted; the playlist never gets an end marker while
     // live; each segment starts on a keyframe so players can join anywhere.
     '-hls_flags', 'delete_segments+independent_segments+omit_endlist',
-    '-hls_segment_filename', path.join(dir, 'seg%05d.ts'),
+    '-hls_segment_filename', path.join(dir, `seg-${path.basename(dir)}-%05d.ts`),
     path.join(dir, HLS_PLAYLIST_NAME),
   ];
 }

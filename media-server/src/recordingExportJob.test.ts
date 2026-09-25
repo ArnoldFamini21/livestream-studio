@@ -54,6 +54,19 @@ async function createCompletedUpload() {
 }
 
 describe('recording export jobs', () => {
+  it('exports audio-only recordings as WAV and MP3 without requiring a video track', async () => {
+    const { uploads, session } = await createCompletedUpload();
+    const source = uploads.getExportSource(session.uploadId);
+    source.tracks = source.tracks.filter((track) => track.kind === 'audio');
+    const exports = new RecordingExportJobStore(async (command) => {
+      await writeFile(command.outputPath, 'test audio');
+    });
+    const job = await exports.createJob(source, { includeAudioStems: false });
+    assert.deepEqual(job.artifacts.map((artifact) => artifact.format), ['wav', 'mp3', 'json']);
+    await exports.startJob(job.exportId);
+    assert.equal(exports.getJob(job.exportId).status, 'ready');
+  });
+
   it('creates a private FFmpeg export job from completed uploaded WebM tracks', async () => {
     const { uploads: uploadStore, session } = await createCompletedUpload();
     const commands: RecordingExportCommand[] = [];

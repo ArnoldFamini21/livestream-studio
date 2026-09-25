@@ -506,7 +506,7 @@ function createEditedMp4Args(
   }
 
   const filterScript = editScript(outputPath, audioChain ? `${videoChain};${audioChain}` : videoChain);
-  args.push('-/filter_complex', filterScript.path, '-map', '[vout]');
+  args.push('-filter_complex_script', filterScript.path, '-map', '[vout]');
   if (audioChain) args.push('-map', '[aout]');
   pushVideoEncodingArgs(args, video);
   if (audioChain) {
@@ -543,7 +543,7 @@ export function createRecordingIsolatedVideoArgs(
     const videoChain = `[0:v:0]${buildEditVideoFilter(edit, video.frameRate)},${getClipVideoGeometry(video, null).filter}[vout]`;
     const audioChain = track.hasAudio === true ? `;[0:a:0]${buildEditAudioFilter(edit, audio.sampleRate)}[aout]` : '';
     const filterScript = editScript(outputPath, `${videoChain}${audioChain}`);
-    const args = ['-hide_banner', '-loglevel', 'warning', '-fflags', '+genpts', '-i', track.path, '-/filter_complex', filterScript.path, '-map', '[vout]'];
+    const args = ['-hide_banner', '-loglevel', 'warning', '-fflags', '+genpts', '-i', track.path, '-filter_complex_script', filterScript.path, '-map', '[vout]'];
     if (audioChain) args.push('-map', '[aout]');
     pushVideoEncodingArgs(args, video);
     if (audioChain) {
@@ -615,7 +615,7 @@ export function createRecordingAudioStemArgs(
     const outputPath = path.join(outputDirectory, `${sanitizeExportBasename(`${basename}_${track.label}`)}_cleaned.${format}`);
     const loudnorm = normalizeAudio ? `,${LOUDNORM_AUDIO_FILTER}` : '';
     const filterScript = editScript(outputPath, `[0:a:0]${buildEditAudioFilter(edit, audio.sampleRate)}${loudnorm}[aout]`);
-    const args = ['-hide_banner', '-loglevel', 'warning', '-i', track.path, '-/filter_complex', filterScript.path, '-map', '[aout]', '-ar', String(audio.sampleRate), '-ac', String(audio.channelCount)];
+    const args = ['-hide_banner', '-loglevel', 'warning', '-i', track.path, '-filter_complex_script', filterScript.path, '-map', '[aout]', '-ar', String(audio.sampleRate), '-ac', String(audio.channelCount)];
     if (format === 'wav') args.push('-c:a', 'pcm_s16le');
     else args.push('-c:a', 'libmp3lame', '-b:a', `${Math.round(audio.audioBitsPerSecond / 1000)}k`);
     args.push(outputPath);

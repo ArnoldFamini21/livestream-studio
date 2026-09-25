@@ -1,7 +1,12 @@
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   HlsViewerCounter,
+  prepareHlsRoomDir,
+  removeHlsWriterDir,
   createFfmpegHlsArgs,
   getHlsContentType,
   getHlsRoomDir,
@@ -16,6 +21,8 @@ describe('watch page HLS output', () => {
     assert.equal(isValidWatchRoomId(''), false);
     assert.equal(isServableHlsFile('stream.m3u8'), true);
     assert.equal(isServableHlsFile('seg00012.ts'), true);
+    assert.equal(isServableHlsFile('seg100000.ts'), true);
+    assert.equal(isServableHlsFile('seg-room-Ab12Cd-00001.ts'), true);
     assert.equal(isServableHlsFile('seg1.ts'), false);
     assert.equal(isServableHlsFile('../../secret'), false);
     assert.equal(isServableHlsFile('stream.m3u8.bak'), false);
@@ -33,6 +40,25 @@ describe('watch page HLS output', () => {
     assert.match(args[args.indexOf('-hls_flags') + 1], /omit_endlist/);
     assert.equal(args[args.length - 1], '/tmp/hls/room/stream.m3u8');
     assert.equal(getHlsRoomDir('abc', '/x'), '/x/abc');
+  });
+
+  it('keeps a restarted broadcast intact when the previous writer is cleaned up', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hls-restart-'));
+    try {
+      const previous = await prepareHlsRoomDir('same-room', root);
+      await writeFile(path.join(previous, 'stream.m3u8'), 'old stream');
+      const current = await prepareHlsRoomDir('same-room', root);
+      await writeFile(path.join(current, 'stream.m3u8'), 'new stream');
+      assert.notEqual(previous, current);
+      const oldArgs = createFfmpegHlsArgs(previous);
+      const newArgs = createFfmpegHlsArgs(current);
+      assert.notEqual(path.basename(oldArgs[oldArgs.indexOf('-hls_segment_filename') + 1]), path.basename(newArgs[newArgs.indexOf('-hls_segment_filename') + 1]), 'segment URLs must not collide across broadcasts');
+      await removeHlsWriterDir(previous);
+      assert.equal(await readFile(path.join(current, 'stream.m3u8'), 'utf8'), 'new stream');
+      await assert.rejects(prepareHlsRoomDir('../escape', root), /Invalid/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('counts distinct recent viewers from playlist requests', () => {
