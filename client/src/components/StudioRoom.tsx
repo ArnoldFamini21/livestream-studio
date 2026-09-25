@@ -6516,11 +6516,6 @@ export function StudioRoom() {
                           // Both layouts size tiles by width and aspect-ratio, never an
                           // explicit height, which Safari can keep across a layout switch.
                           ...((sharedContentLayoutResult?.participantStyles[i] || layoutResult.tileStyles[i]) || {}),
-                          // With content on stage, switching Content + Me to Me moves the box
-                          // between absolute and normal positioning. Safari does not recompute
-                          // an aspect-ratio height while the width animates, so the camera was
-                          // left as a thin strip at the old height: do not animate the width.
-                          ...(sharedContentLayoutResult ? { transition: 'opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease' } : {}),
                           ...getStagePresenceWrapperStyle(presence.phase),
                         }}
                         onDragStart={canDragStageTile ? (event) => onStageTileDragStart(event, item.id) : undefined}
@@ -7852,9 +7847,10 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     borderRadius: 16,
     position: 'relative',
-    // No height transition: normal tiles size by aspect-ratio (height auto),
-    // which cannot be animated, and Safari can get stuck on the old height.
-    transition: 'width 0.3s ease, flex-basis 0.3s ease, opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease',
+    // No size transitions: tiles size by width and aspect-ratio, and Safari
+    // does not recompute an aspect-ratio height while the width animates. The
+    // box kept its old height (a thin strip after Content + Me -> Me).
+    transition: 'opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease',
   },
   tileWrapperFocused: {
     outline: '2px solid var(--accent)',
