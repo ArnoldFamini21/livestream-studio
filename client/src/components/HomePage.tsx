@@ -1411,7 +1411,7 @@ export function HomePage() {
         </div>
       </aside>
       <div className="workspace-body">
-        <header className="workspace-topbar"><span>Workspace <span className="breadcrumb-divider">/</span> <strong>{viewTitles[workspaceView]}</strong></span><button className="account-chip" onClick={() => setWorkspaceView('settings')}><span className="account-avatar">{accountUser?.name.slice(0, 1).toUpperCase() || 'AF'}</span>{accountUser?.name || 'My account'}<StudioIcon name="chevron" /></button></header>
+        <header className="workspace-topbar"><span><span className="breadcrumb-root">Workspace <span className="breadcrumb-divider">/</span> </span><strong>{viewTitles[workspaceView]}</strong></span><button className="account-chip" onClick={() => setWorkspaceView('settings')}><span className="account-avatar">{accountUser?.name.slice(0, 1).toUpperCase() || 'AF'}</span>{accountUser?.name || 'My account'}<StudioIcon name="chevron" /></button></header>
         <main id="workspace-main" className="workspace-main">
           <div className="workspace-page-heading"><div><span className="eyebrow">CREATE. CONNECT. GO LIVE.</span><h1>{viewTitles[workspaceView]}</h1><p>{viewDescriptions[workspaceView]}</p></div><button className="workspace-primary" onClick={() => setShowCreate(true)}><StudioIcon name="plus" />Create studio</button></div>
           {(dashboardError || recordingLibrary.error) && <p className="workspace-alert" role="alert">{dashboardError || recordingLibrary.error}</p>}

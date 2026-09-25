@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import Hls from 'hls.js';
+import type Hls from 'hls.js';
 import '../styles/studio-chrome.css';
 import { StudioIcon } from './StudioIcon.tsx';
 import { ApiRequestError, requestJson, resolveMediaHttpUrl } from '../utils/apiClient.ts';
 import { pollWatchStatus, type WatchStatus } from '../utils/watchStatus.ts';
+import { HlsRecoveryPolicy } from '../utils/hlsRecovery.ts';
+
+// The player library loads only once there is something to play, so the
+// waiting page stays small. The light build has everything a single live
+// rendition needs (no subtitles, alternate audio, or DRM).
+const loadHls = () => import('hls.js/light').then((module) => module.default);
 
 /**
  * The public watch page: the live program as HLS from the media server,
@@ -91,32 +97,84 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     if (!video || !playlistUrl) return;
     let cancelled = false;
     let hls: Hls | null = null;
+    let retryTimer: number | undefined;
+    const recovery = new HlsRecoveryPolicy();
     setNeedsTap(false);
     setPlayerError('');
     const tryPlay = () => { video.play().then(() => { if (!cancelled) setNeedsTap(false); }).catch(() => { if (!cancelled) setNeedsTap(true); }); };
-    if (Hls.isSupported()) {
-      hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 3, enableWorker: true });
-      hlsRef.current = hls;
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MEDIA_ATTACHED, () => hls?.loadSource(playlistUrl));
-      hls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal || !hls) return;
-        // Network hiccups (a segment not written yet) recover on their own; media errors need a nudge.
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else { setPlayerError('Playback stopped. Please retry.'); hls.destroy(); }
-      });
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari plays HLS natively.
+    const nativeHls = Boolean(video.canPlayType('application/vnd.apple.mpegurl'));
+    const onNativeError = () => {
+      if (cancelled) return;
+      // Safari's player stops on a missing playlist or segment; retry like hls.js does.
+      const step = recovery.next({ type: 'networkError', details: 'nativePlaybackError' });
+      if (step.action !== 'reload') return;
+      retryTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        video.src = playlistUrl;
+        video.addEventListener('loadedmetadata', tryPlay, { once: true });
+      }, step.delayMs);
+    };
+    const onNativeProgress = () => recovery.recovered();
+    const playNatively = () => {
+      if (!nativeHls) return false;
+      video.addEventListener('error', onNativeError);
+      video.addEventListener('playing', onNativeProgress);
       video.src = playlistUrl;
       video.addEventListener('loadedmetadata', tryPlay, { once: true });
+      return true;
+    };
+    // Safari (the only browser with AirPlay) plays HLS natively, which keeps
+    // AirPlay, lock-screen playback, and battery life; hls.js would turn AirPlay off.
+    // Elsewhere hls.js is preferred (Android's native HLS lags further behind live).
+    if (nativeHls && 'WebKitPlaybackTargetAvailabilityEvent' in window) {
+      playNatively();
     } else {
-      setPlayerError('This browser cannot play this broadcast. Please use a browser with HLS support.');
+      loadHls().then((HlsPlayer) => {
+        if (cancelled) return;
+        if (!HlsPlayer.isSupported()) {
+          if (!playNatively()) setPlayerError('This browser cannot play this broadcast. Please use a browser with HLS support.');
+          return;
+        }
+        const player = new HlsPlayer({ lowLatencyMode: true, liveSyncDurationCount: 3, enableWorker: true });
+        hls = player;
+        hlsRef.current = player;
+        player.attachMedia(video);
+        player.on(HlsPlayer.Events.MEDIA_ATTACHED, () => player.loadSource(playlistUrl));
+        player.on(HlsPlayer.Events.MANIFEST_PARSED, tryPlay);
+        player.on(HlsPlayer.Events.FRAG_BUFFERED, () => recovery.recovered());
+        player.on(HlsPlayer.Events.ERROR, (_event, data) => {
+          if (!data.fatal || cancelled) return;
+          const step = recovery.next(data);
+          if (step.action === 'reload') {
+            // The playlist can be missing for a moment (first segment not written yet, encoder restart).
+            retryTimer = window.setTimeout(() => {
+              if (cancelled) return;
+              if (data.details.startsWith('manifest')) player.loadSource(playlistUrl);
+              else player.startLoad();
+            }, step.delayMs);
+          } else if (step.action === 'recover-media') {
+            player.recoverMediaError();
+          } else if (step.action === 'swap-audio-and-recover') {
+            player.swapAudioCodec();
+            player.recoverMediaError();
+          } else {
+            setPlayerError(step.message);
+            player.destroy();
+            hls = null;
+            hlsRef.current = null;
+          }
+        });
+      }).catch(() => {
+        // The player chunk failed to load (offline, or a stale deploy); a browser with native HLS can still play.
+        if (!cancelled && !playNatively()) setPlayerError('The player could not load. Please retry.');
+      });
     }
     return () => {
       cancelled = true;
+      window.clearTimeout(retryTimer);
       video.removeEventListener('loadedmetadata', tryPlay);
+      video.removeEventListener('error', onNativeError);
+      video.removeEventListener('playing', onNativeProgress);
       hls?.destroy();
       hlsRef.current = null;
       video.removeAttribute('src');

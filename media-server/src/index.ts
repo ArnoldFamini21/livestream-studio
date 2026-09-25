@@ -89,6 +89,7 @@ import {
   isValidWatchRoomId,
   prepareHlsRoomDir,
   removeHlsWriterDir,
+  sweepStaleHlsWriterDirs,
 } from './hlsOutput.js';
 
 const PORT = Number(process.env.PORT || process.env.MEDIA_SERVER_PORT || 3002);
@@ -1814,6 +1815,9 @@ server.listen(PORT, () => {
   console.log(`Media server running on http://localhost:${PORT}`);
   console.log(`RTMP relay WebSocket on ws://localhost:${PORT}/rtmp`);
   console.log(`SFU signaling WebSocket on ws://localhost:${PORT}/sfu`);
+  void sweepStaleHlsWriterDirs().then((count) => {
+    if (count > 0) console.log(`Removed ${count} watch-page folder(s) left by an earlier run.`);
+  });
 });
 
 function gracefulShutdown(signal: string) {

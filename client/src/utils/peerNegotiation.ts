@@ -7,6 +7,9 @@ export class PeerNegotiation {
   private ignoreOffer = false;
   private restartAttempts = 0;
   private recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  private connectTimer: ReturnType<typeof setTimeout> | undefined;
+  private firstOfferTimer: ReturnType<typeof setTimeout> | undefined;
+  private firstOfferPending = false;
   private candidates: RTCIceCandidateInit[] = [];
 
   constructor(
@@ -15,15 +18,49 @@ export class PeerNegotiation {
     private readonly send: (description: RTCSessionDescriptionInit) => void,
     private readonly isCurrent: () => boolean,
     private readonly recoveryDelayMs = 5_000,
+    private readonly connectTimeoutMs = 10_000,
+    private readonly firstOfferDelayMs = 1_500,
   ) {
+    this.armConnectWatchdog();
     // The answering side's camera sits on its own transceiver (simulcast uses
     // addTransceiver, which an incoming offer cannot adopt), so it only starts
     // sending after a follow-up offer. Without this, whoever answered was never
     // seen: the host could not see a guest, or a guest could not see the host
     // or their screen share. Collisions are resolved by the polite/impolite roles.
     pc.addEventListener?.('negotiationneeded', () => {
+      if (this.polite && !this.pc.remoteDescription) {
+        this.deferFirstOffer();
+        return;
+      }
       void this.offer().catch(() => {});
     });
+  }
+
+  /**
+   * Both sides make their first offer at the same moment (a guest is brought
+   * on stage). The polite side then takes its offer back, and if a TURN
+   * allocation is in flight Chrome never gathers a candidate for that
+   * connection again: an ICE restart does not revive it, and the call stays
+   * blank (about 1 in 5 relayed calls). So the polite side lets the other
+   * side offer first and sends its own offer right after answering. If
+   * nothing arrives (a peer with nothing to send never offers), it offers
+   * anyway.
+   */
+  private deferFirstOffer() {
+    this.firstOfferPending = true;
+    if (this.firstOfferTimer) return;
+    this.firstOfferTimer = setTimeout(() => {
+      this.firstOfferTimer = undefined;
+      this.sendDeferredOffer();
+    }, this.firstOfferDelayMs);
+  }
+
+  private sendDeferredOffer() {
+    if (!this.firstOfferPending) return;
+    this.firstOfferPending = false;
+    if (this.firstOfferTimer) clearTimeout(this.firstOfferTimer);
+    this.firstOfferTimer = undefined;
+    if (this.active()) void this.offer().catch(() => {});
   }
 
   private active() {
@@ -41,6 +78,12 @@ export class PeerNegotiation {
 
   offer(iceRestart = false) {
     return this.enqueue(async () => {
+      if (this.pc.signalingState === 'have-local-offer' && iceRestart) {
+        // Recovery with our last offer still unanswered (lost, or dropped by the
+        // peer): take it back and offer again rather than wait forever.
+        await this.pc.setLocalDescription({ type: 'rollback' });
+        if (!this.active()) return;
+      }
       if (this.pc.signalingState !== 'stable') return;
       this.makingOffer = true;
       try {
@@ -55,11 +98,13 @@ export class PeerNegotiation {
   }
 
   receiveOffer(sdp: RTCSessionDescriptionInit) {
-    // Check at arrival as well as inside the queue: signalingState can still be
-    // stable while createOffer is pending.
-    const collisionAtArrival = this.makingOffer || this.pc.signalingState !== 'stable';
     return this.enqueue(async () => {
-      const collision = collisionAtArrival || this.pc.signalingState !== 'stable';
+      // Decide here, not on arrival: operations run in order, so an offer we are
+      // still creating has been set by now (a real collision), and an answer
+      // queued ahead of this offer has been applied (not a collision). Checking
+      // on arrival dropped an offer that came in while the previous answer was
+      // being applied, and the peer then waited forever for our answer.
+      const collision = this.makingOffer || this.pc.signalingState !== 'stable';
       this.ignoreOffer = !this.polite && collision;
       if (this.ignoreOffer) return;
       // Modern WebRTC rolls back a pending local offer when applying this offer.
@@ -70,6 +115,8 @@ export class PeerNegotiation {
       if (!this.active()) return;
       await this.pc.setLocalDescription(answer);
       if (this.active() && this.pc.localDescription) this.send(this.pc.localDescription);
+      // Our own offer waited for this one; it goes out next.
+      this.sendDeferredOffer();
     });
   }
 
@@ -106,11 +153,34 @@ export class PeerNegotiation {
     }
   }
 
+  /**
+   * A connection that never leaves "new" is not reported as failed, so the
+   * recovery below never runs. Seen when the polite side takes back its offer
+   * while a TURN allocation is in flight: Chrome never finishes gathering for
+   * that ICE session and the call stays blank. An ICE restart gathers afresh.
+   * The impolite side restarts first; the polite side waits twice as long so
+   * the two restarts do not collide (a collision is what caused the stall).
+   */
+  private armConnectWatchdog() {
+    if (this.restartAttempts >= 2) return;
+    const delay = this.polite ? this.connectTimeoutMs * 2 : this.connectTimeoutMs;
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = undefined;
+      if (!this.active() || this.pc.connectionState !== 'new') return;
+      this.restartAttempts++;
+      void this.offer(true).catch(() => {});
+      this.armConnectWatchdog();
+    }, delay);
+    // Node (tests) should not wait on this timer; browsers return a number.
+    (this.connectTimer as { unref?: () => void }).unref?.();
+  }
+
   connectionStateChanged() {
     if (!this.active()) return;
     if (this.pc.connectionState === 'connected') {
       this.restartAttempts = 0;
       this.clearRecoveryTimer();
+      this.clearConnectTimer();
     } else if (this.pc.connectionState === 'disconnected' || this.pc.connectionState === 'failed') {
       this.scheduleRecovery();
     }
@@ -132,9 +202,17 @@ export class PeerNegotiation {
     this.recoveryTimer = undefined;
   }
 
+  private clearConnectTimer() {
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = undefined;
+  }
+
   dispose() {
     this.disposed = true;
     this.clearRecoveryTimer();
+    this.clearConnectTimer();
+    if (this.firstOfferTimer) clearTimeout(this.firstOfferTimer);
+    this.firstOfferTimer = undefined;
     this.candidates = [];
   }
 }

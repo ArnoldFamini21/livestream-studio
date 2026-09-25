@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -7,6 +7,7 @@ import {
   HlsViewerCounter,
   prepareHlsRoomDir,
   removeHlsWriterDir,
+  sweepStaleHlsWriterDirs,
   createFfmpegHlsArgs,
   getHlsContentType,
   getHlsRoomDir,
@@ -69,5 +70,23 @@ describe('watch page HLS output', () => {
     assert.equal(counter.count(600), 2);
     assert.equal(counter.count(1200), 1);
     assert.equal(counter.count(2000), 0);
+  });
+
+  it('sweeps writer folders left by a crash, and nothing else', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hls-sweep-'));
+    try {
+      const leftover = await prepareHlsRoomDir('TwypUGS5cl', root);
+      await writeFile(path.join(leftover, `seg-${path.basename(leftover)}-00001.ts`), 'old');
+      await writeFile(path.join(leftover, 'stream.m3u8'), '#EXTM3U');
+      // Named like a writer folder, but holding something else.
+      await mkdir(path.join(root, 'unrelated-folder'));
+      await writeFile(path.join(root, 'unrelated-folder', 'photo.jpg'), 'keep');
+      await writeFile(path.join(root, 'notes.txt'), 'keep');
+      assert.equal(await sweepStaleHlsWriterDirs(root), 1);
+      assert.deepEqual((await readdir(root)).sort(), ['notes.txt', 'unrelated-folder']);
+      assert.equal(await sweepStaleHlsWriterDirs(path.join(root, 'missing')), 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

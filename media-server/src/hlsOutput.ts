@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -48,6 +48,30 @@ export async function prepareHlsRoomDir(roomId: string, rootDir = getHlsRootDir(
 
 export async function removeHlsWriterDir(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+}
+
+/** A writer folder: `<room id>-` plus mkdtemp's six random characters. */
+const WRITER_DIR_PATTERN = /^[\w-]{1,80}-[A-Za-z0-9]{6}$/;
+
+/**
+ * At startup nothing is live, so writer folders left by a crash (whose delayed
+ * cleanup never ran) can go. Only folders named like a writer's and holding
+ * nothing but HLS files are removed, so a misconfigured HLS_OUTPUT_DIR cannot
+ * lose anything else.
+ */
+export async function sweepStaleHlsWriterDirs(rootDir = getHlsRootDir()): Promise<number> {
+  const entries = await readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !WRITER_DIR_PATTERN.test(entry.name)) continue;
+    const dir = path.join(rootDir, entry.name);
+    // Only a folder holding nothing but a playlist and segments is a writer's.
+    const files = await readdir(dir).catch(() => null);
+    if (!files || !files.every(isServableHlsFile)) continue;
+    await removeHlsWriterDir(dir);
+    removed++;
+  }
+  return removed;
 }
 
 /** FFmpeg: shared FLV on stdin, HLS segments in `dir`, no re-encode. */

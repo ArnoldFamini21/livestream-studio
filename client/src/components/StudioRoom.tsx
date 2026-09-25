@@ -1050,6 +1050,8 @@ export function StudioRoom() {
   // stops it, so a misclick never produces a stray take.
   const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
   const isPortraitPhone = useIsPortraitPhone();
+  // Phones and tablets have no screen capture (iOS Safari, Android Chrome): offer no button that cannot work.
+  const screenShareSupported = typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
   const recordingCountdownCancelRef = useRef<(() => void) | null>(null);
   const runRecordingCountdown = useCallback(() => new Promise<boolean>((resolve) => {
     let remaining = RECORDING_COUNTDOWN_SECONDS;
@@ -5373,7 +5375,7 @@ export function StudioRoom() {
     switch (shortcutId) {
       case 'toggle-mic': onToggleAudio(); return true;
       case 'toggle-camera': onToggleVideo(); return true;
-      case 'toggle-screen-share': void onToggleScreenShare(); return true;
+      case 'toggle-screen-share': if (!screenShareSupported) return false; void onToggleScreenShare(); return true;
       case 'toggle-recording':
         if (!canControlRecording) return false;
         void onToggleRecording();
@@ -7141,7 +7143,7 @@ export function StudioRoom() {
         onToggleRecording={canControlRecording ? onToggleRecording : undefined}
         onToggleRecordingPause={canControlRecording && isRecording ? onToggleRecordingPause : undefined}
         isScreenSharing={isScreenSharing}
-        onToggleScreenShare={onToggleScreenShare}
+        onToggleScreenShare={screenShareSupported || isScreenSharing ? onToggleScreenShare : undefined}
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
         unreadChatCount={unreadChatCount}
         onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}

@@ -13,6 +13,8 @@ class FakePeer extends EventTarget {
   releaseOffer: (() => void) | undefined;
   pauseOffer = false;
   rejectRemote = false;
+  pauseRemote = false;
+  releaseRemote: (() => void) | undefined;
   async createOffer(options?: RTCOfferOptions) {
     this.offers.push(options);
     if (this.pauseOffer) await new Promise<void>(resolve => { this.releaseOffer = resolve; });
@@ -20,11 +22,13 @@ class FakePeer extends EventTarget {
   }
   async createAnswer() { return { type: 'answer', sdp: 'local answer' } as RTCSessionDescriptionInit; }
   async setLocalDescription(sdp: RTCSessionDescriptionInit) {
+    if (sdp.type === 'rollback') { this.signalingState = 'stable'; return; }
     this.localDescription = sdp;
     this.signalingState = sdp.type === 'offer' ? 'have-local-offer' : 'stable';
   }
   async setRemoteDescription(sdp: RTCSessionDescriptionInit) {
     this.remoteCalls++;
+    if (this.pauseRemote) await new Promise<void>(resolve => { this.releaseRemote = resolve; });
     if (this.rejectRemote) throw new Error('stale SDP');
     this.remoteDescription = sdp;
     this.signalingState = sdp.type === 'offer' ? 'have-remote-offer' : 'stable';
@@ -184,4 +188,121 @@ test('ignores renegotiation after the peer is replaced', async () => {
   pc.dispatchEvent(new Event('negotiationneeded'));
   await settle();
   assert.equal(sent.length, 0);
+});
+
+test('impolite peer answers an offer that arrives while the previous answer is still being applied', async () => {
+  // Seen with relayed connections: the polite peer answers our offer, then sends
+  // its own offer; it arrives while our side is still applying that answer.
+  // Checking for a collision on arrival dropped it, and neither side recovered.
+  const { pc, negotiation, sent } = setup(false);
+  await negotiation.offer();
+  pc.pauseRemote = true;
+  const applyingAnswer = negotiation.receiveAnswer(remoteAnswer);
+  await settle();
+  assert.equal(pc.signalingState, 'have-local-offer');
+  const followUp = negotiation.receiveOffer({ ...remoteOffer, sdp: 'follow-up offer' });
+  pc.pauseRemote = false;
+  pc.releaseRemote!();
+  await Promise.all([applyingAnswer, followUp]);
+  assert.deepEqual(sent.map(d => d.type), ['offer', 'answer']);
+  assert.equal(pc.remoteDescription?.sdp, 'follow-up offer');
+  assert.equal(pc.signalingState, 'stable');
+});
+
+test('recovery re-offers when the previous offer was never answered', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pc = new FakePeer();
+  const sent: RTCSessionDescriptionInit[] = [];
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, true, d => sent.push(d), () => true, 10);
+  await negotiation.offer();
+  assert.equal(pc.signalingState, 'have-local-offer');
+  pc.connectionState = 'failed';
+  negotiation.connectionStateChanged();
+  t.mock.timers.tick(10);
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['offer', 'offer']);
+  assert.deepEqual(pc.offers.at(-1), { iceRestart: true });
+  assert.equal(pc.signalingState, 'have-local-offer');
+  negotiation.dispose();
+});
+
+test('restarts ICE when a connection never leaves "new", impolite side first', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const make = (polite: boolean) => {
+    const pc = new FakePeer();
+    pc.connectionState = 'new';
+    const sent: RTCSessionDescriptionInit[] = [];
+    const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, polite, d => sent.push(d), () => true, 5, 100);
+    return { pc, sent, negotiation };
+  };
+  const impolite = make(false);
+  const polite = make(true);
+  t.mock.timers.tick(100);
+  await settle();
+  assert.deepEqual(impolite.pc.offers, [{ iceRestart: true }]);
+  assert.equal(polite.pc.offers.length, 0);
+  // The impolite restart is answered and the polite side connects: no restart of its own.
+  polite.pc.connectionState = 'connected';
+  polite.negotiation.connectionStateChanged();
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(polite.pc.offers.length, 0);
+  // Still stuck: one more restart, then it stops.
+  impolite.pc.signalingState = 'stable';
+  t.mock.timers.tick(100);
+  await settle();
+  impolite.pc.signalingState = 'stable';
+  t.mock.timers.tick(1_000);
+  await settle();
+  assert.equal(impolite.pc.offers.length, 2);
+  impolite.negotiation.dispose();
+  polite.negotiation.dispose();
+});
+
+test('the connect watchdog leaves a connection that is making progress alone', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pc = new FakePeer();
+  pc.connectionState = 'connecting';
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, () => {}, () => true, 5, 100);
+  t.mock.timers.tick(500);
+  await settle();
+  assert.equal(pc.offers.length, 0);
+  negotiation.dispose();
+});
+
+test('the polite side lets the other side make the first offer, then sends its own', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { pc, negotiation, sent } = setup(true);
+  pc.connectionState = 'new';
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  await settle();
+  assert.deepEqual(sent, [], 'no offer of its own yet: no collision to take back');
+  await negotiation.receiveOffer(remoteOffer);
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['answer', 'offer']);
+  t.mock.timers.tick(5_000);
+  await settle();
+  assert.equal(sent.length, 2, 'the fallback does not offer twice');
+  negotiation.dispose();
+});
+
+test('the polite side offers anyway when the other side never does', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { pc, negotiation, sent } = setup(true);
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  t.mock.timers.tick(1_499);
+  await settle();
+  assert.equal(sent.length, 0);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['offer']);
+  negotiation.dispose();
+});
+
+test('the impolite side offers at once', async () => {
+  const { pc, negotiation, sent } = setup(false);
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['offer']);
+  negotiation.dispose();
 });
