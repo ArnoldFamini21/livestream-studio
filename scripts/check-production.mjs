@@ -13,7 +13,6 @@ const DEFAULT_MEDIA_HTTP_URL = 'https://livestream-studio-media-server.onrender.
 const clientUrl = trimUrl(process.env.PRODUCTION_CLIENT_URL || DEFAULT_CLIENT_URL);
 const apiUrl = trimUrl(process.env.PRODUCTION_API_URL || DEFAULT_API_URL);
 const mediaHttpUrl = trimUrl(process.env.PRODUCTION_MEDIA_HTTP_URL || DEFAULT_MEDIA_HTTP_URL);
-const expectedCommit = normalizeSha(process.env.EXPECTED_COMMIT || process.env.GITHUB_SHA || '');
 const waitMs = parseNonNegativeInt(process.env.PRODUCTION_CHECK_WAIT_MS, 0);
 const intervalMs = parsePositiveInt(process.env.PRODUCTION_CHECK_INTERVAL_MS, 15_000);
 const requireProductionTurn = parseBoolean(process.env.PRODUCTION_REQUIRE_TURN || process.env.REQUIRE_PRODUCTION_TURN);
@@ -30,6 +29,13 @@ function trimUrl(value) {
 function normalizeSha(value) {
   const trimmed = String(value || '').trim();
   return /^[a-f0-9]{7,40}$/i.test(trimmed) ? trimmed.toLowerCase() : '';
+}
+
+// Empty per-service expectations intentionally keep health checks while
+// allowing an unchanged service to remain on its previous release.
+export function getExpectedServiceCommit(service, env = process.env) {
+  const key = service === 'media-server' ? 'EXPECTED_MEDIA_COMMIT' : 'EXPECTED_SIGNALING_COMMIT';
+  return normalizeSha(env[key] ?? (env.EXPECTED_COMMIT || env.GITHUB_SHA || ''));
 }
 
 function parseNonNegativeInt(value, fallback) {
@@ -200,6 +206,7 @@ export function describeServiceHealthMetadataFailure(label, json, expectedServic
 function requireServiceHealth(label, json, expectedService) {
   const metadataFailure = describeServiceHealthMetadataFailure(label, json, expectedService);
   if (metadataFailure) throw new Error(metadataFailure);
+  const expectedCommit = getExpectedServiceCommit(expectedService);
   if (expectedCommit) {
     const actual = normalizeSha(json.commit);
     if (!actual || !expectedCommit.startsWith(actual.slice(0, 7))) {
