@@ -51,7 +51,8 @@
 .hero-kicker > span { width: 5px; height: 5px; background: #7a698d; border-radius: 50%; }
 .hero-copy h2 { font-size: clamp(24px, 2.7vw, 38px); line-height: 1.16; letter-spacing: -1.4px; font-weight: 550; margin: 20px 0 13px; color: #302b42; }
 .hero-copy p { color: #57536a; font-size: 11px; line-height: 1.8; }
-.hero-action { display: inline-flex; align-items: center; gap: 22px; color: #544779; background: none; padding: 0; margin-top: 22px; font-size: 11px; font-weight: 600; }
+/* 12 px of padding makes a 44 px tap target; the margin shrinks by the same amount so the text does not move. */
+.hero-action { display: inline-flex; align-items: center; gap: 22px; color: #544779; background: none; padding: 12px 0; margin-top: 10px; min-height: 44px; font-size: 11px; font-weight: 600; }
 .hero-illustration { display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 24px 30px 16px 10px; }
 .mini-studio { width: min(100%, 360px); background: #25252e; padding: 11px; border: 1px solid #ffffff22; border-radius: 10px; box-shadow: 0 14px 30px #3d355322; transform: rotate(-3deg); }
 .mini-top { display: flex; align-items: center; gap: 5px; color: #d1d0d8; font-size: 7px; padding: 2px 2px 10px; }
@@ -156,6 +157,18 @@ html:has(.workspace-app), body:has(.workspace-app) { background: #f7f8fa; }
   .workspace-surface { padding: 18px; }.workspace-app .ws-savedRoomCard { padding: 15px !important; }.workspace-app .ws-savedRoomTop { flex-basis: 100%; }.workspace-app .ws-savedRoomActions { justify-content: flex-end; width: 100%; }
   .studio-list-tools { flex-wrap: wrap; }.workspace-app .ws-accountFormGrid { grid-template-columns: 1fr !important; }.workspace-app .ws-workspaceHeader { flex-wrap: wrap; }.workspace-app .ws-workspaceTeamForm { grid-template-columns: 1fr !important; }
   .workspace-app .ws-workspaceRow { flex-wrap: wrap; }.workspace-app .ws-cardInner { padding: 30px 22px !important; }.nav-count { display: none; }
+  .workspace-nav nav button { flex: 1 1 0; min-width: 0; }
+}
+/* Narrow phones (iPhone SE): four tabs share 284 px. Icon above a one-line label. */
+@media (max-width: 400px) {
+  .workspace-nav { padding-left: 12px; padding-right: 12px; }
+  .workspace-nav nav { gap: 2px; }
+  .workspace-nav nav button { flex-direction: column; gap: 4px; padding: 8px 2px; white-space: nowrap; }
+  /* The page heading already names the section; keep the top bar to one line. */
+  .workspace-topbar { gap: 10px; padding: 0 16px; }
+  .breadcrumb-root { display: none; }
+  .workspace-topbar > span, .account-chip { white-space: nowrap; min-width: 0; }
+  .account-chip { overflow: hidden; text-overflow: ellipsis; }
 }
 .workspace-app .ws-workspaceRecordingSourceBadge { color: #665782 !important; background: #f1eef7 !important; border-color: #e5deef !important; }
 
