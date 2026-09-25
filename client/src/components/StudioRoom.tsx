@@ -6516,6 +6516,11 @@ export function StudioRoom() {
                           // Both layouts size tiles by width and aspect-ratio, never an
                           // explicit height, which Safari can keep across a layout switch.
                           ...((sharedContentLayoutResult?.participantStyles[i] || layoutResult.tileStyles[i]) || {}),
+                          // With content on stage, switching Content + Me to Me moves the box
+                          // between absolute and normal positioning. Safari does not recompute
+                          // an aspect-ratio height while the width animates, so the camera was
+                          // left as a thin strip at the old height: do not animate the width.
+                          ...(sharedContentLayoutResult ? { transition: 'opacity 0.3s ease, border-radius 0.3s ease, transform 0.3s ease' } : {}),
                           ...getStagePresenceWrapperStyle(presence.phase),
                         }}
                         onDragStart={canDragStageTile ? (event) => onStageTileDragStart(event, item.id) : undefined}
