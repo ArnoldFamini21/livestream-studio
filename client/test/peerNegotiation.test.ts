@@ -225,3 +225,84 @@ test('recovery re-offers when the previous offer was never answered', async t =>
   assert.equal(pc.signalingState, 'have-local-offer');
   negotiation.dispose();
 });
+
+test('restarts ICE when a connection never leaves "new", impolite side first', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const make = (polite: boolean) => {
+    const pc = new FakePeer();
+    pc.connectionState = 'new';
+    const sent: RTCSessionDescriptionInit[] = [];
+    const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, polite, d => sent.push(d), () => true, 5, 100);
+    return { pc, sent, negotiation };
+  };
+  const impolite = make(false);
+  const polite = make(true);
+  t.mock.timers.tick(100);
+  await settle();
+  assert.deepEqual(impolite.pc.offers, [{ iceRestart: true }]);
+  assert.equal(polite.pc.offers.length, 0);
+  // The impolite restart is answered and the polite side connects: no restart of its own.
+  polite.pc.connectionState = 'connected';
+  polite.negotiation.connectionStateChanged();
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(polite.pc.offers.length, 0);
+  // Still stuck: one more restart, then it stops.
+  impolite.pc.signalingState = 'stable';
+  t.mock.timers.tick(100);
+  await settle();
+  impolite.pc.signalingState = 'stable';
+  t.mock.timers.tick(1_000);
+  await settle();
+  assert.equal(impolite.pc.offers.length, 2);
+  impolite.negotiation.dispose();
+  polite.negotiation.dispose();
+});
+
+test('the connect watchdog leaves a connection that is making progress alone', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pc = new FakePeer();
+  pc.connectionState = 'connecting';
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, () => {}, () => true, 5, 100);
+  t.mock.timers.tick(500);
+  await settle();
+  assert.equal(pc.offers.length, 0);
+  negotiation.dispose();
+});
+
+test('the polite side lets the other side make the first offer, then sends its own', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { pc, negotiation, sent } = setup(true);
+  pc.connectionState = 'new';
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  await settle();
+  assert.deepEqual(sent, [], 'no offer of its own yet: no collision to take back');
+  await negotiation.receiveOffer(remoteOffer);
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['answer', 'offer']);
+  t.mock.timers.tick(5_000);
+  await settle();
+  assert.equal(sent.length, 2, 'the fallback does not offer twice');
+  negotiation.dispose();
+});
+
+test('the polite side offers anyway when the other side never does', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { pc, negotiation, sent } = setup(true);
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  t.mock.timers.tick(1_499);
+  await settle();
+  assert.equal(sent.length, 0);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['offer']);
+  negotiation.dispose();
+});
+
+test('the impolite side offers at once', async () => {
+  const { pc, negotiation, sent } = setup(false);
+  pc.dispatchEvent(new Event('negotiationneeded'));
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['offer']);
+  negotiation.dispose();
+});
