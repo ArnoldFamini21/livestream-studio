@@ -16,6 +16,7 @@ import {
   addTrackWithOptionalSimulcast,
   refreshSenderVideoEncodingParameters,
 } from '../utils/webrtcSimulcast.ts';
+import { sendScreenOnConnection, stopScreenOnConnection } from '../utils/screenTransceiver.ts';
 
 interface PeerState {
   participantId: string;
@@ -25,8 +26,8 @@ interface PeerState {
   negotiation: PeerNegotiation;
   /** The peer's screen, sent as a second video track beside its camera. */
   screenStream: MediaStream | null;
-  /** Our screen track on this connection, when we are sharing. */
-  screenSender: RTCRtpSender | null;
+  /** The transceiver that sends our screen to this peer (inactive between shares). */
+  screenTransceiver: RTCRtpTransceiver | null;
 }
 
 interface UseWebRTCProps {
@@ -150,7 +151,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         stream: null,
         senders: new Map(),
         screenStream: null,
-        screenSender: null,
+        screenTransceiver: null,
         negotiation: new PeerNegotiation(
           pc,
           (myParticipantIdRef.current || '') < remoteParticipantId,
@@ -190,7 +191,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       // A screen we are already sharing goes to this new peer as well.
       const publishedScreen = publishedScreenRef.current;
       if (publishedScreen) {
-        peerState.screenSender = pc.addTrack(publishedScreen.track, publishedScreen.stream);
+        peerState.screenTransceiver = pc.addTransceiver(publishedScreen.track, { direction: 'sendonly', streams: [publishedScreen.stream] });
       }
 
       // Handle incoming remote tracks
@@ -390,11 +391,9 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     for (const [participantId, peer] of peersRef.current) {
       try {
         if (track && stream) {
-          if (peer.screenSender) await peer.screenSender.replaceTrack(track);
-          else peer.screenSender = peer.connection.addTrack(track, stream);
-        } else if (peer.screenSender) {
-          peer.connection.removeTrack(peer.screenSender);
-          peer.screenSender = null;
+          peer.screenTransceiver = await sendScreenOnConnection(peer.connection, peer.screenTransceiver, track, stream);
+        } else if (peer.screenTransceiver) {
+          await stopScreenOnConnection(peer.screenTransceiver);
         }
       } catch (err) {
         console.warn(`Failed to ${track ? 'send' : 'stop'} screen track for peer ${participantId}:`, err);
