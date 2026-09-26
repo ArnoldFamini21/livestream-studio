@@ -48,6 +48,31 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   // track can be told apart from the camera even before the camera arrives.
   const remoteScreenStreamIdsRef = useRef<Map<string, string>>(new Map());
   const publishedScreenRef = useRef<{ track: MediaStreamTrack; stream: MediaStream } | null>(null);
+  // Peers whose media link dropped after connecting and is recovering.
+  const [reconnectingPeerIds, setReconnectingPeerIds] = useState<Set<string>>(new Set());
+  const reconnectingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const setPeerReconnecting = useCallback((participantId: string, reconnecting: boolean) => {
+    const timer = reconnectingTimersRef.current.get(participantId);
+    if (timer) {
+      clearTimeout(timer);
+      reconnectingTimersRef.current.delete(participantId);
+    }
+    const update = (value: boolean) => setReconnectingPeerIds((current) => {
+      if (current.has(participantId) === value) return current;
+      const next = new Set(current);
+      if (value) next.add(participantId); else next.delete(participantId);
+      return next;
+    });
+    if (!reconnecting) {
+      update(false);
+      return;
+    }
+    // Brief "disconnected" blips recover on their own; show only a real drop.
+    reconnectingTimersRef.current.set(participantId, setTimeout(() => {
+      reconnectingTimersRef.current.delete(participantId);
+      update(true);
+    }, 1_000));
+  }, []);
   const [peerBandwidthHealth, setPeerBandwidthHealth] = useState<Map<string, PeerBandwidthHealth>>(new Map());
 
   // Use refs to avoid stale closures in setTimeout callbacks
@@ -236,9 +261,18 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         }
       };
 
+      let everConnected = false;
       pc.onconnectionstatechange = () => {
         if (peersRef.current.get(remoteParticipantId) !== peerState) return;
         peerState.negotiation.connectionStateChanged();
+        if (pc.connectionState === 'connected') {
+          everConnected = true;
+          setPeerReconnecting(remoteParticipantId, false);
+        } else if (everConnected && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
+          setPeerReconnecting(remoteParticipantId, true);
+        } else if (pc.connectionState === 'closed') {
+          setPeerReconnecting(remoteParticipantId, false);
+        }
         if (pc.connectionState === 'closed') {
           peerState.negotiation.dispose();
           peersRef.current.delete(remoteParticipantId);
@@ -256,7 +290,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       }
       return pc;
     },
-    [removePeerBandwidthState, updateRemoteStreams]
+    [removePeerBandwidthState, setPeerReconnecting, updateRemoteStreams]
   );
 
   // Wait for configured TURN before negotiating, including when an offer arrives
@@ -327,6 +361,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     (participantId: string) => {
       removedPeersRef.current.set(participantId, (removedPeersRef.current.get(participantId) || 0) + 1);
       pendingCandidatesRef.current.delete(participantId);
+      setPeerReconnecting(participantId, false);
       const peer = peersRef.current.get(participantId);
       if (peer) {
         peer.negotiation.dispose();
@@ -342,7 +377,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       }
       remoteScreenStreamIdsRef.current.delete(participantId);
     },
-    [removePeerBandwidthState, updateRemoteStreams]
+    [removePeerBandwidthState, setPeerReconnecting, updateRemoteStreams]
   );
 
   const applyPeerBandwidthMode = useCallback(async (peer: PeerState, mode: BandwidthAdaptationMode) => {
@@ -504,6 +539,9 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   const cleanup = useCallback(() => {
     generationRef.current++;
     removedPeersRef.current.clear();
+    for (const timer of reconnectingTimersRef.current.values()) clearTimeout(timer);
+    reconnectingTimersRef.current.clear();
+    setReconnectingPeerIds(new Set());
     // The sampling effect owns its timer; a room rejoin only resets peers.
     for (const [, peer] of peersRef.current) {
       peer.negotiation.dispose();
@@ -535,6 +573,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     publishScreenTrack,
     setRemoteScreenStreamId,
     peerBandwidthHealth,
+    reconnectingPeerIds,
     connectToPeer,
     handleOffer,
     handleAnswer,

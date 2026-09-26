@@ -22,6 +22,8 @@ interface VideoTileProps {
   cameraShape?: CameraShape;
   nameTagStyle?: NameTagStyle;
   connectionHealth?: PeerBandwidthHealth | null;
+  /** Their connection dropped and is recovering: shown in the studio, not the broadcast. */
+  reconnecting?: boolean;
   onAudioLevelChange?: (participantId: string, level: number) => void;
 }
 
@@ -148,6 +150,7 @@ export function VideoTile({
   cameraShape = 'rectangle',
   nameTagStyle = 'classic',
   connectionHealth = null,
+  reconnecting = false,
   onAudioLevelChange,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -262,6 +265,15 @@ export function VideoTile({
         >
           <span style={tileStyles.connectionBadgeDot} />
           {formatPeerBandwidthQualityLabel(connectionHealth)}
+        </div>
+      )}
+
+      {reconnecting && !isLocal && (
+        <div data-local-only style={tileStyles.reconnectingScrim} role="status" aria-live="polite">
+          <div style={tileStyles.reconnectingPill}>
+            <span style={{ ...tileStyles.reconnectingSpinner, animation: 'spin 0.9s linear infinite' }} aria-hidden="true" />
+            Reconnecting…
+          </div>
         </div>
       )}
 
@@ -380,6 +392,36 @@ const tileStyles: Record<string, React.CSSProperties> = {
     height: 72,
     background: 'linear-gradient(transparent, rgba(0, 0, 0, 0.65))',
     pointerEvents: 'none',
+  },
+  reconnectingScrim: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 4,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(8, 10, 18, 0.55)',
+    backdropFilter: 'blur(2px)',
+    pointerEvents: 'none',
+  },
+  reconnectingPill: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '7px 14px',
+    borderRadius: 999,
+    background: 'rgba(15, 23, 42, 0.85)',
+    border: '1px solid rgba(255, 255, 255, 0.14)',
+    color: '#f5f6fa',
+    fontSize: 13,
+    fontWeight: 600,
+  },
+  reconnectingSpinner: {
+    width: 12,
+    height: 12,
+    borderRadius: '50%',
+    border: '2px solid rgba(255, 255, 255, 0.25)',
+    borderTopColor: '#a78bfa',
   },
   connectionBadge: {
     position: 'absolute',

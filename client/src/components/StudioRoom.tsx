@@ -394,6 +394,8 @@ interface StageVideoItem {
   volume: number;
   isScreenShare?: boolean;
   connectionHealth?: PeerBandwidthHealth | null;
+  /** Their media link dropped and is recovering. */
+  reconnecting?: boolean;
 }
 
 interface PendingLiveTokenRequest {
@@ -1370,6 +1372,7 @@ export function StudioRoom() {
     publishScreenTrack,
     setRemoteScreenStreamId,
     peerBandwidthHealth,
+    reconnectingPeerIds,
     connectToPeer,
     handleOffer,
     handleAnswer,
@@ -5118,12 +5121,12 @@ export function StudioRoom() {
         // otherwise (SFU) the screen has replaced the camera.
         const separateScreen = p.screenSharing ? meshRemoteScreenStreams.get(id) || null : null;
         const screenReplacesCamera = Boolean(p.screenSharing) && !separateScreen;
-        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: screenReplacesCamera ? false : p.audioEnabled, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null });
+        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: screenReplacesCamera ? false : p.audioEnabled, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
         if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: false, videoEnabled: true, volume: 1, isScreenShare: true });
       }
     }
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, meshRemoteScreenStreams, isScreenSharing, screenStream, participantVolumes, peerBandwidthHealth]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, meshRemoteScreenStreams, isScreenSharing, screenStream, participantVolumes, peerBandwidthHealth, reconnectingPeerIds]);
 
   const localPresenterCameraItem = useMemo((): StageVideoItem | null => {
     if (!myParticipant || !isStudioOperator(myParticipant) || myParticipant.status === 'green-room') return null;
@@ -6452,6 +6455,7 @@ export function StudioRoom() {
                       cameraShape={cameraShape}
                       nameTagStyle={nameTagStyle}
                       connectionHealth={item.connectionHealth}
+                          reconnecting={item.reconnecting}
                       onAudioLevelChange={handleStageAudioLevelChange}
                     />
                   </div>
@@ -6658,6 +6662,7 @@ export function StudioRoom() {
                           cameraShape={cameraShape}
                           nameTagStyle={nameTagStyle}
                           connectionHealth={item.connectionHealth}
+                          reconnecting={item.reconnecting}
                           onAudioLevelChange={isLeavingTile ? undefined : handleStageAudioLevelChange}
                         />
                       </div>
@@ -7383,6 +7388,7 @@ function BackstagePrivateRoom({
               cameraShape={cameraShape}
               nameTagStyle={nameTagStyle}
               connectionHealth={item.connectionHealth}
+                          reconnecting={item.reconnecting}
             />
           </div>
         ))}
