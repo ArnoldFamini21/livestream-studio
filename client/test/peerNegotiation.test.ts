@@ -306,3 +306,30 @@ test('the impolite side offers at once', async () => {
   assert.deepEqual(sent.map(d => d.type), ['offer']);
   negotiation.dispose();
 });
+
+test('starting a connection: the impolite side offers, the polite side waits for that offer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const impolite = setup(false);
+  await impolite.negotiation.start();
+  assert.deepEqual(impolite.sent.map(d => d.type), ['offer']);
+
+  const polite = setup(true);
+  await polite.negotiation.start();
+  await settle();
+  assert.deepEqual(polite.sent, [], 'no offer to take back when the other side offers');
+  await polite.negotiation.receiveOffer(remoteOffer);
+  await settle();
+  assert.deepEqual(polite.sent.map(d => d.type), ['answer', 'offer']);
+  impolite.negotiation.dispose();
+  polite.negotiation.dispose();
+});
+
+test('a polite side whose peer never offers still starts the connection', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { negotiation, sent } = setup(true);
+  await negotiation.start();
+  t.mock.timers.tick(1_500);
+  await settle();
+  assert.deepEqual(sent.map(d => d.type), ['offer']);
+  negotiation.dispose();
+});

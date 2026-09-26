@@ -275,7 +275,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   const connectToPeer = useCallback(async (id: string) => {
     if (peersRef.current.has(id)) return;
     const peer = await preparePeer(id);
-    if (peer) await peer.negotiation.offer();
+    if (peer) await peer.negotiation.start();
   }, [preparePeer]);
 
   const handleOffer = useCallback(async (from: string, sdp: RTCSessionDescriptionInit) => {
