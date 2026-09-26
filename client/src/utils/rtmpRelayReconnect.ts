@@ -10,6 +10,19 @@ export const RELAY_RECONNECT_DELAY_MS = 1_500;
 export const RELAY_RECONNECT_MAX_DELAY_MS = 15_000;
 export const RELAY_STABLE_AFTER_MS = 30_000;
 
+/**
+ * With no network at all every attempt fails at once and the count ran out
+ * in about two minutes. While the browser reports it is offline, the relay
+ * waits instead, without using attempts, for up to this long, and reconnects
+ * the moment the connection returns.
+ */
+export const RELAY_OFFLINE_WAIT_MAX_MS = 5 * 60_000;
+export const RELAY_OFFLINE_STOP_MESSAGE = 'The internet connection was lost for more than 5 minutes.';
+
+export function isBrowserOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
 export function getRelayReconnectDelayMs(attempt: number): number {
   return Math.min(RELAY_RECONNECT_MAX_DELAY_MS, RELAY_RECONNECT_DELAY_MS * 2 ** Math.max(0, attempt - 1));
 }

@@ -1311,6 +1311,8 @@ export function StudioRoom() {
 
   // Hooks
   const { connect, disconnect, send, addHandler, connected, reconnectFailed, retry: retryConnection } = useSignaling();
+  const signalingConnectedRef = useRef(connected);
+  signalingConnectedRef.current = connected;
   const onDisplayNameChange = useCallback((name: string) => {
     const trimmed = name.trim();
     if (!trimmed || trimmed === userName) return;
@@ -1808,6 +1810,10 @@ export function StudioRoom() {
     onDestinationStatus: handleRelayDestinationStatus,
     onRelayStopped: handleRelayStopped,
   });
+
+  // Whether this studio is sending a broadcast (live, or reconnecting after a drop).
+  const relayActiveRef = useRef(false);
+  relayActiveRef.current = relayStats.status === 'connecting' || relayStats.status === 'live';
 
   useEffect(() => {
     if (relayBackupRecording) setLiveBackupRecording(relayBackupRecording);
@@ -2447,14 +2453,19 @@ export function StudioRoom() {
       switch (message.type) {
         case 'room-joined': {
           const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState, studioBranding, features } = message.payload;
-          const live = Boolean(liveStreamState?.live || roomData.status === 'live');
-          const liveStartedAt = live ? liveStreamState?.startedAt || new Date().toISOString() : null;
+          // Our own broadcast keeps running through a dropped studio connection,
+          // but the server forgot it when we disconnected: keep it, and say so again below.
+          const resumingOwnBroadcast = isLiveRef.current && relayActiveRef.current;
+          const live = resumingOwnBroadcast || Boolean(liveStreamState?.live || roomData.status === 'live');
+          const liveStartedAt = resumingOwnBroadcast && liveStartedAtRef.current
+            ? liveStartedAtRef.current
+            : live ? liveStreamState?.startedAt || new Date().toISOString() : null;
           const recordingStartedAt = recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null;
           const recordingSessionId = recordingState?.recording ? recordingState.sessionId || null : null;
           isLiveRef.current = live;
           liveStartedAtRef.current = liveStartedAt;
           sessionRecordingStartedAtRef.current = recordingStartedAt;
-          setRoom(roomData);
+          setRoom(resumingOwnBroadcast ? { ...roomData, status: 'live' } : roomData);
           setIsLive(live);
           setLiveStartedAt(liveStartedAt);
           const localParticipant = withLocalJoinMedia(participant, localStreamRef.current);
@@ -2468,6 +2479,12 @@ export function StudioRoom() {
               screenSharing: isScreenSharingRef.current,
             },
           });
+          if (resumingOwnBroadcast && !liveStreamState?.live) {
+            sendRef.current({
+              type: 'live-stream-state-changed',
+              payload: { live: true, startedAt: liveStartedAt ?? undefined, performedBy: participant.id },
+            });
+          }
           setJoined(true);
           setChatMessages(existingChatMessages);
           setChatTypingIndicators([]);
@@ -3691,6 +3708,11 @@ export function StudioRoom() {
 
   const requestLiveStreamToken = useCallback((): Promise<string> => {
     const requestId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    // A request sent while the studio connection is down is dropped; fail now
+    // so a reconnecting broadcast retries in seconds instead of waiting out the timeout.
+    if (!signalingConnectedRef.current) {
+      return Promise.reject(new Error('Waiting for the studio connection.'));
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         liveTokenRequestsRef.current.delete(requestId);

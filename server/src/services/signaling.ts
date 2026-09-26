@@ -1856,6 +1856,21 @@ function handleSfuTokenRequest(
   });
 }
 
+const MAX_RESUMED_BROADCAST_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A host whose studio connection dropped mid-broadcast rejoins still live;
+ * the server forgot the broadcast when they disconnected. Keep its original
+ * start time so everyone's live timer carries on instead of restarting.
+ */
+export function getResumedLiveStartedAt(value: unknown, nowMs: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const startedAtMs = Date.parse(value);
+  if (!Number.isFinite(startedAtMs)) return undefined;
+  if (startedAtMs > nowMs || nowMs - startedAtMs > MAX_RESUMED_BROADCAST_AGE_MS) return undefined;
+  return new Date(startedAtMs).toISOString();
+}
+
 function handleLiveStreamStateChange(ws: WebSocket, payload: LiveStreamStatePayload) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
@@ -1880,7 +1895,9 @@ function handleLiveStreamStateChange(ws: WebSocket, payload: LiveStreamStatePayl
   }
 
   const now = new Date().toISOString();
-  const startedAt = payload.live ? roomState.liveStreamStartedAt || now : undefined;
+  const startedAt = payload.live
+    ? roomState.liveStreamStartedAt || getResumedLiveStartedAt(payload.startedAt, Date.now()) || now
+    : undefined;
   const authoritativePayload: LiveStreamStatePayload = {
     live: payload.live,
     performedBy: mapping.participantId,

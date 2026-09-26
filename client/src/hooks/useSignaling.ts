@@ -139,7 +139,8 @@ export function useSignaling() {
         console.info(`Scheduling reconnection in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})`);
         reconnectTimerRef.current = setTimeout(() => {
           reconnectTimerRef.current = null;
-          reconnectAttemptsRef.current++;
+          // Offline, every attempt fails at once; keep trying without giving up.
+          if (navigator.onLine !== false) reconnectAttemptsRef.current++;
           connect();
         }, delay);
       };
@@ -179,12 +180,18 @@ export function useSignaling() {
   // exactly when a connection may have died silently: check it right away.
   useEffect(() => {
     let probeTimer: ReturnType<typeof setTimeout> | null = null;
-    const check = () => {
+    const check = (event?: Event) => {
       if (intentionalDisconnectRef.current) return;
       if (document.visibilityState === 'hidden') return;
       const ws = wsRef.current;
       if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-        if (!reconnectTimerRef.current && !connectTimerRef.current) connectRef.current();
+        if (connectTimerRef.current) return;
+        // Back online: reconnect now rather than after the rest of the backoff.
+        if (reconnectTimerRef.current && event?.type === 'online') {
+          clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+        }
+        if (!reconnectTimerRef.current) connectRef.current();
         return;
       }
       if (ws.readyState !== WebSocket.OPEN) return;

@@ -4,6 +4,7 @@ import {
   getRelayAttemptsUsed,
   getRelayReconnectDelayMs,
   getRelayReconnectPlan,
+  isBrowserOffline,
   MAX_RELAY_RECONNECT_ATTEMPTS,
   RELAY_RECONNECT_DELAY_MS,
   RELAY_STABLE_AFTER_MS,
@@ -45,5 +46,20 @@ describe('RTMP relay reconnect policy', () => {
     assert.equal(getRelayAttemptsUsed(4, now - RELAY_STABLE_AFTER_MS, now), 0);
     assert.equal(getRelayAttemptsUsed(4, now - 2_000, now), 4);
     assert.equal(getRelayAttemptsUsed(1, null, now), 1);
+  });
+});
+
+describe('isBrowserOffline', () => {
+  it('is true only when the browser reports no network', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    try {
+      Object.defineProperty(globalThis, 'navigator', { value: { onLine: false }, configurable: true });
+      assert.equal(isBrowserOffline(), true);
+      Object.defineProperty(globalThis, 'navigator', { value: { onLine: true }, configurable: true });
+      assert.equal(isBrowserOffline(), false);
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'navigator', original);
+      else delete (globalThis as { navigator?: unknown }).navigator;
+    }
   });
 });
