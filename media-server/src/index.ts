@@ -3,6 +3,7 @@ import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import ffmpegStaticPath from 'ffmpeg-static';
@@ -68,6 +69,7 @@ import {
   bytesForSeconds,
   createFfmpegArgs,
   createFfmpegEncoderArgs,
+  createFfmpegSlateArgs,
   createFfmpegPushArgs,
   hasRemainingRelayWork,
   isEncodeOnceEnabled,
@@ -78,7 +80,9 @@ import {
   validateDestinations,
 } from './rtmp.js';
 import { WebmSinkFeed, WebmStreamTracker } from './webmStream.js';
-import { FlvSinkFeed, FlvTagStream } from './flvStream.js';
+import { FlvSinkFeed } from './flvStream.js';
+import { FlvProgram, type FlvProgramSource } from './flvSplice.js';
+import { isSameRelaySetup, shouldShowSlate, STUDIO_RECONNECT_HOLD_MS } from './relayResume.js';
 import {
   HLS_PLAYLIST_NAME,
   HlsViewerCounter,
@@ -134,7 +138,15 @@ interface RelayProcess {
 interface EncoderProcess {
   process: ChildProcessByStdio<Writable, Readable, Readable>;
   feed: WebmSinkFeed;
-  flv: FlvTagStream;
+  source: FlvProgramSource;
+  exited: boolean;
+}
+
+/** "We'll be right back" on the program while the studio reconnects. */
+interface SlateProcess {
+  process: ChildProcessByStdio<null, Readable, Readable>;
+  source: FlvProgramSource;
+  startedAtMs: number;
   exited: boolean;
 }
 
@@ -155,6 +167,8 @@ interface BackupProcess {
 }
 
 interface RelaySession {
+  /** The studio's connection; replaced when a studio that dropped reconnects. */
+  client: WebSocket;
   started: boolean;
   stopping: boolean;
   claims: LiveStreamTokenClaims | null;
@@ -175,6 +189,14 @@ interface RelaySession {
   restartAttempts: Map<string, number>;
   /** Destinations whose RTMP connection has held at least once this session. */
   confirmedDestinations: Set<string>;
+  payload: RtmpRelayStartPayload | null;
+  /** Encode-once: what the destinations receive, spliced across encoders. */
+  program: FlvProgram | null;
+  slate: SlateProcess | null;
+  lastMediaAtMs: number;
+  /** The studio's connection closed; the broadcast waits on the slate. */
+  clientGone: boolean;
+  watchdog: ReturnType<typeof setInterval> | null;
 }
 
 const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
@@ -315,12 +337,12 @@ function stopRelayProcess(session: RelaySession, relay: RelayProcess) {
   session.stopTimers.set(relay.destination.id, timer);
 }
 
-function stopBackupProcess(ws: WebSocket, session: RelaySession) {
+function stopBackupProcess(session: RelaySession) {
   const backup = session.backup;
   if (!backup || backup.exited) return;
   backup.recording.status = 'finalizing';
   backup.recording.stoppedAt = new Date().toISOString();
-  sendJson(ws, {
+  sendJson(session.client, {
     type: 'backup-recording-status',
     payload: toLiveBackupPublicStatus(backup.recording),
   });
@@ -358,7 +380,7 @@ function endProcess(child: ChildProcessByStdio<Writable, Readable | null, Readab
   }, SHUTDOWN_TIMEOUT_MS);
 }
 
-function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
+function stopSession(session: RelaySession, reason?: string) {
   if (session.stopping) return;
   session.stopping = true;
   for (const timer of session.restartTimers.values()) {
@@ -369,8 +391,15 @@ function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
     clearTimeout(session.encoderRestartTimer);
     session.encoderRestartTimer = null;
   }
-  stopBackupProcess(ws, session);
+  stopBackupProcess(session);
   stopHlsWriter(session);
+  stopSlate(session);
+  if (session.watchdog) {
+    clearInterval(session.watchdog);
+    session.watchdog = null;
+  }
+  // A broadcast held for a studio that never came back leaves the session list.
+  if (session.clientGone && sessions.get(session.client) === session) sessions.delete(session.client);
 
   const encoder = session.encoder;
   if (encoder && !encoder.exited) {
@@ -383,28 +412,28 @@ function stopSession(ws: WebSocket, session: RelaySession, reason?: string) {
   }
 
   for (const relay of session.relays.values()) {
-    sendJson(ws, {
+    sendJson(session.client, {
       type: 'destination-status',
       payload: { destinationId: relay.destination.id, status: 'idle' },
     });
   }
-  sendJson(ws, { type: 'session-stopped', payload: { reason } });
+  sendJson(session.client, { type: 'session-stopped', payload: { reason } });
 }
 
-function stopSessionIfNoRelayWork(ws: WebSocket, session: RelaySession) {
+function stopSessionIfNoRelayWork(session: RelaySession) {
   if (!session.started || session.stopping || session.encoderRestartTimer) return;
   const relayWork = Array.from(session.relays.entries()).map(([destinationId, relay]) => ({
     exited: relay.exited,
     restartPending: session.restartTimers.has(destinationId),
   }));
   if (hasRemainingRelayWork(relayWork)) return;
-  stopSession(ws, session, 'All RTMP destinations stopped.');
+  stopSession(session, 'All RTMP destinations stopped.');
 }
 
 async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload: RtmpRelayStartPayload) {
-  const encoder = session.encoder;
+  const program = session.program;
   const roomId = session.claims?.roomId;
-  if (!encoder || encoder.exited || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
+  if (!program || session.hls || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
   let dir: string;
   try {
     dir = await prepareHlsRoomDir(roomId);
@@ -412,13 +441,13 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
     console.warn('Watch page HLS folder could not be prepared:', err instanceof Error ? err.message : err);
     return;
   }
-  if (session.stopping || session.hls || session.encoder !== encoder || encoder.exited) {
+  if (session.stopping || session.hls || session.program !== program) {
     await removeHlsWriterDir(dir);
     return;
   }
   const child = spawn(ffmpegPath, createFfmpegHlsArgs(dir), { stdio: ['pipe', 'ignore', 'pipe'] });
   const options = { video: normalizeVideoConfig(payload.video), audio: normalizeAudioConfig(payload.audio) };
-  const feed = new FlvSinkFeed(child.stdin, encoder.flv, {
+  const feed = new FlvSinkFeed(child.stdin, program.stream, {
     maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS, options),
     onOverflow: () => console.warn('Watch page HLS writer fell behind; skipping ahead'),
     onError: (err) => console.warn(`Watch page HLS input closed: ${err.message}`),
@@ -534,7 +563,6 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
 }
 
 function spawnRelay(
-  ws: WebSocket,
   session: RelaySession,
   ffmpegPath: string,
   destination: RtmpRelayDestination,
@@ -544,8 +572,8 @@ function spawnRelay(
     video: normalizeVideoConfig(payload.video),
     audio: normalizeAudioConfig(payload.audio),
   };
-  const encoder = session.encodeOnce ? session.encoder : null;
-  const args = encoder ? createFfmpegPushArgs(destination) : createFfmpegArgs(destination, options);
+  const program = session.encodeOnce ? session.program : null;
+  const args = program ? createFfmpegPushArgs(destination) : createFfmpegArgs(destination, options);
   const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
   const onInputError = (err: Error) => {
     console.warn(`ffmpeg ${destination.name} input closed: ${err.message}`);
@@ -554,7 +582,7 @@ function spawnRelay(
     maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS, options),
     onOverflow: () => {
       console.warn(`RTMP relay ${destination.name} fell ${RELAY_INPUT_BACKLOG_SECONDS}s behind; skipping ahead to the live edge`);
-      sendJson(ws, {
+      sendJson(session.client, {
         type: 'destination-status',
         payload: {
           destinationId: destination.id,
@@ -565,7 +593,7 @@ function spawnRelay(
     },
     onRecover: (droppedBytes: number) => {
       const seconds = Math.max(1, Math.round(droppedBytes / Math.max(1, bytesForSeconds(1, options))));
-      sendJson(ws, {
+      sendJson(session.client, {
         type: 'destination-status',
         payload: {
           destinationId: destination.id,
@@ -579,10 +607,10 @@ function spawnRelay(
   let feed: WebmSinkFeed | null = null;
   let flvFeed: FlvSinkFeed | null = null;
   let joinedMidStream: boolean;
-  if (encoder) {
+  if (program) {
     // Copy-only uploader: a restart rejoins the shared encode at the next
     // keyframe, without re-encoding and without touching other destinations.
-    flvFeed = new FlvSinkFeed(child.stdin, encoder.flv, { ...backpressure, onError: onInputError });
+    flvFeed = new FlvSinkFeed(child.stdin, program.stream, { ...backpressure, onError: onInputError });
     joinedMidStream = flvFeed.join() === 'resync';
   } else {
     feed = new WebmSinkFeed(child.stdin, onInputError, backpressure);
@@ -608,7 +636,7 @@ function spawnRelay(
   };
   session.relays.set(destination.id, relay);
 
-  sendJson(ws, {
+  sendJson(session.client, {
     type: 'destination-status',
     payload: { destinationId: destination.id, status: 'connecting' },
   });
@@ -623,7 +651,7 @@ function spawnRelay(
   child.on('error', (err) => {
     relay.exited = true;
     if (relay.retired) return;
-    sendJson(ws, {
+    sendJson(session.client, {
       type: 'destination-status',
       payload: { destinationId: destination.id, status: 'error', message: err.message },
     });
@@ -661,7 +689,7 @@ function spawnRelay(
       const nextAttempt = attempts + 1;
       session.restartAttempts.set(destination.id, nextAttempt);
       const delayMs = getDestinationReconnectDelayMs(nextAttempt);
-      sendJson(ws, {
+      sendJson(session.client, {
         type: 'destination-status',
         payload: {
           destinationId: destination.id,
@@ -671,15 +699,15 @@ function spawnRelay(
       });
       const restartTimer = setTimeout(() => {
         session.restartTimers.delete(destination.id);
-        if (session.stopping || ws.readyState !== WebSocket.OPEN) return;
-        spawnRelay(ws, session, ffmpegPath, destination, payload);
+        if (session.stopping) return;
+        spawnRelay(session, ffmpegPath, destination, payload);
       }, delayMs);
       session.restartTimers.set(destination.id, restartTimer);
       return;
     }
 
     console.warn(`RTMP relay ${destination.name} stopped: ${message}`);
-    sendJson(ws, {
+    sendJson(session.client, {
       type: 'destination-status',
       payload: {
         destinationId: destination.id,
@@ -689,7 +717,7 @@ function spawnRelay(
           : `Could not connect to ${destination.name}. Check the server URL and stream key, and that the platform is ready to receive.`,
       },
     });
-    stopSessionIfNoRelayWork(ws, session);
+    stopSessionIfNoRelayWork(session);
   });
 }
 
@@ -699,14 +727,14 @@ function spawnRelay(
  * ends about a second later. Report "live" only once it has held, so the
  * panel never shows a destination live that is not receiving anything.
  */
-function markRelayReceivingMedia(ws: WebSocket, session: RelaySession, relay: RelayProcess) {
+function markRelayReceivingMedia(session: RelaySession, relay: RelayProcess) {
   relay.live = true;
   relay.liveSinceMs = Date.now();
   relay.confirmTimer = setTimeout(() => {
     relay.confirmTimer = null;
     if (relay.exited || relay.retired || session.stopping) return;
     session.confirmedDestinations.add(relay.destination.id);
-    sendJson(ws, {
+    sendJson(session.client, {
       type: 'destination-status',
       payload: { destinationId: relay.destination.id, status: 'live' },
     });
@@ -718,7 +746,6 @@ function markRelayReceivingMedia(ws: WebSocket, session: RelaySession, relay: Re
  * copy-only uploader, so CPU cost no longer grows with the destination count.
  */
 function spawnEncoder(
-  ws: WebSocket,
   session: RelaySession,
   ffmpegPath: string,
   payload: RtmpRelayStartPayload
@@ -727,8 +754,10 @@ function spawnEncoder(
     video: normalizeVideoConfig(payload.video),
     audio: normalizeAudioConfig(payload.audio),
   };
+  const program = session.program;
+  if (!program) throw new Error('The live program is not ready.');
   const child = spawn(ffmpegPath, createFfmpegEncoderArgs(options), { stdio: ['pipe', 'pipe', 'pipe'] });
-  const flv = new FlvTagStream();
+  const source = program.createSource('encoder');
   const feed = new WebmSinkFeed(child.stdin, (err) => {
     console.warn(`ffmpeg encoder input closed: ${err.message}`);
   }, {
@@ -737,7 +766,7 @@ function spawnEncoder(
       console.warn(`Live encoder fell ${RELAY_INPUT_BACKLOG_SECONDS}s behind; skipping ahead to the live edge`);
       for (const relay of session.relays.values()) {
         if (relay.exited || relay.retired) continue;
-        sendJson(ws, {
+        sendJson(session.client, {
           type: 'destination-status',
           payload: {
             destinationId: relay.destination.id,
@@ -752,22 +781,13 @@ function spawnEncoder(
   if (join === 'no-init') {
     console.warn('Live encoder restarted without a WebM init segment; FFmpeg may reject the stream');
   }
-  const encoder: EncoderProcess = { process: child, feed, flv, exited: false };
+  const encoder: EncoderProcess = { process: child, feed, source, exited: false };
   session.encoder = encoder;
   console.log(`Live encoder starting for ${session.destinations.length} destination(s)`);
 
-  child.stdout.on('data', (data: Buffer) => {
-    const chunk = flv.push(data);
-    // The watch page's HLS writer takes the same tags as the destinations.
-    const hls = session.hls;
-    if (chunk && hls && !hls.exited) hls.feed.write(chunk);
-    if (!chunk) return;
-    for (const relay of session.relays.values()) {
-      if (relay.exited || relay.retired || !relay.flvFeed) continue;
-      if (!relay.flvFeed.write(chunk) || relay.live) continue;
-      markRelayReceivingMedia(ws, session, relay);
-    }
-  });
+  // On air at once for a new broadcast; after a restart, at its first keyframe.
+  program.switchTo(source);
+  child.stdout.on('data', (data: Buffer) => source.push(data));
   child.stdout.on('end', () => {
     if (session.stopping) stopRelays(session);
   });
@@ -787,53 +807,41 @@ function spawnEncoder(
       return;
     }
     if (session.encoder !== encoder) return;
+    // The studio is away: the slate is on air, and a new encoder starts when it returns.
+    if (session.clientGone) return;
 
-    stopHlsWriter(session);
-
-    // Every uploader was fed by this encode. Retire them; a new encoder
-    // starts a new FLV stream, and they are respawned against it.
-    for (const timer of session.restartTimers.values()) clearTimeout(timer);
-    session.restartTimers.clear();
-    for (const relay of session.relays.values()) {
-      if (relay.exited) continue;
-      relay.retired = true;
-      endProcess(relay.process, () => relay.exited);
-    }
-
+    // The destinations and the watch page stay connected: the program
+    // splices the replacement encoder in at its first keyframe.
     const canResume = session.webm.joinPoint() !== null;
     if (canResume && session.encoderRestartAttempts < MAX_ENCODER_RESTARTS) {
       session.encoderRestartAttempts += 1;
       const attempt = session.encoderRestartAttempts;
       console.warn(`Live encoder stopped (${message}); restarting ${attempt}/${MAX_ENCODER_RESTARTS}`);
       for (const destination of session.destinations) {
-        sendJson(ws, {
+        sendJson(session.client, {
           type: 'destination-status',
           payload: {
             destinationId: destination.id,
-            status: 'connecting',
+            status: 'live',
             message: `Restarting the encoder (${attempt}/${MAX_ENCODER_RESTARTS})`,
           },
         });
       }
       session.encoderRestartTimer = setTimeout(() => {
         session.encoderRestartTimer = null;
-        if (session.stopping || ws.readyState !== WebSocket.OPEN) return;
-        spawnEncoder(ws, session, ffmpegPath, payload);
-        void spawnHlsWriter(session, ffmpegPath, payload);
-        for (const destination of session.destinations) {
-          spawnRelay(ws, session, ffmpegPath, destination, payload);
-        }
+        if (session.stopping || session.clientGone) return;
+        spawnEncoder(session, ffmpegPath, session.payload ?? payload);
       }, ENCODER_RESTART_DELAY_MS);
       return;
     }
 
     for (const destination of session.destinations) {
-      sendJson(ws, {
+      sendJson(session.client, {
         type: 'destination-status',
         payload: { destinationId: destination.id, status: 'error', message: `Live encoder stopped: ${message}` },
       });
     }
-    stopSession(ws, session, 'The live encoder stopped.');
+    stopSession(session, 'The live encoder stopped.');
   };
 
   child.on('error', (err) => onExit(err.message));
@@ -844,14 +852,13 @@ function spawnEncoder(
 }
 
 async function spawnLiveBackup(
-  ws: WebSocket,
   session: RelaySession,
   ffmpegPath: string,
   claims: LiveStreamTokenClaims,
   payload: RtmpRelayStartPayload
 ) {
   if (!isLiveBackupRecordingEnabled()) {
-    sendJson(ws, {
+    sendJson(session.client, {
       type: 'backup-recording-status',
       payload: {
         backupId: '',
@@ -898,7 +905,7 @@ async function spawnLiveBackup(
     session.backup = backup;
     liveBackups.set(recording.backupId, recording);
 
-    sendJson(ws, {
+    sendJson(session.client, {
       type: 'backup-recording-status',
       payload: toLiveBackupPublicStatus(recording),
     });
@@ -913,7 +920,7 @@ async function spawnLiveBackup(
       recording.status = 'error';
       recording.error = err.message;
       if (!recording.stoppedAt) recording.stoppedAt = new Date().toISOString();
-      sendJson(ws, {
+      sendJson(session.client, {
         type: 'backup-recording-status',
         payload: toLiveBackupPublicStatus(recording),
       });
@@ -945,7 +952,7 @@ async function spawnLiveBackup(
               if (recording.storageStatus === 'failed') {
                 console.warn(`Live backup ${recording.backupId} upload failed: ${recording.storageError}`);
               }
-              sendJson(ws, {
+              sendJson(session.client, {
                 type: 'backup-recording-status',
                 payload: toLiveBackupPublicStatus(recording),
               });
@@ -957,21 +964,21 @@ async function spawnLiveBackup(
             ? `Backup recording stopped from ${signal}`
             : `Backup recording exited with code ${code ?? 'unknown'}`;
         }
-        sendJson(ws, {
+        sendJson(session.client, {
           type: 'backup-recording-status',
           payload: toLiveBackupPublicStatus(recording),
         });
       }).catch((err) => {
         recording.status = 'error';
         recording.error = err instanceof Error ? err.message : 'Backup recording finalization failed';
-        sendJson(ws, {
+        sendJson(session.client, {
           type: 'backup-recording-status',
           payload: toLiveBackupPublicStatus(recording),
         });
       });
     });
   } catch (err) {
-    sendJson(ws, {
+    sendJson(session.client, {
       type: 'backup-recording-status',
       payload: {
         backupId: '',
@@ -985,7 +992,203 @@ async function spawnLiveBackup(
   }
 }
 
-async function handleStart(ws: WebSocket, session: RelaySession, payload: RtmpRelayStartPayload) {
+const SLATE_IMAGE_PATH = fileURLToPath(new URL('../assets/reconnecting-slate.jpg', import.meta.url));
+
+function createRelaySession(ws: WebSocket): RelaySession {
+  return {
+    client: ws,
+    started: false,
+    stopping: false,
+    claims: null,
+    destinations: [],
+    webm: new WebmStreamTracker(),
+    encodeOnce: false,
+    encoder: null,
+    encoderRestartAttempts: 0,
+    encoderRestartTimer: null,
+    relaysStopRequested: false,
+    relays: new Map(),
+    backup: null,
+    backupStopTimer: null,
+    hls: null,
+    stopTimers: new Map(),
+    restartTimers: new Map(),
+    restartAttempts: new Map(),
+    confirmedDestinations: new Set(),
+    payload: null,
+    program: null,
+    slate: null,
+    lastMediaAtMs: 0,
+    clientGone: false,
+    watchdog: null,
+  };
+}
+
+/** The program fans out to every destination and the watch page. */
+function createProgram(session: RelaySession): FlvProgram {
+  return new FlvProgram((chunk) => {
+    const hls = session.hls;
+    if (hls && !hls.exited) hls.feed.write(chunk);
+    for (const relay of session.relays.values()) {
+      if (relay.exited || relay.retired || !relay.flvFeed) continue;
+      if (!relay.flvFeed.write(chunk) || relay.live) continue;
+      markRelayReceivingMedia(session, relay);
+    }
+  }, (source) => {
+    // The studio's video is back on air.
+    if (session.slate && source !== session.slate.source) {
+      console.log('Studio video is back on air; slate off');
+      stopSlate(session);
+    }
+  });
+}
+
+function startSlate(session: RelaySession): boolean {
+  if (session.slate && !session.slate.exited) return true;
+  const program = session.program;
+  const payload = session.payload;
+  const ffmpegPath = getFfmpegPath();
+  if (!program || !payload || !ffmpegPath || session.stopping || !existsSync(SLATE_IMAGE_PATH)) return false;
+  const options = { video: normalizeVideoConfig(payload.video), audio: normalizeAudioConfig(payload.audio) };
+  const child = spawn(ffmpegPath, createFfmpegSlateArgs(options, SLATE_IMAGE_PATH), { stdio: ['ignore', 'pipe', 'pipe'] });
+  const source = program.createSource('slate');
+  const slate: SlateProcess = { process: child, source, startedAtMs: Date.now(), exited: false };
+  session.slate = slate;
+  console.warn('Studio video stopped; the destinations see the reconnecting slate');
+  child.stdout.on('data', (data: Buffer) => source.push(data));
+  child.stderr.on('data', (chunk: Buffer) => {
+    const line = chunk.toString('utf8').trim();
+    if (line) console.warn(`ffmpeg slate: ${line}`);
+  });
+  const onExit = () => {
+    if (slate.exited) return;
+    slate.exited = true;
+    if (session.slate !== slate) return;
+    session.slate = null;
+    // Nothing else can keep the destinations going while the studio is away.
+    if (session.clientGone) stopSession(session, 'The reconnecting slate stopped.');
+  };
+  child.on('error', onExit);
+  child.on('close', onExit);
+  program.switchTo(source);
+  return true;
+}
+
+function stopSlate(session: RelaySession) {
+  const slate = session.slate;
+  if (!slate) return;
+  session.slate = null;
+  if (!slate.exited) slate.process.kill('SIGTERM');
+}
+
+/** Checked every second: slate on when the studio goes quiet, and the hold's time limit. */
+function checkStudioInput(session: RelaySession) {
+  if (!session.started || session.stopping || !session.program) return;
+  const now = Date.now();
+  const slate = session.slate;
+  if (slate && now - slate.startedAtMs >= STUDIO_RECONNECT_HOLD_MS) {
+    stopSession(session, 'The studio did not reconnect.');
+    return;
+  }
+  if (shouldShowSlate({
+    lastMediaAtMs: session.lastMediaAtMs,
+    nowMs: now,
+    hasLiveDestination: session.confirmedDestinations.size > 0,
+    slateOnAir: Boolean(slate),
+  })) {
+    startSlate(session);
+  }
+}
+
+/** The studio's connection closed mid-broadcast: keep the destinations on the slate. */
+function holdSession(session: RelaySession): boolean {
+  if (!session.started || session.stopping || !session.program) return false;
+  if (session.confirmedDestinations.size === 0) {
+    console.log('Studio disconnected before any destination went live; nothing to hold');
+    return false;
+  }
+  if (!startSlate(session)) return false;
+  session.clientGone = true;
+  // The returning studio sends a new WebM stream; this backup file ends here.
+  stopBackupProcess(session);
+  console.warn(`Studio disconnected from a live broadcast; holding for ${Math.round(STUDIO_RECONNECT_HOLD_MS / 1000)} s`);
+  return true;
+}
+
+function findResumableSession(current: RelaySession, roomId: string, payload: RtmpRelayStartPayload): RelaySession | null {
+  for (const candidate of sessions.values()) {
+    if (candidate === current || !candidate.started || candidate.stopping) continue;
+    if (!candidate.program || !candidate.payload || candidate.claims?.roomId !== roomId) continue;
+    if (isSameRelaySetup(candidate.payload, payload)) return candidate;
+  }
+  return null;
+}
+
+/** The studio reconnected: continue its broadcast on the new connection. */
+async function resumeSession(
+  ws: WebSocket,
+  held: RelaySession,
+  claims: LiveStreamTokenClaims,
+  payload: RtmpRelayStartPayload,
+  ffmpegPath: string,
+  onResume: (session: RelaySession) => void
+) {
+  const previous = held.client;
+  if (sessions.get(previous) === held) sessions.delete(previous);
+  sessions.set(ws, held);
+  held.client = ws;
+  held.claims = claims;
+  held.payload = payload;
+  held.clientGone = false;
+  held.lastMediaAtMs = Date.now();
+  held.webm = new WebmStreamTracker();
+  held.encoderRestartAttempts = 0;
+  if (held.encoderRestartTimer) {
+    clearTimeout(held.encoderRestartTimer);
+    held.encoderRestartTimer = null;
+  }
+  onResume(held);
+  // A connection that died without closing is replaced; its close is ignored.
+  if (previous !== ws && previous.readyState === WebSocket.OPEN) previous.terminate();
+  console.log(`Studio reconnected to its live broadcast in room ${claims.roomId}`);
+
+  // The new encoder goes on air at its first keyframe; until then the slate
+  // (or the last studio video) stays on.
+  const old = held.encoder;
+  spawnEncoder(held, ffmpegPath, payload);
+  if (old && !old.exited) endProcess(old.process, () => old.exited);
+
+  if (held.backup && !held.backup.exited && held.backup.recording.status !== 'finalizing') stopBackupProcess(held);
+  await spawnLiveBackup(held, ffmpegPath, claims, payload);
+  if (held.stopping) return;
+
+  sendJson(ws, {
+    type: 'session-started',
+    payload: {
+      roomId: claims.roomId,
+      destinationIds: payload.destinations.map((destination) => destination.id),
+    },
+  });
+  for (const relay of held.relays.values()) {
+    const id = relay.destination.id;
+    const failed = relay.exited && !held.restartTimers.has(id);
+    sendJson(ws, {
+      type: 'destination-status',
+      payload: {
+        destinationId: id,
+        status: failed ? 'error' : relay.live && !relay.exited && held.confirmedDestinations.has(id) ? 'live' : 'connecting',
+        ...(failed ? { message: `Lost the connection to ${relay.destination.name}.` } : {}),
+      },
+    });
+  }
+}
+
+async function handleStart(
+  ws: WebSocket,
+  session: RelaySession,
+  payload: RtmpRelayStartPayload,
+  onResume: (session: RelaySession) => void = () => {}
+) {
   if (session.started) {
     sendError(ws, 'ALREADY_STARTED', 'This relay session is already live');
     return;
@@ -1019,22 +1222,37 @@ async function handleStart(ws: WebSocket, session: RelaySession, payload: RtmpRe
     return;
   }
 
+  if (isEncodeOnceEnabled()) {
+    const held = findResumableSession(session, claims.roomId, payload);
+    if (held) {
+      await resumeSession(ws, held, claims, payload, ffmpegPath, onResume);
+      return;
+    }
+  }
+
   session.started = true;
   session.claims = claims;
   session.destinations = payload.destinations;
   session.encodeOnce = isEncodeOnceEnabled();
+  session.payload = payload;
+  session.lastMediaAtMs = Date.now();
+  if (session.encodeOnce) {
+    session.program = createProgram(session);
+    session.watchdog = setInterval(() => checkStudioInput(session), 1_000);
+    session.watchdog.unref?.();
+  }
 
-  await spawnLiveBackup(ws, session, ffmpegPath, claims, payload);
+  await spawnLiveBackup(session, ffmpegPath, claims, payload);
   if (session.stopping) return;
 
-  if (session.encodeOnce) spawnEncoder(ws, session, ffmpegPath, payload);
+  if (session.encodeOnce) spawnEncoder(session, ffmpegPath, payload);
 
   for (const destination of payload.destinations) {
-    spawnRelay(ws, session, ffmpegPath, destination, payload);
+    spawnRelay(session, ffmpegPath, destination, payload);
   }
   if (session.encodeOnce) await spawnHlsWriter(session, ffmpegPath, payload);
 
-  sendJson(ws, {
+  sendJson(session.client, {
     type: 'session-started',
     payload: {
       roomId: claims.roomId,
@@ -1055,14 +1273,21 @@ function handleBinaryChunk(ws: WebSocket, session: RelaySession, data: RawData) 
       ? Buffer.concat(data)
       : Buffer.from(data);
   const info = session.webm.push(chunk);
+  session.lastMediaAtMs = Date.now();
   if (session.encodeOnce) {
     // Destinations go live when the encoder's output reaches them.
     const encoder = session.encoder;
     if (encoder && !encoder.exited) encoder.feed.write(chunk, info);
+    // Studio video after a stall on the same connection: back on air at the next keyframe.
+    const program = session.program;
+    if (session.slate && encoder && !encoder.exited && program) {
+      program.switchTo(encoder.source);
+      if (program.activeSource === encoder.source) stopSlate(session);
+    }
   } else {
     for (const relay of session.relays.values()) {
       if (relay.exited || !relay.feed || !relay.feed.write(chunk, info) || relay.live) continue;
-      markRelayReceivingMedia(ws, session, relay);
+      markRelayReceivingMedia(session, relay);
     }
   }
   const backup = session.backup;
@@ -1791,26 +2016,8 @@ sfuWss.on('connection', (ws) => {
 });
 
 wss.on('connection', (ws) => {
-  const session: RelaySession = {
-    started: false,
-    stopping: false,
-    claims: null,
-    destinations: [],
-    webm: new WebmStreamTracker(),
-    encodeOnce: false,
-    encoder: null,
-    encoderRestartAttempts: 0,
-    encoderRestartTimer: null,
-    relaysStopRequested: false,
-    relays: new Map(),
-    backup: null,
-    backupStopTimer: null,
-    hls: null,
-    stopTimers: new Map(),
-    restartTimers: new Map(),
-    restartAttempts: new Map(),
-    confirmedDestinations: new Set(),
-  };
+  // Replaced by the running broadcast when this connection is a studio reconnecting.
+  let session = createRelaySession(ws);
   sessions.set(ws, session);
 
   ws.on('message', (data, isBinary) => {
@@ -1826,10 +2033,12 @@ wss.on('connection', (ws) => {
     }
 
     if (message.type === 'start') {
-      void handleStart(ws, session, message.payload).catch((err) => {
+      void handleStart(ws, session, message.payload, (resumed) => {
+        session = resumed;
+      }).catch((err) => {
         const message = err instanceof Error ? err.message : 'Unable to start relay session';
         sendError(ws, 'START_FAILED', message);
-        stopSession(ws, session, message);
+        stopSession(session, message);
       });
     } else if (message.type === 'ping') {
       sendJson(ws, {
@@ -1841,19 +2050,26 @@ wss.on('connection', (ws) => {
         },
       });
     } else {
-      stopSession(ws, session, 'client requested stop');
+      stopSession(session, 'client requested stop');
       ws.close(1000, 'Relay stopped');
     }
   });
 
   ws.on('close', () => {
-    stopSession(ws, session, 'client disconnected');
+    // A reconnected studio took this broadcast over.
+    if (session.client !== ws) {
+      if (sessions.get(ws) === session) sessions.delete(ws);
+      return;
+    }
+    if (holdSession(session)) return;
+    if (session.started && !session.stopping) console.log('Studio disconnected; ending its relay session');
+    stopSession(session, 'client disconnected');
     sessions.delete(ws);
   });
 
+  // 'close' always follows and decides whether the broadcast is held.
   ws.on('error', (err) => {
     console.error('RTMP relay socket error:', err.message);
-    stopSession(ws, session, 'socket error');
   });
 });
 
