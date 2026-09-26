@@ -2,6 +2,7 @@ import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
 import { countUnreadChatMessages } from '../utils/chatUnread.ts';
 import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
 import { withLocalJoinMedia } from '../utils/joinMediaState.ts';
+import { CONTENT_EXIT_DURATION_MS, measureStageTiles, playStageFlip, STAGE_FLIP_DURATION_MS, type StageTileRects } from '../utils/stageFlip.ts';
 import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraSize } from '../utils/presentationLayout.ts';
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
@@ -206,7 +207,6 @@ import {
 } from '../utils/stagePresenceTransitions.ts';
 import {
   LAYOUT_SWITCH_TRANSITION_DURATION_MS,
-  VIEW_SWITCH_TRANSITION_DURATION_MS,
   getStageLayoutTransitionStyle,
   shouldStartLayoutTransition,
   type StageLayoutTransition,
@@ -1123,6 +1123,23 @@ export function StudioRoom() {
   const setPresentationLayout = useCallback((next: LayoutMode) => setStoredPresentationLayout(normalizeMediaShareLayout(next)), []);
   // The "Me" view: shared content stays loaded but off stage, so it can return instantly.
   const [contentHidden, setContentHidden] = useState(false);
+  // The stage follows contentHidden, but leaving content first fades out
+  // (CONTENT_EXIT_DURATION_MS) before the cameras move into its space.
+  const [displayContentHidden, setDisplayContentHidden] = useState(false);
+  const [contentExiting, setContentExiting] = useState(false);
+  useEffect(() => {
+    if (!contentHidden) {
+      setContentExiting(false);
+      setDisplayContentHidden(false);
+      return;
+    }
+    setContentExiting(true);
+    const timer = window.setTimeout(() => {
+      setDisplayContentHidden(true);
+      setContentExiting(false);
+    }, CONTENT_EXIT_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [contentHidden]);
   // Presenters always appear at the large size beside or over shared content.
   const presentationCameraSize: PresentationCameraSize = 'large';
   const [selectedScreenShareId, setSelectedScreenShareId] = useState<string | null>(null);
@@ -1180,7 +1197,7 @@ export function StudioRoom() {
   const [activeMedia, setActiveMedia] = useState<ActiveMedia | null>(null);
   const [activeMediaSlideIndex, setActiveMediaSlideIndex] = useState(0);
   /** The media actually on stage (and in the broadcast): none in the "Me" view. */
-  const stagedMedia = contentHidden ? null : activeMedia;
+  const stagedMedia = displayContentHidden ? null : activeMedia;
   const [mediaAssets, setMediaAssets] = useState<StudioMediaAsset[]>([]);
 
   const onStageMediaError = (media: ActiveMedia, message: string) => {
@@ -1879,12 +1896,12 @@ export function StudioRoom() {
     }
   }, []);
 
-  const startLayoutTransition = useCallback((from: LayoutMode, to: LayoutMode, kind: 'layout' | 'view' = 'layout') => {
-    if (kind === 'layout' && !shouldStartLayoutTransition(from, to)) return;
+  const startLayoutTransition = useCallback((from: LayoutMode, to: LayoutMode) => {
+    if (!shouldStartLayoutTransition(from, to)) return;
 
     clearLayoutTransitionTimers();
     const id = ++layoutTransitionSequenceRef.current;
-    setLayoutTransition({ id, from, to, visible: false, kind });
+    setLayoutTransition({ id, from, to, visible: false });
     layoutTransitionFrameRef.current = window.requestAnimationFrame(() => {
       layoutTransitionFrameRef.current = window.requestAnimationFrame(() => {
         setLayoutTransition((current) => (
@@ -1896,7 +1913,7 @@ export function StudioRoom() {
     layoutTransitionTimerRef.current = window.setTimeout(() => {
       setLayoutTransition((current) => (current?.id === id ? null : current));
       layoutTransitionTimerRef.current = null;
-    }, kind === 'view' ? VIEW_SWITCH_TRANSITION_DURATION_MS + 100 : LAYOUT_SWITCH_TRANSITION_DURATION_MS);
+    }, LAYOUT_SWITCH_TRANSITION_DURATION_MS);
   }, [clearLayoutTransitionTimers]);
 
   const applyLayout = useCallback((nextLayout: LayoutMode, options: { animate?: boolean } = {}) => {
@@ -5254,9 +5271,9 @@ export function StudioRoom() {
 
   const renderedVideoItems = useMemo(() => (
     stagePresenceItems
-      .filter((presence) => !(contentHidden && presence.item.isScreenShare))
+      .filter((presence) => !(displayContentHidden && presence.item.isScreenShare))
       .map((presence) => presence.item)
-  ), [contentHidden, stagePresenceItems]);
+  ), [displayContentHidden, stagePresenceItems]);
 
   const screenShareStageSplit = useMemo(() => splitScreenShareStageItems(
     stagePresenceItems
@@ -5272,7 +5289,7 @@ export function StudioRoom() {
 
   // Something is shared (a file or a screen), whether or not the "Me" view hides it.
   const sharedContentAvailable = Boolean(activeMedia || screenShareStageSplit.screenShareItem);
-  const sharedContentScreenShare = !activeMedia && !contentHidden ? screenShareStageSplit.screenShareItem : null;
+  const sharedContentScreenShare = !activeMedia && !displayContentHidden ? screenShareStageSplit.screenShareItem : null;
   const sharedContentParticipantPresenceItems = sharedContentAvailable
     ? screenShareStageSplit.participantItems
     : stagePresenceItems;
@@ -5289,16 +5306,34 @@ export function StudioRoom() {
     // Guests follow the host's choice, which arrives with the stage content.
     if (isHostOrCoHost) setContentHidden(false);
   }, [isHostOrCoHost, sharedContentIdentity]);
-  // Switching between Me, Content and Content + Me (here or following the host) fades the stage.
-  const previousPresentingViewRef = useRef(presentingView);
-  // Before paint, so the snapped layout never shows at full opacity first.
-  useLayoutEffect(() => {
-    const previous = previousPresentingViewRef.current;
-    previousPresentingViewRef.current = presentingView;
-    if (previous === presentingView || !sharedContentAvailable) return;
-    startLayoutTransition(presentationLayout, presentationLayout, 'view');
-  }, [presentingView, sharedContentAvailable, presentationLayout, startLayoutTransition]);
   const effectiveLayout = sharedContentIsActive ? presentationLayout : layout;
+  // Me <-> Content + Me (and other stage layout changes): tiles glide from
+  // their old boxes to the new ones, and content that appears fades in.
+  const stageLayerRef = useRef<HTMLDivElement | null>(null);
+  const stageTileRectsRef = useRef<StageTileRects>(new Map());
+  const stageFlipUntilRef = useRef(0);
+  const stageFlipSignature = `${effectiveLayout}|${sharedContentIsActive ? 'content' : 'none'}`;
+  const previousStageFlipSignatureRef = useRef(stageFlipSignature);
+  const previousSharedContentActiveRef = useRef(sharedContentIsActive);
+  useLayoutEffect(() => {
+    const previous = previousStageFlipSignatureRef.current;
+    const contentAppeared = sharedContentIsActive && !previousSharedContentActiveRef.current;
+    previousStageFlipSignatureRef.current = stageFlipSignature;
+    previousSharedContentActiveRef.current = sharedContentIsActive;
+    const layer = stageLayerRef.current;
+    if (!layer || previous === stageFlipSignature) return;
+    playStageFlip(layer, stageTileRectsRef.current, contentAppeared);
+    stageFlipUntilRef.current = performance.now() + STAGE_FLIP_DURATION_MS;
+    const timer = window.setTimeout(() => {
+      if (stageLayerRef.current) stageTileRectsRef.current = measureStageTiles(stageLayerRef.current);
+    }, STAGE_FLIP_DURATION_MS + 30);
+    return () => window.clearTimeout(timer);
+  }, [stageFlipSignature, sharedContentIsActive]);
+  // Remember where tiles are, for the next switch (not mid-animation).
+  useLayoutEffect(() => {
+    if (!stageLayerRef.current || performance.now() < stageFlipUntilRef.current) return;
+    stageTileRectsRef.current = measureStageTiles(stageLayerRef.current);
+  });
   const changeVisibleLayout = useCallback((next: LayoutMode) => {
     if (sharedContentIsActive) setPresentationLayout(next); else applyLayout(next);
   }, [sharedContentIsActive, applyLayout]);
@@ -6490,6 +6525,7 @@ export function StudioRoom() {
                 />
               )}
               <div
+                ref={stageLayerRef}
                 data-compositor-stage-layer
                 style={{
                   ...styles.gridBase,
@@ -6504,6 +6540,8 @@ export function StudioRoom() {
                     style={{
                       ...styles.mediaOverlay,
                       ...(sharedContentLayoutResult?.mediaStyle || {}),
+                      opacity: contentExiting ? 0 : 1,
+                      transition: `opacity ${CONTENT_EXIT_DURATION_MS}ms ease`,
                     }}
                   >
                     {stagedMediaContent}
@@ -6517,6 +6555,7 @@ export function StudioRoom() {
                       ...styles.mediaOverlay,
                       ...(sharedContentLayoutResult?.mediaStyle || {}),
                       ...getStagePresenceWrapperStyle(sharedContentScreenShare.phase),
+                      ...(contentExiting ? { opacity: 0, transition: `opacity ${CONTENT_EXIT_DURATION_MS}ms ease` } : {}),
                     }}
                   >
                     <VideoTile
