@@ -308,6 +308,13 @@ function drawBroadcastWidgetOverlay(ctx: CanvasRenderingContext2D, widget: Widge
   ctx.restore();
 }
 
+/** Computed opacity (CSS transitions and animations included); 1 without an element. */
+function getElementOpacity(element: Element | null): number {
+  if (!element) return 1;
+  const value = Number.parseFloat(getComputedStyle(element).opacity);
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+}
+
 function drawStageBackground(
   ctx: CanvasRenderingContext2D,
   background: StageBackground | undefined,
@@ -1354,6 +1361,8 @@ export function useCompositor({
     // 2. Draw shared media first so participant PiP tiles can remain visible above it.
     if (activeMedia) {
       const mediaNode = containerRef.current.querySelector('.studio-active-media');
+      ctx.save();
+      ctx.globalAlpha *= getElementOpacity(mediaNode);
       drawActiveMediaOverlay(
         ctx,
         activeMedia,
@@ -1366,6 +1375,7 @@ export function useCompositor({
         activeMediaSlideIndex,
         mediaNode ? getCompositorClipShapes(mediaNode, containerRef.current, containerBounds, scales) : []
       );
+      ctx.restore();
     }
 
     // 3. Draw Videos mapped precisely from DOM coordinates
@@ -1375,6 +1385,11 @@ export function useCompositor({
       if (video.classList.contains('studio-stage-background-video')) return;
       if (activeMedia && video.closest('.studio-active-media')) return;
 
+      // Tiles and shared screens fade in and out on layout changes.
+      const fade = getElementOpacity(video.closest('.studio-active-media, [data-stage-item-id]'));
+      if (fade <= 0.01) return;
+      const baseAlpha = ctx.globalAlpha;
+      ctx.globalAlpha = baseAlpha * fade;
       const rect = video.getBoundingClientRect();
       const x = (rect.left - containerBounds.left) * scaleX;
       const y = (rect.top - containerBounds.top) * scaleY;
@@ -1391,7 +1406,7 @@ export function useCompositor({
       } else {
         drawVideoElementFrame(ctx, video, x, y, w, h);
       }
-      
+      ctx.globalAlpha = baseAlpha;
     });
     drawParticipantCards(ctx, containerRef.current, containerBounds, scaleX, scaleY, logicalScaleX, logicalScaleY);
     ctx.restore();
