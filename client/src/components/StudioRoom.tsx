@@ -1166,6 +1166,8 @@ export function StudioRoom() {
   const [sessionRecordingPaused, setSessionRecordingPaused] = useState(false);
   const [supportsCoordinatedRecording, setSupportsCoordinatedRecording] = useState(false);
   const [programRecordingFinalizing, setProgramRecordingFinalizing] = useState(false);
+  // Exports still running after Stop Recording (see finishExport).
+  const [backgroundExportCount, setBackgroundExportCount] = useState(0);
   const [localRecordingFinalizing, setLocalRecordingFinalizing] = useState(false);
   const recordingActionRef = useRef(false);
   const [participantRecordingFinalizing, setParticipantRecordingFinalizing] = useState(false);
@@ -3196,7 +3198,7 @@ export function StudioRoom() {
               if (mediaServerHealth.status === 'unavailable') {
                 throw new Error(mediaServerHealth.message || 'Media-server is unavailable.');
               }
-              addToast('Finalizing MP4 recording export...', 'info');
+              addToast('Saving your recording. The MP4 is prepared in the background; you can keep going.', 'info');
               let programUploaded = false;
               if (programUpload) {
                 try {
@@ -3219,48 +3221,64 @@ export function StudioRoom() {
                   startExport: false,
                 });
               }
-              const distributed = await waitForDistributedRecordingSession({
-                token,
-                roomId: roomId || '',
-                sessionId: recordingSessionId,
-                expectedUploads,
-                timeoutMs: 120_000,
-                intervalMs: 1_500,
-              });
-              if (distributed.completedUploadCount < expectedUploads) {
-                addToast(
-                  `Exporting ${distributed.completedUploadCount}/${expectedUploads} available local recordings.`,
-                  'warning'
-                );
-              }
-              const exportJob = await exportDistributedRecordingSession({
-                token,
-                roomId: roomId || '',
-                sessionId: recordingSessionId,
-                basename: exportBasename,
-                exportVideoCodec: 'h264',
-                includeAudioStems: true,
-                pollTimeoutMs: 180_000,
-              });
-              // Keep the whole export (every person's tracks, not only the MP4)
-              // reachable from the Recordings panel.
-              if (programSession) {
-                await updateRecordingSessionMediaExport(programSession.id, exportJob).catch((error) => {
-                  console.warn('Could not link the export to the recording library:', error);
+              // Your tracks are uploaded; waiting for guests, the server export,
+              // and the download happens in the background so Record is free
+              // again right away (the exit guard still covers it).
+              const finishExport = async () => {
+                const distributed = await waitForDistributedRecordingSession({
+                  token,
+                  roomId: roomId || '',
+                  sessionId: recordingSessionId,
+                  expectedUploads,
+                  timeoutMs: 120_000,
+                  intervalMs: 1_500,
                 });
-              }
-              const mp4Artifact = getReadyMp4Artifact(exportJob);
-              if (!mp4Artifact) throw new Error(exportJob.error || 'MP4 export did not finish.');
-              const download = await downloadRecordingExportArtifact({
-                token,
-                uploadId: exportJob.uploadId,
-                exportId: exportJob.exportId,
-                artifactId: mp4Artifact.id,
-                artifactLabel: mp4Artifact.label,
-                format: mp4Artifact.format,
-              });
-              downloadBlobFile(download.blob, download.fileName);
-              addToast('MP4 recording export downloaded.', 'success');
+                if (distributed.completedUploadCount < expectedUploads) {
+                  addToast(
+                    `Exporting ${distributed.completedUploadCount}/${expectedUploads} available local recordings.`,
+                    'warning'
+                  );
+                }
+                const exportJob = await exportDistributedRecordingSession({
+                  token,
+                  roomId: roomId || '',
+                  sessionId: recordingSessionId,
+                  basename: exportBasename,
+                  exportVideoCodec: 'h264',
+                  includeAudioStems: true,
+                  pollTimeoutMs: 180_000,
+                });
+                // Keep the whole export (every person's tracks, not only the MP4)
+                // reachable from the Recordings panel.
+                if (programSession) {
+                  await updateRecordingSessionMediaExport(programSession.id, exportJob).catch((error) => {
+                    console.warn('Could not link the export to the recording library:', error);
+                  });
+                }
+                const mp4Artifact = getReadyMp4Artifact(exportJob);
+                if (!mp4Artifact) throw new Error(exportJob.error || 'MP4 export did not finish.');
+                const download = await downloadRecordingExportArtifact({
+                  token,
+                  uploadId: exportJob.uploadId,
+                  exportId: exportJob.exportId,
+                  artifactId: mp4Artifact.id,
+                  artifactLabel: mp4Artifact.label,
+                  format: mp4Artifact.format,
+                });
+                // Name it after the studio and time, not the export's generic "Final MP4",
+                // so takes do not pile up as Final_MP4 (1).mp4, (2)...
+                const extension = download.fileName.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4';
+                downloadBlobFile(download.blob, `${exportBasename.replace(/[^\w .()-]+/g, '_').trim()}${extension}`);
+                addToast('MP4 recording export downloaded.', 'success');
+              };
+              setBackgroundExportCount((count) => count + 1);
+              void finishExport()
+                .catch(async (err) => {
+                  console.warn('MP4 recording export failed, saving original tracks:', err);
+                  await downloadToolbarRecordingFallbackFiles(files, timestamp);
+                  addToast(getToolbarRecordingFallbackToast(files), 'warning');
+                })
+                .finally(() => setBackgroundExportCount((count) => Math.max(0, count - 1)));
             } catch (err) {
               console.warn('MP4 recording export failed, saving original tracks:', err);
               await downloadToolbarRecordingFallbackFiles(files, timestamp);
@@ -5791,8 +5809,8 @@ export function StudioRoom() {
     isMixedRecording: isRecording,
     isLocalRecording,
     isSessionRecording: Boolean(sessionRecordingStartedAt),
-    isFinalizingRecording: programRecordingFinalizing || localRecordingFinalizing || participantRecordingFinalizing,
-  }), [isLive, isRecording, isLocalRecording, sessionRecordingStartedAt, programRecordingFinalizing, localRecordingFinalizing, participantRecordingFinalizing]);
+    isFinalizingRecording: programRecordingFinalizing || localRecordingFinalizing || participantRecordingFinalizing || backgroundExportCount > 0,
+  }), [isLive, isRecording, isLocalRecording, sessionRecordingStartedAt, programRecordingFinalizing, localRecordingFinalizing, participantRecordingFinalizing, backgroundExportCount]);
 
   useEffect(() => {
     if (!productionExitGuard.shouldBlock) return undefined;
