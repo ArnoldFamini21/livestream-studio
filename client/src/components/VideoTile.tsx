@@ -295,7 +295,7 @@ export function VideoTile({
           )}
           <span data-stage-name-text style={tileStyles.nameText}>
             {name}
-            {isLocal && <span style={tileStyles.youTag}> (You)</span>}
+            {isLocal && <span data-local-only style={tileStyles.youTag}> (You)</span>}
           </span>
         </div>
       </div>}

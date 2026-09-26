@@ -275,7 +275,7 @@ async function updateRecordingSessionCloudHandoff(
   }
 }
 
-async function updateRecordingSessionMediaExport(
+export async function updateRecordingSessionMediaExport(
   sessionId: string,
   exportJob: RecordingExportJobResponse
 ): Promise<LocalRecordingSession> {

@@ -30,7 +30,7 @@ import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/use
 import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
-import { persistRecordingSession, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
+import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
@@ -3145,7 +3145,8 @@ export function StudioRoom() {
             capture: file.capture,
             fileName: makeToolbarRecordingFileName(`${file.label}_${index + 1}`, file.blob, timestamp),
           }));
-          await persistRecordingSession({ roomName: room?.name || 'Studio', durationSeconds: null, files });
+          const captureMs = result.files.find((file) => file.capture?.durationMs)?.capture?.durationMs;
+          await persistRecordingSession({ roomName: room?.name || 'Studio', durationSeconds: captureMs ? Math.round(captureMs / 1000) : null, files });
           setShowRecordingPanel(true);
           addToast('Recording saved to your library.', 'success');
         } catch (error) {
@@ -3179,10 +3180,11 @@ export function StudioRoom() {
 
             // Preserve the complete stage locally before a server export or download.
             // The distributed participant uploads only contain isolated source tracks.
+            let programSession: LocalRecordingSession | null = null;
             try {
-              await persistRecordingSession({
+              programSession = await persistRecordingSession({
                 roomName: `${room?.name || 'Studio'} - Program`,
-                durationSeconds: null,
+                durationSeconds: [...recordings.values()].find((track) => track.durationSeconds)?.durationSeconds ?? null,
                 files,
               });
             } catch (error) {
@@ -3240,6 +3242,13 @@ export function StudioRoom() {
                 includeAudioStems: true,
                 pollTimeoutMs: 180_000,
               });
+              // Keep the whole export (every person's tracks, not only the MP4)
+              // reachable from the Recordings panel.
+              if (programSession) {
+                await updateRecordingSessionMediaExport(programSession.id, exportJob).catch((error) => {
+                  console.warn('Could not link the export to the recording library:', error);
+                });
+              }
               const mp4Artifact = getReadyMp4Artifact(exportJob);
               if (!mp4Artifact) throw new Error(exportJob.error || 'MP4 export did not finish.');
               const download = await downloadRecordingExportArtifact({

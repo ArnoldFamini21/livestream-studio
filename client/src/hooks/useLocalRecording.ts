@@ -29,6 +29,9 @@ import {
 } from '../utils/progressiveRecordingUpload.ts';
 import { reportClientError } from '../utils/clientErrorReporter.ts';
 
+/** Audio rate beside a camera or screen track in a local recording. */
+const LOCAL_RECORDING_AUDIO_BITS_PER_SECOND = 256_000;
+
 export interface RecordingResult {
   audio: Blob;
   video: Blob;
@@ -352,7 +355,15 @@ export function useLocalRecording(roomName = 'Studio') {
       return null;
     }
 
-    const recorder = new MediaRecorder(stream, { mimeType, bitsPerSecond });
+    // Separate rates: with one combined figure Chrome gives audio 10% of it
+    // (850 kbps for an 8.5 Mbps camera) and then clamps it to 510 kbps.
+    const hasVideo = stream.getVideoTracks().length > 0;
+    const hasAudio = stream.getAudioTracks().length > 0;
+    const recorder = new MediaRecorder(stream, {
+      mimeType,
+      ...(hasVideo ? { videoBitsPerSecond: bitsPerSecond } : {}),
+      ...(hasAudio ? { audioBitsPerSecond: hasVideo ? LOCAL_RECORDING_AUDIO_BITS_PER_SECOND : bitsPerSecond } : {}),
+    });
     const chunkStore = createRecoverableRecordingStore({
       roomName, label: source.label, kind: source.kind, mimeType: recorder.mimeType,
     }, () => setStorageWarning('Recording is continuing in memory. Keep this tab open until it has been saved.'));

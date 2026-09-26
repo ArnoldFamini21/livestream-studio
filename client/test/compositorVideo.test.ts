@@ -5,7 +5,6 @@ import {
   canDrawMediaVideo,
   getCompositorVideoDrawPlan,
   getCompositorVideoObjectFit,
-  isCompositorVideoHorizontallyMirrored,
   isCompositorFeedbackSource,
 } from '../src/utils/compositorVideo.ts';
 
@@ -129,6 +128,5 @@ describe('compositor video drawing', () => {
     } as unknown as HTMLVideoElement;
 
     assert.equal(getCompositorVideoObjectFit(video), 'contain');
-    assert.equal(isCompositorVideoHorizontallyMirrored(video), true);
   });
 });

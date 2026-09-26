@@ -52,3 +52,31 @@ it('does not cover a live camera with an avatar card', () => {
   assert.deepEqual(result.fills, []);
   assert.deepEqual(result.texts, []);
 });
+
+it('leaves the studio-only "(You)" out of the broadcast name tag', () => {
+  const texts: string[] = [];
+  const pills: number[][] = [];
+  const bounds = { left: 0, top: 0 } as DOMRect;
+  const at = (left: number, width: number) => ({ getBoundingClientRect: () => ({ left, top: 100, width, height: 24 }) });
+  const name = { nodeType: 3, textContent: 'Arnold', childNodes: [] };
+  const you = { ...at(160, 44), textContent: ' (You)', childNodes: [], hasAttribute: (attr: string) => attr === 'data-local-only' };
+  const text = { ...at(100, 104), textContent: 'Arnold (You)', childNodes: [name, you], hasAttribute: () => false };
+  const tag = { ...at(90, 124), querySelector: (selector: string) => selector === '[data-stage-name-text]' ? text : null, querySelectorAll: (selector: string) => selector === '[data-local-only]' ? [you] : [] };
+  const tile = { ...at(0, 400), querySelector: (selector: string) => selector === '[data-stage-name-tag]' ? tag : null };
+  const stage = { querySelectorAll: () => [tile] } as unknown as HTMLElement;
+  const ctx = {
+    save() {}, restore() {}, beginPath() {}, clip() {}, rect() {}, fill() {},
+    roundRect: (...args: number[]) => pills.push(args),
+    fillText: (value: string) => texts.push(value),
+  } as unknown as CanvasRenderingContext2D;
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'getComputedStyle');
+  Object.defineProperty(globalThis, 'getComputedStyle', { configurable: true, value: () => ({ borderTopLeftRadius: '12px', color: '#fff', backgroundColor: '#000', fontWeight: '600', fontSize: '14px', fontFamily: 'sans-serif' }) });
+  try {
+    drawParticipantCards(ctx, stage, bounds, 1, 1, 1, 1);
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'getComputedStyle', original);
+    else delete (globalThis as { getComputedStyle?: unknown }).getComputedStyle;
+  }
+  assert.deepEqual(texts, ['Arnold']);
+  assert.equal(pills[1][2], 124 - 44, 'the pill (after the tile outline) is trimmed by the width of "(You)"');
+});

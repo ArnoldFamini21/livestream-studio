@@ -76,6 +76,20 @@ export class PeerNegotiation {
     return result;
   }
 
+  /**
+   * Begin a new connection. The impolite side offers now; the polite side
+   * waits for the other side's offer (see deferFirstOffer). Both sides open
+   * the connection at the same moment, so offering from both made the polite
+   * side take its offer back, which is what left Chrome gathering no candidates.
+   */
+  start() {
+    if (this.polite && !this.pc.remoteDescription) {
+      this.deferFirstOffer();
+      return Promise.resolve();
+    }
+    return this.offer();
+  }
+
   offer(iceRestart = false) {
     return this.enqueue(async () => {
       if (this.pc.signalingState === 'have-local-offer' && iceRestart) {

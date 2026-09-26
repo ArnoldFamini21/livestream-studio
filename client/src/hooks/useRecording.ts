@@ -27,6 +27,8 @@ export interface RecordingTrackResult {
   name: string;
   blob: Blob;
   kind?: RecordingUploadTrackKind;
+  /** Recorded time, excluding pauses. */
+  durationSeconds?: number;
 }
 
 export interface StartProgramRecordingOptions {
@@ -269,6 +271,7 @@ export function useRecording(roomName = 'Studio') {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
     const tracks = [...tracksRef.current.entries()];
+    const durationSeconds = getElapsedSeconds();
     const activeUpload = progressiveUploadRef.current;
     progressiveUploadRef.current = null;
     // Halt background cycles; finish() still uploads the remainder when the caller asks.
@@ -278,10 +281,10 @@ export function useRecording(roomName = 'Studio') {
         const results = await Promise.all(tracks.map(async ([id, track]) => {
           if (track.recorder.state !== 'inactive') {
             try { track.recorder.stop(); }
-            catch { return [id, { name: track.name, kind: track.kind, blob: await track.chunkStore.finish(track.recorder.mimeType) }] as const; }
+            catch { return [id, { name: track.name, kind: track.kind, durationSeconds, blob: await track.chunkStore.finish(track.recorder.mimeType) }] as const; }
           }
           const blob = await track.finished;
-          return [id, { name: track.name, kind: track.kind, blob }] as const;
+          return [id, { name: track.name, kind: track.kind, durationSeconds, blob }] as const;
         }));
         if (activeUpload) {
           const finalBlobs = new Map<string, Blob>();
