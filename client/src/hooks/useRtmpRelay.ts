@@ -12,7 +12,8 @@ import { getRelaySendBacklog } from '../utils/rtmpRelayBackpressure.ts';
 import {
   getRelayReconnectPlan,
   MAX_RELAY_RECONNECT_ATTEMPTS,
-  RELAY_RECONNECT_DELAY_MS,
+  getRelayAttemptsUsed,
+  getRelayReconnectDelayMs,
 } from '../utils/rtmpRelayReconnect.ts';
 import { estimateDroppedFrames } from '../utils/rtmpRelayDrops.ts';
 import { getRelayLatencyMs } from '../utils/rtmpRelayLatency.ts';
@@ -417,6 +418,8 @@ export function useRtmpRelay({
   const intentionalStopRef = useRef(false);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  // When the relay last (re)connected; a long-healthy connection resets the reconnect count.
+  const relayConnectedAtRef = useRef<number | null>(null);
   const heartbeatTimerRef = useRef<number | null>(null);
   const heartbeatSequenceRef = useRef(0);
   const pendingHeartbeatsRef = useRef<Map<number, number>>(new Map());
@@ -722,7 +725,7 @@ export function useRtmpRelay({
           const scheduleReconnect = (message: string): boolean => {
             if (intentionalStopRef.current || finalStopReported) return false;
             const plan = getRelayReconnectPlan(
-              reconnectAttemptsRef.current,
+              getRelayAttemptsUsed(reconnectAttemptsRef.current, relayConnectedAtRef.current, Date.now()),
               message,
               MAX_RELAY_RECONNECT_ATTEMPTS
             );
@@ -757,7 +760,7 @@ export function useRtmpRelay({
                   }
                 }
               })();
-            }, RELAY_RECONNECT_DELAY_MS);
+            }, getRelayReconnectDelayMs(plan.attempt));
 
             return true;
           };
@@ -850,6 +853,7 @@ export function useRtmpRelay({
             if (message.type === 'session-started') {
               clearStartTimeout();
               started = true;
+              relayConnectedAtRef.current = Date.now();
               setRelayStatus('live');
               startHeartbeatTimer(ws);
               startRecorder();
