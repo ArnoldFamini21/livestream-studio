@@ -9,8 +9,8 @@ import type { SinkBackpressureOptions } from './webmStream.js';
 // without touching the encoder or the other destinations.
 
 export const FLV_HEADER_BYTES = 13; // 9-byte header + PreviousTagSize0
-const FLV_TAG_HEADER_BYTES = 11;
-const FLV_PREVIOUS_TAG_SIZE_BYTES = 4;
+export const FLV_TAG_HEADER_BYTES = 11;
+export const FLV_PREVIOUS_TAG_SIZE_BYTES = 4;
 const MAX_FLV_TAG_BYTES = 16 * 1024 * 1024;
 
 export const FLV_TAG_AUDIO = 8;
@@ -83,6 +83,11 @@ export class FlvTagStream {
       this.videoConfig,
       ...(this.audioConfig ? [this.audioConfig] : []),
     ]);
+  }
+
+  /** The latest AVC and AAC sequence-header tags, in that order. */
+  get sequenceHeaders(): Buffer[] {
+    return [this.videoConfig, this.audioConfig].filter((tag): tag is Buffer => tag !== null);
   }
 
   /** The file header and any tags before it are returned as-is. */

@@ -75,6 +75,7 @@ RUN npm ci --omit=dev --workspace=media-server --workspace=shared --include-work
 
 COPY --from=build /app/shared/dist shared/dist
 COPY --from=build /app/media-server/dist media-server/dist
+COPY media-server/assets media-server/assets
 
 EXPOSE 3002
 CMD ["npm", "run", "start", "--workspace=media-server"]

@@ -133,7 +133,9 @@ export function normalizeAudioConfig(config: RtmpRelayAudioConfig): RtmpRelayAud
   };
 }
 
-function createEncodeArgs(options: FfmpegRelayOptions): string[] {
+const WEBM_INPUT_ARGS = ['-fflags', '+genpts', '-f', 'webm', '-i', 'pipe:0'];
+
+function createEncodeArgs(options: FfmpegRelayOptions, inputArgs: string[] = WEBM_INPUT_ARGS): string[] {
   const video = normalizeVideoConfig(options.video);
   const audio = normalizeAudioConfig(options.audio);
   const videoBitrateKbps = Math.round(video.videoBitsPerSecond / 1000);
@@ -143,9 +145,7 @@ function createEncodeArgs(options: FfmpegRelayOptions): string[] {
   return [
     '-hide_banner',
     '-loglevel', 'warning',
-    '-fflags', '+genpts',
-    '-f', 'webm',
-    '-i', 'pipe:0',
+    ...inputArgs,
     '-vf', `scale=${video.width}:${video.height}:force_original_aspect_ratio=decrease,pad=${video.width}:${video.height}:(ow-iw)/2:(oh-ih)/2`,
     '-c:v', 'libx264',
     '-preset', 'veryfast',
@@ -178,6 +178,28 @@ export function createFfmpegArgs(destination: RtmpRelayDestination, options: Ffm
 export function createFfmpegEncoderArgs(options: FfmpegRelayOptions): string[] {
   return [
     ...createEncodeArgs(options),
+    '-flush_packets', '1',
+    '-flvflags', 'no_duration_filesize',
+    '-f', 'flv',
+    'pipe:1',
+  ];
+}
+
+/**
+ * "We'll be right back" while the studio reconnects: a still image and
+ * silence, encoded in real time with exactly the program encoder's settings
+ * so the destinations can switch to it and back without a new stream.
+ */
+export function createFfmpegSlateArgs(options: FfmpegRelayOptions, imagePath: string): string[] {
+  const video = normalizeVideoConfig(options.video);
+  const audio = normalizeAudioConfig(options.audio);
+  const layout = audio.channelCount === 1 ? 'mono' : 'stereo';
+  return [
+    ...createEncodeArgs(options, [
+      '-re', '-loop', '1', '-framerate', String(video.frameRate), '-i', imagePath,
+      '-re', '-f', 'lavfi', '-i', `anullsrc=r=${audio.sampleRate}:cl=${layout}`,
+      '-map', '0:v', '-map', '1:a',
+    ]),
     '-flush_packets', '1',
     '-flvflags', 'no_duration_filesize',
     '-f', 'flv',
