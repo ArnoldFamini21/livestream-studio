@@ -34,6 +34,15 @@ export const PRESENTING_VIEW_LABELS: Record<PresentingView, string> = {
   'content-me': 'Content + Me',
 };
 
+/** With more than one person on camera, "Me" reads as "People". */
+export function getPresentingViewLabel(view: PresentingView, presenterCount = 1): string {
+  if (presenterCount > 1) {
+    if (view === 'me') return 'People';
+    if (view === 'content-me') return 'Content + People';
+  }
+  return PRESENTING_VIEW_LABELS[view];
+}
+
 export const PRESENTING_VIEW_DESCRIPTIONS: Record<PresentingView, string> = {
   me: 'Cameras full screen; the shared content stays ready',
   content: 'The shared content full screen',

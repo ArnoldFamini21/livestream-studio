@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import type { Participant, ParticipantStatus, LayoutMode, StageActionPayload } from '@studio/shared';
-import { getStudioLayoutLabel, PRESENTING_VIEW_LABELS, PRESENTING_VIEWS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
+import { getPresentingViewLabel, getStudioLayoutLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
 
 interface ProducerPanelProps {
   participants: Map<string, Participant>;
@@ -19,6 +19,8 @@ interface ProducerPanelProps {
   /** While something is shared: the same Me / Content / Content + Me views as the stage bar. */
   presentingView?: PresentingView;
   onPresentingViewChange?: (view: PresentingView) => void;
+  /** People on camera beside the content; more than one reads "People" instead of "Me". */
+  presenterCount?: number;
   focusedParticipantId: string | null;
   onSpotlightParticipant: (participantId: string | null) => void;
 
@@ -318,6 +320,7 @@ export function ProducerPanel({
   onLayoutChange,
   presentingView,
   onPresentingViewChange,
+  presenterCount = 1,
   focusedParticipantId,
   onSpotlightParticipant,
   onClose,
@@ -486,7 +489,7 @@ export function ProducerPanel({
                   <button
                     key={view}
                     onClick={() => onPresentingViewChange(view)}
-                    title={PRESENTING_VIEW_LABELS[view]}
+                    title={getPresentingViewLabel(view, presenterCount)}
                     aria-pressed={isActive}
                     style={{
                       ...styles.layoutBtn,
@@ -494,7 +497,7 @@ export function ProducerPanel({
                     }}
                   >
                     {layoutIcons[view === 'me' ? 'grid' : view === 'content' ? 'single' : 'side-by-side']}
-                    <span style={styles.layoutLabel}>{PRESENTING_VIEW_LABELS[view]}</span>
+                    <span style={styles.layoutLabel}>{getPresentingViewLabel(view, presenterCount)}</span>
                   </button>
                 );
               }) : STUDIO_LAYOUT_PRESET_ORDER.map((mode) => {

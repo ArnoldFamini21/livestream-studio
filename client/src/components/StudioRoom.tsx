@@ -7,7 +7,7 @@ import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraS
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
-import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, PRESENTING_VIEW_LABELS, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
+import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, getPresentingViewLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
@@ -5434,7 +5434,7 @@ export function StudioRoom() {
   const roleShortcuts = useMemo(() => getShortcutsForRole(isHostOrCoHost), [isHostOrCoHost]);
   // Keys 1-6 follow the bar on screen: the three views while presenting, else the studio layouts.
   const layoutBarLabels = sharedContentAvailable
-    ? PRESENTING_VIEWS.map((view) => PRESENTING_VIEW_LABELS[view])
+    ? PRESENTING_VIEWS.map((view) => getPresentingViewLabel(view, sharedContentParticipantPresenceItems.length))
     : STUDIO_LAYOUT_PRESET_ORDER.map((mode) => STUDIO_LAYOUT_LABELS[mode]);
 
   // The latest state and actions for the keyboard listener, so it is bound once.
@@ -5446,7 +5446,7 @@ export function StudioRoom() {
         const view = PRESENTING_VIEWS[layoutIndex];
         if (!view) return false;
         if (isPresentingViewDisabled(view, sharedContentParticipantPresenceItems.length)) {
-          addToast(`${PRESENTING_VIEW_LABELS[view]} needs a camera on stage.`, 'info');
+          addToast(`${getPresentingViewLabel(view, sharedContentParticipantPresenceItems.length)} needs a camera on stage.`, 'info');
           return true;
         }
         changePresentingView(view);
@@ -6844,6 +6844,7 @@ export function StudioRoom() {
               cameraShape={cameraShape}
               nameTagStyle={nameTagStyle}
               compact
+              onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
             />
           )}
 
@@ -7283,6 +7284,7 @@ export function StudioRoom() {
             currentLayout={effectiveLayout}
             onLayoutChange={applyLayout}
             presentingView={sharedContentAvailable ? presentingView : undefined}
+            presenterCount={sharedContentParticipantPresenceItems.length}
             onPresentingViewChange={changePresentingView}
             focusedParticipantId={focusedVideoItemId}
             onSpotlightParticipant={onSpotlightParticipant}
@@ -7382,12 +7384,15 @@ function BackstagePrivateRoom({
   cameraShape,
   nameTagStyle,
   compact = false,
+  onAddToStage,
 }: {
   items: StageVideoItem[];
   brandColor: string;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
   compact?: boolean;
+  /** Hosts: put this person on stage. */
+  onAddToStage?: (participantId: string) => void;
 }) {
   return (
     <section
@@ -7402,33 +7407,50 @@ function BackstagePrivateRoom({
         <span style={styles.backstageRoomTitle}>
           <span style={styles.backstageRoomDot} />
           Backstage
+          <span style={styles.backstageRoomCount}>{items.length}</span>
         </span>
-        <span style={styles.backstageRoomMeta}>{items.length} private</span>
+        <span style={styles.backstageRoomMeta}>Not on stream</span>
       </div>
-      <div style={styles.backstageRoomGrid}>
+      <div style={styles.backstageRoomRow}>
         {items.map((item) => (
-          <div
-            key={item.id}
-            style={{
-              ...styles.backstageRoomTile,
-              ...(compact ? styles.backstageRoomTileCompact : {}),
-            }}
-          >
-            <VideoTile
-              participantId={item.id}
-              stream={item.stream}
-              name={item.name}
-              isLocal={item.isLocal}
-              isScreenShare={item.isScreenShare}
-              audioEnabled={item.audioEnabled}
-              videoEnabled={item.videoEnabled}
-              volume={item.volume}
-              brandColor={brandColor}
-              cameraShape={cameraShape}
-              nameTagStyle={nameTagStyle}
-              connectionHealth={item.connectionHealth}
-                          reconnecting={item.reconnecting}
-            />
+          <div key={item.id} style={styles.backstageRoomCard}>
+            <div
+              style={{
+                ...styles.backstageRoomTile,
+                ...(compact ? styles.backstageRoomTileCompact : {}),
+              }}
+            >
+              <VideoTile
+                participantId={item.id}
+                stream={item.stream}
+                name={item.name}
+                isLocal={item.isLocal}
+                isScreenShare={item.isScreenShare}
+                audioEnabled={item.audioEnabled}
+                videoEnabled={item.videoEnabled}
+                volume={item.volume}
+                brandColor={brandColor}
+                cameraShape={cameraShape}
+                nameTagStyle={nameTagStyle}
+                // Only a weak connection is worth a badge on a thumbnail.
+                connectionHealth={item.connectionHealth && item.connectionHealth.quality !== 'good' && item.connectionHealth.quality !== 'unknown' ? item.connectionHealth : null}
+                reconnecting={item.reconnecting}
+              />
+            </div>
+            {onAddToStage && !item.isLocal && (
+              <button
+                type="button"
+                className="btn-ghost"
+                style={styles.backstageRoomAddButton}
+                onClick={() => onAddToStage(item.id)}
+                aria-label={`Add ${item.name} to stage`}
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+                Add to stage
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -7824,65 +7846,106 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(0, 0, 0, 0.15)',
   },
   backstageRoom: {
-    width: 'min(760px, 100%)',
+    width: 'fit-content',
+    maxWidth: '100%',
+    alignSelf: 'center',
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
-    padding: 10,
-    borderRadius: 10,
-    border: '1px solid rgba(245, 158, 11, 0.28)',
-    background: 'rgba(15, 23, 42, 0.78)',
-    boxShadow: '0 14px 34px rgba(0, 0, 0, 0.24)',
+    marginTop: 4,
+    padding: '10px 12px 12px',
+    borderRadius: 14,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    background: 'rgba(15, 23, 42, 0.72)',
+    boxShadow: '0 10px 28px rgba(0, 0, 0, 0.22)',
     backdropFilter: 'blur(12px)',
     WebkitBackdropFilter: 'blur(12px)',
   },
   backstageRoomCompact: {
-    width: 'min(720px, 100%)',
-    padding: 8,
+    padding: '8px 10px 10px',
   },
   backstageRoomHeader: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 16,
+    minWidth: 0,
   },
   backstageRoomTitle: {
     minWidth: 0,
     display: 'flex',
     alignItems: 'center',
     gap: 7,
-    color: '#fde68a',
+    color: 'var(--text-primary)',
     fontSize: 12,
-    fontWeight: 800,
-    textTransform: 'uppercase',
-    letterSpacing: '0.04em',
+    fontWeight: 700,
+    letterSpacing: '0.01em',
   },
   backstageRoomDot: {
     width: 7,
     height: 7,
     borderRadius: '50%',
     background: '#f59e0b',
-    boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.14)',
+    boxShadow: '0 0 0 3px rgba(245, 158, 11, 0.16)',
+  },
+  backstageRoomCount: {
+    minWidth: 18,
+    height: 18,
+    padding: '0 5px',
+    borderRadius: 999,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(255, 255, 255, 0.08)',
+    color: 'var(--text-secondary)',
+    fontSize: 11,
+    fontWeight: 700,
   },
   backstageRoomMeta: {
     color: 'var(--text-muted)',
     fontSize: 11,
-    fontWeight: 700,
+    fontWeight: 600,
+    whiteSpace: 'nowrap',
   },
-  backstageRoomGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(128px, 1fr))',
-    gap: 8,
+  backstageRoomRow: {
+    display: 'flex',
+    gap: 10,
+    overflowX: 'auto',
+    maxWidth: '100%',
+    paddingBottom: 2,
+  },
+  backstageRoomCard: {
+    flex: '0 0 auto',
+    width: 176,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
   },
   backstageRoomTile: {
-    minWidth: 0,
-    height: 132,
-    borderRadius: 8,
+    width: '100%',
+    aspectRatio: '16 / 9',
+    borderRadius: 10,
     overflow: 'hidden',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    background: '#0b0f1a',
   },
-  backstageRoomTileCompact: {
-    height: 92,
+  backstageRoomTileCompact: {},
+  backstageRoomAddButton: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    width: '100%',
+    height: 28,
+    padding: '0 10px',
+    borderRadius: 8,
+    border: '1px solid rgba(139, 124, 246, 0.38)',
+    background: 'rgba(139, 124, 246, 0.14)',
+    color: '#d6ceff',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
   },
   canvas: {
     borderRadius: 14,

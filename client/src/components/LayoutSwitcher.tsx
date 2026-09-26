@@ -6,7 +6,7 @@ import {
   isPresentingViewDisabled,
   isStudioLayoutDisabled,
   PRESENTING_VIEW_DESCRIPTIONS,
-  PRESENTING_VIEW_LABELS,
+  getPresentingViewLabel,
   PRESENTING_VIEWS,
   STUDIO_LAYOUT_PRESET_ORDER,
   type PresentingView,
@@ -121,13 +121,13 @@ export function LayoutSwitcher({
     return <div className="presentation-layouts">
       <div className="presentation-layout-options" role="group" aria-label="Presentation view">
         {PRESENTING_VIEWS.map((view, index) => <button type="button" key={view} aria-pressed={presentingView === view}
-          aria-label={`${PRESENTING_VIEW_LABELS[view]} view`}
+          aria-label={`${getPresentingViewLabel(view, activeMediaParticipantCount)} view`}
           aria-keyshortcuts={String(index + 1)}
           title={`${PRESENTING_VIEW_DESCRIPTIONS[view]} (${index + 1})`}
           disabled={isPresentingViewDisabled(view, activeMediaParticipantCount)}
           onClick={() => onPresentingViewChange?.(view)}>
           <PresentingViewGlyph view={view} />
-          <span>{PRESENTING_VIEW_LABELS[view]}</span>
+          <span>{getPresentingViewLabel(view, activeMediaParticipantCount)}</span>
         </button>)}
       </div>
       {showHiddenCount && <div className="presentation-layout-tuning">
