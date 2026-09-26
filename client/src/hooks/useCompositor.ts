@@ -1345,6 +1345,12 @@ export function useCompositor({
     
     const { displayScaleX: scaleX, displayScaleY: scaleY, logicalScaleX, logicalScaleY } = scales;
 
+    // The stage fades when the presenting view changes; the broadcast fades with it.
+    const stageLayer = containerRef.current.querySelector('[data-compositor-stage-layer]');
+    const stageOpacity = stageLayer ? Number.parseFloat(getComputedStyle(stageLayer).opacity) : 1;
+    ctx.save();
+    ctx.globalAlpha = Number.isFinite(stageOpacity) ? Math.min(1, Math.max(0, stageOpacity)) : 1;
+
     // 2. Draw shared media first so participant PiP tiles can remain visible above it.
     if (activeMedia) {
       const mediaNode = containerRef.current.querySelector('.studio-active-media');
@@ -1388,6 +1394,7 @@ export function useCompositor({
       
     });
     drawParticipantCards(ctx, containerRef.current, containerBounds, scaleX, scaleY, logicalScaleX, logicalScaleY);
+    ctx.restore();
 
     // 4. Draw logo watermark with the same placement and max-size rules as the stage.
     const logoImage = logoImageRef.current;

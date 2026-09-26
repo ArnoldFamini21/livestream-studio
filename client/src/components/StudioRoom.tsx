@@ -6486,6 +6486,7 @@ export function StudioRoom() {
                 />
               )}
               <div
+                data-compositor-stage-layer
                 style={{
                   ...styles.gridBase,
                   ...(sharedContentLayoutResult?.containerStyle || layoutResult.containerStyle),
