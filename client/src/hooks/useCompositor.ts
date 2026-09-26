@@ -24,6 +24,10 @@ import { getLogoCanvasRect } from '../utils/logoPosition.ts';
 import { applyCompositorClipShapes, getCompositorClipShapes, type CompositorClipShape } from '../utils/compositorClip.ts';
 import type { ActiveStreamScreen } from '../utils/streamScreens.ts';
 import type { LiveCaptionSegment } from './useLiveCaptions.ts';
+import { createFrameTicker } from '../utils/frameTicker.ts';
+
+/** The program's frame rate: the canvas stream and the draw timer. */
+const COMPOSITOR_FPS = 30;
 
 interface CompositorProps {
   containerRef: React.RefObject<HTMLDivElement>;
@@ -569,6 +573,7 @@ function drawVideoElementFrame(
   if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0 || width <= 0 || height <= 0) {
     return false;
   }
+
 
   const objectFit = getCompositorVideoObjectFit(video);
   const plan = getCompositorVideoDrawPlan(video.videoWidth, video.videoHeight, width, height, objectFit);
@@ -1245,7 +1250,6 @@ export function useCompositor({
 }: CompositorProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const compositeStreamRef = useRef<MediaStream | null>(null);
-  const rAF = useRef<number>(0);
   const logoImageRef = useRef<HTMLImageElement | null>(null);
   const backgroundImageRef = useRef<HTMLImageElement | null>(null);
   const activePresentationSlideImageRef = useRef<HTMLImageElement | null>(null);
@@ -1318,13 +1322,12 @@ export function useCompositor({
     
     // Capture the canvas video stream at 30 fps
     try {
-      compositeStreamRef.current = canvas.captureStream(30);
+      compositeStreamRef.current = canvas.captureStream(COMPOSITOR_FPS);
     } catch (err) {
       console.warn('captureStream not supported in this environment');
     }
 
     return () => {
-      cancelAnimationFrame(rAF.current);
       frameTargetRef.current?.dispose();
       frameTargetRef.current = null;
     };
@@ -1342,7 +1345,6 @@ export function useCompositor({
       drawStageBackground(ctx, streamScreen.background, backgroundImageRef.current);
       drawStreamScreen(ctx, streamScreen, logoImageRef.current, Date.now());
       target?.commit();
-      rAF.current = requestAnimationFrame(drawLoop);
       return;
     }
 
@@ -1355,7 +1357,6 @@ export function useCompositor({
     });
     if (!scales) {
       target?.commit();
-      rAF.current = requestAnimationFrame(drawLoop);
       return;
     }
     
@@ -1502,24 +1503,17 @@ export function useCompositor({
     }
     drawBroadcastReactions(ctx, floatingReactions, Date.now());
     target?.commit();
-
-    // Loop
-    rAF.current = requestAnimationFrame(drawLoop);
   }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen]);
 
+  // Frames come from a worker timer at the output rate, not requestAnimationFrame,
+  // so the stream and recording keep moving when the studio tab is hidden or covered.
+  const drawLoopRef = useRef(drawLoop);
+  drawLoopRef.current = drawLoop;
   useEffect(() => {
-    if (isActive) {
-      cancelAnimationFrame(rAF.current); // Guard against multi-ticks
-      rAF.current = requestAnimationFrame(drawLoop);
-    } else {
-      cancelAnimationFrame(rAF.current);
-    }
-    
-    // Cleanup to prevent memory leaks when drawLoop dependencies change
-    return () => {
-      cancelAnimationFrame(rAF.current);
-    };
-  }, [isActive, drawLoop]);
+    if (!isActive) return;
+    const ticker = createFrameTicker(COMPOSITOR_FPS, () => drawLoopRef.current());
+    return () => ticker.stop();
+  }, [isActive]);
 
   return { compositeStreamRef, compositeCanvasRef: canvasRef };
 }
