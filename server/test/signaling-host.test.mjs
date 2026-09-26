@@ -339,6 +339,91 @@ describe('live stream token authorization', () => {
   });
 });
 
+describe('returning guests', () => {
+  it('puts an admitted guest who reconnects straight back in their place, not the green room', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Guest rejoin test', 'Arnold', {
+      creatorIp: `guest-rejoin-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = true;
+    const joinSessionId = 'guest-browser-0001';
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostInfo = await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest', joinSessionId });
+      const first = await guestJoined;
+      assert.equal(first.payload.participant.status, 'green-room');
+
+      const admitted = waitForMessage(host, 'participant-updated', (m) => m.payload.status === 'on-stage' || m.payload.participant?.status === 'on-stage');
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: { action: 'move-to-stage', targetParticipantId: first.payload.participant.id, performedBy: hostInfo.payload.participant.id },
+      });
+      await admitted;
+
+      // The connection drops; the same browser comes back.
+      const left = waitForMessage(host, 'participant-left');
+      guest.terminate();
+      await left;
+      const again = await connectClient(harness.url);
+      const rejoined = waitForMessage(again, 'room-joined');
+      joinRoom(again, { roomId: room.id, name: 'Guest', role: 'guest', joinSessionId });
+      assert.equal((await rejoined).payload.participant.status, 'on-stage');
+
+      // A different browser still waits to be admitted.
+      const stranger = await connectClient(harness.url);
+      const strangerJoined = waitForMessage(stranger, 'room-joined');
+      joinRoom(stranger, { roomId: room.id, name: 'Other', role: 'guest', joinSessionId: 'other-browser-01' });
+      assert.equal((await strangerJoined).payload.participant.status, 'green-room');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('replaces a lingering connection from the same guest browser instead of duplicating it', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Guest replace test', 'Arnold', {
+      creatorIp: `guest-replace-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+    const joinSessionId = 'guest-browser-0002';
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      await hostJoined;
+
+      const oldTab = await connectClient(harness.url);
+      const oldJoined = waitForMessage(oldTab, 'room-joined');
+      joinRoom(oldTab, { roomId: room.id, name: 'Guest', role: 'guest', joinSessionId });
+      const first = await oldJoined;
+
+      const removed = waitForMessage(oldTab, 'participant-removed');
+      const newTab = await connectClient(harness.url);
+      const newJoined = waitForMessage(newTab, 'room-joined');
+      joinRoom(newTab, { roomId: room.id, name: 'Guest', role: 'guest', joinSessionId });
+      const second = await newJoined;
+      await removed;
+      assert.notEqual(second.payload.participant.id, first.payload.participant.id);
+      const guests = [...roomState.participants.values()].filter((entry) => entry.participant.role === 'guest');
+      assert.equal(guests.length, 1);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('SFU media authorization', () => {
   it('issues an admitted guest a purpose-scoped SFU token without requiring recording', async () => {
     const previousSecret = process.env.LIVE_STREAM_TOKEN_SECRET;

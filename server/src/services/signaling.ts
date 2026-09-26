@@ -6,6 +6,7 @@ import type {
   SignalMessage,
   Room,
   Participant,
+  ParticipantStatus,
   JoinRoomPayload,
   MediaStatePayload,
   UpdateNamePayload,
@@ -66,6 +67,8 @@ interface RoomState {
   room: Room;
   participants: Map<string, { participant: Participant; ws: WebSocket; joinSessionId?: string; stageUploadToken?: string }>;
   bannedJoinSessionIds: Set<string>;
+  /** Admitted guests who dropped, by join session, so a quick return skips the green room. */
+  recentGuestSessions?: Map<string, { status: ParticipantStatus; leftAtMs: number }>;
   chatMessages: Map<string, ChatMessage>;
   chatReactions: Map<string, Map<ChatReactionType, Set<string>>>;
   qaQuestions: Map<string, QAQuestion>;
@@ -106,6 +109,27 @@ interface RoomState {
  * and left the reconnected host in a studio that no longer existed.
  */
 export const HOST_RECONNECT_GRACE_MS = 2 * 60_000;
+/** A guest the host admitted who returns this soon (dropped connection, reload) is not re-screened. */
+export const GUEST_REJOIN_GRACE_MS = 2 * 60_000;
+
+/** Where a returning guest goes: their earlier place, if they were admitted and left recently. */
+export function getReturningGuestStatus(
+  record: { status: ParticipantStatus; leftAtMs: number } | undefined,
+  nowMs: number
+): ParticipantStatus | undefined {
+  if (!record || record.status === 'green-room') return undefined;
+  if (nowMs - record.leftAtMs > GUEST_REJOIN_GRACE_MS) return undefined;
+  return record.status;
+}
+
+function rememberDepartedGuest(roomState: RoomState, joinSessionId: string, status: ParticipantStatus, nowMs: number) {
+  const sessions = roomState.recentGuestSessions ?? new Map();
+  roomState.recentGuestSessions = sessions;
+  for (const [id, record] of sessions) {
+    if (nowMs - record.leftAtMs > GUEST_REJOIN_GRACE_MS) sessions.delete(id);
+  }
+  sessions.set(joinSessionId, { status, leftAtMs: nowMs });
+}
 
 export interface StageImage {
   data: Buffer;
@@ -564,6 +588,23 @@ function clearLiveStreamStateForParticipant(roomId: string, roomState: RoomState
     },
   });
   return true;
+}
+
+function replaceGuestSession(roomId: string, roomState: RoomState, existingId: string) {
+  const existing = roomState.participants.get(existingId);
+  if (!existing) return;
+  // Seen only if the old connection is still alive, i.e. another tab.
+  send(existing.ws, {
+    type: 'participant-removed',
+    payload: { reason: 'You joined this studio again from another tab or window.' },
+  });
+  roomState.participants.delete(existingId);
+  wsToParticipant.delete(existing.ws);
+  broadcastToRoom(roomId, {
+    type: 'participant-left',
+    payload: { participantId: existingId },
+  });
+  existing.ws.close(4000, 'Guest session replaced');
 }
 
 function replaceExistingHostSession(roomId: string, roomState: RoomState, existingHostId: string) {
@@ -1141,6 +1182,20 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     }
   }
 
+  // The same guest browser joining again while its old connection lingers
+  // (a connection that died without closing, or a reload) replaces it.
+  let returningGuestStatus: ParticipantStatus | undefined;
+  if (requestedRole === 'guest' && joinSessionId && !roomState.bannedJoinSessionIds.has(joinSessionId)) {
+    for (const [existingId, existing] of roomState.participants) {
+      if (existing.joinSessionId !== joinSessionId || existing.participant.role !== 'guest') continue;
+      returningGuestStatus = existing.participant.status === 'green-room' ? undefined : existing.participant.status;
+      replaceGuestSession(roomId, roomState, existingId);
+      break;
+    }
+    returningGuestStatus ??= getReturningGuestStatus(roomState.recentGuestSessions?.get(joinSessionId), Date.now());
+    roomState.recentGuestSessions?.delete(joinSessionId);
+  }
+
   if (roomState.participants.size >= roomState.room.settings.maxParticipants) {
     sendError(ws, 'Room is full (max 7 participants)', 'ROOM_FULL');
     return;
@@ -1221,8 +1276,11 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     roomState.room.coHostIds.push(participant.id);
     participant.status = 'on-stage';
   } else {
-    // Guests: if green room is enabled, they wait; otherwise auto-admit
-    if (roomState.room.settings.greenRoomEnabled) {
+    // Guests: if green room is enabled, they wait; otherwise auto-admit.
+    // A guest already admitted who dropped and came straight back keeps their place.
+    if (returningGuestStatus) {
+      participant.status = returningGuestStatus;
+    } else if (roomState.room.settings.greenRoomEnabled) {
       participant.status = 'green-room';
     } else {
       participant.status = 'on-stage';
@@ -3507,6 +3565,15 @@ function handleDisconnect(ws: WebSocket) {
 
     roomState.participants.delete(participantId);
     wsToParticipant.delete(ws);
+
+    if (
+      entry?.participant.role === 'guest'
+      && entry.joinSessionId
+      && entry.participant.status !== 'green-room'
+      && !roomState.bannedJoinSessionIds.has(entry.joinSessionId)
+    ) {
+      rememberDepartedGuest(roomState, entry.joinSessionId, entry.participant.status, Date.now());
+    }
 
     clearLiveStreamStateForParticipant(roomId, roomState, participantId);
 
