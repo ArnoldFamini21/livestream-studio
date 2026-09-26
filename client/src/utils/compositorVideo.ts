@@ -75,18 +75,6 @@ export function getCompositorVideoObjectFit(video: HTMLVideoElement): Compositor
   return normalizeObjectFit(window.getComputedStyle(video).objectFit);
 }
 
-export function isCompositorVideoHorizontallyMirrored(video: HTMLVideoElement): boolean {
-  const inlineTransform = video.style.transform || '';
-  if (inlineTransform.includes('scaleX(-1)')) return true;
-
-  if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
-    return false;
-  }
-
-  const transform = window.getComputedStyle(video).transform || '';
-  return /^matrix\(-1(?:\.0+)?,\s*0(?:\.0+)?,\s*0(?:\.0+)?,\s*1(?:\.0+)?,/.test(transform);
-}
-
 export function getCompositorVideoDrawPlan(
   sourceWidth: number,
   sourceHeight: number,

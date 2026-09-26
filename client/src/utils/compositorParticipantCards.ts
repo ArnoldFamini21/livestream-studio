@@ -14,8 +14,26 @@ export function drawParticipantCards(
     const value = node.getBoundingClientRect();
     return { x: (value.left - bounds.left) * scaleX, y: (value.top - bounds.top) * scaleY, width: value.width * scaleX, height: value.height * scaleY };
   };
-  const roundPath = (node: Element) => {
+  // Parts of the stage marked data-local-only (the "(You)" on your own tile)
+  // are for the studio view; the broadcast leaves them out.
+  const localOnlyWidth = (node: Element) => Array.from(node.querySelectorAll?.('[data-local-only]') ?? [])
+    .reduce((width, part) => width + rect(part).width, 0);
+  const broadcastText = (node: Node): string => {
+    const children = node.childNodes;
+    if (!children || children.length === 0) return node.textContent || '';
+    return Array.from(children)
+      .map((child) => {
+        const element = child as Element;
+        if (typeof element.hasAttribute === 'function') {
+          return element.hasAttribute('data-local-only') ? '' : broadcastText(element);
+        }
+        return child.textContent || '';
+      })
+      .join('');
+  };
+  const roundPath = (node: Element, trimRight = 0) => {
     const r = rect(node);
+    r.width = Math.max(0, r.width - trimRight);
     const radius = getComputedStyle(node).borderTopLeftRadius;
     const size = radius.endsWith('%') ? Math.min(r.width, r.height) * parseFloat(radius) / 100 : parseFloat(radius) * Math.min(logicalScaleX, logicalScaleY);
     ctx.beginPath();
@@ -32,7 +50,7 @@ export function drawParticipantCards(
     ctx.fillStyle = style.color;
     ctx.font = `${style.fontWeight} ${parseFloat(style.fontSize) * logicalScaleY}px ${style.fontFamily}`;
     ctx.textBaseline = 'middle';
-    ctx.fillText(node.textContent || '', r.x, r.y + r.height / 2);
+    ctx.fillText(broadcastText(node).trimEnd(), r.x, r.y + r.height / 2);
     ctx.restore();
   };
 
@@ -66,7 +84,7 @@ export function drawParticipantCards(
     }
     const tag = tile.querySelector('[data-stage-name-tag]');
     if (tag) {
-      roundPath(tag);
+      roundPath(tag, localOnlyWidth(tag));
       ctx.fillStyle = getComputedStyle(tag).backgroundColor;
       ctx.fill();
       const text = tag.querySelector('[data-stage-name-text]');

@@ -16,7 +16,6 @@ import {
   canDrawMediaVideo,
   getCompositorVideoDrawPlan,
   getCompositorVideoObjectFit,
-  isCompositorVideoHorizontallyMirrored,
   isCompositorFeedbackSource,
 } from '../utils/compositorVideo.ts';
 import { DEFAULT_LOGO_OPACITY, normalizeLogoOpacity } from '../utils/logoWatermark.ts';
@@ -579,8 +578,8 @@ function drawVideoElementFrame(
   const plan = getCompositorVideoDrawPlan(video.videoWidth, video.videoHeight, width, height, objectFit);
   if (!plan) return false;
 
-  const mirrored = isCompositorVideoHorizontallyMirrored(video);
-
+  // Your own camera is mirrored in the studio (a self-view convention), but
+  // the broadcast shows every camera as it is, so text and gestures read correctly.
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, width, height);
@@ -591,33 +590,17 @@ function drawVideoElementFrame(
     ctx.fillRect(x, y, width, height);
   }
 
-  if (mirrored) {
-    ctx.translate(x + width, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(
-      video,
-      plan.sourceX,
-      plan.sourceY,
-      plan.sourceWidth,
-      plan.sourceHeight,
-      width - plan.destX - plan.destWidth,
-      y + plan.destY,
-      plan.destWidth,
-      plan.destHeight
-    );
-  } else {
-    ctx.drawImage(
-      video,
-      plan.sourceX,
-      plan.sourceY,
-      plan.sourceWidth,
-      plan.sourceHeight,
-      x + plan.destX,
-      y + plan.destY,
-      plan.destWidth,
-      plan.destHeight
-    );
-  }
+  ctx.drawImage(
+    video,
+    plan.sourceX,
+    plan.sourceY,
+    plan.sourceWidth,
+    plan.sourceHeight,
+    x + plan.destX,
+    y + plan.destY,
+    plan.destWidth,
+    plan.destHeight
+  );
 
   ctx.restore();
   return true;
