@@ -1,0 +1,1 @@
+(function(){let e;self.onmessage=t=>{e!==void 0&&clearInterval(e),e=void 0;let n=t.data?.intervalMs;typeof n==`number`&&n>0&&(e=setInterval(()=>self.postMessage(0),n))}})();
