@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { runAtBackgroundPriority } from './processPriority.js';
 import type {
   RecordingExportArtifactFormat,
   RecordingExportArtifactStorage,
@@ -244,6 +245,8 @@ function buildExportManifest(job: RecordingExportJob): string {
 export function createFfmpegExportRunner(ffmpegPath: string): RecordingExportRunner {
   return (command) => new Promise<void>((resolve, reject) => {
     const child = spawn(ffmpegPath, command.args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    // Exports yield the CPU to live encoding (see processPriority.ts).
+    runAtBackgroundPriority(child.pid);
     let stderr = '';
     child.stderr.on('data', (chunk: Buffer) => {
       stderr = `${stderr}${chunk.toString('utf8')}`.slice(-4000);

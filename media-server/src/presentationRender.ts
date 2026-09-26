@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import JSZip from 'jszip';
 import type { PresentationSlidePreview, StudioMediaAssetPreview } from '@studio/shared';
+import { runAtBackgroundPriority } from './processPriority.js';
 
 export const MAX_PRESENTATION_RENDER_BYTES = 50 * 1024 * 1024;
 export const MAX_PRESENTATION_RENDER_SLIDES = 60;
@@ -174,6 +175,8 @@ async function defaultCommandProbeRunner(
 
   return new Promise<CommandProbeResult>((resolve) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Probes and deck renders can run mid-broadcast; they yield the CPU to live encoding.
+    runAtBackgroundPriority(child.pid);
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -297,6 +300,7 @@ async function defaultCommandRunner(command: string, args: string[], options: { 
 
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    runAtBackgroundPriority(child.pid);
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
