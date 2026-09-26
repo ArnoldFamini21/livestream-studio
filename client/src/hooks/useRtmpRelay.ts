@@ -14,6 +14,9 @@ import {
   MAX_RELAY_RECONNECT_ATTEMPTS,
   getRelayAttemptsUsed,
   getRelayReconnectDelayMs,
+  isBrowserOffline,
+  RELAY_OFFLINE_STOP_MESSAGE,
+  RELAY_OFFLINE_WAIT_MAX_MS,
 } from '../utils/rtmpRelayReconnect.ts';
 import { estimateDroppedFrames } from '../utils/rtmpRelayDrops.ts';
 import { getRelayLatencyMs } from '../utils/rtmpRelayLatency.ts';
@@ -418,6 +421,8 @@ export function useRtmpRelay({
   const intentionalStopRef = useRef(false);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  // Reconnects early when the browser comes back online during a wait.
+  const reconnectOnlineListenerRef = useRef<(() => void) | null>(null);
   // When the relay last (re)connected; a long-healthy connection resets the reconnect count.
   const relayConnectedAtRef = useRef<number | null>(null);
   const heartbeatTimerRef = useRef<number | null>(null);
@@ -483,6 +488,10 @@ export function useRtmpRelay({
     if (reconnectTimerRef.current) {
       window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
+    }
+    if (reconnectOnlineListenerRef.current) {
+      window.removeEventListener('online', reconnectOnlineListenerRef.current);
+      reconnectOnlineListenerRef.current = null;
     }
   }, []);
 
@@ -657,6 +666,8 @@ export function useRtmpRelay({
 
       let currentToken = token;
       let finalStopReported = false;
+      // When the browser went offline in the current outage.
+      let offlineSince: number | null = null;
 
       const reportFinalStop = (message: string) => {
         if (finalStopReported || intentionalStopRef.current) return;
@@ -722,8 +733,52 @@ export function useRtmpRelay({
             reject(error);
           };
 
+          const reconnectNow = () => {
+            clearReconnectTimer();
+            void (async () => {
+              try {
+                currentToken = refreshToken ? await refreshToken() : currentToken;
+                await connectRelay(currentToken);
+              } catch (err) {
+                const retryMessage = err instanceof Error ? err.message : 'Unable to reconnect media relay.';
+                if (!scheduleReconnect(retryMessage)) {
+                  reportFinalStop(retryMessage);
+                }
+              }
+            })();
+          };
+
+          // Reconnects after delayMs, or as soon as the browser is back online.
+          const waitToReconnect = (delayMs: number, onElapsed: () => void) => {
+            clearReconnectTimer();
+            reconnectTimerRef.current = window.setTimeout(() => {
+              clearReconnectTimer();
+              onElapsed();
+            }, delayMs);
+            const handleOnline = () => reconnectNow();
+            reconnectOnlineListenerRef.current = handleOnline;
+            window.addEventListener('online', handleOnline);
+          };
+
           const scheduleReconnect = (message: string): boolean => {
             if (intentionalStopRef.current || finalStopReported) return false;
+            if (isBrowserOffline()) {
+              const now = Date.now();
+              offlineSince ??= now;
+              const offlineWaitLeftMs = RELAY_OFFLINE_WAIT_MAX_MS - (now - offlineSince);
+              if (offlineWaitLeftMs <= 0) {
+                reportFinalStop(RELAY_OFFLINE_STOP_MESSAGE);
+                return false;
+              }
+              stopActiveRelayTransport(false);
+              activeDestinationIdsRef.current.forEach((id) => {
+                onDestinationStatus(id, 'connecting', 'Your internet connection dropped. Reconnecting as soon as it is back...');
+              });
+              setStats((current) => ({ ...current, status: 'connecting', updatedAt: Date.now() }));
+              waitToReconnect(offlineWaitLeftMs, () => reportFinalStop(RELAY_OFFLINE_STOP_MESSAGE));
+              return true;
+            }
+            offlineSince = null;
             const plan = getRelayReconnectPlan(
               getRelayAttemptsUsed(reconnectAttemptsRef.current, relayConnectedAtRef.current, Date.now()),
               message,
@@ -746,22 +801,7 @@ export function useRtmpRelay({
               updatedAt: Date.now(),
             }));
 
-            clearReconnectTimer();
-            reconnectTimerRef.current = window.setTimeout(() => {
-              reconnectTimerRef.current = null;
-              void (async () => {
-                try {
-                  currentToken = refreshToken ? await refreshToken() : currentToken;
-                  await connectRelay(currentToken);
-                } catch (err) {
-                  const retryMessage = err instanceof Error ? err.message : 'Unable to reconnect media relay.';
-                  if (!scheduleReconnect(retryMessage)) {
-                    reportFinalStop(retryMessage);
-                  }
-                }
-              })();
-            }, getRelayReconnectDelayMs(plan.attempt));
-
+            waitToReconnect(getRelayReconnectDelayMs(plan.attempt), reconnectNow);
             return true;
           };
 
