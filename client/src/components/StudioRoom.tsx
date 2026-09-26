@@ -10,7 +10,7 @@ import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isP
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
-import { lazy, Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
@@ -206,6 +206,7 @@ import {
 } from '../utils/stagePresenceTransitions.ts';
 import {
   LAYOUT_SWITCH_TRANSITION_DURATION_MS,
+  VIEW_SWITCH_TRANSITION_DURATION_MS,
   getStageLayoutTransitionStyle,
   shouldStartLayoutTransition,
   type StageLayoutTransition,
@@ -1875,12 +1876,12 @@ export function StudioRoom() {
     }
   }, []);
 
-  const startLayoutTransition = useCallback((from: LayoutMode, to: LayoutMode) => {
-    if (!shouldStartLayoutTransition(from, to)) return;
+  const startLayoutTransition = useCallback((from: LayoutMode, to: LayoutMode, kind: 'layout' | 'view' = 'layout') => {
+    if (kind === 'layout' && !shouldStartLayoutTransition(from, to)) return;
 
     clearLayoutTransitionTimers();
     const id = ++layoutTransitionSequenceRef.current;
-    setLayoutTransition({ id, from, to, visible: false });
+    setLayoutTransition({ id, from, to, visible: false, kind });
     layoutTransitionFrameRef.current = window.requestAnimationFrame(() => {
       layoutTransitionFrameRef.current = window.requestAnimationFrame(() => {
         setLayoutTransition((current) => (
@@ -1892,7 +1893,7 @@ export function StudioRoom() {
     layoutTransitionTimerRef.current = window.setTimeout(() => {
       setLayoutTransition((current) => (current?.id === id ? null : current));
       layoutTransitionTimerRef.current = null;
-    }, LAYOUT_SWITCH_TRANSITION_DURATION_MS);
+    }, kind === 'view' ? VIEW_SWITCH_TRANSITION_DURATION_MS + 100 : LAYOUT_SWITCH_TRANSITION_DURATION_MS);
   }, [clearLayoutTransitionTimers]);
 
   const applyLayout = useCallback((nextLayout: LayoutMode, options: { animate?: boolean } = {}) => {
@@ -5285,6 +5286,15 @@ export function StudioRoom() {
     // Guests follow the host's choice, which arrives with the stage content.
     if (isHostOrCoHost) setContentHidden(false);
   }, [isHostOrCoHost, sharedContentIdentity]);
+  // Switching between Me, Content and Content + Me (here or following the host) fades the stage.
+  const previousPresentingViewRef = useRef(presentingView);
+  // Before paint, so the snapped layout never shows at full opacity first.
+  useLayoutEffect(() => {
+    const previous = previousPresentingViewRef.current;
+    previousPresentingViewRef.current = presentingView;
+    if (previous === presentingView || !sharedContentAvailable) return;
+    startLayoutTransition(presentationLayout, presentationLayout, 'view');
+  }, [presentingView, sharedContentAvailable, presentationLayout, startLayoutTransition]);
   const effectiveLayout = sharedContentIsActive ? presentationLayout : layout;
   const changeVisibleLayout = useCallback((next: LayoutMode) => {
     if (sharedContentIsActive) setPresentationLayout(next); else applyLayout(next);
