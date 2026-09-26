@@ -91,15 +91,21 @@ import {
   removeHlsWriterDir,
   sweepStaleHlsWriterDirs,
 } from './hlsOutput.js';
+import {
+  DESTINATION_LIVE_CONFIRM_MS,
+  MAX_DESTINATION_RECONNECTS,
+  MAX_UNCONFIRMED_DESTINATION_RECONNECTS,
+  getDestinationReconnectDelayMs,
+  getReconnectAttemptsAfterDrop,
+} from './destinationReconnect.js';
 
 const PORT = Number(process.env.PORT || process.env.MEDIA_SERVER_PORT || 3002);
 const MAX_WS_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 const EXPORT_REQUEST_MAX_BYTES = 256 * 1024;
-const MAX_DESTINATION_RESTARTS = 2;
-const DESTINATION_RESTART_DELAY_MS = 1_500;
 const MEDIA_HEALTH_CAPABILITY_CACHE_MS = 60_000;
 const MAX_ENCODER_RESTARTS = 2;
+const ENCODER_RESTART_DELAY_MS = 1_500;
 // Seconds of media an FFmpeg input may queue before its feed skips ahead to
 // the live edge. Without a bound, a slow destination or a CPU-starved encoder
 // grows server memory without limit and viewers fall further behind.
@@ -114,6 +120,10 @@ interface RelayProcess {
   /** Encode-once: the shared encoder's FLV goes in and is copied to RTMP. */
   flvFeed: FlvSinkFeed | null;
   live: boolean;
+  /** When this connection went live; a long-healthy connection resets the reconnect count. */
+  liveSinceMs: number | null;
+  /** Reports "live" once the connection has held (see markRelayReceivingMedia). */
+  confirmTimer: ReturnType<typeof setTimeout> | null;
   /** Spawned after media began, so it resumes from the cached init segment. */
   joinedMidStream: boolean;
   /** Replaced because the shared encoder restarted; its exit is expected. */
@@ -163,6 +173,8 @@ interface RelaySession {
   stopTimers: Map<string, ReturnType<typeof setTimeout>>;
   restartTimers: Map<string, ReturnType<typeof setTimeout>>;
   restartAttempts: Map<string, number>;
+  /** Destinations whose RTMP connection has held at least once this session. */
+  confirmedDestinations: Set<string>;
 }
 
 const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
@@ -588,6 +600,8 @@ function spawnRelay(
     feed,
     flvFeed,
     live: false,
+    liveSinceMs: null,
+    confirmTimer: null,
     joinedMidStream,
     retired: false,
     exited: false,
@@ -617,6 +631,8 @@ function spawnRelay(
 
   child.on('close', (code, signal) => {
     relay.exited = true;
+    if (relay.confirmTimer) clearTimeout(relay.confirmTimer);
+    relay.confirmTimer = null;
     if (relay.retired) return;
     const timer = session.stopTimers.get(destination.id);
     if (timer) {
@@ -630,34 +646,71 @@ function spawnRelay(
       ? `FFmpeg exited from ${signal}`
       : `FFmpeg exited with code ${code ?? 'unknown'}`;
 
-    const attempts = session.restartAttempts.get(destination.id) || 0;
+    const attempts = getReconnectAttemptsAfterDrop(
+      session.restartAttempts.get(destination.id) || 0,
+      relay.liveSinceMs,
+      Date.now()
+    );
     // A respawn that dies before its first Cluster was still a live destination.
-    if ((relay.live || relay.joinedMidStream) && attempts < MAX_DESTINATION_RESTARTS) {
+    // A destination that has never held a connection (a wrong key or URL)
+    // gets a short budget so the error shows quickly.
+    const maxAttempts = session.confirmedDestinations.has(destination.id)
+      ? MAX_DESTINATION_RECONNECTS
+      : MAX_UNCONFIRMED_DESTINATION_RECONNECTS;
+    if ((relay.live || relay.joinedMidStream) && attempts < maxAttempts) {
       const nextAttempt = attempts + 1;
       session.restartAttempts.set(destination.id, nextAttempt);
+      const delayMs = getDestinationReconnectDelayMs(nextAttempt);
       sendJson(ws, {
         type: 'destination-status',
         payload: {
           destinationId: destination.id,
           status: 'connecting',
-          message: `Reconnecting (${nextAttempt}/${MAX_DESTINATION_RESTARTS})`,
+          message: `Reconnecting (${nextAttempt}/${maxAttempts}) in ${Math.round(delayMs / 1000)} s`,
         },
       });
       const restartTimer = setTimeout(() => {
         session.restartTimers.delete(destination.id);
         if (session.stopping || ws.readyState !== WebSocket.OPEN) return;
         spawnRelay(ws, session, ffmpegPath, destination, payload);
-      }, DESTINATION_RESTART_DELAY_MS);
+      }, delayMs);
       session.restartTimers.set(destination.id, restartTimer);
       return;
     }
 
+    console.warn(`RTMP relay ${destination.name} stopped: ${message}`);
     sendJson(ws, {
       type: 'destination-status',
-      payload: { destinationId: destination.id, status: 'error', message },
+      payload: {
+        destinationId: destination.id,
+        status: 'error',
+        message: session.confirmedDestinations.has(destination.id)
+          ? `Lost the connection to ${destination.name} and could not reconnect. The other destinations are still live.`
+          : `Could not connect to ${destination.name}. Check the server URL and stream key, and that the platform is ready to receive.`,
+      },
     });
     stopSessionIfNoRelayWork(ws, session);
   });
+}
+
+/**
+ * Media is flowing into a destination's uploader. That alone does not mean
+ * the platform accepted the connection: a refused or rejected RTMP connection
+ * ends about a second later. Report "live" only once it has held, so the
+ * panel never shows a destination live that is not receiving anything.
+ */
+function markRelayReceivingMedia(ws: WebSocket, session: RelaySession, relay: RelayProcess) {
+  relay.live = true;
+  relay.liveSinceMs = Date.now();
+  relay.confirmTimer = setTimeout(() => {
+    relay.confirmTimer = null;
+    if (relay.exited || relay.retired || session.stopping) return;
+    session.confirmedDestinations.add(relay.destination.id);
+    sendJson(ws, {
+      type: 'destination-status',
+      payload: { destinationId: relay.destination.id, status: 'live' },
+    });
+  }, DESTINATION_LIVE_CONFIRM_MS);
 }
 
 /**
@@ -712,11 +765,7 @@ function spawnEncoder(
     for (const relay of session.relays.values()) {
       if (relay.exited || relay.retired || !relay.flvFeed) continue;
       if (!relay.flvFeed.write(chunk) || relay.live) continue;
-      relay.live = true;
-      sendJson(ws, {
-        type: 'destination-status',
-        payload: { destinationId: relay.destination.id, status: 'live' },
-      });
+      markRelayReceivingMedia(ws, session, relay);
     }
   });
   child.stdout.on('end', () => {
@@ -774,7 +823,7 @@ function spawnEncoder(
         for (const destination of session.destinations) {
           spawnRelay(ws, session, ffmpegPath, destination, payload);
         }
-      }, DESTINATION_RESTART_DELAY_MS);
+      }, ENCODER_RESTART_DELAY_MS);
       return;
     }
 
@@ -1013,11 +1062,7 @@ function handleBinaryChunk(ws: WebSocket, session: RelaySession, data: RawData) 
   } else {
     for (const relay of session.relays.values()) {
       if (relay.exited || !relay.feed || !relay.feed.write(chunk, info) || relay.live) continue;
-      relay.live = true;
-      sendJson(ws, {
-        type: 'destination-status',
-        payload: { destinationId: relay.destination.id, status: 'live' },
-      });
+      markRelayReceivingMedia(ws, session, relay);
     }
   }
   const backup = session.backup;
@@ -1764,6 +1809,7 @@ wss.on('connection', (ws) => {
     stopTimers: new Map(),
     restartTimers: new Map(),
     restartAttempts: new Map(),
+    confirmedDestinations: new Set(),
   };
   sessions.set(ws, session);
 

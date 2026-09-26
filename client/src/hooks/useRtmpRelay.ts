@@ -870,7 +870,9 @@ export function useRtmpRelay({
             }
 
             if (message.type === 'destination-status') {
-              if (message.payload.status === 'error') setRelayStatus('error');
+              // One platform failing is shown on its own row; the relay itself
+              // (browser to media server) is still fine while others stream. If
+              // every destination fails, the server ends the session instead.
               if (message.payload.status === 'live') setRelayStatus('live');
               onDestinationStatus(
                 message.payload.destinationId,
