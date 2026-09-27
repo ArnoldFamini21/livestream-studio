@@ -5195,7 +5195,7 @@ export function StudioRoom() {
 
       items.push({
         id,
-        name: participant.status === 'backstage' ? participant.name : `${participant.name} (${participant.role})`,
+        name: participant.status === 'backstage' ? participant.name : `${participant.name} · ${participant.role === 'co-host' ? 'Co-host' : 'Host'}`,
         stream: remoteStreams.get(id) || null,
         isLocal: false,
         audioEnabled: participant.screenSharing ? false : participant.audioEnabled,
@@ -7399,7 +7399,7 @@ function BackstagePrivateRoom({
       data-testid="backstage-private-room"
       style={{
         ...styles.backstageRoom,
-        ...(compact ? styles.backstageRoomCompact : {}),
+        ...(compact ? styles.backstageRoomCompact : styles.backstageRoomWide),
       }}
       aria-label="Backstage private room"
     >
@@ -7411,9 +7411,9 @@ function BackstagePrivateRoom({
         </span>
         <span style={styles.backstageRoomMeta}>Not on stream</span>
       </div>
-      <div style={styles.backstageRoomRow}>
+      <div style={{ ...styles.backstageRoomRow, ...(compact ? {} : styles.backstageRoomRowWrap) }}>
         {items.map((item) => (
-          <div key={item.id} style={styles.backstageRoomCard}>
+          <div key={item.id} style={{ ...styles.backstageRoomCard, ...(compact ? {} : styles.backstageRoomCardLarge) }}>
             <div
               style={{
                 ...styles.backstageRoomTile,
@@ -7432,6 +7432,7 @@ function BackstagePrivateRoom({
                 brandColor={brandColor}
                 cameraShape={cameraShape}
                 nameTagStyle={nameTagStyle}
+                compact
                 // Only a weak connection is worth a badge on a thumbnail.
                 connectionHealth={item.connectionHealth && item.connectionHealth.quality !== 'good' && item.connectionHealth.quality !== 'unknown' ? item.connectionHealth : null}
                 reconnecting={item.reconnecting}
@@ -7865,6 +7866,9 @@ const styles: Record<string, React.CSSProperties> = {
   backstageRoomCompact: {
     padding: '8px 10px 10px',
   },
+  backstageRoomWide: {
+    width: 'min(660px, 100%)',
+  },
   backstageRoomHeader: {
     display: 'flex',
     alignItems: 'center',
@@ -7921,6 +7925,15 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
+  },
+  backstageRoomCardLarge: {
+    // Three across on a laptop, two on a phone, all the same size.
+    width: 'clamp(140px, calc((100% - 20px) / 3), 200px)',
+  },
+  backstageRoomRowWrap: {
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    overflowX: 'visible',
   },
   backstageRoomTile: {
     width: '100%',

@@ -24,6 +24,8 @@ interface VideoTileProps {
   connectionHealth?: PeerBandwidthHealth | null;
   /** Their connection dropped and is recovering: shown in the studio, not the broadcast. */
   reconnecting?: boolean;
+  /** Thumbnail size (backstage): a slimmer name tag that may use the full width. */
+  compact?: boolean;
   onAudioLevelChange?: (participantId: string, level: number) => void;
 }
 
@@ -151,6 +153,7 @@ export function VideoTile({
   nameTagStyle = 'classic',
   connectionHealth = null,
   reconnecting = false,
+  compact = false,
   onAudioLevelChange,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -281,8 +284,8 @@ export function VideoTile({
       {!isScreenShare && <div style={tileStyles.gradient} />}
 
       {/* Name Tag Area */}
-      {!isScreenShare && <div style={tileStyles.nameBar}>
-        <div data-stage-name-tag style={{ ...getNameTagStyle(), display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      {!isScreenShare && <div style={{ ...tileStyles.nameBar, ...(compact ? tileStyles.nameBarCompact : {}) }}>
+        <div data-stage-name-tag style={{ ...getNameTagStyle(), display: 'inline-flex', alignItems: 'center', gap: compact ? 5 : 8, ...(compact ? tileStyles.nameTagCompact : {}) }}>
           {!audioEnabled ? (
             <div style={tileStyles.muteIcon}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round">
@@ -292,7 +295,7 @@ export function VideoTile({
               </svg>
             </div>
           ) : (
-            <div style={{ width: 24, paddingBottom: 2 }}>
+            <div style={{ width: compact ? 14 : 24, paddingBottom: 2, flexShrink: 0 }}>
                <AudioLevelMeter stream={stream} size="small" orientation="horizontal" />
             </div>
           )}
@@ -305,7 +308,7 @@ export function VideoTile({
               </svg>
             </div>
           )}
-          <span data-stage-name-text style={tileStyles.nameText}>
+          <span data-stage-name-text style={{ ...tileStyles.nameText, ...(compact ? tileStyles.nameTextCompact : {}) }}>
             {name}
             {isLocal && <span data-local-only style={tileStyles.youTag}> (You)</span>}
           </span>
@@ -459,6 +462,16 @@ const tileStyles: Record<string, React.CSSProperties> = {
     padding: '0 10px 10px',
     display: 'flex',
     alignItems: 'center',
+  },
+  nameBarCompact: {
+    padding: '0 6px 6px',
+  },
+  nameTagCompact: {
+    maxWidth: '100%',
+    padding: '3px 8px',
+  },
+  nameTextCompact: {
+    fontSize: 11,
   },
   namePill: {
     display: 'inline-flex',
