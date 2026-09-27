@@ -260,7 +260,8 @@ export function VideoTile({
         </div>
       )}
 
-      {connectionHealth && !isLocal && !isScreenShare && (
+      {/* Only a weak connection needs attention; "Good" on every tile is noise. */}
+      {connectionHealth && (connectionHealth.quality === 'fair' || connectionHealth.quality === 'poor') && !isLocal && !isScreenShare && (
         <div
           style={{ ...tileStyles.connectionBadge, ...getConnectionBadgeStyle(connectionHealth.quality) }}
           title={formatPeerBandwidthHealthTitle(connectionHealth)}
@@ -429,7 +430,8 @@ const tileStyles: Record<string, React.CSSProperties> = {
   connectionBadge: {
     position: 'absolute',
     top: 10,
-    right: 10,
+    // Left: the host's tile controls sit on the right.
+    left: 10,
     display: 'inline-flex',
     alignItems: 'center',
     gap: 5,
