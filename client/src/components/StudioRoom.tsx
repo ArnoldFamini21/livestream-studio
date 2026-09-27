@@ -6608,6 +6608,7 @@ export function StudioRoom() {
                         // camera preview, and Safari then drops macOS video effects such
                         // as Background.
                         key={item.id}
+                        className="stage-tile"
                         data-stage-item-id={item.id}
                         draggable={canDragStageTile}
                         style={{
@@ -6635,7 +6636,7 @@ export function StudioRoom() {
                         aria-label={canDragStageTile ? `${item.name} stage tile. Click to spotlight or drag to reorder.` : undefined}
                       >
                         {canFocusTile && (
-                          <div style={styles.tileControls}>
+                          <div className="stage-tile-controls" style={styles.tileControls}>
                             <button
                               type="button"
                               style={{ ...styles.focusTileBtn, ...(isFocusedTile ? styles.focusTileBtnActive : {}) }}

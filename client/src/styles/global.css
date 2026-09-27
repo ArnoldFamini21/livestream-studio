@@ -612,3 +612,18 @@ textarea:focus {
   color: rgba(255, 255, 255, 0.7) !important;
   transform: scale(1.05);
 }
+
+/* Stage tile controls (spotlight, reorder) appear on hover, not over every camera. */
+.stage-tile .stage-tile-controls {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.stage-tile:hover .stage-tile-controls,
+.stage-tile:focus-within .stage-tile-controls {
+  opacity: 1;
+}
+@media (hover: none) {
+  .stage-tile .stage-tile-controls {
+    opacity: 1;
+  }
+}
