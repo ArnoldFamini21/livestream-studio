@@ -125,6 +125,7 @@ import {
   type LiveSessionSummary,
 } from '../utils/liveStreamStatus.ts';
 import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
+import { describePendingGuestUploads, END_SESSION_UPLOAD_WAIT_MS, getEndSessionPrompt, getPendingGuestUploads } from '../utils/endSession.ts';
 import { buildApiUrl, resolveMediaHttpUrl } from '../utils/apiClient.ts';
 import { loadSavedStreamDestinations, saveStreamDestinations, serializeStreamDestinations } from '../utils/streamDestinationStorage.ts';
 import type { YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
@@ -267,6 +268,7 @@ import {
   type StreamScreenKind,
 } from '../utils/streamScreens.ts';
 import { useToast } from './Toast.tsx';
+import { ConfirmDialog } from './ConfirmDialog.tsx';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -1179,6 +1181,9 @@ export function StudioRoom() {
   const [roomEnding, setRoomEnding] = useState(false);
   const [roomEndsAt, setRoomEndsAt] = useState<number | null>(null);
   const [endingCountdown, setEndingCountdown] = useState(10);
+  // Host ending the session: confirm, save the recording, let guests' uploads finish.
+  const [endSessionStep, setEndSessionStep] = useState<'closed' | 'confirm' | 'saving' | 'uploads'>('closed');
+  const endSessionUploadRef = useRef<{ sessionId: string; startedAt: number } | null>(null);
   const [liveStartedAt, setLiveStartedAt] = useState<string | null>(null);
   const [liveElapsed, setLiveElapsed] = useState(0);
   const [sessionRecordingStartedAt, setSessionRecordingStartedAt] = useState<string | null>(null);
@@ -2541,6 +2546,10 @@ export function StudioRoom() {
             next.set(message.payload.id, message.payload);
             return next;
           });
+          // Hosts might be looking at another panel: say someone is waiting to be let in.
+          if (message.payload.status === 'green-room' && isStudioOperator(myParticipantRef.current)) {
+            addToastRef.current(`${message.payload.name} is waiting in the green room.`, 'info');
+          }
           break;
         }
         case 'participant-left': {
@@ -2928,6 +2937,7 @@ export function StudioRoom() {
         case 'co-host-invite-token-request':
         case 'update-name':
         case 'end-room':
+        case 'cancel-end-room':
           break;
         default:
           assertNever(message);
@@ -3014,13 +3024,44 @@ export function StudioRoom() {
       return;
     }
     if (userRole === 'host') {
-      // Host ends the room: trigger server-side countdown for all participants
-      send({ type: 'end-room', payload: {} });
+      // One misclick must not end the show for everyone: confirm first.
+      if (endSessionStep === 'closed') setEndSessionStep('confirm');
     } else {
       // Guests just leave immediately
       cleanup(); stopMedia(); stopPublishedScreenShareRef.current(); navigate('/');
     }
   };
+
+  // Host ends the room: the server counts everyone down, then closes it.
+  const finishEndSession = useCallback(() => {
+    endSessionUploadRef.current = null;
+    setEndSessionStep('closed');
+    send({ type: 'end-room', payload: {} });
+  }, [send]);
+  const hasActiveRecording = isRecording || isLocalRecording || Boolean(sessionRecordingStartedAt);
+  const confirmEndSession = async () => {
+    const recordingSessionId = sessionRecordingSessionId;
+    if (!(canControlRecording && hasActiveRecording)) {
+      finishEndSession();
+      return;
+    }
+    // Stop and save the take first; ending the room mid-take left it unsaved.
+    setEndSessionStep('saving');
+    addToast('Stopping and saving the recording before the studio closes…', 'info');
+    await onToggleRecording();
+    if (!recordingSessionId) {
+      finishEndSession();
+      return;
+    }
+    // Guests upload their own tracks over this studio's connection; give them time.
+    endSessionUploadRef.current = { sessionId: recordingSessionId, startedAt: Date.now() };
+    setEndSessionStep('uploads');
+  };
+  const cancelEndSession = () => {
+    endSessionUploadRef.current = null;
+    setEndSessionStep('closed');
+  };
+  const keepRoomOpen = () => send({ type: 'cancel-end-room', payload: {} });
 
   const onAudioDeviceChange = async (id: string) => {
     try { const t = await switchAudioDevice(id, audioProcessing); if (t) await replaceTrack(t); }
@@ -5895,6 +5936,28 @@ export function StudioRoom() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [productionExitGuard]);
 
+  const endSessionPendingUploads = useMemo(() => (
+    endSessionStep === 'uploads'
+      ? getPendingGuestUploads(participantRecordingUploads, endSessionUploadRef.current?.sessionId ?? null, new Set(participants.keys()))
+      : []
+  ), [endSessionStep, participantRecordingUploads, participants]);
+  // Close the studio once every guest recording is in, or after the wait runs out.
+  useEffect(() => {
+    if (endSessionStep !== 'uploads') return undefined;
+    if (endSessionPendingUploads.length === 0) {
+      finishEndSession();
+      return undefined;
+    }
+    const startedAt = endSessionUploadRef.current?.startedAt ?? Date.now();
+    const timer = setTimeout(finishEndSession, Math.max(0, startedAt + END_SESSION_UPLOAD_WAIT_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [endSessionPendingUploads, endSessionStep, finishEndSession]);
+  const endSessionPrompt = getEndSessionPrompt({
+    isLive,
+    isRecording: hasActiveRecording,
+    otherParticipantCount: Math.max(0, participants.size - (myParticipant && participants.has(myParticipant.id) ? 1 : 0)),
+  });
+
   useEffect(() => {
     displayedLowerThirdRef.current = displayedLowerThird;
   }, [displayedLowerThird]);
@@ -6267,10 +6330,16 @@ export function StudioRoom() {
             {orderedVideoItems.length} in studio
           </span>
           {isHostOrCoHost && waitingCount > 0 && (
-            <span style={styles.waitingBadge}>
+            <button
+              type="button"
+              style={{ ...styles.waitingBadge, ...styles.waitingBadgeButton }}
+              onClick={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
+              aria-label={`${waitingCount} waiting in the green room: open People to let them in`}
+              title="Open People to let them in"
+            >
               <span style={styles.waitingDot} />
               {waitingCount} waiting
-            </span>
+            </button>
           )}
           {recordingStatus.active && (
             <span style={styles.recBadge}>
@@ -7363,7 +7432,7 @@ export function StudioRoom() {
             </div>
             <h2 style={styles.roomEndingTitle}>Room is ending...</h2>
             <div style={styles.roomEndingCountdown}>{endingCountdown}</div>
-            <p style={styles.roomEndingSubtitle}>The host is ending this session</p>
+            <p style={styles.roomEndingSubtitle}>{userRole === 'host' ? 'You are ending this session' : 'The host is ending this session'}</p>
             <div style={styles.roomEndingBar}>
               <div
                 style={{
@@ -7372,9 +7441,33 @@ export function StudioRoom() {
                 }}
               />
             </div>
+            {userRole === 'host' && (
+              <button type="button" className="btn-secondary" style={styles.roomEndingKeepOpen} onClick={keepRoomOpen}>
+                Keep studio open
+              </button>
+            )}
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={endSessionStep === 'confirm'}
+        title={endSessionPrompt.title}
+        message={endSessionPrompt.message}
+        confirmLabel={endSessionPrompt.confirmLabel}
+        cancelLabel="Keep studio open"
+        onConfirm={() => { void confirmEndSession(); }}
+        onCancel={cancelEndSession}
+      />
+      <ConfirmDialog
+        open={endSessionStep === 'uploads'}
+        title="Finishing guest recordings"
+        message={describePendingGuestUploads(endSessionPendingUploads)}
+        confirmLabel="End now"
+        cancelLabel="Keep studio open"
+        onConfirm={finishEndSession}
+        onCancel={cancelEndSession}
+      />
     </div>
   );
 }
@@ -7528,6 +7621,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24', fontWeight: 600,
   },
   waitingDot: { width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 2s infinite' },
+  waitingBadgeButton: { border: '1px solid rgba(245, 158, 11, 0.35)', cursor: 'pointer', lineHeight: 'inherit' },
   recBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
@@ -8666,6 +8760,10 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--accent)',
     borderRadius: 2,
     transition: 'width 1s linear',
+  },
+  roomEndingKeepOpen: {
+    marginTop: 20,
+    width: '100%',
   },
   // Logo watermark
   logoWatermark: {

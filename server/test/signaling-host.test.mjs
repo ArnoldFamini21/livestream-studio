@@ -2579,3 +2579,56 @@ describe('participant rename', () => {
     }
   });
 });
+
+describe('ending the room', () => {
+  it('lets the host keep the room open during the end countdown, and only the host', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('End room cancel test', 'Arnold', {
+      creatorIp: `end-room-cancel-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest', joinSessionId: 'end-room-guest-01' });
+      await guestJoined;
+
+      const guestSawEnding = waitForMessage(guest, 'room-ending');
+      sendSignal(host, { type: 'end-room', payload: {} });
+      assert.ok(Date.parse((await guestSawEnding).payload.endsAt) > Date.now());
+
+      // A guest cannot stop the host from ending the room.
+      const refused = waitForMessage(guest, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, { type: 'cancel-end-room', payload: {} });
+      await refused;
+
+      const guestSawCancel = waitForMessage(guest, 'room-ending-cancelled');
+      const hostSawCancel = waitForMessage(host, 'room-ending-cancelled');
+      sendSignal(host, { type: 'cancel-end-room', payload: {} });
+      await Promise.all([guestSawCancel, hostSawCancel]);
+
+      // Nothing left to cancel: no second announcement, and the room stays.
+      const noRepeat = expectNoMessage(guest, 'room-ending-cancelled');
+      sendSignal(host, { type: 'cancel-end-room', payload: {} });
+      await noRepeat;
+      assert.ok(getRooms().has(room.id));
+
+      // The host can still end it afterwards.
+      const endingAgain = waitForMessage(guest, 'room-ending');
+      sendSignal(host, { type: 'end-room', payload: {} });
+      await endingAgain;
+      sendSignal(host, { type: 'cancel-end-room', payload: {} });
+      await waitForMessage(guest, 'room-ending-cancelled');
+    } finally {
+      await harness.close();
+    }
+  });
+});

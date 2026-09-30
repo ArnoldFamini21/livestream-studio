@@ -383,6 +383,8 @@ export type SignalMessage =
   | { type: 'participant-updated'; payload: Participant }
   | { type: 'participant-removed'; payload: { reason: string } }
   | { type: 'end-room'; payload: Record<string, never> }
+  /** Host: keep the studio open after all, during the end countdown. */
+  | { type: 'cancel-end-room'; payload: Record<string, never> }
   | { type: 'room-ending'; payload: { endsAt: string } }
   | { type: 'room-ended'; payload: Record<string, never> }
   | { type: 'room-ending-cancelled'; payload: Record<string, never> }

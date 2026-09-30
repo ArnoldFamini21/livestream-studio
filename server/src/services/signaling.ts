@@ -204,6 +204,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'guest-invite-token-request',
   'co-host-invite-token-request',
   'end-room',
+  'cancel-end-room',
 ]);
 
 const STAGE_ACTIONS = new Set<StageActionPayload['action']>([
@@ -1128,6 +1129,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'end-room':
       handleEndRoom(ws);
+      break;
+    case 'cancel-end-room':
+      handleCancelEndRoom(ws);
       break;
     default:
       sendError(ws, 'Unknown message type', 'UNKNOWN_TYPE');
@@ -3546,6 +3550,28 @@ function handleEndRoom(ws: WebSocket) {
   timer.unref?.();
 
   endingTimers.set(roomId, timer);
+}
+
+/** The host changed their mind during the end countdown: the studio stays open. */
+function handleCancelEndRoom(ws: WebSocket) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer || performer.participant.role !== 'host') {
+    sendError(ws, 'Only the host can keep the room open', 'UNAUTHORIZED');
+    return;
+  }
+
+  if (!clearRoomEndingTimer(mapping.roomId)) return;
+  console.log(`Host kept room ${mapping.roomId} open`);
+  broadcastToRoom(mapping.roomId, {
+    type: 'room-ending-cancelled',
+    payload: {},
+  });
 }
 
 function handleDisconnect(ws: WebSocket) {

@@ -781,6 +781,8 @@ const styles: Record<string, React.CSSProperties> = {
   closeBtn: {
     width: 34,
     height: 34,
+    // The global button padding left no room, collapsing the icon to nothing.
+    padding: 0,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',

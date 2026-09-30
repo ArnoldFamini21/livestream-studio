@@ -1407,7 +1407,7 @@ export function HomePage() {
         </nav>
         <div className="workspace-nav-bottom">
           <button aria-current={workspaceView === 'settings' ? 'page' : undefined} onClick={() => setWorkspaceView('settings')}><StudioIcon name="settings" />Settings & account</button>
-          <div className="workspace-attribution">Powered by<a href="https://ArnoldFamily.com" target="_blank" rel="noopener noreferrer">ArnoldFamily.com <span>↗</span></a></div>
+          <div className="workspace-attribution">Powered by<a href="https://arnoldfamini.com" target="_blank" rel="noopener noreferrer">ArnoldFamini.com <span>↗</span></a></div>
         </div>
       </aside>
       <div className="workspace-body">
