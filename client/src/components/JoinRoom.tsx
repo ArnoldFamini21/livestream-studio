@@ -20,11 +20,14 @@ import {
   type VideoQualityPresetId,
 } from '../utils/mediaPreferences.ts';
 import { createSpeakerTestToneBlob } from '../utils/speakerTestTone.ts';
+import { selfViewTransform, setMirrorSelfView, useMirrorSelfView } from '../utils/selfViewMirror.ts';
 import {
   clearUrlHostToken,
   getHostSession,
   getSavedHostStudio,
   getStoredUserName,
+  getRememberedDisplayName,
+  rememberDisplayName,
   getUrlHostToken,
   persistLegacyHostSession,
   persistHostSession,
@@ -99,9 +102,10 @@ export function JoinRoom() {
     ? hostSession.hostName
     : isHostEntryRequested
       ? savedHostStudio?.hostName || getStoredUserName() || ''
-      : getStoredUserName() || savedHostStudio?.hostName || '';
+      : getStoredUserName() || savedHostStudio?.hostName || getRememberedDisplayName() || '';
   // Auto-fill from sessionStorage for Hosts
   const [guestName, setGuestName] = useState(initialName);
+  const mirrorSelfView = useMirrorSelfView();
   const [guestEmail, setGuestEmail] = useState(() => getStoredGuestEmail());
   const [roomInfo, setRoomInfo] = useState<RoomExistsResponse | null>(null);
   const [roomPassword, setRoomPassword] = useState('');
@@ -411,6 +415,7 @@ export function JoinRoom() {
       }
     }
     sessionStorage.setItem('userName', guestName);
+    rememberDisplayName(guestName);
     sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
     sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
     writePreferredAudioProcessing({ echoCancellation, noiseSuppression, voiceIsolation });
@@ -431,6 +436,15 @@ export function JoinRoom() {
     (registrationRequired && !registrationSubmitted && !canSubmitRegistration) ||
     (needsRoomPassword && !roomPassword.trim())
   );
+
+  // Say what is missing instead of leaving a silently disabled button.
+  const joinHint = joining || hostAccessMissing || scheduledGuestBlocked
+    ? null
+    : !guestName.trim()
+      ? 'Enter your name to continue.'
+      : needsRoomPassword && !roomPassword.trim()
+        ? 'Enter the room password to continue.'
+        : null;
 
   const joinButtonLabel = hostAccessMissing
     ? 'Host Access Missing'
@@ -551,6 +565,7 @@ export function JoinRoom() {
             playsInline
             style={{
               ...styles.previewVideo,
+              transform: selfViewTransform(mirrorSelfView),
               ...(videoEnabled ? {} : { display: 'none' }),
             }}
           />
@@ -731,9 +746,11 @@ export function JoinRoom() {
           className="btn-primary entry-submit"
           onClick={joinStudio}
           disabled={joinDisabled}
+          aria-describedby={joinHint ? 'entry-join-hint' : undefined}
         >
           {joinButtonLabel}
         </button>
+        {joinHint && <p id="entry-join-hint" style={styles.joinHint}>{joinHint}</p>}
 
 
         </section>
@@ -777,6 +794,12 @@ export function JoinRoom() {
                 {VIDEO_QUALITY_PRESETS.map(preset => <option key={preset.id} value={preset.id}>{preset.label}{preset.id === recommendedVideoQuality ? ' (recommended)' : ''}</option>)}
               </select>
             </div>
+          )}
+          {videoDevices.length > 0 && (
+            <label style={styles.checkboxLabel}>
+              <input type="checkbox" checked={mirrorSelfView} onChange={(e) => setMirrorSelfView(e.target.checked)} />
+              Mirror my preview (viewers always see the true view)
+            </label>
           )}
           {audioOutputDevices.length > 0 && (
             <div style={styles.deviceField}>
@@ -927,7 +950,6 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     height: '100%',
     objectFit: 'cover',
-    transform: 'scaleX(-1)',
   },
   previewOff: {
     display: 'flex',
@@ -1089,6 +1111,12 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
     fontSize: 12,
     lineHeight: 1.4,
+  },
+  joinHint: {
+    margin: '8px 0 0',
+    color: 'var(--text-muted)',
+    fontSize: 12,
+    textAlign: 'center',
   },
   registrationError: {
     margin: '8px 0 0',

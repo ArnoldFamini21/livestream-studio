@@ -7,6 +7,8 @@ const LEGACY_HOST_SESSION_PREFIX = 'legacyHost:';
 const LEGACY_HOST_STUDIOS_STORAGE_KEY = 'livestream-studio:scheduled-studios';
 const USER_NAME_KEY = 'userName';
 const USER_ROLE_KEY = 'userRole';
+const REMEMBERED_DISPLAY_NAME_KEY = 'livestream-studio:display-name';
+const MAX_DISPLAY_NAME_LENGTH = 50;
 
 export interface SavedHostStudio {
   id: string;
@@ -190,6 +192,16 @@ export function clearUrlHostToken() {
 
 export function getStoredUserName(): string {
   return getSessionItem(USER_NAME_KEY);
+}
+
+/** The name this browser last joined a studio with, so returning guests need not retype it. */
+export function getRememberedDisplayName(): string {
+  return getLocalItem(REMEMBERED_DISPLAY_NAME_KEY).trim().slice(0, MAX_DISPLAY_NAME_LENGTH);
+}
+
+export function rememberDisplayName(name: string) {
+  const trimmed = name.trim().slice(0, MAX_DISPLAY_NAME_LENGTH);
+  if (trimmed) setLocalItem(REMEMBERED_DISPLAY_NAME_KEY, trimmed);
 }
 
 export function getStoredParticipantRole(): ParticipantRole {

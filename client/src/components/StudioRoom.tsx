@@ -269,6 +269,7 @@ import {
 } from '../utils/streamScreens.ts';
 import { useToast } from './Toast.tsx';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
+import { alertGuestArrival, requestArrivalNotificationPermission } from '../utils/guestArrivalAlert.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -1037,6 +1038,8 @@ export function StudioRoom() {
       : storedUserRole;
 
   const [room, setRoom] = useState<Room | null>(null);
+  const roomNameRef = useRef('Studio');
+  roomNameRef.current = room?.name || 'Studio';
   const [myParticipant, setMyParticipant] = useState<Participant | null>(null);
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [joined, setJoined] = useState(false);
@@ -1112,6 +1115,12 @@ export function StudioRoom() {
   const [showGuestChat, setShowGuestChat] = useState(false);
   const broadcastAudioBus = useBroadcastAudioBus();
   const [showInvitePanel, setShowInvitePanel] = useState(false);
+  // Inviting is when a host starts expecting guests: ask then (from the click)
+  // to notify them about arrivals while the studio tab is in the background.
+  const openInvitePanel = useCallback(() => {
+    setShowInvitePanel(true);
+    requestArrivalNotificationPermission();
+  }, []);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatTypingIndicators, setChatTypingIndicators] = useState<ChatTypingIndicator[]>([]);
@@ -2549,6 +2558,7 @@ export function StudioRoom() {
           // Hosts might be looking at another panel: say someone is waiting to be let in.
           if (message.payload.status === 'green-room' && isStudioOperator(myParticipantRef.current)) {
             addToastRef.current(`${message.payload.name} is waiting in the green room.`, 'info');
+            alertGuestArrival(message.payload.name, roomNameRef.current);
           }
           break;
         }
@@ -5540,7 +5550,7 @@ export function StudioRoom() {
       case 'open-overlays': openSidebarTab('overlays'); return true;
       case 'open-brand': openSidebarTab('brand'); return true;
       case 'open-scenes': openSidebarTab('scenes'); return true;
-      case 'open-invite': setShowInvitePanel(true); return true;
+      case 'open-invite': openInvitePanel(); return true;
       case 'show-shortcuts': setShowShortcutHelp((current) => !current); return true;
       default: return false;
     }
@@ -6058,6 +6068,7 @@ export function StudioRoom() {
     visibleBanners.length > 0 ? 132 : 0,
     highlightedComment ? 128 : 0
   );
+  const waitingParticipants = Array.from(participants.values()).filter((participant) => participant.status === 'green-room' && participant.id !== myParticipant?.id);
   const waitingCount = Array.from(participants.values()).filter((participant) => participant.status === 'green-room').length;
   const offStageGuestStatus = !isHostOrCoHost ? myParticipant?.status : null;
   const isHeldOffStageGuest = offStageGuestStatus === 'green-room' || offStageGuestStatus === 'backstage';
@@ -6327,7 +6338,7 @@ export function StudioRoom() {
           <div style={styles.divider} />
           <span style={styles.badge}>
             <span style={styles.badgeDot} />
-            {orderedVideoItems.length} in studio
+            {orderedVideoItems.length} on stage
           </span>
           {isHostOrCoHost && waitingCount > 0 && (
             <button
@@ -6907,6 +6918,14 @@ export function StudioRoom() {
           )}
 
 
+          {isHostOrCoHost && waitingParticipants.length > 0 && (
+            <WaitingGuestsStrip
+              guests={waitingParticipants}
+              onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
+              onMoveBackstage={(participantId) => onStageAction('move-to-backstage', participantId)}
+            />
+          )}
+
           {isHostOrCoHost && backstagePrivateItems.length > 0 && (
             <BackstagePrivateRoom
               items={backstagePrivateItems}
@@ -7322,7 +7341,7 @@ export function StudioRoom() {
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
         unreadChatCount={unreadChatCount}
         onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
-        onOpenInvitePanel={isHostOrCoHost ? () => setShowInvitePanel(true) : undefined}
+        onOpenInvitePanel={isHostOrCoHost ? openInvitePanel : undefined}
         onOpenStreamDestinations={() => toggleToolPanel('streamDest')}
         onOpenSoundBoard={() => toggleToolPanel('soundBoard')}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
@@ -7469,6 +7488,54 @@ export function StudioRoom() {
         onCancel={cancelEndSession}
       />
     </div>
+  );
+}
+
+/** Hosts: guests waiting to be let in, right under the stage (as StreamYard does). */
+function WaitingGuestsStrip({
+  guests,
+  onAddToStage,
+  onMoveBackstage,
+}: {
+  guests: Participant[];
+  onAddToStage: (participantId: string) => void;
+  onMoveBackstage: (participantId: string) => void;
+}) {
+  return (
+    <section style={{ ...styles.backstageRoom, ...styles.backstageRoomCompact }} aria-label="Guests waiting to join">
+      <div style={styles.backstageRoomHeader}>
+        <span style={styles.backstageRoomTitle}>
+          <span style={styles.backstageRoomDot} />
+          Waiting
+          <span style={styles.backstageRoomCount}>{guests.length}</span>
+        </span>
+        <span style={styles.backstageRoomMeta}>Not on stream</span>
+      </div>
+      <div style={styles.backstageRoomRow}>
+        {guests.map((guest) => (
+          <div key={guest.id} style={styles.waitingGuestCard}>
+            <span style={styles.waitingGuestAvatar} aria-hidden="true">{(guest.name.trim()[0] || '?').toUpperCase()}</span>
+            <span style={styles.waitingGuestName} title={guest.name}>{guest.name}</span>
+            <button
+              type="button"
+              style={styles.waitingGuestAction}
+              onClick={() => onMoveBackstage(guest.id)}
+              aria-label={`Move ${guest.name} backstage`}
+            >
+              Backstage
+            </button>
+            <button
+              type="button"
+              style={{ ...styles.backstageRoomAddButton, ...styles.waitingGuestAdd }}
+              onClick={() => onAddToStage(guest.id)}
+              aria-label={`Add ${guest.name} to stage`}
+            >
+              Add to stage
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -8039,6 +8106,52 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#0b0f1a',
   },
   backstageRoomTileCompact: {},
+  waitingGuestCard: {
+    flex: '0 0 auto',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '4px 4px 4px 6px',
+    borderRadius: 10,
+    border: '1px solid rgba(245, 158, 11, 0.22)',
+    background: 'rgba(245, 158, 11, 0.06)',
+  },
+  waitingGuestAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: '50%',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(245, 158, 11, 0.18)',
+    color: '#fbbf24',
+    fontSize: 11,
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+  waitingGuestName: {
+    maxWidth: 140,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    fontWeight: 600,
+  },
+  waitingGuestAction: {
+    height: 28,
+    padding: '0 10px',
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    background: 'transparent',
+    color: 'var(--text-secondary)',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  waitingGuestAdd: {
+    width: 'auto',
+  },
   backstageRoomAddButton: {
     display: 'inline-flex',
     alignItems: 'center',

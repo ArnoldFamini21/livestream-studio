@@ -360,31 +360,6 @@ export function InvitePanel({
           </button>
         </div>
 
-        {/* Public watch page: the program as a plain video page, no YouTube needed. */}
-        <div style={styles.emailBox}>
-          <label style={styles.linkLabel} htmlFor="studio-watch-link">Watch page</label>
-          <div style={styles.linkRow}>
-            <input
-              id="studio-watch-link"
-              style={styles.linkInput}
-              value={watchUrl}
-              readOnly
-              onFocus={(event) => event.currentTarget.select()}
-              aria-label="Public watch page link"
-            />
-            <button
-              type="button"
-              style={{ ...styles.copyBtn, ...(copied === 'watch' ? styles.copyBtnDone : {}) }}
-              onClick={() => void handleCopy('watch', watchUrl)}
-            >
-              {copied === 'watch' ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-          <p style={styles.secureInviteText}>
-            Anyone with this link can watch the live program in their browser once you go live. When registration is enabled for this studio, viewers register first.
-          </p>
-        </div>
-
         <div style={styles.metaGrid}>
           <div style={styles.metaItem}>
             <span style={styles.metaLabel}>Room</span>
@@ -461,6 +436,31 @@ export function InvitePanel({
               {copied === 'link' ? 'Copied' : 'Copy'}
             </button>
           </div>
+        </div>
+
+        {/* Public watch page: the program as a plain video page, no YouTube needed. */}
+        <div style={styles.emailBox}>
+          <label style={styles.linkLabel} htmlFor="studio-watch-link">Watch page</label>
+          <div style={styles.linkRow}>
+            <input
+              id="studio-watch-link"
+              style={styles.linkInput}
+              value={watchUrl}
+              readOnly
+              onFocus={(event) => event.currentTarget.select()}
+              aria-label="Public watch page link"
+            />
+            <button
+              type="button"
+              style={{ ...styles.copyBtn, ...(copied === 'watch' ? styles.copyBtnDone : {}) }}
+              onClick={() => void handleCopy('watch', watchUrl)}
+            >
+              {copied === 'watch' ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <p style={styles.secureInviteText}>
+            Anyone with this link can watch the live program in their browser once you go live. When registration is enabled for this studio, viewers register first.
+          </p>
         </div>
 
         <div style={styles.coHostBox}>

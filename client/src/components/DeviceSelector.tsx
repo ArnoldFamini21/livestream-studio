@@ -7,6 +7,7 @@ import {
   type VideoQualityPresetId,
 } from '../utils/mediaPreferences.ts';
 import { VirtualBackgroundPicker } from './VirtualBackgroundPicker.tsx';
+import { setMirrorSelfView, useMirrorSelfView } from '../utils/selfViewMirror.ts';
 
 interface DeviceSelectorProps {
   audioDevices: MediaDeviceInfo[];
@@ -57,6 +58,7 @@ export function DeviceSelector({
   virtualBackgroundReady,
   virtualBackgroundError,
 }: DeviceSelectorProps) {
+  const mirrorSelfView = useMirrorSelfView();
   const panelRef = useRef<HTMLDivElement>(null);
   const [nameDraft, setNameDraft] = useState(displayName || '');
   useEffect(() => { setNameDraft(displayName || ''); }, [displayName]);
@@ -157,6 +159,21 @@ export function DeviceSelector({
             onChange={onVideoDeviceChange}
             emptyText="No cameras detected"
           />
+
+          {videoDevices.length > 0 && (
+            <label style={styles.processingOption}>
+              <span style={styles.processingLabel}>Mirror my preview</span>
+              <span style={styles.processingState}>{mirrorSelfView ? 'On' : 'Off'}</span>
+              <input
+                type="checkbox"
+                checked={mirrorSelfView}
+                onChange={(e) => setMirrorSelfView(e.target.checked)}
+                aria-label="Mirror my preview. Viewers always see the true view."
+                title="Only your own preview changes; viewers always see the true view."
+                style={styles.processingCheckbox}
+              />
+            </label>
+          )}
 
           {videoQuality && onVideoQualityChange && (
             <div style={styles.qualitySection}>

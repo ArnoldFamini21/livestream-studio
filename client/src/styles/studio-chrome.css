@@ -124,3 +124,18 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
 .watch-error { margin: 0; color: #ffb4bd; font-size: 13px; }
 .watch-header .entry-wordmark { display: inline-flex; align-items: center; gap: 8px; color: #f4f4f8; text-decoration: none; font-weight: 700; font-size: 14px; }
 .watch-header .entry-wordmark svg { width: 18px; height: 18px; }
+
+/* Go Live panel: collapsible sections with a turning chevron. */
+.sd-disclosure > summary::-webkit-details-marker { display: none; }
+.sd-disclosure > summary::after {
+  content: '';
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 0.15s ease;
+}
+.sd-disclosure[open] > summary::after { transform: rotate(225deg) translateY(-2px); }
