@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getParticipantAvatarColors } from '../utils/participantAvatar.ts';
 import { AudioLevelMeter } from './AudioLevelMeter.tsx';
+import { selfViewTransform, useMirrorSelfView } from '../utils/selfViewMirror.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 import {
   formatPeerBandwidthHealthTitle,
@@ -157,6 +158,7 @@ export function VideoTile({
   onAudioLevelChange,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const mirrorSelfView = useMirrorSelfView();
   const playbackVolume = clampVolume(volume);
   const hasAudiblePlayback = audioEnabled && playbackVolume > 0;
   const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, hasAudiblePlayback);
@@ -245,7 +247,7 @@ export function VideoTile({
             // Preserve the complete camera frame. Cropping is only intentional
             // when the operator explicitly chooses a square or circular mask.
             objectFit: !isScreenShare && (cameraShape === 'circle' || cameraShape === 'square') ? 'cover' : 'contain',
-            transform: isLocal && !isScreenShare ? 'scaleX(-1)' : 'none',
+            transform: selfViewTransform(Boolean(isLocal && !isScreenShare && mirrorSelfView)),
           } : tileStyles.hiddenVideo}
         />
       )}

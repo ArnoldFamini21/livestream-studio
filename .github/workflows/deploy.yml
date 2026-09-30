@@ -83,6 +83,13 @@ jobs:
       - name: Build media server
         run: npm run -w media-server build
 
+      # Nothing reaches production unless every suite passes.
+      - name: Typecheck all workspaces
+        run: npm run lint
+
+      - name: Run all test suites
+        run: npm run test --workspaces
+
       - name: Build client
         run: npm run -w client build
         env:

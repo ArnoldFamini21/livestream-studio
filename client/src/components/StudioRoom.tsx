@@ -125,6 +125,7 @@ import {
   type LiveSessionSummary,
 } from '../utils/liveStreamStatus.ts';
 import { getProductionExitGuardDecision } from '../utils/productionExitGuard.ts';
+import { describePendingGuestUploads, END_SESSION_UPLOAD_WAIT_MS, getEndSessionPrompt, getPendingGuestUploads } from '../utils/endSession.ts';
 import { buildApiUrl, resolveMediaHttpUrl } from '../utils/apiClient.ts';
 import { loadSavedStreamDestinations, saveStreamDestinations, serializeStreamDestinations } from '../utils/streamDestinationStorage.ts';
 import type { YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
@@ -267,6 +268,8 @@ import {
   type StreamScreenKind,
 } from '../utils/streamScreens.ts';
 import { useToast } from './Toast.tsx';
+import { ConfirmDialog } from './ConfirmDialog.tsx';
+import { alertGuestArrival, requestArrivalNotificationPermission } from '../utils/guestArrivalAlert.ts';
 
 const STUDIO_STATE_VERSION = 1;
 const INVITE_BASE_URL = import.meta.env.VITE_INVITE_BASE_URL || window.location.origin;
@@ -1035,6 +1038,8 @@ export function StudioRoom() {
       : storedUserRole;
 
   const [room, setRoom] = useState<Room | null>(null);
+  const roomNameRef = useRef('Studio');
+  roomNameRef.current = room?.name || 'Studio';
   const [myParticipant, setMyParticipant] = useState<Participant | null>(null);
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [joined, setJoined] = useState(false);
@@ -1110,6 +1115,12 @@ export function StudioRoom() {
   const [showGuestChat, setShowGuestChat] = useState(false);
   const broadcastAudioBus = useBroadcastAudioBus();
   const [showInvitePanel, setShowInvitePanel] = useState(false);
+  // Inviting is when a host starts expecting guests: ask then (from the click)
+  // to notify them about arrivals while the studio tab is in the background.
+  const openInvitePanel = useCallback(() => {
+    setShowInvitePanel(true);
+    requestArrivalNotificationPermission();
+  }, []);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatTypingIndicators, setChatTypingIndicators] = useState<ChatTypingIndicator[]>([]);
@@ -1179,6 +1190,9 @@ export function StudioRoom() {
   const [roomEnding, setRoomEnding] = useState(false);
   const [roomEndsAt, setRoomEndsAt] = useState<number | null>(null);
   const [endingCountdown, setEndingCountdown] = useState(10);
+  // Host ending the session: confirm, save the recording, let guests' uploads finish.
+  const [endSessionStep, setEndSessionStep] = useState<'closed' | 'confirm' | 'saving' | 'uploads'>('closed');
+  const endSessionUploadRef = useRef<{ sessionId: string; startedAt: number } | null>(null);
   const [liveStartedAt, setLiveStartedAt] = useState<string | null>(null);
   const [liveElapsed, setLiveElapsed] = useState(0);
   const [sessionRecordingStartedAt, setSessionRecordingStartedAt] = useState<string | null>(null);
@@ -2541,6 +2555,11 @@ export function StudioRoom() {
             next.set(message.payload.id, message.payload);
             return next;
           });
+          // Hosts might be looking at another panel: say someone is waiting to be let in.
+          if (message.payload.status === 'green-room' && isStudioOperator(myParticipantRef.current)) {
+            addToastRef.current(`${message.payload.name} is waiting in the green room.`, 'info');
+            alertGuestArrival(message.payload.name, roomNameRef.current);
+          }
           break;
         }
         case 'participant-left': {
@@ -2928,6 +2947,7 @@ export function StudioRoom() {
         case 'co-host-invite-token-request':
         case 'update-name':
         case 'end-room':
+        case 'cancel-end-room':
           break;
         default:
           assertNever(message);
@@ -3014,13 +3034,44 @@ export function StudioRoom() {
       return;
     }
     if (userRole === 'host') {
-      // Host ends the room: trigger server-side countdown for all participants
-      send({ type: 'end-room', payload: {} });
+      // One misclick must not end the show for everyone: confirm first.
+      if (endSessionStep === 'closed') setEndSessionStep('confirm');
     } else {
       // Guests just leave immediately
       cleanup(); stopMedia(); stopPublishedScreenShareRef.current(); navigate('/');
     }
   };
+
+  // Host ends the room: the server counts everyone down, then closes it.
+  const finishEndSession = useCallback(() => {
+    endSessionUploadRef.current = null;
+    setEndSessionStep('closed');
+    send({ type: 'end-room', payload: {} });
+  }, [send]);
+  const hasActiveRecording = isRecording || isLocalRecording || Boolean(sessionRecordingStartedAt);
+  const confirmEndSession = async () => {
+    const recordingSessionId = sessionRecordingSessionId;
+    if (!(canControlRecording && hasActiveRecording)) {
+      finishEndSession();
+      return;
+    }
+    // Stop and save the take first; ending the room mid-take left it unsaved.
+    setEndSessionStep('saving');
+    addToast('Stopping and saving the recording before the studio closes…', 'info');
+    await onToggleRecording();
+    if (!recordingSessionId) {
+      finishEndSession();
+      return;
+    }
+    // Guests upload their own tracks over this studio's connection; give them time.
+    endSessionUploadRef.current = { sessionId: recordingSessionId, startedAt: Date.now() };
+    setEndSessionStep('uploads');
+  };
+  const cancelEndSession = () => {
+    endSessionUploadRef.current = null;
+    setEndSessionStep('closed');
+  };
+  const keepRoomOpen = () => send({ type: 'cancel-end-room', payload: {} });
 
   const onAudioDeviceChange = async (id: string) => {
     try { const t = await switchAudioDevice(id, audioProcessing); if (t) await replaceTrack(t); }
@@ -5499,7 +5550,7 @@ export function StudioRoom() {
       case 'open-overlays': openSidebarTab('overlays'); return true;
       case 'open-brand': openSidebarTab('brand'); return true;
       case 'open-scenes': openSidebarTab('scenes'); return true;
-      case 'open-invite': setShowInvitePanel(true); return true;
+      case 'open-invite': openInvitePanel(); return true;
       case 'show-shortcuts': setShowShortcutHelp((current) => !current); return true;
       default: return false;
     }
@@ -5895,6 +5946,28 @@ export function StudioRoom() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [productionExitGuard]);
 
+  const endSessionPendingUploads = useMemo(() => (
+    endSessionStep === 'uploads'
+      ? getPendingGuestUploads(participantRecordingUploads, endSessionUploadRef.current?.sessionId ?? null, new Set(participants.keys()))
+      : []
+  ), [endSessionStep, participantRecordingUploads, participants]);
+  // Close the studio once every guest recording is in, or after the wait runs out.
+  useEffect(() => {
+    if (endSessionStep !== 'uploads') return undefined;
+    if (endSessionPendingUploads.length === 0) {
+      finishEndSession();
+      return undefined;
+    }
+    const startedAt = endSessionUploadRef.current?.startedAt ?? Date.now();
+    const timer = setTimeout(finishEndSession, Math.max(0, startedAt + END_SESSION_UPLOAD_WAIT_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [endSessionPendingUploads, endSessionStep, finishEndSession]);
+  const endSessionPrompt = getEndSessionPrompt({
+    isLive,
+    isRecording: hasActiveRecording,
+    otherParticipantCount: Math.max(0, participants.size - (myParticipant && participants.has(myParticipant.id) ? 1 : 0)),
+  });
+
   useEffect(() => {
     displayedLowerThirdRef.current = displayedLowerThird;
   }, [displayedLowerThird]);
@@ -5995,6 +6068,7 @@ export function StudioRoom() {
     visibleBanners.length > 0 ? 132 : 0,
     highlightedComment ? 128 : 0
   );
+  const waitingParticipants = Array.from(participants.values()).filter((participant) => participant.status === 'green-room' && participant.id !== myParticipant?.id);
   const waitingCount = Array.from(participants.values()).filter((participant) => participant.status === 'green-room').length;
   const offStageGuestStatus = !isHostOrCoHost ? myParticipant?.status : null;
   const isHeldOffStageGuest = offStageGuestStatus === 'green-room' || offStageGuestStatus === 'backstage';
@@ -6264,13 +6338,19 @@ export function StudioRoom() {
           <div style={styles.divider} />
           <span style={styles.badge}>
             <span style={styles.badgeDot} />
-            {orderedVideoItems.length} in studio
+            {orderedVideoItems.length} on stage
           </span>
           {isHostOrCoHost && waitingCount > 0 && (
-            <span style={styles.waitingBadge}>
+            <button
+              type="button"
+              style={{ ...styles.waitingBadge, ...styles.waitingBadgeButton }}
+              onClick={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
+              aria-label={`${waitingCount} waiting in the green room: open People to let them in`}
+              title="Open People to let them in"
+            >
               <span style={styles.waitingDot} />
               {waitingCount} waiting
-            </span>
+            </button>
           )}
           {recordingStatus.active && (
             <span style={styles.recBadge}>
@@ -6838,6 +6918,14 @@ export function StudioRoom() {
           )}
 
 
+          {isHostOrCoHost && waitingParticipants.length > 0 && (
+            <WaitingGuestsStrip
+              guests={waitingParticipants}
+              onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
+              onMoveBackstage={(participantId) => onStageAction('move-to-backstage', participantId)}
+            />
+          )}
+
           {isHostOrCoHost && backstagePrivateItems.length > 0 && (
             <BackstagePrivateRoom
               items={backstagePrivateItems}
@@ -7253,7 +7341,7 @@ export function StudioRoom() {
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
         unreadChatCount={unreadChatCount}
         onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
-        onOpenInvitePanel={isHostOrCoHost ? () => setShowInvitePanel(true) : undefined}
+        onOpenInvitePanel={isHostOrCoHost ? openInvitePanel : undefined}
         onOpenStreamDestinations={() => toggleToolPanel('streamDest')}
         onOpenSoundBoard={() => toggleToolPanel('soundBoard')}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
@@ -7363,7 +7451,7 @@ export function StudioRoom() {
             </div>
             <h2 style={styles.roomEndingTitle}>Room is ending...</h2>
             <div style={styles.roomEndingCountdown}>{endingCountdown}</div>
-            <p style={styles.roomEndingSubtitle}>The host is ending this session</p>
+            <p style={styles.roomEndingSubtitle}>{userRole === 'host' ? 'You are ending this session' : 'The host is ending this session'}</p>
             <div style={styles.roomEndingBar}>
               <div
                 style={{
@@ -7372,10 +7460,82 @@ export function StudioRoom() {
                 }}
               />
             </div>
+            {userRole === 'host' && (
+              <button type="button" className="btn-secondary" style={styles.roomEndingKeepOpen} onClick={keepRoomOpen}>
+                Keep studio open
+              </button>
+            )}
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={endSessionStep === 'confirm'}
+        title={endSessionPrompt.title}
+        message={endSessionPrompt.message}
+        confirmLabel={endSessionPrompt.confirmLabel}
+        cancelLabel="Keep studio open"
+        onConfirm={() => { void confirmEndSession(); }}
+        onCancel={cancelEndSession}
+      />
+      <ConfirmDialog
+        open={endSessionStep === 'uploads'}
+        title="Finishing guest recordings"
+        message={describePendingGuestUploads(endSessionPendingUploads)}
+        confirmLabel="End now"
+        cancelLabel="Keep studio open"
+        onConfirm={finishEndSession}
+        onCancel={cancelEndSession}
+      />
     </div>
+  );
+}
+
+/** Hosts: guests waiting to be let in, right under the stage (as StreamYard does). */
+function WaitingGuestsStrip({
+  guests,
+  onAddToStage,
+  onMoveBackstage,
+}: {
+  guests: Participant[];
+  onAddToStage: (participantId: string) => void;
+  onMoveBackstage: (participantId: string) => void;
+}) {
+  return (
+    <section style={{ ...styles.backstageRoom, ...styles.backstageRoomCompact }} aria-label="Guests waiting to join">
+      <div style={styles.backstageRoomHeader}>
+        <span style={styles.backstageRoomTitle}>
+          <span style={styles.backstageRoomDot} />
+          Waiting
+          <span style={styles.backstageRoomCount}>{guests.length}</span>
+        </span>
+        <span style={styles.backstageRoomMeta}>Not on stream</span>
+      </div>
+      <div style={styles.backstageRoomRow}>
+        {guests.map((guest) => (
+          <div key={guest.id} style={styles.waitingGuestCard}>
+            <span style={styles.waitingGuestAvatar} aria-hidden="true">{(guest.name.trim()[0] || '?').toUpperCase()}</span>
+            <span style={styles.waitingGuestName} title={guest.name}>{guest.name}</span>
+            <button
+              type="button"
+              style={styles.waitingGuestAction}
+              onClick={() => onMoveBackstage(guest.id)}
+              aria-label={`Move ${guest.name} backstage`}
+            >
+              Backstage
+            </button>
+            <button
+              type="button"
+              style={{ ...styles.backstageRoomAddButton, ...styles.waitingGuestAdd }}
+              onClick={() => onAddToStage(guest.id)}
+              aria-label={`Add ${guest.name} to stage`}
+            >
+              Add to stage
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -7528,6 +7688,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24', fontWeight: 600,
   },
   waitingDot: { width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 2s infinite' },
+  waitingBadgeButton: { border: '1px solid rgba(245, 158, 11, 0.35)', cursor: 'pointer', lineHeight: 'inherit' },
   recBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
@@ -7945,6 +8106,52 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#0b0f1a',
   },
   backstageRoomTileCompact: {},
+  waitingGuestCard: {
+    flex: '0 0 auto',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '4px 4px 4px 6px',
+    borderRadius: 10,
+    border: '1px solid rgba(245, 158, 11, 0.22)',
+    background: 'rgba(245, 158, 11, 0.06)',
+  },
+  waitingGuestAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: '50%',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(245, 158, 11, 0.18)',
+    color: '#fbbf24',
+    fontSize: 11,
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+  waitingGuestName: {
+    maxWidth: 140,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    fontWeight: 600,
+  },
+  waitingGuestAction: {
+    height: 28,
+    padding: '0 10px',
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    background: 'transparent',
+    color: 'var(--text-secondary)',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  waitingGuestAdd: {
+    width: 'auto',
+  },
   backstageRoomAddButton: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -8666,6 +8873,10 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--accent)',
     borderRadius: 2,
     transition: 'width 1s linear',
+  },
+  roomEndingKeepOpen: {
+    marginTop: 20,
+    width: '100%',
   },
   // Logo watermark
   logoWatermark: {

@@ -5,11 +5,13 @@ import {
   buildHostEntryUrl,
   clearUrlHostToken,
   getHostSession,
+  getRememberedDisplayName,
   getValidHostToken,
   isLegacyHostlessCreateResponse,
   persistLegacyHostSession,
   persistHostSession,
   readHostTokenFromHash,
+  rememberDisplayName,
   upsertSavedHostStudio,
 } from '../src/utils/hostSession.ts';
 
@@ -207,5 +209,21 @@ describe('host session links', () => {
     clearUrlHostToken();
 
     assert.equal(replacedUrl, `/join/${ROOM_ID}?role=host`);
+  });
+});
+
+describe('remembered display name', () => {
+  it('keeps the last name used in this browser, trimmed and bounded', () => {
+    assert.equal(getRememberedDisplayName(), '');
+    rememberDisplayName('  Nica  ');
+    assert.equal(getRememberedDisplayName(), 'Nica');
+    rememberDisplayName('x'.repeat(80));
+    assert.equal(getRememberedDisplayName().length, 50);
+  });
+
+  it('ignores a blank name', () => {
+    rememberDisplayName('Nica');
+    rememberDisplayName('   ');
+    assert.equal(getRememberedDisplayName(), 'Nica');
   });
 });

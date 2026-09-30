@@ -21,6 +21,7 @@
     "docker:logs": "docker compose logs -f",
     "production:check": "node scripts/check-production.mjs",
     "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces && node --test scripts/*.test.mjs",
     "lint": "npm run lint --workspaces"
   },
   "devDependencies": {

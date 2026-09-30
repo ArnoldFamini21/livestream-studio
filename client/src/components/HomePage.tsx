@@ -19,7 +19,7 @@ import {
   upsertSavedHostStudio,
   type SavedHostStudio,
 } from '../utils/hostSession.ts';
-import { getApiErrorMessage, getJson } from '../utils/apiClient.ts';
+import { ApiRequestError, getApiErrorMessage, getJson } from '../utils/apiClient.ts';
 import {
   fetchAccountSession,
   loginAccount,
@@ -334,6 +334,7 @@ export function HomePage() {
   const recordingLibrary = useRecordingLibrary();
   const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
   const lastAccountWorkspaceStudioCatalogSyncKey = useRef('');
+  const missingRecordingCatalogRoomsRef = useRef(new Set<string>());
 
   const [error, setError] = useState<string | null>(null);
 
@@ -641,7 +642,10 @@ export function HomePage() {
       setServerRecordingCatalogLoading(false);
       return;
     }
-    const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken));
+    // A studio the server no longer knows (ended, or lost on a restart without
+    // a database) answers 404 every time; stop asking for it this visit.
+    const missingRooms = missingRecordingCatalogRoomsRef.current;
+    const hostAccessibleStudios = dashboardStudios.filter((room) => getValidHostToken(room.hostToken) && !missingRooms.has(room.id));
     if (hostAccessibleStudios.length === 0) {
       setServerRecordingCatalog([]);
       setServerRecordingCatalogError(null);
@@ -659,6 +663,11 @@ export function HomePage() {
       .then((results) => {
         if (cancelled) return;
         const byId = new Map<string, RecordingCatalogEntry>();
+        results.forEach((result, index) => {
+          if (result.status === 'rejected' && result.reason instanceof ApiRequestError && result.reason.status === 404) {
+            missingRooms.add(hostAccessibleStudios[index].id);
+          }
+        });
         for (const result of results) {
           if (result.status !== 'fulfilled') continue;
           for (const recording of result.value.recordings) {
@@ -668,7 +677,9 @@ export function HomePage() {
         setServerRecordingCatalog(
           Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
         );
-        const failedCount = results.filter((result) => result.status === 'rejected').length;
+        const failedCount = results.filter((result) => (
+          result.status === 'rejected' && !(result.reason instanceof ApiRequestError && result.reason.status === 404)
+        )).length;
         setServerRecordingCatalogError(failedCount > 0
           ? `Could not refresh cloud recordings for ${failedCount} saved studio${failedCount === 1 ? '' : 's'}.`
           : null
@@ -1407,7 +1418,7 @@ export function HomePage() {
         </nav>
         <div className="workspace-nav-bottom">
           <button aria-current={workspaceView === 'settings' ? 'page' : undefined} onClick={() => setWorkspaceView('settings')}><StudioIcon name="settings" />Settings & account</button>
-          <div className="workspace-attribution">Powered by<a href="https://ArnoldFamily.com" target="_blank" rel="noopener noreferrer">ArnoldFamily.com <span>↗</span></a></div>
+          <div className="workspace-attribution">Powered by<a href="https://arnoldfamini.com" target="_blank" rel="noopener noreferrer">ArnoldFamini.com <span>↗</span></a></div>
         </div>
       </aside>
       <div className="workspace-body">
@@ -1946,6 +1957,15 @@ export function HomePage() {
               {progressMessage && !error && (
                 <p className="ws-progress" style={styles.progress}>{progressMessage}</p>
               )}
+              {!error && !loading && !schedulingLoading && (!roomName.trim() || !hostName.trim()) && (
+                <p className="ws-hint" style={styles.createHint}>
+                  {!roomName.trim() && !hostName.trim()
+                    ? 'Add a studio name and your name to continue.'
+                    : !roomName.trim()
+                      ? 'Add a studio name to continue.'
+                      : 'Add your name to continue.'}
+                </p>
+              )}
 
               <button
                 className="btn-primary ws-button" style={styles.button}
@@ -2203,6 +2223,12 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 0,
     marginBottom: 8,
     lineHeight: 1.4,
+  },
+  createHint: {
+    fontSize: 12,
+    color: 'var(--text-muted)',
+    marginTop: 0,
+    marginBottom: 8,
   },
   progress: {
     fontSize: 12,

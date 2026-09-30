@@ -347,155 +347,6 @@ export function StreamDestinations({
       </div>
 
       <div style={styles.body}>
-        <div style={styles.orientationCard}>
-          <div style={styles.orientationHeader}>
-            <span style={styles.orientationTitle}>Output Orientation</span>
-            <span style={styles.orientationHint}>{selectedOrientation.detail}</span>
-          </div>
-          <div style={styles.orientationRow}>
-            {ORIENTATION_OPTIONS.map((option) => {
-              const active = option.value === broadcastOrientation;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  style={{
-                    ...styles.orientationBtn,
-                    ...(active ? styles.orientationBtnActive : {}),
-                    ...(isLive ? styles.orientationBtnDisabled : {}),
-                  }}
-                  onClick={() => onBroadcastOrientationChange(option.value)}
-                  disabled={isLive}
-                >
-                  <span style={styles.orientationLabel}>{option.label}</span>
-                  <span style={styles.orientationDetail}>{option.detail}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div style={styles.outputCard}>
-          <div style={styles.outputHeader}>
-            <span style={styles.outputTitle}>Output Quality</span>
-            <span style={styles.outputHint}>{selectedOutputSummary}</span>
-          </div>
-          <div style={styles.outputPresetGrid}>
-            {RTMP_RELAY_OUTPUT_PRESETS.map((preset) => {
-              const active = preset.id === relayOutputPreset;
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  style={{
-                    ...styles.outputPresetBtn,
-                    ...(active ? styles.outputPresetBtnActive : {}),
-                    ...(isLive ? styles.outputPresetBtnDisabled : {}),
-                  }}
-                  onClick={() => onRelayOutputPresetChange(preset.id)}
-                  disabled={isLive}
-                >
-                  <span style={styles.outputPresetLabel}>{preset.label}</span>
-                  <span style={styles.outputPresetDetail}>{preset.detail}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {relayReadiness && (
-          <div style={{
-            ...styles.relayReadyCard,
-            borderColor: relayStatus.border,
-            background: relayStatus.background,
-          }}>
-            <div style={styles.relayReadyTop}>
-              <div>
-                <span style={styles.relayReadyLabel}>Media Relay</span>
-                <p style={styles.relayReadyDetail}>{relayReadiness.message}</p>
-              </div>
-              <span style={{ ...styles.relayReadyBadge, color: relayStatus.color, borderColor: relayStatus.border }}>
-                {relayStatus.label}
-              </span>
-            </div>
-            {relayReadiness.status === 'unavailable' && onRetryRelayReadiness && !isLive && (
-              <button
-                type="button"
-                className="btn-secondary"
-                style={styles.retryRelayBtn}
-                onClick={onRetryRelayReadiness}
-              >
-                Retry Check
-              </button>
-            )}
-          </div>
-        )}
-
-        {destinations.length > 0 && (
-          <div style={{ ...styles.preflight, ...(canGoLive ? styles.preflightReady : styles.preflightWarn) }}>
-            <div style={styles.preflightTop}>
-              <span style={styles.preflightLabel}>{canGoLive ? 'Ready to stream' : 'Needs setup'}</span>
-              <span style={styles.preflightCount}>{enabledCount}/{MAX_ENABLED_DESTINATIONS} enabled</span>
-            </div>
-            {preflightIssue && <div style={styles.preflightIssue}>{preflightIssue}</div>}
-          </div>
-        )}
-
-        <div style={styles.checklistCard}>
-          <div style={styles.checklistHeader}>
-            <div>
-              <span style={styles.checklistTitle}>Go Live Checklist</span>
-              <p style={styles.checklistSubtitle}>
-                {livePreflight.blockedCount > 0
-                  ? `${livePreflight.blockedCount} blocked item${livePreflight.blockedCount === 1 ? '' : 's'}`
-                  : livePreflight.warningCount > 0
-                    ? `${livePreflight.warningCount} item${livePreflight.warningCount === 1 ? '' : 's'} to review`
-                    : 'All required checks are ready'}
-              </p>
-            </div>
-            <span style={{
-              ...styles.checklistBadge,
-              color: getPreflightStatusColor(livePreflight.status),
-              borderColor: getPreflightStatusBorder(livePreflight.status),
-              background: getPreflightStatusBackground(livePreflight.status),
-            }}>
-              {livePreflight.label}
-            </span>
-          </div>
-          <div style={styles.checklistList}>
-            {livePreflight.items.map((item) => (
-              <div key={item.id} style={styles.checklistItem}>
-                <span style={{ ...styles.checklistDot, background: getPreflightStatusColor(item.status) }} />
-                <div style={styles.checklistBody}>
-                  <div style={styles.checklistTopLine}>
-                    <span style={styles.checklistItemLabel}>{item.label}</span>
-                    <span style={{ ...styles.checklistItemStatus, color: getPreflightStatusColor(item.status) }}>
-                      {getPreflightStatusLabel(item.status)}
-                    </span>
-                  </div>
-                  <p style={styles.checklistDetail}>{item.detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div style={styles.screenSection}>
-          <div style={styles.screenHeader}>
-            <div>
-              <span style={styles.screenTitle}>Stream Screens</span>
-              <p style={styles.screenSubtitle}>{activeStreamScreenKind ? `${activeStreamScreenKind} screen on stage` : 'No screen on stage'}</p>
-            </div>
-            {activeStreamScreenKind && (
-              <button type="button" className="btn-ghost" style={styles.screenHeaderClearBtn} onClick={onClearStreamScreen}>
-                Clear
-              </button>
-            )}
-          </div>
-          {renderStreamScreenCard('starting', 'Starting')}
-          {renderStreamScreenCard('ending', 'Ending')}
-        </div>
-
         {isLive && relayStats && (
           <div style={styles.healthCard}>
             <div style={styles.healthTop}>
@@ -808,6 +659,16 @@ export function StreamDestinations({
           </button>
         )}
 
+        {!isLive && (
+          <div style={{ ...styles.preflight, ...(canGoLive ? styles.preflightReady : styles.preflightWarn) }}>
+            <div style={styles.preflightTop}>
+              <span style={styles.preflightLabel}>{canGoLive ? 'Ready to stream' : 'Needs setup'}</span>
+              <span style={styles.preflightCount}>{enabledCount}/{MAX_ENABLED_DESTINATIONS} enabled</span>
+            </div>
+            {preflightIssue && <div style={styles.preflightIssue}>{preflightIssue}</div>}
+          </div>
+        )}
+
         {/* Go Live button */}
         <div style={styles.liveSection}>
           {isLive ? (
@@ -827,6 +688,160 @@ export function StreamDestinations({
             </button>
           )}
         </div>
+
+        {/* Details that rarely change sit below the controls used for every show. */}
+        <details className="sd-disclosure" style={styles.disclosure}>
+          <summary style={{ ...styles.checklistHeader, ...styles.disclosureSummary }}>
+            <div>
+              <span style={styles.checklistTitle}>Go Live Checklist</span>
+              <p style={styles.checklistSubtitle}>
+                {livePreflight.blockedCount > 0
+                  ? `${livePreflight.blockedCount} blocked item${livePreflight.blockedCount === 1 ? '' : 's'}`
+                  : livePreflight.warningCount > 0
+                    ? `${livePreflight.warningCount} item${livePreflight.warningCount === 1 ? '' : 's'} to review`
+                    : 'All required checks are ready'}
+              </p>
+            </div>
+            <span style={{
+              ...styles.checklistBadge,
+              color: getPreflightStatusColor(livePreflight.status),
+              borderColor: getPreflightStatusBorder(livePreflight.status),
+              background: getPreflightStatusBackground(livePreflight.status),
+            }}>
+              {livePreflight.label}
+            </span>
+          </summary>
+          <div style={{ ...styles.checklistList, marginTop: 10 }}>
+            {livePreflight.items.map((item) => (
+              <div key={item.id} style={styles.checklistItem}>
+                <span style={{ ...styles.checklistDot, background: getPreflightStatusColor(item.status) }} />
+                <div style={styles.checklistBody}>
+                  <div style={styles.checklistTopLine}>
+                    <span style={styles.checklistItemLabel}>{item.label}</span>
+                    <span style={{ ...styles.checklistItemStatus, color: getPreflightStatusColor(item.status) }}>
+                      {getPreflightStatusLabel(item.status)}
+                    </span>
+                  </div>
+                  <p style={styles.checklistDetail}>{item.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+
+        <details className="sd-disclosure" style={styles.disclosure}>
+          <summary style={styles.disclosureSummary}>
+            <span style={styles.disclosureTitle}>Output settings</span>
+            <span style={styles.disclosureHint}>{selectedOutputPreset.label} · {selectedOrientation.detail}</span>
+          </summary>
+          <div style={styles.disclosureBody}>
+        <div style={styles.orientationCard}>
+          <div style={styles.orientationHeader}>
+            <span style={styles.orientationTitle}>Output Orientation</span>
+            <span style={styles.orientationHint}>{selectedOrientation.detail}</span>
+          </div>
+          <div style={styles.orientationRow}>
+            {ORIENTATION_OPTIONS.map((option) => {
+              const active = option.value === broadcastOrientation;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  style={{
+                    ...styles.orientationBtn,
+                    ...(active ? styles.orientationBtnActive : {}),
+                    ...(isLive ? styles.orientationBtnDisabled : {}),
+                  }}
+                  onClick={() => onBroadcastOrientationChange(option.value)}
+                  disabled={isLive}
+                >
+                  <span style={styles.orientationLabel}>{option.label}</span>
+                  <span style={styles.orientationDetail}>{option.detail}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={styles.outputCard}>
+          <div style={styles.outputHeader}>
+            <span style={styles.outputTitle}>Output Quality</span>
+            <span style={styles.outputHint}>{selectedOutputSummary}</span>
+          </div>
+          <div style={styles.outputPresetGrid}>
+            {RTMP_RELAY_OUTPUT_PRESETS.map((preset) => {
+              const active = preset.id === relayOutputPreset;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  style={{
+                    ...styles.outputPresetBtn,
+                    ...(active ? styles.outputPresetBtnActive : {}),
+                    ...(isLive ? styles.outputPresetBtnDisabled : {}),
+                  }}
+                  onClick={() => onRelayOutputPresetChange(preset.id)}
+                  disabled={isLive}
+                >
+                  <span style={styles.outputPresetLabel}>{preset.label}</span>
+                  <span style={styles.outputPresetDetail}>{preset.detail}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {relayReadiness && (
+          <div style={{
+            ...styles.relayReadyCard,
+            borderColor: relayStatus.border,
+            background: relayStatus.background,
+          }}>
+            <div style={styles.relayReadyTop}>
+              <div>
+                <span style={styles.relayReadyLabel}>Media Relay</span>
+                <p style={styles.relayReadyDetail}>{relayReadiness.message}</p>
+              </div>
+              <span style={{ ...styles.relayReadyBadge, color: relayStatus.color, borderColor: relayStatus.border }}>
+                {relayStatus.label}
+              </span>
+            </div>
+            {relayReadiness.status === 'unavailable' && onRetryRelayReadiness && !isLive && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={styles.retryRelayBtn}
+                onClick={onRetryRelayReadiness}
+              >
+                Retry Check
+              </button>
+            )}
+          </div>
+        )}
+          </div>
+        </details>
+
+        <details className="sd-disclosure" style={styles.disclosure}>
+          <summary style={styles.disclosureSummary}>
+            <span style={styles.disclosureTitle}>Stream screens</span>
+            <span style={styles.disclosureHint}>{activeStreamScreenKind ? `${activeStreamScreenKind} screen on stage` : 'Starting and ending'}</span>
+          </summary>
+          <div style={styles.disclosureBody}>
+        <div style={styles.screenSection}>
+          <div style={styles.screenHeader}>
+            <div>
+              <span style={styles.screenTitle}>Stream Screens</span>
+              <p style={styles.screenSubtitle}>{activeStreamScreenKind ? `${activeStreamScreenKind} screen on stage` : 'No screen on stage'}</p>
+            </div>
+            {activeStreamScreenKind && (
+              <button type="button" className="btn-ghost" style={styles.screenHeaderClearBtn} onClick={onClearStreamScreen}>
+                Clear
+              </button>
+            )}
+          </div>
+          {renderStreamScreenCard('starting', 'Starting')}
+          {renderStreamScreenCard('ending', 'Ending')}
+        </div>
+          </div>
+        </details>
       </div>
     </div>
   );
@@ -1102,7 +1117,11 @@ const styles: Record<string, React.CSSProperties> = {
   preflightLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
   preflightCount: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' },
   preflightIssue: { fontSize: 11, color: '#fbbf24', lineHeight: 1.35 },
-  checklistCard: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 9 },
+  disclosure: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' },
+  disclosureSummary: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', listStyle: 'none' },
+  disclosureTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
+  disclosureHint: { marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)', textAlign: 'right' },
+  disclosureBody: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 },
   checklistHeader: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
   checklistTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
   checklistSubtitle: { margin: '2px 0 0', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
@@ -1199,7 +1218,7 @@ const styles: Record<string, React.CSSProperties> = {
   formError: { fontSize: 11, color: '#fca5a5', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 6, padding: '7px 9px', lineHeight: 1.35 },
   formActions: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 },
   addBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13, padding: '10px', width: '100%' },
-  liveSection: { marginTop: 'auto', paddingTop: 8 },
+  liveSection: { paddingTop: 4, paddingBottom: 4 },
   liveBtn: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 14, fontWeight: 600, padding: '12px 16px' },
   liveDotAnim: { width: 10, height: 10, borderRadius: '50%', background: 'white', animation: 'livePulse 1.5s infinite' },
 };
