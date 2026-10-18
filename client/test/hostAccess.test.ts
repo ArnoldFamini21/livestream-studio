@@ -7,12 +7,10 @@ import {
 } from '../src/utils/hostAccess.ts';
 
 const originalFetch = globalThis.fetch;
-const originalWarn = console.warn;
 const VALID_HOST_TOKEN = 'RecoveredHostToken_1234567890';
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  console.warn = originalWarn;
 });
 
 describe('created room host access resolution', () => {
@@ -22,140 +20,33 @@ describe('created room host access resolution', () => {
       called = true;
       throw new Error('recovery should not be called');
     };
-
     const room: CreatedRoomResponse = {
-      id: 'token-room',
-      name: 'Token room',
-      hostName: 'Arnold',
-      hostToken: VALID_HOST_TOKEN,
+      id: 'token-room', name: 'Token room', hostName: 'Arnold', hostToken: VALID_HOST_TOKEN,
     };
-
     assert.equal(hasCreatedRoomDetails(room), true);
     const result = await resolveCreatedRoomHostAccess(room);
-
     assert.equal(result.legacyHostless, false);
     assert.equal(result.room.hostToken, VALID_HOST_TOKEN);
     assert.equal(called, false);
   });
 
-  it('recovers host tokens when a modern server can restore access', async () => {
-    let requestedUrl = '';
-    globalThis.fetch = async (input) => {
-      requestedUrl = String(input);
-      return new Response(JSON.stringify({
-        id: 'stripped-room',
-        name: 'Recovered room',
-        hostName: 'Arnold',
-        hostToken: VALID_HOST_TOKEN,
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    };
-
-    const room: CreatedRoomResponse = {
-      id: 'stripped-room',
-      name: 'Stripped room',
-      hostName: 'Arnold',
-    };
-
-    assert.equal(hasCreatedRoomDetails(room), true);
-    const result = await resolveCreatedRoomHostAccess(room);
-
-    assert.equal(requestedUrl, '/api/rooms/stripped-room/host-access');
-    assert.equal(result.legacyHostless, false);
-    assert.equal(result.room.name, 'Recovered room');
-    assert.equal(result.room.hostToken, VALID_HOST_TOKEN);
-  });
-
-  it('recovers host tokens before using same-tab legacy fallback', async () => {
-    let requestedUrl = '';
-    globalThis.fetch = async (input) => {
-      requestedUrl = String(input);
-      return new Response(JSON.stringify({
-        id: 'legacy-immediate-room',
-        name: 'Recovered legacy room',
-        hostName: 'Arnold',
-        hostToken: VALID_HOST_TOKEN,
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    };
-
-    const room: CreatedRoomResponse = {
-      id: 'legacy-immediate-room',
-      name: 'Legacy immediate room',
-      hostId: '',
-      coHostIds: [],
-      hostName: 'Arnold',
-    };
-
-    assert.equal(hasCreatedRoomDetails(room), true);
-    const result = await resolveCreatedRoomHostAccess(room, { preferLegacyFallback: true });
-
-    assert.equal(requestedUrl, '/api/rooms/legacy-immediate-room/host-access');
-    assert.equal(result.legacyHostless, false);
-    assert.equal(result.room.id, 'legacy-immediate-room');
-    assert.equal(result.room.name, 'Recovered legacy room');
-    assert.equal(result.room.hostToken, VALID_HOST_TOKEN);
-  });
-
-  it('can enter same-tab legacy host mode immediately for create-room responses', async () => {
+  it('fails closed for missing or malformed private host credentials', async () => {
     let called = false;
     globalThis.fetch = async () => {
       called = true;
-      throw new Error('recovery should not be called');
+      throw new Error('an IP-based recovery must not be attempted');
     };
-
-    const room: CreatedRoomResponse = {
-      id: 'legacy-immediate-entry-room',
-      name: 'Legacy immediate entry room',
-      hostId: '',
-      coHostIds: [],
-      hostName: 'Arnold',
-    };
-
-    assert.equal(hasCreatedRoomDetails(room), true);
-    const result = await resolveCreatedRoomHostAccess(room, {
-      preferLegacyFallback: true,
-      recoverBeforeLegacyFallback: false,
-    });
-
+    for (const hostToken of [undefined, '', 'short', 12345, {}]) {
+      await assert.rejects(resolveCreatedRoomHostAccess({
+        id: 'stripped-room', name: 'Stripped room', hostToken,
+      }), /private host credential/);
+    }
     assert.equal(called, false);
-    assert.equal(result.legacyHostless, true);
-    assert.equal(result.room.id, 'legacy-immediate-entry-room');
-    assert.equal(result.room.hostToken, undefined);
   });
 
-  it('falls back to same-tab legacy host mode when old servers have no recovery route', async () => {
-    let requestedUrl = '';
-    console.warn = () => {};
-    globalThis.fetch = async (input) => {
-      requestedUrl = String(input);
-      return new Response('<!doctype html><pre>Cannot POST /host-access</pre>', {
-        status: 404,
-        headers: { 'content-type': 'text/html' },
-      });
-    };
-
-    const room: CreatedRoomResponse = {
-      id: 'legacy-room',
-      name: 'Legacy room',
-      hostId: '',
-      coHostIds: [],
-      hostName: 'Arnold',
-      settings: {
-        passwordProtected: false,
-      },
-    };
-
-    assert.equal(hasCreatedRoomDetails(room), true);
-    const result = await resolveCreatedRoomHostAccess(room);
-
-    assert.equal(requestedUrl, '/api/rooms/legacy-room/host-access');
-    assert.equal(result.legacyHostless, true);
-    assert.equal(result.room.id, 'legacy-room');
-    assert.equal(result.room.hostToken, undefined);
+  it('rejects a legacy hostless response instead of accepting a local host marker', async () => {
+    await assert.rejects(resolveCreatedRoomHostAccess({
+      id: 'legacy-room', name: 'Legacy room', hostId: '', coHostIds: [], hostName: 'Arnold',
+    }), /private host credential/);
   });
 });

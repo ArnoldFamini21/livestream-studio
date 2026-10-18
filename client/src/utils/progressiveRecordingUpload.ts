@@ -351,6 +351,7 @@ export function createProgressiveRecordingUploader(
 
   const sendChunk = async (id: string, track: TrackUpload, blob: Blob, end: number, final: boolean) => {
     const offset = track.uploadedBytes;
+    const sequence = track.sequence;
     const chunk = blob.slice(offset, end, track.source.mimeType);
     const query = `?sequence=${track.sequence}&offset=${offset}${final ? '&final=1' : ''}`;
     try {
@@ -362,11 +363,17 @@ export function createProgressiveRecordingUploader(
       track.lastSentAt = now();
       emit();
     } catch (error) {
-      if (error instanceof ProgressiveUploadHttpError && error.status === 409) {
+      if (
+        error instanceof ProgressiveUploadHttpError && error.status === 409 &&
+        ['RECORDING_CHUNK_OUT_OF_ORDER', 'RECORDING_CHUNK_OFFSET_MISMATCH'].includes(error.code)
+      ) {
         await reconcile(id);
         if (track.uploadedBytes > blob.size) {
           throw new Error(`${track.source.label}: the server has more bytes than this recording`);
         }
+        // A conflict without a changed server position cannot be resolved by
+        // immediately sending the same chunk again. Yield to bounded backoff.
+        if (track.uploadedBytes === offset && track.sequence === sequence) throw error;
         return;
       }
       throw error;
@@ -515,7 +522,10 @@ export function createProgressiveRecordingUploader(
         const sessionLost = recoverLostSession(error);
         if (
           attempt >= finishAttempts ||
-          (!sessionLost && error instanceof ProgressiveUploadHttpError && [400, 403, 413].includes(error.status))
+          (!sessionLost && error instanceof ProgressiveUploadHttpError && (
+            [400, 403, 413].includes(error.status) ||
+            (error.status === 409 && ['RECORDING_TRACK_COMPLETE', 'RECORDING_TRACK_WRITE_FAILED'].includes(error.code))
+          ))
         ) {
           status = 'error';
           emit();

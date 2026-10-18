@@ -12,7 +12,6 @@ import {
   buildHostEntryUrl,
   getValidHostToken,
   HOST_STUDIOS_STORAGE_KEY,
-  persistLegacyHostSession,
   persistHostSession,
   readSavedHostStudios,
   removeSavedHostStudio,
@@ -371,17 +370,9 @@ export function HomePage() {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
       }
-      const { room } = await resolveCreatedRoomHostAccess(createdRoom, {
-        preferLegacyFallback: true,
-        recoverBeforeLegacyFallback: false,
-      });
+      const { room } = await resolveCreatedRoomHostAccess(createdRoom);
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
-      if (!hostToken) {
-        persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
-        navigate(buildHostEntryPath(room.id));
-        return;
-      }
       // Scoped per room so old tokens don't leak across rooms.
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
       const savedRoom = toSavedScheduledRoom(room, savedHostName, hostToken);
@@ -425,11 +416,6 @@ export function HomePage() {
       const { room } = await resolveCreatedRoomHostAccess(createdRoom);
       const savedHostName = room.hostName || hostName;
       const hostToken = getValidHostToken(room.hostToken);
-      if (!hostToken) {
-        persistLegacyHostSession({ roomId: room.id, hostName: savedHostName });
-        navigate(buildHostEntryPath(room.id));
-        return;
-      }
       persistHostSession({ roomId: room.id, hostName: savedHostName, hostToken });
       const savedRoom = toSavedScheduledRoom(room, savedHostName, hostToken);
       const nextStudios = upsertSavedScheduledStudio(savedRoom);

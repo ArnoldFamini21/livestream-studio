@@ -165,4 +165,31 @@ describe('room routes', () => {
     assert.equal(invalidResponse.status, 400);
     assert.equal(invalid.code, 'REGISTRANT_EMAIL_INVALID');
   });
+
+  it('does not disclose a host token to a caller on the creator network or a forged forwarded address', async () => {
+    const creatorIp = '198.51.100.219';
+    const createResponse = await fetch(`${baseUrl}/api/rooms`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': creatorIp },
+      body: JSON.stringify({ name: 'Private recovery room', hostName: 'Arnold' }),
+    });
+    assert.equal(createResponse.status, 201);
+    const room = await createResponse.json();
+
+    const rejected = await fetch(`${baseUrl}/api/rooms/${room.id}/host-access`, {
+      method: 'POST',
+      headers: { 'x-forwarded-for': creatorIp },
+    });
+    assert.equal(rejected.status, 403);
+    const error = await rejected.json();
+    assert.equal(error.code, 'HOST_TOKEN_INVALID');
+    assert.equal(error.hostToken, undefined);
+
+    const recovered = await fetch(`${baseUrl}/api/rooms/${room.id}/host-access`, {
+      method: 'POST',
+      headers: { 'x-host-token': room.hostToken, 'x-forwarded-for': '198.51.100.220' },
+    });
+    assert.equal(recovered.status, 200);
+    assert.equal((await recovered.json()).hostToken, room.hostToken);
+  });
 });

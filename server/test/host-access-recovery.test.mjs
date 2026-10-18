@@ -7,38 +7,33 @@ function uniqueCreatorIp(label) {
 }
 
 describe('host access recovery', () => {
-  it('recovers the host token for the original creator before the room is joined', () => {
-    const creatorIp = uniqueCreatorIp('creator');
-    const { room, hostToken } = createRoom('Recovery test', 'Arnold', { creatorIp });
-
-    const result = recoverHostAccess(room.id, creatorIp);
-
+  it('returns host details only for a holder of the private credential', () => {
+    const { room, hostToken } = createRoom('Credential recovery test', 'Arnold', {
+      creatorIp: uniqueCreatorIp('owner'),
+    });
+    const result = recoverHostAccess(room.id, hostToken);
     assert.equal(result.status, 'ok');
-    assert.equal(result.status === 'ok' ? result.hostToken : '', hostToken);
-    assert.equal(result.status === 'ok' ? result.room.id : '', room.id);
+    assert.equal(result.hostToken, hostToken);
+    assert.equal(result.room.id, room.id);
   });
 
-  it('does not recover host access for a different creator IP', () => {
-    const creatorIp = uniqueCreatorIp('owner');
-    const { room } = createRoom('Recovery forbidden test', 'Arnold', { creatorIp });
-
-    assert.deepEqual(recoverHostAccess(room.id, uniqueCreatorIp('attacker')), { status: 'forbidden' });
+  it('never exchanges the creator IP or a missing credential for the private host token', () => {
+    const creatorIp = uniqueCreatorIp('shared-network');
+    const { room } = createRoom('Shared network recovery test', 'Arnold', { creatorIp });
+    for (const claimedCredential of [creatorIp, undefined, '', 'wrong-token']) {
+      assert.deepEqual(recoverHostAccess(room.id, claimedCredential), { status: 'forbidden' });
+    }
   });
 
-  it('does not recover host access after the room has been joined', () => {
-    const creatorIp = uniqueCreatorIp('joined');
-    const { room } = createRoom('Recovery joined test', 'Arnold', { creatorIp });
-    const state = getRooms().get(room.id);
-    assert.ok(state);
-    state.hasBeenJoined = true;
-
-    assert.deepEqual(recoverHostAccess(room.id, creatorIp), { status: 'already_joined' });
+  it('allows a legitimate credential holder to recover details after joining', () => {
+    const { room, hostToken } = createRoom('Joined credential recovery test', 'Arnold', {
+      creatorIp: uniqueCreatorIp('joined'),
+    });
+    getRooms().get(room.id).hasBeenJoined = true;
+    assert.equal(recoverHostAccess(room.id, hostToken).status, 'ok');
   });
 
-  it('expires recovery for old unjoined rooms', () => {
-    const creatorIp = uniqueCreatorIp('expired');
-    const { room } = createRoom('Recovery expired test', 'Arnold', { creatorIp });
-
-    assert.deepEqual(recoverHostAccess(room.id, creatorIp, Number.MAX_SAFE_INTEGER), { status: 'expired' });
+  it('returns not found for an unknown room', () => {
+    assert.deepEqual(recoverHostAccess('unknown-recovery-room', 'any-token'), { status: 'not_found' });
   });
 });

@@ -30,6 +30,11 @@ export function shouldUseSfuMedia(input: SfuEligibilityInput): boolean {
   return onStageCount >= threshold;
 }
 
+/** A signaling rejoin changes the authenticated SFU identity even at the same stage size. */
+export function getSfuSessionParticipantId(input: SfuEligibilityInput): string | null {
+  return shouldUseSfuMedia(input) ? input.localParticipant?.id || null : null;
+}
+
 /**
  * Prefer each live SFU media kind independently and retain mesh only as a
  * per-track fallback. Returning one combined stream keeps every existing

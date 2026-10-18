@@ -7,6 +7,7 @@ import {
   createEnhancedAudioStream,
   type EnhancedAudioStream,
 } from '../utils/audioEnhancement.ts';
+import { replaceFallbackMediaTrack } from '../utils/mediaDeviceFallback.ts';
 import {
   createVideoTrackConstraints,
   getRecommendedVideoQualityPresetId,
@@ -510,21 +511,12 @@ export function useMediaDevices() {
                 enhancedAudio.cleanup({ stopSource: true });
                 throw new Error('Fallback microphone did not return an audio track.');
               }
-              const nextEnabled = publishedAudioTrack?.enabled ?? true;
-              newTrack.enabled = nextEnabled;
-              if (newSourceTrack && newSourceTrack !== newTrack) {
-                newSourceTrack.enabled = nextEnabled;
-              }
-              if (publishedAudioTrack) {
-                streamRef.current.removeTrack(publishedAudioTrack);
-                publishedAudioTrack.stop();
-              }
               previousEnhancedAudio?.cleanup({ stopSource: true });
               enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
-              streamRef.current.addTrack(newTrack);
+              const nextEnabled = replaceFallbackMediaTrack(streamRef.current, publishedAudioTrack, newTrack, newSourceTrack);
               publishStreamUpdate();
               setSelectedAudioDeviceId(fallbackAudio.deviceId);
-              setAudioEnabled(true);
+              setAudioEnabled(nextEnabled);
 
               (newSourceTrack || newTrack).onended = () => {
                 setAudioEnabled(false);
@@ -552,11 +544,10 @@ export function useMediaDevices() {
                 video: createVideoTrackConstraints(fallbackVideo.deviceId, videoQualityRef.current),
               });
               const newTrack = newStream.getVideoTracks()[0];
-              streamRef.current.removeTrack(videoTrack);
-              streamRef.current.addTrack(newTrack);
+              const nextEnabled = replaceFallbackMediaTrack(streamRef.current, videoTrack, newTrack);
               publishStreamUpdate();
               setSelectedVideoDeviceId(fallbackVideo.deviceId);
-              setVideoEnabled(true);
+              setVideoEnabled(nextEnabled);
 
               newTrack.onended = () => {
                 setVideoEnabled(false);

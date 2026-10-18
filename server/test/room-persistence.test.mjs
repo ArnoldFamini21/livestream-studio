@@ -294,7 +294,7 @@ describe('signaling room snapshot restore', () => {
       assert.equal(roomState.participants.size, 0);
       assert.equal(roomState.registrants.size, 1);
 
-      const recovery = recoverHostAccess(snapshot.room.id, snapshot.creatorIp);
+      const recovery = recoverHostAccess(snapshot.room.id, snapshot.hostToken);
       assert.equal(recovery.status, 'ok');
       assert.equal(recovery.status === 'ok' ? recovery.hostToken : '', snapshot.hostToken);
 

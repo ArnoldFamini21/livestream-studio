@@ -1,7 +1,7 @@
 import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
 import { countUnreadChatMessages } from '../utils/chatUnread.ts';
 import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
-import { withLocalJoinMedia } from '../utils/joinMediaState.ts';
+import { applyParticipantMediaState, withLocalJoinMedia, withLocalMediaChoice } from '../utils/joinMediaState.ts';
 import { CONTENT_EXIT_DURATION_MS, measureStageTiles, playStageFlip, STAGE_FLIP_DURATION_MS, type StageTileRects } from '../utils/stageFlip.ts';
 import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraSize } from '../utils/presentationLayout.ts';
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
@@ -26,12 +26,13 @@ import { useWebRTC } from '../hooks/useWebRTC.ts';
 import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
 import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
 import { SfuSocketSession } from '../utils/sfuSocket.ts';
-import { mergeSfuMediaWithMeshFallback, shouldUseSfuMedia, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
+import { getSfuSessionParticipantId, mergeSfuMediaWithMeshFallback, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
 import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
 import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
 import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
+import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
@@ -1533,7 +1534,7 @@ export function StudioRoom() {
     }
     return planMeshCapacity({ participantCount: onStageCount, uplinkKbps });
   }, [myParticipant, sessionPeerConnectionParticipants]);
-  const shouldConnectSfuMedia = useMemo(() => shouldUseSfuMedia({
+  const sfuSessionParticipantId = useMemo(() => getSfuSessionParticipantId({
     localParticipant: myParticipant,
     remoteParticipants: participants.values(),
     mediaServerReady: mediaServerHealth.status === 'ready',
@@ -2990,15 +2991,7 @@ export function StudioRoom() {
 
   // Sync local tracks when remotely muted/unmuted
   useEffect(() => {
-    if (!myParticipant || !localStream) return;
-    const audioTrack = localStream.getAudioTracks()[0];
-    if (audioTrack && audioTrack.enabled !== myParticipant.audioEnabled) {
-      setAudioTrackEnabled(myParticipant.audioEnabled);
-    }
-    const videoTrack = localStream.getVideoTracks()[0];
-    if (videoTrack && videoTrack.enabled !== myParticipant.videoEnabled) {
-      setVideoTrackEnabled(myParticipant.videoEnabled);
-    }
+    applyParticipantMediaState(myParticipant, localStream, setAudioTrackEnabled, setVideoTrackEnabled);
   }, [myParticipant?.audioEnabled, myParticipant?.videoEnabled, localStream, setAudioTrackEnabled, setVideoTrackEnabled]);
 
   useEffect(() => {
@@ -3021,12 +3014,22 @@ export function StudioRoom() {
   // ====== Actions ======
 
   const onToggleAudio = useCallback(() => {
-    const s = toggleAudio();
-    if (myParticipantRef.current) send({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: s, videoEnabled: videoEnabledRef.current, screenSharing: isScreenSharingRef.current } });
+    const enabled = toggleAudio();
+    if (!myParticipantRef.current) return;
+    // The server broadcasts this update only to other participants. Remember our
+    // own choice before a device replacement reconciles against participant state.
+    const participant = withLocalMediaChoice(myParticipantRef.current, 'audio', enabled);
+    myParticipantRef.current = participant;
+    setMyParticipant(participant);
+    send({ type: 'media-state-changed', payload: { participantId: participant.id, audioEnabled: participant.audioEnabled, videoEnabled: participant.videoEnabled, screenSharing: isScreenSharingRef.current } });
   }, [toggleAudio, send]);
   const onToggleVideo = useCallback(() => {
-    const s = toggleVideo();
-    if (myParticipantRef.current) send({ type: 'media-state-changed', payload: { participantId: myParticipantRef.current.id, audioEnabled: audioEnabledRef.current, videoEnabled: s, screenSharing: isScreenSharingRef.current } });
+    const enabled = toggleVideo();
+    if (!myParticipantRef.current) return;
+    const participant = withLocalMediaChoice(myParticipantRef.current, 'video', enabled);
+    myParticipantRef.current = participant;
+    setMyParticipant(participant);
+    send({ type: 'media-state-changed', payload: { participantId: participant.id, audioEnabled: participant.audioEnabled, videoEnabled: participant.videoEnabled, screenSharing: isScreenSharingRef.current } });
   }, [toggleVideo, send]);
   const onLeave = () => {
     if (programRecordingFinalizing || localRecordingFinalizing || participantRecordingFinalizing) {
@@ -3836,7 +3839,7 @@ export function StudioRoom() {
       }, 5_000);
     };
 
-    if (!shouldConnectSfuMedia) {
+    if (!sfuSessionParticipantId) {
       sfuSessionRef.current?.close();
       sfuSessionRef.current = null;
       setSfuTransportStatus('idle');
@@ -3949,7 +3952,7 @@ export function StudioRoom() {
       void setAudioForwardingEnabled(true);
       void setVideoForwardingEnabled(true);
     };
-  }, [requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, shouldConnectSfuMedia]);
+  }, [requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, sfuSessionParticipantId]);
 
   useEffect(() => {
     if (
@@ -4053,39 +4056,46 @@ export function StudioRoom() {
           }));
         if (files.length === 0) return;
 
-        await persistRecordingSession({
-          roomName: `${room?.name || 'Studio'} - ${participant.name}`,
-          durationSeconds: result.files[0]?.capture?.durationMs
-            ? Math.round(result.files[0].capture.durationMs / 1000)
-            : null,
-          files,
-        });
-
-        if (result.progressiveUpload) {
-          try {
-            await result.progressiveUpload.finish();
-            addToast('Your recording is safely uploaded.', 'success');
-            return;
-          } catch (err) {
-            console.warn('Progressive recording upload could not finish; sending the full recording instead:', err);
-          }
-        }
-
-        try {
-          const token = await requestRecordingUploadToken(sessionId);
-          await uploadRecordingToMediaServer({
-            token,
-            roomId,
-            sessionId,
-            participantId: participant.id,
-            participantName: participant.name,
+        const saved = await saveParticipantRecording({
+          saveLocal: () => persistRecordingSession({
+            roomName: `${room?.name || 'Studio'} - ${participant.name}`,
+            durationSeconds: result.files[0]?.capture?.durationMs
+              ? Math.round(result.files[0].capture.durationMs / 1000)
+              : null,
             files,
-            startExport: false,
-          });
+          }),
+          finishProgressive: result.progressiveUpload
+            ? () => result.progressiveUpload!.finish()
+            : undefined,
+          uploadFull: async () => {
+            const token = await requestRecordingUploadToken(sessionId);
+            await uploadRecordingToMediaServer({
+              token,
+              roomId,
+              sessionId,
+              participantId: participant.id,
+              participantName: participant.name,
+              files,
+              startExport: false,
+            });
+          },
+        });
+        if (!saved.localSaved) {
+          console.warn('Participant recording could not be saved to the browser library:', saved.localError);
+        }
+        if (saved.progressiveError) {
+          console.warn('Progressive recording upload could not finish; attempted a full upload:', saved.progressiveError);
+        }
+        if (saved.cloudSaved && saved.localSaved) {
           addToast(`${participant.name}'s local recording uploaded.`, 'success');
-        } catch (err) {
-          console.warn('Participant local recording upload failed:', err);
+        } else if (saved.cloudSaved) {
+          addToast('Your recording uploaded, but could not be saved in this browser.', 'warning');
+        } else if (saved.localSaved) {
+          console.warn('Participant local recording upload failed:', saved.cloudError);
           addToast('Local recording saved in this browser; cloud upload is unavailable.', 'warning');
+        } else {
+          console.error('Participant recording cloud upload failed:', saved.cloudError);
+          addToast('Recording could not be saved or uploaded. Browser recovery may still contain footage.', 'error');
         }
       } catch (err) {
         console.error('Participant local recording finalization failed:', err);

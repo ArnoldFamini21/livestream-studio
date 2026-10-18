@@ -1948,6 +1948,7 @@ const sfuManager = new SfuManager({}, (roomSend) => new SfuMediaTransport({
 
 sfuWss.on('connection', (ws) => {
   let sfuParticipantId: string | null = null;
+  let sfuConnection: symbol | null = null;
 
   ws.on('message', (data, isBinary) => {
     if (isBinary || !Buffer.isBuffer(data)) {
@@ -1981,10 +1982,10 @@ sfuWss.on('connection', (ws) => {
       }
       try {
         const identity = verifySfuIdentity(frame.token, secret);
-        sfuParticipantId = identity.participantId;
-        sfuManager.connect(identity.roomId, identity.participantId, (message) => {
+        sfuConnection = sfuManager.connect(identity.roomId, identity.participantId, (message) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
         });
+        sfuParticipantId = identity.participantId;
         ws.send(JSON.stringify({
           type: 'sfu-ready',
           roomId: identity.roomId,
@@ -1996,21 +1997,23 @@ sfuWss.on('connection', (ws) => {
       return;
     }
 
-    sfuManager.handleMessage(sfuParticipantId, parsed);
+    if (sfuConnection) sfuManager.handleMessage(sfuParticipantId, parsed, sfuConnection);
   });
 
   ws.on('close', () => {
-    if (sfuParticipantId) {
-      sfuManager.disconnect(sfuParticipantId);
+    if (sfuParticipantId && sfuConnection) {
+      sfuManager.disconnect(sfuParticipantId, sfuConnection);
       sfuParticipantId = null;
+      sfuConnection = null;
     }
   });
 
   ws.on('error', (err) => {
     console.error('SFU socket error:', err.message);
-    if (sfuParticipantId) {
-      sfuManager.disconnect(sfuParticipantId);
+    if (sfuParticipantId && sfuConnection) {
+      sfuManager.disconnect(sfuParticipantId, sfuConnection);
       sfuParticipantId = null;
+      sfuConnection = null;
     }
   });
 });
