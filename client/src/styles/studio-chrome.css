@@ -66,10 +66,45 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
  .join-card { padding: 24px !important; }
 }
 @media (prefers-reduced-motion: reduce) { .studio-container *, .workspace-app * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
-.studio-brand-setting { padding: 14px 0; border-top: 1px solid var(--border); }
-.studio-brand-setting > summary { color: var(--text-secondary); font-size: 12px; font-weight: 500; cursor: pointer; }
-.studio-brand-setting[open] > summary { color: var(--text-primary); margin-bottom: 16px; }
-.studio-brand-setting > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+/* Keep the everyday brand controls visible; native disclosures hold the rest. */
+.studio-brand-panel { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 16px; overscroll-behavior: contain; }
+.studio-brand-intro { margin: 0 0 16px; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
+.studio-brand-field { min-width: 0; margin-bottom: 18px; }
+.studio-brand-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.studio-brand-field > h3, .studio-brand-field-heading > h3 { margin: 0 0 10px; color: var(--text-secondary); font-size: 12px; font-weight: 500; line-height: 1.4; text-transform: none; letter-spacing: 0; }
+.studio-brand-field-heading > h3 { margin: 0; }
+.studio-brand-setting { min-width: 0; border-top: 1px solid var(--border); }
+.studio-brand-setting > summary,
+.studio-brand-more > summary { display: flex; align-items: center; gap: 10px; list-style: none; cursor: pointer; border-radius: 6px; color: var(--text-secondary); }
+.studio-brand-setting > summary { min-height: 46px; margin: 0 -6px; padding: 12px 6px; font-size: 12px; font-weight: 500; line-height: 1.4; }
+.studio-brand-setting > summary::-webkit-details-marker,
+.studio-brand-more > summary::-webkit-details-marker { display: none; }
+.studio-brand-setting > summary::marker,
+.studio-brand-more > summary::marker { content: ''; }
+.studio-brand-setting > summary > span:first-child { flex: 1; min-width: 0; }
+.studio-brand-summary-value { flex: 0 1 auto; min-width: 0; max-width: 46%; overflow: hidden; color: var(--text-muted); font-size: 10px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.studio-brand-setting > summary::after,
+.studio-brand-more > summary::after { content: ''; display: block; width: 6px; height: 6px; flex-shrink: 0; border-right: 1.5px solid var(--text-muted); border-bottom: 1.5px solid var(--text-muted); transform: rotate(-45deg); transition: transform 150ms ease; }
+.studio-brand-setting[open] > summary,
+.studio-brand-more[open] > summary { color: var(--text-primary); }
+.studio-brand-setting[open] > summary::after,
+.studio-brand-more[open] > summary::after { transform: rotate(45deg) translate(-1px, -1px); }
+.studio-brand-group-content { min-width: 0; padding: 4px 0 16px; }
+.studio-brand-group-content > .studio-brand-field:last-child { margin-bottom: 0; }
+.studio-brand-more { min-width: 0; margin-top: 10px; border: 0; }
+.studio-brand-more > summary { min-height: 32px; padding: 6px 0; font-size: 11px; font-weight: 400; line-height: 1.4; }
+.studio-brand-more > summary::after { width: 5px; height: 5px; margin-left: auto; }
+.studio-brand-more[open] > summary { margin-bottom: 10px; }
+.studio-brand-replace { flex-shrink: 0; margin-left: auto; min-height: 28px; padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg-primary); color: var(--text-primary); font: inherit; font-size: 10px; font-weight: 500; line-height: 1.2; cursor: pointer; }
+.studio-brand-hint { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.studio-brand-input-label { display: block; margin: 10px 0 6px; color: var(--text-secondary); font-size: 11px; line-height: 1.4; }
+.studio-brand-panel :is(input, select, textarea) { max-width: 100%; }
+.studio-brand-panel :is(button, input, select, textarea, summary, a[href], [tabindex]):focus-visible { outline: 2px solid var(--accent) !important; outline-offset: 3px !important; }
+@media (hover: hover) {
+ .studio-brand-setting > summary:hover,
+ .studio-brand-more > summary:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+ .studio-brand-panel button:not(:disabled):hover { filter: brightness(1.08); }
+}
 /* Keep menus above the stage, and let mobile fixed menus anchor to the viewport. */
 .studio-control-bar { position: relative; z-index: 60; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 
