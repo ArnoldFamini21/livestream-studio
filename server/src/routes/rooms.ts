@@ -151,9 +151,10 @@ roomRouter.post('/schedule', (req, res) => {
   }
 });
 
-// Recover host access if the room creation response was interrupted or stripped.
+// Compatibility lookup for callers that already hold the private host credential.
 roomRouter.post('/:id/host-access', (req, res) => {
-  const result = recoverHostAccess(req.params.id, getClientIp(req));
+  const hostToken = req.headers['x-host-token'];
+  const result = recoverHostAccess(req.params.id, Array.isArray(hostToken) ? hostToken[0] : hostToken);
 
   if (result.status === 'ok') {
     sendCreatorRoom(res, result.room, result.hostToken);
@@ -165,12 +166,7 @@ roomRouter.post('/:id/host-access', (req, res) => {
     return;
   }
 
-  if (result.status === 'forbidden') {
-    res.status(403).json({ error: 'Host access can only be recovered from the creator network.' });
-    return;
-  }
-
-  res.status(410).json({ error: 'Host access recovery expired. Create a new studio to get a fresh private host link.' });
+  res.status(403).json({ error: 'A valid private host credential is required.', code: 'HOST_TOKEN_INVALID' });
 });
 
 // Register for a webinar-style guest invite. Host/co-host entry is unchanged.

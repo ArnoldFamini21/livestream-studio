@@ -107,6 +107,49 @@ describe('SfuManager', () => {
     assert.equal(manager.getRoomParticipantCount('room-2'), 1);
   });
 
+  it('keeps a replacement connection alive when the previous socket closes or errors', () => {
+    const manager = new SfuManager();
+    const oldSocket = recorder();
+    const newSocket = recorder();
+    const oldConnection = manager.connect('room-1', 'alice', oldSocket.send);
+    manager.handleMessage('alice', { type: 'sfu-join' }, oldConnection);
+    const newConnection = manager.connect('room-1', 'alice', newSocket.send);
+
+    // An old WebSocket can emit both error and close after replacement.
+    manager.disconnect('alice', oldConnection);
+    manager.disconnect('alice', oldConnection);
+    assert.equal(manager.getParticipantCount(), 1);
+    assert.equal(manager.getRoomParticipantCount('room-1'), 1);
+    assert.equal(manager.handleMessage('alice', { type: 'sfu-join' }, newConnection), true);
+    assert.ok(newSocket.messages.some((message) => message.type === 'sfu-producers'));
+
+    manager.disconnect('alice', newConnection);
+    assert.equal(manager.getParticipantCount(), 0);
+    assert.equal(manager.getRoomCount(), 0);
+  });
+
+  it('ignores late frames from a replaced socket without letting it unpublish its successor', () => {
+    const manager = new SfuManager();
+    const oldSocket = recorder();
+    const newSocket = recorder();
+    const bob = recorder();
+    const oldConnection = manager.connect('room-1', 'alice', oldSocket.send);
+    manager.handleMessage('alice', { type: 'sfu-join' }, oldConnection);
+    const newConnection = manager.connect('room-1', 'alice', newSocket.send);
+    const bobConnection = manager.connect('room-1', 'bob', bob.send);
+    manager.handleMessage('bob', { type: 'sfu-join' }, bobConnection);
+    manager.handleMessage('alice', { type: 'sfu-publish', layers: LAYERS }, newConnection);
+    bob.messages.length = 0;
+
+    assert.equal(manager.handleMessage('alice', { type: 'sfu-unpublish' }, oldConnection), false);
+    assert.equal(manager.handleMessage('alice', { type: 'sfu-leave' }, oldConnection), false);
+    assert.equal(bob.messages.some((message) => message.type === 'sfu-producer-removed'), false);
+    assert.equal(manager.getRoomParticipantCount('room-1'), 2);
+
+    manager.disconnect('alice', newConnection);
+    assert.ok(bob.messages.some((message) => message.type === 'sfu-producer-removed'));
+  });
+
   it('requires a room and participant id to connect', () => {
     const manager = new SfuManager();
     const alice = recorder();

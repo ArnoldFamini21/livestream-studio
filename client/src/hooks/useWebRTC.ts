@@ -17,6 +17,7 @@ import {
   refreshSenderVideoEncodingParameters,
 } from '../utils/webrtcSimulcast.ts';
 import { sendScreenOnConnection, stopScreenOnConnection } from '../utils/screenTransceiver.ts';
+import { replacePeerMediaTrack } from '../utils/peerMediaSender.ts';
 
 interface PeerState {
   participantId: string;
@@ -459,23 +460,25 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       if (newTrack.kind !== 'audio' && newTrack.kind !== 'video') return;
       publishedTracksRef.current.set(newTrack.kind, newTrack);
       for (const [participantId, peer] of peersRef.current) {
-        const sender = peer.senders.get(newTrack.kind);
-        if (sender) {
-          if (newTrack.kind === 'video' && !videoForwardingEnabledRef.current) continue;
-          if (newTrack.kind === 'audio' && !audioForwardingEnabledRef.current) continue;
-          try {
-            await sender.replaceTrack(newTrack);
-          } catch (err) {
-            console.warn(`Failed to replace track for peer ${participantId}:`, err);
-            continue;
-          }
-          try {
-            await refreshSenderVideoEncodingParameters(sender, newTrack);
-            const currentMode = bandwidthStatesRef.current.get(participantId)?.mode || 'full';
-            await applyBandwidthModeToVideoSender(sender, currentMode);
-          } catch (err) {
-            console.warn('Failed to refresh video sender encoding parameters:', err);
-          }
+        const forwardingEnabled = newTrack.kind === 'video'
+          ? videoForwardingEnabledRef.current
+          : audioForwardingEnabledRef.current;
+        let sender: RTCRtpSender;
+        try {
+          sender = await replacePeerMediaTrack(
+            peer, newTrack, localStreamRef.current || new MediaStream([newTrack]), forwardingEnabled,
+          );
+        } catch (err) {
+          console.warn(`Failed to replace track for peer ${participantId}:`, err);
+          continue;
+        }
+        if (!forwardingEnabled) continue;
+        try {
+          await refreshSenderVideoEncodingParameters(sender, newTrack);
+          const currentMode = bandwidthStatesRef.current.get(participantId)?.mode || 'full';
+          await applyBandwidthModeToVideoSender(sender, currentMode);
+        } catch (err) {
+          console.warn('Failed to refresh video sender encoding parameters:', err);
         }
       }
     },

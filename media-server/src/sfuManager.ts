@@ -35,6 +35,7 @@ export class SfuManager {
   private readonly rooms = new Map<string, RoomEntry>();
   private readonly sends = new Map<string, SfuParticipantSend>();
   private readonly participantRoom = new Map<string, string>();
+  private readonly connections = new Map<string, symbol>();
 
   constructor(
     private readonly options: LayerSelectionOptions = {},
@@ -71,7 +72,7 @@ export class SfuManager {
   }
 
   /** Register a socket for a participant in a room. Replaces any prior connection for that id. */
-  connect(roomId: string, participantId: string, send: SfuParticipantSend): void {
+  connect(roomId: string, participantId: string, send: SfuParticipantSend): symbol {
     if (!roomId || !participantId) throw new Error('roomId and participantId are required');
     // A reconnect under the same id in a different room should leave the old room first.
     const priorRoom = this.participantRoom.get(participantId);
@@ -79,12 +80,16 @@ export class SfuManager {
       this.disconnect(participantId);
     }
     const entry = this.ensureRoom(roomId);
+    const connection = Symbol(participantId);
     this.sends.set(participantId, send);
+    this.connections.set(participantId, connection);
     this.participantRoom.set(participantId, roomId);
     entry.participants.add(participantId);
+    return connection;
   }
 
-  handleMessage(participantId: string, raw: unknown): boolean {
+  handleMessage(participantId: string, raw: unknown, connection?: symbol): boolean {
+    if (connection !== undefined && this.connections.get(participantId) !== connection) return false;
     const roomId = this.participantRoom.get(participantId);
     if (!roomId) return false;
     const entry = this.rooms.get(roomId);
@@ -92,9 +97,13 @@ export class SfuManager {
     return entry.hub.handleMessage(participantId, raw);
   }
 
-  disconnect(participantId: string): void {
+  disconnect(participantId: string, connection?: symbol): void {
+    // A replaced socket may close after its successor authenticates. Its close
+    // and late frames must not tear down or control the current participant.
+    if (connection !== undefined && this.connections.get(participantId) !== connection) return;
     const roomId = this.participantRoom.get(participantId);
     this.participantRoom.delete(participantId);
+    this.connections.delete(participantId);
     this.sends.delete(participantId);
     if (!roomId) return;
     const entry = this.rooms.get(roomId);

@@ -1,7 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { nanoid } from 'nanoid';
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import type { IncomingMessage } from 'node:http';
 import type {
   SignalMessage,
   Room,
@@ -166,7 +165,6 @@ interface ExternalChatConnectionState {
 // Extend WebSocket to track heartbeat state
 interface AliveWebSocket extends WebSocket {
   isAlive: boolean;
-  clientIp?: string;
 }
 
 // Known message types for validation (fix #10)
@@ -294,12 +292,6 @@ const GUEST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_GUEST_INVITE_TOKENS_PER_ROOM = 40;
 const CO_HOST_INVITE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_CO_HOST_INVITE_TOKENS_PER_ROOM = 20;
-const HOST_ACCESS_RECOVERY_WINDOW_MS = parseBoundedDurationMs(
-  process.env.HOST_ACCESS_RECOVERY_WINDOW_MS,
-  10 * 60 * 1000,
-  60 * 1000,
-  60 * 60 * 1000
-);
 
 function parseBoundedDurationMs(
   value: string | undefined,
@@ -311,22 +303,6 @@ function parseBoundedDurationMs(
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(Math.trunc(parsed), min), max);
-}
-
-function getHeaderValue(value: string | string[] | undefined): string {
-  if (Array.isArray(value)) return value[0] || '';
-  return value || '';
-}
-
-function getClientIpFromRequest(req?: IncomingMessage): string {
-  if (!req) return 'unknown';
-  const forwardedFor = getHeaderValue(req.headers['x-forwarded-for'])
-    .split(',')[0]
-    .trim();
-  if (forwardedFor) return forwardedFor;
-  const realIp = getHeaderValue(req.headers['x-real-ip']).trim();
-  if (realIp) return realIp;
-  return req.socket.remoteAddress || 'unknown';
 }
 
 function checkWsRateLimit(ws: WebSocket): boolean {
@@ -358,7 +334,7 @@ export interface CreatedRoom {
 
 export type HostAccessRecoveryResult =
   | { status: 'ok'; room: Room; hostToken: string }
-  | { status: 'not_found' | 'forbidden' | 'expired' | 'already_joined' };
+  | { status: 'not_found' | 'forbidden' };
 
 export type RoomHostAccessResult =
   | { status: 'ok'; room: Room }
@@ -480,16 +456,12 @@ export function restoreRoomSnapshots(snapshots: RoomSnapshot[]): number {
   return restored;
 }
 
-export function recoverHostAccess(roomId: string, creatorIp: string, nowMs = Date.now()): HostAccessRecoveryResult {
+export function recoverHostAccess(roomId: string, hostToken: unknown): HostAccessRecoveryResult {
   const roomState = rooms.get(roomId);
   if (!roomState) return { status: 'not_found' };
-  if (roomState.creatorIp !== creatorIp) return { status: 'forbidden' };
-  if (roomState.hasBeenJoined || roomState.participants.size > 0) return { status: 'already_joined' };
-
-  const createdAtMs = Date.parse(roomState.room.createdAt);
-  if (!Number.isFinite(createdAtMs) || nowMs - createdAtMs > HOST_ACCESS_RECOVERY_WINDOW_MS) {
-    return { status: 'expired' };
-  }
+  // A shared or forwarded IP address is not proof of room ownership. Keep this
+  // compatibility route available only to a holder of the private credential.
+  if (typeof hostToken !== 'string' || !safeEqual(hostToken, roomState.hostToken)) return { status: 'forbidden' };
 
   return {
     status: 'ok',
@@ -551,14 +523,6 @@ function clearRoomEndingTimer(roomId: string) {
   clearTimeout(endingTimer);
   endingTimers.delete(roomId);
   return true;
-}
-
-function canUseCreatorNetworkHostFallback(ws: WebSocket, roomState: RoomState, nowMs = Date.now()): boolean {
-  if (roomState.hasBeenJoined || roomState.participants.size > 0 || roomState.room.hostId) return false;
-  const clientIp = (ws as AliveWebSocket).clientIp || 'unknown';
-  if (clientIp === 'unknown' || roomState.creatorIp !== clientIp) return false;
-  const createdAtMs = Date.parse(roomState.room.createdAt);
-  return Number.isFinite(createdAtMs) && nowMs - createdAtMs <= HOST_ACCESS_RECOVERY_WINDOW_MS;
 }
 
 function updateRoomActivityStatus(roomState: RoomState) {
@@ -983,13 +947,12 @@ export function setupSignalingServer(wss: WebSocketServer) {
     clearInterval(heartbeatInterval);
   });
 
-  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+  wss.on('connection', (ws: WebSocket) => {
     console.log('New WebSocket connection');
 
     // Fix #3: Mark connection as alive on connect and on pong
     const aliveWs = ws as AliveWebSocket;
     aliveWs.isAlive = true;
-    aliveWs.clientIp = getClientIpFromRequest(req);
 
     ws.on('pong', () => {
       (ws as AliveWebSocket).isAlive = true;
@@ -1170,12 +1133,8 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   if (requestedRole === 'host') {
     const presented = typeof payload.hostToken === 'string' ? payload.hostToken : '';
     if (!presented || !safeEqual(presented, roomState.hostToken)) {
-      if (!presented && canUseCreatorNetworkHostFallback(ws, roomState)) {
-        console.warn(`Room ${roomId} accepted first host from creator network without a host token`);
-      } else {
-        sendError(ws, 'Host access is missing or expired. Reopen this studio from the creator browser or saved host entry.', 'HOST_TOKEN_INVALID');
-        return;
-      }
+      sendError(ws, 'Host access is missing or expired. Reopen this studio from the creator browser or saved host entry.', 'HOST_TOKEN_INVALID');
+      return;
     } else {
       const existingHostId = roomState.room.hostId;
       const hostStillConnected =

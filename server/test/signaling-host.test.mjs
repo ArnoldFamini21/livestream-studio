@@ -114,7 +114,7 @@ function verifySignedLiveToken(token, secret) {
 }
 
 describe('host admission', () => {
-  it('allows the first host to enter without a token from the creator network', async () => {
+  it('rejects a tokenless first host even when forwarded headers claim the creator network', async () => {
     const harness = await createSignalingHarness();
     const creatorIp = `198.51.100.${Math.floor(Math.random() * 100) + 1}`;
     const { room } = createRoom('Creator network fallback test', 'Arnold', {
@@ -125,17 +125,34 @@ describe('host admission', () => {
       const host = await connectClient(harness.url, {
         headers: { 'x-forwarded-for': creatorIp },
       });
-      const hostJoined = waitForMessage(host, 'room-joined');
+      const errorMessage = waitForMessage(host, 'error');
       joinRoom(host, {
         roomId: room.id,
         name: 'Arnold',
         role: 'host',
       });
 
-      const joined = await hostJoined;
-      assert.equal(joined.payload.participant.role, 'host');
-      assert.equal(joined.payload.participant.status, 'on-stage');
-      assert.equal(getRooms().get(room.id)?.room.hostId, joined.payload.participant.id);
+      const error = await errorMessage;
+      assert.equal(error.payload.code, 'HOST_TOKEN_INVALID');
+      assert.equal(getRooms().get(room.id)?.participants.size, 0);
+      assert.equal(getRooms().get(room.id)?.room.hostId, '');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects a tokenless first host sharing the actual creator address', async () => {
+    const harness = await createSignalingHarness();
+    const { room } = createRoom('Shared network host test', 'Arnold', {
+      creatorIp: '::ffff:127.0.0.1',
+    });
+
+    try {
+      const attacker = await connectClient(harness.url);
+      const rejected = waitForMessage(attacker, 'error');
+      joinRoom(attacker, { roomId: room.id, name: 'Guest claiming host', role: 'host' });
+      assert.equal((await rejected).payload.code, 'HOST_TOKEN_INVALID');
+      assert.equal(getRooms().get(room.id)?.participants.size, 0);
     } finally {
       await harness.close();
     }

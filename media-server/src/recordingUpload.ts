@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, rm } from 'node:fs/promises';
+import { appendFile, mkdir, rm, truncate } from 'node:fs/promises';
 import type {
   DistributedRecordingSessionResponse,
   RecordingUploadChunkResponse,
@@ -26,6 +26,7 @@ interface RecordingUploadTrackState extends RecordingUploadTrackManifest {
   bytesReceived: number;
   chunksReceived: number;
   complete: boolean;
+  writeFailed?: boolean;
 }
 
 export interface RecordingUploadSession {
@@ -283,8 +284,23 @@ function defaultUploadRoot(): string {
 
 export class RecordingUploadStore {
   private readonly sessions = new Map<string, RecordingUploadSession>();
+  private readonly pendingMutations = new Map<string, Promise<void>>();
 
   constructor(private readonly uploadRoot = process.env.RECORDING_UPLOAD_DIR || defaultUploadRoot()) {}
+
+  /** Serialize whole sessions: sequence checks and shared byte limits must commit together. */
+  private async mutateSession<T>(uploadId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.pendingMutations.get(uploadId) || Promise.resolve();
+    const operation = previous.then(task);
+    // A failed request must not poison the queue for valid retries.
+    const settled = operation.then(() => undefined, () => undefined);
+    this.pendingMutations.set(uploadId, settled);
+    try {
+      return await operation;
+    } finally {
+      if (this.pendingMutations.get(uploadId) === settled) this.pendingMutations.delete(uploadId);
+    }
+  }
 
   async createSession(input: unknown, nowMs = Date.now()): Promise<RecordingUploadSessionResponse> {
     const normalized = normalizeCreateRequest(input);
@@ -435,6 +451,10 @@ export class RecordingUploadStore {
   }
 
   async appendChunk(input: RecordingUploadChunkInput, nowMs = Date.now()): Promise<RecordingUploadChunkResponse> {
+    return this.mutateSession(input.uploadId, () => this.appendChunkExclusive(input, nowMs));
+  }
+
+  private async appendChunkExclusive(input: RecordingUploadChunkInput, nowMs: number): Promise<RecordingUploadChunkResponse> {
     const session = this.getSession(input.uploadId, nowMs);
     if (!isValidId(input.trackId)) {
       throw new RecordingUploadError(404, 'RECORDING_TRACK_NOT_FOUND', 'Recording track not found');
@@ -442,6 +462,9 @@ export class RecordingUploadStore {
     const track = session.tracks.get(input.trackId);
     if (!track) {
       throw new RecordingUploadError(404, 'RECORDING_TRACK_NOT_FOUND', 'Recording track not found');
+    }
+    if (track.writeFailed) {
+      throw new RecordingUploadError(409, 'RECORDING_TRACK_WRITE_FAILED', 'Recording track could not be restored after a failed write; start a new upload');
     }
     if (!Number.isSafeInteger(input.sequence) || input.sequence < 0) {
       throw new RecordingUploadError(400, 'INVALID_RECORDING_CHUNK', 'Chunk sequence must be a non-negative integer');
@@ -451,6 +474,11 @@ export class RecordingUploadStore {
     }
     if (input.offset !== undefined && input.offset !== track.bytesReceived) {
       throw new RecordingUploadError(409, 'RECORDING_CHUNK_OFFSET_MISMATCH', 'Recording chunk offset does not match uploaded bytes');
+    }
+    // A retry of the final chunk still receives an ordering conflict, allowing
+    // clients to reconcile its acknowledgement before enforcing immutability.
+    if (track.complete) {
+      throw new RecordingUploadError(409, 'RECORDING_TRACK_COMPLETE', 'Recording track is already finalized');
     }
     if (!Buffer.isBuffer(input.data) || input.data.length === 0) {
       throw new RecordingUploadError(400, 'INVALID_RECORDING_CHUNK', 'Recording chunk is empty');
@@ -464,8 +492,21 @@ export class RecordingUploadStore {
     if (track.expectedBytes !== undefined && track.bytesReceived + input.data.length > track.expectedBytes) {
       throw new RecordingUploadError(413, 'RECORDING_TRACK_TOO_LARGE', 'Recording track exceeds expected bytes');
     }
+    if (input.final && track.expectedBytes !== undefined && track.bytesReceived + input.data.length !== track.expectedBytes) {
+      throw new RecordingUploadError(409, 'RECORDING_UPLOAD_INCOMPLETE', `${track.label} has not received all expected bytes`);
+    }
 
-    await appendFile(track.filePath, input.data);
+    try {
+      await appendFile(track.filePath, input.data);
+    } catch (error) {
+      // appendFile may write a prefix before disk exhaustion. Roll it back so
+      // retrying the unchanged offset cannot duplicate that partial chunk.
+      try { await truncate(track.filePath, track.bytesReceived); }
+      catch (rollbackError) {
+        if (!isRecord(rollbackError) || rollbackError.code !== 'ENOENT') track.writeFailed = true;
+      }
+      throw error;
+    }
     track.bytesReceived += input.data.length;
     track.chunksReceived += 1;
     track.complete = Boolean(input.final);
@@ -485,7 +526,17 @@ export class RecordingUploadStore {
    */
   completeSession(uploadId: string, nowMs = Date.now(), completion?: unknown): RecordingUploadSessionResponse {
     const session = this.getSession(uploadId, nowMs);
-    for (const update of normalizeCompletionUpdates(completion)) {
+    if (this.pendingMutations.has(uploadId)) {
+      throw new RecordingUploadError(409, 'RECORDING_UPLOAD_BUSY', 'Wait for pending recording chunks before finalizing');
+    }
+    const updates = normalizeCompletionUpdates(completion);
+    // Validate every track before mutating any metadata or completion flags.
+    for (const track of session.tracks.values()) {
+      if (track.writeFailed || (track.expectedBytes !== undefined && track.bytesReceived !== track.expectedBytes)) {
+        throw new RecordingUploadError(409, 'RECORDING_UPLOAD_INCOMPLETE', `${track.label} has not received all expected bytes`);
+      }
+    }
+    for (const update of updates) {
       const track = session.tracks.get(update.id);
       if (!track) continue;
       if (update.durationMs !== undefined) track.durationMs = update.durationMs;
@@ -499,9 +550,11 @@ export class RecordingUploadStore {
   }
 
   async deleteSession(uploadId: string): Promise<void> {
-    const session = this.sessions.get(uploadId);
-    if (!session) return;
-    this.sessions.delete(uploadId);
-    await rm(session.rootDir, { recursive: true, force: true });
+    await this.mutateSession(uploadId, async () => {
+      const session = this.sessions.get(uploadId);
+      if (!session) return;
+      this.sessions.delete(uploadId);
+      await rm(session.rootDir, { recursive: true, force: true });
+    });
   }
 }

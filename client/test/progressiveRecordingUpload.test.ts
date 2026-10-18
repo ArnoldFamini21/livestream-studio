@@ -391,6 +391,56 @@ describe('progressive recording upload', () => {
     assert.deepEqual(sleeps, []);
   });
 
+  for (const code of ['RECORDING_TRACK_COMPLETE', 'RECORDING_TRACK_WRITE_FAILED']) {
+    it(`rejects ${code} without spinning on unchanged server offsets`, async () => {
+      const server = createFakeMediaServer();
+      const video = createRecordingSource('camera', 300);
+      let chunkRequests = 0;
+      const { uploader, sleeps } = createUploader(server, undefined, {
+        fetchImpl: async (input, init) => {
+          if (String(input).includes('/chunks?')) {
+            chunkRequests += 1;
+            // Bound the old implementation's loop so this regression fails
+            // deterministically instead of hanging the whole test process.
+            if (chunkRequests > 3) throw new Error('Runaway chunk retries');
+            return new Response(JSON.stringify({ error: 'Track cannot accept more bytes', code }), { status: 409 });
+          }
+          return server.fetchImpl(input, init);
+        },
+      });
+      uploader.start([video.source]);
+      await uploader.flush();
+
+      await assert.rejects(uploader.finish(new Map([['camera', video.finalBlob()]])), /Track cannot accept more bytes/);
+      assert.equal(chunkRequests, 1);
+      assert.equal(uploader.getState().status, 'error');
+      assert.deepEqual(sleeps, []);
+    });
+  }
+
+  it('bounds offset reconciliation when the server reports no progress', async () => {
+    const server = createFakeMediaServer();
+    const video = createRecordingSource('camera', 300);
+    let chunkRequests = 0;
+    const { uploader } = createUploader(server, undefined, {
+      fetchImpl: async (input, init) => {
+        if (String(input).includes('/chunks?')) {
+          chunkRequests += 1;
+          if (chunkRequests > 3) throw new Error('Runaway chunk retries');
+          return new Response(JSON.stringify({ error: 'Out of order', code: 'RECORDING_CHUNK_OUT_OF_ORDER' }), { status: 409 });
+        }
+        return server.fetchImpl(input, init);
+      },
+    });
+    uploader.start([video.source]);
+    await uploader.flush();
+    video.commit(300);
+    await uploader.flush();
+    assert.equal(chunkRequests, 1);
+    assert.match(uploader.getState().error || '', /Out of order/);
+    uploader.stop();
+  });
+
   it('completes a session when a declared track produced no data', async () => {
     const server = createFakeMediaServer();
     const video = createRecordingSource('camera', 250);

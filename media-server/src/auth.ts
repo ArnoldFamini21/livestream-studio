@@ -62,6 +62,7 @@ export function verifyLiveStreamToken(token: string, secret: string, now = Date.
 
   if (
     !claims ||
+    'purpose' in claims ||
     claims.v !== 1 ||
     typeof claims.roomId !== 'string' ||
     typeof claims.participantId !== 'string' ||

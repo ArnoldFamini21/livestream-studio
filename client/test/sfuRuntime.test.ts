@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Participant } from '@studio/shared';
 import {
+  getSfuSessionParticipantId,
   mergeSfuMediaWithMeshFallback,
   shouldUseSfuMedia,
 } from '../src/utils/sfuRuntime.ts';
@@ -49,6 +50,27 @@ describe('shouldUseSfuMedia', () => {
       remoteParticipants: [participant('a'), participant('b'), participant('c'), participant('d', 'backstage')],
       mediaServerReady: true,
     }), false);
+  });
+});
+
+describe('SFU session participant identity', () => {
+  it('rekeys the media session after a signaling rejoin at an unchanged stage size', () => {
+    const remoteParticipants = [participant('a'), participant('b'), participant('c'), participant('d')];
+    const input = { remoteParticipants, mediaServerReady: true };
+    const beforeRejoin = getSfuSessionParticipantId({ ...input, localParticipant: participant('old-id') });
+    const afterRejoin = getSfuSessionParticipantId({ ...input, localParticipant: participant('new-id') });
+
+    assert.equal(beforeRejoin, 'old-id');
+    assert.equal(afterRejoin, 'new-id');
+    assert.notEqual(beforeRejoin, afterRejoin);
+  });
+
+  it('releases the media session when the participant is no longer eligible', () => {
+    assert.equal(getSfuSessionParticipantId({
+      localParticipant: participant('host', 'backstage'),
+      remoteParticipants: [participant('a'), participant('b'), participant('c'), participant('d')],
+      mediaServerReady: true,
+    }), null);
   });
 });
 

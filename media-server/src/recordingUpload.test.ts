@@ -186,6 +186,111 @@ describe('recording upload store', () => {
     assert.equal(complete.tracks[0].bytesReceived, 7);
   });
 
+  it('serializes overlapping retries so a chunk is committed only once', async () => {
+    const { store } = await createStore();
+    const session = await store.createSession({
+      roomId: 'room-retry',
+      tracks: [{ id: 'camera', label: 'Camera', kind: 'video', mimeType: 'video/webm' }],
+    });
+    const chunk = { uploadId: session.uploadId, trackId: 'camera', sequence: 0, offset: 0, data: Buffer.from('frames') };
+
+    const results = await Promise.allSettled([store.appendChunk(chunk), store.appendChunk(chunk)]);
+
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    const rejected = results.find(result => result.status === 'rejected');
+    assert.equal(rejected?.status === 'rejected' && rejected.reason instanceof RecordingUploadError && rejected.reason.statusCode, 409);
+    assert.equal(store.getStatus(session.uploadId).bytesReceived, 6);
+    const track = store.getExportSource(session.uploadId).tracks[0];
+    assert.equal(await readFile(track.filePath, 'utf8'), 'frames');
+  });
+
+  it('enforces the session byte limit across concurrent tracks and continues after a rejected chunk', async () => {
+    const { store } = await createStore();
+    const session = await store.createSession({
+      roomId: 'room-concurrent-limit',
+      maxBytes: 6,
+      tracks: ['camera', 'screen'].map(id => ({ id, label: id, kind: 'video', mimeType: 'video/webm' })),
+    });
+    const results = await Promise.allSettled(['camera', 'screen'].map(trackId => store.appendChunk({
+      uploadId: session.uploadId, trackId, sequence: 0, data: Buffer.from('four'),
+    })));
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    const rejected = results.find(result => result.status === 'rejected');
+    assert.equal(rejected?.status === 'rejected' && rejected.reason instanceof RecordingUploadError && rejected.reason.code, 'RECORDING_UPLOAD_TOO_LARGE');
+    const emptyTrack = store.getStatus(session.uploadId).tracks.find(track => track.bytesReceived === 0)!;
+    await store.appendChunk({ uploadId: session.uploadId, trackId: emptyTrack.id, sequence: 0, data: Buffer.from('ok') });
+    assert.equal(store.getStatus(session.uploadId).bytesReceived, 6);
+  });
+
+  it('rejects completion of a short declared track without finalizing the other tracks', async () => {
+    const { store } = await createStore();
+    const session = await store.createSession(baseRequest);
+    await store.appendChunk({ uploadId: session.uploadId, trackId: 'program', sequence: 0, data: Buffer.from('short') });
+
+    assert.throws(
+      () => store.completeSession(session.uploadId),
+      error => error instanceof RecordingUploadError && error.code === 'RECORDING_UPLOAD_INCOMPLETE'
+    );
+    assert.equal(store.getStatus(session.uploadId).tracks.every(track => !track.complete), true);
+  });
+
+  it('waits for an in-flight chunk before permitting explicit completion', async () => {
+    const { store } = await createStore();
+    const session = await store.createSession({
+      roomId: 'room-pending',
+      tracks: [{ id: 'audio', label: 'Audio', kind: 'audio', mimeType: 'audio/webm', expectedBytes: 5 }],
+    });
+    const pending = store.appendChunk({ uploadId: session.uploadId, trackId: 'audio', sequence: 0, data: Buffer.from('audio') });
+    assert.throws(
+      () => store.completeSession(session.uploadId),
+      error => error instanceof RecordingUploadError && error.code === 'RECORDING_UPLOAD_BUSY'
+    );
+    await pending;
+    assert.equal(store.completeSession(session.uploadId).tracks[0].complete, true);
+  });
+
+  it('rejects an early final chunk and prevents mutation after finalization', async () => {
+    const { store } = await createStore();
+    const session = await store.createSession({
+      roomId: 'room-final-integrity',
+      tracks: [{ id: 'audio', label: 'Audio', kind: 'audio', mimeType: 'audio/webm', expectedBytes: 5 }],
+    });
+    await assert.rejects(
+      store.appendChunk({ uploadId: session.uploadId, trackId: 'audio', sequence: 0, final: true, data: Buffer.from('bad') }),
+      error => error instanceof RecordingUploadError && error.code === 'RECORDING_UPLOAD_INCOMPLETE'
+    );
+    assert.equal(store.getStatus(session.uploadId).bytesReceived, 0);
+    await store.appendChunk({ uploadId: session.uploadId, trackId: 'audio', sequence: 0, final: true, data: Buffer.from('audio') });
+    await assert.rejects(
+      store.appendChunk({ uploadId: session.uploadId, trackId: 'audio', sequence: 0, offset: 0, final: true, data: Buffer.from('audio') }),
+      error => error instanceof RecordingUploadError && error.code === 'RECORDING_CHUNK_OUT_OF_ORDER'
+    );
+    await assert.rejects(
+      store.appendChunk({ uploadId: session.uploadId, trackId: 'audio', sequence: 1, offset: 5, data: Buffer.from('extra') }),
+      error => error instanceof RecordingUploadError && error.code === 'RECORDING_TRACK_COMPLETE'
+    );
+    const track = store.getExportSource(session.uploadId).tracks[0];
+    assert.equal(await readFile(track.filePath, 'utf8'), 'audio');
+  });
+
+  it('serializes deletion with pending chunks and rejects queued appends after deletion', async () => {
+    const { store } = await createStore();
+    const session = await store.createSession({
+      roomId: 'room-deleting',
+      tracks: [{ id: 'audio', label: 'Audio', kind: 'audio', mimeType: 'audio/webm' }],
+    });
+    const rootDir = store.getSession(session.uploadId).rootDir;
+    const pending = store.appendChunk({ uploadId: session.uploadId, trackId: 'audio', sequence: 0, data: Buffer.from('audio') });
+    const deletion = store.deleteSession(session.uploadId);
+    const lateChunk = store.appendChunk({ uploadId: session.uploadId, trackId: 'audio', sequence: 1, data: Buffer.from('late') });
+    await Promise.all([
+      pending,
+      deletion,
+      assert.rejects(lateChunk, error => error instanceof RecordingUploadError && error.code === 'RECORDING_UPLOAD_NOT_FOUND'),
+    ]);
+    await assert.rejects(stat(rootDir));
+  });
+
   it('rejects out-of-order, mismatched, and oversized chunks', async () => {
     const { store } = await createStore();
     const session = await store.createSession(baseRequest);
