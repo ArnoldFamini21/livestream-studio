@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { acknowledgeRecordingBackups, createRecoverableRecordingStore, listRecoverableRecordings, recoverRecording } from '../src/utils/recordingRecovery.ts';
+import { acknowledgeRecordingBackups, createRecoverableRecordingStore, getRecordingBackupId, listRecoverableRecordings, recoverRecording, registerRecordingBackup, retainRecordingBackups } from '../src/utils/recordingRecovery.ts';
 
 function storage() {
   let failChunk = '';
   let failRemoval = false;
-  const locks = new Set<string>();
+  const locks = new Map<string, { mode: 'shared' | 'exclusive'; readers: number }>();
+  const references = new Set<string>();
   class Directory {
     directories = new Map<string, Directory>();
     files = new Map<string, Blob>();
@@ -41,13 +42,21 @@ function storage() {
   const root = new Directory();
   const environment = {
     root: async () => root,
-    lock: async <T>(name: string, task: (available: boolean) => Promise<T>): Promise<T> => {
-      if (locks.has(name)) return task(false);
-      locks.add(name);
-      try { return await task(true); } finally { locks.delete(name); }
+    isSavedBackupReferenced: async (id: string) => references.has(id),
+    lock: async <T>(name: string, task: (available: boolean) => Promise<T>, options?: { mode?: 'shared' | 'exclusive'; wait?: boolean }): Promise<T> => {
+      const mode = options?.mode || 'exclusive';
+      const current = locks.get(name);
+      if (current && (current.mode !== 'shared' || mode !== 'shared')) return task(false);
+      const held = current || { mode, readers: 0 };
+      held.readers++;
+      locks.set(name, held);
+      try { return await task(true); }
+      finally {
+        if (locks.get(name) === held && --held.readers === 0) locks.delete(name);
+      }
     },
   };
-  return { root, environment, locks, failChunk: (name: string) => { failChunk = name; }, failRemoval: () => { failRemoval = true; } };
+  return { root, environment, locks, references, failChunk: (name: string) => { failChunk = name; }, failRemoval: () => { failRemoval = true; } };
 }
 const metadata = { roomName: 'Podcast', label: 'Host camera', kind: 'video' as const, mimeType: 'video/webm' };
 
@@ -67,8 +76,11 @@ describe('interrupted recording recovery', () => {
       assert.equal(input.files[0].fileName, 'Host camera_recovered.webm');
       assert.equal(await input.files[0].blob.text(), 'container-header-frame1');
       assert.equal(input.files[0].blob.type, 'video/webm');
+      assert.equal(getRecordingBackupId(input.files[0].blob), recording.id);
+      disk.references.add(recording.id); // The library committed this backing id.
     }, disk.environment);
-    assert.equal(disk.root.directories.size, 0);
+    assert.equal(disk.root.directories.size, 1);
+    assert.deepEqual(await listRecoverableRecordings(disk.environment), []);
   });
   it('retains the only copy when saving to the library fails', async () => {
     const disk = storage();
@@ -79,11 +91,13 @@ describe('interrupted recording recovery', () => {
     await assert.rejects(recoverRecording(recording.id, async () => { throw new Error('Quota exceeded'); }, disk.environment), /Quota exceeded/);
     assert.equal((await listRecoverableRecordings(disk.environment)).length, 1);
   });
-  it('keeps finished file-backed blobs readable until navigation, then removes acknowledged backups', async () => {
+  it('retains acknowledged backing files after navigation until the library owner is deleted', async () => {
     const disk = storage();
     const track = createRecoverableRecordingStore(metadata, undefined, disk.environment);
     track.append(new Blob(['header']));
     const result = await track.finish();
+    const backupId = getRecordingBackupId(result)!;
+    disk.references.add(backupId);
     assert.deepEqual(await listRecoverableRecordings(disk.environment), []);
     await acknowledgeRecordingBackups([result]);
     assert.equal(disk.root.directories.size, 1);
@@ -91,7 +105,74 @@ describe('interrupted recording recovery', () => {
     assert.deepEqual(await listRecoverableRecordings(disk.environment), []);
     disk.locks.clear(); // Navigation releases references to file-backed blobs.
     assert.deepEqual(await listRecoverableRecordings(disk.environment), []);
+    assert.equal(disk.root.directories.size, 1, 'the IndexedDB copy still depends on its OPFS files');
+    disk.references.delete(backupId);
+    assert.deepEqual(await listRecoverableRecordings(disk.environment), []);
     assert.equal(disk.root.directories.size, 0);
+  });
+
+  it('defers cleanup after library deletion while a second document previews the footage', async () => {
+    const disk = storage();
+    const track = createRecoverableRecordingStore(metadata, undefined, disk.environment);
+    track.append(new Blob(['header']));
+    const blob = await track.finish();
+    const id = getRecordingBackupId(blob)!;
+    disk.references.add(id);
+    await acknowledgeRecordingBackups([blob]);
+    disk.locks.clear(); // The capturing document closes.
+    await retainRecordingBackups([id], disk.environment);
+    await retainRecordingBackups([id], disk.environment); // Loading twice shares one document lock.
+    assert.equal(disk.locks.size, 1);
+    disk.references.delete(id);
+    await listRecoverableRecordings(disk.environment);
+    assert.equal(disk.root.directories.size, 1, 'another document still has a readable Blob');
+    disk.locks.clear(); // The preview document closes.
+    await listRecoverableRecordings(disk.environment);
+    assert.equal(disk.root.directories.size, 0);
+  });
+
+  it('does not delete saved backing files when ownership cannot be checked', async () => {
+    const disk = storage();
+    const track = createRecoverableRecordingStore(metadata, undefined, disk.environment);
+    track.append(new Blob(['header']));
+    await acknowledgeRecordingBackups([await track.finish()]);
+    disk.locks.clear();
+    disk.environment.isSavedBackupReferenced = async () => { throw new Error('IndexedDB unavailable'); };
+    await listRecoverableRecordings(disk.environment);
+    assert.equal(disk.root.directories.size, 1);
+  });
+
+  it('keeps shared backing files until the final library owner is deleted', async () => {
+    const disk = storage();
+    const track = createRecoverableRecordingStore(metadata, undefined, disk.environment);
+    track.append(new Blob(['header']));
+    const original = await track.finish();
+    const id = getRecordingBackupId(original)!;
+    await acknowledgeRecordingBackups([original]);
+    const loaded = new Blob(['header']); // Simulate the distinct identity returned by IndexedDB.
+    assert.equal(getRecordingBackupId(loaded), undefined);
+    registerRecordingBackup(loaded, id);
+    const owners = new Map([['original-session', id], ['duplicate-session', getRecordingBackupId(loaded)]]);
+    disk.environment.isSavedBackupReferenced = async candidate => [...owners.values()].includes(candidate);
+    disk.locks.clear();
+    owners.delete('original-session');
+    await listRecoverableRecordings(disk.environment);
+    assert.equal(disk.root.directories.size, 1);
+    owners.delete('duplicate-session');
+    await listRecoverableRecordings(disk.environment);
+    assert.equal(disk.root.directories.size, 0);
+  });
+
+  it('conservatively retains legacy acknowledgements that have no ownership metadata', async () => {
+    const disk = storage();
+    const track = createRecoverableRecordingStore(metadata, undefined, disk.environment);
+    track.append(new Blob(['header'])); await track.finish();
+    disk.locks.clear();
+    const [directory] = disk.root.directories.values();
+    const manifest = JSON.parse(await directory.files.get('recording.json')!.text());
+    directory.files.set('recording.json', new Blob([JSON.stringify({ ...manifest, savedToLibrary: true })]));
+    await listRecoverableRecordings(disk.environment);
+    assert.equal(disk.root.directories.size, 1);
   });
   it('preserves the complete in-memory result and only offers the safe disk prefix when the disk fills', async () => {
     const disk = storage(); disk.failChunk('chunk-000001.part');
@@ -144,7 +225,7 @@ describe('interrupted recording recovery', () => {
     await assert.rejects(recoverRecording(recording.id, async () => {}, disk.environment), /another tab/);
     finish(); await first;
   });
-  it('uses a stable library id if cleanup fails and recovery is retried', async () => {
+  it('retains recovered backing files and prevents duplicate recovery after the library commits', async () => {
     const disk = storage();
     const track = createRecoverableRecordingStore(metadata, undefined, disk.environment);
     track.append(new Blob(['header'])); await track.finish();
@@ -152,9 +233,10 @@ describe('interrupted recording recovery', () => {
     disk.failRemoval();
     const [recording] = await listRecoverableRecordings(disk.environment);
     const saved: string[] = [];
-    await recoverRecording(recording.id, async input => { saved.push(input.id); }, disk.environment);
-    await recoverRecording(recording.id, async input => { saved.push(input.id); }, disk.environment);
-    assert.equal(saved[0], saved[1]);
+    await recoverRecording(recording.id, async input => { saved.push(input.id); disk.references.add(recording.id); }, disk.environment);
+    await assert.rejects(recoverRecording(recording.id, async input => { saved.push(input.id); }, disk.environment), /already been saved/);
+    assert.deepEqual(saved, [`recovered-${recording.id}`]);
+    assert.equal(disk.root.directories.size, 1);
   });
   it('cancel discards only this capture and releases its cross-tab lock', async () => {
     const disk = storage();

@@ -61,6 +61,7 @@ export class SfuManager {
         throw new Error(`SFU is at capacity (max ${MAX_SFU_ROOMS} rooms)`);
       }
       const roomSend = (participantId: string, message: SfuServerMessage) => {
+        if (this.rooms.get(roomId) !== entry || this.participantRoom.get(participantId) !== roomId) return;
         this.sends.get(participantId)?.(message);
       };
       const transport = this.createTransport ? this.createTransport(roomSend) : null;
@@ -74,9 +75,10 @@ export class SfuManager {
   /** Register a socket for a participant in a room. Replaces any prior connection for that id. */
   connect(roomId: string, participantId: string, send: SfuParticipantSend): symbol {
     if (!roomId || !participantId) throw new Error('roomId and participantId are required');
-    // A reconnect under the same id in a different room should leave the old room first.
+    // A new socket starts a fresh media lifecycle, including when it replaces
+    // the same identity in the same room. Pending offers belong to the old PC.
     const priorRoom = this.participantRoom.get(participantId);
-    if (priorRoom && priorRoom !== roomId) {
+    if (priorRoom) {
       this.disconnect(participantId);
     }
     const entry = this.ensureRoom(roomId);

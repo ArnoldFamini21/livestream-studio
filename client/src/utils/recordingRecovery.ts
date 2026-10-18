@@ -1,5 +1,6 @@
 import { createRecordingChunkStore, type RecordingChunkDirectory } from './recordingChunkStore.ts';
 import { getRecordingFileExtension } from './recordingMimeTypes.ts';
+import { isRecordingBackupReferenced } from './recordingLibraryStorage.ts';
 
 const ROOT = 'studio-recording-recovery';
 const MANIFEST = 'recording.json';
@@ -13,6 +14,8 @@ export interface RecordingRecoveryMetadata {
   createdAt: string;
   complete: boolean;
   savedToLibrary?: boolean;
+  /** New library metadata records explicit ownership of this backing directory. */
+  libraryOwnershipVersion?: 1;
 }
 export interface RecoverableRecording extends RecordingRecoveryMetadata {
   size: number;
@@ -25,17 +28,50 @@ interface RecoveryDirectory extends RecordingChunkDirectory {
 }
 interface RecoveryEnvironment {
   root(): Promise<RecoveryDirectory>;
-  lock<T>(name: string, task: (available: boolean) => Promise<T>): Promise<T>;
+  lock<T>(name: string, task: (available: boolean) => Promise<T>, options?: { mode?: 'shared' | 'exclusive'; wait?: boolean }): Promise<T>;
+  isSavedBackupReferenced?(id: string): Promise<boolean>;
 }
 // Also injectable for crash, quota and concurrent-tab regression tests.
 export function browserRecoveryEnvironment(): RecoveryEnvironment | undefined {
   if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory || !navigator.locks?.request) return undefined;
   return {
     root: async () => (await navigator.storage.getDirectory()).getDirectoryHandle(ROOT, { create: true }) as unknown as RecoveryDirectory,
-    lock: async (name, task) => await navigator.locks.request(`studio-recovery:${name}`, { ifAvailable: true }, lock => task(Boolean(lock))),
+    lock: async (name, task, options) => await navigator.locks.request(`studio-recovery:${name}`, {
+      mode: options?.mode || 'exclusive',
+      ...(options?.wait ? {} : { ifAvailable: true }),
+    }, lock => task(Boolean(lock))),
+    isSavedBackupReferenced: isRecordingBackupReferenced,
   };
 }
-const savedBlobs = new WeakMap<Blob, () => Promise<void>>();
+const savedBlobs = new WeakMap<Blob, { id: string; acknowledge: () => Promise<void> }>();
+const retainedBackups = new Map<string, Promise<void>>();
+export function getRecordingBackupId(blob: Blob): string | undefined { return savedBlobs.get(blob)?.id; }
+/** Restore ownership after IndexedDB structured cloning produces a new Blob identity. */
+export function registerRecordingBackup(blob: Blob, id: string): void {
+  if (validId(id)) savedBlobs.set(blob, { id, acknowledge: async () => {} });
+}
+
+/** Shared document-lifetime read locks protect active previews/uploads from another tab's deletion. */
+export async function retainRecordingBackups(ids: string[], environment = browserRecoveryEnvironment()): Promise<void> {
+  if (!environment) return;
+  await Promise.all([...new Set(ids)].filter(validId).map(id => {
+    const existing = retainedBackups.get(id);
+    if (existing) return existing;
+    let ready!: () => void;
+    let failed!: (error: unknown) => void;
+    const retained = new Promise<void>((resolve, reject) => { ready = resolve; failed = reject; });
+    retainedBackups.set(id, retained);
+    void environment.lock(id, async available => {
+      if (!available) throw new Error('Recording backing files are busy');
+      ready();
+      await new Promise<void>(() => {});
+    }, { mode: 'shared', wait: true }).catch(error => {
+      retainedBackups.delete(id);
+      failed(error);
+    });
+    return retained;
+  }));
+}
 const validId = (id: string) => /^take-[a-zA-Z0-9_-]+$/.test(id);
 const notify = (report: ((error: unknown) => void) | undefined, error: unknown) => {
   try { report?.(error); } catch { /* Reporting must not stop recording. */ }
@@ -97,8 +133,8 @@ export function createRecoverableRecordingStore(
   const directory = new Promise<RecoveryDirectory | undefined>(resolve => { resolveDirectory = resolve; });
   let root: RecoveryDirectory | undefined;
   // Hold the lock for this document’s lifetime: finished Blobs still reference
-  // OPFS files during uploads/downloads. Navigation or crashes release it so a
-  // later document can recover unsaved footage or clean acknowledged backups.
+  // OPFS files during uploads/downloads. Shared readers can preview saved takes;
+  // recovery and cleanup require an exclusive lock after readers navigate away.
   const lockFinished = environment ? environment.lock(metadata.id, async available => {
     if (!available) throw new Error('Recording storage is busy');
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -111,7 +147,7 @@ export function createRecoverableRecordingStore(
     } catch (error) {
       fail(error); resolveDirectory(undefined);
     }
-  }).catch(error => { fail(error); resolveDirectory(undefined); }) : Promise.resolve().then(() => {
+  }, { mode: 'shared' }).catch(error => { fail(error); resolveDirectory(undefined); }) : Promise.resolve().then(() => {
     fail(new Error('Recoverable recording storage is unavailable in this browser.'));
     resolveDirectory(undefined);
   });
@@ -136,11 +172,11 @@ export function createRecoverableRecordingStore(
         if (target) {
           const completed = { ...metadata, complete: !storageFailed };
           try { await writeManifest(target, completed); } catch (error) { fail(error); }
-          savedBlobs.set(blob, async () => {
+          savedBlobs.set(blob, { id: metadata.id, acknowledge: async () => {
             // Mark, but do not delete: File-backed Blobs become unreadable if
             // their source disappears, even after an IndexedDB copy is saved.
-            await writeManifest(target, { ...completed, savedToLibrary: true });
-          });
+            await writeManifest(target, { ...completed, savedToLibrary: true, libraryOwnershipVersion: 1 });
+          } });
         }
         return blob;
       })();
@@ -155,9 +191,9 @@ export function createRecoverableRecordingStore(
 /** Call only after the complete recording has committed to the recording library. */
 export async function acknowledgeRecordingBackups(blobs: Blob[]): Promise<void> {
   await Promise.all(blobs.map(async blob => {
-    const acknowledge = savedBlobs.get(blob);
-    if (!acknowledge) return;
-    try { await acknowledge(); savedBlobs.delete(blob); } catch { /* Retain the backup if cleanup fails. */ }
+    const backup = savedBlobs.get(blob);
+    if (!backup) return;
+    try { await backup.acknowledge(); } catch { /* Retain the backup if acknowledgement fails. */ }
   }));
 }
 
@@ -172,9 +208,15 @@ export async function listRecoverableRecordings(environment = browserRecoveryEnv
       try {
         const directory = await root.getDirectoryHandle(id, { create: false });
         const metadata = await readManifest(directory, id);
+        // IndexedDB may still refer to the original OPFS Files after a Blob
+        // structured clone. A committed library owner must keep them alive.
+        if (await environment.isSavedBackupReferenced?.(id)) return;
         if (metadata.savedToLibrary) {
-          // The capturing document no longer holds its lock or Blob references.
-          await root.removeEntry(id, { recursive: true });
+          // Legacy acknowledgements have no ownership metadata: retain them
+          // conservatively rather than invalidating an older saved recording.
+          if (metadata.libraryOwnershipVersion === 1 && environment.isSavedBackupReferenced) {
+            await root.removeEntry(id, { recursive: true });
+          }
           return;
         }
         const { chunks, truncated } = await readRecoveryChunks(directory);
@@ -203,16 +245,23 @@ export async function recoverRecording(
     const root = await environment.root();
     const directory = await root.getDirectoryHandle(id, { create: false });
     const metadata = await readManifest(directory, id);
-    if (metadata.savedToLibrary) throw new Error('This recording has already been saved to your library.');
+    if (metadata.savedToLibrary || await environment.isSavedBackupReferenced?.(id)) {
+      throw new Error('This recording has already been saved to your library.');
+    }
     const { chunks } = await readRecoveryChunks(directory);
     if (!chunks.length) throw new Error('No complete recording fragments are available.');
     const blob = new Blob(chunks, { type: metadata.mimeType });
+    savedBlobs.set(blob, { id, acknowledge: () => writeManifest(directory, {
+      ...metadata, savedToLibrary: true, libraryOwnershipVersion: 1,
+    }) });
     const label = metadata.label.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || 'Recording';
     await save({
       id: `recovered-${id}`, roomName: `${metadata.roomName} · Recovered`, createdAt: metadata.createdAt,
       files: [{ label: metadata.label, kind: metadata.kind, blob, fileName: `${label}_recovered.${getRecordingFileExtension(blob.type)}` }],
     });
-    // Never remove the only copy before the library transaction succeeds.
-    try { await root.removeEntry(id, { recursive: true }); } catch { /* Stable recovery id makes retry idempotent. */ }
+    // Keep backing files: the saved Blob can still depend on them after reload.
+    // A crash between the library commit and this acknowledgement is safe:
+    // committed library ownership is checked before any future recovery/cleanup.
+    try { await savedBlobs.get(blob)?.acknowledge(); } catch { /* Ownership remains authoritative. */ }
   });
 }

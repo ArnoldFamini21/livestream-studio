@@ -1,5 +1,10 @@
 # LiveStream Studio — Masterplan to StreamYard / Riverside Parity
 
+> Current engineering review: [October 18, 2026](review-2026-10-18.md).
+> The September baseline below is historical; several listed gaps now have
+> implementations. Use the current review for verified defects, fixes, and
+> remaining qualification work.
+
 _Review date: September 22, 2026 · Baseline commit: `af50eb1`_
 
 ## 1. Summary

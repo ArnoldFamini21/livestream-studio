@@ -4,6 +4,7 @@ import {
   type VideoQualityPresetId,
 } from './mediaPreferences.ts';
 import {
+  getPreferredVideoRecordingMimeType,
   VIDEO_MP4_MEDIA_RECORDER_TYPES,
   VIDEO_WEBM_MEDIA_RECORDER_TYPES,
 } from './recordingMimeTypes.ts';
@@ -140,13 +141,10 @@ export function getPreferredVideoEncodingContentType(
   const isTypeSupported = getMediaRecorderTypeSupport(environment.mediaRecorder);
   if (!isTypeSupported) return getVideoOnlyEncodingContentType(VIDEO_RECORDING_CONTENT_TYPES[0]);
 
-  const recordingContentType = VIDEO_RECORDING_CONTENT_TYPES.find((contentType) => {
-    try {
-      return isTypeSupported(contentType);
-    } catch {
-      return false;
-    }
-  }) || VIDEO_RECORDING_CONTENT_TYPES[0];
+  // Probe the codec that capture will actually use, including its recovery-first
+  // container preference, rather than advertising another encoder's readiness.
+  const recordingContentType = getPreferredVideoRecordingMimeType({ isTypeSupported })
+    || VIDEO_RECORDING_CONTENT_TYPES[0];
   return getVideoOnlyEncodingContentType(recordingContentType);
 }
 

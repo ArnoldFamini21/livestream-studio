@@ -36,6 +36,7 @@ import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
+import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
 import { useMediaServerHealth } from '../hooks/useMediaServerHealth.ts';
@@ -1654,6 +1655,7 @@ export function StudioRoom() {
   const mediaAssetsRef = useRef<StudioMediaAsset[]>(mediaAssets);
   const idCounters = useRef({ lt: 0, dest: 0, banner: 0, timer: 0, ticker: 0, widget: 0, qa: 0, poll: 0, media: 0 });
   const liveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveStartOperationRef = useRef(new RelayOperationSlot());
   const liveTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
   const recordingUploadTokenRequestsRef = useRef<Map<string, PendingRecordingUploadTokenRequest>>(new Map());
   const sfuTokenRequestsRef = useRef<Map<string, PendingLiveTokenRequest>>(new Map());
@@ -4421,7 +4423,10 @@ export function StudioRoom() {
       d.id === id ? { ...d, enabled: !d.enabled, status: 'idle', statusMessage: undefined } : d
     )));
   };
+  useEffect(() => () => liveStartOperationRef.current.cancel(), []);
+
   const onGoLive = async () => {
+    if (liveStartOperationRef.current.active || isLiveRef.current) return;
     if (liveStatusTimerRef.current) {
       clearTimeout(liveStatusTimerRef.current);
       liveStatusTimerRef.current = null;
@@ -4441,47 +4446,48 @@ export function StudioRoom() {
       return;
     }
 
-    const readiness = await checkRelayReadiness();
-    if (readiness.status !== 'ready') {
+    const operation = liveStartOperationRef.current.begin();
+    if (!operation) return;
+    try {
+      const readiness = await operation.run(checkRelayReadiness);
+      operation.assertActive();
+      if (readiness.status !== 'ready') {
+        setDestinations((prev) => prev.map((d) => (
+          d.enabled
+            ? { ...d, status: 'error', statusMessage: readiness.message }
+            : { ...d, status: 'idle', statusMessage: undefined }
+        )));
+        return;
+      }
+
+      setIsLive(true);
+      setLiveStartedAt(null);
+      setLiveSessionSummary(null);
+      setLiveBackupRecording(null);
       setDestinations((prev) => prev.map((d) => (
         d.enabled
-          ? { ...d, status: 'error', statusMessage: readiness.message }
+          ? { ...d, status: 'connecting', statusMessage: 'Starting relay session...' }
           : { ...d, status: 'idle', statusMessage: undefined }
       )));
-      return;
-    }
-
-    setIsLive(true);
-    setLiveStartedAt(null);
-    setLiveSessionSummary(null);
-    setLiveBackupRecording(null);
-    setDestinations((prev) => prev.map((d) => (
-      d.enabled
-        ? { ...d, status: 'connecting', statusMessage: 'Starting relay session...' }
-        : { ...d, status: 'idle', statusMessage: undefined }
-    )));
-    try {
-      const token = await requestLiveStreamToken();
-      await startRelay({
-        token,
-        refreshToken: requestLiveStreamToken,
-        orientation: broadcastOrientation,
-        outputPreset: rtmpRelayOutputPreset,
-        destinations: enabledDestinations.map((destination) => ({
-          id: destination.id,
-          name: destination.name,
-          rtmpUrl: destination.rtmpUrl,
-          streamKey: destination.streamKey,
-        })),
-      });
-      send({
-        type: 'live-stream-state-changed',
-        payload: {
-          live: true,
-          performedBy: myParticipantRef.current?.id || '',
-        },
-      });
+      await startAuthorizedRelay(operation, requestLiveStreamToken,
+        (token) => startRelay({
+          token,
+          refreshToken: requestLiveStreamToken,
+          orientation: broadcastOrientation,
+          outputPreset: rtmpRelayOutputPreset,
+          destinations: enabledDestinations.map((destination) => ({
+            id: destination.id,
+            name: destination.name,
+            rtmpUrl: destination.rtmpUrl,
+            streamKey: destination.streamKey,
+          })),
+        }),
+        () => send({
+          type: 'live-stream-state-changed',
+          payload: { live: true, performedBy: myParticipantRef.current?.id || '' },
+        }));
     } catch (err) {
+      if (!operation.active || isRelayOperationCancelled(err)) return;
       console.error('Failed to start live stream:', err);
       stopRelay();
       setIsLive(false);
@@ -4493,9 +4499,12 @@ export function StudioRoom() {
           ? { ...d, status: 'error', statusMessage: message }
           : { ...d, status: 'idle', statusMessage: undefined }
       )));
+    } finally {
+      liveStartOperationRef.current.finish(operation);
     }
   };
   const onStopLive = () => {
+    liveStartOperationRef.current.cancel();
     if (liveStatusTimerRef.current) {
       clearTimeout(liveStatusTimerRef.current);
       liveStatusTimerRef.current = null;

@@ -7,6 +7,7 @@ import {
   type SfuTransportLike,
 } from './sfuSignaling.js';
 import type { SfuProducerMedia } from './sfuTransport.js';
+import { SfuManager } from './sfuManager.js';
 
 const LAYERS = [
   { rid: 'h', bitrateKbps: 2800, scaleResolutionDownBy: 1 },
@@ -56,6 +57,170 @@ class FakeSfuTransport implements SfuTransportLike {
   removeProducer() {}
   async closeParticipant() {}
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+type Deferred<T> = ReturnType<typeof deferred<T>>;
+type PublishOffer = Awaited<ReturnType<FakeSfuTransport['createPublishOffer']>>;
+type SubscribeOffer = Awaited<ReturnType<FakeSfuTransport['createSubscribeOffer']>>;
+
+class DeferredSfuTransport extends FakeSfuTransport {
+  deferPublish = false;
+  deferSubscribe = false;
+  deferAnswers = false;
+  readonly pendingPublishes: Array<Deferred<PublishOffer>> = [];
+  readonly pendingSubscriptions: Array<Deferred<SubscribeOffer>> = [];
+  readonly pendingAnswers: Array<Deferred<void>> = [];
+
+  async createPublishOffer() {
+    if (!this.deferPublish) return super.createPublishOffer();
+    const operation = deferred<Awaited<ReturnType<FakeSfuTransport['createPublishOffer']>>>();
+    this.pendingPublishes.push(operation);
+    return operation.promise;
+  }
+
+  async createSubscribeOffer(consumerId: string, producers: SfuProducerMedia[]) {
+    const result = await super.createSubscribeOffer(consumerId, producers);
+    if (!this.deferSubscribe) return result;
+    const operation = deferred<typeof result>();
+    this.pendingSubscriptions.push(operation);
+    return operation.promise;
+  }
+
+  async setSubscribeAnswer() {
+    if (!this.deferAnswers) return;
+    const operation = deferred<void>();
+    this.pendingAnswers.push(operation);
+    await operation.promise;
+  }
+}
+
+function createReplacementHarness(transport: DeferredSfuTransport) {
+  const manager = new SfuManager({}, () => transport);
+  const sent: Array<{ to: string; message: SfuServerMessage }> = [];
+  const connect = (id: string) => manager.connect('room-1', id, (message) => sent.push({ to: id, message }));
+  const bob = connect('bob');
+  manager.handleMessage('bob', { type: 'sfu-join' }, bob);
+  return { manager, sent, connect, close: () => {
+    manager.disconnect('alice');
+    manager.disconnect('bob');
+    manager.disconnect('carol');
+  } };
+}
+
+describe('SFU replacement negotiation isolation', () => {
+  for (const outcome of ['resolve', 'reject'] as const) {
+    it(`ignores a stale publish offer ${outcome} after the replacement publishes`, async () => {
+      const transport = new DeferredSfuTransport();
+      transport.deferPublish = true;
+      const { manager, sent, connect, close } = createReplacementHarness(transport);
+      try {
+        const old = connect('alice');
+        manager.handleMessage('alice', { type: 'sfu-join' }, old);
+        manager.handleMessage('alice', { type: 'sfu-publish', layers: LAYERS }, old);
+        const replacement = connect('alice');
+        manager.handleMessage('alice', { type: 'sfu-join' }, replacement);
+        manager.handleMessage('alice', { type: 'sfu-publish', layers: LAYERS }, replacement);
+        transport.pendingPublishes[1].resolve({ type: 'offer', sdp: 'current-offer' });
+        await flushAsyncWork();
+        sent.length = 0;
+
+        if (outcome === 'resolve') transport.pendingPublishes[0].resolve({ type: 'offer', sdp: 'stale-offer' });
+        else transport.pendingPublishes[0].reject(new Error('stale offer failed'));
+        await flushAsyncWork();
+        assert.equal(sent.some(({ to }) => to === 'alice'), false);
+        assert.equal(manager.handleMessage('alice', { type: 'sfu-downlink', downlinkKbps: 1000 }, replacement), true);
+      } finally { close(); }
+    });
+  }
+
+  it('does not deliver an old subscription offer to a replacement socket', async () => {
+    const transport = new DeferredSfuTransport();
+    transport.deferSubscribe = true;
+    const { manager, sent, connect, close } = createReplacementHarness(transport);
+    try {
+      manager.handleMessage('bob', { type: 'sfu-publish', layers: LAYERS });
+      const old = connect('alice');
+      manager.handleMessage('alice', { type: 'sfu-join' }, old);
+      await flushAsyncWork();
+      const replacement = connect('alice');
+      manager.handleMessage('alice', { type: 'sfu-join' }, replacement);
+      await flushAsyncWork();
+      transport.pendingSubscriptions[1].resolve({
+        description: { type: 'offer', sdp: 'current-subscribe' }, producerMids: {},
+      });
+      await flushAsyncWork();
+      sent.length = 0;
+      transport.pendingSubscriptions[0].resolve({
+        description: { type: 'offer', sdp: 'stale-subscribe' }, producerMids: {},
+      });
+      await flushAsyncWork();
+      assert.equal(sent.some(({ to }) => to === 'alice'), false);
+    } finally { close(); }
+  });
+
+  it('does not finish a new negotiation when an old answer completes', async () => {
+    const transport = new DeferredSfuTransport();
+    transport.deferAnswers = true;
+    const { manager, connect, close } = createReplacementHarness(transport);
+    try {
+      manager.handleMessage('bob', { type: 'sfu-publish', layers: LAYERS });
+      const old = connect('alice');
+      manager.handleMessage('alice', { type: 'sfu-join' }, old);
+      await flushAsyncWork();
+      manager.handleMessage('alice', { type: 'sfu-transport-answer', side: 'subscribe', sdp: 'old-answer' }, old);
+      const replacement = connect('alice');
+      manager.handleMessage('alice', { type: 'sfu-join' }, replacement);
+      await flushAsyncWork();
+      const carol = connect('carol');
+      manager.handleMessage('carol', { type: 'sfu-join' }, carol);
+      manager.handleMessage('carol', { type: 'sfu-publish', layers: LAYERS }, carol);
+      await flushAsyncWork();
+      const aliceOffers = () => transport.subscribeOffers.filter(({ consumerId }) => consumerId === 'alice').length;
+      assert.equal(aliceOffers(), 2);
+
+      transport.pendingAnswers[0].resolve();
+      await flushAsyncWork();
+      assert.equal(aliceOffers(), 2);
+      manager.handleMessage('alice', { type: 'sfu-transport-answer', side: 'subscribe', sdp: 'new-answer' }, replacement);
+      transport.pendingAnswers[1].resolve();
+      await flushAsyncWork();
+      assert.equal(aliceOffers(), 3);
+    } finally { close(); }
+  });
+
+  it('clears old subscription deadlines and resets only the lifecycle whose answer times out', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const transport = new DeferredSfuTransport();
+    const { manager, sent, connect, close } = createReplacementHarness(transport);
+    try {
+      manager.handleMessage('bob', { type: 'sfu-publish', layers: LAYERS });
+      const old = connect('alice');
+      manager.handleMessage('alice', { type: 'sfu-join' }, old);
+      await flushAsyncWork();
+      context.mock.timers.tick(1000);
+      const replacement = connect('alice');
+      manager.handleMessage('alice', { type: 'sfu-join' }, replacement);
+      await flushAsyncWork();
+      sent.length = 0;
+
+      context.mock.timers.tick(14_000);
+      assert.equal(sent.some(({ message }) => message.type === 'sfu-error'), false);
+      context.mock.timers.tick(1000);
+      assert.equal(sent.filter(({ to, message }) => to === 'alice' && message.type === 'sfu-error').length, 1);
+      // A fresh join succeeds after reset; the timed-out lifecycle has no
+      // queued negotiation capable of finishing underneath it.
+      assert.equal(manager.handleMessage('alice', { type: 'sfu-join' }, replacement), true);
+      await flushAsyncWork();
+      assert.equal(transport.subscribeOffers.filter(({ consumerId }) => consumerId === 'alice').length, 3);
+    } finally { close(); }
+  });
+});
 
 describe('parseSfuClientMessage', () => {
   it('parses valid client messages', () => {
