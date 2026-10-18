@@ -261,23 +261,6 @@ function loadSavedBrandKits(): SavedBrandKit[] {
   }
 }
 
-function getBackgroundStyleValue(background: StageBackground, fallbackColor: string): string {
-  if (background.type === 'image' && background.value) {
-    return `url(${background.value}) center / cover no-repeat`;
-  }
-  if (background.type === 'gradient' || background.type === 'color') {
-    return background.value || fallbackColor;
-  }
-  return `linear-gradient(135deg, #0f172a 0%, ${fallbackColor} 100%)`;
-}
-
-function getCameraShapeRadius(shape: CameraShape): number | string {
-  if (shape === 'circle') return '50%';
-  if (shape === 'rounded') return 10;
-  if (shape === 'square') return 6;
-  return 3;
-}
-
 type BrandKitPreset = Omit<BrandKitVisuals, 'logoUrl' | 'logoPlacement' | 'logoPosition'> & {
   name: string;
   logoUrl?: string | null;
@@ -486,24 +469,337 @@ export function Sidebar(props: SidebarProps) {
           {activeTab === 'overlays' && <OverlayPanel {...props} />}
 
           {activeTab === 'brand' && (
-            <div style={st.scrollContent}>
-              <div style={st.section}>
-                <h2 style={st.sectionTitle}>Brand Kit</h2>
-                <BrandPreview
-                  studioTheme={props.studioTheme}
-                  brandColor={props.brandColor}
-                  stageBackground={props.stageBackground}
-                  logoUrl={props.logoUrl}
-                  logoPlacement={props.logoPlacement}
-                  logoPosition={props.logoPosition}
-                  logoSize={props.logoSize}
-                  logoOpacity={props.logoOpacity}
-                  cameraShape={props.cameraShape}
-                  nameTagStyle={props.nameTagStyle}
-                  waitingRoomBranding={props.waitingRoomBranding}
-                />
-                <details className="studio-brand-setting"><summary>Studio Theme</summary>
+            <div className="studio-brand-panel" style={st.scrollContent}>
+              <p className="studio-brand-intro">See your changes on the stage.</p>
+              <div className="studio-brand-field">
+                <div className="studio-brand-field-heading">
+                  <h3>Brand color</h3>
+                  <span style={st.colorHex}>{props.brandColor}</span>
+                </div>
+                <div style={st.colorGrid}>
+                  {brandPresets.map((p) => (
+                    <button
+                      key={p.color}
+                      type="button"
+                      style={{ ...st.colorSwatch, background: p.color, outline: props.brandColor === p.color ? `2px solid ${p.color}` : 'none', outlineOffset: 2 }}
+                      onClick={() => props.onBrandColorChange(p.color)}
+                      title={p.name}
+                      aria-label={`${p.name} brand color`}
+                      aria-pressed={props.brandColor === p.color}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="studio-brand-field">
+                <h3>Logo</h3>
+                <input ref={logoInputRef} type="file" accept="image/*" aria-label="Upload brand logo" style={{ display: 'none' }} onChange={handleLogoUpload} />
+                {props.logoUrl ? (
+                  <div style={st.logoPreview}>
+                    <img src={props.logoUrl} alt="Brand logo" style={st.logoImg} />
+                    <button type="button" className="studio-brand-replace" onClick={() => logoInputRef.current?.click()}>Replace</button>
+                    <button type="button" aria-label="Remove logo" title="Remove logo" style={st.removeImgBtn} onClick={() => { const oldUrl = props.logoUrl; props.onLogoUrlChange(null); if (oldUrl && oldUrl.startsWith('blob:')) { setTimeout(() => URL.revokeObjectURL(oldUrl), 100); } }}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" style={st.uploadBtn} onClick={() => logoInputRef.current?.click()}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    Upload logo
+                  </button>
+                )}
 
+                {props.logoUrl && (
+                  <details className="studio-brand-more">
+                    <summary>Logo settings</summary>
+                    <div className="studio-brand-field">
+                      <h3>Position</h3>
+                      <div style={st.positionGrid}>
+                        {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as LogoPlacement[]).map((placement) => (
+                          <button
+                            key={placement}
+                            type="button"
+                            style={{ ...st.positionBtn, ...(!props.logoPosition && props.logoPlacement === placement ? st.positionBtnActive : {}) }}
+                            onClick={() => {
+                              props.onLogoPositionChange(null);
+                              props.onLogoPlacementChange(placement);
+                            }}
+                            title={placement.replace('-', ' ')}
+                            aria-label={`Logo position: ${placement.replace('-', ' ')}`}
+                            aria-pressed={!props.logoPosition && props.logoPlacement === placement}
+                          >
+                            <span style={{ ...st.positionDot, ...getPositionDotStyle(placement) }} />
+                          </button>
+                        ))}
+                      </div>
+                      <div style={st.positionModeRow}>
+                        <button
+                          type="button"
+                          style={{ ...st.positionModeBtn, ...(props.logoPosition ? st.positionModeBtnActive : {}) }}
+                          onClick={() => props.onLogoPositionChange(props.logoPosition || getLogoPositionFromPlacement(props.logoPlacement))}
+                          aria-pressed={Boolean(props.logoPosition)}
+                        >
+                          Custom
+                        </button>
+                        <button
+                          type="button"
+                          style={{ ...st.positionModeBtn, ...(!props.logoPosition ? st.positionModeBtnActive : {}) }}
+                          onClick={() => props.onLogoPositionChange(null)}
+                          aria-pressed={!props.logoPosition}
+                        >
+                          Corner
+                        </button>
+                      </div>
+
+                      <p className="studio-brand-hint">{props.logoPosition ? 'Drag the logo on the stage to position it.' : 'Choose a corner, or use Custom to drag it on the stage.'}</p>
+                    </div>
+                    <div className="studio-brand-field">
+                      <h3>Size</h3>
+                      <div style={st.segmented}>
+                        {(['small', 'medium', 'large'] as LogoSize[]).map((size) => (
+                          <button
+                            key={size}
+                            type="button"
+                            style={{ ...st.segmentedBtn, ...(props.logoSize === size ? st.segmentedBtnActive : {}) }}
+                            onClick={() => props.onLogoSizeChange(size)}
+                            aria-pressed={props.logoSize === size}
+                          >
+                            {size}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="studio-brand-field">
+                      <h3>Opacity</h3>
+                      <div style={st.brandLabelRow}>
+                        <span style={st.colorHex}>{Math.round(props.logoOpacity * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={20}
+                        max={100}
+                        step={5}
+                        value={Math.round(props.logoOpacity * 100)}
+                        onChange={(e) => props.onLogoOpacityChange(normalizeLogoOpacity(Number(e.currentTarget.value) / 100))}
+                        style={st.opacitySlider}
+                        aria-label="Logo watermark opacity"
+                      />
+                      <div style={st.opacityPresets}>
+                        {[
+                          { label: 'Subtle', value: 0.45 },
+                          { label: 'Standard', value: 0.85 },
+                          { label: 'Solid', value: 1 },
+                        ].map((preset) => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            style={{
+                              ...st.opacityPresetBtn,
+                              ...(Math.abs(props.logoOpacity - preset.value) < 0.01 ? st.opacityPresetBtnActive : {}),
+                            }}
+                            onClick={() => props.onLogoOpacityChange(preset.value)}
+                            aria-pressed={Math.abs(props.logoOpacity - preset.value) < 0.01}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </details>
+                )}
+              </div>
+              <details className="studio-brand-setting">
+                <summary><span>Stage appearance</span></summary>
+                <div className="studio-brand-group-content">
+                  <div className="studio-brand-field">
+                    <h3>Camera shape</h3>
+                    <div style={st.shapeGrid}>
+                      {(['rectangle', 'rounded', 'square', 'circle'] as CameraShape[]).map((shape) => (
+                        <button
+                          key={shape}
+                          type="button"
+                          style={{ ...st.shapeBtn, outline: props.cameraShape === shape ? '2px solid var(--accent)' : 'none', outlineOffset: 2 }}
+                          onClick={() => props.onCameraShapeChange(shape)}
+                          title={shape}
+                          aria-label={`${shape} cameras`}
+                          aria-pressed={props.cameraShape === shape}
+                        >
+                          <div style={{ ...st.shapeVisual, borderRadius: shape === 'circle' ? '50%' : shape === 'rounded' ? 8 : shape === 'square' ? 4 : 2, aspectRatio: shape === 'square' || shape === 'circle' ? '1/1' : '16/9' }} />
+                          <span style={st.shapeText}>{shape}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="studio-brand-field">
+                    <h3>Name tags</h3>
+                    <select
+                      style={st.selectInput}
+                      aria-label="Name tag style"
+                      value={props.nameTagStyle}
+                      onChange={(e) => props.onNameTagStyleChange(e.target.value as NameTagStyle)}
+                    >
+                      <option value="classic">Classic</option>
+                      <option value="minimal">Minimal</option>
+                      <option value="block">Block</option>
+                    </select>
+                  </div>
+                  <details className="studio-brand-more">
+                    <summary>Background</summary>
+                    <BackgroundPicker value={props.stageBackground} onChange={props.onStageBackgroundChange} />
+                  </details>
+                </div>
+              </details>
+              <details className="studio-brand-setting">
+                <summary><span>Brand kits</span><span className="studio-brand-summary-value">{savedBrandKits.length > 0 ? `${savedBrandKits.length} saved` : ''}</span></summary>
+                <div className="studio-brand-group-content">
+                  <div className="studio-brand-field">
+                    <h3>Presets</h3>
+                    <div style={st.brandKitGrid}>
+                      {brandKits.map((kit) => (
+                        <button key={kit.name} type="button" style={st.brandKitBtn} onClick={() => applyBrandKit(kit)}>
+                          <span style={{ ...st.brandKitSwatch, background: kit.stageBackground.type === 'none' ? kit.brandColor : kit.stageBackground.value }} />
+                          <span style={st.brandKitName}>{kit.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="studio-brand-field">
+                    <h3>Save this look</h3>
+                    <div style={st.brandSaveRow}>
+                      <input
+                        type="text"
+                        style={st.brandKitInput}
+                        placeholder="Kit name"
+                        aria-label="Brand kit name"
+                        value={brandKitName}
+                        onChange={(e) => setBrandKitName(e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') saveCurrentBrandKit();
+                        }}
+                        maxLength={32}
+                      />
+                      <button
+                        type="button"
+                        style={{
+                          ...st.brandSaveBtn,
+                          ...(savedBrandKits.length >= MAX_SAVED_BRAND_KITS ? st.brandSaveBtnDisabled : {}),
+                        }}
+                        onClick={saveCurrentBrandKit}
+                        disabled={savedBrandKits.length >= MAX_SAVED_BRAND_KITS}
+                      >
+                        Save
+                      </button>
+                    </div>
+                    {brandKitMessage && <span role="status" style={st.brandKitMessage}>{brandKitMessage}</span>}
+                    {savedBrandKits.length > 0 && (
+                      <div style={st.savedBrandKitList}>
+                        {savedBrandKits.map((kit) => (
+                          <div key={kit.id} style={st.savedBrandKitCard}>
+                            <button
+                              type="button"
+                              style={st.savedBrandKitApply}
+                              onClick={() => applyBrandKit(kit)}
+                              title={`Apply ${kit.name}`}
+                            >
+                              <span style={{ ...st.savedBrandKitSwatch, background: kit.stageBackground.type === 'none' ? kit.brandColor : kit.stageBackground.value }}>
+                                {kit.logoUrl && <span style={st.savedBrandKitLogoDot} />}
+                              </span>
+                              <span style={st.savedBrandKitText}>
+                                <span style={st.savedBrandKitName}>{kit.name}</span>
+                                <span style={st.savedBrandKitMeta}>{getStudioThemeLabel(kit.studioTheme)} / {kit.cameraShape} / {kit.nameTagStyle}</span>
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              style={st.savedBrandKitDelete}
+                              title={`Delete ${kit.name}`}
+                              onClick={() => deleteSavedBrandKit(kit.id)}
+                              aria-label={`Delete ${kit.name}`}
+                            >
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                                <line x1="18" y1="6" x2="6" y2="18" />
+                                <line x1="6" y1="6" x2="18" y2="18" />
+                              </svg>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </details>
+              <details className="studio-brand-setting">
+                <summary><span>Waiting room</span></summary>
+                <div className="studio-brand-group-content">
+                  <label className="studio-brand-input-label" htmlFor="brand-waiting-headline">Headline</label>
+                  <input
+                    id="brand-waiting-headline"
+                    type="text"
+                    style={st.textInput}
+                    value={props.waitingRoomBranding.headline}
+                    maxLength={MAX_WAITING_ROOM_HEADLINE_LENGTH}
+                    onChange={(e) => props.onWaitingRoomBrandingChange({
+                      ...props.waitingRoomBranding,
+                      headline: e.currentTarget.value,
+                    })}
+                    aria-label="Waiting room headline"
+                  />
+                  <label className="studio-brand-input-label" htmlFor="brand-waiting-message">Message</label>
+                  <textarea
+                    id="brand-waiting-message"
+                    style={st.textArea}
+                    value={props.waitingRoomBranding.message}
+                    maxLength={MAX_WAITING_ROOM_MESSAGE_LENGTH}
+                    rows={3}
+                    onChange={(e) => props.onWaitingRoomBrandingChange({
+                      ...props.waitingRoomBranding,
+                      message: e.currentTarget.value,
+                    })}
+                    aria-label="Waiting room message"
+                  />
+                  <h3 className="studio-brand-input-label">Background</h3>
+                  <div style={st.segmentedTwo}>
+                    {[
+                      { id: 'brand', label: 'Brand' },
+                      { id: 'studio', label: 'Stage' },
+                    ].map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        style={{
+                          ...st.segmentedBtn,
+                          ...(props.waitingRoomBranding.backgroundMode === mode.id ? st.segmentedBtnActive : {}),
+                        }}
+                        onClick={() => props.onWaitingRoomBrandingChange({
+                          ...props.waitingRoomBranding,
+                          backgroundMode: mode.id as WaitingRoomBranding['backgroundMode'],
+                        })}
+                        aria-pressed={props.waitingRoomBranding.backgroundMode === mode.id}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+                  <label style={st.checkboxRow}>
+                    <input
+                      type="checkbox"
+                      checked={props.waitingRoomBranding.showLogo}
+                      onChange={(e) => props.onWaitingRoomBrandingChange({
+                        ...props.waitingRoomBranding,
+                        showLogo: e.currentTarget.checked,
+                      })}
+                    />
+                    <span>Show logo</span>
+                  </label>
+                </div>
+              </details>
+              <details className="studio-brand-setting">
+                <summary><span>Studio theme</span><span className="studio-brand-summary-value">{getStudioThemeLabel(props.studioTheme)}</span></summary>
+                <div className="studio-brand-group-content">
+                  <p className="studio-brand-hint">Choose how your studio controls look.</p>
                   <div style={st.themeGrid}>
                     {STUDIO_THEME_PRESETS.map((theme) => {
                       const active = props.studioTheme === theme.id;
@@ -528,298 +824,8 @@ export function Sidebar(props: SidebarProps) {
                       );
                     })}
                   </div>
-                </details>
-                <details className="studio-brand-setting"><summary>Presets</summary>
-
-                  <div style={st.brandKitGrid}>
-                    {brandKits.map((kit) => (
-                      <button key={kit.name} type="button" style={st.brandKitBtn} onClick={() => applyBrandKit(kit)}>
-                        <span style={{ ...st.brandKitSwatch, background: kit.stageBackground.type === 'none' ? kit.brandColor : kit.stageBackground.value }} />
-                        <span style={st.brandKitName}>{kit.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                </details>
-                <details className="studio-brand-setting"><summary>Saved Kits</summary>
-                  <div style={st.brandLabelRow}>
-
-                    <span style={st.brandKitCount}>{savedBrandKits.length}/{MAX_SAVED_BRAND_KITS}</span>
-                  </div>
-                  <div style={st.brandSaveRow}>
-                    <input
-                      type="text"
-                      style={st.brandKitInput}
-                      placeholder="Kit name"
-                      value={brandKitName}
-                      onChange={(e) => setBrandKitName(e.currentTarget.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') saveCurrentBrandKit();
-                      }}
-                      maxLength={32}
-                    />
-                    <button
-                      type="button"
-                      style={{
-                        ...st.brandSaveBtn,
-                        ...(savedBrandKits.length >= MAX_SAVED_BRAND_KITS ? st.brandSaveBtnDisabled : {}),
-                      }}
-                      onClick={saveCurrentBrandKit}
-                      disabled={savedBrandKits.length >= MAX_SAVED_BRAND_KITS}
-                    >
-                      Save
-                    </button>
-                  </div>
-                  {brandKitMessage && <span style={st.brandKitMessage}>{brandKitMessage}</span>}
-                  {savedBrandKits.length > 0 && (
-                    <div style={st.savedBrandKitList}>
-                      {savedBrandKits.map((kit) => (
-                        <div key={kit.id} style={st.savedBrandKitCard}>
-                          <button
-                            type="button"
-                            style={st.savedBrandKitApply}
-                            onClick={() => applyBrandKit(kit)}
-                            title={`Apply ${kit.name}`}
-                          >
-                            <span style={{ ...st.savedBrandKitSwatch, background: kit.stageBackground.type === 'none' ? kit.brandColor : kit.stageBackground.value }}>
-                              {kit.logoUrl && <span style={st.savedBrandKitLogoDot} />}
-                            </span>
-                            <span style={st.savedBrandKitText}>
-                              <span style={st.savedBrandKitName}>{kit.name}</span>
-                              <span style={st.savedBrandKitMeta}>{getStudioThemeLabel(kit.studioTheme)} / {kit.cameraShape} / {kit.nameTagStyle}</span>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            style={st.savedBrandKitDelete}
-                            title={`Delete ${kit.name}`}
-                            onClick={() => deleteSavedBrandKit(kit.id)}
-                            aria-label={`Delete ${kit.name}`}
-                          >
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                              <line x1="18" y1="6" x2="6" y2="18" />
-                              <line x1="6" y1="6" x2="18" y2="18" />
-                            </svg>
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </details>
-                <details className="studio-brand-setting"><summary>Logo</summary>
-
-                  <input ref={logoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleLogoUpload} />
-                  {props.logoUrl ? (
-                    <div style={st.logoPreview}>
-                      <img src={props.logoUrl} alt="Logo" style={st.logoImg} />
-                      <button style={st.removeImgBtn} onClick={() => { const oldUrl = props.logoUrl; props.onLogoUrlChange(null); if (oldUrl && oldUrl.startsWith('blob:')) { setTimeout(() => URL.revokeObjectURL(oldUrl), 100); } }}>
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-                      </button>
-                    </div>
-                  ) : (
-                    <button style={st.uploadBtn} onClick={() => logoInputRef.current?.click()}>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
-                      </svg>
-                      Upload Logo
-                    </button>
-                  )}
-                </details>
-                <details className="studio-brand-setting"><summary>Waiting Room</summary>
-
-                  <input
-                    type="text"
-                    style={st.textInput}
-                    value={props.waitingRoomBranding.headline}
-                    maxLength={MAX_WAITING_ROOM_HEADLINE_LENGTH}
-                    onChange={(e) => props.onWaitingRoomBrandingChange({
-                      ...props.waitingRoomBranding,
-                      headline: e.currentTarget.value,
-                    })}
-                    aria-label="Waiting room headline"
-                  />
-                  <textarea
-                    style={st.textArea}
-                    value={props.waitingRoomBranding.message}
-                    maxLength={MAX_WAITING_ROOM_MESSAGE_LENGTH}
-                    rows={3}
-                    onChange={(e) => props.onWaitingRoomBrandingChange({
-                      ...props.waitingRoomBranding,
-                      message: e.currentTarget.value,
-                    })}
-                    aria-label="Waiting room message"
-                  />
-                  <div style={st.segmentedTwo}>
-                    {[
-                      { id: 'brand', label: 'Brand' },
-                      { id: 'studio', label: 'Stage' },
-                    ].map((mode) => (
-                      <button
-                        key={mode.id}
-                        type="button"
-                        style={{
-                          ...st.segmentedBtn,
-                          ...(props.waitingRoomBranding.backgroundMode === mode.id ? st.segmentedBtnActive : {}),
-                        }}
-                        onClick={() => props.onWaitingRoomBrandingChange({
-                          ...props.waitingRoomBranding,
-                          backgroundMode: mode.id as WaitingRoomBranding['backgroundMode'],
-                        })}
-                      >
-                        {mode.label}
-                      </button>
-                    ))}
-                  </div>
-                  <label style={st.checkboxRow}>
-                    <input
-                      type="checkbox"
-                      checked={props.waitingRoomBranding.showLogo}
-                      onChange={(e) => props.onWaitingRoomBrandingChange({
-                        ...props.waitingRoomBranding,
-                        showLogo: e.currentTarget.checked,
-                      })}
-                    />
-                    <span>Show logo</span>
-                  </label>
-                </details>
-                <details className="studio-brand-setting"><summary>Logo Position</summary>
-
-                  <div style={st.positionGrid}>
-                    {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as LogoPlacement[]).map((placement) => (
-                      <button
-                        key={placement}
-                        type="button"
-                        style={{ ...st.positionBtn, ...(!props.logoPosition && props.logoPlacement === placement ? st.positionBtnActive : {}) }}
-                        onClick={() => {
-                          props.onLogoPositionChange(null);
-                          props.onLogoPlacementChange(placement);
-                        }}
-                        title={placement.replace('-', ' ')}
-                      >
-                        <span style={{ ...st.positionDot, ...getPositionDotStyle(placement) }} />
-                      </button>
-                    ))}
-                  </div>
-                  <div style={st.positionModeRow}>
-                    <button
-                      type="button"
-                      style={{ ...st.positionModeBtn, ...(props.logoPosition ? st.positionModeBtnActive : {}) }}
-                      onClick={() => props.onLogoPositionChange(props.logoPosition || getLogoPositionFromPlacement(props.logoPlacement))}
-                    >
-                      Custom
-                    </button>
-                    <button
-                      type="button"
-                      style={{ ...st.positionModeBtn, ...(!props.logoPosition ? st.positionModeBtnActive : {}) }}
-                      onClick={() => props.onLogoPositionChange(null)}
-                    >
-                      Corner
-                    </button>
-                  </div>
-                </details>
-                <details className="studio-brand-setting"><summary>Logo Size</summary>
-
-                  <div style={st.segmented}>
-                    {(['small', 'medium', 'large'] as LogoSize[]).map((size) => (
-                      <button
-                        key={size}
-                        type="button"
-                        style={{ ...st.segmentedBtn, ...(props.logoSize === size ? st.segmentedBtnActive : {}) }}
-                        onClick={() => props.onLogoSizeChange(size)}
-                      >
-                        {size}
-                      </button>
-                    ))}
-                  </div>
-                </details>
-                <details className="studio-brand-setting"><summary>Watermark Opacity</summary>
-                  <div style={st.brandLabelRow}>
-
-                    <span style={st.colorHex}>{Math.round(props.logoOpacity * 100)}%</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={20}
-                    max={100}
-                    step={5}
-                    value={Math.round(props.logoOpacity * 100)}
-                    onChange={(e) => props.onLogoOpacityChange(normalizeLogoOpacity(Number(e.currentTarget.value) / 100))}
-                    style={st.opacitySlider}
-                    aria-label="Logo watermark opacity"
-                  />
-                  <div style={st.opacityPresets}>
-                    {[
-                      { label: 'Subtle', value: 0.45 },
-                      { label: 'Standard', value: 0.85 },
-                      { label: 'Solid', value: 1 },
-                    ].map((preset) => (
-                      <button
-                        key={preset.label}
-                        type="button"
-                        style={{
-                          ...st.opacityPresetBtn,
-                          ...(Math.abs(props.logoOpacity - preset.value) < 0.01 ? st.opacityPresetBtnActive : {}),
-                        }}
-                        onClick={() => props.onLogoOpacityChange(preset.value)}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                  </div>
-                </details>
-                <details className="studio-brand-setting"><summary>Stage Background</summary>
-
-                  <BackgroundPicker value={props.stageBackground} onChange={props.onStageBackgroundChange} />
-                </details>
-                <details className="studio-brand-setting"><summary>Brand Color</summary>
-
-                  <div style={st.colorGrid}>
-                    {brandPresets.map((p) => (
-                      <button
-                        key={p.color}
-                        style={{ ...st.colorSwatch, background: p.color, outline: props.brandColor === p.color ? `2px solid ${p.color}` : 'none', outlineOffset: 2 }}
-                        onClick={() => props.onBrandColorChange(p.color)}
-                        title={p.name}
-                      />
-                    ))}
-                  </div>
-                  <div style={st.colorInfo}>
-                    <div style={{ ...st.colorDot, background: props.brandColor }} />
-                    <span style={st.colorHex}>{props.brandColor}</span>
-                  </div>
-                </details>
-
-                <details className="studio-brand-setting"><summary>Camera Shape</summary>
-
-                  <div style={st.shapeGrid}>
-                    {(['rectangle', 'rounded', 'square', 'circle'] as CameraShape[]).map((shape) => (
-                      <button
-                        key={shape}
-                        style={{ ...st.shapeBtn, outline: props.cameraShape === shape ? '2px solid var(--accent)' : 'none', outlineOffset: 2 }}
-                        onClick={() => props.onCameraShapeChange(shape)}
-                        title={shape}
-                      >
-                        <div style={{ ...st.shapeVisual, borderRadius: shape === 'circle' ? '50%' : shape === 'rounded' ? 8 : shape === 'square' ? 4 : 2, aspectRatio: shape === 'square' || shape === 'circle' ? '1/1' : '16/9' }} />
-                        <span style={st.shapeText}>{shape}</span>
-                      </button>
-                    ))}
-                  </div>
-                </details>
-
-                <details className="studio-brand-setting"><summary>Name Tag Style</summary>
-
-                  <select
-                    style={st.selectInput}
-                    value={props.nameTagStyle}
-                    onChange={(e) => props.onNameTagStyleChange(e.target.value as NameTagStyle)}
-                  >
-                    <option value="classic">Classic (Pill)</option>
-                    <option value="minimal">Minimal</option>
-                    <option value="block">Block (Solid Brand Color)</option>
-                  </select>
-                </details>
-              </div>
+                </div>
+              </details>
             </div>
           )}
 
@@ -872,84 +878,6 @@ export function Sidebar(props: SidebarProps) {
           </button>
         ))}
       </nav>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Mini video preview for the People tab
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Brand preview
-// ---------------------------------------------------------------------------
-function BrandPreview({
-  studioTheme,
-  brandColor,
-  stageBackground,
-  logoUrl,
-  logoPlacement,
-  logoPosition,
-  logoSize,
-  logoOpacity,
-  cameraShape,
-  nameTagStyle,
-  waitingRoomBranding,
-}: {
-  studioTheme: StudioThemeId;
-  brandColor: string;
-  stageBackground: StageBackground;
-  logoUrl: string | null;
-  logoPlacement: LogoPlacement;
-  logoPosition: LogoPosition | null;
-  logoSize: LogoSize;
-  logoOpacity: number;
-  cameraShape: CameraShape;
-  nameTagStyle: NameTagStyle;
-  waitingRoomBranding: WaitingRoomBranding;
-}) {
-  const background = getBackgroundStyleValue(stageBackground, brandColor);
-  const cameraRadius = getCameraShapeRadius(cameraShape);
-  const logoStyle = logoPosition
-    ? {
-        left: `${Math.round(logoPosition.x * 100)}%`,
-        top: `${Math.round(logoPosition.y * 100)}%`,
-        transform: 'translate(-50%, -50%)',
-      }
-    : getPositionDotStyle(logoPlacement);
-  const logoDimension = logoSize === 'large' ? 34 : logoSize === 'small' ? 20 : 26;
-
-  return (
-    <div style={st.brandPreviewCard}>
-      <div style={st.brandPreviewStage}>
-        <div style={{ ...st.brandPreviewBackdrop, background }} />
-        <div style={{ ...st.brandPreviewCamera, borderColor: brandColor, borderRadius: cameraRadius }}>
-          <span style={{ ...st.brandPreviewFace, background: `${brandColor}33` }} />
-          <span style={{ ...st.brandPreviewNameTag, ...(nameTagStyle === 'block' ? { background: brandColor, color: '#fff' } : {}) }}>
-            {nameTagStyle}
-          </span>
-        </div>
-        <div style={{ ...st.brandPreviewLowerThird, borderColor: brandColor }}>
-          <span style={{ ...st.brandPreviewLowerAccent, background: brandColor }} />
-          <span style={st.brandPreviewLowerLine} />
-        </div>
-        <div
-          style={{
-            ...st.brandPreviewLogo,
-            ...logoStyle,
-            width: logoDimension,
-            height: logoDimension,
-            opacity: logoUrl ? logoOpacity : 0.75,
-          }}
-        >
-          {logoUrl ? <img src={logoUrl} alt="" style={st.brandPreviewLogoImage} /> : <span style={{ ...st.brandPreviewLogoFallback, background: brandColor }} />}
-        </div>
-      </div>
-      <div style={st.brandPreviewMeta}>
-        <span style={st.brandPreviewTitle}>Broadcast Preview</span>
-        <span style={st.brandPreviewSub}>
-          {getStudioThemeLabel(studioTheme)} / {cameraShape} cameras / {waitingRoomBranding.backgroundMode === 'studio' ? 'stage green room' : 'brand green room'}
-        </span>
-      </div>
     </div>
   );
 }
@@ -1137,27 +1065,8 @@ const st: Record<string, React.CSSProperties> = {
   iconBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
   iconLabel: { fontSize: 9, fontWeight: 500, lineHeight: 1 },
   section: { padding: 16 },
-  sectionTitle: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 },
   divider: { height: 1, background: 'var(--border)', margin: '4px 16px 8px' },
-  brandPreviewCard: { marginBottom: 16, overflow: 'hidden', borderRadius: 10, border: '1px solid rgba(167, 139, 250, 0.26)', background: 'rgba(15, 23, 42, 0.42)' },
-  brandPreviewStage: { position: 'relative', aspectRatio: '16 / 9', overflow: 'hidden', background: '#0f172a' },
-  brandPreviewBackdrop: { position: 'absolute', inset: 0, opacity: 0.98 },
-  brandPreviewCamera: { position: 'absolute', left: '18%', right: '18%', top: '23%', bottom: '22%', display: 'flex', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderStyle: 'solid', background: 'rgba(2, 6, 23, 0.58)', overflow: 'hidden', boxShadow: '0 16px 34px rgba(0, 0, 0, 0.34)' },
-  brandPreviewFace: { width: 44, height: 44, borderRadius: '50%', boxShadow: '0 0 0 18px rgba(255, 255, 255, 0.035)' },
-  brandPreviewNameTag: { position: 'absolute', left: 12, bottom: 10, minWidth: 54, maxWidth: '70%', height: 19, padding: '0 8px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(2, 6, 23, 0.82)', border: '1px solid rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.86)', fontSize: 9, fontWeight: 800, textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  brandPreviewLowerThird: { position: 'absolute', left: 18, bottom: 18, width: 126, height: 30, borderRadius: 8, borderWidth: 1, borderStyle: 'solid', background: 'rgba(2, 6, 23, 0.72)', boxShadow: '0 10px 22px rgba(0, 0, 0, 0.26)', overflow: 'hidden' },
-  brandPreviewLowerAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 5 },
-  brandPreviewLowerLine: { position: 'absolute', left: 15, right: 14, top: 12, height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.58)' },
-  brandPreviewLogo: { position: 'absolute', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: 'rgba(2, 6, 23, 0.48)', border: '1px solid rgba(255,255,255,0.16)', overflow: 'hidden', boxShadow: '0 8px 18px rgba(0,0,0,0.25)' },
-  brandPreviewLogoImage: { width: '100%', height: '100%', objectFit: 'contain', padding: 4 },
-  brandPreviewLogoFallback: { width: '54%', height: '54%', borderRadius: 4 },
-  brandPreviewMeta: { display: 'flex', flexDirection: 'column', gap: 2, padding: '9px 10px' },
-  brandPreviewTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
-  brandPreviewSub: { fontSize: 10, lineHeight: 1.35, color: 'var(--text-muted)', textTransform: 'capitalize' },
-  brandGroup: { marginBottom: 16 },
-  brandLabel: { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 8 },
   brandLabelRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 },
-  brandKitCount: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600 },
   brandKitGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
   brandKitBtn: { display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch', border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', borderRadius: 8, padding: 8, cursor: 'pointer', minWidth: 0 },
   brandKitSwatch: { display: 'block', height: 28, borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' },
@@ -1183,13 +1092,11 @@ const st: Record<string, React.CSSProperties> = {
   savedBrandKitMeta: { minWidth: 0, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'capitalize' },
   savedBrandKitDelete: { display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, minWidth: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 },
   uploadBtn: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, fontSize: 12, fontWeight: 500, background: 'none', color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 10, cursor: 'pointer', transition: 'all var(--transition-fast)' },
-  logoPreview: { position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', height: 60, borderRadius: 8, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', overflow: 'hidden' },
-  logoImg: { maxHeight: 48, maxWidth: '100%', objectFit: 'contain' },
+  logoPreview: { position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', padding: '8px 40px 8px 10px', gap: 12, height: 60, borderRadius: 8, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', overflow: 'hidden' },
+  logoImg: { maxHeight: 42, maxWidth: '50%', objectFit: 'contain' },
   removeImgBtn: { position: 'absolute', top: 4, right: 4, width: 20, height: 20, borderRadius: 4, background: 'rgba(0,0,0,0.6)', border: 'none', color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 },
-  colorGrid: { display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 4, marginBottom: 8 },
-  colorSwatch: { width: '100%', aspectRatio: '1', borderRadius: 6, border: 'none', cursor: 'pointer', transition: 'transform 0.1s' },
-  colorInfo: { display: 'flex', alignItems: 'center', gap: 6 },
-  colorDot: { width: 12, height: 12, borderRadius: 4 },
+  colorGrid: { display: 'grid', gridTemplateColumns: 'repeat(8, minmax(0, 1fr))', gap: 4, marginBottom: 8 },
+  colorSwatch: { width: '100%', minWidth: 0, padding: 0, aspectRatio: '1', borderRadius: 6, border: 'none', cursor: 'pointer', transition: 'transform 0.1s' },
   colorHex: { fontSize: 11, fontFamily: 'monospace', color: 'var(--text-muted)' },
   positionGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
   positionBtn: { height: 40, position: 'relative', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg-tertiary)', cursor: 'pointer' },
@@ -1209,8 +1116,8 @@ const st: Record<string, React.CSSProperties> = {
   opacityPresets: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, marginTop: 8 },
   opacityPresetBtn: { minWidth: 0, padding: '6px 4px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
   opacityPresetBtnActive: { borderColor: 'var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
-  shapeGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
-  shapeBtn: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s ease' },
+  shapeGrid: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 },
+  shapeBtn: { minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 2px', background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s ease' },
   shapeVisual: { width: 32, background: 'var(--border-strong)' },
   shapeText: { fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)', textTransform: 'capitalize' },
   selectInput: { width: '100%', padding: '8px 12px', fontSize: 13, background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 8, outline: 'none' },
