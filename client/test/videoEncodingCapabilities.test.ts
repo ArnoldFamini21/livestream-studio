@@ -110,6 +110,19 @@ describe('video encoding capability detection', () => {
     assert.deepEqual([...new Set(contentTypes)], ['video/webm;codecs=vp8']);
   });
 
+  it('probes the incremental capture codec when both MP4 and WebM are available', async () => {
+    const contentTypes: string[] = [];
+    const env = createEnvironment(async (configuration) => {
+      contentTypes.push(configuration.video.contentType);
+      return { supported: true, smooth: true, powerEfficient: true };
+    }, {
+      mediaRecorder: { isTypeSupported: () => true },
+    });
+    assert.equal(getPreferredVideoEncodingContentType(env), 'video/webm;codecs=vp9');
+    await detectBrowserVideoEncodingReadiness(env);
+    assert.deepEqual([...new Set(contentTypes)], ['video/webm;codecs=vp9']);
+  });
+
   it('reports unsupported when MediaRecorder is unavailable', async () => {
     const env = createEnvironment(async () => ({ supported: true }), { mediaRecorder: undefined });
 

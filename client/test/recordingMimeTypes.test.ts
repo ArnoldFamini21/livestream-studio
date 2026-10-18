@@ -16,22 +16,25 @@ function mediaRecorderSupporting(types: Set<string>) {
 }
 
 describe('recording MIME type helpers', () => {
-  it('prefers MP4 video recording when the browser supports it', () => {
+  it('prefers incremental WebM capture when both MP4 and WebM are supported', () => {
     const mimeType = getPreferredVideoRecordingMimeType(mediaRecorderSupporting(new Set([
       'video/webm;codecs=vp9,opus',
       'video/mp4',
     ])));
 
-    assert.equal(mimeType, 'video/mp4');
+    assert.equal(mimeType, 'video/webm;codecs=vp9,opus');
   });
 
-  it('recognizes H.264 MP4 variants reported by Safari and Chromium builds', () => {
+  it('recognizes H.264 MP4 variants in browsers without WebM recording', () => {
     const mimeType = getPreferredVideoRecordingMimeType(mediaRecorderSupporting(new Set([
-      'video/webm;codecs=vp9,opus',
       'video/mp4;codecs=avc1.640028,mp4a.40.2',
     ])));
 
     assert.equal(mimeType, 'video/mp4;codecs=avc1.640028,mp4a.40.2');
+  });
+
+  it('uses MP4 when it is the only supported video container', () => {
+    assert.equal(getPreferredVideoRecordingMimeType(mediaRecorderSupporting(new Set(['video/mp4']))), 'video/mp4');
   });
 
   it('falls back to WebM video recording when MP4 is unavailable', () => {
@@ -92,7 +95,6 @@ describe('recording MIME type helpers', () => {
     const summary = getBrowserRecordingFormatSummary(mediaRecorderSupporting(new Set([
       'video/mp4',
       'audio/mp4',
-      'video/webm',
     ])));
 
     assert.equal(summary.supportsVideoMp4, true);
@@ -101,6 +103,16 @@ describe('recording MIME type helpers', () => {
     assert.equal(summary.audioExtension, 'm4a');
     assert.match(summary.label, /MP4/);
     assert.match(summary.detail, /program tracks as MP4/);
+  });
+
+  it('describes the actual WebM capture format when MP4 is also available', () => {
+    const summary = getBrowserRecordingFormatSummary(mediaRecorderSupporting(new Set([
+      'video/mp4', 'audio/mp4', 'video/webm;codecs=vp9,opus',
+    ])));
+    assert.equal(summary.videoExtension, 'webm');
+    assert.equal(summary.supportsVideoMp4, false);
+    assert.match(summary.label, /WEBM/);
+    assert.match(summary.detail, /media-server export/);
   });
 
   it('summarizes browser local recording fallback containers when MP4 is unavailable', () => {

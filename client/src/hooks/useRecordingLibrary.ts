@@ -1,16 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { RecordingExportJobResponse } from '@studio/shared';
-import { acknowledgeRecordingBackups } from '../utils/recordingRecovery.ts';
+import { acknowledgeRecordingBackups, getRecordingBackupId, listRecoverableRecordings, registerRecordingBackup, retainRecordingBackups } from '../utils/recordingRecovery.ts';
+import { openRecordingDb, RECORDING_FILE_STORE as FILE_STORE, RECORDING_SESSION_STORE as SESSION_STORE } from '../utils/recordingLibraryStorage.ts';
 import {
   normalizeRecordingCaptureMetadata,
   type RecordingCaptureMetadata,
 } from '../utils/recordingCaptureMetadata.ts';
-
-const DB_NAME = 'livestream-studio-recording-library';
-const DB_VERSION = 1;
-const SESSION_STORE = 'sessions';
-const FILE_STORE = 'files';
-
 export interface LocalRecordingFileInput {
   label: string;
   blob: Blob;
@@ -27,6 +22,8 @@ export interface LocalRecordingFileMetadata {
   type: string;
   kind?: LocalRecordingTrackKind;
   capture?: RecordingCaptureMetadata;
+  /** OPFS directory backing the Blob; retained while this library file exists. */
+  recoveryId?: string;
 }
 
 export interface LocalRecordingFileRecord extends LocalRecordingFileMetadata {
@@ -146,24 +143,6 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   });
 }
 
-function openRecordingDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onerror = () => reject(request.error || new Error('Failed to open recording database'));
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(SESSION_STORE)) {
-        db.createObjectStore(SESSION_STORE, { keyPath: 'id' });
-      }
-      if (!db.objectStoreNames.contains(FILE_STORE)) {
-        const fileStore = db.createObjectStore(FILE_STORE, { keyPath: 'id' });
-        fileStore.createIndex('sessionId', 'sessionId', { unique: false });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-  });
-}
-
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -192,6 +171,7 @@ export async function persistRecordingSession(input: SaveRecordingSessionInput):
       type: file.blob.type || 'application/octet-stream',
       kind: file.kind,
       capture: normalizeRecordingCaptureMetadata(file.capture),
+      recoveryId: getRecordingBackupId(file.blob),
     }));
     const session: LocalRecordingSession = {
       id: sessionId,
@@ -233,9 +213,20 @@ export async function persistRecordingSession(input: SaveRecordingSessionInput):
 async function getRecordingFiles(sessionId: string): Promise<LocalRecordingFileRecord[]> {
   const db = await openRecordingDb();
   try {
-    const transaction = db.transaction(FILE_STORE, 'readonly');
-    const index = transaction.objectStore(FILE_STORE).index('sessionId');
-    const files = await requestToPromise<LocalRecordingFileRecord[]>(index.getAll(IDBKeyRange.only(sessionId)));
+    const readFiles = () => requestToPromise<LocalRecordingFileRecord[]>(
+      db.transaction(FILE_STORE, 'readonly').objectStore(FILE_STORE).index('sessionId').getAll(IDBKeyRange.only(sessionId))
+    );
+    let files = await readFiles();
+    const backingIds = files.flatMap(file => file.recoveryId ? [file.recoveryId] : []);
+    if (backingIds.length) {
+      await retainRecordingBackups(backingIds);
+      // Deletion may have committed while we waited for a shared read lock.
+      // Re-read under the lock so we never return already-deleted backing files.
+      files = await readFiles();
+    }
+    for (const file of files) {
+      if (file.recoveryId) registerRecordingBackup(file.blob, file.recoveryId);
+    }
     return files.sort((a, b) => a.fileName.localeCompare(b.fileName));
   } finally {
     db.close();
@@ -245,12 +236,16 @@ async function getRecordingFiles(sessionId: string): Promise<LocalRecordingFileR
 async function deleteRecordingSession(sessionId: string): Promise<void> {
   const db = await openRecordingDb();
   try {
-    const files = await getRecordingFiles(sessionId);
+    // Do not acquire preview locks just to delete: cleanup must be able to run.
+    const files = await requestToPromise<LocalRecordingFileRecord[]>(
+      db.transaction(FILE_STORE, 'readonly').objectStore(FILE_STORE).index('sessionId').getAll(IDBKeyRange.only(sessionId))
+    );
     const transaction = db.transaction([SESSION_STORE, FILE_STORE], 'readwrite');
     transaction.objectStore(SESSION_STORE).delete(sessionId);
     const fileStore = transaction.objectStore(FILE_STORE);
     files.forEach((file) => fileStore.delete(file.id));
     await transactionDone(transaction);
+    await listRecoverableRecordings().catch(() => {}); // Exclusive locks defer cleanup while another document reads.
   } finally {
     db.close();
   }

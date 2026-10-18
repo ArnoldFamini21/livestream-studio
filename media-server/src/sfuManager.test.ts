@@ -136,6 +136,7 @@ describe('SfuManager', () => {
     const oldConnection = manager.connect('room-1', 'alice', oldSocket.send);
     manager.handleMessage('alice', { type: 'sfu-join' }, oldConnection);
     const newConnection = manager.connect('room-1', 'alice', newSocket.send);
+    manager.handleMessage('alice', { type: 'sfu-join' }, newConnection);
     const bobConnection = manager.connect('room-1', 'bob', bob.send);
     manager.handleMessage('bob', { type: 'sfu-join' }, bobConnection);
     manager.handleMessage('alice', { type: 'sfu-publish', layers: LAYERS }, newConnection);

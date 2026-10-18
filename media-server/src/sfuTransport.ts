@@ -29,6 +29,7 @@ export interface SfuIceCandidatePayload {
 }
 
 export type SfuTransportSide = 'publish' | 'subscribe';
+export type SfuPeerConnectionFactory = (withRidExtension: boolean) => RTCPeerConnection;
 
 export interface SfuTransportEvents {
   onIceCandidate?: (
@@ -103,8 +104,12 @@ function clonePacket(rtp: RtpPacket): RtpPacket {
 export class SfuMediaTransport {
   private readonly publishers = new Map<string, PublisherState>();
   private readonly subscribers = new Map<string, SubscriberState>();
+  private readonly publishAttempts = new Map<string, symbol>();
 
-  constructor(private readonly events: SfuTransportEvents = {}) {}
+  constructor(
+    private readonly events: SfuTransportEvents = {},
+    private readonly createPeerConnection?: SfuPeerConnectionFactory,
+  ) {}
 
   getPublisherCount(): number {
     return this.publishers.size;
@@ -126,6 +131,7 @@ export class SfuMediaTransport {
   }
 
   private newPeerConnection(withRidExtension: boolean): RTCPeerConnection {
+    if (this.createPeerConnection) return this.createPeerConnection(withRidExtension);
     return new RTCPeerConnection({
       codecs: { audio: AUDIO_CODECS, video: VIDEO_CODECS },
       // One transport from the start. With werift's default "max-compat", each
@@ -139,6 +145,8 @@ export class SfuMediaTransport {
   private emitIce(participantId: string, side: SfuTransportSide, pc: RTCPeerConnection): void {
     pc.onIceCandidate.subscribe((candidate: RTCIceCandidate | undefined) => {
       if (!candidate) return;
+      const current = side === 'publish' ? this.publishers.get(participantId) : this.subscribers.get(participantId);
+      if (current?.pc !== pc) return;
       this.events.onIceCandidate?.(participantId, side, {
         candidate: candidate.candidate,
         sdpMLineIndex: candidate.sdpMLineIndex ?? null,
@@ -158,7 +166,14 @@ export class SfuMediaTransport {
     if (cleanRids.length === 0 && !hasAudio) {
       throw new Error('At least one audio or video track is required to publish');
     }
-    await this.closePublisher(participantId);
+    // Reserve before waiting for the old PC. A disconnect or newer publish
+    // invalidates this attempt even if it has not installed a PC yet.
+    const attempt = Symbol(participantId);
+    this.publishAttempts.set(participantId, attempt);
+    const previous = this.publishers.get(participantId);
+    this.publishers.delete(participantId);
+    if (previous) await previous.pc.close().catch(() => undefined);
+    if (this.publishAttempts.get(participantId) !== attempt) throw new Error('Publish transport was superseded');
 
     const pc = this.newPeerConnection(true);
     const state: PublisherState = {
@@ -177,9 +192,11 @@ export class SfuMediaTransport {
       });
 
       transceiver.onTrack.subscribe((track: MediaStreamTrack) => {
+        if (this.publishers.get(participantId) !== state) return;
         const rid = track.rid;
         if (!rid) return;
         track.onReceiveRtp.subscribe((rtp: RtpPacket) => {
+          if (this.publishers.get(participantId) !== state) return;
           this.injectPublisherRtp(participantId, rid, rtp);
         });
       });
@@ -188,16 +205,29 @@ export class SfuMediaTransport {
     if (hasAudio) {
       const transceiver = pc.addTransceiver('audio', { direction: 'recvonly' });
       transceiver.onTrack.subscribe((track: MediaStreamTrack) => {
+        if (this.publishers.get(participantId) !== state) return;
         track.onReceiveRtp.subscribe((rtp: RtpPacket) => {
+          if (this.publishers.get(participantId) !== state) return;
           this.injectPublisherAudioRtp(participantId, rtp);
         });
       });
     }
 
-    await pc.setLocalDescription(await pc.createOffer());
-    const local = pc.localDescription;
-    if (!local) throw new Error('Failed to create publish offer');
-    return { type: 'offer', sdp: local.sdp };
+    const isCurrent = () => this.publishAttempts.get(participantId) === attempt && this.publishers.get(participantId) === state;
+    try {
+      const offer = await pc.createOffer();
+      if (!isCurrent()) throw new Error('Publish transport was superseded');
+      await pc.setLocalDescription(offer);
+      if (!isCurrent()) throw new Error('Publish transport was superseded');
+      const local = pc.localDescription;
+      if (!local) throw new Error('Failed to create publish offer');
+      return { type: 'offer', sdp: local.sdp };
+    } catch (error) {
+      if (this.publishers.get(participantId) === state) this.publishers.delete(participantId);
+      if (this.publishAttempts.get(participantId) === attempt) this.publishAttempts.delete(participantId);
+      await pc.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async setPublishAnswer(participantId: string, answer: { sdp: string }): Promise<void> {
@@ -251,7 +281,10 @@ export class SfuMediaTransport {
       }
     }
 
-    await state.pc.setLocalDescription(await state.pc.createOffer());
+    const offer = await state.pc.createOffer();
+    if (this.subscribers.get(consumerId) !== state) throw new Error('Subscribe transport was superseded');
+    await state.pc.setLocalDescription(offer);
+    if (this.subscribers.get(consumerId) !== state) throw new Error('Subscribe transport was superseded');
     const local = state.pc.localDescription;
     if (!local) throw new Error('Failed to create subscribe offer');
 
@@ -336,16 +369,10 @@ export class SfuMediaTransport {
   }
 
   async closePublisher(participantId: string): Promise<void> {
+    this.publishAttempts.delete(participantId);
     const state = this.publishers.get(participantId);
     if (!state) return;
     this.publishers.delete(participantId);
-    await state.pc.close().catch(() => undefined);
-  }
-
-  private async closeSubscriber(consumerId: string): Promise<void> {
-    const state = this.subscribers.get(consumerId);
-    if (!state) return;
-    this.subscribers.delete(consumerId);
     await state.pc.close().catch(() => undefined);
   }
 
@@ -357,15 +384,22 @@ export class SfuMediaTransport {
   }
 
   async closeParticipant(participantId: string): Promise<void> {
-    await this.closePublisher(participantId);
-    await this.closeSubscriber(participantId);
+    // Detach both sides before either close yields. A replacement subscriber
+    // created while an old publisher closes belongs to the next lifecycle.
+    const publisher = this.publishers.get(participantId);
+    const subscriber = this.subscribers.get(participantId);
+    this.publishAttempts.delete(participantId);
+    this.publishers.delete(participantId);
+    this.subscribers.delete(participantId);
     this.removeProducer(participantId);
+    await Promise.all([
+      publisher?.pc.close().catch(() => undefined),
+      subscriber?.pc.close().catch(() => undefined),
+    ]);
   }
 
   async closeAll(): Promise<void> {
-    const ids = new Set([...this.publishers.keys(), ...this.subscribers.keys()]);
-    for (const id of ids) {
-      await this.closeParticipant(id);
-    }
+    const ids = new Set([...this.publishers.keys(), ...this.subscribers.keys(), ...this.publishAttempts.keys()]);
+    await Promise.all([...ids].map((id) => this.closeParticipant(id)));
   }
 }

@@ -76,8 +76,11 @@ export function getSupportedMediaRecorderMimeType(
 export function getPreferredVideoRecordingMimeType(
   mediaRecorder?: MediaRecorderSupport
 ): string {
+  // Some MP4 encoders report support but buffer the whole take until Stop,
+  // leaving no fragments for progressive upload or crash recovery. Prefer
+  // incremental WebM capture when available; final MP4 remains an export.
   return getSupportedMediaRecorderMimeType(
-    [...VIDEO_MP4_MEDIA_RECORDER_TYPES, ...VIDEO_WEBM_MEDIA_RECORDER_TYPES],
+    [...VIDEO_WEBM_MEDIA_RECORDER_TYPES, ...VIDEO_MP4_MEDIA_RECORDER_TYPES],
     mediaRecorder
   );
 }

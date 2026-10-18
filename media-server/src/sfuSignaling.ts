@@ -68,6 +68,13 @@ const MAX_SDP_LENGTH = 128 * 1024;
 const MAX_ICE_CANDIDATE_LENGTH = 1024;
 const SUBSCRIPTION_ANSWER_TIMEOUT_MS = 15_000;
 
+interface SubscriptionNegotiation {
+  generation: symbol;
+  queued: boolean;
+  awaitingAnswer: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -150,9 +157,9 @@ function parseIceCandidate(value: unknown): SfuIceCandidatePayload | null {
 export class SfuSignalingHub {
   private readonly room: SfuSessionCoordinator;
   private readonly publishers = new Map<string, SfuProducerMedia>();
-  private readonly subscriptionNegotiating = new Set<string>();
-  private readonly subscriptionQueued = new Set<string>();
-  private readonly subscriptionAnswerTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly generations = new Map<string, symbol>();
+  private readonly publishNegotiations = new Map<string, symbol>();
+  private readonly subscriptionNegotiations = new Map<string, SubscriptionNegotiation>();
 
   constructor(
     private readonly send: SfuSendFn,
@@ -188,7 +195,6 @@ export class SfuSignalingHub {
 
   /** Drop a participant on socket close without an explicit leave message. */
   handleDisconnect(participantId: string): void {
-    if (!this.room.hasParticipant(participantId)) return;
     this.removeParticipant(participantId);
   }
 
@@ -196,6 +202,7 @@ export class SfuSignalingHub {
     switch (message.type) {
       case 'sfu-join': {
         this.room.join(participantId, message.downlinkKbps);
+        if (!this.generations.has(participantId)) this.generations.set(participantId, Symbol(participantId));
         // Tell the joiner which producers already exist.
         this.send(participantId, {
           type: 'sfu-producers',
@@ -219,10 +226,12 @@ export class SfuSignalingHub {
         }
         if (this.transport) {
           const rids = message.layers.map((layer) => layer.rid);
-          this.runTransportOp(participantId, async (transport) => {
+          const negotiation = Symbol('publish');
+          this.publishNegotiations.set(participantId, negotiation);
+          this.runTransportOp(participantId, async (transport, isCurrent) => {
             const offer = await transport.createPublishOffer(participantId, rids, message.audio);
-            this.send(participantId, { type: 'sfu-transport-offer', side: 'publish', sdp: offer.sdp });
-          });
+            if (isCurrent()) this.send(participantId, { type: 'sfu-transport-offer', side: 'publish', sdp: offer.sdp });
+          }, () => this.publishNegotiations.get(participantId) === negotiation);
           // Every other participant needs a (re)negotiated subscribe offer for the new producer.
           for (const participant of this.room.listParticipants()) {
             if (participant.participantId !== participantId) {
@@ -234,6 +243,7 @@ export class SfuSignalingHub {
         return;
       }
       case 'sfu-unpublish': {
+        this.publishNegotiations.delete(participantId);
         if (this.publishers.delete(participantId)) {
           this.room.unpublish(participantId);
           this.transport?.removeProducer(participantId);
@@ -280,81 +290,90 @@ export class SfuSignalingHub {
   /** Send (or renegotiate) a subscribe transport offer covering all current producers. */
   private offerSubscription(consumerId: string): void {
     if (!this.transport) return;
+    const generation = this.generations.get(consumerId);
+    if (!generation) return;
     const producers = [...this.publishers.values()].filter((producer) => producer.producerId !== consumerId);
     if (producers.length === 0) return;
-    if (this.subscriptionNegotiating.has(consumerId)) {
-      this.subscriptionQueued.add(consumerId);
+    const existing = this.subscriptionNegotiations.get(consumerId);
+    if (existing) {
+      existing.queued = true;
       return;
     }
 
-    this.subscriptionNegotiating.add(consumerId);
+    const negotiation: SubscriptionNegotiation = { generation, queued: false, awaitingAnswer: false };
+    this.subscriptionNegotiations.set(consumerId, negotiation);
     void this.transport.createSubscribeOffer(consumerId, producers).then(({ description, producerMids }) => {
-      if (!this.room.hasParticipant(consumerId)) {
-        this.subscriptionNegotiating.delete(consumerId);
-        this.subscriptionQueued.delete(consumerId);
-        void this.transport?.closeParticipant(consumerId).catch(() => undefined);
-        return;
-      }
+      if (!this.isCurrentSubscription(consumerId, negotiation)) return;
       for (const selection of this.room.listLayerSelections(consumerId)) {
         this.transport?.setForwardedLayer(consumerId, selection.producerId, selection.rid);
       }
+      negotiation.awaitingAnswer = true;
       this.send(consumerId, {
         type: 'sfu-transport-offer',
         side: 'subscribe',
         sdp: description.sdp,
         producerMids,
       });
-      const timer = setTimeout(() => {
-        this.subscriptionAnswerTimers.delete(consumerId);
+      negotiation.timer = setTimeout(() => {
+        if (!this.isCurrentSubscription(consumerId, negotiation)) return;
         this.send(consumerId, { type: 'sfu-error', message: 'SFU subscription negotiation timed out' });
-        this.finishSubscriptionNegotiation(consumerId);
+        // A timed-out answer may still be in flight. Reset this lifecycle rather
+        // than negotiating a newer offer on the same PC underneath that answer.
+        this.removeParticipant(consumerId);
       }, SUBSCRIPTION_ANSWER_TIMEOUT_MS);
-      this.subscriptionAnswerTimers.set(consumerId, timer);
     }).catch((err) => {
+      if (!this.isCurrentSubscription(consumerId, negotiation)) return;
       this.send(consumerId, {
         type: 'sfu-error',
         message: err instanceof Error ? err.message : 'SFU subscription transport error',
       });
-      this.finishSubscriptionNegotiation(consumerId);
+      this.finishSubscriptionNegotiation(consumerId, negotiation);
     });
   }
 
   private acceptSubscriptionAnswer(consumerId: string, sdp: string): void {
     if (!this.transport) return;
-    if (!this.subscriptionNegotiating.has(consumerId)) {
+    const negotiation = this.subscriptionNegotiations.get(consumerId);
+    if (!negotiation?.awaitingAnswer) {
       this.send(consumerId, { type: 'sfu-error', message: 'No SFU subscription offer is awaiting an answer' });
       return;
     }
+    negotiation.awaitingAnswer = false;
     void this.transport.setSubscribeAnswer(consumerId, { sdp }).then(() => {
-      this.finishSubscriptionNegotiation(consumerId);
+      this.finishSubscriptionNegotiation(consumerId, negotiation);
     }).catch((err) => {
+      if (!this.isCurrentSubscription(consumerId, negotiation)) return;
       this.send(consumerId, {
         type: 'sfu-error',
         message: err instanceof Error ? err.message : 'SFU subscription answer failed',
       });
-      this.finishSubscriptionNegotiation(consumerId);
+      this.finishSubscriptionNegotiation(consumerId, negotiation);
     });
   }
 
-  private finishSubscriptionNegotiation(consumerId: string): void {
-    const timer = this.subscriptionAnswerTimers.get(consumerId);
-    if (timer) clearTimeout(timer);
-    this.subscriptionAnswerTimers.delete(consumerId);
-    this.subscriptionNegotiating.delete(consumerId);
-    if (!this.room.hasParticipant(consumerId)) {
-      this.subscriptionQueued.delete(consumerId);
-      return;
-    }
-    if (!this.subscriptionQueued.delete(consumerId)) return;
-    this.offerSubscription(consumerId);
+  private isCurrentSubscription(consumerId: string, negotiation: SubscriptionNegotiation): boolean {
+    return this.generations.get(consumerId) === negotiation.generation &&
+      this.subscriptionNegotiations.get(consumerId) === negotiation;
+  }
+
+  private finishSubscriptionNegotiation(consumerId: string, negotiation: SubscriptionNegotiation): void {
+    if (!this.isCurrentSubscription(consumerId, negotiation)) return;
+    if (negotiation.timer) clearTimeout(negotiation.timer);
+    this.subscriptionNegotiations.delete(consumerId);
+    if (negotiation.queued) this.offerSubscription(consumerId);
   }
 
   private runTransportOp(
     participantId: string,
-    op: (transport: SfuTransportLike) => Promise<void>
+    op: (transport: SfuTransportLike, isCurrent: () => boolean) => Promise<void>,
+    ownsOperation: () => boolean = () => true,
   ): void {
     if (!this.transport) return;
-    void op(this.transport).catch((err) => {
+    const generation = this.generations.get(participantId);
+    const isCurrent = () => generation !== undefined && this.generations.get(participantId) === generation && ownsOperation();
+    if (!isCurrent()) return;
+    void op(this.transport, isCurrent).catch((err) => {
+      if (!isCurrent()) return;
       this.send(participantId, {
         type: 'sfu-error',
         message: err instanceof Error ? err.message : 'SFU transport error',
@@ -363,11 +382,11 @@ export class SfuSignalingHub {
   }
 
   private removeParticipant(participantId: string): void {
-    const timer = this.subscriptionAnswerTimers.get(participantId);
-    if (timer) clearTimeout(timer);
-    this.subscriptionAnswerTimers.delete(participantId);
-    this.subscriptionNegotiating.delete(participantId);
-    this.subscriptionQueued.delete(participantId);
+    this.generations.delete(participantId);
+    this.publishNegotiations.delete(participantId);
+    const negotiation = this.subscriptionNegotiations.get(participantId);
+    if (negotiation?.timer) clearTimeout(negotiation.timer);
+    this.subscriptionNegotiations.delete(participantId);
     const wasPublishing = this.publishers.delete(participantId);
     this.room.leave(participantId);
     if (this.transport) {

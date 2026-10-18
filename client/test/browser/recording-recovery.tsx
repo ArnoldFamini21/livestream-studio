@@ -1,6 +1,6 @@
 // Manual regression in the Codex browser: record > reload without stopping >
 // recover > preview. Normal saves keep original Blobs readable for uploads;
-// navigating away permits cleanup of acknowledged fragments.
+// saved fragments remain backing the library until that library item is deleted.
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useRecording } from '../../src/hooks/useRecording.ts';
@@ -57,7 +57,7 @@ function App() {
     {(program.storageWarning || local.storageWarning) && <p role="alert">{program.storageWarning || local.storageWarning}</p>}
     <RecordingRecoveryNotice onRecovered={library.refresh} />
     <h2>Library</h2>
-    {library.sessions.map(session => <p key={session.id}>{session.roomName} · {session.trackCount} tracks <button onClick={() => void library.loadFiles(session.id).then(files => setPreview(URL.createObjectURL(files.find(file => file.blob.type.startsWith('video/'))!.blob)))}>Preview {session.roomName}</button></p>)}
+    {library.sessions.map(session => <p key={session.id}>{session.roomName} · {session.trackCount} tracks <button onClick={() => void library.loadFiles(session.id).then(files => setPreview(URL.createObjectURL(files.find(file => file.blob.type.startsWith('video/'))!.blob)))}>Preview {session.roomName}</button> <button onClick={() => void library.loadFiles(session.id).then(files => library.saveSession({ roomName: `${session.roomName} copy`, files: files.map(file => ({ label: file.label, blob: file.blob, fileName: file.fileName, kind: file.kind, capture: file.capture })) }))}>Duplicate {session.roomName}</button> <button onClick={() => void library.deleteSession(session.id)}>Delete {session.roomName}</button></p>)}
     {preview && <video aria-label="Recovered recording preview" src={preview} controls autoPlay muted style={{width:640,maxWidth:'100%'}} />}
   </main>;
 }
