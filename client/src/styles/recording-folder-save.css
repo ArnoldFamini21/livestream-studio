@@ -1,0 +1,13 @@
+.recording-folder-save { min-width: 0; width: 100%; padding: 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-tertiary); }
+.recording-folder-save-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 8px 11px; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text-primary); background: var(--bg-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.recording-folder-save-button:disabled { cursor: default; opacity: .5; }
+.recording-folder-save :is(button, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.recording-folder-save p { margin: 8px 0 0; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.recording-folder-save-help { color: var(--text-muted); }
+.recording-folder-save-status, .recording-folder-save-result { color: var(--text-secondary); }
+.recording-folder-save-error { color: var(--danger, #f87171); }
+.recording-folder-save-result summary { margin-top: 9px; color: var(--text-primary); font-size: 11px; cursor: pointer; }
+.recording-folder-save-result video { display: block; width: 100%; max-height: 240px; margin-top: 8px; border-radius: 7px; background: #000; }
+.recording-folder-save-result audio { display: block; width: 100%; max-width: 100%; margin-top: 8px; }
+.recording-folder-save--compact { flex: 1 0 100%; margin-top: 8px; padding: 9px; }
+.recording-folder-save--compact > .recording-folder-save-button { min-height: 30px; padding: 6px 9px; font-size: 11px; }

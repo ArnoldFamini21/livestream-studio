@@ -18,6 +18,7 @@ import '@fontsource/inter/latin-600.css';
 import '@fontsource/inter/latin-700.css';
 import './styles/global.css';
 import './styles/recording-recovery.css';
+import './styles/recording-folder-save.css';
 
 const ResetPassword = React.lazy(() => import('./components/ResetPassword.tsx').then((module) => ({ default: module.ResetPassword })));
 const WatchPage = React.lazy(() => import('./components/WatchPage.tsx'));

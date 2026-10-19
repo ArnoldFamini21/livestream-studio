@@ -1,4 +1,5 @@
 import { RecordingRecoveryNotice } from './RecordingRecoveryNotice.tsx';
+import { RecordingFolderSave } from './RecordingFolderSave.tsx';
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import type { RecordingExportArtifactStatus, RecordingExportJobResponse, RecordingExportVideoCodec } from '@studio/shared';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
@@ -4111,6 +4112,21 @@ export function RecordingPanel({
                 )}
               </div>
             </div>
+            <RecordingFolderSave
+              key={activeSessionId || recordedFiles[0]?.fileName}
+              disabled={isStopping}
+              getRecording={() => {
+                const session = sessions.find((item) => item.id === activeSessionId);
+                return {
+                  id: session?.id || activeSessionId || undefined,
+                  roomName: session?.roomName || roomName,
+                  createdAt: session?.createdAt || new Date().toISOString(),
+                  durationSeconds: session?.durationSeconds ?? lastRecordingDurationSeconds ?? parseDurationSeconds(formattedTime),
+                  files: recordedFiles,
+                  markers: sortedRecordingMarkers,
+                };
+              }}
+            />
             {(mediaUploadMessage || mediaUploadError) && (
               <div style={{
                 ...styles.mediaUploadStatus,
@@ -4966,6 +4982,19 @@ export function RecordingPanel({
                     Delete
                   </button>
                 </div>
+                <RecordingFolderSave
+                  compact
+                  disabled={isBusy || isRecording || isStopping}
+                  onBusyChange={(busy) => setLibraryBusyId((current) => busy ? session.id : current === session.id ? null : current)}
+                  getRecording={async () => ({
+                    id: session.id,
+                    roomName: session.roomName,
+                    createdAt: session.createdAt,
+                    durationSeconds: session.durationSeconds,
+                    files: await loadFiles(session.id),
+                    markers: isActive ? sortedRecordingMarkers : session.markers,
+                  })}
+                />
                 {isTrackExpanded && (
                   <div style={styles.sessionTrackList}>
                     {trackError && <div style={styles.libraryTrackError}>{trackError}</div>}

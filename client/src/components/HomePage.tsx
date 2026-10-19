@@ -35,6 +35,7 @@ import {
 import { buildRegistrantsCsv } from '../utils/webinarRegistration.ts';
 import { buildGuestInviteEmailHref, buildGuestInviteUrl, buildGuestPreparationSheet } from '../utils/inviteLinks.ts';
 import { useRecordingLibrary, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
+import { RecordingFolderSave } from './RecordingFolderSave.tsx';
 import {
   BRAND_KIT_STORAGE_KEY,
   parseSavedBrandKits,
@@ -1767,7 +1768,7 @@ export function HomePage() {
                         const exportState = getWorkspaceRecordingExportState(session);
                         const exportLabel = getWorkspaceRecordingExportLabel(session);
                         return (
-                          <div key={session.id} className="ws-workspaceRow" style={styles.workspaceRow}>
+                          <div key={session.id} className="ws-workspaceRow" style={{ ...styles.workspaceRow, flexWrap: 'wrap' }}>
                             <span className="ws-workspaceRecordingSourceBadge" style={styles.workspaceRecordingSourceBadge}>
                               {session.source === 'local-and-server' ? 'Both' : session.source === 'server' ? 'Cloud' : 'Local'}
                             </span>
@@ -1815,17 +1816,37 @@ export function HomePage() {
                               {localRecordingIds.has(session.id) && (
                                 <>
                                 <button className="ws-workspaceRowAction" style={styles.workspaceRowAction} onClick={() => void downloadLocalRecording(session)} disabled={downloadingRecordingId !== null}>
-                                  {downloadingRecordingId === session.id ? 'Preparing…' : 'Download tracks'}
+                                  {downloadingRecordingId === session.id ? 'Working…' : 'Download tracks'}
                                 </button>
                                 <button
                                   className="ws-workspaceRowAction" style={styles.workspaceRowAction}
                                   onClick={() => void deleteDashboardRecordingSession(session)}
+                                  disabled={downloadingRecordingId !== null}
                                 >
                                   Delete
                                 </button>
                                 </>
                               )}
                             </div>
+                            {localRecordingIds.has(session.id) && (
+                              <RecordingFolderSave
+                                compact
+                                disabled={downloadingRecordingId !== null}
+                                onBusyChange={(busy) => setDownloadingRecordingId((current) => busy ? session.id : current === session.id ? null : current)}
+                                getRecording={async () => {
+                                  const localSession = recordingLibrary.sessions.find((item) => item.id === session.id);
+                                  if (!localSession) throw new Error('This recording is no longer in the local library.');
+                                  return {
+                                    id: localSession.id,
+                                    roomName: localSession.roomName,
+                                    createdAt: localSession.createdAt,
+                                    durationSeconds: localSession.durationSeconds,
+                                    files: await recordingLibrary.loadFiles(localSession.id),
+                                    markers: localSession.markers,
+                                  };
+                                }}
+                              />
+                            )}
                           </div>
                         );
                       })}
