@@ -1,7 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, rm, truncate } from 'node:fs/promises';
+import { existsSync, readdirSync, readFileSync, statSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFile, mkdir, rm, truncate, writeFile } from 'node:fs/promises';
 import type {
   DistributedRecordingSessionResponse,
   RecordingUploadChunkResponse,
@@ -278,6 +279,41 @@ function normalizeCompletionUpdates(input: unknown): RecordingUploadTrackComplet
   });
 }
 
+const SESSION_STATE_FILE_NAME = 'session-state.json';
+
+interface PersistedRecordingUploadSession {
+  version: 1;
+  uploadId: string;
+  roomId: string;
+  sessionId?: string;
+  participantId?: string;
+  participantName?: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  maxBytes: number;
+  bytesReceived: number;
+  tracks: RecordingUploadTrackState[];
+}
+
+function serializeSessionState(session: RecordingUploadSession): string {
+  const payload: PersistedRecordingUploadSession = {
+    version: 1,
+    uploadId: session.uploadId,
+    roomId: session.roomId,
+    sessionId: session.sessionId,
+    participantId: session.participantId,
+    participantName: session.participantName,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    expiresAt: session.expiresAt,
+    maxBytes: session.maxBytes,
+    bytesReceived: session.bytesReceived,
+    tracks: Array.from(session.tracks.values()),
+  };
+  return `${JSON.stringify(payload, null, 2)}\n`;
+}
+
 function defaultUploadRoot(): string {
   return path.join(os.tmpdir(), 'livestream-studio-recordings');
 }
@@ -287,6 +323,10 @@ export class RecordingUploadStore {
   private readonly pendingMutations = new Map<string, Promise<void>>();
 
   constructor(private readonly uploadRoot = process.env.RECORDING_UPLOAD_DIR || defaultUploadRoot()) {}
+
+  getUploadRoot(): string {
+    return this.uploadRoot;
+  }
 
   /** Serialize whole sessions: sequence checks and shared byte limits must commit together. */
   private async mutateSession<T>(uploadId: string, task: () => Promise<T>): Promise<T> {
@@ -299,6 +339,126 @@ export class RecordingUploadStore {
       return await operation;
     } finally {
       if (this.pendingMutations.get(uploadId) === settled) this.pendingMutations.delete(uploadId);
+    }
+  }
+
+  private async persistSession(session: RecordingUploadSession): Promise<void> {
+    await writeFile(path.join(session.rootDir, SESSION_STATE_FILE_NAME), serializeSessionState(session), 'utf8');
+  }
+
+  private persistSessionSync(session: RecordingUploadSession): void {
+    try {
+      writeFileSync(path.join(session.rootDir, SESSION_STATE_FILE_NAME), serializeSessionState(session), 'utf8');
+    } catch {
+      // Directory may have been removed concurrently.
+    }
+  }
+
+  private loadSessionFromDisk(uploadId: string): RecordingUploadSession | null {
+    if (!isValidId(uploadId)) return null;
+    const rootDir = path.join(this.uploadRoot, uploadId);
+    const stateFile = path.join(rootDir, SESSION_STATE_FILE_NAME);
+    if (!existsSync(stateFile)) return null;
+
+    try {
+      const parsed = JSON.parse(readFileSync(stateFile, 'utf8')) as Partial<PersistedRecordingUploadSession>;
+      if (
+        !parsed ||
+        parsed.uploadId !== uploadId ||
+        typeof parsed.roomId !== 'string' ||
+        typeof parsed.createdAt !== 'string' ||
+        typeof parsed.updatedAt !== 'string' ||
+        typeof parsed.expiresAt !== 'string' ||
+        typeof parsed.maxBytes !== 'number' ||
+        !Array.isArray(parsed.tracks)
+      ) {
+        return null;
+      }
+
+      const tracks = new Map<string, RecordingUploadTrackState>();
+      let totalBytes = 0;
+      let needsSyncPersist = false;
+      for (const rawTrack of parsed.tracks) {
+        if (!rawTrack || typeof rawTrack.id !== 'string' || typeof rawTrack.mimeType !== 'string') continue;
+        const filePath = path.join(rootDir, `${rawTrack.id}.${getRecordingTrackExtension(rawTrack.mimeType)}`);
+        let bytesReceived = typeof rawTrack.bytesReceived === 'number' && rawTrack.bytesReceived >= 0
+          ? rawTrack.bytesReceived
+          : 0;
+        let chunksReceived = typeof rawTrack.chunksReceived === 'number' && rawTrack.chunksReceived >= 0
+          ? rawTrack.chunksReceived
+          : 0;
+        let complete = Boolean(rawTrack.complete);
+
+        try {
+          const fileStat = statSync(filePath);
+          if (fileStat.size > bytesReceived) {
+            // An unrecorded partial write occurred right before a crash; roll back to the committed offset.
+            try {
+              truncateSync(filePath, bytesReceived);
+            } catch {
+              bytesReceived = fileStat.size;
+              needsSyncPersist = true;
+            }
+          } else if (fileStat.size < bytesReceived) {
+            bytesReceived = fileStat.size;
+            complete = false;
+            needsSyncPersist = true;
+          }
+        } catch {
+          if (bytesReceived > 0) {
+            bytesReceived = 0;
+            chunksReceived = 0;
+            complete = false;
+            needsSyncPersist = true;
+          }
+        }
+
+        totalBytes += bytesReceived;
+        tracks.set(rawTrack.id, {
+          ...rawTrack,
+          filePath,
+          bytesReceived,
+          chunksReceived,
+          complete,
+        });
+      }
+
+      const session: RecordingUploadSession = {
+        uploadId,
+        roomId: parsed.roomId,
+        sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined,
+        participantId: typeof parsed.participantId === 'string' ? parsed.participantId : undefined,
+        participantName: typeof parsed.participantName === 'string' ? parsed.participantName : undefined,
+        rootDir,
+        createdAt: parsed.createdAt,
+        updatedAt: parsed.updatedAt,
+        expiresAt: parsed.expiresAt,
+        maxBytes: parsed.maxBytes,
+        bytesReceived: totalBytes,
+        tracks,
+      };
+      this.sessions.set(uploadId, session);
+      if (needsSyncPersist) {
+        this.persistSessionSync(session);
+      }
+      return session;
+    } catch {
+      return null;
+    }
+  }
+
+  private hydrateAllFromDisk(): void {
+    if (!existsSync(this.uploadRoot)) return;
+    try {
+      const entries = readdirSync(this.uploadRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('._')) continue;
+        if (!this.sessions.has(entry.name)) {
+          this.loadSessionFromDisk(entry.name);
+        }
+      }
+    } catch {
+      // Ignore missing or unreadable uploadRoot.
     }
   }
 
@@ -336,21 +496,35 @@ export class RecordingUploadStore {
       tracks,
     };
     this.sessions.set(uploadId, session);
+    await this.persistSession(session);
     return sessionStatus(session);
   }
 
-  getSession(uploadId: string, nowMs = Date.now()): RecordingUploadSession {
+  private resolveSession(uploadId: string): RecordingUploadSession {
     if (!isValidId(uploadId)) {
       throw new RecordingUploadError(404, 'RECORDING_UPLOAD_NOT_FOUND', 'Recording upload session not found');
     }
-    const session = this.sessions.get(uploadId);
+    const session = this.sessions.get(uploadId) ?? this.loadSessionFromDisk(uploadId);
     if (!session) {
       throw new RecordingUploadError(404, 'RECORDING_UPLOAD_NOT_FOUND', 'Recording upload session not found');
     }
+    return session;
+  }
+
+  getSession(uploadId: string, nowMs = Date.now()): RecordingUploadSession {
+    const session = this.resolveSession(uploadId);
     if (Date.parse(session.expiresAt) <= nowMs) {
       throw new RecordingUploadError(410, 'RECORDING_UPLOAD_EXPIRED', 'Recording upload session expired');
     }
     return session;
+  }
+
+  /**
+   * Look up a session for deletion without rejecting expired uploads so callers
+   * and cleanup jobs can still authenticate and reclaim expired directories.
+   */
+  getSessionForDelete(uploadId: string): RecordingUploadSession {
+    return this.resolveSession(uploadId);
   }
 
   getStatus(uploadId: string, nowMs = Date.now()): RecordingUploadSessionResponse {
@@ -392,6 +566,7 @@ export class RecordingUploadStore {
     if (!isValidId(roomId) || !isValidId(sessionId)) {
       throw new RecordingUploadError(404, 'RECORDING_SESSION_NOT_FOUND', 'Recording session not found');
     }
+    this.hydrateAllFromDisk();
     const uploads = Array.from(this.sessions.values())
       .filter((session) => (
         session.roomId === roomId &&
@@ -512,6 +687,7 @@ export class RecordingUploadStore {
     track.complete = Boolean(input.final);
     session.bytesReceived += input.data.length;
     session.updatedAt = new Date(nowMs).toISOString();
+    await this.persistSession(session);
 
     return {
       uploadId: session.uploadId,
@@ -546,15 +722,30 @@ export class RecordingUploadStore {
       track.complete = true;
     }
     session.updatedAt = new Date(nowMs).toISOString();
+    this.persistSessionSync(session);
     return sessionStatus(session);
   }
 
   async deleteSession(uploadId: string): Promise<void> {
     await this.mutateSession(uploadId, async () => {
-      const session = this.sessions.get(uploadId);
+      const session = this.sessions.get(uploadId) ?? this.loadSessionFromDisk(uploadId);
       if (!session) return;
       this.sessions.delete(uploadId);
       await rm(session.rootDir, { recursive: true, force: true });
     });
+  }
+
+  async sweepExpiredSessions(nowMs = Date.now()): Promise<number> {
+    this.hydrateAllFromDisk();
+    const expiredIds: string[] = [];
+    for (const session of this.sessions.values()) {
+      if (Date.parse(session.expiresAt) <= nowMs && !this.pendingMutations.has(session.uploadId)) {
+        expiredIds.push(session.uploadId);
+      }
+    }
+    for (const uploadId of expiredIds) {
+      await this.deleteSession(uploadId);
+    }
+    return expiredIds.length;
   }
 }

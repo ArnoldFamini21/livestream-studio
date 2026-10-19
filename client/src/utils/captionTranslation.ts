@@ -1,4 +1,5 @@
 import { ApiRequestError, postJson } from './apiClient.ts';
+import { accountHeaders } from './accountAuth.ts';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions.ts';
 
 const TRANSLATION_TIMEOUT_MS = 60_000;
@@ -85,7 +86,7 @@ export async function requestCaptionTranslation(
       segments: requestSegments,
       targetLanguage: input.targetLanguage,
     },
-    { timeoutMs: TRANSLATION_TIMEOUT_MS }
+    { timeoutMs: TRANSLATION_TIMEOUT_MS, credentials: 'include', headers: accountHeaders() }
   );
 
   const translations = Array.isArray(data.translations) ? data.translations : [];

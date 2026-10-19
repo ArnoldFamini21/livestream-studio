@@ -3,6 +3,8 @@ import type {
   LiveStreamTokenClaims,
   ParticipantRole,
   RecordingUploadTokenClaims,
+  SfuMembershipControlAction,
+  SfuMembershipControlClaims,
   SfuTokenClaims,
 } from '@studio/shared';
 
@@ -25,7 +27,7 @@ function safeSignatureEquals(actual: string, expected: string): boolean {
 }
 
 export function signLiveStreamToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -116,10 +118,44 @@ export function verifySfuToken(token: string, secret: string, now = Date.now()):
     typeof claims.participantId !== 'string' ||
     !isParticipantRole(claims.role) ||
     typeof claims.nonce !== 'string' ||
-    typeof claims.exp !== 'number'
+    typeof claims.exp !== 'number' ||
+    (claims.iat !== undefined && (typeof claims.iat !== 'number' || !Number.isFinite(claims.iat)))
   ) {
     throw new Error('Invalid SFU token claims');
   }
   if (claims.exp <= now) throw new Error('SFU token expired');
   return claims as SfuTokenClaims;
+}
+
+function isSfuControlAction(value: unknown): value is SfuMembershipControlAction {
+  return value === 'revoke-participant' || value === 'allow-participant' || value === 'revoke-room';
+}
+
+export function verifySfuMembershipControlToken(
+  token: string,
+  secret: string,
+  now = Date.now()
+): SfuMembershipControlClaims {
+  const claims = verifyTokenPayload(token, secret) as Partial<SfuMembershipControlClaims> | null;
+  if (
+    !claims ||
+    claims.v !== 1 ||
+    claims.purpose !== 'sfu-control' ||
+    !isSfuControlAction(claims.action) ||
+    typeof claims.roomId !== 'string' ||
+    !claims.roomId ||
+    typeof claims.nonce !== 'string' ||
+    typeof claims.iat !== 'number' ||
+    !Number.isFinite(claims.iat) ||
+    typeof claims.exp !== 'number' ||
+    !Number.isFinite(claims.exp) ||
+    ((claims.action === 'revoke-participant' || claims.action === 'allow-participant') &&
+      (typeof claims.participantId !== 'string' || !claims.participantId))
+  ) {
+    throw new Error('Invalid SFU membership control token claims');
+  }
+  if (claims.exp <= now) {
+    throw new Error('SFU membership control token expired');
+  }
+  return claims as SfuMembershipControlClaims;
 }

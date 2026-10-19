@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { describe, it } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
-import { createRoom, getRooms, getStageImage, setupSignalingServer, storeStageImage } from '../dist/services/signaling.js';
+import {
+  createRoom,
+  getRooms,
+  getStageImage,
+  setSfuMembershipNotifier,
+  setupSignalingServer,
+  storeStageImage,
+} from '../dist/services/signaling.js';
 
 async function createSignalingHarness() {
   const wss = new WebSocketServer({ port: 0 });
@@ -503,6 +510,79 @@ describe('SFU media authorization', () => {
       sendSignal(guest, { type: 'sfu-token-request', payload: { requestId: 'sfu-green-request' } });
       await denied;
     } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects backstage guests from SFU token issuance and emits revocation notifications on off-stage/removal actions', async () => {
+    const previousSecret = process.env.LIVE_STREAM_TOKEN_SECRET;
+    const secret = 'test-sfu-revocation-token-secret-123456';
+    process.env.LIVE_STREAM_TOKEN_SECRET = secret;
+    const notifications = [];
+    setSfuMembershipNotifier((event) => {
+      notifications.push(event);
+    });
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('SFU revocation test', 'Arnold', {
+      creatorIp: `sfu-revocation-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest' });
+      const joined = await guestJoined;
+      const guestId = joined.payload.participant.id;
+
+      // Move guest to backstage -> revokes SFU membership and blocks SFU token issuance.
+      const movedBackstage = waitForMessage(guest, 'participant-updated', (m) => m.payload.status === 'backstage');
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: { targetParticipantId: guestId, action: 'move-to-backstage', performedBy: room.hostId },
+      });
+      await movedBackstage;
+      assert.ok(notifications.some((n) => n.action === 'revoke-participant' && n.participantId === guestId && n.reason === 'Moved to backstage'));
+
+      const deniedBackstage = waitForMessage(guest, 'error', (message) => message.payload.code === 'PARTICIPANT_OFF_STAGE');
+      sendSignal(guest, { type: 'sfu-token-request', payload: { requestId: 'sfu-backstage-request' } });
+      await deniedBackstage;
+
+      // Move back to stage -> allows SFU membership and issues token with iat.
+      const movedStage = waitForMessage(guest, 'participant-updated', (m) => m.payload.status === 'on-stage');
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: { targetParticipantId: guestId, action: 'move-to-stage', performedBy: room.hostId },
+      });
+      await movedStage;
+      assert.ok(notifications.some((n) => n.action === 'allow-participant' && n.participantId === guestId));
+
+      const issued = waitForMessage(guest, 'sfu-token-issued', (m) => m.payload.requestId === 'sfu-stage-request');
+      sendSignal(guest, { type: 'sfu-token-request', payload: { requestId: 'sfu-stage-request' } });
+      const issuedMsg = await issued;
+      const claims = verifySignedLiveToken(issuedMsg.payload.token, secret);
+      assert.equal(typeof claims.iat, 'number');
+
+      // Remove guest -> revokes SFU membership.
+      notifications.length = 0;
+      const removed = waitForMessage(guest, 'participant-removed');
+      sendSignal(host, {
+        type: 'stage-action',
+        payload: { targetParticipantId: guestId, action: 'remove', performedBy: room.hostId },
+      });
+      await removed;
+      assert.ok(notifications.some((n) => n.action === 'revoke-participant' && n.participantId === guestId));
+    } finally {
+      setSfuMembershipNotifier(null);
+      if (previousSecret === undefined) delete process.env.LIVE_STREAM_TOKEN_SECRET;
+      else process.env.LIVE_STREAM_TOKEN_SECRET = previousSecret;
       await harness.close();
     }
   });

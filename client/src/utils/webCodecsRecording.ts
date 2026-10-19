@@ -30,6 +30,7 @@ interface VideoEncoderInitLike {
 }
 
 interface VideoEncoderLike {
+  readonly encodeQueueSize?: number;
   configure: (config: BrowserVideoEncoderConfigLike) => void;
   encode: (frame: VideoFrameLike, options?: { keyFrame?: boolean }) => void;
   flush: () => Promise<void>;
@@ -70,6 +71,7 @@ export interface WebCodecsVideoRecorderOptions {
   hardwareAcceleration?: BrowserVideoEncoderHardwareAcceleration;
   keyFrameIntervalFrames?: number;
   maxBufferedBytes?: number;
+  maxEncodeQueueSize?: number;
   environment?: WebCodecsRecordingEnvironment;
 }
 
@@ -93,11 +95,14 @@ export interface WebCodecsVideoRecorderResult {
   config: BrowserVideoEncoderConfigLike;
   chunks: WebCodecsEncodedChunk[];
   framesEncoded: number;
+  droppedFrames: number;
   durationMs: number;
 }
 
-const DEFAULT_MAX_BUFFERED_BYTES = 512 * 1024 * 1024;
+const DEFAULT_MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
+const MAX_ALLOWED_BUFFERED_BYTES = 512 * 1024 * 1024;
 const DEFAULT_KEYFRAME_INTERVAL_FRAMES = 60;
+const DEFAULT_MAX_ENCODE_QUEUE_SIZE = 16;
 
 function getCurrentEnvironment(): WebCodecsRecordingEnvironment {
   const root = typeof globalThis === 'undefined'
@@ -172,8 +177,8 @@ export function resolveWebCodecsVideoRecorderConfig(
   };
 }
 
-function copyEncodedChunk(chunk: EncodedVideoChunkLike): Uint8Array {
-  const byteLength = boundedInteger(chunk.byteLength, 0, 0, DEFAULT_MAX_BUFFERED_BYTES);
+function copyEncodedChunk(chunk: EncodedVideoChunkLike, maxBytes: number): Uint8Array {
+  const byteLength = boundedInteger(chunk.byteLength, 0, 0, maxBytes);
   const data = new Uint8Array(byteLength);
   if (byteLength > 0 && typeof chunk.copyTo === 'function') {
     chunk.copyTo(data);
@@ -182,7 +187,7 @@ function copyEncodedChunk(chunk: EncodedVideoChunkLike): Uint8Array {
 }
 
 export class WebCodecsVideoTrackRecorder {
-  private readonly options: Required<Pick<WebCodecsVideoRecorderOptions, 'keyFrameIntervalFrames' | 'maxBufferedBytes'>> & WebCodecsVideoRecorderOptions;
+  private readonly options: Required<Pick<WebCodecsVideoRecorderOptions, 'keyFrameIntervalFrames' | 'maxBufferedBytes' | 'maxEncodeQueueSize'>> & WebCodecsVideoRecorderOptions;
   private readonly environment: WebCodecsRecordingEnvironment;
   private encoder: VideoEncoderLike | null = null;
   private reader: ReadableStreamReaderLike | null = null;
@@ -190,6 +195,8 @@ export class WebCodecsVideoTrackRecorder {
   private chunks: WebCodecsEncodedChunk[] = [];
   private totalBufferedBytes = 0;
   private framesEncoded = 0;
+  private droppedFrames = 0;
+  private forceNextKeyFrame = false;
   private startedAt = 0;
   private stopped = false;
   private encoderError: Error | null = null;
@@ -200,7 +207,8 @@ export class WebCodecsVideoTrackRecorder {
     this.options = {
       ...options,
       keyFrameIntervalFrames: boundedInteger(options.keyFrameIntervalFrames, DEFAULT_KEYFRAME_INTERVAL_FRAMES, 1, 600),
-      maxBufferedBytes: boundedInteger(options.maxBufferedBytes, DEFAULT_MAX_BUFFERED_BYTES, 1024 * 1024, DEFAULT_MAX_BUFFERED_BYTES),
+      maxBufferedBytes: boundedInteger(options.maxBufferedBytes, DEFAULT_MAX_BUFFERED_BYTES, 1024, MAX_ALLOWED_BUFFERED_BYTES),
+      maxEncodeQueueSize: boundedInteger(options.maxEncodeQueueSize, DEFAULT_MAX_ENCODE_QUEUE_SIZE, 1, 120),
       environment: this.environment,
     };
   }
@@ -241,11 +249,16 @@ export class WebCodecsVideoTrackRecorder {
   }
 
   private handleOutput(chunk: EncodedVideoChunkLike) {
-    const data = copyEncodedChunk(chunk);
-    this.totalBufferedBytes += data.byteLength;
-    if (this.totalBufferedBytes > this.options.maxBufferedBytes) {
-      throw new Error('WebCodecs recording exceeded the buffered chunk limit.');
+    if (this.encoderError) return;
+    const rawByteLength = boundedInteger(chunk.byteLength, 0, 0, MAX_ALLOWED_BUFFERED_BYTES);
+    if (this.totalBufferedBytes + rawByteLength > this.options.maxBufferedBytes) {
+      this.encoderError = new Error('WebCodecs recording exceeded the buffered chunk limit.');
+      this.stopped = true;
+      void this.reader?.cancel?.();
+      return;
     }
+    const data = copyEncodedChunk(chunk, this.options.maxBufferedBytes);
+    this.totalBufferedBytes += data.byteLength;
     this.chunks.push({
       type: chunk.type || 'delta',
       timestamp: Number.isFinite(chunk.timestamp) ? Math.round(Number(chunk.timestamp)) : 0,
@@ -262,9 +275,16 @@ export class WebCodecsVideoTrackRecorder {
       const frame = await this.reader.read();
       if (frame.done || !frame.value) return;
       try {
-        this.encoder.encode(frame.value, {
-          keyFrame: this.framesEncoded % this.options.keyFrameIntervalFrames === 0,
-        });
+        if (this.encoderError) throw this.encoderError;
+        const queueSize = Number(this.encoder.encodeQueueSize ?? 0);
+        if (Number.isFinite(queueSize) && queueSize >= this.options.maxEncodeQueueSize) {
+          this.droppedFrames += 1;
+          this.forceNextKeyFrame = true;
+          continue;
+        }
+        const keyFrame = this.forceNextKeyFrame || this.framesEncoded % this.options.keyFrameIntervalFrames === 0;
+        this.forceNextKeyFrame = false;
+        this.encoder.encode(frame.value, { keyFrame });
         this.framesEncoded += 1;
       } finally {
         frame.value.close?.();
@@ -278,20 +298,31 @@ export class WebCodecsVideoTrackRecorder {
       await this.reader?.cancel?.();
     }
     await this.readLoop?.catch((error) => {
-      if (!this.stopped) throw error;
+      if (!this.stopped || this.encoderError) throw error;
     });
     this.stopped = true;
-    if (this.encoderError) throw this.encoderError;
+    if (this.encoderError) {
+      try {
+        this.encoder?.close();
+      } catch {
+        // ignore close errors after encoder failure
+      }
+      throw this.encoderError;
+    }
     await this.encoder?.flush();
+    if (this.encoderError) {
+      try {
+        this.encoder?.close();
+      } catch {
+        // ignore close errors after encoder failure
+      }
+      throw this.encoderError;
+    }
     this.encoder?.close();
 
     const mimeType = this.config?.mimeType || 'application/octet-stream';
     const durationMs = Math.max(0, Math.round((this.environment.now?.() ?? Date.now()) - this.startedAt));
-    const blobParts = this.chunks.map((chunk) => {
-      const buffer = new ArrayBuffer(chunk.data.byteLength);
-      new Uint8Array(buffer).set(chunk.data);
-      return buffer;
-    });
+    const blobParts = this.chunks.map((chunk) => chunk.data as unknown as BlobPart);
     return {
       blob: new Blob(blobParts, { type: mimeType }),
       mimeType,
@@ -304,6 +335,7 @@ export class WebCodecsVideoTrackRecorder {
       },
       chunks: [...this.chunks],
       framesEncoded: this.framesEncoded,
+      droppedFrames: this.droppedFrames,
       durationMs,
     };
   }

@@ -1,4 +1,5 @@
 import { ApiRequestError, postJson } from './apiClient.ts';
+import { accountHeaders } from './accountAuth.ts';
 import {
   mapAiHighlightSuggestions,
   toTimedCaptionSegments,
@@ -50,7 +51,7 @@ export async function requestAiHighlights(
         ? { durationSeconds: input.durationSeconds }
         : {}),
     },
-    { timeoutMs: HIGHLIGHT_TIMEOUT_MS }
+    { timeoutMs: HIGHLIGHT_TIMEOUT_MS, credentials: 'include', headers: accountHeaders() }
   );
 
   const highlights = Array.isArray(data.suggestions) ? data.suggestions : [];

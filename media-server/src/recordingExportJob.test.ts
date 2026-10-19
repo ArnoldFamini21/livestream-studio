@@ -310,4 +310,39 @@ describe('recording export jobs', () => {
     const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
     assert.equal(parsed.export.normalizeAudio, true);
   });
+
+  it('recovers completed export jobs and artifacts across store restarts and marks interrupted running jobs as failed', async () => {
+    const { root, uploads, session } = await createCompletedUpload();
+    const runner: RecordingExportRunner = async (command) => {
+      await writeFile(command.outputPath, Buffer.from(command.label));
+    };
+    const exports = new RecordingExportJobStore(runner, undefined, root);
+    const queued = await exports.createJob(uploads.getExportSource(session.uploadId), {
+      basename: 'Restart Durable',
+      includeAudioStems: false,
+    });
+    await exports.startJob(queued.exportId);
+
+    const restartedExports = new RecordingExportJobStore(runner, undefined, root);
+    const recoveredJob = restartedExports.getJob(queued.exportId, session.uploadId);
+    assert.equal(recoveredJob.status, 'ready');
+    const recoveredArtifact = restartedExports.getArtifact(queued.exportId, 'final-mp4', session.uploadId);
+    assert.match(recoveredArtifact.path, /Restart_Durable\.mp4$/);
+
+    // Simulate a job that was mid-flight ('running') when the server process exited.
+    const interruptedJob = await exports.createJob(uploads.getExportSource(session.uploadId), {
+      basename: 'Interrupted Export',
+      includeAudioStems: false,
+    });
+    const stateFile = path.join(root, session.uploadId, 'exports', interruptedJob.exportId, 'job-state.json');
+    const rawState = JSON.parse(await readFile(stateFile, 'utf8'));
+    rawState.status = 'running';
+    rawState.artifacts[0].status = 'running';
+    await writeFile(stateFile, JSON.stringify(rawState, null, 2), 'utf8');
+
+    const afterCrashStore = new RecordingExportJobStore(runner, undefined, root);
+    const afterCrashJob = afterCrashStore.getJob(interruptedJob.exportId, session.uploadId);
+    assert.equal(afterCrashJob.status, 'error');
+    assert.match(afterCrashJob.error || '', /interrupted by server restart/i);
+  });
 });

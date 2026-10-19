@@ -21,6 +21,8 @@ import type {
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
   RecordingUploadTokenClaims,
+  SfuMembershipControlAction,
+  SfuMembershipControlClaims,
   SfuTokenClaims,
   StudioBrandingPayload,
   StageContentPayload,
@@ -565,6 +567,7 @@ function replaceGuestSession(roomId: string, roomState: RoomState, existingId: s
   });
   roomState.participants.delete(existingId);
   wsToParticipant.delete(existing.ws);
+  notifyMediaServerSfuMembership('revoke-participant', roomId, existingId, 'Guest session replaced');
   broadcastToRoom(roomId, {
     type: 'participant-left',
     payload: { participantId: existingId },
@@ -583,6 +586,7 @@ function replaceExistingHostSession(roomId: string, roomState: RoomState, existi
 
   roomState.participants.delete(existingHostId);
   wsToParticipant.delete(existingHost.ws);
+  notifyMediaServerSfuMembership('revoke-participant', roomId, existingHostId, 'Host session replaced');
   roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== existingHostId);
 
   if (clearRoomEndingTimer(roomId)) {
@@ -798,12 +802,75 @@ function getLiveStreamTokenSecret(): string | null {
 }
 
 function signMediaToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
   const signature = createHmac('sha256', secret).update(body).digest('base64url');
   return `${body}.${signature}`;
+}
+
+export interface SfuMembershipNotification {
+  action: SfuMembershipControlAction;
+  roomId: string;
+  participantId?: string;
+  reason?: string;
+  token: string;
+}
+
+type SfuMembershipNotifier = (notification: SfuMembershipNotification) => void | Promise<void>;
+
+let customSfuMembershipNotifier: SfuMembershipNotifier | null = null;
+
+export function setSfuMembershipNotifier(notifier: SfuMembershipNotifier | null): void {
+  customSfuMembershipNotifier = notifier;
+}
+
+function notifyMediaServerSfuMembership(
+  action: SfuMembershipControlAction,
+  roomId: string,
+  participantId?: string,
+  reason?: string
+): void {
+  const secret = getLiveStreamTokenSecret();
+  if (!secret) return;
+  const now = Date.now();
+  const claims: SfuMembershipControlClaims = {
+    v: 1,
+    purpose: 'sfu-control',
+    action,
+    roomId,
+    ...(participantId ? { participantId } : {}),
+    ...(reason ? { reason } : {}),
+    iat: now,
+    exp: now + 60_000,
+    nonce: nanoid(16),
+  };
+  const token = signMediaToken(claims, secret);
+
+  if (customSfuMembershipNotifier) {
+    void Promise.resolve(
+      customSfuMembershipNotifier({ action, roomId, participantId, reason, token })
+    ).catch(() => undefined);
+    return;
+  }
+
+  const mediaServerUrl = process.env.MEDIA_SERVER_URL?.trim().replace(/\/+$/, '');
+  if (!mediaServerUrl) return;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  timeout.unref?.();
+  void fetch(`${mediaServerUrl}/sfu/membership`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ token }),
+    signal: controller.signal,
+  })
+    .catch(() => undefined)
+    .finally(() => clearTimeout(timeout));
 }
 
 function pruneExpiredCoHostInviteTokens(roomState: RoomState, now = Date.now()) {
@@ -1398,14 +1465,17 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
   switch (payload.action) {
     case 'move-to-stage':
       target.participant.status = 'on-stage';
+      notifyMediaServerSfuMembership('allow-participant', mapping.roomId, target.participant.id);
       break;
     case 'move-to-backstage':
       target.participant.status = 'backstage';
       target.participant.screenSharing = false;
+      notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to backstage');
       break;
     case 'move-to-green-room':
       target.participant.status = 'green-room';
       target.participant.screenSharing = false;
+      notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to green room');
       break;
     case 'promote-co-host':
       target.participant.role = 'co-host';
@@ -1454,6 +1524,7 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       console.log(`Stage action: unmute requested for ${target.participant.name} by ${performer.participant.name}`);
       return;
     case 'remove':
+      notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Removed by host');
       send(target.ws, {
         type: 'participant-removed',
         payload: { reason: 'Removed by host' },
@@ -1465,6 +1536,7 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       if (target.joinSessionId) {
         roomState.bannedJoinSessionIds.add(target.joinSessionId);
       }
+      notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Banned by host');
       send(target.ws, {
         type: 'participant-removed',
         payload: { reason: 'Banned by host' },
@@ -1850,6 +1922,10 @@ function handleSfuTokenRequest(
     sendError(ws, 'Wait until you are admitted before connecting to studio media', 'PARTICIPANT_NOT_ADMITTED');
     return;
   }
+  if (participantEntry.participant.status !== 'on-stage') {
+    sendError(ws, 'Move to the live stage before connecting to SFU media', 'PARTICIPANT_OFF_STAGE');
+    return;
+  }
 
   const secret = getLiveStreamTokenSecret();
   if (!secret) {
@@ -1857,16 +1933,19 @@ function handleSfuTokenRequest(
     return;
   }
 
-  const expiresAtMs = Date.now() + SFU_TOKEN_TTL_MS;
+  const nowMs = Date.now();
+  const expiresAtMs = nowMs + SFU_TOKEN_TTL_MS;
   const claims: SfuTokenClaims = {
     v: 1,
     purpose: 'sfu',
     roomId: mapping.roomId,
     participantId: mapping.participantId,
     role: participantEntry.participant.role,
+    iat: nowMs,
     exp: expiresAtMs,
     nonce: nanoid(16),
   };
+  notifyMediaServerSfuMembership('allow-participant', mapping.roomId, mapping.participantId);
   send(ws, {
     type: 'sfu-token-issued',
     payload: {
@@ -3550,6 +3629,7 @@ function handleDisconnect(ws: WebSocket) {
 
     roomState.participants.delete(participantId);
     wsToParticipant.delete(ws);
+    notifyMediaServerSfuMembership('revoke-participant', roomId, participantId, 'Disconnected from signaling');
 
     if (
       entry?.participant.role === 'guest'

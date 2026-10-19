@@ -567,7 +567,58 @@ export class PresentationPdfCache {
   }
 }
 
+export class PresentationRenderQueue {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(
+    private readonly maxConcurrent = Math.max(1, Number(process.env.PRESENTATION_RENDER_CONCURRENCY) || 1),
+    private readonly maxQueue = Math.max(0, Number(process.env.PRESENTATION_RENDER_MAX_QUEUE) || 4)
+  ) {}
+
+  get activeCount(): number {
+    return this.active;
+  }
+
+  get queuedCount(): number {
+    return this.waiting.length;
+  }
+
+  isFull(): boolean {
+    return this.active >= this.maxConcurrent && this.waiting.length >= this.maxQueue;
+  }
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.active >= this.maxConcurrent) {
+      if (this.waiting.length >= this.maxQueue) {
+        throw new PresentationRenderError(
+          429,
+          'PRESENTATION_RENDER_BUSY',
+          'Presentation renderer is busy; please try again in a moment.'
+        );
+      }
+      await new Promise<void>((resolve) => {
+        this.waiting.push(resolve);
+      });
+    }
+    this.active += 1;
+    try {
+      return await task();
+    } finally {
+      this.active -= 1;
+      const next = this.waiting.shift();
+      if (next) next();
+    }
+  }
+}
+
 const sharedPresentationPdfCache = new PresentationPdfCache();
+const sharedPresentationRenderQueue = new PresentationRenderQueue();
+const inFlightPdfConversions = new Map<string, Promise<Buffer>>();
+
+export function isPresentationRenderQueueFull(): boolean {
+  return sharedPresentationRenderQueue.isFull();
+}
 
 function validatePresentationInput(input: PresentationRenderInput): PresentationRenderSourceFormat {
   if (input.data.byteLength === 0) {
@@ -596,68 +647,96 @@ export interface PresentationPdfResult {
  */
 export async function convertPresentationToPdf(
   input: PresentationRenderInput,
-  options: RenderOptions & { cache?: PresentationPdfCache | null } = {}
+  options: RenderOptions & { cache?: PresentationPdfCache | null; queue?: PresentationRenderQueue | null } = {}
 ): Promise<PresentationPdfResult> {
   const sourceFormat = validatePresentationInput(input);
   if (sourceFormat === 'pdf') return { pdf: input.data, sourceFormat, cached: false };
 
   const cache = options.cache === undefined ? sharedPresentationPdfCache : options.cache;
+  const queue = options.queue === undefined ? sharedPresentationRenderQueue : options.queue;
   const key = createHash('sha256').update(input.data).digest('hex');
   const hit = cache?.get(key);
   if (hit) return { pdf: hit, sourceFormat, cached: true };
 
-  const workspace = await mkdtemp(path.join(tmpdir(), 'studio-presentation-'));
-  const outputDir = path.join(workspace, 'output');
-  const commandRunner = options.commandRunner || defaultCommandRunner;
-  try {
-    await mkdir(outputDir, { recursive: true });
-    const inputPath = path.join(workspace, `source${getInputExtension(input.fileName, sourceFormat)}`);
-    await writeFile(inputPath, input.data);
-    const sofficePath = options.sofficePath || getLibreOfficePath();
-    const libreOfficeProfileDir = path.join(workspace, 'lo-profile');
-    await mkdir(libreOfficeProfileDir, { recursive: true });
-    await commandRunner(
-      sofficePath,
-      createLibreOfficePdfArgs(inputPath, outputDir, pathToFileURL(libreOfficeProfileDir).href),
-      { timeoutMs: COMMAND_TIMEOUT_MS }
-    );
-    const pdf = await readFile(path.join(outputDir, 'source.pdf')).catch(() => null);
-    if (!pdf || pdf.byteLength === 0) {
-      throw new PresentationRenderError(422, 'PRESENTATION_RENDER_EMPTY', 'The presentation could not be converted');
+  const existingInFlight = inFlightPdfConversions.get(key);
+  if (existingInFlight) {
+    const pdf = await existingInFlight;
+    return { pdf, sourceFormat, cached: true };
+  }
+
+  const runConversion = async (): Promise<Buffer> => {
+    const cachedAfterWait = cache?.get(key);
+    if (cachedAfterWait) return cachedAfterWait;
+
+    const workspace = await mkdtemp(path.join(tmpdir(), 'studio-presentation-'));
+    const outputDir = path.join(workspace, 'output');
+    const commandRunner = options.commandRunner || defaultCommandRunner;
+    try {
+      await mkdir(outputDir, { recursive: true });
+      const inputPath = path.join(workspace, `source${getInputExtension(input.fileName, sourceFormat)}`);
+      await writeFile(inputPath, input.data);
+      const sofficePath = options.sofficePath || getLibreOfficePath();
+      const libreOfficeProfileDir = path.join(workspace, 'lo-profile');
+      await mkdir(libreOfficeProfileDir, { recursive: true });
+      await commandRunner(
+        sofficePath,
+        createLibreOfficePdfArgs(inputPath, outputDir, pathToFileURL(libreOfficeProfileDir).href),
+        { timeoutMs: COMMAND_TIMEOUT_MS }
+      );
+      const pdf = await readFile(path.join(outputDir, 'source.pdf')).catch(() => null);
+      if (!pdf || pdf.byteLength === 0) {
+        throw new PresentationRenderError(422, 'PRESENTATION_RENDER_EMPTY', 'The presentation could not be converted');
+      }
+      cache?.set(key, pdf);
+      return pdf;
+    } finally {
+      await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
     }
-    cache?.set(key, pdf);
+  };
+
+  const conversionPromise = queue ? queue.run(runConversion) : runConversion();
+  inFlightPdfConversions.set(key, conversionPromise);
+  try {
+    const pdf = await conversionPromise;
     return { pdf, sourceFormat, cached: false };
   } finally {
-    await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
+    if (inFlightPdfConversions.get(key) === conversionPromise) {
+      inFlightPdfConversions.delete(key);
+    }
   }
 }
 
 export async function renderPresentationPreview(
   input: PresentationRenderInput,
-  options: RenderOptions & { cache?: PresentationPdfCache | null } = {}
+  options: RenderOptions & { cache?: PresentationPdfCache | null; queue?: PresentationRenderQueue | null } = {}
 ): Promise<StudioMediaAssetPreview> {
   const { pdf, sourceFormat } = await convertPresentationToPdf(input, options);
   const metadataSlides = sourceFormat === 'pptx'
     ? await extractPptxSlideMetadata(input.data).catch(() => [])
     : [];
 
-  const workspace = await mkdtemp(path.join(tmpdir(), 'studio-presentation-'));
-  const outputDir = path.join(workspace, 'output');
-  const commandRunner = options.commandRunner || defaultCommandRunner;
-  try {
-    await mkdir(outputDir, { recursive: true });
-    const pdfPath = path.join(workspace, 'source.pdf');
-    await writeFile(pdfPath, pdf);
-    const pdftoppmPath = options.pdftoppmPath || getPdftoppmPath();
-    await commandRunner(pdftoppmPath, createPdfToRasterArgs(pdfPath, path.join(outputDir, 'slide')), { timeoutMs: COMMAND_TIMEOUT_MS });
-    const imagePaths = await getRenderedRasterPaths(outputDir);
+  const queue = options.queue === undefined ? sharedPresentationRenderQueue : options.queue;
+  const runRaster = async (): Promise<StudioMediaAssetPreview> => {
+    const workspace = await mkdtemp(path.join(tmpdir(), 'studio-presentation-'));
+    const outputDir = path.join(workspace, 'output');
+    const commandRunner = options.commandRunner || defaultCommandRunner;
+    try {
+      await mkdir(outputDir, { recursive: true });
+      const pdfPath = path.join(workspace, 'source.pdf');
+      await writeFile(pdfPath, pdf);
+      const pdftoppmPath = options.pdftoppmPath || getPdftoppmPath();
+      await commandRunner(pdftoppmPath, createPdfToRasterArgs(pdfPath, path.join(outputDir, 'slide')), { timeoutMs: COMMAND_TIMEOUT_MS });
+      const imagePaths = await getRenderedRasterPaths(outputDir);
 
-    if (imagePaths.length === 0) {
-      throw new PresentationRenderError(422, 'PRESENTATION_RENDER_EMPTY', 'No slides were rendered from this file');
+      if (imagePaths.length === 0) {
+        throw new PresentationRenderError(422, 'PRESENTATION_RENDER_EMPTY', 'No slides were rendered from this file');
+      }
+
+      return buildPreviewFromRasterImages(imagePaths, sourceFormat, metadataSlides);
+    } finally {
+      await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
     }
+  };
 
-    return buildPreviewFromRasterImages(imagePaths, sourceFormat, metadataSlides);
-  } finally {
-    await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
-  }
+  return queue ? queue.run(runRaster) : runRaster();
 }

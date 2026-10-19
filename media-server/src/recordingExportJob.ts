@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { runAtBackgroundPriority } from './processPriority.js';
 import type {
@@ -263,13 +265,129 @@ export function createFfmpegExportRunner(ffmpegPath: string): RecordingExportRun
   });
 }
 
+const JOB_STATE_FILE_NAME = 'job-state.json';
+const EXPORT_ID_PATTERN = /^[A-Za-z0-9_-]{1,120}$/;
+
+function defaultExportUploadRoot(): string {
+  return process.env.RECORDING_UPLOAD_DIR || path.join(os.tmpdir(), 'livestream-studio-recordings');
+}
+
 export class RecordingExportJobStore {
   private readonly jobs = new Map<string, RecordingExportJob>();
+  private readonly knownUploadRoots = new Set<string>();
 
   constructor(
     private readonly runner: RecordingExportRunner,
-    private readonly artifactUploader?: RecordingExportArtifactUploader
-  ) {}
+    private readonly artifactUploader?: RecordingExportArtifactUploader,
+    uploadRoot = defaultExportUploadRoot()
+  ) {
+    if (uploadRoot) this.knownUploadRoots.add(uploadRoot);
+  }
+
+  private async persistJob(job: RecordingExportJob): Promise<void> {
+    await writeFile(path.join(job.outputDirectory, JOB_STATE_FILE_NAME), `${JSON.stringify(job, null, 2)}\n`, 'utf8');
+  }
+
+  private persistJobSync(job: RecordingExportJob): void {
+    try {
+      writeFileSync(path.join(job.outputDirectory, JOB_STATE_FILE_NAME), `${JSON.stringify(job, null, 2)}\n`, 'utf8');
+    } catch {
+      // Directory may have been removed concurrently.
+    }
+  }
+
+  private loadJobFromStateFile(stateFile: string, expectedExportId: string): RecordingExportJob | null {
+    if (!existsSync(stateFile)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(stateFile, 'utf8')) as Partial<RecordingExportJob>;
+      if (
+        !parsed ||
+        parsed.exportId !== expectedExportId ||
+        typeof parsed.uploadId !== 'string' ||
+        typeof parsed.roomId !== 'string' ||
+        typeof parsed.outputDirectory !== 'string' ||
+        typeof parsed.status !== 'string' ||
+        typeof parsed.createdAt !== 'string' ||
+        typeof parsed.updatedAt !== 'string' ||
+        !Array.isArray(parsed.tracks) ||
+        !Array.isArray(parsed.artifacts)
+      ) {
+        return null;
+      }
+
+      const job: RecordingExportJob = {
+        exportId: parsed.exportId,
+        uploadId: parsed.uploadId,
+        roomId: parsed.roomId,
+        sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined,
+        outputDirectory: parsed.outputDirectory,
+        status: parsed.status,
+        createdAt: parsed.createdAt,
+        updatedAt: parsed.updatedAt,
+        clip: parsed.clip ?? null,
+        edit: parsed.edit ?? null,
+        normalizeAudio: parsed.normalizeAudio === true,
+        tracks: parsed.tracks,
+        artifacts: parsed.artifacts,
+        error: typeof parsed.error === 'string' ? parsed.error : undefined,
+      };
+
+      // A job that was actively running when the previous process exited lost its child FFmpeg process.
+      if (job.status === 'running') {
+        const reason = 'Recording export interrupted by server restart';
+        job.status = 'error';
+        job.error = reason;
+        job.updatedAt = new Date().toISOString();
+        for (const artifact of job.artifacts) {
+          if (artifact.status === 'running' || artifact.status === 'queued') {
+            artifact.status = 'error';
+            artifact.error = reason;
+          }
+        }
+        this.persistJobSync(job);
+      }
+
+      this.jobs.set(job.exportId, job);
+      return job;
+    } catch {
+      return null;
+    }
+  }
+
+  private loadJobFromDisk(exportId: string, uploadId?: string): RecordingExportJob | null {
+    if (!EXPORT_ID_PATTERN.test(exportId)) return null;
+    if (uploadId && !EXPORT_ID_PATTERN.test(uploadId)) return null;
+
+    for (const root of this.knownUploadRoots) {
+      if (!existsSync(root)) continue;
+      if (uploadId) {
+        const stateFile = path.join(root, uploadId, 'exports', exportId, JOB_STATE_FILE_NAME);
+        const loaded = this.loadJobFromStateFile(stateFile, exportId);
+        if (loaded) return loaded;
+        continue;
+      }
+      try {
+        const uploadDirs = readdirSync(root, { withFileTypes: true });
+        for (const entry of uploadDirs) {
+          if (!entry.isDirectory() || entry.name.startsWith('._')) continue;
+          const stateFile = path.join(root, entry.name, 'exports', exportId, JOB_STATE_FILE_NAME);
+          const loaded = this.loadJobFromStateFile(stateFile, exportId);
+          if (loaded) return loaded;
+        }
+      } catch {
+        // Ignore unreadable roots.
+      }
+    }
+    return null;
+  }
+
+  private resolveJob(exportId: string, uploadId?: string): RecordingExportJob {
+    const job = this.jobs.get(exportId) ?? this.loadJobFromDisk(exportId, uploadId);
+    if (!job || (uploadId && job.uploadId !== uploadId)) {
+      throw new RecordingExportJobError(404, 'RECORDING_EXPORT_NOT_FOUND', 'Recording export job not found');
+    }
+    return job;
+  }
 
   async createJob(
     source: RecordingUploadExportSource,
@@ -291,6 +409,7 @@ export class RecordingExportJobStore {
     const exportId = randomUUID();
     const basename = sanitizeExportBasename(request.basename || source.sessionId || source.uploadId);
     const outputDirectory = path.join(source.rootDir, 'exports', exportId);
+    this.knownUploadRoots.add(path.dirname(source.rootDir));
     await mkdir(outputDirectory, { recursive: true });
 
     const normalizeAudio = request.normalizeAudio === true;
@@ -345,22 +464,16 @@ export class RecordingExportJobStore {
       artifacts,
     };
     this.jobs.set(exportId, job);
+    await this.persistJob(job);
     return toPublicJob(job);
   }
 
   getJob(exportId: string, uploadId?: string): RecordingExportJobResponse {
-    const job = this.jobs.get(exportId);
-    if (!job || (uploadId && job.uploadId !== uploadId)) {
-      throw new RecordingExportJobError(404, 'RECORDING_EXPORT_NOT_FOUND', 'Recording export job not found');
-    }
-    return toPublicJob(job);
+    return toPublicJob(this.resolveJob(exportId, uploadId));
   }
 
   getArtifact(exportId: string, artifactId: string, uploadId?: string): { path: string; format: RecordingExportArtifactFormat; label: string } {
-    const job = this.jobs.get(exportId);
-    if (!job || (uploadId && job.uploadId !== uploadId)) {
-      throw new RecordingExportJobError(404, 'RECORDING_EXPORT_NOT_FOUND', 'Recording export job not found');
-    }
+    const job = this.resolveJob(exportId, uploadId);
     const artifact = job.artifacts.find((item) => item.id === artifactId);
     if (!artifact) {
       throw new RecordingExportJobError(404, 'RECORDING_EXPORT_ARTIFACT_NOT_FOUND', 'Recording export artifact not found');
@@ -372,16 +485,18 @@ export class RecordingExportJobStore {
   }
 
   async startJob(exportId: string): Promise<void> {
-    const job = this.jobs.get(exportId);
+    const job = this.jobs.get(exportId) ?? this.loadJobFromDisk(exportId);
     if (!job || job.status !== 'queued') return;
     job.status = 'running';
     job.updatedAt = new Date().toISOString();
+    await this.persistJob(job);
 
     for (const artifact of job.artifacts) {
       artifact.status = 'running';
       artifact.error = undefined;
       artifact.storage = undefined;
       job.updatedAt = new Date().toISOString();
+      await this.persistJob(job);
       try {
         if (artifact.generated === 'manifest') {
           await writeFile(artifact.outputPath, buildExportManifest(job), 'utf8');
@@ -410,6 +525,7 @@ export class RecordingExportJobStore {
         }
         artifact.status = 'ready';
         job.updatedAt = new Date().toISOString();
+        await this.persistJob(job);
       } catch (err) {
         artifact.status = 'error';
         artifact.error = errorMessage(err);
@@ -422,11 +538,13 @@ export class RecordingExportJobStore {
             pending.error = 'Skipped because an earlier export artifact failed';
           }
         }
+        await this.persistJob(job);
         return;
       }
     }
 
     job.status = 'ready';
     job.updatedAt = new Date().toISOString();
+    await this.persistJob(job);
   }
 }

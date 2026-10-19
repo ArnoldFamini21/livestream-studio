@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_RECORDING_UPLOAD_MAX_BYTES,
   MAX_RECORDING_UPLOAD_CHUNK_BYTES,
+  RECORDING_UPLOAD_TTL_MS,
   RecordingUploadError,
   RecordingUploadStore,
 } from './recordingUpload.js';
@@ -457,5 +458,78 @@ describe('recording upload store', () => {
 
     await assert.rejects(() => stat(state.rootDir));
     assert.throws(() => store.getSession(session.uploadId), /not found/);
+  });
+
+  it('recovers upload sessions, committed offsets, and distributed status across store restarts', async () => {
+    const { root, store } = await createStore();
+    const session = await store.createSession({
+      roomId: 'room-durable',
+      sessionId: 'session-durable-1',
+      participantId: 'host-1',
+      participantName: 'Host',
+      tracks: [
+        { id: 'program', label: 'Program', kind: 'program', mimeType: 'video/webm', expectedBytes: 12 },
+      ],
+    });
+    await store.appendChunk({
+      uploadId: session.uploadId,
+      trackId: 'program',
+      sequence: 0,
+      offset: 0,
+      data: Buffer.from('hello '),
+    });
+
+    // Simulate an unrecorded partial write before a process crash.
+    const trackPath = path.join(root, session.uploadId, 'program.webm');
+    await appendFile(trackPath, Buffer.from('CRASH'));
+
+    const restarted = new RecordingUploadStore(root);
+    const recoveredStatus = restarted.getStatus(session.uploadId);
+    assert.equal(recoveredStatus.bytesReceived, 6);
+    assert.equal(recoveredStatus.tracks[0].chunksReceived, 1);
+
+    // Next chunk at the committed offset 6 succeeds cleanly without duplicating the partial write.
+    await restarted.appendChunk({
+      uploadId: session.uploadId,
+      trackId: 'program',
+      sequence: 1,
+      offset: 6,
+      final: true,
+      data: Buffer.from('world!'),
+    });
+    assert.equal(await readFile(trackPath, 'utf8'), 'hello world!');
+
+    const restartedAgain = new RecordingUploadStore(root);
+    const distributed = restartedAgain.getDistributedSessionStatus('room-durable', 'session-durable-1');
+    assert.equal(distributed.uploadCount, 1);
+    assert.equal(distributed.completedUploadCount, 1);
+    assert.equal(distributed.bytesReceived, 12);
+  });
+
+  it('allows deleting expired sessions and sweeps expired upload directories from disk', async () => {
+    const { root, store } = await createStore();
+    const nowMs = 1_700_000_000_000;
+    const expired = await store.createSession({
+      roomId: 'room-expire',
+      tracks: [{ id: 'audio', label: 'Audio', kind: 'audio', mimeType: 'audio/webm' }],
+    }, nowMs);
+    const active = await store.createSession({
+      roomId: 'room-expire',
+      tracks: [{ id: 'audio', label: 'Audio', kind: 'audio', mimeType: 'audio/webm' }],
+    }, nowMs + 10_000);
+
+    const afterExpiryMs = nowMs + RECORDING_UPLOAD_TTL_MS + 1;
+    assert.throws(
+      () => store.getSession(expired.uploadId, afterExpiryMs),
+      (err) => err instanceof RecordingUploadError && err.statusCode === 410
+    );
+    // Deletion lookup still resolves expired sessions so callers can authorize and delete them.
+    assert.equal(store.getSessionForDelete(expired.uploadId).uploadId, expired.uploadId);
+
+    const restarted = new RecordingUploadStore(root);
+    const sweptCount = await restarted.sweepExpiredSessions(afterExpiryMs);
+    assert.equal(sweptCount, 1);
+    await assert.rejects(() => stat(path.join(root, expired.uploadId)));
+    assert.equal(restarted.getStatus(active.uploadId, afterExpiryMs).uploadId, active.uploadId);
   });
 });

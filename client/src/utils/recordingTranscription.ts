@@ -1,4 +1,5 @@
 import { ApiRequestError, buildApiUrl } from './apiClient.ts';
+import { readAccountSessionToken } from './accountAuth.ts';
 import type { LocalRecordingFileResult } from '../hooks/useLocalRecording.ts';
 import type { TranscriptWord } from './transcriptCleanup.ts';
 
@@ -73,6 +74,7 @@ export async function requestRecordingTranscription(
 ): Promise<RecordingTranscriptionResult> {
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), TRANSCRIPTION_TIMEOUT_MS);
+  const accountToken = readAccountSessionToken();
 
   let response: Response;
   try {
@@ -82,6 +84,7 @@ export async function requestRecordingTranscription(
         'Content-Type': file.blob.type || 'application/octet-stream',
         'X-File-Name': sanitizeHeaderValue(file.fileName),
         ...(language ? { 'X-Transcription-Language': sanitizeHeaderValue(language) } : {}),
+        ...(accountToken ? { Authorization: `Bearer ${accountToken}` } : {}),
       },
       body: file.blob,
       signal: controller.signal,

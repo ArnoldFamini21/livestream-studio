@@ -157,4 +157,63 @@ describe('SfuManager', () => {
     assert.throws(() => manager.connect('', 'alice', alice.send), /required/);
     assert.throws(() => manager.connect('room-1', '', alice.send), /required/);
   });
+
+  it('immediately disconnects a revoked participant, blocks stale tokens, and allows re-admitted tokens', () => {
+    const manager = new SfuManager();
+    const alice = recorder();
+    const bob = recorder();
+    const revokedReasons: string[] = [];
+
+    manager.connect('room-1', 'alice', alice.send, {
+      issuedAtMs: 1_000,
+      expiresAtMs: 60_000,
+      nowMs: 1_000,
+      onRevoke: (reason) => revokedReasons.push(reason),
+    });
+    manager.connect('room-1', 'bob', bob.send);
+    manager.handleMessage('alice', { type: 'sfu-join', downlinkKbps: 6000 });
+    manager.handleMessage('bob', { type: 'sfu-join', downlinkKbps: 6000 });
+    manager.handleMessage('alice', { type: 'sfu-publish', layers: LAYERS });
+    bob.messages.length = 0;
+
+    assert.equal(manager.revokeParticipant('room-1', 'alice', 'Moved to backstage', 2_000), true);
+    assert.deepEqual(revokedReasons, ['Moved to backstage']);
+    assert.ok(bob.messages.some((message) => message.type === 'sfu-producer-removed'));
+    assert.equal(manager.getRoomParticipantCount('room-1'), 1);
+
+    // Reconnecting with a token issued at or before revocation is rejected.
+    assert.throws(
+      () => manager.connect('room-1', 'alice', alice.send, { issuedAtMs: 1_500, nowMs: 2_500 }),
+      /revoked/
+    );
+    assert.throws(
+      () => manager.connect('room-1', 'alice', alice.send, { nowMs: 2_500 }),
+      /revoked/
+    );
+
+    // A fresh token minted after the participant returns to stage is accepted.
+    manager.connect('room-1', 'alice', alice.send, { issuedAtMs: 3_000, nowMs: 3_000 });
+    assert.equal(manager.getRoomParticipantCount('room-1'), 2);
+  });
+
+  it('enforces token expiry on connect and during active sessions', () => {
+    const manager = new SfuManager();
+    const alice = recorder();
+    const revokedReasons: string[] = [];
+
+    assert.throws(
+      () => manager.connect('room-1', 'alice', alice.send, { expiresAtMs: 1_000, nowMs: 1_000 }),
+      /expired/
+    );
+
+    const conn = manager.connect('room-1', 'alice', alice.send, {
+      expiresAtMs: 5_000,
+      nowMs: 1_000,
+      onRevoke: (reason) => revokedReasons.push(reason),
+    });
+    assert.equal(manager.handleMessage('alice', { type: 'sfu-join' }, conn, 4_999), true);
+    assert.equal(manager.handleMessage('alice', { type: 'sfu-join' }, conn, 5_000), false);
+    assert.deepEqual(revokedReasons, ['SFU token expired']);
+    assert.equal(manager.getParticipantCount(), 0);
+  });
 });

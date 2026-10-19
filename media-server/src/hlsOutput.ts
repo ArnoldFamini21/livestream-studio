@@ -48,10 +48,15 @@ export async function prepareHlsRoomDir(roomId: string, rootDir = getHlsRootDir(
 
 export async function removeHlsWriterDir(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  await rm(path.join(path.dirname(dir), `._${path.basename(dir)}`), { force: true }).catch(() => undefined);
 }
 
 /** A writer folder: `<room id>-` plus mkdtemp's six random characters. */
 const WRITER_DIR_PATTERN = /^[\w-]{1,80}-[A-Za-z0-9]{6}$/;
+
+function isHlsWriterArtifact(name: string): boolean {
+  return isServableHlsFile(name) || (name.startsWith('._') && isServableHlsFile(name.slice(2)));
+}
 
 /**
  * At startup nothing is live, so writer folders left by a crash (whose delayed
@@ -67,7 +72,7 @@ export async function sweepStaleHlsWriterDirs(rootDir = getHlsRootDir()): Promis
     const dir = path.join(rootDir, entry.name);
     // Only a folder holding nothing but a playlist and segments is a writer's.
     const files = await readdir(dir).catch(() => null);
-    if (!files || !files.every(isServableHlsFile)) continue;
+    if (!files || !files.every(isHlsWriterArtifact)) continue;
     await removeHlsWriterDir(dir);
     removed++;
   }

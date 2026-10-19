@@ -21,6 +21,7 @@ import { transcriptionRouter } from './routes/transcriptions.js';
 import { highlightRouter } from './routes/highlights.js';
 import { episodeContentRouter } from './routes/episodeContent.js';
 import { captionTranslationRouter } from './routes/captionTranslation.js';
+import { createAiRouteAccessMiddleware } from './services/aiAccess.js';
 import { buildIceConfigStatusFromEnv, resolveIceConfigWithStatus } from './services/ice-config.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { buildProductionReadiness, getStrictStartupFailure } from './services/productionReadiness.js';
@@ -258,9 +259,12 @@ app.use('/api/brand-kits', brandKitRouter);
 app.use('/api/workspace-studios', workspaceStudioRouter);
 app.use('/api/workspace-team', workspaceTeamRouter);
 
+const aiRouteAccessMiddleware = createAiRouteAccessMiddleware();
+
 app.use(
   '/api/transcriptions',
   transcriptionLimiter.middleware,
+  aiRouteAccessMiddleware,
   express.raw({
     type: ['audio/*', 'video/mp4', 'video/webm', 'application/octet-stream'],
     limit: '25mb',
@@ -268,9 +272,9 @@ app.use(
   transcriptionRouter
 );
 
-app.use('/api/highlights', transcriptionLimiter.middleware, highlightRouter);
-app.use('/api/episode-content', transcriptionLimiter.middleware, episodeContentRouter);
-app.use('/api/translate-captions', transcriptionLimiter.middleware, captionTranslationRouter);
+app.use('/api/highlights', transcriptionLimiter.middleware, aiRouteAccessMiddleware, highlightRouter);
+app.use('/api/episode-content', transcriptionLimiter.middleware, aiRouteAccessMiddleware, episodeContentRouter);
+app.use('/api/translate-captions', transcriptionLimiter.middleware, aiRouteAccessMiddleware, captionTranslationRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({

@@ -13,6 +13,7 @@ import {
   getPresentationRenderSourceFormat,
   getPresentationRendererHealth,
   PresentationRenderError,
+  PresentationRenderQueue,
   renderPresentationPreview,
   convertPresentationToPdf,
   PresentationPdfCache,
@@ -274,5 +275,63 @@ describe('presentation rendering', () => {
     assert.equal(cache.get('b'), undefined);
     cache.set('big', Buffer.alloc(2048));
     assert.equal(cache.get('big'), undefined, 'oversized PDFs are not cached');
+  });
+
+  it('bounds concurrent rendering work and rejects overflow when the queue is full', async () => {
+    const queue = new PresentationRenderQueue(1, 1);
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const first = queue.run(async () => {
+      await firstGate;
+      return 'first';
+    });
+    const second = queue.run(async () => 'second');
+
+    assert.equal(queue.activeCount, 1);
+    assert.equal(queue.queuedCount, 1);
+    assert.equal(queue.isFull(), true);
+
+    await assert.rejects(
+      () => queue.run(async () => 'third'),
+      (err: unknown) => err instanceof PresentationRenderError && err.statusCode === 429 && err.code === 'PRESENTATION_RENDER_BUSY'
+    );
+
+    releaseFirst();
+    assert.deepEqual(await Promise.all([first, second]), ['first', 'second']);
+    assert.equal(queue.activeCount, 0);
+    assert.equal(queue.queuedCount, 0);
+  });
+
+  it('deduplicates concurrent conversions of the same PowerPoint deck', async () => {
+    const cache = new PresentationPdfCache();
+    const queue = new PresentationRenderQueue(2, 2);
+    let conversions = 0;
+    const input = {
+      fileName: 'concurrent.pptx',
+      contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      data: Buffer.from('pptx-concurrent-dedup'),
+    };
+    const options = {
+      sofficePath: 'soffice-test',
+      cache,
+      queue,
+      commandRunner: async (_command: string, args: string[]) => {
+        conversions += 1;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        const outDir = args[args.indexOf('--outdir') + 1];
+        await writeFile(path.join(outDir, 'source.pdf'), Buffer.from('%PDF-1.7 deduplicated'));
+      },
+    };
+
+    const [a, b] = await Promise.all([
+      convertPresentationToPdf(input, options),
+      convertPresentationToPdf(input, options),
+    ]);
+    assert.equal(conversions, 1);
+    assert.equal(a.pdf.toString(), '%PDF-1.7 deduplicated');
+    assert.equal(b.pdf.toString(), '%PDF-1.7 deduplicated');
   });
 });

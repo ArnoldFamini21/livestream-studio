@@ -1,13 +1,13 @@
 import type { ParticipantRole } from '@studio/shared';
-import { verifyLiveStreamToken, verifyRecordingUploadToken, verifySfuToken } from './auth.js';
+import { verifyLiveStreamToken, verifySfuToken } from './auth.js';
 
 /**
  * Authentication for the `/sfu` control-plane socket.
  *
- * The first frame a client sends must be `{ type: 'sfu-auth', token }`. Hosts
- * Every admitted participant receives a purpose-scoped SFU token from the
- * signaling server. Legacy live-stream and recording-upload tokens remain
- * accepted during rolling deployment so existing sessions do not break.
+ * The first frame a client sends must be `{ type: 'sfu-auth', token }`.
+ * Every on-stage participant receives a purpose-scoped SFU token (`purpose: 'sfu'`)
+ * from the signaling server. Host live-stream tokens remain accepted for operator
+ * compatibility, while recording-upload tokens are strictly rejected.
  */
 
 export interface SfuAuthFrame {
@@ -18,6 +18,8 @@ export interface SfuIdentity {
   roomId: string;
   participantId: string;
   role: ParticipantRole;
+  exp: number;
+  iat?: number;
 }
 
 export function parseSfuAuthFrame(value: unknown): SfuAuthFrame | null {
@@ -31,16 +33,21 @@ export function parseSfuAuthFrame(value: unknown): SfuAuthFrame | null {
 export function verifySfuIdentity(token: string, secret: string, now = Date.now()): SfuIdentity {
   try {
     const claims = verifySfuToken(token, secret, now);
-    return { roomId: claims.roomId, participantId: claims.participantId, role: claims.role };
+    return {
+      roomId: claims.roomId,
+      participantId: claims.participantId,
+      role: claims.role,
+      exp: claims.exp,
+      ...(typeof claims.iat === 'number' ? { iat: claims.iat } : {}),
+    };
   } catch {
-    // Accept short-lived legacy tokens while the signaling server rolls out.
+    // Allow operator live-stream tokens; reject recording-upload or other purpose-scoped tokens.
   }
-  try {
-    const claims = verifyLiveStreamToken(token, secret, now);
-    return { roomId: claims.roomId, participantId: claims.participantId, role: claims.role };
-  } catch {
-    // Fall through to the participant-scoped recording token guests may hold.
-  }
-  const claims = verifyRecordingUploadToken(token, secret, now);
-  return { roomId: claims.roomId, participantId: claims.participantId, role: claims.role };
+  const claims = verifyLiveStreamToken(token, secret, now);
+  return {
+    roomId: claims.roomId,
+    participantId: claims.participantId,
+    role: claims.role,
+    exp: claims.exp,
+  };
 }

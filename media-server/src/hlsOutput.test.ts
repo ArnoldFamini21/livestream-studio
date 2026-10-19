@@ -83,7 +83,7 @@ describe('watch page HLS output', () => {
       await writeFile(path.join(root, 'unrelated-folder', 'photo.jpg'), 'keep');
       await writeFile(path.join(root, 'notes.txt'), 'keep');
       assert.equal(await sweepStaleHlsWriterDirs(root), 1);
-      assert.deepEqual((await readdir(root)).sort(), ['notes.txt', 'unrelated-folder']);
+      assert.deepEqual((await readdir(root)).filter((name) => !name.startsWith('._')).sort(), ['notes.txt', 'unrelated-folder']);
       assert.equal(await sweepStaleHlsWriterDirs(path.join(root, 'missing')), 0);
     } finally {
       await rm(root, { recursive: true, force: true });

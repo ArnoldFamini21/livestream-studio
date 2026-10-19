@@ -1,4 +1,5 @@
 import { ApiRequestError, postJson } from './apiClient.ts';
+import { accountHeaders } from './accountAuth.ts';
 
 const EPISODE_CONTENT_TIMEOUT_MS = 60_000;
 const MIN_TRANSCRIPT_CHARS = 40;
@@ -68,7 +69,7 @@ export async function requestEpisodeContent(
         ? { durationSeconds: input.durationSeconds }
         : {}),
     },
-    { timeoutMs: EPISODE_CONTENT_TIMEOUT_MS }
+    { timeoutMs: EPISODE_CONTENT_TIMEOUT_MS, credentials: 'include', headers: accountHeaders() }
   );
 
   return {

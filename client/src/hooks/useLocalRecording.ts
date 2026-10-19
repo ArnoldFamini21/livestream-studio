@@ -61,6 +61,8 @@ export type LocalProgressiveUploadConfig = Pick<
 
 export interface StartLocalRecordingOptions {
   progressiveUpload?: LocalProgressiveUploadConfig;
+  /** Opt in to capturing a raw WebCodecs bitstream sidecar alongside playable MediaRecorder video files. */
+  enableWebCodecsSidecar?: boolean;
 }
 
 interface ActiveProgressiveUpload {
@@ -75,6 +77,7 @@ export interface LocalRecordingSource {
   stream: MediaStream;
   kind: 'audio' | 'video' | 'screen' | 'program' | 'iso';
   bitsPerSecond?: number;
+  enableWebCodecsSidecar?: boolean;
   cleanup?: () => void;
 }
 
@@ -87,6 +90,7 @@ interface TrackRecorder {
   finished: Promise<Blob>;
   started: boolean;
   capture: RecordingCaptureMetadata;
+  enableWebCodecsSidecar: boolean;
   sidecarResults: LocalRecordingFileResult[];
   webCodecsSidecar?: WebCodecsSidecarRecorder;
   cleanup?: () => void;
@@ -204,7 +208,7 @@ export function useLocalRecording(roomName = 'Studio') {
         container,
         codec: webCodecsConfig.config.codec,
         hardwareAcceleration: webCodecsConfig.config.hardwareAcceleration,
-        fallbackReason: 'WebCodecs VideoEncoder is available; raw bitstream sidecar starts when recording begins.',
+        fallbackReason: 'WebCodecs VideoEncoder is available; playable browser primary captured with MediaRecorder (raw bitstream sidecar is opt-in).',
       };
     }
 
@@ -345,7 +349,10 @@ export function useLocalRecording(roomName = 'Studio') {
     }
   };
 
-  const createTrackRecorder = async (source: LocalRecordingSource): Promise<TrackRecorder | null> => {
+  const createTrackRecorder = async (
+    source: LocalRecordingSource,
+    enableWebCodecsSidecarOption = false
+  ): Promise<TrackRecorder | null> => {
     const stream = new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live'));
     if (stream.getTracks().length === 0) return null;
     const mimeType = getMimeTypeForSource({ ...source, stream });
@@ -373,7 +380,10 @@ export function useLocalRecording(roomName = 'Studio') {
     const finished = new Promise<Blob>((resolve, reject) => { resolveFinished = resolve; rejectFinished = reject; });
     recorder.onstop = () => { void chunkStore.finish(recorder.mimeType).then(resolveFinished, rejectFinished); };
     void finished.catch(() => {});
-    const webCodecsSidecar = createWebCodecsSidecarRecorder(source, stream, mimeType, bitsPerSecond);
+    const enableWebCodecsSidecar = Boolean(source.enableWebCodecsSidecar ?? enableWebCodecsSidecarOption);
+    const webCodecsSidecar = enableWebCodecsSidecar
+      ? createWebCodecsSidecarRecorder(source, stream, mimeType, bitsPerSecond)
+      : undefined;
     const capture = createRecordingCaptureMetadata({
       sourceId: source.id,
       sourceKind: source.kind,
@@ -402,6 +412,7 @@ export function useLocalRecording(roomName = 'Studio') {
       finished,
       started: false,
       capture,
+      enableWebCodecsSidecar,
       sidecarResults: [],
       webCodecsSidecar,
       cleanup: source.cleanup,
@@ -510,7 +521,7 @@ export function useLocalRecording(roomName = 'Studio') {
         for (const source of sources) {
           if (generation !== generationRef.current) { source.cleanup?.(); continue; }
           try {
-            const trackRecorder = await createTrackRecorder(source);
+            const trackRecorder = await createTrackRecorder(source, Boolean(options?.enableWebCodecsSidecar));
             if (trackRecorder) {
               if (generation !== generationRef.current) {
                 await trackRecorder.chunkStore.discard();
@@ -524,16 +535,18 @@ export function useLocalRecording(roomName = 'Studio') {
         }
         if (recorders.length === 0) return;
 
-        // Start all recorders with 1-second chunks
+        // Start all primary MediaRecorder tracks synchronously first so optional sidecars never delay track start
         try {
-          const startedAt = new Date().toISOString();
           for (const trackRecorder of recorders) {
-            trackRecorder.capture = { ...trackRecorder.capture, startedAt };
             if (generation !== generationRef.current) throw new Error('Studio closed before recording started.');
+            const trackStartedAt = new Date().toISOString();
+            trackRecorder.capture = { ...trackRecorder.capture, startedAt: trackStartedAt };
             trackRecorder.recorder.start(1000);
             trackRecorder.started = true;
-            await startWebCodecsSidecar(trackRecorder, startedAt);
           }
+          await Promise.all(
+            recorders.map((trackRecorder) => startWebCodecsSidecar(trackRecorder, trackRecorder.capture.startedAt))
+          );
           if (generation !== generationRef.current) throw new Error('Studio closed before recording started.');
         } catch (err) {
           for (const trackRecorder of recorders) {
@@ -628,9 +641,9 @@ export function useLocalRecording(roomName = 'Studio') {
     setRecordingDuration(getElapsedSeconds());
     setIsPaused(false);
 
-    const startedAt = new Date().toISOString();
     await Promise.all(recordersRef.current.map(async (trackRecorder) => {
-      if (trackRecorder.webCodecsSidecar) return;
+      if (!trackRecorder.enableWebCodecsSidecar || trackRecorder.webCodecsSidecar) return;
+      const startedAt = new Date().toISOString();
       const bitsPerSecond = trackRecorder.capture.requestedBitsPerSecond;
       const source: LocalRecordingSource = {
         id: `${trackRecorder.id}-segment-${trackRecorder.sidecarResults.length + 1}`,
@@ -638,6 +651,7 @@ export function useLocalRecording(roomName = 'Studio') {
         kind: trackRecorder.kind,
         stream: new MediaStream(trackRecorder.recorder.stream.getTracks().filter((track) => track.readyState === 'live')),
         ...(bitsPerSecond ? { bitsPerSecond } : {}),
+        enableWebCodecsSidecar: true,
       };
       const sidecar = createWebCodecsSidecarRecorder(
         source,

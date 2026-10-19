@@ -1001,6 +1001,21 @@ export interface SfuTokenClaims {
   roomId: string;
   participantId: string;
   role: ParticipantRole;
+  iat?: number;
+  exp: number;
+  nonce: string;
+}
+
+export type SfuMembershipControlAction = 'revoke-participant' | 'allow-participant' | 'revoke-room';
+
+export interface SfuMembershipControlClaims {
+  v: 1;
+  purpose: 'sfu-control';
+  action: SfuMembershipControlAction;
+  roomId: string;
+  participantId?: string;
+  reason?: string;
+  iat: number;
   exp: number;
   nonce: string;
 }

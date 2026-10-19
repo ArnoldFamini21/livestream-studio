@@ -161,11 +161,86 @@ describe('WebCodecs video recording core', () => {
     assert.equal(config.config.codec, 'vp8');
     assert.equal(FakeVideoEncoder.configs.length, 1);
     assert.equal(result.framesEncoded, 3);
+    assert.equal(result.droppedFrames, 0);
     assert.equal(result.mimeType, 'video/x-vp8');
     assert.equal(result.blob.type, 'video/x-vp8');
     assert.deepEqual(result.chunks.map((chunk) => chunk.type), ['key', 'delta', 'key']);
     assert.deepEqual(result.chunks.map((chunk) => Array.from(chunk.data)), [[1, 1], [0, 2], [1, 3]]);
     assert.equal(frames.every((frame) => frame.closed), true);
     assert.equal(result.durationMs, 500);
+  });
+
+  it('bounds the encoder queue by dropping frames when overloaded and forces a keyframe on recovery', async () => {
+    const frames = [
+      new FakeVideoFrame(1, 0),
+      new FakeVideoFrame(2, 33_333),
+      new FakeVideoFrame(3, 66_666),
+      new FakeVideoFrame(4, 99_999),
+    ];
+    const queueSizesByRead = [0, 2, 0, 0];
+    let readCheckIndex = 0;
+    const baseEnv = createEnvironment(frames);
+    class BackpressuredVideoEncoder extends FakeVideoEncoder {
+      get encodeQueueSize() {
+        return queueSizesByRead[readCheckIndex++] ?? 0;
+      }
+    }
+
+    const recorder = createWebCodecsVideoTrackRecorder({
+      stream: createStream(createTrack({ width: 1920, height: 1080, frameRate: 30 })),
+      presetId: '1080p',
+      contentType: 'video/webm;codecs=vp8',
+      keyFrameIntervalFrames: 60,
+      maxEncodeQueueSize: 2,
+      environment: {
+        ...baseEnv,
+        VideoEncoder: BackpressuredVideoEncoder as unknown as WebCodecsRecordingEnvironment['VideoEncoder'],
+      },
+    });
+
+    await recorder.start();
+    const result = await recorder.stop({ drain: true });
+
+    assert.equal(result.framesEncoded, 3);
+    assert.equal(result.droppedFrames, 1);
+    // Frame 1 is a keyframe (first frame), Frame 2 was dropped due to queue size 2,
+    // Frame 3 is forced to a keyframe to recover after a dropped frame, Frame 4 is delta.
+    assert.deepEqual(result.chunks.map((chunk) => chunk.type), ['key', 'key', 'delta']);
+    assert.deepEqual(result.chunks.map((chunk) => Array.from(chunk.data)), [[1, 1], [1, 3], [0, 4]]);
+    assert.equal(frames.every((frame) => frame.closed), true);
+  });
+
+  it('halts cleanly when buffered chunks exceed maxBufferedBytes', async () => {
+    const frames = [
+      new FakeVideoFrame(1, 0),
+      new FakeVideoFrame(2, 33_333),
+    ];
+    const baseEnv = createEnvironment(frames);
+    class LargeChunkVideoEncoder extends FakeVideoEncoder {
+      override encode(frame: FakeVideoFrame, options?: { keyFrame?: boolean }) {
+        const payload = new Array(700).fill(frame.id);
+        (this as unknown as { output: (chunk: FakeEncodedVideoChunk) => void }).output(
+          new FakeEncodedVideoChunk(options?.keyFrame ? 'key' : 'delta', frame.timestamp, payload)
+        );
+      }
+    }
+
+    const recorder = createWebCodecsVideoTrackRecorder({
+      stream: createStream(createTrack({ width: 1920, height: 1080, frameRate: 30 })),
+      presetId: '1080p',
+      contentType: 'video/webm;codecs=vp8',
+      maxBufferedBytes: 1024,
+      environment: {
+        ...baseEnv,
+        VideoEncoder: LargeChunkVideoEncoder as unknown as WebCodecsRecordingEnvironment['VideoEncoder'],
+      },
+    });
+
+    await recorder.start();
+    await assert.rejects(
+      () => recorder.stop({ drain: true }),
+      /WebCodecs recording exceeded the buffered chunk limit/
+    );
+    assert.equal(frames[0].closed, true);
   });
 });

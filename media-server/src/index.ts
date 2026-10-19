@@ -16,7 +16,12 @@ import type {
   RecordingUploadTokenClaims,
 } from '@studio/shared';
 import { buildServiceHealthPayload } from '@studio/shared';
-import { getLiveStreamTokenSecret, verifyLiveStreamToken, verifyRecordingUploadToken } from './auth.js';
+import {
+  getLiveStreamTokenSecret,
+  verifyLiveStreamToken,
+  verifyRecordingUploadToken,
+  verifySfuMembershipControlToken,
+} from './auth.js';
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
 import {
   buildLiveBackupLatestKey,
@@ -60,7 +65,9 @@ import {
 import {
   MAX_PRESENTATION_RENDER_BYTES,
   PresentationRenderError,
+  getPresentationRenderSourceFormat,
   getPresentationRendererHealth,
+  isPresentationRenderQueueFull,
   renderPresentationPreview,
   convertPresentationToPdf,
   type PresentationRendererHealth,
@@ -313,7 +320,8 @@ function getRecordingExportStore(): RecordingExportJobStore {
             fileName: path.basename(input.filePath),
           }),
         })
-        : undefined
+        : undefined,
+      recordingUploads.getUploadRoot()
     );
     recordingExportsFfmpegPath = ffmpegPath;
     recordingExportsStorageFingerprint = storageFingerprint;
@@ -1744,7 +1752,7 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
     const artifactMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)\/exports\/([^/]+)\/artifacts\/([^/]+)$/);
     if (artifactMatch && req.method === 'GET') {
       const [, uploadId, exportId, artifactId] = artifactMatch;
-      const session = recordingUploads.getSession(uploadId);
+      const session = recordingUploads.getSessionForDelete(uploadId);
       authenticateHostRecordingRequest(req, session.roomId);
       const artifact = getRecordingExportStore().getArtifact(exportId, artifactId, uploadId);
       res.writeHead(200, {
@@ -1763,7 +1771,7 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
     const exportStatusMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)\/exports\/([^/]+)$/);
     if (exportStatusMatch && req.method === 'GET') {
       const [, uploadId, exportId] = exportStatusMatch;
-      const session = recordingUploads.getSession(uploadId);
+      const session = recordingUploads.getSessionForDelete(uploadId);
       authenticateHostRecordingRequest(req, session.roomId);
       writeJson(res, 200, getRecordingExportStore().getJob(exportId, uploadId));
       return true;
@@ -1772,7 +1780,9 @@ async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerRes
     const sessionMatch = url.pathname.match(/^\/recordings\/uploads\/([^/]+)$/);
     if (sessionMatch && (req.method === 'GET' || req.method === 'DELETE')) {
       const [, uploadId] = sessionMatch;
-      const session = recordingUploads.getSession(uploadId);
+      const session = req.method === 'DELETE'
+        ? recordingUploads.getSessionForDelete(uploadId)
+        : recordingUploads.getSession(uploadId);
       authenticateRecordingUpload(req, session.roomId, undefined, session.sessionId, session.participantId);
       if (req.method === 'DELETE') {
         await recordingUploads.deleteSession(uploadId);
@@ -1821,15 +1831,51 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
   }
 
   try {
+    if (process.env.PRESENTATION_RENDER_REQUIRE_AUTH === 'true') {
+      const secret = getLiveStreamTokenSecret();
+      const token = getBearerToken(req);
+      if (!secret || !token) {
+        throw new PresentationRenderError(401, 'UNAUTHORIZED', 'Presentation rendering requires a valid studio token');
+      }
+      let authorized = false;
+      try {
+        verifyLiveStreamToken(token, secret);
+        authorized = true;
+      } catch {
+        try {
+          verifyRecordingUploadToken(token, secret);
+          authorized = true;
+        } catch {
+          try {
+            verifySfuIdentity(token, secret);
+            authorized = true;
+          } catch {
+            authorized = false;
+          }
+        }
+      }
+      if (!authorized) {
+        throw new PresentationRenderError(401, 'UNAUTHORIZED', 'Invalid presentation rendering token');
+      }
+    }
+
     const fileNameHeader = req.headers['x-file-name'];
     const contentTypeHeader = req.headers['content-type'];
-    const fileName = Array.isArray(fileNameHeader) ? fileNameHeader[0] : fileNameHeader;
-    const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
+    const fileName = (Array.isArray(fileNameHeader) ? fileNameHeader[0] : fileNameHeader) || 'presentation';
+    const contentType = (Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader) || 'application/octet-stream';
+
+    if (!getPresentationRenderSourceFormat(fileName, contentType)) {
+      throw new PresentationRenderError(415, 'PRESENTATION_UNSUPPORTED', 'Only PDF and PowerPoint files can be rendered');
+    }
+    if (isPresentationRenderQueueFull()) {
+      throw new PresentationRenderError(429, 'PRESENTATION_RENDER_BUSY', 'Presentation renderer is busy; please try again in a moment.');
+    }
+
     const data = await readRequestBody(req, MAX_PRESENTATION_RENDER_BYTES);
 
     const input = {
-      fileName: fileName || 'presentation',
-      contentType: contentType || 'application/octet-stream',
+      fileName,
+      contentType,
       data,
     };
 
@@ -1865,6 +1911,65 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
   }
 }
 
+async function handleSfuMembershipRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  if (url.pathname !== '/sfu/membership') return false;
+  if (req.method !== 'POST') {
+    writeJson(res, 405, { error: 'Method not allowed' });
+    return true;
+  }
+
+  const secret = getLiveStreamTokenSecret();
+  if (!secret) {
+    writeJson(res, 503, { error: 'SFU control plane is not configured', code: 'SFU_NOT_CONFIGURED' });
+    return true;
+  }
+
+  try {
+    const authHeader = req.headers.authorization;
+    const bearer = typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+    let token = bearer;
+    if (!token) {
+      const body = await readRequestBody(req, 16 * 1024);
+      const parsed = JSON.parse(body.toString('utf8')) as { token?: unknown };
+      if (typeof parsed?.token === 'string') token = parsed.token.trim();
+    }
+    if (!token) {
+      writeJson(res, 401, { error: 'Missing SFU membership control token', code: 'UNAUTHORIZED' });
+      return true;
+    }
+
+    const claims = verifySfuMembershipControlToken(token, secret);
+    if (claims.action === 'revoke-participant') {
+      const disconnected = sfuManager.revokeParticipant(
+        claims.roomId,
+        claims.participantId!,
+        claims.reason || 'SFU membership revoked',
+        claims.iat
+      );
+      writeJson(res, 200, { ok: true, action: claims.action, disconnected });
+      return true;
+    }
+    if (claims.action === 'allow-participant') {
+      sfuManager.allowParticipant(claims.roomId, claims.participantId!);
+      writeJson(res, 200, { ok: true, action: claims.action });
+      return true;
+    }
+    const disconnected = sfuManager.revokeRoom(
+      claims.roomId,
+      claims.reason || 'Room closed',
+      claims.iat
+    );
+    writeJson(res, 200, { ok: true, action: claims.action, disconnected });
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Invalid SFU membership control request';
+    writeJson(res, 401, { error: message, code: 'UNAUTHORIZED' });
+    return true;
+  }
+}
+
 async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || '/', 'http://media-server.local');
   if (url.pathname === '/health') {
@@ -1891,6 +1996,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
+  if (await handleSfuMembershipRequest(req, res, url)) return;
   if (await handleLiveBackupRequest(req, res, url)) return;
   if (await handleWatchRequest(req, res, url)) return;
   if (await handleRecordingUploadRequest(req, res, url)) return;
@@ -1982,9 +2088,22 @@ sfuWss.on('connection', (ws) => {
       }
       try {
         const identity = verifySfuIdentity(frame.token, secret);
-        sfuConnection = sfuManager.connect(identity.roomId, identity.participantId, (message) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
-        });
+        sfuConnection = sfuManager.connect(
+          identity.roomId,
+          identity.participantId,
+          (message) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+          },
+          {
+            expiresAtMs: identity.exp,
+            issuedAtMs: identity.iat,
+            onRevoke: (reason) => {
+              if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close(1008, reason.slice(0, 120));
+              }
+            },
+          }
+        );
         sfuParticipantId = identity.participantId;
         ws.send(JSON.stringify({
           type: 'sfu-ready',
@@ -2083,6 +2202,15 @@ server.listen(PORT, () => {
   void sweepStaleHlsWriterDirs().then((count) => {
     if (count > 0) console.log(`Removed ${count} watch-page folder(s) left by an earlier run.`);
   });
+  void recordingUploads.sweepExpiredSessions().then((count) => {
+    if (count > 0) console.log(`Removed ${count} expired recording upload session(s).`);
+  });
+  const recordingSweepTimer = setInterval(() => {
+    void recordingUploads.sweepExpiredSessions().then((count) => {
+      if (count > 0) console.log(`Removed ${count} expired recording upload session(s).`);
+    });
+  }, 15 * 60 * 1000);
+  recordingSweepTimer.unref?.();
 });
 
 function gracefulShutdown(signal: string) {

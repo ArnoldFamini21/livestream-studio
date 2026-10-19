@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { signLiveStreamToken } from './auth.js';
+import { signLiveStreamToken, verifySfuMembershipControlToken } from './auth.js';
 import { parseSfuAuthFrame, verifySfuIdentity } from './sfuAuth.js';
 
 const SECRET = 'test-secret-that-is-at-least-32-chars!!';
@@ -40,6 +40,7 @@ function sfuToken(overrides: Record<string, unknown> = {}): string {
     roomId: 'room-1',
     participantId: 'guest-7',
     role: 'guest',
+    iat: NOW,
     exp: NOW + 60_000,
     nonce: 'sfu-nonce',
     ...overrides,
@@ -62,11 +63,13 @@ describe('parseSfuAuthFrame', () => {
 });
 
 describe('verifySfuIdentity', () => {
-  it('accepts a purpose-scoped token for an admitted guest outside recording', () => {
+  it('accepts a purpose-scoped token for an admitted on-stage guest and returns exp/iat', () => {
     assert.deepEqual(verifySfuIdentity(sfuToken(), SECRET, NOW), {
       roomId: 'room-1',
       participantId: 'guest-7',
       role: 'guest',
+      iat: NOW,
+      exp: NOW + 60_000,
     });
   });
 
@@ -75,20 +78,17 @@ describe('verifySfuIdentity', () => {
       roomId: 'room-1',
       participantId: 'host-1',
       role: 'host',
+      exp: NOW + 60_000,
     });
   });
 
-  it('accepts a guest recording-upload token', () => {
-    assert.deepEqual(verifySfuIdentity(guestToken(), SECRET, NOW), {
-      roomId: 'room-1',
-      participantId: 'guest-7',
-      role: 'guest',
-    });
+  it('rejects a guest recording-upload token for SFU access', () => {
+    assert.throws(() => verifySfuIdentity(guestToken(), SECRET, NOW));
   });
 
   it('rejects expired tokens of either kind', () => {
     assert.throws(() => verifySfuIdentity(hostToken({ exp: NOW - 1 }), SECRET, NOW));
-    assert.throws(() => verifySfuIdentity(guestToken({ exp: NOW - 1 }), SECRET, NOW));
+    assert.throws(() => verifySfuIdentity(sfuToken({ exp: NOW - 1 }), SECRET, NOW));
   });
 
   it('rejects tampered tokens', () => {
@@ -100,5 +100,24 @@ describe('verifySfuIdentity', () => {
   it('rejects tokens signed with a different secret', () => {
     const otherSecret = 'another-secret-that-is-32-chars-long!!';
     assert.throws(() => verifySfuIdentity(hostToken(), otherSecret, NOW));
+  });
+
+  it('verifies SFU membership control tokens and rejects cross-purpose or expired tokens', () => {
+    const controlToken = signLiveStreamToken({
+      v: 1,
+      purpose: 'sfu-control',
+      action: 'revoke-participant',
+      roomId: 'room-1',
+      participantId: 'guest-7',
+      reason: 'Moved to backstage',
+      iat: NOW,
+      exp: NOW + 30_000,
+      nonce: 'ctrl-1',
+    }, SECRET);
+    const verified = verifySfuMembershipControlToken(controlToken, SECRET, NOW);
+    assert.equal(verified.action, 'revoke-participant');
+    assert.equal(verified.participantId, 'guest-7');
+    assert.throws(() => verifySfuMembershipControlToken(sfuToken(), SECRET, NOW));
+    assert.throws(() => verifySfuMembershipControlToken(controlToken, SECRET, NOW + 31_000));
   });
 });
