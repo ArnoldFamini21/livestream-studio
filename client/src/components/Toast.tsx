@@ -22,7 +22,7 @@ interface Toast {
 }
 
 interface ToastContextValue {
-  addToast: (message: string, type?: ToastType) => void;
+  addToast: (message: string, type?: ToastType, options?: { durationMs?: number }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,15 +59,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addToast = useCallback(
-    (message: string, type: ToastType = 'info') => {
+    (message: string, type: ToastType = 'info', options?: { durationMs?: number }) => {
       const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       setToasts((prev) => [...prev, { id, message, type, exiting: false }]);
 
-      const timer = setTimeout(() => {
-        removeToast(id);
-        timersRef.current.delete(id);
-      }, 4000);
-      timersRef.current.set(id, timer);
+      const durationMs = options?.durationMs ?? 4000;
+      if (durationMs > 0) {
+        const timer = setTimeout(() => {
+          removeToast(id);
+          timersRef.current.delete(id);
+        }, durationMs);
+        timersRef.current.set(id, timer);
+      }
     },
     [removeToast]
   );

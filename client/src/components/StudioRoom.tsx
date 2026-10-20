@@ -1056,6 +1056,7 @@ export function StudioRoom() {
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [showBackgroundMusic, setShowBackgroundMusic] = useState(false);
   const [showRecordingPanel, setShowRecordingPanel] = useState(false);
+  const [folderSaving, setFolderSaving] = useState(false);
   // A short on-stage countdown before a recording starts. Escape or Cancel
   // stops it, so a misclick never produces a stray take.
   const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
@@ -1100,6 +1101,10 @@ export function StudioRoom() {
   }), []);
   type ToolPanel = keyof typeof toolPanelSetters;
   const toggleToolPanel = useCallback((panel: ToolPanel, open?: boolean) => {
+    if (folderSaving) {
+      addToast('Your recording backup is still being saved. Keep the recording panel open until it finishes.', 'info');
+      return;
+    }
     const setter = toolPanelSetters[panel];
     setter((current) => {
       const next = open ?? !current;
@@ -1110,10 +1115,11 @@ export function StudioRoom() {
       }
       return next;
     });
-  }, [toolPanelSetters]);
+  }, [toolPanelSetters, folderSaving, addToast]);
   const closeToolPanels = useCallback(() => {
+    if (folderSaving) return;
     for (const setter of Object.values(toolPanelSetters)) setter(false);
-  }, [toolPanelSetters]);
+  }, [toolPanelSetters, folderSaving]);
   const [showGuestChat, setShowGuestChat] = useState(false);
   const broadcastAudioBus = useBroadcastAudioBus();
   const [showInvitePanel, setShowInvitePanel] = useState(false);
@@ -3034,7 +3040,7 @@ export function StudioRoom() {
     send({ type: 'media-state-changed', payload: { participantId: participant.id, audioEnabled: participant.audioEnabled, videoEnabled: participant.videoEnabled, screenSharing: isScreenSharingRef.current } });
   }, [toggleVideo, send]);
   const onLeave = () => {
-    if (programRecordingFinalizing || localRecordingFinalizing || participantRecordingFinalizing) {
+    if (folderSaving || programRecordingFinalizing || localRecordingFinalizing || participantRecordingFinalizing) {
       addToast('Your recording is still being saved. Keep this studio open until it finishes.', 'warning');
       return;
     }
@@ -3211,7 +3217,7 @@ export function StudioRoom() {
   }, [canControlRecording, isRecording, isRecordingPaused, pauseRecording, resumeRecording, send, sessionRecordingSessionId, sessionRecordingStartedAt]);
 
   const onToggleRecording = async () => {
-    if (!myParticipant || !canControlRecording || recordingActionRef.current || localRecordingFinalizing || participantRecordingFinalizing) return;
+    if (!myParticipant || !canControlRecording || folderSaving || recordingActionRef.current || localRecordingFinalizing || participantRecordingFinalizing) return;
     const action = getToolbarRecordingAction({
       mixRecording: isRecording,
       sessionStartedAt: sessionRecordingStartedAt,
@@ -3460,7 +3466,7 @@ export function StudioRoom() {
 
   // Local recording (separate on-stage tracks)
   const onStartLocalRecording = useCallback(async () => {
-    if (!myParticipant || !canControlRecording || localRecordingFinalizing || programRecordingFinalizing || !recordingReadiness.canStart) return;
+    if (!myParticipant || !canControlRecording || folderSaving || localRecordingFinalizing || programRecordingFinalizing || !recordingReadiness.canStart) return;
     const programSource = createProgramRecordingSource({
       compositeStream: compositeStreamRef.current,
       localStream,
@@ -3489,6 +3495,7 @@ export function StudioRoom() {
     await startLocalRecording(sources);
   }, [
     localRecordingFinalizing,
+    folderSaving,
     programRecordingFinalizing,
     audioDuckingEnabled,
     broadcastAudioBus,
@@ -7317,6 +7324,7 @@ export function StudioRoom() {
               onResumeRecording={resumeLocalRecording}
               onStopRecording={stopLocalRecording}
               onFinalizingChange={setLocalRecordingFinalizing}
+              onFolderSavingChange={setFolderSaving}
               onCancelRecording={cancelLocalRecording}
               onUploadRecording={uploadLocalRecordingToMediaServer}
               onDownloadRecordingExportArtifact={downloadMediaServerRecordingArtifact}
@@ -7351,7 +7359,7 @@ export function StudioRoom() {
         isHost={isHostOrCoHost}
         isRecording={recordingStatus.active}
         recordingPaused={recordingStatus.paused}
-        recordingFinalizing={programRecordingFinalizing || localRecordingFinalizing || participantRecordingFinalizing}
+        recordingFinalizing={folderSaving || programRecordingFinalizing || localRecordingFinalizing || participantRecordingFinalizing}
         formattedTime={recordingStatus.formattedTime}
         onToggleRecording={canControlRecording ? onToggleRecording : undefined}
         onToggleRecordingPause={canControlRecording && isRecording ? onToggleRecordingPause : undefined}

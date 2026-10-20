@@ -64,6 +64,7 @@ interface RecordingPanelProps {
   onResumeRecording?: () => void | Promise<void>;
   onStopRecording: () => Promise<RecordingResult>;
   onFinalizingChange?: (finalizing: boolean) => void;
+  onFolderSavingChange?: (saving: boolean) => void;
   onCancelRecording?: () => void | Promise<void>;
   onUploadRecording?: (input: RecordingServerUploadInput) => Promise<RecordingUploadSummary>;
   onDownloadRecordingExportArtifact?: (input: RecordingServerExportArtifactInput) => Promise<BlobExportDownload>;
@@ -2397,6 +2398,7 @@ export function RecordingPanel({
   onResumeRecording,
   onStopRecording,
   onFinalizingChange,
+  onFolderSavingChange,
   onCancelRecording,
   onUploadRecording,
   onDownloadRecordingExportArtifact,
@@ -2455,6 +2457,11 @@ export function RecordingPanel({
   const [aiHighlightError, setAiHighlightError] = useState<string | null>(null);
   const [aiHighlightNotice, setAiHighlightNotice] = useState<string | null>(null);
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
+  const [folderSaving, setFolderSaving] = useState(false);
+  const handleFolderSavingChange = useCallback((saving: boolean) => {
+    setFolderSaving(saving);
+    onFolderSavingChange?.(saving);
+  }, [onFolderSavingChange]);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [libraryTrackFiles, setLibraryTrackFiles] = useState<Record<string, RecordedFile[]>>({});
   const [libraryTrackError, setLibraryTrackError] = useState<{ sessionId: string; message: string } | null>(null);
@@ -2515,7 +2522,7 @@ export function RecordingPanel({
   const visibleTrackLabels = recordingTrackLabels.length > 0
     ? recordingTrackLabels
     : ['Audio', 'Video', 'Screen'];
-  const canStartRecording = recordingReadiness?.canStart ?? true;
+  const canStartRecording = !folderSaving && (recordingReadiness?.canStart ?? true);
   const finalCaptionCount = getFinalCaptionSegments(captionSegments).length;
   const sortedRecordingMarkers = useMemo(() => getSortedRecordingMarkers(recordingMarkers), [recordingMarkers]);
   const markerCount = sortedRecordingMarkers.length;
@@ -3197,9 +3204,10 @@ export function RecordingPanel({
   }, [driveShareLink]);
 
   const handleNewRecording = useCallback(() => {
+    if (folderSaving) return;
     resetCompletedRecordingState();
     onClearRecordingMarkers?.();
-  }, [onClearRecordingMarkers, resetCompletedRecordingState]);
+  }, [folderSaving, onClearRecordingMarkers, resetCompletedRecordingState]);
 
   const handlePreviewFile = useCallback((file: RecordedFile, sourceName?: string, sessionId?: string) => {
     setPreview((current) => {
@@ -3741,7 +3749,7 @@ export function RecordingPanel({
           <h2 style={styles.title}>Local Recording</h2>
           <p style={styles.subtitle}>Multi-track recording</p>
         </div>
-        <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} aria-label="Close recordings">
+        <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} disabled={folderSaving} aria-label="Close recordings">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
           </svg>
@@ -4114,7 +4122,8 @@ export function RecordingPanel({
             </div>
             <RecordingFolderSave
               key={activeSessionId || recordedFiles[0]?.fileName}
-              disabled={isStopping}
+              disabled={isStopping || folderSaving || libraryBusyId !== null}
+              onBusyChange={handleFolderSavingChange}
               getRecording={() => {
                 const session = sessions.find((item) => item.id === activeSessionId);
                 return {
@@ -4498,6 +4507,7 @@ export function RecordingPanel({
             <button
               style={styles.newRecordingBtn}
               onClick={handleNewRecording}
+              disabled={folderSaving}
             >
               New Recording
             </button>
@@ -4825,6 +4835,7 @@ export function RecordingPanel({
             <div style={styles.libraryControls}>
               <input
                 aria-label="Search recording library"
+                disabled={folderSaving}
                 style={styles.librarySearch}
                 value={libraryQuery}
                 onChange={(event) => setLibraryQuery(event.target.value)}
@@ -4843,6 +4854,7 @@ export function RecordingPanel({
                         ...(active ? styles.libraryFilterBtnActive : {}),
                       }}
                       onClick={() => setLibraryFilter(filter.value)}
+                      disabled={folderSaving}
                     >
                       {filter.label}
                     </button>
@@ -4864,7 +4876,7 @@ export function RecordingPanel({
 
           {filteredSessions.map((session) => {
             const isActive = activeSessionId === session.id;
-            const isBusy = libraryBusyId === session.id;
+            const isBusy = folderSaving || libraryBusyId === session.id;
             const hasSessionPodcastAudio = sessionHasPodcastAudio(session);
             const isTrackExpanded = expandedSessionId === session.id;
             const sessionTracks = libraryTrackFiles[session.id];
@@ -4984,8 +4996,8 @@ export function RecordingPanel({
                 </div>
                 <RecordingFolderSave
                   compact
-                  disabled={isBusy || isRecording || isStopping}
-                  onBusyChange={(busy) => setLibraryBusyId((current) => busy ? session.id : current === session.id ? null : current)}
+                  disabled={folderSaving || libraryBusyId !== null || isRecording || isStopping}
+                  onBusyChange={handleFolderSavingChange}
                   getRecording={async () => ({
                     id: session.id,
                     roomName: session.roomName,
