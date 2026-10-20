@@ -275,10 +275,12 @@ function toSavedScheduledRoom(
 
 export function HomePage() {
   const [workspaceParams, setWorkspaceParams] = useSearchParams();
+  const [folderSaving, setFolderSaving] = useState(false);
   type WorkspaceView = 'studios' | 'recordings' | 'brand' | 'team' | 'settings';
   const requestedView = workspaceParams.get('view');
   const workspaceView: WorkspaceView = requestedView === 'recordings' || requestedView === 'brand' || requestedView === 'team' || requestedView === 'settings' ? requestedView : 'studios';
   const setWorkspaceView = (view: WorkspaceView) => {
+    if (folderSaving) return;
     setWorkspaceParams(previous => {
       const next = new URLSearchParams(previous);
       if (view === 'studios') next.delete('view');
@@ -1412,6 +1414,7 @@ export function HomePage() {
         <header className="workspace-topbar"><span><span className="breadcrumb-root">Workspace <span className="breadcrumb-divider">/</span> </span><strong>{viewTitles[workspaceView]}</strong></span><button className="account-chip" onClick={() => setWorkspaceView('settings')}><span className="account-avatar">{accountUser?.name.slice(0, 1).toUpperCase() || 'AF'}</span>{accountUser?.name || 'My account'}<StudioIcon name="chevron" /></button></header>
         <main id="workspace-main" className="workspace-main">
           <div className="workspace-page-heading"><div><span className="eyebrow">CREATE. CONNECT. GO LIVE.</span><h1>{viewTitles[workspaceView]}</h1><p>{viewDescriptions[workspaceView]}</p></div><button className="workspace-primary" onClick={() => setShowCreate(true)}><StudioIcon name="plus" />Create studio</button></div>
+          {folderSaving && <p className="workspace-notice" role="status">Saving your recording backup. Keep this page open and your drive connected until it finishes.</p>}
           {(dashboardError || recordingLibrary.error) && <p className="workspace-alert" role="alert">{dashboardError || recordingLibrary.error}</p>}
           {workspaceSyncNotice && !dashboardError && !recordingLibrary.error && <p className="workspace-notice" role="status">{workspaceSyncNotice}</p>}
           {error && !showCreate && <p className="workspace-alert" role="alert">{error}</p>}
@@ -1815,13 +1818,13 @@ export function HomePage() {
                               )}
                               {localRecordingIds.has(session.id) && (
                                 <>
-                                <button className="ws-workspaceRowAction" style={styles.workspaceRowAction} onClick={() => void downloadLocalRecording(session)} disabled={downloadingRecordingId !== null}>
+                                <button className="ws-workspaceRowAction" style={styles.workspaceRowAction} onClick={() => void downloadLocalRecording(session)} disabled={folderSaving || downloadingRecordingId !== null}>
                                   {downloadingRecordingId === session.id ? 'Working…' : 'Download tracks'}
                                 </button>
                                 <button
                                   className="ws-workspaceRowAction" style={styles.workspaceRowAction}
                                   onClick={() => void deleteDashboardRecordingSession(session)}
-                                  disabled={downloadingRecordingId !== null}
+                                  disabled={folderSaving || downloadingRecordingId !== null}
                                 >
                                   Delete
                                 </button>
@@ -1831,8 +1834,8 @@ export function HomePage() {
                             {localRecordingIds.has(session.id) && (
                               <RecordingFolderSave
                                 compact
-                                disabled={downloadingRecordingId !== null}
-                                onBusyChange={(busy) => setDownloadingRecordingId((current) => busy ? session.id : current === session.id ? null : current)}
+                                disabled={folderSaving || downloadingRecordingId !== null}
+                                onBusyChange={setFolderSaving}
                                 getRecording={async () => {
                                   const localSession = recordingLibrary.sessions.find((item) => item.id === session.id);
                                   if (!localSession) throw new Error('This recording is no longer in the local library.');

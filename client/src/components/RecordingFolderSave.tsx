@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useToast } from './Toast.tsx';
 import {
   isRecordingFolderSaveSupported,
   pickRecordingFolder,
@@ -16,6 +17,7 @@ interface RecordingFolderSaveProps {
 
 /** An explicit, independent copy of finished tracks; capture storage stays separate. */
 export function RecordingFolderSave({ getRecording, disabled, compact = false, onBusyChange }: RecordingFolderSaveProps) {
+  const { addToast } = useToast();
   const supported = isRecordingFolderSaveSupported();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
@@ -52,11 +54,11 @@ export function RecordingFolderSave({ getRecording, disabled, compact = false, o
       event.returnValue = '';
     };
     try {
+      onBusyChange?.(true);
       // The native picker needs the click's user activation. Load library files afterwards.
       const directory = await pickRecordingFolder();
       folderSelected = true;
       window.addEventListener('beforeunload', protectSave);
-      onBusyChange?.(true);
       if (mountedRef.current) setProgress('Preparing tracks…');
       const recording = await getRecording();
       const result = await saveRecordingToFolder(directory, recording, {
@@ -65,16 +67,17 @@ export function RecordingFolderSave({ getRecording, disabled, compact = false, o
         },
       });
       if (mountedRef.current) { setSaved(result); setProgress(''); }
+      else addToast(`Saved ${result.fileCount} tracks to ${result.folderName}. File sizes checked.`, 'success', { durationMs: 0 });
     } catch (failure) {
+      const cancelled = !folderSelected && failure instanceof DOMException && failure.name === 'AbortError';
+      const message = `${failure instanceof Error ? failure.message : 'Could not save to the selected folder.'} Keep this tab open and try again.`;
       if (mountedRef.current) {
         setProgress('');
-        if (folderSelected || !(failure instanceof DOMException && failure.name === 'AbortError')) {
-          setError(`${failure instanceof Error ? failure.message : 'Could not save to the selected folder.'} Keep this tab open and try again.`);
-        }
-      }
+        if (!cancelled) setError(message);
+      } else if (!cancelled) addToast(message, 'error', { durationMs: 0 });
     } finally {
       window.removeEventListener('beforeunload', protectSave);
-      if (folderSelected) onBusyChange?.(false);
+      onBusyChange?.(false);
       savingRef.current = false;
       if (mountedRef.current) setBusy(false);
     }

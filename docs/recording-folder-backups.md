@@ -12,6 +12,11 @@ includes track names, sizes, capture details, and recording markers. This action
 does not upload files or call a paid service.
 
 Keep the tab open and the drive connected until the studio reports success.
+While a save is in progress, the studio holds the recording controls and
+library selection in place. Cancelling the folder picker releases those
+controls. If a disconnect or browser Back navigation closes the recording
+panel, the finished save reports success or failure in a notification that
+stays visible until dismissed.
 Expand **Preview saved copy** to play the first video or audio track directly
 from the saved file. For a separate check after closing the studio, open that
 file from the destination folder in a player that supports its format.
