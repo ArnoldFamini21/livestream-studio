@@ -1,5 +1,5 @@
 import type { RtmpRelayStartPayload } from '@studio/shared';
-import { normalizeAudioConfig, normalizeVideoConfig } from './rtmp.js';
+import { getRelayVideoMode, normalizeAudioConfig, normalizeVideoConfig } from './rtmp.js';
 
 /**
  * When the studio's connection drops mid-broadcast, the media server keeps
@@ -32,6 +32,8 @@ export function isSameRelaySetup(running: RtmpRelayStartPayload, incoming: RtmpR
   const videoB = normalizeVideoConfig(incoming.video);
   const audioA = normalizeAudioConfig(running.audio);
   const audioB = normalizeAudioConfig(incoming.audio);
+  // A copied browser stream and a server re-encode differ in size and codec setup.
+  if (getRelayVideoMode(running.encoding) !== getRelayVideoMode(incoming.encoding)) return false;
   return videoA.width === videoB.width
     && videoA.height === videoB.height
     && videoA.frameRate === videoB.frameRate

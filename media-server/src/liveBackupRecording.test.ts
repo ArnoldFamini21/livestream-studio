@@ -31,28 +31,50 @@ describe('live backup recording utilities', () => {
     assert.equal(sanitizeLiveBackupFilePart('...', 'room'), 'room');
   });
 
-  it('builds bounded FFmpeg MP4 backup args', () => {
-    const args = createFfmpegLiveBackupArgs('/tmp/live-backup.mp4', {
-      video: {
-        width: 1920,
-        height: 1080,
-        frameRate: 30,
-        videoBitsPerSecond: 4_500_000,
-      },
-      audio: {
-        sampleRate: 48_000,
-        channelCount: 2,
-        audioBitsPerSecond: 160_000,
-      },
-      maxBytes: 256 * 1024 * 1024,
-    });
+  const backupOptions = {
+    video: {
+      width: 1920,
+      height: 1080,
+      frameRate: 30,
+      videoBitsPerSecond: 4_500_000,
+    },
+    audio: {
+      sampleRate: 48_000,
+      channelCount: 2,
+      audioBitsPerSecond: 160_000,
+    },
+    maxBytes: 256 * 1024 * 1024,
+  };
 
-    assert.equal(args.includes('libx264'), true);
-    assert.equal(args.includes('aac'), true);
+  it('builds a bounded stream-copy MP4 backup of the shared program', () => {
+    const args = createFfmpegLiveBackupArgs('/tmp/live-backup.mp4', backupOptions);
+    assert.ok(args);
+
+    assert.equal(args.includes('libx264'), false, 'no second encode');
+    assert.deepEqual(args.slice(args.indexOf('-f'), args.indexOf('-f') + 4), ['-f', 'flv', '-i', 'pipe:0']);
+    assert.equal(args[args.indexOf('-c') + 1], 'copy');
     assert.equal(args.includes('+faststart'), true);
     assert.equal(args.includes('-fs'), true);
     assert.equal(args[args.indexOf('-fs') + 1], String(256 * 1024 * 1024));
     assert.equal(args.at(-1), '/tmp/live-backup.mp4');
+  });
+
+  it('copies an H.264 studio upload and refuses to re-encode a VP8 one', () => {
+    const copy = createFfmpegLiveBackupArgs('/tmp/live-backup.mp4', {
+      ...backupOptions,
+      source: 'studio-webm',
+      videoMode: 'copy',
+    });
+    assert.ok(copy);
+    assert.equal(copy[copy.indexOf('-c:v') + 1], 'copy');
+    assert.equal(copy[copy.indexOf('-c:a') + 1], 'aac');
+    assert.equal(copy.includes('libx264'), false);
+
+    assert.equal(createFfmpegLiveBackupArgs('/tmp/live-backup.mp4', {
+      ...backupOptions,
+      source: 'studio-webm',
+      videoMode: 'transcode',
+    }), null);
   });
 
   it('exposes download path only when a backup is ready', () => {

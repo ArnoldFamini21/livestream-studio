@@ -3,10 +3,12 @@ import { describe, it } from 'node:test';
 import {
   formatRtmpRelayOutputSummary,
   getRtmpRelayOutputPreflight,
+  getRtmpRelayOutputPreset,
   getRtmpRelayTargetKbps,
   getRtmpRelayVideoConfig,
   RTMP_RELAY_AUDIO_BITS_PER_SECOND,
   RTMP_RELAY_OUTPUT_PRESETS,
+  type RtmpRelayOutputPresetId,
 } from '../src/utils/rtmpRelayOutput.ts';
 
 describe('RTMP relay output presets', () => {
@@ -25,26 +27,18 @@ describe('RTMP relay output presets', () => {
     });
   });
 
-  it('builds high-motion 1080p60 and 4K30 relay configs', () => {
+  it('offers only what the 1080p30 compositor really delivers', () => {
     assert.deepEqual(RTMP_RELAY_OUTPUT_PRESETS.map((preset) => preset.id), [
       'smooth-720p',
       'standard-1080p',
       'maximum-1080p',
-      'motion-1080p60',
-      'ultra-4k30',
     ]);
-    assert.deepEqual(getRtmpRelayVideoConfig('landscape', 'motion-1080p60'), {
-      width: 1920,
-      height: 1080,
-      frameRate: 60,
-      videoBitsPerSecond: 10_000_000,
-    });
-    assert.deepEqual(getRtmpRelayVideoConfig('landscape', 'ultra-4k30'), {
-      width: 3840,
-      height: 2160,
-      frameRate: 30,
-      videoBitsPerSecond: 18_000_000,
-    });
+    for (const preset of RTMP_RELAY_OUTPUT_PRESETS) {
+      assert.equal(preset.frameRate, 30, `${preset.id} has no duplicated frames`);
+      assert.ok(preset.width <= 1920 && preset.height <= 1080, `${preset.id} is not upscaled`);
+    }
+    // A preset id saved by an older studio falls back to the default.
+    assert.equal(getRtmpRelayOutputPreset('ultra-4k30' as RtmpRelayOutputPresetId).id, 'standard-1080p');
   });
 
   it('rotates output dimensions for portrait destinations without changing bitrate', () => {
@@ -54,20 +48,12 @@ describe('RTMP relay output presets', () => {
       frameRate: 30,
       videoBitsPerSecond: 4_500_000,
     });
-    assert.deepEqual(getRtmpRelayVideoConfig('portrait', 'ultra-4k30'), {
-      width: 2160,
-      height: 3840,
-      frameRate: 30,
-      videoBitsPerSecond: 18_000_000,
-    });
   });
 
   it('includes audio overhead in stream health bitrate targets', () => {
     assert.equal(RTMP_RELAY_AUDIO_BITS_PER_SECOND, 160_000);
     assert.equal(getRtmpRelayTargetKbps('smooth-720p'), 2660);
     assert.equal(getRtmpRelayTargetKbps('maximum-1080p'), 8160);
-    assert.equal(getRtmpRelayTargetKbps('motion-1080p60'), 10160);
-    assert.equal(getRtmpRelayTargetKbps('ultra-4k30'), 18160);
   });
 
   it('formats the visible output summary from the active orientation and preset', () => {
@@ -77,13 +63,15 @@ describe('RTMP relay output presets', () => {
     );
   });
 
-  it('warns for 60fps and 4K live relay outputs', () => {
+  it('says whether the server copies or has to re-encode', () => {
     assert.equal(getRtmpRelayOutputPreflight('landscape', 'standard-1080p').status, 'good');
-    assert.deepEqual(getRtmpRelayOutputPreflight('landscape', 'motion-1080p60'), {
-      status: 'warning',
-      detail: '1920x1080 / 60 FPS / 10.2 Mbps. 60 FPS doubles encoder work; test this browser and upload path before a long live session.',
+    assert.deepEqual(getRtmpRelayOutputPreflight('landscape', 'standard-1080p', undefined, 'copy'), {
+      status: 'good',
+      detail: '1920x1080 / 30 FPS / 4.7 Mbps. Browser H.264, sent on without re-encoding.',
     });
-    assert.equal(getRtmpRelayOutputPreflight('portrait', 'ultra-4k30').status, 'warning');
-    assert.match(getRtmpRelayOutputPreflight('portrait', 'ultra-4k30').detail, /2160x3840/);
+    const transcode = getRtmpRelayOutputPreflight('portrait', 'standard-1080p', undefined, 'transcode');
+    assert.equal(transcode.status, 'warning');
+    assert.match(transcode.detail, /re-encode/);
+    assert.match(transcode.detail, /720p30/);
   });
 });

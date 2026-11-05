@@ -1052,11 +1052,57 @@ export interface RtmpRelayAudioConfig {
   audioBitsPerSecond: number;
 }
 
+/** Codecs the browser's MediaRecorder produces for the relay upload. */
+export type RtmpRelayVideoCodec = 'h264' | 'vp8' | 'vp9' | 'unknown';
+export type RtmpRelayAudioCodec = 'opus' | 'aac' | 'unknown';
+
+/**
+ * What the studio uploads. H.264 with a known keyframe interval lets the
+ * media server copy the video instead of re-encoding it (the free tier's
+ * CPU cannot run a real-time x264 encode).
+ */
+export interface RtmpRelayEncoding {
+  container: 'webm' | 'matroska';
+  videoCodec: RtmpRelayVideoCodec;
+  audioCodec: RtmpRelayAudioCodec;
+  /** Keyframe interval the browser was asked for, or null when it cannot be controlled. */
+  keyframeIntervalMs: number | null;
+}
+
+/**
+ * copy: the browser's H.264 goes to the destinations untouched (audio to AAC).
+ * transcode: the server re-encodes with libx264 (slow on the free tier).
+ */
+export type RtmpRelayVideoMode = 'copy' | 'transcode';
+
 export interface RtmpRelayStartPayload {
   token: string;
   destinations: RtmpRelayDestination[];
   video: RtmpRelayVideoConfig;
   audio: RtmpRelayAudioConfig;
+  /** Missing on older studios: treated as VP8 WebM. */
+  encoding?: RtmpRelayEncoding;
+}
+
+/** The server's live encoder, from FFmpeg's progress report (every ~2 s). */
+export interface RtmpRelayEncoderStats {
+  videoMode: RtmpRelayVideoMode;
+  /** Processing speed against real time; below 1 the output falls behind. */
+  speed: number | null;
+  fps: number | null;
+  bitrateKbps: number | null;
+  /** Frames FFmpeg dropped or duplicated to keep the output rate. */
+  droppedFrames: number;
+  duplicatedFrames: number;
+  at: number;
+}
+
+/** One destination's uploader: what actually leaves the server for that platform. */
+export interface RtmpRelayDestinationStats {
+  destinationId: string;
+  bitrateKbps: number | null;
+  speed: number | null;
+  at: number;
 }
 
 export interface RtmpRelayPingPayload {
@@ -1087,7 +1133,9 @@ export interface RtmpRelayBackupRecordingPayload {
 }
 
 export type RtmpRelayServerMessage =
-  | { type: 'session-started'; payload: { roomId: string; destinationIds: string[] } }
+  | { type: 'session-started'; payload: { roomId: string; destinationIds: string[]; videoMode?: RtmpRelayVideoMode } }
+  | { type: 'encoder-stats'; payload: RtmpRelayEncoderStats }
+  | { type: 'destination-stats'; payload: RtmpRelayDestinationStats }
   | { type: 'session-stopped'; payload: { reason?: string } }
   | { type: 'pong'; payload: RtmpRelayPingPayload & { receivedAt: number } }
   | { type: 'destination-status'; payload: { destinationId: string; status: RtmpRelayDestinationStatus; message?: string } }

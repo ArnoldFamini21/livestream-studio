@@ -78,7 +78,12 @@ import {
   createFfmpegEncoderArgs,
   createFfmpegSlateArgs,
   createFfmpegPushArgs,
+  describeRelayVideoMode,
+  getRelayEncoderOptions,
+  getRelayVideoMode,
   hasRemainingRelayWork,
+  TRANSCODE_MAX_FRAME_RATE,
+  TRANSCODE_MAX_PIXELS,
   isEncodeOnceEnabled,
   normalizeAudioConfig,
   normalizeVideoConfig,
@@ -88,6 +93,7 @@ import {
 } from './rtmp.js';
 import { WebmSinkFeed, WebmStreamTracker } from './webmStream.js';
 import { FlvSinkFeed } from './flvStream.js';
+import { FfmpegProgressParser, FfmpegRateMeter, type FfmpegProgress } from './ffmpegProgress.js';
 import { FlvProgram, type FlvProgramSource } from './flvSplice.js';
 import { isSameRelaySetup, shouldShowSlate, STUDIO_RECONNECT_HOLD_MS } from './relayResume.js';
 import {
@@ -169,7 +175,10 @@ interface HlsProcess {
 interface BackupProcess {
   recording: LiveBackupRecording;
   process: ChildProcessByStdio<Writable, null, Readable>;
-  feed: WebmSinkFeed;
+  /** Per-destination encoding: the studio's upload, video copied. */
+  feed: WebmSinkFeed | null;
+  /** Encode-once: a stream copy of the program the destinations receive. */
+  flvFeed: FlvSinkFeed | null;
   exited: boolean;
 }
 
@@ -255,6 +264,11 @@ async function healthPayload() {
       liveRelay: {
         encodeOnce: isEncodeOnceEnabled(),
         backlogSeconds: RELAY_INPUT_BACKLOG_SECONDS,
+        // H.264 from the browser is copied; anything else is re-encoded,
+        // capped at this size (and slow on a free instance).
+        videoModes: ['copy', 'transcode'],
+        transcodeMaxPixels: TRANSCODE_MAX_PIXELS,
+        transcodeMaxFrameRate: TRANSCODE_MAX_FRAME_RATE,
       },
       presentationRenderer: {
         ready: presentationRenderer.ready,
@@ -327,6 +341,37 @@ function getRecordingExportStore(): RecordingExportJobStore {
     recordingExportsStorageFingerprint = storageFingerprint;
   }
   return recordingExports;
+}
+
+/**
+ * Splits FFmpeg's stderr into progress reports (from -progress pipe:2) and
+ * log lines. Log lines are redacted and logged as before. Reports carry the
+ * bitrate and speed over the last interval, not FFmpeg's running averages.
+ */
+function watchFfmpegStderr(
+  child: { stderr: Readable },
+  session: RelaySession,
+  label: string,
+  onProgress: (progress: FfmpegProgress) => void
+) {
+  const parser = new FfmpegProgressParser();
+  const meter = new FfmpegRateMeter();
+  child.stderr.on('data', (chunk: Buffer) => {
+    const { reports, logLines } = parser.push(chunk);
+    for (const line of logLines) {
+      const redacted = redactFfmpegLine(line, session.destinations);
+      if (redacted) console.warn(`ffmpeg ${label}: ${redacted}`);
+    }
+    for (const report of reports) {
+      onProgress({ ...report, ...meter.sample(report, Date.now()) });
+    }
+  });
+}
+
+function roundStat(value: number | null, digits = 2): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 function stopRelayProcess(session: RelaySession, relay: RelayProcess) {
@@ -576,10 +621,7 @@ function spawnRelay(
   destination: RtmpRelayDestination,
   payload: RtmpRelayStartPayload
 ) {
-  const options = {
-    video: normalizeVideoConfig(payload.video),
-    audio: normalizeAudioConfig(payload.audio),
-  };
+  const options = getRelayEncoderOptions(payload);
   const program = session.encodeOnce ? session.program : null;
   const args = program ? createFfmpegPushArgs(destination) : createFfmpegArgs(destination, options);
   const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
@@ -651,9 +693,18 @@ function spawnRelay(
 
   console.log(`RTMP relay starting for ${destination.name}: ${redactDestinationUrl(destination)}`);
 
-  child.stderr.on('data', (chunk: Buffer) => {
-    const line = redactFfmpegLine(chunk.toString('utf8').trim(), session.destinations);
-    if (line) console.warn(`ffmpeg ${destination.name}: ${line}`);
+  // What actually leaves the server for this platform, every ~2 s.
+  watchFfmpegStderr(child, session, destination.name, (progress) => {
+    if (relay.exited || relay.retired || session.stopping || progress.ended) return;
+    sendJson(session.client, {
+      type: 'destination-stats',
+      payload: {
+        destinationId: destination.id,
+        bitrateKbps: roundStat(progress.bitrateKbps, 0),
+        speed: roundStat(progress.speed),
+        at: Date.now(),
+      },
+    });
   });
 
   child.on('error', (err) => {
@@ -758,10 +809,7 @@ function spawnEncoder(
   ffmpegPath: string,
   payload: RtmpRelayStartPayload
 ): EncoderProcess {
-  const options = {
-    video: normalizeVideoConfig(payload.video),
-    audio: normalizeAudioConfig(payload.audio),
-  };
+  const options = getRelayEncoderOptions(payload);
   const program = session.program;
   if (!program) throw new Error('The live program is not ready.');
   const child = spawn(ffmpegPath, createFfmpegEncoderArgs(options), { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -791,7 +839,12 @@ function spawnEncoder(
   }
   const encoder: EncoderProcess = { process: child, feed, source, exited: false };
   session.encoder = encoder;
-  console.log(`Live encoder starting for ${session.destinations.length} destination(s)`);
+  const modeDescription = describeRelayVideoMode(options);
+  if (options.videoMode === 'copy') {
+    console.log(`Live encoder starting for ${session.destinations.length} destination(s): ${modeDescription}`);
+  } else {
+    console.warn(`Live encoder starting for ${session.destinations.length} destination(s): ${modeDescription}`);
+  }
 
   // On air at once for a new broadcast; after a restart, at its first keyframe.
   program.switchTo(source);
@@ -800,9 +853,20 @@ function spawnEncoder(
     if (session.stopping) stopRelays(session);
   });
 
-  child.stderr.on('data', (chunk: Buffer) => {
-    const line = redactFfmpegLine(chunk.toString('utf8').trim(), session.destinations);
-    if (line) console.warn(`ffmpeg encoder: ${line}`);
+  watchFfmpegStderr(child, session, 'encoder', (progress) => {
+    if (encoder.exited || session.encoder !== encoder || session.stopping || progress.ended) return;
+    sendJson(session.client, {
+      type: 'encoder-stats',
+      payload: {
+        videoMode: options.videoMode,
+        speed: roundStat(progress.speed),
+        fps: roundStat(progress.fps, 1),
+        bitrateKbps: roundStat(progress.bitrateKbps, 0),
+        droppedFrames: progress.droppedFrames,
+        duplicatedFrames: progress.duplicatedFrames,
+        at: Date.now(),
+      },
+    });
   });
 
   let handled = false;
@@ -879,35 +943,66 @@ async function spawnLiveBackup(
     return;
   }
 
+  const options = getRelayEncoderOptions(payload);
+  const program = session.encodeOnce ? session.program : null;
+  // The backup is always a stream copy. Without the shared program (per-
+  // destination encoding) that needs H.264 from the browser.
+  const backupSource = program ? 'program-flv' : 'studio-webm';
+  if (!program && options.videoMode !== 'copy') {
+    console.warn('Live backup skipped: it would need a second server encode of a VP8 upload');
+    sendJson(session.client, {
+      type: 'backup-recording-status',
+      payload: {
+        backupId: '',
+        roomId: claims.roomId,
+        fileName: '',
+        startedAt: new Date().toISOString(),
+        status: 'disabled',
+        error: 'The server backup needs an H.264 upload from the studio browser.',
+      },
+    });
+    return;
+  }
+
   try {
     const recording = await createLiveBackupRecording({
       roomId: claims.roomId,
-      video: normalizeVideoConfig(payload.video),
-      audio: normalizeAudioConfig(payload.audio),
+      video: options.video,
+      audio: options.audio,
       maxBytes: getLiveBackupMaxBytes(),
     });
     const args = createFfmpegLiveBackupArgs(recording.filePath, {
-      video: normalizeVideoConfig(payload.video),
-      audio: normalizeAudioConfig(payload.audio),
+      video: options.video,
+      audio: options.audio,
       maxBytes: getLiveBackupMaxBytes(),
+      source: backupSource,
+      videoMode: options.videoMode,
     });
+    if (!args) throw new Error('The server backup cannot copy this stream.');
     const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
-    const feed = new WebmSinkFeed(child.stdin, (err) => {
+    const onInputError = (err: Error) => {
       console.warn(`ffmpeg live backup ${recording.backupId} input closed: ${err.message}`);
-    }, {
-      maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS * 2, {
-        video: normalizeVideoConfig(payload.video),
-        audio: normalizeAudioConfig(payload.audio),
-      }),
+    };
+    const backpressure = {
+      maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS * 2, options),
       onOverflow: () => {
         console.warn(`Live backup ${recording.backupId} fell behind; skipping ahead`);
       },
-    });
-    feed.join(session.webm);
+    };
+    let feed: WebmSinkFeed | null = null;
+    let flvFeed: FlvSinkFeed | null = null;
+    if (program) {
+      flvFeed = new FlvSinkFeed(child.stdin, program.stream, { ...backpressure, onError: onInputError });
+      flvFeed.join();
+    } else {
+      feed = new WebmSinkFeed(child.stdin, onInputError, backpressure);
+      feed.join(session.webm);
+    }
     const backup: BackupProcess = {
       recording,
       process: child,
       feed,
+      flvFeed,
       exited: false,
     };
     session.backup = backup;
@@ -1037,6 +1132,8 @@ function createProgram(session: RelaySession): FlvProgram {
   return new FlvProgram((chunk) => {
     const hls = session.hls;
     if (hls && !hls.exited) hls.feed.write(chunk);
+    const backup = session.backup;
+    if (backup && !backup.exited && backup.flvFeed) backup.flvFeed.write(chunk);
     for (const relay of session.relays.values()) {
       if (relay.exited || relay.retired || !relay.flvFeed) continue;
       if (!relay.flvFeed.write(chunk) || relay.live) continue;
@@ -1057,7 +1154,7 @@ function startSlate(session: RelaySession): boolean {
   const payload = session.payload;
   const ffmpegPath = getFfmpegPath();
   if (!program || !payload || !ffmpegPath || session.stopping || !existsSync(SLATE_IMAGE_PATH)) return false;
-  const options = { video: normalizeVideoConfig(payload.video), audio: normalizeAudioConfig(payload.audio) };
+  const options = getRelayEncoderOptions(payload);
   const child = spawn(ffmpegPath, createFfmpegSlateArgs(options, SLATE_IMAGE_PATH), { stdio: ['ignore', 'pipe', 'pipe'] });
   const source = program.createSource('slate');
   const slate: SlateProcess = { process: child, source, startedAtMs: Date.now(), exited: false };
@@ -1175,6 +1272,7 @@ async function resumeSession(
     payload: {
       roomId: claims.roomId,
       destinationIds: payload.destinations.map((destination) => destination.id),
+      videoMode: getRelayVideoMode(payload.encoding),
     },
   });
   for (const relay of held.relays.values()) {
@@ -1265,6 +1363,7 @@ async function handleStart(
     payload: {
       roomId: claims.roomId,
       destinationIds: payload.destinations.map((destination) => destination.id),
+      videoMode: getRelayVideoMode(payload.encoding),
     },
   });
 }
@@ -1299,7 +1398,7 @@ function handleBinaryChunk(ws: WebSocket, session: RelaySession, data: RawData) 
     }
   }
   const backup = session.backup;
-  if (backup && !backup.exited) {
+  if (backup && !backup.exited && backup.feed) {
     backup.feed.write(chunk, info);
   }
 }

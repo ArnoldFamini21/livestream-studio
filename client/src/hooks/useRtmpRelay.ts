@@ -3,9 +3,12 @@ import type {
   BroadcastOrientation,
   RtmpRelayBackupRecordingPayload,
   RtmpRelayDestination,
+  RtmpRelayDestinationStats,
   RtmpRelayDestinationStatus,
+  RtmpRelayEncoderStats,
   RtmpRelayServerMessage,
   RtmpRelayVideoConfig,
+  RtmpRelayVideoMode,
 } from '@studio/shared';
 import { resolveMediaWsUrl } from '../utils/apiClient.ts';
 import { getRelaySendBacklog } from '../utils/rtmpRelayBackpressure.ts';
@@ -26,6 +29,12 @@ import {
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
 import type { ProgramAudioTrackLease } from '../audio/useProgramAudioMix.ts';
+import {
+  buildRelayRecorderOptions,
+  getRelayRecorderFormat,
+  getRelayUploadVideoConfig,
+} from '../utils/relayEncoding.ts';
+import { createRelayVideoStream, type RelayVideoResources } from '../utils/relayVideoStream.ts';
 import { reportClientError } from '../utils/clientErrorReporter.ts';
 import {
   isRelayOperationCancelled,
@@ -62,11 +71,6 @@ interface MixerResources {
   programAudio: ProgramAudioTrackLease | null;
 }
 
-interface RelayVideoResources {
-  stream: MediaStream;
-  cleanup: () => void;
-}
-
 export interface RtmpRelayStats {
   status: 'idle' | 'connecting' | 'live' | 'error';
   startedAt: number | null;
@@ -82,6 +86,12 @@ export interface RtmpRelayStats {
   relayLatencyMs: number | null;
   /** Seconds of video queued in the browser because the uplink is behind. */
   sendBacklogSeconds: number;
+  /** How the media server handles this upload: copy (H.264) or re-encode. */
+  serverVideoMode: RtmpRelayVideoMode | null;
+  /** The media server's live encoder, as FFmpeg reports it. */
+  serverEncoder: RtmpRelayEncoderStats | null;
+  /** What each destination's uploader actually sends, by destination id. */
+  destinationStats: Record<string, RtmpRelayDestinationStats>;
 }
 
 export interface RtmpRelayReadiness {
@@ -116,6 +126,9 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
   reconnectAttempts: 0,
   relayLatencyMs: null,
   sendBacklogSeconds: 0,
+  serverVideoMode: null,
+  serverEncoder: null,
+  destinationStats: {},
 };
 
 const BITRATE_WINDOW_MS = 5_000;
@@ -136,20 +149,10 @@ function getMediaWsUrl(): string {
   return resolveMediaWsUrl();
 }
 
-function getRelayMimeType(): string {
-  if (!('MediaRecorder' in window) || typeof MediaRecorder.isTypeSupported !== 'function') return '';
-  const candidates = [
-    'video/webm;codecs=vp8,opus',
-    'video/webm;codecs=vp9,opus',
-    'video/webm',
-  ];
-  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
-}
-
 function getBrowserRelayIssue(): string | null {
   if (!('WebSocket' in window)) return 'This browser does not support WebSocket streaming.';
   if (!('MediaRecorder' in window)) return 'This browser does not support MediaRecorder streaming.';
-  if (!getRelayMimeType()) return 'This browser does not support WebM recording for RTMP relay.';
+  if (!getRelayRecorderFormat()) return 'This browser does not support WebM recording for RTMP relay.';
   return null;
 }
 
@@ -186,96 +189,6 @@ function probeRelayWebSocket(mediaWsUrl: string): Promise<void> {
     ws.onerror = () => finish(new Error('Unable to reach the media relay server.'));
     ws.onclose = () => finish(new Error('Media relay connection closed before it was ready.'));
   });
-}
-
-function drawVideoCover(
-  ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement,
-  width: number,
-  height: number
-) {
-  if (video.videoWidth <= 0 || video.videoHeight <= 0) return;
-
-  const sourceRatio = video.videoWidth / video.videoHeight;
-  const targetRatio = width / height;
-  let sourceX = 0;
-  let sourceY = 0;
-  let sourceWidth = video.videoWidth;
-  let sourceHeight = video.videoHeight;
-
-  if (sourceRatio > targetRatio) {
-    sourceWidth = video.videoHeight * targetRatio;
-    sourceX = (video.videoWidth - sourceWidth) / 2;
-  } else {
-    sourceHeight = video.videoWidth / targetRatio;
-    sourceY = (video.videoHeight - sourceHeight) / 2;
-  }
-
-  ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
-}
-
-async function createRelayVideoStream(
-  compositeStream: MediaStream,
-  videoConfig: RtmpRelayVideoConfig
-): Promise<RelayVideoResources> {
-  const videoTrack = compositeStream.getVideoTracks()[0];
-  if (!videoTrack || videoTrack.readyState !== 'live') {
-    throw new Error('The composited studio video stream is not ready.');
-  }
-
-  if (videoConfig.width === 1920 && videoConfig.height === 1080) {
-    return {
-      stream: new MediaStream([videoTrack]),
-      cleanup: () => undefined,
-    };
-  }
-
-  const sourceStream = new MediaStream([videoTrack]);
-  const sourceVideo = document.createElement('video');
-  sourceVideo.muted = true;
-  sourceVideo.playsInline = true;
-  sourceVideo.srcObject = sourceStream;
-
-  await new Promise<void>((resolve) => {
-    if (sourceVideo.readyState >= 1) {
-      resolve();
-      return;
-    }
-    const timeout = window.setTimeout(resolve, 1_000);
-    sourceVideo.onloadedmetadata = () => {
-      window.clearTimeout(timeout);
-      resolve();
-    };
-  });
-  await sourceVideo.play().catch(() => undefined);
-
-  const canvas = document.createElement('canvas');
-  canvas.width = videoConfig.width;
-  canvas.height = videoConfig.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas output is unavailable for portrait streaming.');
-
-  let frame = 0;
-  const draw = () => {
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    if (sourceVideo.readyState >= 2) {
-      drawVideoCover(ctx, sourceVideo, canvas.width, canvas.height);
-    }
-    frame = window.requestAnimationFrame(draw);
-  };
-  draw();
-
-  const stream = canvas.captureStream(videoConfig.frameRate);
-  return {
-    stream,
-    cleanup: () => {
-      window.cancelAnimationFrame(frame);
-      stream.getTracks().forEach((track) => track.stop());
-      sourceVideo.pause();
-      sourceVideo.srcObject = null;
-    },
-  };
 }
 
 async function createMixedBroadcastStream(
@@ -555,12 +468,17 @@ export function useRtmpRelay({
         throw new Error('The composited studio stream is not ready.');
       }
 
-      const mimeType = getRelayMimeType();
-      if (!mimeType) {
+      const recorderFormat = getRelayRecorderFormat();
+      if (!recorderFormat) {
         throw new Error('This browser does not support WebM recording for RTMP relay.');
       }
 
-      const videoConfig = getRtmpRelayVideoConfig(orientation, outputPreset);
+      // H.264 goes out at the preset's size; a re-encode on the server is
+      // capped, so the upload is sized to what it will output.
+      const videoConfig: RtmpRelayVideoConfig = getRelayUploadVideoConfig(
+        getRtmpRelayVideoConfig(orientation, outputPreset),
+        recorderFormat.videoMode
+      );
       const operation = relayOperationRef.current.begin();
       if (!operation) throw new Error('A live relay session is already active.');
       activeDestinationIdsRef.current = destinations.map((destination) => destination.id);
@@ -722,11 +640,10 @@ export function useRtmpRelay({
               videoConfig.frameRate,
               RELAY_RECORDER_TIMESLICE_MS
             );
-            const recorder = new MediaRecorder(mixer.stream, {
-              mimeType,
-              videoBitsPerSecond: videoConfig.videoBitsPerSecond,
-              audioBitsPerSecond: RELAY_AUDIO.audioBitsPerSecond,
-            });
+            const recorder = new MediaRecorder(
+              mixer.stream,
+              buildRelayRecorderOptions(recorderFormat, videoConfig, RELAY_AUDIO.audioBitsPerSecond)
+            );
             recorderRef.current = recorder;
 
             recorder.ondataavailable = (event) => {
@@ -781,6 +698,7 @@ export function useRtmpRelay({
                 destinations,
                 video: videoConfig,
                 audio: RELAY_AUDIO,
+                encoding: recorderFormat.encoding,
               },
             }));
           };
@@ -799,6 +717,8 @@ export function useRtmpRelay({
               started = true;
               relayConnectedAtRef.current = Date.now();
               setRelayStatus('live');
+              const serverVideoMode = message.payload.videoMode ?? null;
+              setStats((current) => ({ ...current, serverVideoMode, updatedAt: Date.now() }));
               startHeartbeatTimer(ws);
               startRecorder();
               resolve();
@@ -827,6 +747,27 @@ export function useRtmpRelay({
                 message.payload.status,
                 message.payload.message
               );
+              return;
+            }
+
+            if (message.type === 'encoder-stats') {
+              const serverEncoder = message.payload;
+              setStats((current) => ({
+                ...current,
+                serverEncoder,
+                serverVideoMode: serverEncoder.videoMode,
+                updatedAt: Date.now(),
+              }));
+              return;
+            }
+
+            if (message.type === 'destination-stats') {
+              const destinationStats = message.payload;
+              setStats((current) => ({
+                ...current,
+                destinationStats: { ...current.destinationStats, [destinationStats.destinationId]: destinationStats },
+                updatedAt: Date.now(),
+              }));
               return;
             }
 

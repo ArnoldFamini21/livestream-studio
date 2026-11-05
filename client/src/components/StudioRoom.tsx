@@ -442,6 +442,8 @@ interface SceneTransitionState {
   visible: boolean;
   durationMs: number;
   stingerClip?: SceneStingerClip | null;
+  /** performance.now() at the switch; the program canvas animates from it. */
+  startedAt: number;
 }
 
 interface ActiveStreamScreenState {
@@ -1634,6 +1636,13 @@ export function StudioRoom() {
   const startScreenShareRef = useRef(startScreenShare);
   const sendRef = useRef(send);
 
+  const compositorSceneTransition = useMemo(() => (sceneTransition ? {
+    presetId: sceneTransition.presetId,
+    sceneName: sceneTransition.sceneName,
+    startedAt: sceneTransition.startedAt,
+    durationMs: sceneTransition.durationMs,
+  } : null), [sceneTransition?.presetId, sceneTransition?.sceneName, sceneTransition?.startedAt, sceneTransition?.durationMs]);
+
   // Initialize Canvas Compositor for RTMP
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     containerRef: stageRef,
@@ -1658,6 +1667,7 @@ export function StudioRoom() {
     logoSize,
     logoOpacity,
     streamScreen: activeStreamScreen,
+    sceneTransition: compositorSceneTransition,
   });
 
   const handleLogoPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -1875,23 +1885,31 @@ export function StudioRoom() {
       sceneTransitionTimerRef.current = null;
     }
     if (sceneTransitionFrameRef.current !== null) {
-      window.cancelAnimationFrame(sceneTransitionFrameRef.current);
+      window.clearTimeout(sceneTransitionFrameRef.current);
       sceneTransitionFrameRef.current = null;
     }
 
     const presetId = sceneTransitionPreset;
     const durationMs = presetId === 'stinger' ? STINGER_TRANSITION_DURATION_MS : SCENE_TRANSITION_DURATION_MS;
     const stingerClip = presetId === 'stinger' ? sceneStingerClip : null;
-    setSceneTransition({ sceneId: scene.id, sceneName: scene.name, presetId, visible: true, durationMs, stingerClip });
+    setSceneTransition({
+      sceneId: scene.id,
+      sceneName: scene.name,
+      presetId,
+      visible: true,
+      durationMs,
+      stingerClip,
+      startedAt: performance.now(),
+    });
     if (presetId !== 'stinger') {
-      sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
-        sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
-          setSceneTransition((current) => (
-            current?.sceneId === scene.id ? { ...current, visible: false } : current
-          ));
-          sceneTransitionFrameRef.current = null;
-        });
-      });
+      // Let the covering style paint, then start the reveal. A timer, not
+      // requestAnimationFrame, which never fires while the tab is hidden.
+      sceneTransitionFrameRef.current = window.setTimeout(() => {
+        setSceneTransition((current) => (
+          current?.sceneId === scene.id ? { ...current, visible: false } : current
+        ));
+        sceneTransitionFrameRef.current = null;
+      }, 32);
     }
     sceneTransitionTimerRef.current = window.setTimeout(() => {
       setSceneTransition((current) => (current?.sceneId === scene.id ? null : current));
@@ -1918,7 +1936,7 @@ export function StudioRoom() {
     return () => {
       if (liveStatusTimerRef.current) clearTimeout(liveStatusTimerRef.current);
       if (sceneTransitionTimerRef.current !== null) window.clearTimeout(sceneTransitionTimerRef.current);
-      if (sceneTransitionFrameRef.current !== null) window.cancelAnimationFrame(sceneTransitionFrameRef.current);
+      if (sceneTransitionFrameRef.current !== null) window.clearTimeout(sceneTransitionFrameRef.current);
       if (layoutTransitionTimerRef.current !== null) window.clearTimeout(layoutTransitionTimerRef.current);
       if (layoutTransitionFrameRef.current !== null) window.cancelAnimationFrame(layoutTransitionFrameRef.current);
       if (chatTypingExpiryTimerRef.current !== null) window.clearTimeout(chatTypingExpiryTimerRef.current);
@@ -6799,6 +6817,7 @@ export function StudioRoom() {
               {sceneTransition && (
                 <div
                   data-testid="scene-transition-overlay"
+                  data-compositor-scene-transition
                   role="status"
                   aria-live="polite"
                   aria-label={`Scene transition: ${sceneTransition.sceneName}`}
@@ -6816,6 +6835,9 @@ export function StudioRoom() {
                     <video
                       key={`${sceneTransition.sceneId}-${sceneTransition.stingerClip.url}`}
                       src={sceneTransition.stingerClip.url}
+                      // A URL clip must allow CORS, or drawing it would taint
+                      // the program canvas; without it the broadcast skips it.
+                      crossOrigin="anonymous"
                       style={styles.sceneTransitionVideo}
                       autoPlay
                       muted

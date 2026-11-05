@@ -16,6 +16,9 @@ import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-600.css';
 import '@fontsource/inter/latin-700.css';
+// 800/900 are used by the program canvas (timers, headlines, labels).
+import '@fontsource/inter/latin-800.css';
+import '@fontsource/inter/latin-900.css';
 import './styles/global.css';
 import './styles/recording-recovery.css';
 import './styles/recording-folder-save.css';
