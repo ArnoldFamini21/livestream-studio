@@ -1,340 +1,51 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
-import type { BroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
+import { useCallback, useEffect, useRef } from 'react';
+import type { BackgroundMusicPlayer } from '../audio/backgroundMusicPlayer.ts';
+import { useBackgroundMusicState } from '../audio/useBackgroundMusicPlayer.ts';
+import { shouldIgnoreShortcutTarget } from '../utils/keyboardShortcuts.ts';
 
 interface BackgroundMusicProps {
   onClose: () => void;
-  broadcastAudio?: BroadcastAudioBus;
+  /** The studio-level player: music keeps playing when this panel closes. */
+  player: BackgroundMusicPlayer;
 }
 
-interface Track {
-  id: string;
-  name: string;
-  url: string;
-  duration: number;
-}
-
-export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProps) {
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [volume, setVolume] = useState(70);
-  const [sendToStream, setSendToStream] = useState(true);
-  const [monitorEnabled, setMonitorEnabled] = useState(true);
-  const [loop, setLoop] = useState(false);
-  const [fadeEnabled, setFadeEnabled] = useState(false);
-  const [fadeDuration, setFadeDuration] = useState(2);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const mediaElementSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const routingGainRef = useRef<GainNode | null>(null);
-  const cleanupAudioRoutingRef = useRef<(() => void) | null>(null);
+/** Controls for the studio's background music, docked beside the stage. */
+export function BackgroundMusic({ onClose, player }: BackgroundMusicProps) {
+  const {
+    tracks,
+    currentTrackId,
+    isPlaying,
+    volume,
+    sendToStream,
+    monitorEnabled,
+    loop,
+    fadeEnabled,
+    fadeDuration,
+    currentTime,
+    duration,
+  } = useBackgroundMusicState(player);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const fadeFrameRef = useRef<number | null>(null);
-  const isFadingRef = useRef(false);
 
-  // Keep a stable reference to the target volume for fades
-  const targetVolumeRef = useRef(volume / 100);
-
-  const setOutputVolume = useCallback((value: number) => {
-    const clamped = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 1));
-    if (routingGainRef.current) {
-      routingGainRef.current.gain.value = clamped;
-      if (audioRef.current) audioRef.current.volume = 1;
-      return;
-    }
-    if (audioRef.current) audioRef.current.volume = clamped;
-  }, []);
-
-  const getOutputVolume = useCallback(() => (
-    routingGainRef.current?.gain.value ?? audioRef.current?.volume ?? targetVolumeRef.current
-  ), []);
-
-  const connectBroadcastRouting = useCallback((gain: GainNode) => {
-    if (!broadcastAudio) return;
-    cleanupAudioRoutingRef.current?.();
-    cleanupAudioRoutingRef.current = broadcastAudio.connectNode(gain, {
-      stream: sendToStream,
-      monitor: monitorEnabled,
-    });
-  }, [broadcastAudio, monitorEnabled, sendToStream]);
-
-  const ensureBroadcastRouting = useCallback(() => {
-    if (!broadcastAudio || !audioRef.current) return;
-    const audioContext = broadcastAudio.getContext();
-    if (audioContext.state === 'suspended') {
-      void audioContext.resume();
-    }
-    if (mediaElementSourceRef.current) return;
-
-    const source = audioContext.createMediaElementSource(audioRef.current);
-    const gain = audioContext.createGain();
-    gain.gain.value = targetVolumeRef.current;
-    source.connect(gain);
-    connectBroadcastRouting(gain);
-    mediaElementSourceRef.current = source;
-    routingGainRef.current = gain;
-    audioRef.current.volume = 1;
-  }, [broadcastAudio, connectBroadcastRouting]);
-
-  useEffect(() => {
-    if (!routingGainRef.current) return;
-    connectBroadcastRouting(routingGainRef.current);
-  }, [connectBroadcastRouting]);
-
-  // Escape key to close
+  // Escape closes the panel (not the music) unless the host is typing.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
+      if (e.key === 'Escape' && !shouldIgnoreShortcutTarget(e.target as HTMLElement | null)) onClose();
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  // Initialize audio element
-  useEffect(() => {
-    const audio = new Audio();
-    audio.preload = 'metadata';
-    audioRef.current = audio;
+  const playTrack = useCallback((track?: (typeof tracks)[number]) => player.playTrack(track), [player]);
+  const pauseTrack = useCallback(() => player.pauseTrack(), [player]);
+  const togglePlayPause = useCallback(() => player.togglePlayPause(), [player]);
+  const skipTrack = useCallback((direction: 1 | -1) => player.skipTrack(direction), [player]);
+  const removeTrack = useCallback((id: string) => player.removeTrack(id), [player]);
 
-    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
-    const onLoadedMetadata = () => setDuration(audio.duration);
-    const onEnded = () => {
-      if (!audio.loop) {
-        setIsPlaying(false);
-        setCurrentTime(0);
-      }
-    };
-
-    audio.addEventListener('timeupdate', onTimeUpdate);
-    audio.addEventListener('loadedmetadata', onLoadedMetadata);
-    audio.addEventListener('ended', onEnded);
-
-    return () => {
-      audio.removeEventListener('timeupdate', onTimeUpdate);
-      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
-      audio.removeEventListener('ended', onEnded);
-      audio.pause();
-      audio.src = '';
-      cleanupAudioRoutingRef.current?.();
-      cleanupAudioRoutingRef.current = null;
-      try {
-        mediaElementSourceRef.current?.disconnect();
-        routingGainRef.current?.disconnect();
-      } catch {
-        // Already disconnected.
-      }
-      mediaElementSourceRef.current = null;
-      routingGainRef.current = null;
-      if (fadeFrameRef.current !== null) {
-        cancelAnimationFrame(fadeFrameRef.current);
-      }
-      // Revoke all blob URLs on unmount
-      setTracks((prev) => {
-        prev.forEach((t) => URL.revokeObjectURL(t.url));
-        return [];
-      });
-    };
-  }, []);
-
-  // Sync loop
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.loop = loop;
-    }
-  }, [loop]);
-
-  // Sync volume (when not fading)
-  useEffect(() => {
-    targetVolumeRef.current = volume / 100;
-    if (!isFadingRef.current) {
-      setOutputVolume(volume / 100);
-    }
-  }, [setOutputVolume, volume]);
-
-  // Fade helper
-  const fadeAudio = useCallback(
-    (from: number, to: number, durationSec: number, onComplete?: () => void) => {
-      const audio = audioRef.current;
-      if (!audio) return;
-
-      if (fadeFrameRef.current !== null) {
-        cancelAnimationFrame(fadeFrameRef.current);
-      }
-
-      isFadingRef.current = true;
-      const startTime = performance.now();
-      const durationMs = durationSec * 1000;
-
-      const step = () => {
-        const elapsed = performance.now() - startTime;
-        const progress = Math.min(elapsed / durationMs, 1);
-        // Ease in-out
-        const eased = progress < 0.5
-          ? 2 * progress * progress
-          : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-
-        setOutputVolume(from + (to - from) * eased);
-
-        if (progress < 1) {
-          fadeFrameRef.current = requestAnimationFrame(step);
-        } else {
-          setOutputVolume(to);
-          isFadingRef.current = false;
-          fadeFrameRef.current = null;
-          onComplete?.();
-        }
-      };
-
-      fadeFrameRef.current = requestAnimationFrame(step);
-    },
-    [setOutputVolume]
-  );
-
-  const loadTrack = useCallback(
-    (track: Track) => {
-      const audio = audioRef.current;
-      if (!audio) return;
-
-      // Stop current fade
-      if (fadeFrameRef.current !== null) {
-        cancelAnimationFrame(fadeFrameRef.current);
-        fadeFrameRef.current = null;
-        isFadingRef.current = false;
-      }
-
-      audio.src = track.url;
-      audio.load();
-      setCurrentTrackId(track.id);
-      setCurrentTime(0);
-      setDuration(track.duration || 0);
-    },
-    []
-  );
-
-  const playTrack = useCallback(
-    (track?: Track) => {
-      const audio = audioRef.current;
-      if (!audio) return;
-
-      if (track && track.id !== currentTrackId) {
-        loadTrack(track);
-      }
-      ensureBroadcastRouting();
-
-      if (fadeEnabled && fadeDuration > 0) {
-        setOutputVolume(0);
-        audio.play().then(() => {
-          fadeAudio(0, targetVolumeRef.current, fadeDuration);
-        }).catch(() => {});
-      } else {
-        setOutputVolume(targetVolumeRef.current);
-        audio.play().catch(() => {});
-      }
-      setIsPlaying(true);
-    },
-    [currentTrackId, ensureBroadcastRouting, fadeEnabled, fadeDuration, loadTrack, fadeAudio, setOutputVolume]
-  );
-
-  const pauseTrack = useCallback(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    if (fadeEnabled && fadeDuration > 0) {
-      fadeAudio(getOutputVolume(), 0, fadeDuration, () => {
-        audio.pause();
-        setIsPlaying(false);
-      });
-    } else {
-      audio.pause();
-      setIsPlaying(false);
-    }
-  }, [fadeEnabled, fadeDuration, fadeAudio, getOutputVolume]);
-
-  const togglePlayPause = useCallback(() => {
-    if (isPlaying) {
-      pauseTrack();
-    } else {
-      const currentTrack = tracks.find((t) => t.id === currentTrackId);
-      if (currentTrack) {
-        playTrack();
-      } else if (tracks.length > 0) {
-        playTrack(tracks[0]);
-      }
-    }
-  }, [isPlaying, pauseTrack, playTrack, tracks, currentTrackId]);
-
-  const skipTrack = useCallback(
-    (direction: 1 | -1) => {
-      if (tracks.length === 0) return;
-      const idx = tracks.findIndex((t) => t.id === currentTrackId);
-      let nextIdx = idx + direction;
-      if (nextIdx < 0) nextIdx = tracks.length - 1;
-      if (nextIdx >= tracks.length) nextIdx = 0;
-      playTrack(tracks[nextIdx]);
-    },
-    [tracks, currentTrackId, playTrack]
-  );
-
-  const handleFileUpload = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
-      if (!files || files.length === 0) return;
-
-      Array.from(files).forEach((file) => {
-        if (!file.type.startsWith('audio/')) return;
-
-        const url = URL.createObjectURL(file);
-        const name = file.name.replace(/\.[^/.]+$/, '');
-        const id = `track-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-        // Get duration from a temporary audio element
-        const tempAudio = new Audio();
-        tempAudio.preload = 'metadata';
-        tempAudio.src = url;
-        tempAudio.addEventListener('loadedmetadata', () => {
-          setTracks((prev) => [
-            ...prev,
-            { id, name, url, duration: tempAudio.duration },
-          ]);
-        });
-        // Fallback if metadata doesn't load
-        tempAudio.addEventListener('error', () => {
-          setTracks((prev) => [...prev, { id, name, url, duration: 0 }]);
-        });
-      });
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    },
-    []
-  );
-
-  const removeTrack = useCallback(
-    (id: string) => {
-      const track = tracks.find((t) => t.id === id);
-      if (track) {
-        URL.revokeObjectURL(track.url);
-      }
-      if (id === currentTrackId) {
-        const audio = audioRef.current;
-        if (audio) {
-          audio.pause();
-          audio.src = '';
-        }
-        setIsPlaying(false);
-        setCurrentTrackId(null);
-        setCurrentTime(0);
-        setDuration(0);
-      }
-      setTracks((prev) => prev.filter((t) => t.id !== id));
-    },
-    [tracks, currentTrackId]
-  );
+  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) player.addFiles(Array.from(files));
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [player]);
 
   const formatTime = (seconds: number) => {
     if (!isFinite(seconds) || isNaN(seconds)) return '0:00';
@@ -345,18 +56,9 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
 
   const currentTrack = tracks.find((t) => t.id === currentTrackId);
 
-  const handleOverlayClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.target === e.currentTarget) {
-        onClose();
-      }
-    },
-    [onClose]
-  );
-
   return (
-    <div style={styles.overlay} onClick={handleOverlayClick}>
-      <div style={styles.panel}>
+    <div style={styles.overlay}>
+      <div style={styles.panel} role="dialog" aria-modal="false" aria-label="Background music">
         {/* Header */}
         <div style={styles.header}>
           <div style={styles.headerLeft}>
@@ -496,7 +198,7 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
               color: loop ? 'var(--accent)' : 'var(--text-muted)',
               background: loop ? 'var(--accent-subtle)' : 'transparent',
             }}
-            onClick={() => setLoop((l) => !l)}
+            onClick={() => player.setLoop(!loop)}
             title="Loop"
           >
             <svg
@@ -547,41 +249,39 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
             step="1"
             aria-label="Music volume"
             value={volume}
-            onChange={(e) => setVolume(parseInt(e.target.value, 10))}
+            onChange={(e) => player.setVolume(parseInt(e.target.value, 10))}
             style={styles.volumeSlider}
           />
           <span style={styles.volumeLabel}>{volume}%</span>
         </div>
 
-        {broadcastAudio && (
-          <div style={styles.routingSection}>
-            <span style={styles.sectionLabel}>Mix Routing</span>
-            <div style={styles.routingGrid}>
-              <label style={styles.routingOption}>
-                <span style={styles.routingLabel}>Stream</span>
-                <span style={styles.routingState}>{sendToStream ? 'On' : 'Off'}</span>
-                <input
-                  type="checkbox"
-                  checked={sendToStream}
-                  onChange={(e) => setSendToStream(e.target.checked)}
-                  style={styles.routingCheckbox}
-                  aria-label="Send background music to stream"
-                />
-              </label>
-              <label style={styles.routingOption}>
-                <span style={styles.routingLabel}>Monitor</span>
-                <span style={styles.routingState}>{monitorEnabled ? 'On' : 'Off'}</span>
-                <input
-                  type="checkbox"
-                  checked={monitorEnabled}
-                  onChange={(e) => setMonitorEnabled(e.target.checked)}
-                  style={styles.routingCheckbox}
-                  aria-label="Monitor background music locally"
-                />
-              </label>
-            </div>
+        <div style={styles.routingSection}>
+          <span style={styles.sectionLabel}>Mix Routing</span>
+          <div style={styles.routingGrid}>
+            <label style={styles.routingOption}>
+              <span style={styles.routingLabel}>Stream</span>
+              <span style={styles.routingState}>{sendToStream ? 'On' : 'Off'}</span>
+              <input
+                type="checkbox"
+                checked={sendToStream}
+                onChange={(e) => player.setSendToStream(e.target.checked)}
+                style={styles.routingCheckbox}
+                aria-label="Send background music to stream"
+              />
+            </label>
+            <label style={styles.routingOption}>
+              <span style={styles.routingLabel}>Monitor</span>
+              <span style={styles.routingState}>{monitorEnabled ? 'On' : 'Off'}</span>
+              <input
+                type="checkbox"
+                checked={monitorEnabled}
+                onChange={(e) => player.setMonitorEnabled(e.target.checked)}
+                style={styles.routingCheckbox}
+                aria-label="Monitor background music locally"
+              />
+            </label>
           </div>
-        )}
+        </div>
 
         {/* Fade Controls */}
         <div style={styles.fadeSection}>
@@ -593,7 +293,7 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
                 background: fadeEnabled ? 'var(--accent)' : 'var(--bg-tertiary)',
                 justifyContent: fadeEnabled ? 'flex-end' : 'flex-start',
               }}
-              onClick={() => setFadeEnabled((f) => !f)}
+              onClick={() => player.setFadeEnabled(!fadeEnabled)}
               title={fadeEnabled ? 'Disable fade' : 'Enable fade'}
             >
               <div style={styles.fadeToggleKnob} />
@@ -609,7 +309,7 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
                 step="0.1"
                 aria-label="Fade duration in seconds"
                 value={fadeDuration}
-                onChange={(e) => setFadeDuration(parseFloat(e.target.value))}
+                onChange={(e) => player.setFadeDuration(parseFloat(e.target.value))}
                 style={styles.volumeSlider}
               />
               <span style={styles.fadeValue}>{fadeDuration.toFixed(1)}s</span>
@@ -789,18 +489,18 @@ export function BackgroundMusic({ onClose, broadcastAudio }: BackgroundMusicProp
 const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: 'fixed',
-    inset: 0,
-    background: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-    backdropFilter: 'blur(4px)',
+    right: 16,
+    bottom: 88,
+    zIndex: 900,
+    pointerEvents: 'none',
+    maxWidth: 'calc(100vw - 32px)',
   },
   panel: {
-    width: 420,
-    maxWidth: '92vw',
-    maxHeight: '85vh',
+    pointerEvents: 'auto',
+    width: 380,
+    maxWidth: '100%',
+    maxHeight: 'calc(100vh - 140px)',
+    boxShadow: '0 18px 48px rgba(0,0,0,0.45)',
     overflowY: 'auto',
     background: 'var(--bg-secondary)',
     border: '1px solid var(--border)',

@@ -11,7 +11,7 @@ import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isP
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
-import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
@@ -38,6 +38,15 @@ import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
+import {
+  buildPeerLocalStream,
+  useMusicDucking,
+  useOutboundAudioMix,
+  useProgramAudioMix,
+  type ProgramAudioTrackLease,
+} from '../audio/useProgramAudioMix.ts';
+import { useBackgroundMusicPlayer } from '../audio/useBackgroundMusicPlayer.ts';
+import { useSoundBoardPlayer } from '../audio/useSoundBoardPlayer.ts';
 import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
 import { useMediaServerHealth } from '../hooks/useMediaServerHealth.ts';
 import { useIsPortraitPhone } from '../hooks/usePortraitPhone.ts';
@@ -154,7 +163,6 @@ import {
   buildRecordingReadinessSummary,
   type RecordingParticipantReadiness,
 } from '../utils/recordingReadiness.ts';
-import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
 import { buildLocalRecordingSources, buildParticipantRecordingSources } from '../utils/localRecordingSources.ts';
 import {
@@ -395,6 +403,8 @@ interface StageVideoItem {
   stream: MediaStream | null;
   isLocal: boolean;
   audioEnabled: boolean;
+  /** A remote camera/mic stream: keep it audible when their mic is muted (studio sounds ride on it). */
+  audibleWhileMuted?: boolean;
   videoEnabled: boolean;
   volume: number;
   isScreenShare?: boolean;
@@ -443,25 +453,10 @@ function getStudioStateKey(roomId: string): string {
   return `livestream-studio:room-state:${roomId}`;
 }
 
-type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
-
-interface ProgramRecordingAudioSource {
-  id?: string;
-  stream: MediaStream;
-  volume: number;
-}
-
 interface CreateProgramRecordingSourceOptions {
   compositeStream: MediaStream | null;
-  localStream: MediaStream | null;
-  localParticipant: Participant | null;
-  participants: Map<string, Participant>;
-  remoteStreams: Map<string, MediaStream>;
-  screenStream: MediaStream | null;
-  auxiliaryAudioStream: MediaStream | null;
-  participantVolumes: Record<string, number>;
-  participantAudioLevels: Record<string, number>;
-  audioDuckingEnabled: boolean;
+  /** Leases the studio's live program audio (the same mix the relay sends). */
+  acquireProgramAudio: () => ProgramAudioTrackLease | null;
 }
 
 interface CreateScreenPictureInPictureRecordingSourceOptions {
@@ -469,21 +464,6 @@ interface CreateScreenPictureInPictureRecordingSourceOptions {
   label: string;
   screenStream: MediaStream | null;
   cameraStream: MediaStream | null;
-}
-
-function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
-  const globalWithWebkit = globalThis as typeof globalThis & {
-    webkitAudioContext?: BrowserAudioContextConstructor;
-  };
-  return globalWithWebkit.AudioContext || globalWithWebkit.webkitAudioContext || null;
-}
-
-function createRecordingAudioContext(AudioContextConstructor: BrowserAudioContextConstructor): AudioContext {
-  try {
-    return new AudioContextConstructor({ sampleRate: 48_000 });
-  } catch {
-    return new AudioContextConstructor();
-  }
 }
 
 function createScreenPictureInPictureRecordingSource(
@@ -513,109 +493,18 @@ function createProgramRecordingSource(options: CreateProgramRecordingSourceOptio
   const videoTrack = options.compositeStream?.getVideoTracks().find((track) => track.readyState === 'live');
   if (!videoTrack) return null;
 
-  const AudioContextConstructor = getAudioContextConstructor();
-  if (!AudioContextConstructor) return null;
-
-  const audioContext = createRecordingAudioContext(AudioContextConstructor);
-  const destination = audioContext.createMediaStreamDestination();
-  const audioSources: ProgramRecordingAudioSource[] = [];
-  const participantIds: string[] = [];
-
-  if (options.localParticipant?.status === 'on-stage') {
-    participantIds.push(options.localParticipant.id);
-  }
-  for (const [id, participant] of options.participants) {
-    if (participant.status === 'on-stage') participantIds.push(id);
-  }
-
-  const programVolumes = getDuckedParticipantVolumes({
-    enabled: options.audioDuckingEnabled,
-    participantVolumes: options.participantVolumes,
-    participantAudioLevels: options.participantAudioLevels,
-    participantIds,
-  });
-
-  const localAudioTracks = options.localParticipant?.status === 'on-stage'
-    ? getLiveAudioTracks(options.localStream)
-    : [];
-  if (localAudioTracks.length > 0 && options.localParticipant) {
-    audioSources.push({
-      id: options.localParticipant.id,
-      stream: new MediaStream(localAudioTracks),
-      volume: programVolumes[options.localParticipant.id] ?? 1,
-    });
-  }
-
-  for (const [id, participant] of options.participants) {
-    if (participant.status !== 'on-stage') continue;
-    const audioTracks = getLiveAudioTracks(options.remoteStreams.get(id));
-    if (audioTracks.length > 0) {
-      audioSources.push({
-        id,
-        stream: new MediaStream(audioTracks),
-        volume: programVolumes[id] ?? 1,
-      });
-    }
-  }
-
-  const screenAudioTracks = getLiveAudioTracks(options.screenStream);
-  if (screenAudioTracks.length > 0) {
-    audioSources.push({ stream: new MediaStream(screenAudioTracks), volume: 1 });
-  }
-
-  const auxiliaryAudioTracks = getLiveAudioTracks(options.auxiliaryAudioStream);
-  if (auxiliaryAudioTracks.length > 0) {
-    audioSources.push({ stream: new MediaStream(auxiliaryAudioTracks), volume: 1 });
-  }
-
-  const sourceNodes: MediaStreamAudioSourceNode[] = [];
-  const gainNodes: GainNode[] = [];
-  let silentOscillator: OscillatorNode | null = null;
-
-  for (const source of audioSources) {
-    const sourceNode = audioContext.createMediaStreamSource(source.stream);
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = Math.min(1, Math.max(0, source.volume));
-    sourceNode.connect(gainNode);
-    gainNode.connect(destination);
-    sourceNodes.push(sourceNode);
-    gainNodes.push(gainNode);
-  }
-
-  if (audioSources.length === 0) {
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = 0;
-    oscillator.connect(gainNode);
-    gainNode.connect(destination);
-    oscillator.start();
-    silentOscillator = oscillator;
-    gainNodes.push(gainNode);
-  }
-
-  const audioTracks = destination.stream.getAudioTracks();
-  const stream = new MediaStream([videoTrack, ...audioTracks]);
-  let cleanedUp = false;
+  // One live graph feeds the relay and every program take: stage changes,
+  // mic switches, reconnects and volume moves reach the file while recording.
+  const programAudio = options.acquireProgramAudio();
+  if (!programAudio) return null;
 
   return {
     id: 'program-mix',
     label: 'Program mix',
     kind: 'program',
-    stream,
+    stream: new MediaStream([videoTrack, programAudio.track]),
     bitsPerSecond: 10_000_000,
-    cleanup: () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      try {
-        silentOscillator?.stop();
-      } catch {
-        // Already stopped.
-      }
-      sourceNodes.forEach((node) => node.disconnect());
-      gainNodes.forEach((node) => node.disconnect());
-      audioTracks.forEach((track) => track.stop());
-      void audioContext.close();
-    },
+    cleanup: programAudio.release,
   };
 }
 
@@ -1405,6 +1294,20 @@ export function StudioRoom() {
   const [sfuReconnectNonce, setSfuReconnectNonce] = useState(0);
   const sfuSessionRef = useRef<SfuSocketSession | null>(null);
 
+  // Guests hear the host's mic plus the media bus (effects, music, clips) once
+  // the bus is in use. The host's own isolated recording keeps the mic alone.
+  const outboundAudioTrack = useOutboundAudioMix({
+    bus: broadcastAudioBus,
+    micStream: localStream,
+    enabled: broadcastAudioBus.active,
+  });
+  const peerLocalStream = useMemo(
+    () => buildPeerLocalStream(localStream, outboundAudioTrack),
+    [localStream, outboundAudioTrack]
+  );
+  const peerAudioTrackRef = useRef<MediaStreamTrack | null>(null);
+  peerAudioTrackRef.current = peerLocalStream?.getAudioTracks()[0] ?? null;
+
   const {
     remoteStreams: meshRemoteStreams,
     remoteScreenStreams: meshRemoteScreenStreams,
@@ -1422,7 +1325,7 @@ export function StudioRoom() {
     setVideoForwardingEnabled,
     cleanup,
   } = useWebRTC({
-    localStream,
+    localStream: peerLocalStream,
     myParticipantId: myParticipant?.id || null,
     send,
   });
@@ -1433,16 +1336,14 @@ export function StudioRoom() {
       : meshRemoteStreams
   ), [meshRemoteStreams, sfuRemoteStreams, sfuTransportStatus]);
 
-  const broadcastRemoteStreams = useMemo(() => {
-    const streams = new Map<string, MediaStream>();
+  const onStageParticipantIds = useMemo(() => {
+    const ids: string[] = [];
+    if (myParticipant?.status === 'on-stage') ids.push(myParticipant.id);
     for (const [id, participant] of participants) {
-      const stream = remoteStreams.get(id);
-      if (participant.status === 'on-stage' && stream) {
-        streams.set(id, stream);
-      }
+      if (participant.status === 'on-stage' && id !== myParticipant?.id) ids.push(id);
     }
-    return streams;
-  }, [participants, remoteStreams]);
+    return ids;
+  }, [myParticipant?.id, myParticipant?.status, participants]);
 
   const {
     isRecording,
@@ -1459,6 +1360,17 @@ export function StudioRoom() {
     takeProgressiveUpload: takeProgramProgressiveUpload,
   } = useRecording(room?.name || 'Studio');
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
+  // One live program audio graph for the relay and the program recording.
+  const programAudioMix = useProgramAudioMix({
+    bus: broadcastAudioBus,
+    localParticipant: myParticipant,
+    localStream,
+    participants,
+    remoteStreams,
+    remoteScreenStreams: meshRemoteScreenStreams,
+    screenStream,
+    participantVolumes,
+  });
   const {
     isRecording: isLocalRecording,
     isPaused: isLocalRecordingPaused,
@@ -1841,19 +1753,25 @@ export function StudioRoom() {
     checkRelayReadiness,
   } = useRtmpRelay({
     compositeStreamRef,
-    localStream,
-    localParticipantId: myParticipant?.id || null,
-    remoteStreams: broadcastRemoteStreams,
-    screenStream,
-    auxiliaryAudioStream: broadcastAudioBus.stream,
-    ensureAuxiliaryAudioStream: broadcastAudioBus.ensureStream,
-    participantVolumes,
-    participantAudioLevels: stageAudioLevels,
-    audioDuckingEnabled,
+    acquireProgramAudio: programAudioMix.acquire,
     readinessEnabled: canUseOperatorControls,
     onDestinationStatus: handleRelayDestinationStatus,
     onRelayStopped: handleRelayStopped,
   });
+  // Auto ducking dips music and clips (not people) while anyone on stage talks.
+  useMusicDucking({
+    bus: broadcastAudioBus,
+    enabled: audioDuckingEnabled,
+    participantAudioLevels: stageAudioLevels,
+    onStageIds: onStageParticipantIds,
+  });
+  const backgroundMusicPlayer = useBackgroundMusicPlayer(broadcastAudioBus);
+  const backgroundMusicPlaying = useSyncExternalStore(
+    backgroundMusicPlayer.subscribe,
+    () => backgroundMusicPlayer.getSnapshot().isPlaying,
+    () => false
+  );
+  const soundBoardPlayer = useSoundBoardPlayer(broadcastAudioBus, { hotkeysEnabled: canUseOperatorControls });
 
   // Whether this studio is sending a broadcast (live, or reconnecting after a drop).
   const relayActiveRef = useRef(false);
@@ -2972,7 +2890,9 @@ export function StudioRoom() {
 
   // Keep active peer connections aligned when a device switch or fallback replaces tracks.
   useEffect(() => {
-    const audioTrack = localStream?.getAudioTracks()[0];
+    // Peers get the outbound mix (mic + studio sounds) when it exists; it is a
+    // stable track, so a mic switch only changes its input, not the sender.
+    const audioTrack = peerLocalStream?.getAudioTracks()[0];
     const videoTrack = localStream?.getVideoTracks()[0];
     const published = publishedTrackIdsRef.current;
 
@@ -2995,7 +2915,7 @@ export function StudioRoom() {
         sfuSessionRef.current?.setLocalVideoTrack(null);
       }
     }
-  }, [isScreenSharing, localStream, replaceTrack]);
+  }, [isScreenSharing, localStream, peerLocalStream, replaceTrack]);
 
   // Sync local tracks when remotely muted/unmuted
   useEffect(() => {
@@ -3085,11 +3005,12 @@ export function StudioRoom() {
   const keepRoomOpen = () => send({ type: 'cancel-end-room', payload: {} });
 
   const onAudioDeviceChange = async (id: string) => {
-    try { const t = await switchAudioDevice(id, audioProcessing); if (t) await replaceTrack(t); }
+    // With the outbound mix, peers keep its stable track; the mix swaps its mic input.
+    try { const t = await switchAudioDevice(id, audioProcessing); if (t && !outboundAudioTrack) await replaceTrack(t); }
     catch (err) { console.error('Failed to switch audio device:', err); }
   };
   const onAudioProcessingChange = async (next: AudioProcessingPreferences) => {
-    try { const t = await updateAudioProcessing(next); if (t) await replaceTrack(t); }
+    try { const t = await updateAudioProcessing(next); if (t && !outboundAudioTrack) await replaceTrack(t); }
     catch (err) { console.error('Failed to update audio processing:', err); }
   };
   const onVideoDeviceChange = async (id: string) => {
@@ -3394,15 +3315,7 @@ export function StudioRoom() {
         const streams = new Map<string, RecordingStreamInput>();
         const programSource = createProgramRecordingSource({
           compositeStream: compositeStreamRef.current,
-          localStream,
-          localParticipant: myParticipant,
-          participants,
-          remoteStreams,
-          screenStream,
-          auxiliaryAudioStream: broadcastAudioBus.ensureStream() ?? broadcastAudioBus.stream,
-          participantVolumes,
-          participantAudioLevels: stageAudioLevels,
-          audioDuckingEnabled,
+          acquireProgramAudio: programAudioMix.acquire,
         });
 
         if (programSource) {
@@ -3469,15 +3382,7 @@ export function StudioRoom() {
     if (!myParticipant || !canControlRecording || folderSaving || localRecordingFinalizing || programRecordingFinalizing || !recordingReadiness.canStart) return;
     const programSource = createProgramRecordingSource({
       compositeStream: compositeStreamRef.current,
-      localStream,
-      localParticipant: myParticipant,
-      participants,
-      remoteStreams,
-      screenStream,
-      auxiliaryAudioStream: broadcastAudioBus.ensureStream() ?? broadcastAudioBus.stream,
-      participantVolumes,
-      participantAudioLevels: stageAudioLevels,
-      audioDuckingEnabled,
+      acquireProgramAudio: programAudioMix.acquire,
     });
     const sources = buildLocalRecordingSources({
       localParticipant: myParticipant,
@@ -3497,20 +3402,17 @@ export function StudioRoom() {
     localRecordingFinalizing,
     folderSaving,
     programRecordingFinalizing,
-    audioDuckingEnabled,
-    broadcastAudioBus,
+    programAudioMix,
     canControlRecording,
     createScreenPictureInPictureRecordingSource,
     isScreenSharing,
     localStream,
     myParticipant,
-    participantVolumes,
     participants,
     recordingReadiness.canStart,
     remoteStreams,
     meshRemoteScreenStreams,
     screenStream,
-    stageAudioLevels,
     startLocalRecording,
   ]);
 
@@ -3864,7 +3766,7 @@ export function StudioRoom() {
       const iceConfiguration = await fetchIceConfig().catch(() => DEFAULT_ICE_CONFIG);
       if (cancelled) return;
       const localVideoTrack = publishedVideoTrackRef.current || localStreamRef.current?.getVideoTracks()[0] || null;
-      const localAudioTrack = localStreamRef.current?.getAudioTracks()[0] || null;
+      const localAudioTrack = peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null;
       let remoteMediaReady = false;
       let localPublishReady = localVideoTrack === null && localAudioTrack === null;
       const activateSfuMedia = () => {
@@ -5215,7 +5117,7 @@ export function StudioRoom() {
         // otherwise (SFU) the screen has replaced the camera.
         const separateScreen = p.screenSharing ? meshRemoteScreenStreams.get(id) || null : null;
         const screenReplacesCamera = Boolean(p.screenSharing) && !separateScreen;
-        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: screenReplacesCamera ? false : p.audioEnabled, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
+        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: screenReplacesCamera ? false : p.audioEnabled, audibleWhileMuted: !screenReplacesCamera, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
         if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: false, videoEnabled: true, volume: 1, isScreenShare: true });
       }
     }
@@ -5276,6 +5178,7 @@ export function StudioRoom() {
         stream: remoteStreams.get(id) || null,
         isLocal: false,
         audioEnabled: participant.screenSharing ? false : participant.audioEnabled,
+        audibleWhileMuted: !participant.screenSharing,
         videoEnabled: participant.videoEnabled || participant.screenSharing,
         volume: participantVolumes[id] ?? 1,
         isScreenShare: participant.screenSharing || false,
@@ -6590,6 +6493,7 @@ export function StudioRoom() {
                       name={item.name}
                       isLocal={item.isLocal}
                       audioEnabled={item.audioEnabled}
+                      audibleWhileMuted={item.audibleWhileMuted}
                       videoEnabled={item.videoEnabled}
                       volume={item.volume}
                       brandColor={brandColor}
@@ -6802,6 +6706,7 @@ export function StudioRoom() {
                           isLocal={item.isLocal}
                           isScreenShare={item.isScreenShare}
                           audioEnabled={item.audioEnabled}
+                          audibleWhileMuted={item.audibleWhileMuted}
                           videoEnabled={item.videoEnabled}
                           volume={item.volume}
                           brandColor={brandColor}
@@ -7374,6 +7279,7 @@ export function StudioRoom() {
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
         onOpenMediaPanel={() => { setShowSidebar(true); setSidebarActiveTab('media'); }}
         onOpenBackgroundMusic={() => toggleToolPanel('backgroundMusic')}
+        backgroundMusicPlaying={backgroundMusicPlaying}
         onOpenRecordingPanel={canControlRecording ? () => toggleToolPanel('recording') : undefined}
         onOpenProducerPanel={() => toggleToolPanel('producer')}
         onOpenWebinarQA={() => toggleToolPanel('webinarQA')}
@@ -7414,17 +7320,17 @@ export function StudioRoom() {
         <Suspense fallback={<LazyPanelFallback />}>
           <SoundBoard
             onClose={() => setShowSoundBoard(false)}
-            broadcastAudio={broadcastAudioBus}
+            player={soundBoardPlayer}
           />
         </Suspense>
       )}
 
-      {/* Background Music Modal */}
+      {/* Background Music dock (playback lives in StudioRoom) */}
       {showBackgroundMusic && (
         <Suspense fallback={<LazyPanelFallback />}>
           <BackgroundMusic
             onClose={() => setShowBackgroundMusic(false)}
-            broadcastAudio={broadcastAudioBus}
+            player={backgroundMusicPlayer}
           />
         </Suspense>
       )}
@@ -7615,6 +7521,7 @@ function BackstagePrivateRoom({
                 isLocal={item.isLocal}
                 isScreenShare={item.isScreenShare}
                 audioEnabled={item.audioEnabled}
+                audibleWhileMuted={item.audibleWhileMuted}
                 videoEnabled={item.videoEnabled}
                 volume={item.volume}
                 brandColor={brandColor}

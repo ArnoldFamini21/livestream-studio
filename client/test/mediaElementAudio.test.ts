@@ -33,7 +33,7 @@ describe('shared clip audio routing', () => {
     const route = connectMediaElementAudio({} as HTMLMediaElement, bus);
     await route.resume();
     await route.resume();
-    assert.deepEqual(routes, [{ stream: true, monitor: true }]);
+    assert.deepEqual(routes, [{ stream: true, monitor: true, duck: true }]);
     assert.deepEqual(counts(), { sourceCount: 1, activeRoutes: 1, resumed: 1 });
     route.disconnect();
     route.disconnect();

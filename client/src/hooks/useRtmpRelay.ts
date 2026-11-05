@@ -25,8 +25,7 @@ import {
   RTMP_RELAY_AUDIO_BITS_PER_SECOND,
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
-import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
-import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
+import type { ProgramAudioTrackLease } from '../audio/useProgramAudioMix.ts';
 import { reportClientError } from '../utils/clientErrorReporter.ts';
 import {
   isRelayOperationCancelled,
@@ -38,15 +37,12 @@ import {
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
-  localStream: MediaStream | null;
-  localParticipantId?: string | null;
-  remoteStreams: Map<string, MediaStream>;
-  screenStream: MediaStream | null;
-  auxiliaryAudioStream?: MediaStream | null;
-  ensureAuxiliaryAudioStream?: () => MediaStream | null;
-  participantVolumes?: Record<string, number>;
-  participantAudioLevels?: Record<string, number>;
-  audioDuckingEnabled?: boolean;
+  /**
+   * Leases the studio's live program audio track (one dynamic mix shared with
+   * the program recording). Each relay connection, reconnects included, takes
+   * a fresh lease, so it always carries the current stage audio.
+   */
+  acquireProgramAudio: () => ProgramAudioTrackLease | null;
   readinessEnabled?: boolean;
   onDestinationStatus: (destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => void;
   onRelayStopped?: (message: string) => void;
@@ -61,13 +57,9 @@ interface StartRelayOptions {
 }
 
 interface MixerResources {
-  audioContext: AudioContext;
   stream: MediaStream;
   videoResources: RelayVideoResources;
-  sources: MediaStreamAudioSourceNode[];
-  gains: GainNode[];
-  participantGains: Map<string, GainNode>;
-  silentOscillator?: OscillatorNode;
+  programAudio: ProgramAudioTrackLease | null;
 }
 
 interface RelayVideoResources {
@@ -140,11 +132,6 @@ const INITIAL_RELAY_READINESS: RtmpRelayReadiness = {
   checkedAt: null,
 };
 
-function clampVolume(volume: number | undefined): number {
-  if (!Number.isFinite(volume)) return 1;
-  return Math.min(1, Math.max(0, volume ?? 1));
-}
-
 function getMediaWsUrl(): string {
   return resolveMediaWsUrl();
 }
@@ -199,42 +186,6 @@ function probeRelayWebSocket(mediaWsUrl: string): Promise<void> {
     ws.onerror = () => finish(new Error('Unable to reach the media relay server.'));
     ws.onclose = () => finish(new Error('Media relay connection closed before it was ready.'));
   });
-}
-
-function collectAudioSources(
-  localStream: MediaStream | null,
-  localParticipantId: string | null | undefined,
-  remoteStreams: Map<string, MediaStream>,
-  screenStream: MediaStream | null,
-  auxiliaryAudioStream: MediaStream | null | undefined,
-  participantVolumes: Record<string, number>
-): Array<{ stream: MediaStream; volume: number; participantId?: string }> {
-  const sources: Array<{ stream: MediaStream; volume: number; participantId?: string }> = [];
-  const localAudioTracks = getLiveAudioTracks(localStream);
-  if (localAudioTracks.length > 0) {
-    sources.push({
-      stream: new MediaStream(localAudioTracks),
-      volume: localParticipantId ? clampVolume(participantVolumes[localParticipantId]) : 1,
-      participantId: localParticipantId || undefined,
-    });
-  }
-  for (const [participantId, stream] of remoteStreams) {
-    const audioTracks = getLiveAudioTracks(stream);
-    if (audioTracks.length > 0) {
-      sources.push({
-        stream: new MediaStream(audioTracks),
-        volume: clampVolume(participantVolumes[participantId]),
-        participantId,
-      });
-    }
-  }
-  const screenAudioTracks = getLiveAudioTracks(screenStream);
-  if (screenAudioTracks.length > 0) sources.push({ stream: new MediaStream(screenAudioTracks), volume: 1 });
-  const auxiliaryAudioTracks = getLiveAudioTracks(auxiliaryAudioStream);
-  if (auxiliaryAudioTracks.length > 0) {
-    sources.push({ stream: new MediaStream(auxiliaryAudioTracks), volume: 1 });
-  }
-  return sources;
 }
 
 function drawVideoCover(
@@ -330,12 +281,7 @@ async function createRelayVideoStream(
 async function createMixedBroadcastStream(
   compositeStream: MediaStream,
   videoConfig: RtmpRelayVideoConfig,
-  localStream: MediaStream | null,
-  localParticipantId: string | null | undefined,
-  remoteStreams: Map<string, MediaStream>,
-  screenStream: MediaStream | null,
-  auxiliaryAudioStream: MediaStream | null | undefined,
-  participantVolumes: Record<string, number>
+  acquireProgramAudio: () => ProgramAudioTrackLease | null
 ): Promise<MixerResources> {
   const videoResources = await createRelayVideoStream(compositeStream, videoConfig);
   const videoTrack = videoResources.stream.getVideoTracks()[0];
@@ -343,80 +289,28 @@ async function createMixedBroadcastStream(
     throw new Error('The composited studio video stream is not ready.');
   }
 
-  const AudioContextConstructor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextConstructor) {
+  // A clone of the studio's live program mix: its inputs follow the stage
+  // while the relay runs (late guests, mic switches, reconnects), so nothing
+  // is snapshotted here.
+  const programAudio = acquireProgramAudio();
+  if (!programAudio) {
+    videoResources.cleanup();
     throw new Error('Web Audio is not available in this browser.');
   }
 
-  const audioContext = new AudioContextConstructor({ sampleRate: RELAY_AUDIO.sampleRate });
-  const destination = audioContext.createMediaStreamDestination();
-  const sources: MediaStreamAudioSourceNode[] = [];
-  const gains: GainNode[] = [];
-  const participantGains = new Map<string, GainNode>();
-  const audioSources = collectAudioSources(
-    localStream,
-    localParticipantId,
-    remoteStreams,
-    screenStream,
-    auxiliaryAudioStream,
-    participantVolumes
-  );
-
-  for (const audioSource of audioSources) {
-    const source = audioContext.createMediaStreamSource(audioSource.stream);
-    const gain = audioContext.createGain();
-    gain.gain.value = audioSource.volume;
-    source.connect(gain);
-    gain.connect(destination);
-    sources.push(source);
-    gains.push(gain);
-    if (audioSource.participantId) participantGains.set(audioSource.participantId, gain);
-  }
-
-  let silentOscillator: OscillatorNode | undefined;
-  if (sources.length === 0) {
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    gain.gain.value = 0;
-    oscillator.connect(gain);
-    gain.connect(destination);
-    oscillator.start();
-    silentOscillator = oscillator;
-  }
-
-  const mixedStream = new MediaStream([
-    videoTrack,
-    ...destination.stream.getAudioTracks(),
-  ]);
-
-  return { audioContext, stream: mixedStream, videoResources, sources, gains, participantGains, silentOscillator };
+  const mixedStream = new MediaStream([videoTrack, programAudio.track]);
+  return { stream: mixedStream, videoResources, programAudio };
 }
 
 function cleanupMixer(mixer: MixerResources | null) {
   if (!mixer) return;
-  try {
-    mixer.silentOscillator?.stop();
-  } catch {
-    // Already stopped.
-  }
-  mixer.stream.getAudioTracks().forEach((track) => track.stop());
+  mixer.programAudio?.release();
   mixer.videoResources.cleanup();
-  mixer.sources.forEach((source) => source.disconnect());
-  mixer.gains.forEach((gain) => gain.disconnect());
-  void mixer.audioContext.close();
 }
 
 export function useRtmpRelay({
   compositeStreamRef,
-  localStream,
-  localParticipantId,
-  remoteStreams,
-  screenStream,
-  auxiliaryAudioStream,
-  ensureAuxiliaryAudioStream,
-  participantVolumes = {},
-  participantAudioLevels = {},
-  audioDuckingEnabled = false,
+  acquireProgramAudio,
   readinessEnabled = true,
   onDestinationStatus,
   onRelayStopped,
@@ -703,25 +597,10 @@ export function useRtmpRelay({
           throw new Error('The composited studio stream is not ready.');
         }
 
-        const initialParticipantVolumes = getDuckedParticipantVolumes({
-          enabled: audioDuckingEnabled,
-          participantVolumes,
-          participantAudioLevels,
-          participantIds: [
-            ...(localParticipantId ? [localParticipantId] : []),
-            ...remoteStreams.keys(),
-          ],
-        });
-        const currentAuxiliaryAudioStream = ensureAuxiliaryAudioStream?.() ?? auxiliaryAudioStream ?? null;
         const mixer = await operation.run(() => createMixedBroadcastStream(
           currentCompositeStream,
           videoConfig,
-          localStream,
-          localParticipantId,
-          remoteStreams,
-          screenStream,
-          currentAuxiliaryAudioStream,
-          initialParticipantVolumes
+          acquireProgramAudio
         ), cleanupMixer);
         if (!operation.active) {
           cleanupMixer(mixer);
@@ -1003,7 +882,7 @@ export function useRtmpRelay({
         throw error;
       }
     },
-    [audioDuckingEnabled, auxiliaryAudioStream, cleanup, clearReconnectTimer, compositeStreamRef, ensureAuxiliaryAudioStream, localParticipantId, localStream, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, participantAudioLevels, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
+    [acquireProgramAudio, cleanup, clearReconnectTimer, compositeStreamRef, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, resetStats, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
   );
 
   useEffect(() => {
@@ -1011,24 +890,6 @@ export function useRtmpRelay({
     if (wsRef.current || stats.status !== 'idle') return;
     void checkRelayReadiness();
   }, [checkRelayReadiness, readinessEnabled, stats.status]);
-
-  useEffect(() => {
-    const mixer = mixerRef.current;
-    if (!mixer) return;
-    const effectiveVolumes = getDuckedParticipantVolumes({
-      enabled: audioDuckingEnabled,
-      participantVolumes,
-      participantAudioLevels,
-      participantIds: mixer.participantGains.keys(),
-    });
-    for (const [participantId, gain] of mixer.participantGains) {
-      gain.gain.setTargetAtTime(
-        clampVolume(effectiveVolumes[participantId]),
-        mixer.audioContext.currentTime,
-        0.08
-      );
-    }
-  }, [audioDuckingEnabled, participantAudioLevels, participantVolumes]);
 
   useEffect(() => {
     if (stats.status === 'idle') return;

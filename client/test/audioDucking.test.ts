@@ -1,59 +1,35 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  AUDIO_DUCKING_ATTENUATION,
-  getAudioDuckingSpeakerId,
-  getDuckedParticipantVolumes,
+  AUDIO_DUCKING_TRIGGER_LEVEL,
+  INITIAL_MUSIC_DUCKING_STATE,
+  MUSIC_DUCKING_HOLD_MS,
+  getMusicDuckingReleaseDelay,
+  isSpeechPresent,
+  nextMusicDuckingState,
 } from '../src/utils/audioDucking.ts';
 
-describe('audio ducking policy', () => {
-  it('selects a dominant speaker above the trigger threshold', () => {
-    assert.equal(
-      getAudioDuckingSpeakerId({
-        participantAudioLevels: { host: 12, guest: 34, producer: 7 },
-      }),
-      'guest'
-    );
+describe('music ducking policy', () => {
+  it('detects speech from anyone on stage, ignoring people off stage', () => {
+    const levels = { host: 4, guest: AUDIO_DUCKING_TRIGGER_LEVEL + 10, backstage: 80 };
+    assert.equal(isSpeechPresent(levels, ['host', 'guest']), true);
+    assert.equal(isSpeechPresent(levels, ['host']), false);
+    assert.equal(isSpeechPresent({ host: Number.NaN }, ['host']), false);
   });
 
-  it('does not duck when speakers are too close in level', () => {
-    assert.equal(
-      getAudioDuckingSpeakerId({
-        participantAudioLevels: { host: 31, guest: 29, producer: 4 },
-      }),
-      null
-    );
+  it('ducks on speech, holds between words, then releases', () => {
+    let state = nextMusicDuckingState(INITIAL_MUSIC_DUCKING_STATE, { enabled: true, speaking: true, now: 1_000 });
+    assert.equal(state.ducked, true);
+    state = nextMusicDuckingState(state, { enabled: true, speaking: false, now: 1_000 + MUSIC_DUCKING_HOLD_MS / 2 });
+    assert.equal(state.ducked, true);
+    assert.equal(getMusicDuckingReleaseDelay(state, 1_000 + MUSIC_DUCKING_HOLD_MS / 2), MUSIC_DUCKING_HOLD_MS / 2);
+    state = nextMusicDuckingState(state, { enabled: true, speaking: false, now: 1_000 + MUSIC_DUCKING_HOLD_MS });
+    assert.equal(state.ducked, false);
+    assert.equal(getMusicDuckingReleaseDelay(state, 5_000), null);
   });
 
-  it('keeps base volumes when disabled or below threshold', () => {
-    assert.deepEqual(
-      getDuckedParticipantVolumes({
-        enabled: false,
-        participantVolumes: { host: 0.8, guest: 0.6 },
-        participantAudioLevels: { host: 42, guest: 3 },
-      }),
-      { host: 0.8, guest: 0.6 }
-    );
-
-    assert.deepEqual(
-      getDuckedParticipantVolumes({
-        enabled: true,
-        participantVolumes: { host: 0.8, guest: 0.6 },
-        participantAudioLevels: { host: 12, guest: 3 },
-      }),
-      { host: 0.8, guest: 0.6 }
-    );
-  });
-
-  it('attenuates non-speaking participants while preserving manual mix levels', () => {
-    const volumes = getDuckedParticipantVolumes({
-      enabled: true,
-      participantVolumes: { host: 0.9, guest: 0.5, producer: 0 },
-      participantAudioLevels: { host: 46, guest: 8, producer: 2 },
-    });
-
-    assert.equal(volumes.host, 0.9);
-    assert.equal(volumes.guest, Math.round(0.5 * AUDIO_DUCKING_ATTENUATION * 1000) / 1000);
-    assert.equal(volumes.producer, 0);
+  it('never ducks while disabled', () => {
+    const ducked = nextMusicDuckingState(INITIAL_MUSIC_DUCKING_STATE, { enabled: true, speaking: true, now: 0 });
+    assert.deepEqual(nextMusicDuckingState(ducked, { enabled: false, speaking: true, now: 10 }), INITIAL_MUSIC_DUCKING_STATE);
   });
 });

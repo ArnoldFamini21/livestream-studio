@@ -1,495 +1,71 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
-import type { BroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { SoundBoardPlayer } from '../audio/soundBoardPlayer.ts';
+import { listSoundPads } from '../audio/soundBoardPlayer.ts';
+import { useSoundBoardState } from '../audio/useSoundBoardPlayer.ts';
+import { shouldIgnoreShortcutTarget } from '../utils/keyboardShortcuts.ts';
+import { MAX_CUSTOM_SOUND_BYTES, MAX_CUSTOM_SOUND_SECONDS } from '../utils/soundBoard.ts';
 
 interface SoundBoardProps {
   onClose: () => void;
-  broadcastAudio?: BroadcastAudioBus;
+  /** The studio-level player: sounds keep playing when this panel closes. */
+  player: SoundBoardPlayer;
 }
 
-interface SoundEffect {
-  id: string;
-  name: string;
-  icon: string;
-  color: string;
-  play: (ctx: AudioContext, masterGain: GainNode) => void;
-}
-
-// ---------------------------------------------------------------------------
-// Synthesised sound effects using Web Audio API
-// ---------------------------------------------------------------------------
-
-function playApplause(ctx: AudioContext, masterGain: GainNode) {
-  const duration = 2.0;
-  const bufferSize = ctx.sampleRate * duration;
-  const buffer = ctx.createBuffer(2, bufferSize, ctx.sampleRate);
-
-  for (let ch = 0; ch < 2; ch++) {
-    const data = buffer.getChannelData(ch);
-    for (let i = 0; i < bufferSize; i++) {
-      const t = i / ctx.sampleRate;
-      // Envelope: ramp up then fade
-      const env = Math.min(t / 0.15, 1) * Math.exp(-t / 1.4);
-      // Shaped noise with random crackle bursts
-      const crackle = Math.random() > 0.97 ? 2.5 : 1;
-      data[i] = (Math.random() * 2 - 1) * env * 0.5 * crackle;
-    }
-  }
-
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-
-  // Band-pass to simulate clapping frequency
-  const bp = ctx.createBiquadFilter();
-  bp.type = 'bandpass';
-  bp.frequency.value = 2200;
-  bp.Q.value = 0.6;
-
-  src.connect(bp);
-  bp.connect(masterGain);
-  src.start();
-}
-
-function playDrumRoll(ctx: AudioContext, masterGain: GainNode) {
-  const duration = 1.5;
-  const hits = 30;
-  for (let i = 0; i < hits; i++) {
-    const t = (i / hits) * duration;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.value = 120 + Math.random() * 20;
-    gain.gain.setValueAtTime(0.35, ctx.currentTime + t);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.06);
-    osc.connect(gain);
-    gain.connect(masterGain);
-    osc.start(ctx.currentTime + t);
-    osc.stop(ctx.currentTime + t + 0.06);
-  }
-  // Final crash
-  const noise = ctx.createBufferSource();
-  const buf = ctx.createBuffer(1, ctx.sampleRate * 0.4, ctx.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < data.length; i++) {
-    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.12));
-  }
-  noise.buffer = buf;
-  const ng = ctx.createGain();
-  ng.gain.setValueAtTime(0.4, ctx.currentTime + duration);
-  ng.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration + 0.4);
-  noise.connect(ng);
-  ng.connect(masterGain);
-  noise.start(ctx.currentTime + duration);
-}
-
-function playAirHorn(ctx: AudioContext, masterGain: GainNode) {
-  const osc1 = ctx.createOscillator();
-  const osc2 = ctx.createOscillator();
-  const gain = ctx.createGain();
-
-  osc1.type = 'sawtooth';
-  osc2.type = 'sawtooth';
-
-  osc1.frequency.setValueAtTime(300, ctx.currentTime);
-  osc1.frequency.linearRampToValueAtTime(580, ctx.currentTime + 0.08);
-  osc1.frequency.setValueAtTime(580, ctx.currentTime + 0.08);
-  osc1.frequency.linearRampToValueAtTime(560, ctx.currentTime + 1.2);
-
-  osc2.frequency.setValueAtTime(302, ctx.currentTime);
-  osc2.frequency.linearRampToValueAtTime(584, ctx.currentTime + 0.08);
-  osc2.frequency.setValueAtTime(584, ctx.currentTime + 0.08);
-  osc2.frequency.linearRampToValueAtTime(564, ctx.currentTime + 1.2);
-
-  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.05);
-  gain.gain.setValueAtTime(0.3, ctx.currentTime + 0.9);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
-
-  const dist = ctx.createWaveShaper();
-  const curve = new Float32Array(256);
-  for (let i = 0; i < 256; i++) {
-    const x = (i * 2) / 256 - 1;
-    curve[i] = Math.tanh(x * 2);
-  }
-  dist.curve = curve;
-
-  osc1.connect(dist);
-  osc2.connect(dist);
-  dist.connect(gain);
-  gain.connect(masterGain);
-
-  osc1.start();
-  osc2.start();
-  osc1.stop(ctx.currentTime + 1.3);
-  osc2.stop(ctx.currentTime + 1.3);
-}
-
-function playRimShot(ctx: AudioContext, masterGain: GainNode) {
-  const now = ctx.currentTime;
-
-  // "Ba"
-  const bass1 = ctx.createOscillator();
-  const g1 = ctx.createGain();
-  bass1.frequency.setValueAtTime(180, now);
-  bass1.frequency.exponentialRampToValueAtTime(80, now + 0.12);
-  g1.gain.setValueAtTime(0.4, now);
-  g1.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-  bass1.connect(g1);
-  g1.connect(masterGain);
-  bass1.start(now);
-  bass1.stop(now + 0.15);
-
-  // "dum"
-  const bass2 = ctx.createOscillator();
-  const g2 = ctx.createGain();
-  bass2.frequency.setValueAtTime(160, now + 0.25);
-  bass2.frequency.exponentialRampToValueAtTime(70, now + 0.37);
-  g2.gain.setValueAtTime(0.4, now + 0.25);
-  g2.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-  bass2.connect(g2);
-  g2.connect(masterGain);
-  bass2.start(now + 0.25);
-  bass2.stop(now + 0.4);
-
-  // "tss" (hi-hat)
-  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.15, ctx.sampleRate);
-  const noiseData = noiseBuf.getChannelData(0);
-  for (let i = 0; i < noiseData.length; i++) {
-    noiseData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.04));
-  }
-  const noiseSrc = ctx.createBufferSource();
-  noiseSrc.buffer = noiseBuf;
-  const hp = ctx.createBiquadFilter();
-  hp.type = 'highpass';
-  hp.frequency.value = 7000;
-  const g3 = ctx.createGain();
-  g3.gain.setValueAtTime(0.5, now + 0.5);
-  g3.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
-  noiseSrc.connect(hp);
-  hp.connect(g3);
-  g3.connect(masterGain);
-  noiseSrc.start(now + 0.5);
-}
-
-function playCrickets(ctx: AudioContext, masterGain: GainNode) {
-  const duration = 2.0;
-  // Multiple chirps
-  for (let c = 0; c < 6; c++) {
-    const startTime = ctx.currentTime + c * 0.3 + Math.random() * 0.05;
-    const chirpDur = 0.12 + Math.random() * 0.05;
-
-    const osc = ctx.createOscillator();
-    const modOsc = ctx.createOscillator();
-    const modGain = ctx.createGain();
-    const envGain = ctx.createGain();
-
-    osc.type = 'sine';
-    osc.frequency.value = 4200 + Math.random() * 600;
-
-    modOsc.type = 'sine';
-    modOsc.frequency.value = 55 + Math.random() * 15;
-    modGain.gain.value = 1800;
-
-    modOsc.connect(modGain);
-    modGain.connect(osc.frequency);
-
-    envGain.gain.setValueAtTime(0.0001, startTime);
-    envGain.gain.exponentialRampToValueAtTime(0.15, startTime + 0.005);
-    envGain.gain.setValueAtTime(0.15, startTime + chirpDur * 0.7);
-    envGain.gain.exponentialRampToValueAtTime(0.0001, startTime + chirpDur);
-
-    osc.connect(envGain);
-    envGain.connect(masterGain);
-
-    osc.start(startTime);
-    osc.stop(startTime + chirpDur + 0.01);
-    modOsc.start(startTime);
-    modOsc.stop(startTime + chirpDur + 0.01);
-  }
-
-  // Fade envelope for the whole thing
-  const envAll = ctx.createGain();
-  envAll.gain.setValueAtTime(1, ctx.currentTime);
-  envAll.gain.setValueAtTime(1, ctx.currentTime + duration * 0.7);
-  envAll.gain.linearRampToValueAtTime(0, ctx.currentTime + duration);
-}
-
-function playSadTrombone(ctx: AudioContext, masterGain: GainNode) {
-  const notes = [
-    { freq: 370, start: 0, dur: 0.35 },
-    { freq: 349, start: 0.35, dur: 0.35 },
-    { freq: 330, start: 0.7, dur: 0.35 },
-    { freq: 311, start: 1.05, dur: 0.7 },
-  ];
-
-  for (const note of notes) {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const vibrato = ctx.createOscillator();
-    const vibGain = ctx.createGain();
-
-    osc.type = 'sawtooth';
-    osc.frequency.value = note.freq;
-
-    // Add vibrato on last note
-    vibrato.frequency.value = 5;
-    vibGain.gain.value = note === notes[notes.length - 1] ? 8 : 2;
-    vibrato.connect(vibGain);
-    vibGain.connect(osc.frequency);
-
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime + note.start);
-    gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + note.start + 0.04);
-    gain.gain.setValueAtTime(0.15, ctx.currentTime + note.start + note.dur * 0.6);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + note.start + note.dur);
-
-    // Low pass for trombone tone
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = 1200;
-
-    osc.connect(lp);
-    lp.connect(gain);
-    gain.connect(masterGain);
-
-    osc.start(ctx.currentTime + note.start);
-    osc.stop(ctx.currentTime + note.start + note.dur + 0.05);
-    vibrato.start(ctx.currentTime + note.start);
-    vibrato.stop(ctx.currentTime + note.start + note.dur + 0.05);
-  }
-}
-
-function playDing(ctx: AudioContext, masterGain: GainNode) {
-  const freqs = [880, 1760, 2640];
-
-  for (const freq of freqs) {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.type = 'sine';
-    osc.frequency.value = freq;
-
-    const amp = freq === 880 ? 0.3 : freq === 1760 ? 0.15 : 0.08;
-    gain.gain.setValueAtTime(amp, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
-
-    osc.connect(gain);
-    gain.connect(masterGain);
-    osc.start();
-    osc.stop(ctx.currentTime + 1.6);
-  }
-}
-
-function playWhoosh(ctx: AudioContext, masterGain: GainNode) {
-  const duration = 0.6;
-  const bufferSize = ctx.sampleRate * duration;
-  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = Math.random() * 2 - 1;
-  }
-
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-
-  const bp = ctx.createBiquadFilter();
-  bp.type = 'bandpass';
-  bp.Q.value = 3;
-  bp.frequency.setValueAtTime(200, ctx.currentTime);
-  bp.frequency.exponentialRampToValueAtTime(4000, ctx.currentTime + duration * 0.4);
-  bp.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + duration);
-
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.5, ctx.currentTime + duration * 0.25);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-
-  src.connect(bp);
-  bp.connect(gain);
-  gain.connect(masterGain);
-  src.start();
-}
-
-// ---------------------------------------------------------------------------
-// Effects list
-// ---------------------------------------------------------------------------
-
-const effects: SoundEffect[] = [
-  { id: 'applause', name: 'Applause', icon: '\uD83D\uDC4F', color: '#f59e0b', play: playApplause },
-  { id: 'drumroll', name: 'Drum Roll', icon: '\uD83E\uDD41', color: '#ef4444', play: playDrumRoll },
-  { id: 'airhorn', name: 'Air Horn', icon: '\uD83D\uDCE2', color: '#f97316', play: playAirHorn },
-  { id: 'rimshot', name: 'Ba-dum-tss', icon: '\uD83E\uDD39', color: '#8b5cf6', play: playRimShot },
-  { id: 'crickets', name: 'Crickets', icon: '\uD83E\uDDA0', color: '#22c55e', play: playCrickets },
-  { id: 'sadtrombone', name: 'Sad Trombone', icon: '\uD83C\uDFBA', color: '#3b82f6', play: playSadTrombone },
-  { id: 'ding', name: 'Ding', icon: '\uD83D\uDD14', color: '#eab308', play: playDing },
-  { id: 'whoosh', name: 'Whoosh', icon: '\uD83D\uDCA8', color: '#06b6d4', play: playWhoosh },
-];
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
-interface CustomSound {
-  id: string;
-  name: string;
-  buffer: AudioBuffer;
-}
-
-export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
-  const [volume, setVolume] = useState(0.7);
-  const [sendToStream, setSendToStream] = useState(true);
-  const [monitorEnabled, setMonitorEnabled] = useState(true);
-  const [playingId, setPlayingId] = useState<string | null>(null);
-  const [customSounds, setCustomSounds] = useState<CustomSound[]>([]);
-  const [showUpload, setShowUpload] = useState(false);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const masterGainRef = useRef<GainNode | null>(null);
-  const cleanupMasterGainRef = useRef<(() => void) | null>(null);
-  const ownsAudioContextRef = useRef(false);
+/**
+ * Sound board controls, docked beside the stage so the host can keep
+ * producing while it is open. Pads play through the studio's media bus (the
+ * stream, the program recording and guests all hear them).
+ */
+export function SoundBoard({ onClose, player }: SoundBoardProps) {
+  const state = useSoundBoardState(player);
+  const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pads = listSoundPads(state.customSounds);
+  const builtInPads = pads.filter((pad) => pad.kind === 'built-in');
+  const customPads = pads.filter((pad) => pad.kind === 'custom');
 
-  // Close AudioContext on unmount
   useEffect(() => {
-    return () => {
-      cleanupMasterGainRef.current?.();
-      cleanupMasterGainRef.current = null;
-      if (ownsAudioContextRef.current) {
-        audioCtxRef.current?.close().catch(() => {});
-      }
-      audioCtxRef.current = null;
-      masterGainRef.current = null;
-    };
-  }, []);
+    void player.loadLibrary();
+  }, [player]);
 
-  // Escape key to close
+  // Escape closes the dock (sounds keep playing) unless the host is typing.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
+      if (e.key === 'Escape' && !shouldIgnoreShortcutTarget(e.target as HTMLElement | null)) onClose();
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  const connectMasterGain = useCallback((gain: GainNode) => {
-    if (!broadcastAudio) return;
-    cleanupMasterGainRef.current?.();
-    cleanupMasterGainRef.current = broadcastAudio.connectNode(gain, {
-      stream: sendToStream,
-      monitor: monitorEnabled,
-    });
-  }, [broadcastAudio, monitorEnabled, sendToStream]);
-
-  useEffect(() => {
-    if (!broadcastAudio || !masterGainRef.current || ownsAudioContextRef.current) return;
-    connectMasterGain(masterGainRef.current);
-  }, [broadcastAudio, connectMasterGain]);
-
-  const getAudioContext = useCallback(() => {
-    if (broadcastAudio) {
-      const ctx = broadcastAudio.getContext();
-      if (ctx.state === 'suspended') {
-        void ctx.resume();
-      }
-
-      if (audioCtxRef.current !== ctx || !masterGainRef.current) {
-        cleanupMasterGainRef.current?.();
-        cleanupMasterGainRef.current = null;
-        audioCtxRef.current = ctx;
-        ownsAudioContextRef.current = false;
-        masterGainRef.current = ctx.createGain();
-        masterGainRef.current.gain.value = volume;
-        connectMasterGain(masterGainRef.current);
-      }
-
-      masterGainRef.current.gain.value = volume;
-      return { ctx, masterGain: masterGainRef.current };
-    }
-
-    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-      audioCtxRef.current = new AudioContext();
-      masterGainRef.current = audioCtxRef.current.createGain();
-      masterGainRef.current.gain.value = volume;
-      masterGainRef.current.connect(audioCtxRef.current.destination);
-      cleanupMasterGainRef.current = () => {
-        try {
-          masterGainRef.current?.disconnect();
-        } catch {
-          // Already disconnected.
-        }
-      };
-      ownsAudioContextRef.current = true;
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume();
-    }
-    masterGainRef.current!.gain.value = volume;
-    return { ctx: audioCtxRef.current, masterGain: masterGainRef.current! };
-  }, [broadcastAudio, connectMasterGain, volume]);
-
-  const handlePlay = useCallback((effect: SoundEffect) => {
-    const { ctx, masterGain } = getAudioContext();
-    setPlayingId(effect.id);
-    effect.play(ctx, masterGain);
-    setTimeout(() => setPlayingId(null), 300);
-  }, [getAudioContext]);
-
-  const handlePlayCustom = useCallback((sound: CustomSound) => {
-    const { ctx, masterGain } = getAudioContext();
-    setPlayingId(sound.id);
-    const src = ctx.createBufferSource();
-    src.buffer = sound.buffer;
-    src.connect(masterGain);
-    src.start();
-    setTimeout(() => setPlayingId(null), 300);
-  }, [getAudioContext]);
-
-  const handleVolumeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseFloat(e.target.value);
-    setVolume(v);
-    if (masterGainRef.current) {
-      masterGainRef.current.gain.value = v;
-    }
-  }, []);
-
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    if (fileInputRef.current) fileInputRef.current.value = '';
     if (!file) return;
-
-    const { ctx } = getAudioContext();
+    setUploading(true);
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-      const id = `custom-${Date.now()}`;
-      const name = file.name.replace(/\.[^/.]+$/, '');
-      setCustomSounds((prev) => [...prev, { id, name, buffer: audioBuffer }]);
-    } catch {
-      // Could not decode audio file
+      await player.addCustomSound(file);
+    } finally {
+      setUploading(false);
     }
+  }, [player]);
 
-    // Reset input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  }, [getAudioContext]);
-
-  const handleRemoveCustom = useCallback((id: string) => {
-    setCustomSounds((prev) => prev.filter((s) => s.id !== id));
-  }, []);
-
-  const handleOverlayClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.target === e.currentTarget) {
-        onClose();
-      }
-    },
-    [onClose]
+  const renderPadVolume = (padId: string, name: string) => (
+    <input
+      type="range"
+      min="0"
+      max="1"
+      step="0.05"
+      aria-label={`${name} volume`}
+      title={`${name} volume`}
+      value={state.padVolumes[padId] ?? 1}
+      onChange={(e) => player.setPadVolume(padId, parseFloat(e.target.value))}
+      style={styles.padVolume}
+    />
   );
 
   return (
-    <div style={styles.overlay} onClick={handleOverlayClick}>
-      <div style={styles.panel}>
-        {/* Header */}
+    <div style={styles.overlay}>
+      <div style={styles.panel} role="dialog" aria-modal="false" aria-label="Sound board">
         <div style={styles.header}>
           <div style={styles.headerLeft}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -499,15 +75,28 @@ export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
             </svg>
             <span style={styles.headerTitle}>Sound Board</span>
           </div>
-          <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} title="Close" aria-label="Close sound board">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          <div style={styles.headerActions}>
+            <button
+              type="button"
+              style={{ ...styles.stopAllBtn, opacity: state.playingIds.length > 0 ? 1 : 0.55 }}
+              onClick={() => player.stopAll()}
+              disabled={state.playingIds.length === 0}
+              title="Stop all sounds"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="5" y="5" width="14" height="14" rx="2" />
+              </svg>
+              Stop all
+            </button>
+            <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} title="Close" aria-label="Close sound board">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
         </div>
 
-        {/* Volume */}
         <div style={styles.volumeRow}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
@@ -518,180 +107,161 @@ export function SoundBoard({ onClose, broadcastAudio }: SoundBoardProps) {
             max="1"
             step="0.01"
             aria-label="Sound effects volume"
-            value={volume}
-            onChange={handleVolumeChange}
+            value={state.volume}
+            onChange={(e) => player.setVolume(parseFloat(e.target.value))}
             style={styles.volumeSlider}
           />
-          <span style={styles.volumeLabel}>{Math.round(volume * 100)}%</span>
+          <span style={styles.volumeLabel}>{Math.round(state.volume * 100)}%</span>
         </div>
 
-        {broadcastAudio && (
-          <div style={styles.routingSection}>
-            <span style={styles.sectionLabel}>Mix Routing</span>
-            <div style={styles.routingGrid}>
-              <label style={styles.routingOption}>
-                <span style={styles.routingLabel}>Stream</span>
-                <span style={styles.routingState}>{sendToStream ? 'On' : 'Off'}</span>
-                <input
-                  type="checkbox"
-                  checked={sendToStream}
-                  onChange={(e) => setSendToStream(e.target.checked)}
-                  style={styles.routingCheckbox}
-                  aria-label="Send sound board to stream"
-                />
-              </label>
-              <label style={styles.routingOption}>
-                <span style={styles.routingLabel}>Monitor</span>
-                <span style={styles.routingState}>{monitorEnabled ? 'On' : 'Off'}</span>
-                <input
-                  type="checkbox"
-                  checked={monitorEnabled}
-                  onChange={(e) => setMonitorEnabled(e.target.checked)}
-                  style={styles.routingCheckbox}
-                  aria-label="Monitor sound board locally"
-                />
-              </label>
-            </div>
+        <div style={styles.routingSection}>
+          <span style={styles.sectionLabel}>Mix Routing</span>
+          <div style={styles.routingGrid}>
+            <label style={styles.routingOption}>
+              <span style={styles.routingLabel}>Stream &amp; guests</span>
+              <span style={styles.routingState}>{state.sendToStream ? 'On' : 'Off'}</span>
+              <input
+                type="checkbox"
+                checked={state.sendToStream}
+                onChange={(e) => player.setSendToStream(e.target.checked)}
+                style={styles.routingCheckbox}
+                aria-label="Send sound board to the stream, recording and guests"
+              />
+            </label>
+            <label style={styles.routingOption}>
+              <span style={styles.routingLabel}>Monitor</span>
+              <span style={styles.routingState}>{state.monitorEnabled ? 'On' : 'Off'}</span>
+              <input
+                type="checkbox"
+                checked={state.monitorEnabled}
+                onChange={(e) => player.setMonitorEnabled(e.target.checked)}
+                style={styles.routingCheckbox}
+                aria-label="Monitor sound board locally"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div style={styles.grid}>
+          {builtInPads.map((pad) => {
+            const playing = state.playingIds.includes(pad.id);
+            return (
+              <div key={pad.id} style={styles.padCell}>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.effectBtn,
+                    borderColor: playing ? pad.color : 'var(--border)',
+                    boxShadow: playing ? `0 0 12px ${pad.color}44, inset 0 0 20px ${pad.color}11` : 'none',
+                  }}
+                  onClick={() => void player.play(pad.id)}
+                  aria-label={`Play ${pad.name}${pad.hotkey ? ` (${pad.hotkey})` : ''}`}
+                  title={pad.hotkey ? `${pad.name} (${pad.hotkey})` : pad.name}
+                >
+                  <span style={styles.effectIcon}>{pad.icon}</span>
+                  <span style={styles.effectName}>{pad.name}</span>
+                  {pad.hotkey && <kbd style={styles.hotkey}>{pad.hotkey.replace('Shift+', '⇧')}</kbd>}
+                </button>
+                {renderPadVolume(pad.id, pad.name)}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={styles.divider} />
+        <div style={styles.customSection}>
+          <span style={styles.sectionLabel}>Custom Sounds</span>
+          {customPads.length === 0 && state.libraryStatus !== 'loading' && (
+            <span style={styles.emptyText}>Upload short clips (up to {MAX_CUSTOM_SOUND_SECONDS}s). They stay in this browser.</span>
+          )}
+          <div style={styles.customGrid}>
+            {customPads.map((pad) => {
+              const playing = state.playingIds.includes(pad.id);
+              return (
+                <div key={pad.id} style={styles.customItem}>
+                  <button
+                    type="button"
+                    style={{ ...styles.customPlayBtn, borderColor: playing ? 'var(--accent)' : 'var(--border)' }}
+                    onClick={() => void player.play(pad.id)}
+                    aria-label={`Play ${pad.name}${pad.hotkey ? ` (${pad.hotkey})` : ''}`}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--text-muted)">
+                      <polygon points="5 3 19 12 5 21 5 3" />
+                    </svg>
+                    <span style={styles.customName}>{pad.name}</span>
+                    {pad.hotkey && <kbd style={styles.hotkey}>{pad.hotkey.replace('Shift+', '⇧')}</kbd>}
+                  </button>
+                  {renderPadVolume(pad.id, pad.name)}
+                  <button
+                    type="button"
+                    style={styles.removeBtn}
+                    onClick={() => void player.removeCustomSound(pad.id)}
+                    title="Remove"
+                    aria-label={`Remove ${pad.name}`}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {state.message && (
+          <div style={styles.message} role="status">
+            <span>{state.message}</span>
+            <button type="button" style={styles.messageDismiss} onClick={() => player.clearMessage()} aria-label="Dismiss">×</button>
           </div>
         )}
 
-        {/* Effects grid */}
-        <div style={styles.grid}>
-          {effects.map((effect) => (
-            <button
-              key={effect.id}
-              style={{
-                ...styles.effectBtn,
-                borderColor: playingId === effect.id ? effect.color : 'var(--border)',
-                boxShadow: playingId === effect.id
-                  ? `0 0 12px ${effect.color}44, inset 0 0 20px ${effect.color}11`
-                  : 'none',
-                transform: playingId === effect.id ? 'scale(0.95)' : 'scale(1)',
-              }}
-              onClick={() => handlePlay(effect)}
-            >
-              <span style={styles.effectIcon}>{effect.icon}</span>
-              <span style={styles.effectName}>{effect.name}</span>
-              <svg
-                width="10"
-                height="10"
-                viewBox="0 0 24 24"
-                fill="var(--text-muted)"
-                style={styles.playIcon}
-              >
-                <polygon points="5 3 19 12 5 21 5 3" />
-              </svg>
-            </button>
-          ))}
-        </div>
-
-        {/* Custom sounds */}
-        {customSounds.length > 0 && (
-          <>
-            <div style={styles.divider} />
-            <div style={styles.customSection}>
-              <span style={styles.sectionLabel}>Custom Sounds</span>
-              <div style={styles.customGrid}>
-                {customSounds.map((sound) => (
-                  <div key={sound.id} style={styles.customItem}>
-                    <button
-                      style={{
-                        ...styles.customPlayBtn,
-                        borderColor: playingId === sound.id ? 'var(--accent)' : 'var(--border)',
-                      }}
-                      onClick={() => handlePlayCustom(sound)}
-                    >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--text-muted)">
-                        <polygon points="5 3 19 12 5 21 5 3" />
-                      </svg>
-                      <span style={styles.customName}>{sound.name}</span>
-                    </button>
-                    <button
-                      style={styles.removeBtn}
-                      onClick={() => handleRemoveCustom(sound.id)}
-                      title="Remove"
-                    >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                        <line x1="18" y1="6" x2="6" y2="18" />
-                        <line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Upload section */}
-        <div style={styles.divider} />
         <div style={styles.uploadSection}>
-          {showUpload ? (
-            <div style={styles.uploadArea}>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="audio/*"
-                onChange={handleFileUpload}
-                style={styles.fileInput}
-                id="sound-upload"
-              />
-              <label htmlFor="sound-upload" style={styles.uploadLabel}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-                <span>Choose audio file</span>
-              </label>
-              <button
-                style={styles.cancelUploadBtn}
-                onClick={() => setShowUpload(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              style={styles.addSoundBtn}
-              onClick={() => setShowUpload(true)}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-              Upload Custom Sound
-            </button>
-          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="audio/*"
+            onChange={(e) => void handleFileUpload(e)}
+            style={styles.fileInput}
+            id="sound-upload"
+            disabled={uploading}
+          />
+          <label htmlFor="sound-upload" style={{ ...styles.uploadLabel, opacity: uploading ? 0.6 : 1 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <span>{uploading ? 'Adding sound...' : `Upload custom sound (max ${Math.round(MAX_CUSTOM_SOUND_BYTES / 1024 / 1024)} MB)`}</span>
+          </label>
+          <span style={styles.hint}>Shift + 1…0 plays the first ten pads, even with this panel closed.</span>
         </div>
       </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
 const styles: Record<string, React.CSSProperties> = {
+  // Docked, non-modal: the stage stays visible and clickable.
   overlay: {
     position: 'fixed',
-    inset: 0,
-    background: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-    backdropFilter: 'blur(4px)',
+    right: 16,
+    bottom: 88,
+    zIndex: 900,
+    pointerEvents: 'none',
+    maxWidth: 'calc(100vw - 32px)',
   },
   panel: {
-    width: 420,
-    maxWidth: '92vw',
-    maxHeight: '85vh',
+    pointerEvents: 'auto',
+    width: 380,
+    maxWidth: '100%',
+    maxHeight: 'calc(100vh - 140px)',
     overflowY: 'auto',
     background: 'var(--bg-secondary)',
     border: '1px solid var(--border)',
     borderRadius: 'var(--radius)',
+    boxShadow: '0 18px 48px rgba(0,0,0,0.45)',
     display: 'flex',
     flexDirection: 'column',
   },
@@ -699,7 +269,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '14px 16px',
+    padding: '12px 14px',
     borderBottom: '1px solid var(--border)',
   },
   headerLeft: {
@@ -708,10 +278,28 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     color: 'var(--text-primary)',
   },
+  headerActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
   headerTitle: {
     fontSize: 14,
     fontWeight: 600,
     color: 'var(--text-primary)',
+  },
+  stopAllBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '5px 10px',
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer',
   },
   closeBtn: {
     width: 28,
@@ -730,7 +318,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-    padding: '10px 16px',
+    padding: '10px 14px',
     borderBottom: '1px solid var(--border)',
     color: 'var(--text-muted)',
   },
@@ -748,7 +336,7 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'right',
   },
   routingSection: {
-    padding: '10px 16px',
+    padding: '10px 14px',
     borderBottom: '1px solid var(--border)',
   },
   routingGrid: {
@@ -789,9 +377,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
     gap: 8,
-    padding: 16,
+    padding: 14,
+  },
+  padCell: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    minWidth: 0,
   },
   effectBtn: {
     display: 'flex',
@@ -799,17 +393,17 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
-    padding: '14px 4px 10px',
+    padding: '12px 4px 8px',
     background: 'var(--bg-tertiary)',
     border: '1px solid var(--border)',
     borderRadius: 10,
     cursor: 'pointer',
-    transition: 'all 0.1s ease',
+    transition: 'border-color 0.1s ease, box-shadow 0.1s ease',
     position: 'relative',
     color: 'var(--text-primary)',
   },
   effectIcon: {
-    fontSize: 22,
+    fontSize: 20,
     lineHeight: 1,
   },
   effectName: {
@@ -819,19 +413,29 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     lineHeight: 1.2,
   },
-  playIcon: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
-    opacity: 0.4,
+  hotkey: {
+    fontSize: 9,
+    fontFamily: 'inherit',
+    fontWeight: 600,
+    color: 'var(--text-muted)',
+    border: '1px solid var(--border)',
+    borderRadius: 4,
+    padding: '0 4px',
+    lineHeight: '14px',
+  },
+  padVolume: {
+    width: '100%',
+    height: 4,
+    cursor: 'pointer',
+    accentColor: 'var(--accent)',
   },
   divider: {
     height: 1,
     background: 'var(--border)',
-    margin: '0 16px',
+    margin: '0 14px',
   },
   customSection: {
-    padding: '12px 16px',
+    padding: '12px 14px',
   },
   sectionLabel: {
     fontSize: 10,
@@ -842,18 +446,23 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
     display: 'block',
   },
+  emptyText: {
+    fontSize: 11,
+    color: 'var(--text-muted)',
+  },
   customGrid: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 4,
+    gap: 6,
   },
   customItem: {
-    display: 'flex',
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) 72px 24px',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
   },
   customPlayBtn: {
-    flex: 1,
+    minWidth: 0,
     display: 'flex',
     alignItems: 'center',
     gap: 8,
@@ -864,9 +473,11 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     color: 'var(--text-primary)',
     fontSize: 12,
-    transition: 'all 0.1s ease',
   },
   customName: {
+    flex: 1,
+    minWidth: 0,
+    textAlign: 'left',
     fontSize: 12,
     fontWeight: 500,
     color: 'var(--text-primary)',
@@ -887,14 +498,33 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     padding: 0,
   },
-  uploadSection: {
-    padding: '12px 16px 16px',
+  message: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 8,
+    margin: '0 14px 10px',
+    padding: '8px 10px',
+    borderRadius: 8,
+    background: 'var(--bg-tertiary)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-secondary)',
+    fontSize: 11,
   },
-  uploadArea: {
+  messageDismiss: {
+    marginLeft: 'auto',
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    fontSize: 14,
+    lineHeight: 1,
+    padding: 0,
+  },
+  uploadSection: {
     display: 'flex',
     flexDirection: 'column',
-    alignItems: 'center',
-    gap: 8,
+    gap: 6,
+    padding: '0 14px 14px',
   },
   fileInput: {
     display: 'none',
@@ -905,7 +535,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     gap: 8,
     width: '100%',
-    padding: '12px',
+    padding: '9px',
     borderRadius: 8,
     border: '1px dashed var(--border)',
     background: 'var(--bg-tertiary)',
@@ -913,28 +543,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     fontWeight: 500,
     cursor: 'pointer',
+    boxSizing: 'border-box',
   },
-  cancelUploadBtn: {
-    background: 'none',
-    border: 'none',
+  hint: {
+    fontSize: 10,
     color: 'var(--text-muted)',
-    fontSize: 11,
-    cursor: 'pointer',
-    padding: '4px 8px',
-  },
-  addSoundBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    width: '100%',
-    padding: '8px',
-    background: 'var(--bg-surface)',
-    border: '1px solid var(--border)',
-    borderRadius: 8,
-    color: 'var(--text-secondary)',
-    fontSize: 12,
-    fontWeight: 500,
-    cursor: 'pointer',
+    textAlign: 'center',
   },
 };

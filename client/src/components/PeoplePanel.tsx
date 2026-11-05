@@ -66,7 +66,7 @@ export function PeoplePanel(props: PeoplePanelProps) {
         <div id="people-settings" className="people-settings">
           <label>
             <span>
-              Auto ducking<small>Lower other audio while someone speaks.</small>
+              Auto ducking<small>Lower music and clips while someone on stage speaks.</small>
             </span>
             <input
               type="checkbox"

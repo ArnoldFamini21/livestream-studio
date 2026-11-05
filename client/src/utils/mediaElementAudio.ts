@@ -22,7 +22,7 @@ export function connectMediaElementAudio(element: HTMLMediaElement, bus: MediaAu
 
   // Creating the source replaces the element's direct speaker output. Route
   // that single source to both monitoring and the broadcast/recording mix.
-  const disconnectRoute = bus.connectNode(source, { stream: true, monitor: true });
+  const disconnectRoute = bus.connectNode(source, { stream: true, monitor: true, duck: true });
   let disconnected = false;
   return {
     resume: async () => {

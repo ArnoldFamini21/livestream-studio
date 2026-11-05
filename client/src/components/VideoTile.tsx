@@ -17,6 +17,12 @@ interface VideoTileProps {
   isLocal?: boolean;
   isScreenShare?: boolean;
   audioEnabled?: boolean;
+  /**
+   * Keep playing the stream while its mic is muted. A host's outbound audio
+   * also carries studio sounds (effects, music, clips) that must stay audible
+   * when they mute; a muted mic track itself only sends silence.
+   */
+  audibleWhileMuted?: boolean;
   videoEnabled?: boolean;
   volume?: number;
   brandColor?: string;
@@ -147,6 +153,7 @@ export function VideoTile({
   isLocal, 
   isScreenShare, 
   audioEnabled = true, 
+  audibleWhileMuted = false,
   videoEnabled = true, 
   volume = 1,
   brandColor = '#a78bfa',
@@ -161,6 +168,7 @@ export function VideoTile({
   const mirrorSelfView = useMirrorSelfView();
   const playbackVolume = clampVolume(volume);
   const hasAudiblePlayback = audioEnabled && playbackVolume > 0;
+  const mutePlayback = Boolean(isLocal || playbackVolume === 0 || (!audioEnabled && !audibleWhileMuted));
   const { isSpeaking, audioLevel: speakingLevel } = useSpeakingDetector(stream, hasAudiblePlayback);
 
   useEffect(() => {
@@ -190,8 +198,8 @@ export function VideoTile({
     const video = videoRef.current;
     if (!video) return;
     video.volume = playbackVolume;
-    video.muted = Boolean(isLocal || !audioEnabled || playbackVolume === 0);
-  }, [audioEnabled, isLocal, playbackVolume]);
+    video.muted = mutePlayback;
+  }, [mutePlayback, playbackVolume]);
 
   const initials = (name || '?')
     .split(' ')
@@ -241,7 +249,7 @@ export function VideoTile({
           ref={videoRef}
           autoPlay
           playsInline
-          muted={isLocal || !audioEnabled || playbackVolume === 0}
+          muted={mutePlayback}
           style={videoEnabled ? {
             ...tileStyles.video,
             // Preserve the complete camera frame. Cropping is only intentional

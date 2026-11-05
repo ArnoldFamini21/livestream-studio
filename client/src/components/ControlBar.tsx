@@ -29,6 +29,8 @@ interface ControlBarProps {
   onOpenTeleprompter?: () => void;
   onOpenMediaPanel?: () => void;
   onOpenBackgroundMusic?: () => void;
+  /** Music keeps playing with its panel closed; the menu says so. */
+  backgroundMusicPlaying?: boolean;
   onOpenRecordingPanel?: () => void;
   onOpenProducerPanel?: () => void;
   onOpenWebinarQA?: () => void;
@@ -68,6 +70,7 @@ export function ControlBar({
   onOpenTeleprompter,
   onOpenMediaPanel,
   onOpenBackgroundMusic,
+  backgroundMusicPlaying = false,
   onOpenRecordingPanel,
   onOpenProducerPanel,
   onOpenWebinarQA,
@@ -336,7 +339,7 @@ export function ControlBar({
     onClick: () => { onOpenSoundBoard(); setShowMore(false); },
   });
   if (onOpenBackgroundMusic) moreItems.push({
-    label: 'Music',
+    label: backgroundMusicPlaying ? 'Music (playing)' : 'Music',
     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>,
     onClick: () => { onOpenBackgroundMusic(); setShowMore(false); },
   });
