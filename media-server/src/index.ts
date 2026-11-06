@@ -38,6 +38,7 @@ import {
 import { buildAllowedOrigins, isAllowedOrigin, normalizeOrigin } from './origins.js';
 import { parseControlMessage } from './protocol.js';
 import { SfuManager } from './sfuManager.js';
+import { RecordingUploadRevocations } from './uploadRevocations.js';
 import { parseSfuAuthFrame, verifySfuIdentity } from './sfuAuth.js';
 import { SfuMediaTransport } from './sfuTransport.js';
 import {
@@ -165,6 +166,7 @@ interface SlateProcess {
 
 /** The watch page's HLS writer: a copy of the shared encode, no re-encode. */
 interface HlsProcess {
+  /** The studio's private watch id (never the room id, which admits guests). */
   roomId: string;
   dir: string;
   process: ChildProcessByStdio<Writable, null, Readable>;
@@ -485,7 +487,9 @@ function stopSessionIfNoRelayWork(session: RelaySession) {
 
 async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload: RtmpRelayStartPayload) {
   const program = session.program;
-  const roomId = session.claims?.roomId;
+  // Published under the studio's private watch id. The room id is what admits
+  // guests to the studio, so a watch link must never reveal it.
+  const roomId = session.claims?.watchId;
   if (!program || session.hls || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
   let dir: string;
   try {
@@ -543,8 +547,8 @@ function stopHlsWriter(session: RelaySession) {
 }
 
 /**
- * Public watch page endpoints. The room id is the capability, like an
- * unlisted video: status, the playlist, and its segments.
+ * Public watch page endpoints. The studio's private watch id is the
+ * capability, like an unlisted video: status, the playlist, and its segments.
  */
 async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const match = url.pathname.match(/^\/watch\/([^/]+)\/([^/]+)$/);
@@ -1438,6 +1442,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+const recordingUploadRevocations = new RecordingUploadRevocations();
+
+function issuedAtMs(claims: LiveStreamTokenClaims | RecordingUploadTokenClaims): number | undefined {
+  return typeof claims.iat === 'number' && Number.isFinite(claims.iat) ? claims.iat : undefined;
+}
+
 function authenticateRecordingUpload(
   req: IncomingMessage,
   roomId: string,
@@ -1466,6 +1476,9 @@ function authenticateRecordingUpload(
   }
   if (claims.roomId !== roomId) {
     throw new RecordingUploadError(403, 'ROOM_TOKEN_MISMATCH', 'Recording upload token does not match this room');
+  }
+  if (recordingUploadRevocations.isRevoked(claims.roomId, claims.participantId, issuedAtMs(claims))) {
+    throw new RecordingUploadError(403, 'RECORDING_UPLOAD_REVOKED', 'The host removed this participant; their uploads are no longer accepted');
   }
   if ('purpose' in claims && claims.purpose === 'recording-upload') {
     if (!sessionId || claims.sessionId !== sessionId) {
@@ -2053,6 +2066,17 @@ async function handleSfuMembershipRequest(req: IncomingMessage, res: ServerRespo
     if (claims.action === 'allow-participant') {
       sfuManager.allowParticipant(claims.roomId, claims.participantId!);
       writeJson(res, 200, { ok: true, action: claims.action });
+      return true;
+    }
+    if (claims.action === 'revoke-recording-upload') {
+      recordingUploadRevocations.revoke(claims.roomId, claims.participantId!, claims.iat);
+      const disconnected = sfuManager.revokeParticipant(
+        claims.roomId,
+        claims.participantId!,
+        claims.reason || 'Removed by host',
+        claims.iat
+      );
+      writeJson(res, 200, { ok: true, action: claims.action, disconnected });
       return true;
     }
     const disconnected = sfuManager.revokeRoom(

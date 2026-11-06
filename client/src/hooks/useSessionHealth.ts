@@ -1,3 +1,4 @@
+import { getSharedIceConfigLoader } from '../utils/iceConfigLoader.ts';
 import { useEffect, useMemo, useState } from 'react';
 import {
   detectBrowserVideoEncodingReadiness,
@@ -12,7 +13,6 @@ import {
 } from '../utils/sessionPeerHealth.ts';
 import {
   DEFAULT_ICE_CONFIG_STATUS,
-  fetchIceConfigWithStatus,
   type ClientIceConfigStatus,
 } from '../utils/iceConfig.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
@@ -240,9 +240,15 @@ export function useSessionHealth({
     };
   }, []);
 
+  // The same relay configuration the peer connections use, including when it
+  // arrives late (the studio server was waking up).
   useEffect(() => {
     let cancelled = false;
-    fetchIceConfigWithStatus()
+    const loader = getSharedIceConfigLoader();
+    const unsubscribe = loader.subscribe(({ status }) => {
+      if (!cancelled) setIceStatus(status);
+    });
+    loader.ready()
       .then(({ status }) => {
         if (!cancelled) setIceStatus(status);
       })
@@ -251,6 +257,7 @@ export function useSessionHealth({
       });
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 

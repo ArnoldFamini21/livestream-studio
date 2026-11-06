@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PeerNegotiation } from '../src/utils/peerNegotiation.ts';
+import { PeerNegotiation, getIceRestartDelayMs, getPoliteRecoveryDelayMs } from '../src/utils/peerNegotiation.ts';
 
 class FakePeer extends EventTarget {
   signalingState = 'stable';
@@ -124,22 +124,106 @@ test('late offer completion cannot publish after a peer is replaced', async () =
   assert.equal(pc.localDescription, null);
 });
 
-test('failed links restart ICE and recovery is bounded', async t => {
+test('ICE restart backoff doubles up to a minute and never stops', () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 9].map((attempt) => getIceRestartDelayMs(attempt, 5_000, 60_000)), [5_000, 10_000, 20_000, 40_000, 60_000, 60_000, 60_000]);
+  // The polite side always waits well past the impolite side's restart.
+  for (let attempt = 0; attempt < 6; attempt++) {
+    assert.ok(getPoliteRecoveryDelayMs(attempt, 5_000, 60_000) > getIceRestartDelayMs(attempt, 5_000, 60_000) + 4_000);
+  }
+});
+
+test('the impolite side keeps restarting a failed link with growing delays', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { pc, negotiation } = setup();
+  const pc = new FakePeer();
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, () => {}, () => true, 5_000, 10_000, 1_500, { minRollbackAgeMs: 0, rebuildAfterAttempts: 100 });
   pc.connectionState = 'failed';
   negotiation.connectionStateChanged();
+  const elapsedToOffer: number[] = [];
+  let elapsed = 0;
+  for (let step = 0; step < 6 * 60; step++) {
+    t.mock.timers.tick(1_000);
+    elapsed += 1_000;
+    await settle();
+    if (pc.offers.length > elapsedToOffer.length) elapsedToOffer.push(elapsed);
+    // Each restart is "answered" but the network is still down.
+    if (pc.signalingState === 'have-local-offer') await negotiation.receiveAnswer(remoteAnswer);
+  }
+  assert.deepEqual(elapsedToOffer.slice(0, 5), [5_000, 15_000, 35_000, 75_000, 135_000]);
+  assert.ok(pc.offers.length >= 7, `still retrying after six minutes (${pc.offers.length} restarts)`);
+  assert.ok(pc.offers.every((offer) => offer?.iceRestart));
+  negotiation.dispose();
+});
+
+test('the polite side waits for the other side to restart instead of colliding with it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pc = new FakePeer();
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, true, () => {}, () => true, 5_000, 10_000, 1_500, { minRollbackAgeMs: 0, rebuildAfterAttempts: 100 });
+  pc.connectionState = 'failed';
+  negotiation.connectionStateChanged();
+  // The impolite side's restart offer arrives before the polite watch expires.
   t.mock.timers.tick(5_000);
+  await negotiation.receiveOffer({ ...remoteOffer, sdp: 'restart 1' });
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(pc.offers.length, 0, 'no polite restart while the other side is restarting');
+  // Nothing more arrives: the polite side finally restarts on its own.
+  t.mock.timers.tick(60_000);
+  await settle();
+  assert.equal(pc.offers.length, 1);
+  assert.deepEqual(pc.offers[0], { iceRestart: true });
+  negotiation.dispose();
+});
+
+test('rebuilds the connection after repeated failed restarts, once', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pc = new FakePeer();
+  let rebuilds = 0;
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, () => {}, () => true, 1_000, 10_000, 1_500, {
+    minRollbackAgeMs: 0,
+    rebuildAfterAttempts: 3,
+    onRecoveryExhausted: () => { rebuilds++; },
+  });
+  pc.connectionState = 'failed';
+  negotiation.connectionStateChanged();
+  for (let step = 0; step < 60; step++) {
+    t.mock.timers.tick(1_000);
+    await settle();
+    if (pc.signalingState === 'have-local-offer') await negotiation.receiveAnswer(remoteAnswer);
+  }
+  assert.equal(pc.offers.length, 3);
+  assert.equal(rebuilds, 1);
+  negotiation.connectionStateChanged();
+  t.mock.timers.tick(120_000);
+  await settle();
+  assert.equal(rebuilds, 1);
+  negotiation.dispose();
+});
+
+test('restartNow skips the backoff when the network comes back', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pc = new FakePeer();
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, () => {}, () => true, 5_000, 10_000, 1_500, { minRollbackAgeMs: 0 });
+  pc.connectionState = 'disconnected';
+  negotiation.connectionStateChanged();
+  negotiation.restartNow();
   await settle();
   assert.deepEqual(pc.offers, [{ iceRestart: true }]);
-  await negotiation.receiveAnswer(remoteAnswer);
-  t.mock.timers.tick(5_000);
+  pc.connectionState = 'connected';
+  negotiation.connectionStateChanged();
+  negotiation.restartNow();
   await settle();
-  assert.equal(pc.offers.length, 2);
-  await negotiation.receiveAnswer(remoteAnswer);
-  t.mock.timers.tick(30_000);
-  await settle();
-  assert.equal(pc.offers.length, 2);
+  assert.equal(pc.offers.length, 1, 'a connected link is left alone');
+  negotiation.dispose();
+});
+
+test('a young unanswered restart offer is not rolled back by the next attempt', async () => {
+  const pc = new FakePeer();
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, () => {}, () => true, 5_000, 10_000, 1_500, { minRollbackAgeMs: 60_000 });
+  await negotiation.offer(true);
+  assert.equal(pc.signalingState, 'have-local-offer');
+  await negotiation.offer(true);
+  assert.equal(pc.offers.length, 1);
+  assert.equal(pc.signalingState, 'have-local-offer');
   negotiation.dispose();
 });
 
@@ -213,7 +297,7 @@ test('recovery re-offers when the previous offer was never answered', async t =>
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const pc = new FakePeer();
   const sent: RTCSessionDescriptionInit[] = [];
-  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, true, d => sent.push(d), () => true, 10);
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, d => sent.push(d), () => true, 10, 10_000, 1_500, { minRollbackAgeMs: 0 });
   await negotiation.offer();
   assert.equal(pc.signalingState, 'have-local-offer');
   pc.connectionState = 'failed';
@@ -232,7 +316,7 @@ test('restarts ICE when a connection never leaves "new", impolite side first', a
     const pc = new FakePeer();
     pc.connectionState = 'new';
     const sent: RTCSessionDescriptionInit[] = [];
-    const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, polite, d => sent.push(d), () => true, 5, 100);
+    const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, polite, d => sent.push(d), () => true, 5, 100, 1_500, { minRollbackAgeMs: 0 });
     return { pc, sent, negotiation };
   };
   const impolite = make(false);

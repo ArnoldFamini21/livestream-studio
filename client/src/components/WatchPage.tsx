@@ -65,7 +65,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     if (!roomId) { setRoomError('missing'); return; }
     const controller = new AbortController();
     setRoomError(null);
-    requestJson<WatchRoom>(`/api/rooms/${encodeURIComponent(roomId)}`, { signal: controller.signal })
+    requestJson<WatchRoom>(`/api/watch/${encodeURIComponent(roomId)}`, { signal: controller.signal })
       .then((data) => {
         if (!data || typeof data.id !== 'string' || typeof data.name !== 'string') throw new Error('Invalid room response');
         if (!controller.signal.aborted) setRoom(data);
@@ -187,7 +187,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     setFormBusy(true);
     setFormError('');
     try {
-      await requestJson(`/api/rooms/${encodeURIComponent(roomId)}/registrants`, {
+      await requestJson(`/api/watch/${encodeURIComponent(roomId)}/registrants`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name: form.name.trim(), email: form.email.trim() }),

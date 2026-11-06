@@ -6,6 +6,11 @@ import { buildGuestInviteDetails, buildGuestInviteEmailHref } from '../utils/inv
 interface InvitePanelProps {
   roomName: string;
   roomId: string;
+  /**
+   * The studio's private watch-page id. The room id lets guests into the green
+   * room, so it is never put in a public watch link.
+   */
+  watchId?: string | null;
   hostName?: string;
   inviteUrl: string;
   scheduledFor?: string;
@@ -79,6 +84,7 @@ function safeFileName(value: string): string {
 }
 
 export function InvitePanel({
+  watchId,
   roomName,
   roomId,
   hostName,
@@ -148,12 +154,13 @@ export function InvitePanel({
   }, [hostName, inviteUrl, isLive, passwordProtected, roomName, scheduledLabel]);
 
   const watchUrl = useMemo(() => {
+    if (!watchId) return '';
     try {
-      return `${new URL(inviteUrl).origin}/watch/${encodeURIComponent(roomId)}`;
+      return `${new URL(inviteUrl).origin}/watch/${encodeURIComponent(watchId)}`;
     } catch {
-      return `${window.location.origin}/watch/${encodeURIComponent(roomId)}`;
+      return `${window.location.origin}/watch/${encodeURIComponent(watchId)}`;
     }
-  }, [inviteUrl, roomId]);
+  }, [inviteUrl, watchId]);
 
   const mailtoHref = useMemo(() => {
     return buildGuestInviteEmailHref({
@@ -445,7 +452,7 @@ export function InvitePanel({
             <input
               id="studio-watch-link"
               style={styles.linkInput}
-              value={watchUrl}
+              value={watchUrl || 'Reconnecting to the studio server…'}
               readOnly
               onFocus={(event) => event.currentTarget.select()}
               aria-label="Public watch page link"
@@ -454,6 +461,7 @@ export function InvitePanel({
               type="button"
               style={{ ...styles.copyBtn, ...(copied === 'watch' ? styles.copyBtnDone : {}) }}
               onClick={() => void handleCopy('watch', watchUrl)}
+              disabled={!watchUrl}
             >
               {copied === 'watch' ? 'Copied' : 'Copy'}
             </button>

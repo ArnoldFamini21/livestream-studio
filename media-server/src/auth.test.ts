@@ -4,6 +4,7 @@ import {
   signLiveStreamToken,
   verifyLiveStreamToken,
   verifyRecordingUploadToken,
+  verifySfuMembershipControlToken,
   verifySfuToken,
 } from './auth.js';
 
@@ -43,5 +44,30 @@ describe('media token purpose isolation', () => {
     assert.deepEqual(verifySfuToken(token, SECRET, NOW), claims);
     assert.throws(() => verifyLiveStreamToken(token, SECRET, NOW), /Invalid live stream token claims/);
     assert.throws(() => verifyRecordingUploadToken(token, SECRET, NOW), /Invalid recording upload token claims/);
+  });
+});
+
+describe('watch ids and upload revocation tokens', () => {
+  it('carries the studio watch id in live-stream tokens and rejects malformed ones', () => {
+    const claims = { ...BASE_CLAIMS, watchId: 'private-watch-id-123', iat: NOW };
+    assert.deepEqual(verifyLiveStreamToken(signLiveStreamToken(claims, SECRET), SECRET, NOW), claims);
+    const bad = signLiveStreamToken({ ...BASE_CLAIMS, watchId: 42 } as unknown as typeof claims, SECRET);
+    assert.throws(() => verifyLiveStreamToken(bad, SECRET, NOW), /Invalid live stream token claims/);
+  });
+
+  it('accepts a signed revoke-recording-upload control action for a participant', () => {
+    const control = {
+      v: 1 as const,
+      purpose: 'sfu-control' as const,
+      action: 'revoke-recording-upload' as const,
+      roomId: 'room-one',
+      participantId: 'guest-one',
+      iat: NOW,
+      exp: NOW + 60_000,
+      nonce: 'control-nonce',
+    };
+    assert.deepEqual(verifySfuMembershipControlToken(signLiveStreamToken(control as never, SECRET), SECRET, NOW), control);
+    const { participantId: _omitted, ...withoutParticipant } = control;
+    assert.throws(() => verifySfuMembershipControlToken(signLiveStreamToken(withoutParticipant as never, SECRET), SECRET, NOW));
   });
 });

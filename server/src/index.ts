@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws';
 import { buildServiceHealthPayload } from '@studio/shared';
 import {
   configureRoomSnapshotStore,
-  getStageImage,
+  readStageImage,
   restoreRoomSnapshots,
   setupSignalingServer,
   STAGE_IMAGE_MAX_BYTES,
@@ -13,6 +13,7 @@ import {
 } from './services/signaling.js';
 import { authRouter, configureAccountAuthStore } from './routes/auth.js';
 import { configureInviteEmailOrigins, roomRouter } from './routes/rooms.js';
+import { watchRouter } from './routes/watch.js';
 import { configureRecordingCatalogStore, recordingRouter } from './routes/recordings.js';
 import { brandKitRouter, configureBrandKitCatalogStore } from './routes/brandKits.js';
 import { configureWorkspaceStudioCatalogStore, workspaceStudioRouter } from './routes/workspaceStudios.js';
@@ -254,6 +255,15 @@ app.use('/api/rooms', (req, res, next) => {
   next();
 }, roomRouter);
 
+// The public watch page, addressed by its private watch id. Registering shares the room budget.
+app.use('/api/watch', (req, res, next) => {
+  if (req.method === 'POST') {
+    roomCreateLimiter.middleware(req, res, next);
+    return;
+  }
+  next();
+}, watchRouter);
+
 app.use('/api/recordings', recordingRouter);
 app.use('/api/brand-kits', brandKitRouter);
 app.use('/api/workspace-studios', workspaceStudioRouter);
@@ -333,12 +343,17 @@ app.post(
   }
 );
 
+// Reading needs the per-participant token admitted participants receive on
+// join, so the room id alone (or a seat in the green room) shows nothing.
 app.get('/api/rooms/:roomId/stage-images/:imageId', (req, res) => {
-  const image = getStageImage(req.params.roomId, req.params.imageId);
-  if (!image) {
-    res.status(404).end();
+  const header = req.headers['x-stage-token'];
+  const token = (Array.isArray(header) ? header[0] : header) || '';
+  const result = readStageImage(req.params.roomId, req.params.imageId, token);
+  if (!result.ok) {
+    res.status(result.status).end();
     return;
   }
+  const { image } = result;
   // Ids are random and never reused, so the picture can be cached for good.
   res.setHeader('Content-Type', image.contentType);
   res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
@@ -590,6 +605,12 @@ function gracefulShutdown(signal: string) {
     process.exit(1);
   }, 10_000);
 }
+
+// A stray rejected promise (a slow database, a dropped fetch) must be logged,
+// not take the studio down mid-show.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason instanceof Error ? reason.stack || reason.message : reason);
+});
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));

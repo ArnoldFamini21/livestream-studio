@@ -31,6 +31,17 @@ PGSSLMODE=require
 
 The signaling server uses `DATABASE_URL` for PostgreSQL room snapshots and host-scoped recording catalog metadata. This keeps scheduled and newly created studios recoverable across Render restarts and lets hosts sync recording dashboard summaries across browser sessions. Recording blobs and export artifacts are not stored in this database; they stay in browser storage, media-server export storage, Google Drive handoffs, or S3-compatible artifact storage when configured. If `DATABASE_URL` is not set, the server logs that room snapshot persistence is disabled and continues with memory-only rooms and recording catalog metadata.
 
+With `DATABASE_URL` set, each studio snapshot also keeps its live-session state (`session_state` column, added automatically on startup): the private watch-page id, an in-progress recording session (so guests still finalize and upload their takes after a restart), bans, removed guests, the guests who were admitted (they return to their place instead of the green room) and redeemed single-use invite links. A free PostgreSQL database (for example a Neon or Supabase free-tier project) is enough; paste its connection string as `DATABASE_URL`.
+
+Without a database, a restart (every deploy, a crash, the free instance waking from sleep) forgets every studio. The host's browser keeps a signed restore ticket next to its host token (signed with `LIVE_STREAM_TOKEN_SECRET`, so that secret must be set): when the host reconnects, the server rebuilds the studio with the same id, settings, password and watch link. Guests who reconnect first are told the studio is missing; their studio page keeps retrying for about three minutes and shows "Reconnecting to studio server…" instead of ending the session, so they get back in once the host is back. Admitted guests then wait in the green room until the host lets them in again.
+
+Signaling connection lifecycle:
+
+- A dropped connection (Wi-Fi blip, proxy reset, page reload) holds the participant's seat for `SIGNALING_RESUME_GRACE_MS` (default 30000). The client presents the resume token it was given and gets the same participant id, role and place back, so peer connections that are still carrying media stay up. Leaving the studio frees the seat at once.
+- Offers, answers and ICE candidates have their own per-socket budget (600 per 10 s) separate from other messages (100 per 10 s); the client is told when anything is dropped.
+- Wrong room passwords are checked off the event loop, and five wrong guesses from one address lock that address out of the studio for a minute (doubling up to 15 minutes). One address may hold at most `SIGNALING_MAX_SOCKETS_PER_IP` (default 20) studio connections.
+- The public watch page uses a private watch id (`/watch/<watchId>`), never the room id, which is what admits guests to the green room. Waiting guests see only the hosts, not the chat, the stage or other guests, and stage pictures need an admitted participant's token.
+
 Toolbar recording coordinates device-local capture for every on-stage participant. The signaling server signs participant-scoped upload tokens with `LIVE_STREAM_TOKEN_SECRET`; the media-server verifies the same secret, groups completed uploads by room and recording session, and gives only a host/co-host token access to the combined MP4, isolated video, and audio-stem export. The secret must therefore match on both Render services.
 
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.

@@ -215,6 +215,16 @@ function ParticipantRow({
               Next
             </button>
           )}
+          {canUseModerationActions && participant.status === 'green-room' && (
+            <button
+              className="participant-action-btn"
+              style={{ ...rowStyles.actionBtn, color: 'var(--success)', borderColor: 'rgba(34, 197, 94, 0.25)', '--btn-hover-bg': 'rgba(34, 197, 94, 0.1)' } as React.CSSProperties}
+              onClick={() => onStageAction('move-to-backstage', participant.id)}
+              title="Admit to backstage (off air)"
+            >
+              Admit
+            </button>
+          )}
           {canUseModerationActions && (participant.status === 'backstage' || participant.status === 'green-room') && (
             <button
               className="participant-action-btn"
@@ -363,8 +373,9 @@ export function ProducerPanel({
     waitingParticipants.forEach((participant) => onStageAction('notify-next', participant.id));
   };
 
+  // Admitted guests wait backstage, off air, until someone brings them on stage.
   const admitAllWaiting = () => {
-    waitingParticipants.forEach((participant) => onStageAction('move-to-stage', participant.id));
+    waitingParticipants.forEach((participant) => onStageAction('move-to-backstage', participant.id));
   };
 
   // Filtered participants for the right panel
@@ -582,9 +593,9 @@ export function ProducerPanel({
                 type="button"
                 style={{ ...styles.waitingActionBtn, ...styles.waitingActionBtnPrimary }}
                 onClick={admitAllWaiting}
-                title="Admit every waiting guest to the live stage"
+                title="Admit every waiting guest to backstage, off air"
               >
-                Admit All ({waitingParticipants.length})
+                Admit All to backstage ({waitingParticipants.length})
               </button>
             </div>
           )}

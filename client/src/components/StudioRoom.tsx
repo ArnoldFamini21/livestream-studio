@@ -1,6 +1,6 @@
 import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
 import { countUnreadChatMessages } from '../utils/chatUnread.ts';
-import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
+import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, loadStageImageObjectUrl, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
 import { applyParticipantMediaState, withLocalJoinMedia, withLocalMediaChoice } from '../utils/joinMediaState.ts';
 import { CONTENT_EXIT_DURATION_MS, measureStageTiles, playStageFlip, STAGE_FLIP_DURATION_MS, type StageTileRects } from '../utils/stageFlip.ts';
 import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraSize } from '../utils/presentationLayout.ts';
@@ -23,7 +23,19 @@ function assertNever(value: never): never {
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
-import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
+import { getSharedIceConfiguration } from '../utils/iceConfigLoader.ts';
+import {
+  buildStudioJoinPayload,
+  getRoomLostRetryDelayMs,
+  getStudioRestoreTicket,
+  getStudioResumeToken,
+  saveStudioRestoreTicket,
+  saveStudioResumeToken,
+  shouldKeepRetryingLostRoom,
+} from '../utils/studioSession.ts';
+import { mixScreenAudioWithVoice } from '../utils/screenShareAudio.ts';
+import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
+import { reportClientError } from '../utils/clientErrorReporter.ts';
 import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
 import { SfuSocketSession } from '../utils/sfuSocket.ts';
 import { getSfuSessionParticipantId, mergeSfuMediaWithMeshFallback, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
@@ -942,6 +954,22 @@ export function StudioRoom() {
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [joined, setJoined] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  // The studio server restarted and forgot the studio; we keep rejoining while the host rebuilds it.
+  const [studioServerLost, setStudioServerLost] = useState(false);
+  const [joinRetryNonce, setJoinRetryNonce] = useState(0);
+  const everJoinedRef = useRef(false);
+  const roomLostSinceRef = useRef<number | null>(null);
+  const roomLostAttemptRef = useRef(0);
+  const roomLostRetryTimerRef = useRef<number | null>(null);
+  const lastRateLimitNoticeRef = useRef(0);
+  const [watchId, setWatchId] = useState<string | null>(null);
+  const stageReadTokenRef = useRef<string | null>(null);
+  const stageObjectUrlRef = useRef<string | null>(null);
+  const [screenShareOptimizeFor, setScreenShareOptimizeFor] = useState<'text' | 'motion'>(() => {
+    try { return localStorage.getItem('screenShareOptimizeFor') === 'motion' ? 'motion' : 'text'; } catch { return 'text'; }
+  });
+  const screenShareOptimizeForRef = useRef(screenShareOptimizeFor);
+  screenShareOptimizeForRef.current = screenShareOptimizeFor;
   const [mediaAttemptComplete, setMediaAttemptComplete] = useState(false);
 
   // UI panels
@@ -1319,6 +1347,7 @@ export function StudioRoom() {
     remoteStreams: meshRemoteStreams,
     remoteScreenStreams: meshRemoteScreenStreams,
     publishScreenTrack,
+    setScreenShareOptimization,
     setRemoteScreenStreamId,
     peerBandwidthHealth,
     reconnectingPeerIds,
@@ -1330,12 +1359,36 @@ export function StudioRoom() {
     replaceTrack,
     setAudioForwardingEnabled,
     setVideoForwardingEnabled,
+    setMeshForwardingExemption,
+    refreshMeshForwarding,
     cleanup,
   } = useWebRTC({
     localStream: peerLocalStream,
     myParticipantId: myParticipant?.id || null,
     send,
   });
+
+  // Backstage people are not on the SFU: while it carries our media to the
+  // stage, the mesh keeps carrying it to them (and theirs to us).
+  const participantsForMeshRef = useRef(participants);
+  participantsForMeshRef.current = participants;
+  useEffect(() => {
+    setMeshForwardingExemption((participantId) => {
+      const participant = participantsForMeshRef.current.get(participantId);
+      return Boolean(participant) && participant!.status !== 'on-stage';
+    });
+    return () => setMeshForwardingExemption(null);
+  }, [setMeshForwardingExemption]);
+  useEffect(() => {
+    void refreshMeshForwarding();
+  }, [participants, refreshMeshForwarding]);
+  useEffect(() => {
+    setScreenShareOptimization(screenShareOptimizeFor);
+    try { localStorage.setItem('screenShareOptimizeFor', screenShareOptimizeFor); } catch { /* Private mode. */ }
+  }, [screenShareOptimizeFor, setScreenShareOptimization]);
+  useEffect(() => () => {
+    if (roomLostRetryTimerRef.current !== null) window.clearTimeout(roomLostRetryTimerRef.current);
+  }, []);
 
   const remoteStreams = useMemo(() => (
     sfuTransportStatus === 'active'
@@ -1414,6 +1467,14 @@ export function StudioRoom() {
   participantUploadControlRef.current = { pause: pauseParticipantUpload, resume: resumeParticipantUpload };
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
+  // What this browser is recording, so a take can be re-announced to a server that restarted.
+  const recordingResumeRef = useRef({ programRecording: false, participantRecording: false, sessionId: null as string | null, paused: false });
+  recordingResumeRef.current = {
+    programRecording: isRecording,
+    participantRecording: isParticipantLocalRecording,
+    sessionId: sessionRecordingSessionId,
+    paused: isRecordingPaused,
+  };
   const uploadProgressReportRef = useRef<{ sentAt: number; status: string | null; timer: number | null }>({
     sentAt: 0,
     status: null,
@@ -1496,13 +1557,19 @@ export function StudioRoom() {
       (participant) => participant.status === 'on-stage' || participant.status === 'backstage'
     );
     const onStageCount = onStageRemote.length + (myParticipant ? 1 : 0);
-    let uplinkKbps: number | null = null;
+    // Each peer connection estimates only its own share of our uplink, and all
+    // of them share it: the slowest share times the number of peers is what
+    // the uplink sustains for everyone.
+    let slowestShareKbps: number | null = null;
+    let measuredPeers = 0;
     for (const participant of onStageRemote) {
       const available = participant.health?.availableOutgoingBitrateKbps;
       if (typeof available === 'number' && Number.isFinite(available)) {
-        uplinkKbps = Math.max(uplinkKbps ?? 0, available);
+        slowestShareKbps = Math.min(slowestShareKbps ?? available, available);
+        measuredPeers += 1;
       }
     }
+    const uplinkKbps = slowestShareKbps === null ? null : slowestShareKbps * measuredPeers;
     return planMeshCapacity({ participantCount: onStageCount, uplinkKbps });
   }, [myParticipant, sessionPeerConnectionParticipants]);
   const sfuSessionParticipantId = useMemo(() => getSfuSessionParticipantId({
@@ -2446,23 +2513,28 @@ export function StudioRoom() {
       if (missingHostAccess) return;
       joinedRef.current = true;
       // Only present hostToken when claiming host — guests never have one to send.
-      const hostToken = userRole === 'host'
-        ? roomHostToken || undefined
-        : undefined;
-      const coHostInviteToken = userRole === 'co-host'
-        ? sessionStorage.getItem(`coHostInviteToken:${roomId}`) || undefined
-        : undefined;
-      const guestInviteToken = userRole === 'guest'
-        ? sessionStorage.getItem(`guestInviteToken:${roomId}`) || undefined
-        : undefined;
-      const roomPassword = userRole === 'host' || coHostInviteToken ? undefined : sessionStorage.getItem(`roomPassword:${roomId}`) || undefined;
-      const joinSessionId = userRole === 'host' ? undefined : getGuestJoinSessionId();
+      const readSession = (key: string) => {
+        try { return sessionStorage.getItem(key) || undefined; } catch { return undefined; }
+      };
+      // A resume token keeps our seat (same id, role and place) through a
+      // dropped connection; spent single-use invite links are then not re-sent.
       send({
         type: 'join-room',
-        payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, guestInviteToken, roomPassword, joinSessionId },
+        payload: buildStudioJoinPayload({
+          roomId,
+          name: userName,
+          role: userRole,
+          hostToken: userRole === 'host' ? roomHostToken || undefined : undefined,
+          restoreTicket: userRole === 'host' ? getStudioRestoreTicket(roomId) : undefined,
+          coHostInviteToken: userRole === 'co-host' ? readSession(`coHostInviteToken:${roomId}`) : undefined,
+          guestInviteToken: userRole === 'guest' ? readSession(`guestInviteToken:${roomId}`) : undefined,
+          roomPassword: userRole === 'host' ? undefined : readSession(`roomPassword:${roomId}`),
+          joinSessionId: userRole === 'host' ? undefined : getGuestJoinSessionId(),
+          resumeToken: getStudioResumeToken(roomId),
+        }),
       });
     }
-  }, [connected, localStream, mediaError, mediaAttemptComplete, missingHostAccess, roomId, roomHostToken, userName, userRole, send]);
+  }, [connected, joinRetryNonce, localStream, mediaError, mediaAttemptComplete, missingHostAccess, roomId, roomHostToken, userName, userRole, send]);
 
   useEffect(() => {
     if (!guestNotification) return;
@@ -2490,8 +2562,19 @@ export function StudioRoom() {
           const liveStartedAt = resumingOwnBroadcast && liveStartedAtRef.current
             ? liveStartedAtRef.current
             : live ? liveStreamState?.startedAt || new Date().toISOString() : null;
-          const recordingStartedAt = recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null;
-          const recordingSessionId = recordingState?.recording ? recordingState.sessionId || null : null;
+          // A restarted server may not know about a take still running here:
+          // the operator recording it says so again, and a guest recording its
+          // own tracks keeps the take, so both still finalize and upload.
+          const ongoingTake = recordingResumeRef.current;
+          const reassertOwnRecording = !recordingState?.recording && ongoingTake.programRecording
+            && isStudioOperator(participant) && Boolean(ongoingTake.sessionId);
+          const keepGuestTake = !recordingState?.recording && ongoingTake.participantRecording && Boolean(ongoingTake.sessionId);
+          const recordingStartedAt = recordingState?.recording
+            ? recordingState.startedAt || new Date().toISOString()
+            : reassertOwnRecording || keepGuestTake ? sessionRecordingStartedAtRef.current || new Date().toISOString() : null;
+          const recordingSessionId = recordingState?.recording
+            ? recordingState.sessionId || null
+            : reassertOwnRecording || keepGuestTake ? ongoingTake.sessionId : null;
           isLiveRef.current = live;
           liveStartedAtRef.current = liveStartedAt;
           sessionRecordingStartedAtRef.current = recordingStartedAt;
@@ -2515,6 +2598,22 @@ export function StudioRoom() {
               payload: { live: true, startedAt: liveStartedAt ?? undefined, performedBy: participant.id },
             });
           }
+          if (reassertOwnRecording && recordingSessionId) {
+            sendRef.current({
+              type: 'recording-state-changed',
+              payload: { recording: true, sessionId: recordingSessionId, paused: ongoingTake.paused, performedBy: participant.id },
+            });
+          }
+          if (roomId) {
+            saveStudioResumeToken(roomId, message.payload.resumeToken);
+            if (message.payload.restoreTicket) saveStudioRestoreTicket(roomId, message.payload.restoreTicket);
+          }
+          everJoinedRef.current = true;
+          roomLostSinceRef.current = null;
+          roomLostAttemptRef.current = 0;
+          setStudioServerLost(false);
+          setWatchId(message.payload.watchId || null);
+          stageReadTokenRef.current = message.payload.stageReadToken || null;
           setJoined(true);
           setChatMessages(existingChatMessages);
           setChatTypingIndicators([]);
@@ -2533,9 +2632,15 @@ export function StudioRoom() {
           setSessionRecordingStartedAt(recordingStartedAt);
           setSessionRecordingSessionId(recordingSessionId);
           setSessionRecordingPaused(Boolean(recordingState?.recording && recordingState.paused));
-          setSupportsCoordinatedRecording(Boolean(recordingState?.sessionId));
+          setSupportsCoordinatedRecording(Boolean(recordingSessionId));
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
+          // A resumed seat keeps its peer connections; drop only those to
+          // people who left while we were away (or whom we may no longer reach).
+          for (const previousId of participantsForMeshRef.current.keys()) {
+            const still = map.get(previousId);
+            if (!still || !canExchangeStudioMedia(participant, still)) removePeerRef.current(previousId);
+          }
           setParticipants(map);
           // Defer connectToPeer until myParticipant has propagated through useWebRTC's ref;
           // a dedicated effect below handles the initial connect-out.
@@ -2583,13 +2688,13 @@ export function StudioRoom() {
           break;
         }
         case 'offer':
-          handleOfferRef.current(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle offer:', err));
+          handleOfferRef.current(message.payload.from, message.payload.sdp, message.payload).catch(err => console.error('Failed to handle offer:', err));
           break;
         case 'answer':
-          handleAnswerRef.current(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle answer:', err));
+          handleAnswerRef.current(message.payload.from, message.payload.sdp, message.payload).catch(err => console.error('Failed to handle answer:', err));
           break;
         case 'ice-candidate':
-          handleIceCandidateRef.current(message.payload.from, message.payload.candidate).catch(err => console.error('Failed to handle ICE candidate:', err));
+          handleIceCandidateRef.current(message.payload.from, message.payload.candidate, message.payload).catch(err => console.error('Failed to handle ICE candidate:', err));
           break;
         case 'media-state-changed': {
           const { participantId, audioEnabled: a, videoEnabled: v, screenSharing: s, screenStreamId } = message.payload;
@@ -2677,6 +2782,7 @@ export function StudioRoom() {
           break;
         }
         case 'participant-removed':
+          if (roomId) saveStudioResumeToken(roomId, null);
           cleanupRef.current();
           stopMediaRef.current();
           stopPublishedScreenShareRef.current();
@@ -2796,6 +2902,10 @@ export function StudioRoom() {
           break;
         }
         case 'room-ended':
+          if (roomId) {
+            saveStudioResumeToken(roomId, null);
+            saveStudioRestoreTicket(roomId, null);
+          }
           setRoomEnding(false);
           cleanupRef.current();
           stopMediaRef.current();
@@ -2804,12 +2914,42 @@ export function StudioRoom() {
           break;
         case 'error':
           console.error('Server error:', message.payload.message);
+          if (message.payload.code === 'RATE_LIMITED') {
+            // Negotiation retries on its own; say so once rather than fail silently.
+            reportClientError('media', new Error(`Signaling rate limited: ${message.payload.message}`));
+            const noticeAt = Date.now();
+            if (noticeAt - lastRateLimitNoticeRef.current > 60_000) {
+              lastRateLimitNoticeRef.current = noticeAt;
+              addToastRef.current('The studio connection is busy. Some updates were delayed and will be retried.', 'warning');
+            }
+            break;
+          }
           if (message.payload.code === 'ROOM_NOT_FOUND') {
+            // After a server restart the studio comes back when its host
+            // reconnects: keep the stage up and keep asking for a while.
+            const lostAt = Date.now();
+            if (everJoinedRef.current) {
+              roomLostSinceRef.current ??= lostAt;
+              if (shouldKeepRetryingLostRoom(roomLostSinceRef.current, lostAt)) {
+                setStudioServerLost(true);
+                const delay = getRoomLostRetryDelayMs(roomLostAttemptRef.current++);
+                if (roomLostRetryTimerRef.current !== null) window.clearTimeout(roomLostRetryTimerRef.current);
+                roomLostRetryTimerRef.current = window.setTimeout(() => {
+                  roomLostRetryTimerRef.current = null;
+                  joinedRef.current = false;
+                  setJoinRetryNonce((value) => value + 1);
+                }, delay);
+                break;
+              }
+            }
+            setStudioServerLost(false);
+            if (roomId) saveStudioResumeToken(roomId, null);
             setConnectionError('This room does not exist or has ended.');
           }
           if (
             message.payload.code === 'ROOM_PASSWORD_REQUIRED' ||
             message.payload.code === 'ROOM_PASSWORD_INVALID' ||
+            message.payload.code === 'ROOM_PASSWORD_LOCKED' ||
             message.payload.code === 'GUEST_INVITE_INVALID' ||
             message.payload.code === ROOM_NOT_OPEN_ERROR_CODE ||
             message.payload.code === 'PARTICIPANT_BANNED'
@@ -2828,6 +2968,7 @@ export function StudioRoom() {
           }
           if (message.payload.code === 'HOST_TOKEN_INVALID') {
             if (roomId) {
+              saveStudioRestoreTicket(roomId, null);
               sessionStorage.removeItem(`hostToken:${roomId}`);
               removeSavedHostStudio(roomId);
             }
@@ -3143,18 +3284,21 @@ export function StudioRoom() {
       return;
     }
     try {
-      const stream = await startScreenShareRef.current();
+      const contentHint = screenShareOptimizeForRef.current === 'motion' ? 'motion' : 'detail';
+      const stream = await startScreenShareRef.current(contentHint);
       if (!stream || !myParticipantRef.current) return;
       const screenTrack = stream.getVideoTracks()[0];
+      const screenAudioTrack = stream.getAudioTracks()[0] || null;
       if (screenTrack) {
         // Mesh peers take the screen as a second video track, so the camera
         // stays on stage beside it. The SFU carries one video per publisher,
         // so there the screen replaces the camera with a camera inset.
         const separate = !sfuSessionRef.current;
         separateScreenTrackRef.current = separate;
-        try { screenTrack.contentHint = 'detail'; } catch { /* Optional encoder hint. */ }
+        try { screenTrack.contentHint = contentHint; } catch { /* Optional encoder hint. */ }
         if (separate) {
-          await publishScreenTrackRef.current(screenTrack, stream);
+          // The tab's or system's sound goes along as its own track.
+          await publishScreenTrackRef.current(screenTrack, stream, screenAudioTrack);
         } else {
           const screenPip = createScreenPictureInPictureStream({
             screenStream: stream,
@@ -3162,9 +3306,28 @@ export function StudioRoom() {
             frameRate: 30,
           });
           publishedScreenShareCleanupRef.current?.();
-          publishedScreenShareCleanupRef.current = screenPip?.cleanup || null;
+          // The SFU takes one audio track per publisher: mix the shared sound into ours.
+          let screenAudioCleanup: (() => void) | null = null;
+          if (screenAudioTrack) {
+            const context = acquireAudioContext();
+            const mixed = mixScreenAudioWithVoice(context, peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null, screenAudioTrack);
+            if (mixed) {
+              sfuSessionRef.current?.setLocalAudioTrack(mixed.track);
+              screenAudioCleanup = () => {
+                sfuSessionRef.current?.setLocalAudioTrack(peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null);
+                mixed.dispose();
+                releaseAudioContext();
+              };
+            } else {
+              releaseAudioContext();
+            }
+          }
+          const pipCleanup = screenPip?.cleanup || null;
+          publishedScreenShareCleanupRef.current = pipCleanup || screenAudioCleanup
+            ? () => { pipCleanup?.(); screenAudioCleanup?.(); }
+            : null;
           const publishedVideoTrack = screenPip?.videoTrack || screenTrack;
-          try { publishedVideoTrack.contentHint = 'detail'; } catch { /* Optional encoder hint. */ }
+          try { publishedVideoTrack.contentHint = contentHint; } catch { /* Optional encoder hint. */ }
           publishedVideoTrackRef.current = publishedVideoTrack;
           await replaceTrackRef.current(publishedVideoTrack);
           sfuSessionRef.current?.setLocalVideoTrack(publishedVideoTrack);
@@ -3184,6 +3347,18 @@ export function StudioRoom() {
       console.warn('Screen share cancelled or failed:', err);
     }
   }, []); // All mutable values accessed via refs
+
+  // "Optimize for: Text / Motion" applies to a share in progress too.
+  useEffect(() => {
+    if (!isScreenSharing) return;
+    const hint = screenShareOptimizeFor === 'motion' ? 'motion' : 'detail';
+    const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
+    const tracks = [...(screenStream?.getVideoTracks() || []), publishedVideoTrackRef.current]
+      .filter((track): track is MediaStreamTrack => Boolean(track) && track !== cameraTrack);
+    for (const track of tracks) {
+      try { track.contentHint = hint; } catch { /* Optional encoder hint. */ }
+    }
+  }, [isScreenSharing, screenShareOptimizeFor, screenStream]);
 
   // Recording
   const onToggleRecordingPause = useCallback(() => {
@@ -3870,7 +4045,7 @@ export function StudioRoom() {
     setSfuTransportStatus('connecting');
     setSfuRemoteStreams(new Map());
     void requestSfuToken().then(async (token) => {
-      const iceConfiguration = await fetchIceConfig().catch(() => DEFAULT_ICE_CONFIG);
+      const iceConfiguration = await getSharedIceConfiguration();
       if (cancelled) return;
       const localVideoTrack = publishedVideoTrackRef.current || localStreamRef.current?.getVideoTracks()[0] || null;
       const localAudioTrack = peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null;
@@ -5336,8 +5511,9 @@ export function StudioRoom() {
         // otherwise (SFU) the screen has replaced the camera.
         const separateScreen = p.screenSharing ? meshRemoteScreenStreams.get(id) || null : null;
         const screenReplacesCamera = Boolean(p.screenSharing) && !separateScreen;
-        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: screenReplacesCamera ? false : p.audioEnabled, audibleWhileMuted: !screenReplacesCamera, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
-        if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: false, videoEnabled: true, volume: 1, isScreenShare: true });
+        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.audioEnabled, audibleWhileMuted: !screenReplacesCamera, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
+        // A shared tab's sound plays with the screen tile.
+        if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: separateScreen.getAudioTracks().length > 0, videoEnabled: true, volume: participantVolumes[id] ?? 1, isScreenShare: true });
       }
     }
     return items;
@@ -5683,8 +5859,9 @@ export function StudioRoom() {
           addToast('No one is waiting in the green room.', 'info');
           return true;
         }
-        waiting.forEach((participant) => onStageAction('move-to-stage', participant.id));
-        addToast(waiting.length === 1 ? `Admitted ${waiting[0].name}.` : `Admitted ${waiting.length} guests.`, 'success');
+        // Admitted guests go backstage (off air); bringing them on stage is a separate step.
+        waiting.forEach((participant) => onStageAction('move-to-backstage', participant.id));
+        addToast(waiting.length === 1 ? `Admitted ${waiting[0].name} to backstage.` : `Admitted ${waiting.length} guests to backstage.`, 'success');
         return true;
       }
       case 'toggle-auto-director': setAutoDirectorEnabled((current) => !current); return true;
@@ -5788,12 +5965,30 @@ export function StudioRoom() {
       return;
     }
     let cancelled = false;
-    const image = new Image();
-    image.onload = () => { if (!cancelled) apply(); };
-    image.onerror = () => { if (!cancelled) apply(); };
-    image.src = next.url;
+    // Stage pictures are only for admitted participants: fetch with our read token.
+    void loadStageImageObjectUrl(next.url, stageReadTokenRef.current).then((objectUrl) => {
+      if (cancelled) {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      if (objectUrl) next.url = objectUrl;
+      const previousObjectUrl = stageObjectUrlRef.current;
+      stageObjectUrlRef.current = objectUrl;
+      const image = new Image();
+      const show = () => {
+        if (cancelled) return;
+        apply();
+        if (previousObjectUrl && previousObjectUrl !== objectUrl) URL.revokeObjectURL(previousObjectUrl);
+      };
+      image.onload = show;
+      image.onerror = show;
+      image.src = next.url;
+    });
     return () => { cancelled = true; };
   }, [isHostOrCoHost, remoteStageContent, roomId]);
+  useEffect(() => () => {
+    if (stageObjectUrlRef.current) URL.revokeObjectURL(stageObjectUrlRef.current);
+  }, []);
 
   const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
     if (action === 'cycle-pip-corner') {
@@ -6140,7 +6335,9 @@ export function StudioRoom() {
   const connectionTimedOut = connectionError === 'Unable to connect to server. Please check your connection and try again.';
   // Keep an existing stage mounted during a network interruption.
   if (connectionError && !connectionTimedOut) {
-    const passwordError = connectionError === 'This room requires a password' || connectionError === 'Incorrect room password';
+    const passwordError = connectionError === 'This room requires a password'
+      || connectionError.startsWith('Incorrect room password')
+      || connectionError.startsWith('Too many incorrect passwords');
     const hostAccessError = connectionError.includes('Host access is missing or expired');
     const joinRecoverableError =
       passwordError ||
@@ -6257,9 +6454,9 @@ export function StudioRoom() {
             </span>
           </div>
           <div className="studio-headerRight" style={styles.headerRight}>
-            {!connected && (
+            {(!connected || studioServerLost) && (
               <span role="status" style={{ color: 'var(--warning)', fontSize: 13 }}>
-                {reconnectFailed ? 'Connection lost' : 'Reconnecting…'}
+                {reconnectFailed ? 'Connection lost' : 'Reconnecting to studio server…'}
               </span>
             )}
             {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
@@ -6526,9 +6723,9 @@ export function StudioRoom() {
           )}
         </div>
         <div className="studio-headerRight" style={styles.headerRight}>
-          {!connected && (
+          {(!connected || studioServerLost) && (
             <span role="status" style={{ color: 'var(--warning)', fontSize: 13 }}>
-              {reconnectFailed ? 'Connection lost' : 'Reconnecting…'}
+              {reconnectFailed ? 'Connection lost' : 'Reconnecting to studio server…'}
             </span>
           )}
           {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
@@ -7422,6 +7619,7 @@ export function StudioRoom() {
             <InvitePanel
               roomName={room?.name || 'Studio'}
               roomId={roomId || ''}
+              watchId={watchId}
               hostName={room?.hostName}
               inviteUrl={inviteUrl}
               scheduledFor={room?.scheduledFor}
@@ -7511,6 +7709,8 @@ export function StudioRoom() {
         onToggleRecordingPause={canControlRecording && isRecording ? onToggleRecordingPause : undefined}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={screenShareSupported || isScreenSharing ? onToggleScreenShare : undefined}
+        screenShareOptimizeFor={screenShareOptimizeFor}
+        onScreenShareOptimizeForChange={screenShareSupported ? setScreenShareOptimizeFor : undefined}
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
         unreadChatCount={unreadChatCount}
         onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}

@@ -6,6 +6,7 @@ import {
   createRoom,
   getRooms,
   getStageImage,
+  readStageImage,
   setSfuMembershipNotifier,
   setupSignalingServer,
   storeStageImage,
@@ -393,14 +394,16 @@ describe('returning guests', () => {
       });
       await admitted;
 
-      // The connection drops; the same browser comes back.
-      const left = waitForMessage(host, 'participant-left');
+      // The connection drops (the seat is held); the same browser comes back
+      // without its resume token, e.g. from a new tab.
       guest.terminate();
-      await left;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const left = waitForMessage(host, 'participant-left', (m) => m.payload.participantId === first.payload.participant.id);
       const again = await connectClient(harness.url);
       const rejoined = waitForMessage(again, 'room-joined');
       joinRoom(again, { roomId: room.id, name: 'Guest', role: 'guest', joinSessionId });
       assert.equal((await rejoined).payload.participant.status, 'on-stage');
+      await left;
 
       // A different browser still waits to be admitted.
       const stranger = await connectClient(harness.url);
@@ -697,7 +700,7 @@ describe('progressive recording upload reporting', () => {
       payload: { recording: true, sessionId: 'recording-progress-123', performedBy: 'client-host' },
     });
     await started;
-    return { host, guest, observer, guestId: joinedGuest.payload.participant.id };
+    return { host, guest, observer, guestId: joinedGuest.payload.participant.id, roomId: room.id };
   }
 
   it('relays stamped participant progress to hosts but not to other guests', async () => {
@@ -819,8 +822,8 @@ describe('progressive recording upload reporting', () => {
   it('relays recording transfer signals only between participants and hosts', async () => {
     const harness = await createSignalingHarness();
     try {
-      const { host, guest, observer, guestId } = await joinRecordingRoom(harness, 'transfer');
-      const entries = [...getRooms().values()].flatMap((state) => [...state.participants.values()]);
+      const { host, guest, observer, guestId, roomId } = await joinRecordingRoom(harness, 'transfer');
+      const entries = [...getRooms().get(roomId).participants.values()];
       const hostId = entries.find((entry) => entry.participant.name === 'Arnold').participant.id;
       const observerId = entries.find((entry) => entry.participant.name === 'Observer').participant.id;
 
@@ -2566,6 +2569,8 @@ describe('stage content sync', () => {
     const { room, hostToken } = createRoom('Stage sync test', 'Arnold', {
       creatorIp: `stage-sync-${Date.now()}`,
     });
+    // Admitted guests see the stage; waiting guests do not (see "green room privacy").
+    getRooms().get(room.id).room.settings.greenRoomEnabled = false;
 
     try {
       const host = await connectClient(harness.url);
@@ -2595,6 +2600,11 @@ describe('stage content sync', () => {
       const stored = storeStageImage({ roomId: room.id, participantId: hostId, token, contentType: 'image/jpeg', data: jpeg });
       assert.equal(stored.ok, true);
       assert.deepEqual(getStageImage(room.id, stored.imageId).data, jpeg);
+      // Reading a stage picture needs an admitted participant's token.
+      assert.equal(readStageImage(room.id, stored.imageId, '').status, 403);
+      assert.equal(readStageImage(room.id, stored.imageId, 'not-a-real-token').status, 403);
+      assert.equal(typeof guestSession.payload.stageReadToken, 'string');
+      assert.deepEqual(readStageImage(room.id, stored.imageId, guestSession.payload.stageReadToken).image.data, jpeg);
 
       const guestUpdate = waitForMessage(guest, 'stage-content-updated');
       sendSignal(host, {

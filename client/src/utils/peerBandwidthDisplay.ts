@@ -16,10 +16,16 @@ export function formatPeerBandwidthQualityLabel(health: PeerBandwidthHealth): st
 export function formatPeerBandwidthHealthTitle(health: PeerBandwidthHealth): string {
   const details = [
     `Mode: ${health.mode}`,
+    health.inboundQuality && health.inboundQuality !== 'unknown'
+      ? `Receiving: ${health.inboundQuality}${health.audioOnly ? ' (audio only)' : ''}${health.inboundPacketLossPercent !== null && health.inboundPacketLossPercent !== undefined ? `, ${health.inboundPacketLossPercent}% loss` : ''}`
+      : null,
+    health.outboundQuality && health.outboundQuality !== 'unknown' ? `Sending: ${health.outboundQuality}` : null,
     health.bitrateKbps !== null ? `Video: ${health.bitrateKbps} kbps` : null,
     health.roundTripTimeMs !== null ? `RTT: ${health.roundTripTimeMs} ms` : null,
     health.packetLossPercent !== null ? `Loss: ${health.packetLossPercent}%` : null,
+    health.inboundJitterMs !== null && health.inboundJitterMs !== undefined ? `Jitter: ${health.inboundJitterMs} ms` : null,
     health.availableOutgoingBitrateKbps !== null ? `Available: ${health.availableOutgoingBitrateKbps} kbps` : null,
+    health.relayed ? 'Via relay (TURN)' : health.relayed === false ? 'Direct' : null,
   ].filter(Boolean);
 
   return details.join(' | ');

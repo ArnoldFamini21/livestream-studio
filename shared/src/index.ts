@@ -254,6 +254,8 @@ export interface RoomSettings {
   enableStreaming: boolean;
   greenRoomEnabled: boolean;
   passwordProtected: boolean;
+  /** Co-hosts arriving from an invite link go straight on stage; by default they arrive backstage. */
+  coHostsJoinOnStage?: boolean;
 }
 
 export type RoomRegistrationField = 'name' | 'email';
@@ -401,6 +403,15 @@ export interface JoinRoomPayload {
   guestInviteToken?: string;
   roomPassword?: string;
   joinSessionId?: string;
+  /**
+   * Proof of an earlier seat in this studio (from room-joined). Within a short
+   * grace window after a dropped connection, presenting it returns the same
+   * participant id, role and place, so media connections that are still healthy
+   * stay up. Single-use invite tokens are not sent alongside it.
+   */
+  resumeToken?: string;
+  /** Host only: the signed studio description from room-joined, used to rebuild the studio after a server restart. */
+  restoreTicket?: string;
 }
 
 export interface RoomJoinedPayload {
@@ -417,6 +428,16 @@ export interface RoomJoinedPayload {
   stageContent?: StageContentPayload;
   /** Hosts and co-hosts only: authorizes uploads to `/api/rooms/:id/stage-images`. */
   stageUploadToken?: string;
+  /** Admitted participants only: authorizes reading `/api/rooms/:id/stage-images/:imageId` (header `x-stage-token`). */
+  stageReadToken?: string;
+  /** Present again on the next join-room to keep this seat through a dropped connection. */
+  resumeToken?: string;
+  /** True when this join resumed an earlier seat (same participant id); peers were kept. */
+  resumed?: boolean;
+  /** Hosts and co-hosts only: the private id of the public watch page (`/watch/:watchId`). */
+  watchId?: string;
+  /** Host only: signed studio description to keep with the host token (see JoinRoomPayload.restoreTicket). */
+  restoreTicket?: string;
   features?: {
     chatTyping?: boolean;
   };
@@ -444,13 +465,26 @@ export interface StageContentMedia {
   slideCount?: number;
 }
 
-export interface SDPPayload {
+/**
+ * Peer-connection identity carried with every offer, answer and candidate.
+ * `pcId` names the sender's RTCPeerConnection, `toPcId` the receiver's
+ * connection the sender is talking to. A new `pcId` on an offer means the
+ * other side rebuilt its connection (a reload that kept its participant id, or
+ * recovery after repeated ICE failures), so the receiver rebuilds too; messages
+ * aimed at a connection the receiver already replaced are ignored.
+ */
+export interface PeerConnectionRef {
+  pcId?: string;
+  toPcId?: string;
+}
+
+export interface SDPPayload extends PeerConnectionRef {
   from: string;
   to: string;
   sdp: RTCSessionDescriptionInit;
 }
 
-export interface ICEPayload {
+export interface ICEPayload extends PeerConnectionRef {
   from: string;
   to: string;
   candidate: RTCIceCandidateInit;
@@ -1020,6 +1054,9 @@ export interface LiveStreamTokenClaims {
   roomId: string;
   participantId: string;
   role: Extract<ParticipantRole, 'host' | 'co-host'>;
+  /** The studio's private watch-page id; the HLS watch page is published under it, never under the room id. */
+  watchId?: string;
+  iat?: number;
   exp: number;
   nonce: string;
 }
@@ -1039,7 +1076,7 @@ export interface SfuTokenClaims {
   nonce: string;
 }
 
-export type SfuMembershipControlAction = 'revoke-participant' | 'allow-participant' | 'revoke-room';
+export type SfuMembershipControlAction = 'revoke-participant' | 'allow-participant' | 'revoke-room' | 'revoke-recording-upload';
 
 export interface SfuMembershipControlClaims {
   v: 1;
@@ -1061,6 +1098,7 @@ export interface RecordingUploadTokenClaims {
   participantName: string;
   role: ParticipantRole;
   sessionId: string;
+  iat?: number;
   exp: number;
   nonce: string;
 }

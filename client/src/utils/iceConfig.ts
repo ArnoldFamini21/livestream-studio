@@ -174,9 +174,28 @@ export function normalizeIceConfigWithStatus(value: unknown): ClientIceConfigWit
   return { config, status };
 }
 
+/**
+ * The free studio server can take most of a minute to wake from sleep, and its
+ * first Cloudflare TURN request can take seconds more: allow for it.
+ */
+export const ICE_CONFIG_REQUEST_TIMEOUT_MS = 12_000;
+
+/** Fetch the relay configuration; throws when the server could not be reached or answered nonsense. */
+export async function tryFetchIceConfigWithStatus(timeoutMs = ICE_CONFIG_REQUEST_TIMEOUT_MS): Promise<ClientIceConfigWithStatus> {
+  const response = await getJson<unknown>('/api/ice-config', { timeoutMs });
+  const normalized = normalizeIceConfigWithStatus(response);
+  if (!normalized) throw new Error('The studio server returned no usable ICE servers');
+  return normalized;
+}
+
+/** Whether a configuration includes a TURN relay (needed behind strict NATs and many mobile networks). */
+export function hasTurnServers(config: RTCConfiguration | null | undefined): boolean {
+  return (config?.iceServers || []).some((server) => hasUrlScheme(server, ['turn', 'turns']));
+}
+
 export async function fetchIceConfigWithStatus(): Promise<ClientIceConfigWithStatus> {
   try {
-    const response = await getJson<unknown>('/api/ice-config', { timeoutMs: 5_000 });
+    const response = await getJson<unknown>('/api/ice-config', { timeoutMs: ICE_CONFIG_REQUEST_TIMEOUT_MS });
     return normalizeIceConfigWithStatus(response) || {
       config: DEFAULT_ICE_CONFIG,
       status: DEFAULT_ICE_CONFIG_STATUS,

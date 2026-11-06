@@ -99,11 +99,12 @@ export function PeoplePanel(props: PeoplePanelProps) {
                   className="people-text"
                   onClick={() =>
                     waiting.forEach((person) =>
-                      props.onStageAction('move-to-stage', person.id)
+                      props.onStageAction('move-to-backstage', person.id)
                     )
                   }
+                  title="Let everyone in to backstage, off air"
                 >
-                  Admit all
+                  Admit all to backstage
                 </button>
               )}
             </div>
@@ -241,14 +242,29 @@ function PersonRow({
               <StudioIcon name="mic" />
             </button>
           ) : (
-            <button
-              type="button"
-              className="people-admit"
-              aria-label={`Bring ${person.name} on stage`}
-              onClick={() => action('move-to-stage')}
-            >
-              {person.status === 'green-room' ? 'Admit' : 'Add'}
-            </button>
+            // Admitting lets a waiting guest in backstage (off air); putting
+            // someone on air is always its own, explicit step.
+            person.status === 'green-room' ? (
+              <button
+                type="button"
+                className="people-admit"
+                aria-label={`Admit ${person.name} to backstage`}
+                title="Admit to backstage (off air)"
+                onClick={() => action('move-to-backstage')}
+              >
+                Admit
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="people-admit"
+                aria-label={`Bring ${person.name} on stage`}
+                title="Bring on stage (on air)"
+                onClick={() => action('move-to-stage')}
+              >
+                On stage
+              </button>
+            )
           ))}
         {(host || !isMe) && (
           <button
@@ -360,12 +376,17 @@ function PersonRow({
                     Notify: you’re next
                   </button>
                 )}
-                {person.status === 'on-stage' && (
+                {person.status !== 'on-stage' && (
+                  <button type="button" onClick={() => action('move-to-stage')}>
+                    Bring on stage
+                  </button>
+                )}
+                {person.status !== 'backstage' && (
                   <button
                     type="button"
                     onClick={() => action('move-to-backstage')}
                   >
-                    Move backstage
+                    {person.status === 'green-room' ? 'Admit to backstage' : 'Move backstage'}
                   </button>
                 )}
                 {person.status !== 'green-room' && (

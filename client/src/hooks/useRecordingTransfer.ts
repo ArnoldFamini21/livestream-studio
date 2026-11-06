@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Participant, RecordingTransferSignalOptions, RecordingTransferSignalPayload, SignalMessage } from '@studio/shared';
-import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
+import { DEFAULT_ICE_CONFIG } from '../utils/iceConfig.ts';
+import { getSharedIceConfiguration } from '../utils/iceConfigLoader.ts';
 import {
   createTransferReceiver,
   createTransferSender,
@@ -70,13 +71,9 @@ const ICE_GATHER_TIMEOUT_MS = 4_000;
 const RECONNECT_DELAYS_MS = [2_000, 4_000, 8_000, 15_000, 30_000];
 
 // TURN credentials are short-lived: refetch for connections made later in a long show.
-const ICE_CONFIG_TTL_MS = 10 * 60_000;
-let iceConfigCache: { promise: Promise<RTCConfiguration>; at: number } | null = null;
+// The shared loader refetches them after ten minutes and retries a sleeping server.
 function getIceConfiguration(): Promise<RTCConfiguration> {
-  if (!iceConfigCache || Date.now() - iceConfigCache.at > ICE_CONFIG_TTL_MS) {
-    iceConfigCache = { promise: fetchIceConfig().catch(() => DEFAULT_ICE_CONFIG), at: Date.now() };
-  }
-  return iceConfigCache.promise;
+  return getSharedIceConfiguration().catch(() => DEFAULT_ICE_CONFIG);
 }
 
 function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {

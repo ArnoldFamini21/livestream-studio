@@ -70,7 +70,9 @@ export function verifyLiveStreamToken(token: string, secret: string, now = Date.
     typeof claims.participantId !== 'string' ||
     typeof claims.nonce !== 'string' ||
     typeof claims.exp !== 'number' ||
-    (claims.role !== 'host' && claims.role !== 'co-host')
+    (claims.role !== 'host' && claims.role !== 'co-host') ||
+    (claims.watchId !== undefined && typeof claims.watchId !== 'string') ||
+    (claims.iat !== undefined && (typeof claims.iat !== 'number' || !Number.isFinite(claims.iat)))
   ) {
     throw new Error('Invalid live stream token claims');
   }
@@ -128,7 +130,7 @@ export function verifySfuToken(token: string, secret: string, now = Date.now()):
 }
 
 function isSfuControlAction(value: unknown): value is SfuMembershipControlAction {
-  return value === 'revoke-participant' || value === 'allow-participant' || value === 'revoke-room';
+  return value === 'revoke-participant' || value === 'allow-participant' || value === 'revoke-room' || value === 'revoke-recording-upload';
 }
 
 export function verifySfuMembershipControlToken(
@@ -149,7 +151,7 @@ export function verifySfuMembershipControlToken(
     !Number.isFinite(claims.iat) ||
     typeof claims.exp !== 'number' ||
     !Number.isFinite(claims.exp) ||
-    ((claims.action === 'revoke-participant' || claims.action === 'allow-participant') &&
+    ((claims.action === 'revoke-participant' || claims.action === 'allow-participant' || claims.action === 'revoke-recording-upload') &&
       (typeof claims.participantId !== 'string' || !claims.participantId))
   ) {
     throw new Error('Invalid SFU membership control token claims');

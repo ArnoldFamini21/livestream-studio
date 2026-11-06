@@ -236,7 +236,8 @@ roomRouter.post('/:id/invites/email', async (req, res) => {
   }
 });
 
-// Get room info (requires knowing the room ID)
+// Get room info (requires knowing the room ID). Who is in the studio is not
+// public: participants get that over the signaling connection once admitted.
 roomRouter.get('/:id', (req, res) => {
   try {
     const rooms = getRooms();
@@ -247,17 +248,6 @@ roomRouter.get('/:id', (req, res) => {
       return;
     }
 
-    const participants = Array.from(roomState.participants.values()).map((p) => ({
-      id: p.participant.id,
-      name: p.participant.name,
-      role: p.participant.role,
-      audioEnabled: p.participant.audioEnabled,
-      videoEnabled: p.participant.videoEnabled,
-      screenSharing: p.participant.screenSharing,
-      status: p.participant.status,
-      joinedAt: p.participant.joinedAt,
-    }));
-
     res.json({
       id: roomState.room.id,
       name: roomState.room.name,
@@ -267,8 +257,7 @@ roomRouter.get('/:id', (req, res) => {
       scheduledFor: roomState.room.scheduledFor,
       settings: roomState.room.settings,
       registration: roomState.room.registration,
-      participants,
-      participantCount: participants.length,
+      participantCount: roomState.participants.size,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get room' });

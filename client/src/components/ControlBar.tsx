@@ -22,6 +22,9 @@ interface ControlBarProps {
   onToggleRecordingPause?: () => void;
   isScreenSharing?: boolean;
   onToggleScreenShare?: () => void;
+  /** What the screen share encoder favors: sharp text (slides, documents) or smooth motion (a video). */
+  screenShareOptimizeFor?: 'text' | 'motion';
+  onScreenShareOptimizeForChange?: (mode: 'text' | 'motion') => void;
   onOpenParticipants?: () => void;
   onOpenInvitePanel?: () => void;
   onOpenStreamDestinations?: () => void;
@@ -63,6 +66,8 @@ export function ControlBar({
   onToggleRecordingPause,
   isScreenSharing = false,
   onToggleScreenShare,
+  screenShareOptimizeFor = 'text',
+  onScreenShareOptimizeForChange,
   onOpenParticipants,
   onOpenInvitePanel,
   onOpenStreamDestinations,
@@ -237,6 +242,19 @@ export function ControlBar({
                 <line x1="12" y1="17" x2="12" y2="21" />
               </svg>
             </button>
+          )}
+          {onToggleScreenShare && onScreenShareOptimizeForChange && (
+            <select
+              className="cb-focusable"
+              style={styles.shareModeSelect}
+              value={screenShareOptimizeFor}
+              onChange={(event) => onScreenShareOptimizeForChange(event.target.value === 'motion' ? 'motion' : 'text')}
+              aria-label="Optimize screen sharing for"
+              title="Optimize screen sharing for text (slides, documents) or motion (videos)"
+            >
+              <option value="text">Text</option>
+              <option value="motion">Motion</option>
+            </select>
           )}
 
           {/* Chat */}
@@ -446,6 +464,19 @@ export function ControlBar({
               <line x1="12" y1="17" x2="12" y2="21" />
             </svg>
           </button>
+        )}
+        {onToggleScreenShare && onScreenShareOptimizeForChange && (
+          <select
+            className="cb-focusable"
+            style={styles.shareModeSelect}
+            value={screenShareOptimizeFor}
+            onChange={(event) => onScreenShareOptimizeForChange(event.target.value === 'motion' ? 'motion' : 'text')}
+            aria-label="Optimize screen sharing for"
+            title="Optimize screen sharing for text (slides, documents) or motion (videos)"
+          >
+            <option value="text">Text</option>
+            <option value="motion">Motion</option>
+          </select>
         )}
       </div>
 
@@ -690,6 +721,16 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     padding: 0,
     transition: 'all 0.15s ease',
+  },
+  shareModeSelect: {
+    height: 36,
+    borderRadius: 8,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    background: 'rgba(255, 255, 255, 0.06)',
+    color: 'var(--text-primary)',
+    fontSize: 12,
+    padding: '0 6px',
+    cursor: 'pointer',
   },
   iconBtnGreen: {
     background: 'var(--success)',

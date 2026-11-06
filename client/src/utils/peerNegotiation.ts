@@ -1,3 +1,35 @@
+export interface PeerRecoveryOptions {
+  /** Longest wait between ICE restarts. */
+  maxRecoveryDelayMs?: number;
+  /** ICE restarts without reconnecting before the connection is rebuilt from scratch. */
+  rebuildAfterAttempts?: number;
+  /** Called once when ICE restarts are not enough; the owner replaces the connection. */
+  onRecoveryExhausted?: () => void;
+  /** An unanswered restart offer younger than this is left alone rather than rolled back. */
+  minRollbackAgeMs?: number;
+}
+
+/**
+ * Delay before ICE restart number `attempt` (0-based): doubles from the base
+ * delay up to the cap, and never stops. A long outage (an ISP blip, a laptop
+ * lid) keeps being retried instead of leaving the tile "reconnecting" forever.
+ */
+export function getIceRestartDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
+  const exponent = Math.max(0, Math.min(attempt, 16));
+  return Math.min(maxDelayMs, Math.max(0, baseDelayMs) * 2 ** exponent);
+}
+
+/**
+ * The polite side does not restart ICE itself while the impolite side is
+ * doing it: two simultaneous restart offers collide, the polite side rolls
+ * back, and Chrome can stop gathering for that session. It only steps in
+ * (later, and only if no restart offer arrived) when the other side seems to
+ * have stalled, e.g. it never noticed the failure.
+ */
+export function getPoliteRecoveryDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
+  return getIceRestartDelayMs(attempt, baseDelayMs, maxDelayMs) * 2 + baseDelayMs;
+}
+
 /** Keep renegotiation on the existing connection so a network change does not
  * discard the guest's stream, senders, or bandwidth settings. */
 export class PeerNegotiation {
@@ -11,6 +43,14 @@ export class PeerNegotiation {
   private firstOfferTimer: ReturnType<typeof setTimeout> | undefined;
   private firstOfferPending = false;
   private candidates: RTCIceCandidateInit[] = [];
+  private lastLocalOfferAt = 0;
+  /** A restart offer from the other side arrived since the polite watch was armed. */
+  private remoteOfferSinceWatch = false;
+  private exhausted = false;
+  private readonly maxRecoveryDelayMs: number;
+  private readonly rebuildAfterAttempts: number;
+  private readonly minRollbackAgeMs: number;
+  private readonly onRecoveryExhausted?: () => void;
 
   constructor(
     private readonly pc: RTCPeerConnection,
@@ -20,7 +60,12 @@ export class PeerNegotiation {
     private readonly recoveryDelayMs = 5_000,
     private readonly connectTimeoutMs = 10_000,
     private readonly firstOfferDelayMs = 1_500,
+    options: PeerRecoveryOptions = {},
   ) {
+    this.maxRecoveryDelayMs = options.maxRecoveryDelayMs ?? 60_000;
+    this.rebuildAfterAttempts = options.rebuildAfterAttempts ?? 3;
+    this.minRollbackAgeMs = options.minRollbackAgeMs ?? 3_000;
+    this.onRecoveryExhausted = options.onRecoveryExhausted;
     this.armConnectWatchdog();
     // The answering side's camera sits on its own transceiver (simulcast uses
     // addTransceiver, which an incoming offer cannot adopt), so it only starts
@@ -93,6 +138,10 @@ export class PeerNegotiation {
   offer(iceRestart = false) {
     return this.enqueue(async () => {
       if (this.pc.signalingState === 'have-local-offer' && iceRestart) {
+        // An answer to a restart offer takes a round trip over signaling, which
+        // is slow between continents: leave a young offer alone rather than
+        // cancel the restart that is about to work.
+        if (Date.now() - this.lastLocalOfferAt < this.minRollbackAgeMs) return;
         // Recovery with our last offer still unanswered (lost, or dropped by the
         // peer): take it back and offer again rather than wait forever.
         await this.pc.setLocalDescription({ type: 'rollback' });
@@ -104,6 +153,7 @@ export class PeerNegotiation {
         const offer = await this.pc.createOffer(iceRestart ? { iceRestart: true } : undefined);
         if (!this.active()) return;
         await this.pc.setLocalDescription(offer);
+        this.lastLocalOfferAt = Date.now();
         if (this.active() && this.pc.localDescription) this.send(this.pc.localDescription);
       } finally {
         this.makingOffer = false;
@@ -112,6 +162,7 @@ export class PeerNegotiation {
   }
 
   receiveOffer(sdp: RTCSessionDescriptionInit) {
+    this.remoteOfferSinceWatch = true;
     return this.enqueue(async () => {
       // Decide here, not on arrival: operations run in order, so an offer we are
       // still creating has been set by now (a real collision), and an answer
@@ -176,7 +227,16 @@ export class PeerNegotiation {
    * the two restarts do not collide (a collision is what caused the stall).
    */
   private armConnectWatchdog() {
-    if (this.restartAttempts >= 2) return;
+    if (this.restartAttempts >= 2) {
+      // Two fresh gatherings did not help: rebuild the connection. The polite
+      // side waits longer, so normally the other side rebuilds first.
+      this.connectTimer = setTimeout(() => {
+        this.connectTimer = undefined;
+        if (this.active() && this.pc.connectionState === 'new') this.exhaust();
+      }, this.polite ? this.connectTimeoutMs * 3 : this.connectTimeoutMs);
+      (this.connectTimer as { unref?: () => void }).unref?.();
+      return;
+    }
     const delay = this.polite ? this.connectTimeoutMs * 2 : this.connectTimeoutMs;
     this.connectTimer = setTimeout(() => {
       this.connectTimer = undefined;
@@ -200,15 +260,67 @@ export class PeerNegotiation {
     }
   }
 
+  /**
+   * ICE restarts with exponential backoff, for as long as the connection is
+   * down. Only the impolite side restarts (no glare); the polite side watches
+   * and steps in only when no restart offer arrives. After a few attempts the
+   * owner rebuilds the connection from scratch.
+   */
   private scheduleRecovery() {
-    if (this.recoveryTimer || this.restartAttempts >= 2) return;
+    if (this.recoveryTimer || this.exhausted) return;
+    const attempt = this.restartAttempts;
+    const delay = this.polite
+      ? getPoliteRecoveryDelayMs(attempt, this.recoveryDelayMs, this.maxRecoveryDelayMs)
+      : getIceRestartDelayMs(attempt, this.recoveryDelayMs, this.maxRecoveryDelayMs);
+    this.remoteOfferSinceWatch = false;
     this.recoveryTimer = setTimeout(async () => {
       this.recoveryTimer = undefined;
       if (!this.active() || this.pc.connectionState === 'connected') return;
       this.restartAttempts++;
+      if (this.restartAttempts > this.rebuildAfterAttempts && this.onRecoveryExhausted) {
+        this.exhaust();
+        return;
+      }
+      if (this.polite && this.remoteOfferSinceWatch) {
+        // The other side is restarting; keep watching rather than collide.
+        this.scheduleRecovery();
+        return;
+      }
       try { await this.offer(true); } catch { /* Keep the stream while retrying. */ }
-      if (this.active()) this.connectionStateChanged();
-    }, this.recoveryDelayMs);
+      if (this.active() && (this.pc.connectionState as RTCPeerConnectionState) !== 'connected') this.scheduleRecovery();
+    }, delay);
+    (this.recoveryTimer as { unref?: () => void }).unref?.();
+  }
+
+  private exhaust() {
+    if (this.exhausted || !this.onRecoveryExhausted) return;
+    this.exhausted = true;
+    this.clearRecoveryTimer();
+    this.clearConnectTimer();
+    this.onRecoveryExhausted();
+  }
+
+  /**
+   * The network came back (an 'online' event) or a relay server became
+   * available: try now instead of waiting out the backoff.
+   */
+  restartNow() {
+    if (!this.active() || this.pc.connectionState === 'connected' || this.exhausted) return;
+    this.clearRecoveryTimer();
+    if (this.polite) {
+      this.scheduleRecovery();
+      return;
+    }
+    void this.offer(true)
+      .catch(() => {})
+      .finally(() => {
+        if (this.active() && this.pc.connectionState !== 'connected') this.scheduleRecovery();
+      });
+  }
+
+  /** How many ICE restarts were made since the connection was last up. */
+  get recoveryAttempts() {
+    return this.restartAttempts;
   }
 
   private clearRecoveryTimer() {

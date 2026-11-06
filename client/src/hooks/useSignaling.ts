@@ -51,7 +51,8 @@ export function useSignaling() {
     ws.onerror = null;
     wsRef.current = null;
     try {
-      ws.close();
+      // Not a departure: the server holds our seat so the rejoin resumes it.
+      ws.close(3001, 'Reconnecting');
     } catch {
       // Already closed.
     }
@@ -172,7 +173,13 @@ export function useSignaling() {
     }
 
     stopHeartbeat();
-    wsRef.current?.close();
+    // 1000 tells the server this is a deliberate leave: free the seat now
+    // instead of holding it for a reconnect.
+    try {
+      wsRef.current?.close(1000, 'Left the studio');
+    } catch {
+      // Already closed.
+    }
     wsRef.current = null;
   }, [stopHeartbeat]);
 
