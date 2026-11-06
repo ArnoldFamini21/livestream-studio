@@ -368,6 +368,7 @@ export type SignalMessage =
   | { type: 'recording-upload-token-issued'; payload: RecordingUploadTokenIssuedPayload }
   | { type: 'recording-upload-progress'; payload: RecordingUploadProgressPayload }
   | { type: 'recording-upload-control'; payload: RecordingUploadControlPayload }
+  | { type: 'recording-transfer-signal'; payload: RecordingTransferSignalPayload }
   | { type: 'sfu-token-request'; payload: SfuTokenRequestPayload }
   | { type: 'sfu-token-issued'; payload: SfuTokenIssuedPayload }
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
@@ -557,6 +558,38 @@ export interface RecordingUploadControlPayload {
   action: 'pause' | 'resume';
   performedBy?: string;
 }
+
+/**
+ * Peer-to-peer recording transfer signaling. A host or co-host invites a
+ * participant to send their local tracks straight to the host's recording
+ * folder over a dedicated RTCPeerConnection; the participant then offers and
+ * the operator answers. The server relays these only between a participant
+ * and the room's operators, and stamps the sender.
+ */
+export type RecordingTransferSignalKind = 'invite' | 'offer' | 'answer' | 'hangup';
+
+export interface RecordingTransferSignalOptions {
+  /** Ask participants to also capture a lossless 48 kHz WAV of their microphone. */
+  losslessAudio?: boolean;
+  /** Keep the media-server upload running beside the peer-to-peer transfer. */
+  cloudUpload?: boolean;
+}
+
+export interface RecordingTransferSignalPayload {
+  targetParticipantId: string;
+  /** Set by the server to the authenticated sender. */
+  fromParticipantId?: string;
+  /** Identifies one transfer connection; a new offer replaces older ones. */
+  transferId: string;
+  kind: RecordingTransferSignalKind;
+  /** Recording session the invite belongs to, when a take is running. */
+  sessionId?: string;
+  /** Complete (non-trickle) SDP for offers and answers. */
+  sdp?: string;
+  options?: RecordingTransferSignalOptions;
+}
+
+export const MAX_RECORDING_TRANSFER_SDP_LENGTH = 32_000;
 
 export const RECORDING_UPLOAD_PROGRESS_STATUSES: readonly RecordingUploadProgressStatus[] = [
   'uploading',

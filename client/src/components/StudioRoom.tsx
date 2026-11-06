@@ -31,7 +31,12 @@ import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/use
 import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
-import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
+import { useRecordingWorkflow } from '../hooks/useRecordingWorkflow.ts';
+import { RecordingDestinationPanel, RecordingTransferBadge } from './RecordingDestinationPanel.tsx';
+import { planParticipantRecording, shouldPauseOwnUploadWhileLive, type ParticipantRecordingPlan } from '../utils/recordingWorkflowPolicy.ts';
+import { isPcmWavRecordingSupported } from '../utils/pcmWavRecorder.ts';
+import { estimateRecordingBitsPerSecond } from '../utils/recordingBitrate.ts';
+import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalRecordingFileInput, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
@@ -164,7 +169,7 @@ import {
   type RecordingParticipantReadiness,
 } from '../utils/recordingReadiness.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
-import { buildLocalRecordingSources, buildParticipantRecordingSources } from '../utils/localRecordingSources.ts';
+import { buildLocalRecordingSources, buildLosslessMicrophoneSource, buildParticipantRecordingSources } from '../utils/localRecordingSources.ts';
 import {
   downloadRecordingExportArtifact,
   exportDistributedRecordingSession,
@@ -186,6 +191,7 @@ import {
   formatRecordingTimestamp,
   getToolbarRecordingFallbackToast,
   getToolbarRecordingAction,
+  makeParticipantRecordingFileName,
   makeToolbarRecordingFileName,
 } from '../utils/toolbarRecording.ts';
 import {
@@ -486,7 +492,6 @@ function createScreenPictureInPictureRecordingSource(
       pipStream.videoTrack,
       ...getLiveAudioTracks(options.screenStream),
     ]),
-    bitsPerSecond: 8_500_000,
     cleanup: pipStream.cleanup,
   };
 }
@@ -1396,6 +1401,12 @@ export function StudioRoom() {
     uploadState: participantUploadState,
     pauseUpload: pauseParticipantUpload,
     resumeUpload: resumeParticipantUpload,
+    updateSources: updateParticipantSources,
+    cancelUpload: cancelParticipantUpload,
+    inputEndedVersion: participantInputEndedVersion,
+    transferVersion: participantTransferVersion,
+    getTransferTracks: getParticipantTransferTracks,
+    markTransferDelivered: markParticipantTransferDelivered,
   } = useLocalRecording(room?.name || 'Studio');
   // Hosts see each participant's background upload; guests act on host pause/resume requests.
   const [participantRecordingUploads, setParticipantRecordingUploads] = useState<Record<string, RecordingUploadProgressPayload>>({});
@@ -1429,6 +1440,45 @@ export function StudioRoom() {
     }))
   ), [participants, peerBandwidthHealth]);
   const { health: mediaServerHealth, refresh: refreshMediaServerHealth } = useMediaServerHealth();
+  // Direct-to-folder recording (host SSD), peer-to-peer guest track delivery,
+  // storage preflight and the screen wake lock.
+  const recordingWorkflow = useRecordingWorkflow({
+    send,
+    addHandler,
+    roomId,
+    studioName: room?.name || 'Studio',
+    me: myParticipant,
+    isOperator: isHostOrCoHost,
+    participants,
+    cloudAvailable: mediaServerHealth.status !== 'unavailable' && mediaServerHealth.recordingStorage?.ready === true,
+    keepAwake: isRecording || isLive || isLocalRecording || isParticipantLocalRecording || myParticipant?.status === 'on-stage',
+    getLocalTracks: getParticipantTransferTracks,
+    localTracksVersion: participantTransferVersion,
+    onLocalTrackDelivered: markParticipantTransferDelivered,
+    onGuestTracksSaved: (participantName, files) => {
+      const durationMs = files.find((file) => file.capture?.durationMs)?.capture?.durationMs;
+      void persistRecordingSession({
+        roomName: `${room?.name || 'Studio'} - ${participantName}`,
+        durationSeconds: durationMs ? Math.round(durationMs / 1000) : null,
+        files: files.map((file) => ({ ...file, kind: file.kind as LocalRecordingFileInput['kind'] })),
+      }).catch((error) => console.warn(`Could not add ${participantName}'s tracks to the recording library:`, error));
+    },
+  });
+  const recordingWorkflowRef = useRef(recordingWorkflow);
+  recordingWorkflowRef.current = recordingWorkflow;
+  const participantRecordingPlanRef = useRef<(ParticipantRecordingPlan & { sessionId: string; hostFolderTake: boolean; lossless: boolean }) | null>(null);
+  const localRecordingTakeRef = useRef<string | null>(null);
+  /** Stops the Recordings-panel local take and closes its folder take, if any. */
+  const stopLocalRecordingIntoFolder = useCallback(async () => {
+    const result = await stopLocalRecording();
+    const takeId = localRecordingTakeRef.current;
+    localRecordingTakeRef.current = null;
+    if (takeId) {
+      recordingWorkflowRef.current.attachCaptures(takeId, result.files);
+      recordingWorkflowRef.current.endTake(takeId);
+    }
+    return result;
+  }, [stopLocalRecording]);
   const sessionHealth = useSessionHealth({
     localStream,
     connected,
@@ -2893,6 +2943,8 @@ export function StudioRoom() {
         case 'update-name':
         case 'end-room':
         case 'cancel-end-room':
+        // Peer-to-peer recording transfers are handled by useRecordingTransfer.
+        case 'recording-transfer-signal':
           break;
         default:
           assertNever(message);
@@ -3143,6 +3195,7 @@ export function StudioRoom() {
       pauseRecording();
     }
     setSessionRecordingPaused(nextPaused);
+    if (sessionRecordingSessionId) recordingWorkflowRef.current.notePause(sessionRecordingSessionId, nextPaused);
     send({
       type: 'recording-state-changed',
       payload: {
@@ -3177,7 +3230,7 @@ export function StudioRoom() {
       }
       if (action === 'stop-local') {
         try {
-          const result = await stopLocalRecording();
+          const result = await stopLocalRecordingIntoFolder();
           const timestamp = formatRecordingTimestamp(new Date());
           const files = result.files.filter(file => file.blob.size > 0).map((file, index) => ({
             label: file.label,
@@ -3210,6 +3263,11 @@ export function StudioRoom() {
         });
         setSessionRecordingStartedAt(null);
         setSessionRecordingPaused(false);
+        const folderTake = recordingWorkflowRef.current.getActiveTake(recordingSessionId);
+        // With a recording folder, every track is already on the host's drive
+        // (guests' arrive over the transfer connection): no free-tier export.
+        const skipCloudExport = Boolean(folderTake) && !recordingWorkflowRef.current.cloudUploadPreferred;
+        if (folderTake) recordingWorkflowRef.current.endTake(recordingSessionId);
         try {
           const recordings = await stopRecording();
           const programUpload = takeProgramProgressiveUpload();
@@ -3233,95 +3291,104 @@ export function StudioRoom() {
               addToast('The recording library could not save this program. Keep the downloaded recording.', 'warning');
             }
 
-            try {
-              if (mediaServerHealth.status === 'unavailable') {
-                throw new Error(mediaServerHealth.message || 'Media-server is unavailable.');
-              }
-              addToast('Saving your recording. The MP4 is prepared in the background; you can keep going.', 'info');
-              let programUploaded = false;
-              if (programUpload) {
-                try {
-                  await programUpload.finish();
-                  programUploaded = true;
-                } catch (err) {
-                  console.warn('Progressive program upload could not finish; sending the full program instead:', err);
+            if (skipCloudExport && folderTake) {
+              const folderName = recordingWorkflowRef.current.destination.folderName || 'your recording folder';
+              addToast(`Recording saved to ${folderName}/${folderTake.folder.path}. Guests’ tracks keep arriving in the same folder.`, 'success');
+              setShowRecordingPanel(true);
+              void recordingWorkflowRef.current.waitForHostSettled(30 * 60_000).then((settled) => {
+                if (settled && recordingWorkflowRef.current.transfers.length > 0) addToast('Every guest track is in your recording folder.', 'success');
+              });
+            } else {
+              try {
+                if (mediaServerHealth.status === 'unavailable') {
+                  throw new Error(mediaServerHealth.message || 'Media-server is unavailable.');
                 }
-              }
-              const token = await requestLiveStreamToken();
-              const exportBasename = `${room?.name || 'Studio'} Recording ${timestamp}`;
-              if (!programUploaded) {
-                await uploadRecordingToMediaServer({
-                  token,
-                  roomId: roomId || '',
-                  sessionId: recordingSessionId,
-                  participantId: myParticipant.id,
-                  participantName: `${myParticipant.name} program`,
-                  files,
-                  startExport: false,
-                });
-              }
-              // Your tracks are uploaded; waiting for guests, the server export,
-              // and the download happens in the background so Record is free
-              // again right away (the exit guard still covers it).
-              const finishExport = async () => {
-                const distributed = await waitForDistributedRecordingSession({
-                  token,
-                  roomId: roomId || '',
-                  sessionId: recordingSessionId,
-                  expectedUploads,
-                  timeoutMs: 120_000,
-                  intervalMs: 1_500,
-                });
-                if (distributed.completedUploadCount < expectedUploads) {
-                  addToast(
-                    `Exporting ${distributed.completedUploadCount}/${expectedUploads} available local recordings.`,
-                    'warning'
-                  );
+                addToast('Saving your recording. The MP4 is prepared in the background; you can keep going.', 'info');
+                let programUploaded = false;
+                if (programUpload) {
+                  try {
+                    await programUpload.finish();
+                    programUploaded = true;
+                  } catch (err) {
+                    console.warn('Progressive program upload could not finish; sending the full program instead:', err);
+                  }
                 }
-                const exportJob = await exportDistributedRecordingSession({
-                  token,
-                  roomId: roomId || '',
-                  sessionId: recordingSessionId,
-                  basename: exportBasename,
-                  exportVideoCodec: 'h264',
-                  includeAudioStems: true,
-                  pollTimeoutMs: 180_000,
-                });
-                // Keep the whole export (every person's tracks, not only the MP4)
-                // reachable from the Recordings panel.
-                if (programSession) {
-                  await updateRecordingSessionMediaExport(programSession.id, exportJob).catch((error) => {
-                    console.warn('Could not link the export to the recording library:', error);
+                const token = await requestLiveStreamToken();
+                const exportBasename = `${room?.name || 'Studio'} Recording ${timestamp}`;
+                if (!programUploaded) {
+                  await uploadRecordingToMediaServer({
+                    token,
+                    roomId: roomId || '',
+                    sessionId: recordingSessionId,
+                    participantId: myParticipant.id,
+                    participantName: `${myParticipant.name} program`,
+                    files,
+                    startExport: false,
                   });
                 }
-                const mp4Artifact = getReadyMp4Artifact(exportJob);
-                if (!mp4Artifact) throw new Error(exportJob.error || 'MP4 export did not finish.');
-                const download = await downloadRecordingExportArtifact({
-                  token,
-                  uploadId: exportJob.uploadId,
-                  exportId: exportJob.exportId,
-                  artifactId: mp4Artifact.id,
-                  artifactLabel: mp4Artifact.label,
-                  format: mp4Artifact.format,
-                });
-                // Name it after the studio and time, not the export's generic "Final MP4",
-                // so takes do not pile up as Final_MP4 (1).mp4, (2)...
-                const extension = download.fileName.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4';
-                downloadBlobFile(download.blob, `${exportBasename.replace(/[^\w .()-]+/g, '_').trim()}${extension}`);
-                addToast('MP4 recording export downloaded.', 'success');
-              };
-              setBackgroundExportCount((count) => count + 1);
-              void finishExport()
-                .catch(async (err) => {
-                  console.warn('MP4 recording export failed, saving original tracks:', err);
-                  await downloadToolbarRecordingFallbackFiles(files, timestamp);
-                  addToast(getToolbarRecordingFallbackToast(files), 'warning');
-                })
-                .finally(() => setBackgroundExportCount((count) => Math.max(0, count - 1)));
-            } catch (err) {
-              console.warn('MP4 recording export failed, saving original tracks:', err);
-              await downloadToolbarRecordingFallbackFiles(files, timestamp);
-              addToast(getToolbarRecordingFallbackToast(files), 'warning');
+                // Your tracks are uploaded; waiting for guests, the server export,
+                // and the download happens in the background so Record is free
+                // again right away (the exit guard still covers it).
+                const finishExport = async () => {
+                  const distributed = await waitForDistributedRecordingSession({
+                    token,
+                    roomId: roomId || '',
+                    sessionId: recordingSessionId,
+                    expectedUploads,
+                    timeoutMs: 120_000,
+                    intervalMs: 1_500,
+                  });
+                  if (distributed.completedUploadCount < expectedUploads) {
+                    addToast(
+                      `Exporting ${distributed.completedUploadCount}/${expectedUploads} available local recordings.`,
+                      'warning'
+                    );
+                  }
+                  const exportJob = await exportDistributedRecordingSession({
+                    token,
+                    roomId: roomId || '',
+                    sessionId: recordingSessionId,
+                    basename: exportBasename,
+                    exportVideoCodec: 'h264',
+                    includeAudioStems: true,
+                    pollTimeoutMs: 180_000,
+                  });
+                  // Keep the whole export (every person's tracks, not only the MP4)
+                  // reachable from the Recordings panel.
+                  if (programSession) {
+                    await updateRecordingSessionMediaExport(programSession.id, exportJob).catch((error) => {
+                      console.warn('Could not link the export to the recording library:', error);
+                    });
+                  }
+                  const mp4Artifact = getReadyMp4Artifact(exportJob);
+                  if (!mp4Artifact) throw new Error(exportJob.error || 'MP4 export did not finish.');
+                  const download = await downloadRecordingExportArtifact({
+                    token,
+                    uploadId: exportJob.uploadId,
+                    exportId: exportJob.exportId,
+                    artifactId: mp4Artifact.id,
+                    artifactLabel: mp4Artifact.label,
+                    format: mp4Artifact.format,
+                  });
+                  // Name it after the studio and time, not the export's generic "Final MP4",
+                  // so takes do not pile up as Final_MP4 (1).mp4, (2)...
+                  const extension = download.fileName.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4';
+                  downloadBlobFile(download.blob, `${exportBasename.replace(/[^\w .()-]+/g, '_').trim()}${extension}`);
+                  addToast('MP4 recording export downloaded.', 'success');
+                };
+                setBackgroundExportCount((count) => count + 1);
+                void finishExport()
+                  .catch(async (err) => {
+                    console.warn('MP4 recording export failed, saving original tracks:', err);
+                    await downloadToolbarRecordingFallbackFiles(files, timestamp);
+                    addToast(getToolbarRecordingFallbackToast(files), 'warning');
+                  })
+                  .finally(() => setBackgroundExportCount((count) => Math.max(0, count - 1)));
+              } catch (err) {
+                console.warn('MP4 recording export failed, saving original tracks:', err);
+                await downloadToolbarRecordingFallbackFiles(files, timestamp);
+                addToast(getToolbarRecordingFallbackToast(files), 'warning');
+              }
             }
           }
         } catch (err) {
@@ -3329,6 +3396,13 @@ export function StudioRoom() {
           addToast(err instanceof Error ? err.message : 'Failed to stop recording.', 'error');
         }
       } else {
+        // Still inside the click: re-grant the remembered folder, ask for
+        // persistent storage and check browser storage headroom.
+        const startCheck = await recordingWorkflowRef.current.prepareStart(10_000_000 + estimateRecordingBitsPerSecond(
+          buildParticipantRecordingSources({ localParticipant: myParticipant, localStream, screenStream, isScreenSharing }),
+        ));
+        if (!startCheck.proceed) return;
+        if (startCheck.headroom.status === 'warning') addToast(startCheck.headroom.message, 'warning');
         if (!(await runRecordingCountdown())) return;
         const streams = new Map<string, RecordingStreamInput>();
         const programSource = createProgramRecordingSource({
@@ -3356,8 +3430,16 @@ export function StudioRoom() {
         }
         if (streams.size === 0) return;
         const recordingSessionId = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        const mediaHttpUrl = roomId && mediaServerHealth.status !== 'unavailable' ? resolveMediaHttpUrl() : '';
+        const folderTake = startCheck.folderReady
+          ? await recordingWorkflowRef.current.beginTake(recordingSessionId, myParticipant.name)
+          : null;
+        if (!folderTake && recordingWorkflowRef.current.destination.status === 'none') {
+          addToast('Recording to browser storage. Choose a recording folder in Recordings to record straight to your SSD.', 'info');
+        }
+        const uploadProgram = !folderTake || recordingWorkflowRef.current.cloudUploadPreferred;
+        const mediaHttpUrl = uploadProgram && roomId && mediaServerHealth.status !== 'unavailable' ? resolveMediaHttpUrl() : '';
         const started = startRecording(streams, {
+          ...(folderTake ? { storage: folderTake.program } : {}),
           progressiveUpload: mediaHttpUrl && roomId
             ? {
                 mediaHttpUrl,
@@ -3371,7 +3453,10 @@ export function StudioRoom() {
               }
             : undefined,
         });
-        if (!started) return;
+        if (!started) {
+          if (folderTake) recordingWorkflowRef.current.endTake(recordingSessionId);
+          return;
+        }
         const startedAt = new Date().toISOString();
         const localCaptureCount = myParticipant.status === 'on-stage' && (myParticipant.audioEnabled || myParticipant.videoEnabled) ? 1 : 0;
         const remoteCaptureCount = Array.from(participants.values()).filter((participant) => (
@@ -3415,7 +3500,11 @@ export function StudioRoom() {
     });
 
     if (sources.length === 0) return;
-    await startLocalRecording(sources);
+    const localTake = recordingWorkflowRef.current.destination.ready
+      ? await recordingWorkflowRef.current.beginTake(`local-${Date.now().toString(36)}`, myParticipant.name)
+      : null;
+    localRecordingTakeRef.current = localTake?.sessionId || null;
+    await startLocalRecording(sources, null, localTake ? { storage: localTake.forParticipant('Tracks') } : undefined);
   }, [
     localRecordingFinalizing,
     folderSaving,
@@ -3921,11 +4010,33 @@ export function StudioRoom() {
           },
         }
       : undefined;
-    void startParticipantLocalRecording(sources, null, { progressiveUpload })
+    const workflow = recordingWorkflowRef.current;
+    const hostTake = isHostOrCoHost ? workflow.getActiveTake(sessionId) : null;
+    const plan = planParticipantRecording({
+      isOperator: isHostOrCoHost,
+      hostFolderTake: Boolean(hostTake),
+      invitedByHost: !isHostOrCoHost && Boolean(workflow.invite),
+      cloudUpload: isHostOrCoHost ? workflow.cloudUploadPreferred : workflow.invite?.options.cloudUpload === true,
+    });
+    const lossless = workflow.losslessAudio && isPcmWavRecordingSupported();
+    if (lossless) {
+      const wavSource = buildLosslessMicrophoneSource({ localParticipant: myParticipant, localStream });
+      if (wavSource) sources.push(wavSource);
+    }
+    participantRecordingPlanRef.current = { ...plan, sessionId, hostFolderTake: Boolean(hostTake), lossless };
+    void startParticipantLocalRecording(sources, null, {
+      progressiveUpload: plan.progressiveUpload ? progressiveUpload : undefined,
+      ...(hostTake ? { storage: hostTake.forParticipant(myParticipant.name) } : {}),
+      // Tags the browser backup so it can resume to the host after a reload.
+      ...(!isHostOrCoHost && roomId
+        ? { transfer: { roomId, sessionId, participantId: myParticipant.id, participantName: myParticipant.name } }
+        : {}),
+    })
       .catch((err) => {
         console.warn('Participant local recording could not start:', err);
       });
   }, [
+    isHostOrCoHost,
     isParticipantLocalRecording,
     isScreenSharing,
     localStream,
@@ -3939,6 +4050,38 @@ export function StudioRoom() {
     startParticipantLocalRecording,
     supportsCoordinatedRecording,
   ]);
+
+  // A new mic, camera, processing or quality setting continues the track in a
+  // new segment file; a screen share started mid-take becomes its own track.
+  useEffect(() => {
+    if (!isParticipantLocalRecording || !myParticipant || myParticipant.status !== 'on-stage') return;
+    const sources = buildParticipantRecordingSources({ localParticipant: myParticipant, localStream, screenStream, isScreenSharing });
+    if (participantRecordingPlanRef.current?.lossless) {
+      const wavSource = buildLosslessMicrophoneSource({ localParticipant: myParticipant, localStream });
+      if (wavSource) sources.push(wavSource);
+    }
+    void updateParticipantSources(sources).catch((err) => console.warn('Recording could not follow the device change:', err));
+  }, [
+    isParticipantLocalRecording,
+    isScreenSharing,
+    localStream,
+    myParticipant,
+    participantInputEndedVersion,
+    screenStream,
+    updateParticipantSources,
+  ]);
+
+  // The host started collecting tracks mid-take: send them peer-to-peer and
+  // stop the media-server upload unless the host asked for a cloud copy.
+  useEffect(() => {
+    const plan = participantRecordingPlanRef.current;
+    const invite = recordingWorkflow.invite;
+    if (!isParticipantLocalRecording || isHostOrCoHost || !plan || !invite) return;
+    const cloud = invite.options.cloudUpload === true;
+    if (plan.sendToHost && plan.progressiveUpload === cloud) return;
+    if (!cloud && plan.progressiveUpload) cancelParticipantUpload();
+    participantRecordingPlanRef.current = { ...plan, sendToHost: true, progressiveUpload: plan.progressiveUpload && cloud, uploadAfterStop: cloud };
+  }, [cancelParticipantUpload, isHostOrCoHost, isParticipantLocalRecording, recordingWorkflow.invite]);
 
   useEffect(() => {
     if (!isParticipantLocalRecording) return;
@@ -3981,9 +4124,39 @@ export function StudioRoom() {
             blob: file.blob,
             kind: file.kind,
             capture: file.capture,
-            fileName: `${participant.name.replace(/[^a-z0-9_-]+/gi, '_') || 'participant'}_${file.kind}_${index + 1}_${timestamp}.${getRecordingFileExtension(file.blob.type)}`,
+            fileName: makeParticipantRecordingFileName(participant.name, file.kind, index + 1, file.blob, timestamp),
           }));
         if (files.length === 0) return;
+
+        const plan = participantRecordingPlanRef.current?.sessionId === sessionId ? participantRecordingPlanRef.current : null;
+        participantRecordingPlanRef.current = null;
+        const workflow = recordingWorkflowRef.current;
+        const durationMs = result.files.find((file) => file.capture?.durationMs)?.capture?.durationMs;
+        if (plan && !plan.uploadAfterStop && !result.progressiveUpload && (plan.hostFolderTake || workflow.invite)) {
+          // Nothing goes to the media-server: the host's folder holds the take.
+          try {
+            await persistRecordingSession({
+              roomName: `${room?.name || 'Studio'} - ${participant.name}`,
+              durationSeconds: durationMs ? Math.round(durationMs / 1000) : null,
+              files,
+            });
+          } catch (error) {
+            console.warn('Participant recording could not be added to the browser library:', error);
+          }
+          if (plan.hostFolderTake) {
+            workflow.attachCaptures(sessionId, result.files);
+            addToast('Your tracks were recorded straight into the recording folder.', 'success');
+          } else {
+            addToast('Recording saved in this browser. Sending your tracks to the host…', 'info');
+            void workflow.waitForDelivery(30 * 60_000).then((delivered) => addToast(
+              delivered
+                ? 'Your tracks reached the host’s recording folder.'
+                : 'Some of your tracks have not reached the host yet. They stay in this browser and are sent automatically when you rejoin this studio.',
+              delivered ? 'success' : 'warning',
+            ));
+          }
+          return;
+        }
 
         const saved = await saveParticipantRecording({
           saveLocal: () => persistRecordingSession({
@@ -3994,7 +4167,28 @@ export function StudioRoom() {
             files,
           }),
           finishProgressive: result.progressiveUpload
-            ? () => result.progressiveUpload!.finish()
+            ? async () => {
+                await result.progressiveUpload!.finish();
+                // Device-change segments and mid-take screen shares are not in the progressive session.
+                const extra = result.progressiveUpload!.uncoveredFiles.filter((file) => file.blob.size > 0);
+                if (!extra.length) return;
+                const token = await requestRecordingUploadToken(sessionId);
+                await uploadRecordingToMediaServer({
+                  token,
+                  roomId,
+                  sessionId,
+                  participantId: participant.id,
+                  participantName: participant.name,
+                  files: extra.map((file, index) => ({
+                    label: file.label,
+                    blob: file.blob,
+                    kind: file.kind,
+                    capture: file.capture,
+                    fileName: makeParticipantRecordingFileName(participant.name, file.kind, files.length + index + 1, file.blob, timestamp),
+                  })),
+                  startExport: false,
+                });
+              }
             : undefined,
           uploadFull: async () => {
             const token = await requestRecordingUploadToken(sessionId);
@@ -4083,6 +4277,13 @@ export function StudioRoom() {
     if (isLive) pauseProgramUpload();
     else resumeProgramUpload();
   }, [isLive, pauseProgramUpload, programUploadState, resumeProgramUpload]);
+
+  // The host's own ISO upload (only without a recording folder) also waits while live.
+  useEffect(() => {
+    if (!participantUploadState || !isHostOrCoHost) return;
+    if (shouldPauseOwnUploadWhileLive({ isOperator: isHostOrCoHost, isLive })) pauseParticipantUpload();
+    else resumeParticipantUpload();
+  }, [isHostOrCoHost, isLive, participantUploadState, pauseParticipantUpload, resumeParticipantUpload]);
 
   const controlParticipantRecordingUpload = useCallback((participantId: string, action: 'pause' | 'resume') => {
     send({ type: 'recording-upload-control', payload: { targetParticipantId: participantId, action } });
@@ -7236,6 +7437,8 @@ export function StudioRoom() {
           </Suspense>
         )}
 
+        <RecordingTransferBadge transfers={recordingWorkflow.transfers} guestLine={recordingWorkflow.guestLine} />
+
         {/* Recording Panel */}
         {canControlRecording && showRecordingPanel && (
           <Suspense fallback={<LazyPanelFallback />}>
@@ -7249,7 +7452,7 @@ export function StudioRoom() {
               onStartRecording={onStartLocalRecording}
               onPauseRecording={pauseLocalRecording}
               onResumeRecording={resumeLocalRecording}
-              onStopRecording={stopLocalRecording}
+              onStopRecording={stopLocalRecordingIntoFolder}
               onFinalizingChange={setLocalRecordingFinalizing}
               onFolderSavingChange={setFolderSaving}
               onCancelRecording={cancelLocalRecording}
@@ -7268,6 +7471,22 @@ export function StudioRoom() {
               captionSegments={captionSegments}
               captionLanguage={captionLanguage}
               onClose={() => setShowRecordingPanel(false)}
+              destinationPanel={(
+                <RecordingDestinationPanel
+                  status={recordingWorkflow.destination.status}
+                  folderName={recordingWorkflow.destination.folderName}
+                  error={recordingWorkflow.destination.error}
+                  persisted={recordingWorkflow.destination.persistence?.persisted ?? null}
+                  preferences={recordingWorkflow.destination.preferences}
+                  cloudAvailable={recordingWorkflow.cloudAvailable}
+                  transfers={recordingWorkflow.transfers}
+                  disabled={isRecording || isLocalRecording}
+                  onChooseFolder={() => void recordingWorkflow.destination.chooseFolder()}
+                  onReconnectFolder={() => void recordingWorkflow.destination.reconnectFolder()}
+                  onForgetFolder={() => void recordingWorkflow.destination.forgetFolder()}
+                  onPreferencesChange={recordingWorkflow.destination.setPreferences}
+                />
+              )}
             />
           </Suspense>
         )}

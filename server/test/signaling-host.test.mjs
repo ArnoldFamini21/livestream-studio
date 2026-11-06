@@ -815,6 +815,77 @@ describe('progressive recording upload reporting', () => {
       await harness.close();
     }
   });
+
+  it('relays recording transfer signals only between participants and hosts', async () => {
+    const harness = await createSignalingHarness();
+    try {
+      const { host, guest, observer, guestId } = await joinRecordingRoom(harness, 'transfer');
+      const entries = [...getRooms().values()].flatMap((state) => [...state.participants.values()]);
+      const hostId = entries.find((entry) => entry.participant.name === 'Arnold').participant.id;
+      const observerId = entries.find((entry) => entry.participant.name === 'Observer').participant.id;
+
+      const invite = waitForMessage(guest, 'recording-transfer-signal');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: {
+          targetParticipantId: guestId,
+          transferId: 'transfer-1',
+          kind: 'invite',
+          sessionId: 'recording-progress-123',
+          fromParticipantId: 'spoofed',
+          options: { losslessAudio: true, cloudUpload: false, extra: 'dropped' },
+        },
+      });
+      const received = await invite;
+      assert.equal(received.payload.kind, 'invite');
+      assert.equal(received.payload.fromParticipantId, hostId);
+      assert.equal(received.payload.sessionId, 'recording-progress-123');
+      assert.deepEqual(received.payload.options, { losslessAudio: true, cloudUpload: false });
+
+      const offer = waitForMessage(host, 'recording-transfer-signal');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: hostId, transferId: 'transfer-1', kind: 'offer', sdp: 'v=0', options: { cloudUpload: true } },
+      });
+      const relayed = await offer;
+      assert.equal(relayed.payload.kind, 'offer');
+      assert.equal(relayed.payload.fromParticipantId, guestId);
+      assert.equal(relayed.payload.sdp, 'v=0');
+      assert.equal(relayed.payload.options, undefined, 'participants cannot set transfer options');
+
+      const guestToGuest = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      const observerSilent = expectNoMessage(observer, 'recording-transfer-signal');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: observerId, transferId: 'transfer-2', kind: 'offer', sdp: 'v=0' },
+      });
+      await guestToGuest;
+      await observerSilent;
+
+      const guestInvite = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: hostId, transferId: 'transfer-3', kind: 'invite' },
+      });
+      await guestInvite;
+
+      const invalid = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'bad id with spaces', kind: 'offer', sdp: 'v=0' },
+      });
+      await invalid;
+
+      const missingSdp = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'transfer-4', kind: 'answer' },
+      });
+      await missingSdp;
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 describe('secure guest invite token authorization', () => {

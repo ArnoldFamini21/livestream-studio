@@ -29,6 +29,7 @@ import { TranscriptCleanup, type TranscriptCleanupServerExport } from './Transcr
 export { encodePcm16Wav };
 import type { RecordingUploadSummary } from '../utils/recordingUpload.ts';
 import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
+import { getTrackStartOffsetsSeconds } from '../utils/recordingTakeManifest.ts';
 import { buildRecordingSessionSummary } from '../utils/recordingSessionSummary.ts';
 import { getBrowserRecordingFormatSummary, getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
@@ -81,6 +82,8 @@ interface RecordingPanelProps {
   captionSegments?: LiveCaptionSegment[];
   captionLanguage?: string;
   onClose: () => void;
+  /** Recording folder (direct-to-SSD) settings and guest transfer progress. */
+  destinationPanel?: React.ReactNode;
 }
 
 export interface RecordingMarker {
@@ -550,10 +553,20 @@ function createCrc32Table(): Uint32Array {
 
 const CRC32_TABLE = createCrc32Table();
 
-function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
+function crc32Update(crc: number, bytes: Uint8Array): number {
   for (let i = 0; i < bytes.length; i++) {
     crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return crc;
+}
+
+const ZIP_CRC_WINDOW_BYTES = 8 * 1024 * 1024;
+
+/** CRC-32 of a (disk-backed) Blob, read in windows so a long take never sits in memory. */
+async function crc32Blob(blob: Blob): Promise<number> {
+  let crc = 0xffffffff;
+  for (let start = 0; start < blob.size; start += ZIP_CRC_WINDOW_BYTES) {
+    crc = crc32Update(crc, new Uint8Array(await blob.slice(start, start + ZIP_CRC_WINDOW_BYTES).arrayBuffer()));
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
@@ -1162,6 +1175,20 @@ function formatFcpxDuration(seconds: number | null | undefined): string {
   return `${frames}/30s`;
 }
 
+/** FCPXML offset on the 30 fps timeline; 0 stays "0s". */
+function formatFcpxOffset(seconds: number): string {
+  const frames = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 30) : 0;
+  return frames ? `${frames}/30s` : '0s';
+}
+
+/** "0:00" for the take start, "0:01.250" for a track that started later. */
+function formatOffsetTimecode(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0:00';
+  const whole = Math.floor(seconds);
+  const millis = Math.round((seconds - whole) * 1000);
+  return millis ? `${formatDuration(whole)}.${String(millis).padStart(3, '0')}` : formatDuration(whole);
+}
+
 function getTimelineFrameCount(seconds: number | null | undefined): number {
   if (!Number.isFinite(seconds) || Number(seconds) <= 0) return 1;
   return Math.max(1, Math.round(Number(seconds) * 30));
@@ -1300,6 +1327,8 @@ function createEditorTimeline(
   exportedAt: string
 ) {
   const audioStemBySourcePath = new Map(audioStemFiles.map((file) => [file.sourceZipPath, file]));
+  // Each track starts where it really started in the take (manifest timing), not at 0:00.
+  const startOffsets = getTrackStartOffsetsSeconds(files);
   return {
     app: 'livestream-studio',
     exportType: 'editor-timeline',
@@ -1340,9 +1369,9 @@ function createEditorTimeline(
           encoding: audioStem.encoding,
         } : null,
         timeline: {
-          startSeconds: 0,
+          startSeconds: startOffsets[index],
           durationSeconds: source.durationSeconds,
-          startTimecode: '0:00',
+          startTimecode: formatOffsetTimecode(startOffsets[index]),
           durationTimecode: formatDuration(source.durationSeconds),
         },
       };
@@ -1363,6 +1392,7 @@ function buildEditorTimelineCsv(
   audioStemFiles: RecordingAudioStemFile[]
 ): string {
   const audioStemBySourcePath = new Map(audioStemFiles.map((file) => [file.sourceZipPath, file]));
+  const startOffsets = getTrackStartOffsetsSeconds(files);
   const rows = [
     [
       'trackIndex',
@@ -1388,8 +1418,8 @@ function buildEditorTimelineCsv(
         kind,
         kind,
         file.label,
-        '0:00',
-        0,
+        formatOffsetTimecode(startOffsets[index]),
+        startOffsets[index],
         formatDuration(source.durationSeconds),
         source.durationSeconds,
         file.zipPath,
@@ -1412,11 +1442,13 @@ export function buildFinalCutProXml(
   const duration = formatFcpxDuration(source.durationSeconds);
   const projectName = source.roomName || 'LiveStream Studio Recording';
   const audioStemBySourcePath = new Map(audioStemFiles.map((file) => [file.sourceZipPath, file]));
+  const startOffsets = getTrackStartOffsetsSeconds(files);
   const fileAssets = files.map((file, index) => ({
     id: `asset${index + 1}`,
     name: file.label || file.fileName,
     src: `../${file.zipPath}`,
     kind: inferEditorTrackKind(file),
+    offset: startOffsets[index],
   }));
   const stemAssets = files
     .map((file, index) => {
@@ -1427,9 +1459,10 @@ export function buildFinalCutProXml(
         name: stem.label,
         src: `../${stem.zipPath}`,
         kind: 'audio' as const,
+        offset: startOffsets[index],
       };
     })
-    .filter((asset): asset is { id: string; name: string; src: string; kind: 'audio' } => Boolean(asset));
+    .filter((asset): asset is { id: string; name: string; src: string; kind: 'audio'; offset: number } => Boolean(asset));
   const assets = [...fileAssets, ...stemAssets];
   const markerLines = getSortedRecordingMarkers(markers).map((marker) => (
     `            <marker start="${formatFcpxDuration(marker.seconds)}" duration="1/30s" value="${xmlEscape(marker.label)}"/>`
@@ -1440,7 +1473,7 @@ export function buildFinalCutProXml(
   const clipLines = assets.map((asset, index) => {
     const lane = index === 0 ? '' : ` lane="${index}"`;
     const audioRole = asset.kind === 'audio' ? ' audioRole="dialogue"' : '';
-    return `          <asset-clip name="${xmlEscape(asset.name)}" ref="${asset.id}" offset="0s" start="0s" duration="${duration}"${lane}${audioRole}/>`;
+    return `          <asset-clip name="${xmlEscape(asset.name)}" ref="${asset.id}" offset="${formatFcpxOffset(asset.offset)}" start="0s" duration="${duration}"${lane}${audioRole}/>`;
   });
 
   return [
@@ -1477,6 +1510,7 @@ export function buildPremiereProXml(
   const durationFrames = getTimelineFrameCount(source.durationSeconds);
   const projectName = source.roomName || 'LiveStream Studio Recording';
   const audioStemBySourcePath = new Map(audioStemFiles.map((file) => [file.sourceZipPath, file]));
+  const startOffsets = getTrackStartOffsetsSeconds(files);
   const sequenceTracks = files.map((file, index) => {
     const kind = inferEditorTrackKind(file);
     const audioStem = audioStemBySourcePath.get(file.zipPath);
@@ -1489,6 +1523,7 @@ export function buildPremiereProXml(
       fileName: file.fileName,
       type: file.type,
       durationFrames,
+      startFrames: Math.round(startOffsets[index] * 30),
       audioStem,
     };
   });
@@ -1523,7 +1558,7 @@ export function buildPremiereProXml(
       [
         `            <clipitem id="${track.id}">`,
         `              <name>${xmlEscape(track.label)}</name>`,
-        `              <start>0</start><end>${track.durationFrames}</end><in>0</in><out>${track.durationFrames}</out>`,
+        `              <start>${track.startFrames}</start><end>${track.startFrames + track.durationFrames}</end><in>0</in><out>${track.durationFrames}</out>`,
         `              <enabled>TRUE</enabled>`,
         `              <file id="${track.fileId}"/>`,
         '            </clipitem>',
@@ -1537,6 +1572,7 @@ export function buildPremiereProXml(
         fileId: track.fileId,
         label: track.label,
         durationFrames: track.durationFrames,
+        startFrames: track.startFrames,
       })),
     ...sequenceTracks
       .filter((track) => track.audioStem)
@@ -1545,6 +1581,7 @@ export function buildPremiereProXml(
         fileId: `stem-file-${index + 1}`,
         label: track.audioStem?.label || `${track.label} WAV stem`,
         durationFrames: track.durationFrames,
+        startFrames: track.startFrames,
         zipPath: track.audioStem?.zipPath || '',
         fileName: track.audioStem?.zipPath.split('/').pop() || '',
       })),
@@ -1552,7 +1589,7 @@ export function buildPremiereProXml(
     [
       `            <clipitem id="${track.id}">`,
       `              <name>${xmlEscape(track.label)}</name>`,
-      `              <start>0</start><end>${track.durationFrames}</end><in>0</in><out>${track.durationFrames}</out>`,
+      `              <start>${track.startFrames}</start><end>${track.startFrames + track.durationFrames}</end><in>0</in><out>${track.durationFrames}</out>`,
       '              <enabled>TRUE</enabled>',
       `              <file id="${track.fileId}"/>`,
       '            </clipitem>',
@@ -1644,7 +1681,7 @@ function buildEditorReadme(source: RecordingBundleSource): string {
     '- markers/: recording markers when present',
     '- captions/: live caption and generated transcript sidecars when present',
     '',
-    'Import the FCPXML into Final Cut Pro, the Premiere XML into Adobe Premiere Pro, the Resolve XML with File > Import > Timeline in DaVinci Resolve, or place each track at 0:00 in another editor and use the timeline CSV/JSON plus marker files as the sync map.',
+    'Import the FCPXML into Final Cut Pro, the Premiere XML into Adobe Premiere Pro, the Resolve XML with File > Import > Timeline in DaVinci Resolve, or place each track at its startSeconds from the timeline CSV/JSON (taken from the take manifest; 0:00 for older recordings) in another editor and use the marker files as the sync map.',
   ].join('\n');
 }
 
@@ -1662,7 +1699,7 @@ function buildPodcastReadme(source: RecordingBundleSource): string {
     '- markers/: recording markers when present',
     '- captions/: live caption and generated transcript sidecars when present',
     '',
-    'Use this ZIP for podcast editing workflows where video and screen tracks are not needed. Import the audio tracks or WAV stems into your editor at 0:00, then use markers and caption sidecars for show notes and clip points.',
+    'Use this ZIP for podcast editing workflows where video and screen tracks are not needed. Import the audio tracks or WAV stems into your editor at their start offsets (listed as startSeconds in the Editor export timeline and as startOffsetMs in the take-manifest.json of a folder recording; 0:00 when none is recorded), then use markers and caption sidecars for show notes and clip points.',
   ].join('\n');
 }
 
@@ -2011,11 +2048,12 @@ async function createZipBundle(entries: ZipEntry[]): Promise<Blob> {
     const pathBytes = ZIP_ENCODER.encode(entry.path);
     assertZipLimit(pathBytes.length, 'ZIP file path', ZIP_UINT16_MAX);
 
-    const dataBuffer = await entry.blob.arrayBuffer();
-    const data = new Uint8Array(dataBuffer);
-    assertZipLimit(data.byteLength, entry.path);
+    // Keep the original Blob (OPFS or folder backed): the browser streams it
+    // into the download instead of holding every track in memory.
+    const data = entry.blob;
+    assertZipLimit(data.size, entry.path);
 
-    const checksum = crc32(data);
+    const checksum = await crc32Blob(data);
     const { time, date } = getZipTimestamp(entry.modifiedAt || new Date());
 
     const localHeader = new Uint8Array(30 + pathBytes.length);
@@ -2027,8 +2065,8 @@ async function createZipBundle(entries: ZipEntry[]): Promise<Blob> {
     localView.setUint16(10, time, true);
     localView.setUint16(12, date, true);
     localView.setUint32(14, checksum, true);
-    localView.setUint32(18, data.byteLength, true);
-    localView.setUint32(22, data.byteLength, true);
+    localView.setUint32(18, data.size, true);
+    localView.setUint32(22, data.size, true);
     localView.setUint16(26, pathBytes.length, true);
     localView.setUint16(28, 0, true);
     localHeader.set(pathBytes, 30);
@@ -2043,8 +2081,8 @@ async function createZipBundle(entries: ZipEntry[]): Promise<Blob> {
     centralView.setUint16(12, time, true);
     centralView.setUint16(14, date, true);
     centralView.setUint32(16, checksum, true);
-    centralView.setUint32(20, data.byteLength, true);
-    centralView.setUint32(24, data.byteLength, true);
+    centralView.setUint32(20, data.size, true);
+    centralView.setUint32(24, data.size, true);
     centralView.setUint16(28, pathBytes.length, true);
     centralView.setUint16(30, 0, true);
     centralView.setUint16(32, 0, true);
@@ -2054,10 +2092,10 @@ async function createZipBundle(entries: ZipEntry[]): Promise<Blob> {
     centralView.setUint32(42, offset, true);
     centralHeader.set(pathBytes, 46);
 
-    localParts.push(localHeader.buffer, dataBuffer);
+    localParts.push(localHeader.buffer, data);
     centralParts.push(centralHeader.buffer);
     centralSize += centralHeader.byteLength;
-    offset += localHeader.byteLength + data.byteLength;
+    offset += localHeader.byteLength + data.size;
     assertZipLimit(offset, 'ZIP archive');
   }
 
@@ -2415,6 +2453,7 @@ export function RecordingPanel({
   captionSegments = [],
   captionLanguage,
   onClose,
+  destinationPanel,
 }: RecordingPanelProps) {
   const [recordedFiles, setRecordedFiles] = useState<RecordedFile[]>([]);
   const [lastRecordingDurationSeconds, setLastRecordingDurationSeconds] = useState<number | null>(null);
@@ -3997,6 +4036,8 @@ export function RecordingPanel({
             ))}
           </div>
         )}
+
+        {destinationPanel}
 
         {/* The checks stay one click away: only a blocking problem opens them
             by itself, so the panel leads with recording, not diagnostics. */}

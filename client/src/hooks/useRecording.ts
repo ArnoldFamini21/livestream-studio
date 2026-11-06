@@ -1,5 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { createRecoverableRecordingStore } from '../utils/recordingRecovery.ts';
+import {
+  browserRecordingTrackStoreFactory,
+  type RecordingTrackStore,
+  type RecordingTrackStoreFactory,
+} from '../utils/recordingTrackStore.ts';
 import type { RecordingUploadTrackKind } from '@studio/shared';
 import {
   getPreferredVideoRecordingMimeType,
@@ -33,6 +37,8 @@ export interface RecordingTrackResult {
 
 export interface StartProgramRecordingOptions {
   progressiveUpload?: LocalProgressiveUploadConfig;
+  /** Write the program straight into the host's recording folder. */
+  storage?: RecordingTrackStoreFactory;
 }
 
 export interface ProgramProgressiveUploadHandle {
@@ -50,7 +56,7 @@ interface RecordingTrack {
   name: string;
   kind?: RecordingUploadTrackKind;
   recorder: MediaRecorder;
-  chunkStore: ReturnType<typeof createRecoverableRecordingStore>;
+  chunkStore: RecordingTrackStore;
   finished: Promise<Blob>;
   cleanup?: () => void;
   cleanedUp?: boolean;
@@ -167,9 +173,9 @@ export function useRecording(roomName = 'Studio') {
           continue;
         }
 
-        const chunkStore = createRecoverableRecordingStore({
-          roomName, label: name, kind: kind || 'iso', mimeType: recorder.mimeType,
-        }, () => setStorageWarning('Recording is continuing in memory. Keep this tab open until it has been saved.'));
+        const chunkStore = (options?.storage || browserRecordingTrackStoreFactory)({
+          roomName, label: name, kind: kind || 'iso', mimeType: recorder.mimeType, sourceId: id,
+        }, (message) => setStorageWarning(message));
         recorder.ondataavailable = (e) => chunkStore.append(e.data);
         let resolveFinished!: (blob: Blob) => void;
         let rejectFinished!: (error: unknown) => void;

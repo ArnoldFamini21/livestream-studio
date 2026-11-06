@@ -27,13 +27,45 @@ confirms completed writes and matching file sizes; it does not replace a
 playback check of an important recording.
 
 Browsers without the directory picker, including Safari, show instructions to
-use the existing ZIP download. Set the browser's download location to your
-external drive first.
+use **Download all**, which downloads every original track as its own file
+straight from browser storage (the ZIP download also streams tracks from disk
+instead of loading them into memory). Set the browser's download location to
+your external drive first.
+
+## Record straight to your drive (Chrome or Edge)
+
+In the Recordings panel, choose **Choose recording folder** once. The studio
+remembers the folder; on later visits pressing Record asks the browser to allow
+it again with one click, without showing the folder picker.
+
+While a take records, every track is written into that folder as it is
+captured, organised as `<folder>/<Studio>/<YYYY-MM-DD HHmm take>/<person>/`.
+Tracks are committed in small part files every few seconds (so a crash loses
+at most a few seconds) and joined into the final file, with a size check, when
+the track ends. A device or setting change mid-take continues the track in a
+new "(part N)" file, and a screen share started mid-take becomes its own
+track. `take-manifest.json` in the take folder lists every file with its start
+offset, pauses and segment number, and the editor exports (FCPXML, Premiere,
+Resolve, timeline CSV/JSON) place each track at that offset.
+
+Guests' tracks are sent to the host's folder peer-to-peer during the take over
+a dedicated WebRTC data channel (using the studio's STUN/TURN servers). The
+panel shows progress per guest ("Receiving Maria's tracks — 82%"). A guest who
+reloads or reconnects resumes from the last byte the host saved; a guest's
+browser keeps its own copy until the host confirms the whole track. With a
+folder connected nothing is uploaded to the media server, unless object storage
+is configured and the cloud copy is switched on. An optional lossless track
+records each microphone, before voice processing, as 48 kHz WAV.
+
+If the drive stops accepting files, recording continues in browser storage and
+the studio says so; save that take to the folder afterwards. Without a folder,
+the studio asks the browser to keep its storage persistent and warns before
+recording when browser storage has less than about two hours of room.
 
 ## Browser storage is separate
 
-**Save to folder** makes a copy after recording. During recording, recovery
-chunks and the local library use browser storage, which follows the browser
+**Save to folder** makes a copy after recording. Without a recording folder,
+recovery chunks and the local library use browser storage during recording, which follows the browser
 profile. Choosing an external destination afterwards does not relocate that
 storage. Use a dedicated browser profile and cache on the external drive when
 that is a storage requirement. Existing recordings in a different browser or

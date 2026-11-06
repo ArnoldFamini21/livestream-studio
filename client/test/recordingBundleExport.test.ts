@@ -147,6 +147,26 @@ describe('recording bundle editor export', () => {
     assert.match(xml, /value="Clip this &quot;answer&quot;"/);
   });
 
+  it('places tracks at their recorded start offsets instead of 0:00', () => {
+    const timed = (startMs: number, clockOffsetMs?: number) => ({
+      sourceId: 's', sourceKind: 'audio' as const, sourceLabel: 's', mimeType: 'audio/webm', requestedBitsPerSecond: null,
+      startedAt: new Date(startMs).toISOString(), trackCount: 1, tracks: [],
+      timeline: { startMs, timeOrigin: 0, pauses: [], segmentIndex: 0, ...(clockOffsetMs !== undefined ? { clockOffsetMs } : {}) },
+    });
+    // The guest started 2.5 s after the host (its clock runs 1 s ahead).
+    const files = [
+      { ...bundleFiles[0], capture: timed(100_000) },
+      { ...bundleFiles[1], capture: timed(103_500, 1_000) },
+    ];
+    const fcpxml = buildFinalCutProXml(source, files, audioStemFiles, markers);
+    assert.match(fcpxml, /ref="asset1" offset="0s"/);
+    assert.match(fcpxml, /ref="asset2" offset="75\/30s"/);
+    assert.match(fcpxml, /ref="stem2" offset="75\/30s"/);
+    const premiere = buildPremiereProXml(source, files, audioStemFiles, markers);
+    assert.ok(premiere.includes(`<start>75</start><end>${75 + 65 * 30}</end>`));
+    assert.ok(premiere.includes(`<start>0</start><end>${65 * 30}</end>`));
+  });
+
   it('includes the FCPXML sidecar and manifest entry in recording bundles', async () => {
     const bundle = await createRecordingBundle({
       ...source,

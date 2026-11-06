@@ -16,6 +16,11 @@ export function formatRecordingTimestamp(date: Date): string {
   return date.toISOString().slice(0, 19).replace(/[:T]/g, '-');
 }
 
+/** "José_audio_1_<time>.webm": keeps non-ASCII names (José, Niño, 王) instead of turning them into underscores. */
+export function makeParticipantRecordingFileName(participantName: string, kind: string, index: number, blob: Blob, timestamp: string): string {
+  return `${sanitizeRecordingFileNamePart(participantName, 'participant')}_${sanitizeRecordingFileNamePart(kind, 'track')}_${index}_${timestamp}.${getRecordingFileExtension(blob.type)}`;
+}
+
 export function makeToolbarRecordingFileName(name: string, blob: Blob, timestamp: string): string {
   const label = sanitizeRecordingFileNamePart(name, 'recording');
   return `${label}_${timestamp}.${getRecordingFileExtension(blob.type)}`;

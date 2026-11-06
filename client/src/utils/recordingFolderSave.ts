@@ -75,7 +75,8 @@ function safeText(value: unknown, fallback: string, maxLength = 200): string {
   return (text || fallback).slice(0, maxLength);
 }
 
-function safeName(value: unknown, fallback: string, maxLength = 160): string {
+/** Unicode-safe file or folder name: keeps letters such as ñ and é, strips path and control characters. */
+export function safeName(value: unknown, fallback: string, maxLength = 160): string {
   let name = typeof value === 'string' ? value.normalize('NFKC') : '';
   name = name.replace(/[<>:"/\\|?*\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '_')
     .replace(/^[.\s]+|[.\s]+$/g, '').slice(0, maxLength).replace(/[.\s]+$/g, '');

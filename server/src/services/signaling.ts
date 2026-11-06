@@ -37,6 +37,7 @@ import type {
 } from '@studio/shared';
 import {
   RECORDING_UPLOAD_PROGRESS_STATUSES,
+  MAX_RECORDING_TRANSFER_SDP_LENGTH,
   ROOM_NOT_OPEN_ERROR_CODE,
   SCHEDULED_GUEST_ACCESS_MESSAGE,
   canExchangeStudioMedia,
@@ -196,6 +197,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'recording-upload-token-request',
   'recording-upload-progress',
   'recording-upload-control',
+  'recording-transfer-signal',
   'sfu-token-request',
   'live-stream-state-changed',
   'live-stream-token-request',
@@ -1136,6 +1138,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'recording-upload-control':
       handleRecordingUploadControl(ws, message.payload);
       break;
+    case 'recording-transfer-signal':
+      handleRecordingTransferSignal(ws, message.payload);
+      break;
     case 'sfu-token-request':
       handleSfuTokenRequest(ws, message.payload);
       break;
@@ -1900,6 +1905,68 @@ function handleRecordingUploadControl(
       targetParticipantId: target.participant.id,
       action: payload.action,
       performedBy: mapping.participantId,
+    },
+  });
+}
+
+const RECORDING_TRANSFER_SIGNAL_KINDS = new Set(['invite', 'offer', 'answer', 'hangup']);
+const RECORDING_TRANSFER_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/**
+ * Relay peer-to-peer recording transfer signaling between one participant and
+ * the room's operators only. Guests can never reach each other this way, only
+ * operators may invite, and the sender is stamped by the server.
+ */
+function handleRecordingTransferSignal(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'recording-transfer-signal' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  const sender = roomState?.participants.get(mapping.participantId);
+  if (!roomState || !sender) return;
+
+  if (
+    !isRecord(payload) ||
+    typeof payload.targetParticipantId !== 'string' ||
+    typeof payload.transferId !== 'string' ||
+    !RECORDING_TRANSFER_ID_PATTERN.test(payload.transferId) ||
+    !RECORDING_TRANSFER_SIGNAL_KINDS.has(payload.kind) ||
+    (payload.sessionId !== undefined && !isValidRecordingSessionId(payload.sessionId)) ||
+    (payload.sdp !== undefined && (typeof payload.sdp !== 'string' || payload.sdp.length > MAX_RECORDING_TRANSFER_SDP_LENGTH)) ||
+    ((payload.kind === 'offer' || payload.kind === 'answer') && typeof payload.sdp !== 'string')
+  ) {
+    sendError(ws, 'Invalid recording transfer signal', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const target = roomState.participants.get(payload.targetParticipantId);
+  if (!target || target === sender) return;
+  const senderIsOperator = isRoomOperator(sender.participant);
+  const targetIsOperator = isRoomOperator(target.participant);
+  // Exactly one side must be an operator: participant <-> host/co-host only.
+  if (senderIsOperator === targetIsOperator || (payload.kind === 'invite' && !senderIsOperator)) {
+    sendError(ws, 'Recording transfers connect participants with hosts only', 'UNAUTHORIZED');
+    return;
+  }
+
+  const options = isRecord(payload.options)
+    ? {
+        ...(typeof payload.options.losslessAudio === 'boolean' ? { losslessAudio: payload.options.losslessAudio } : {}),
+        ...(typeof payload.options.cloudUpload === 'boolean' ? { cloudUpload: payload.options.cloudUpload } : {}),
+      }
+    : undefined;
+  send(target.ws, {
+    type: 'recording-transfer-signal',
+    payload: {
+      targetParticipantId: target.participant.id,
+      fromParticipantId: mapping.participantId,
+      transferId: payload.transferId,
+      kind: payload.kind,
+      ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
+      ...(typeof payload.sdp === 'string' ? { sdp: payload.sdp } : {}),
+      ...(options && senderIsOperator ? { options } : {}),
     },
   });
 }
