@@ -820,7 +820,7 @@ const styles: Record<string, React.CSSProperties> = {
   metaLabel: {
     display: 'block',
     marginBottom: 3,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 700,
     color: 'var(--text-muted)',
     textTransform: 'uppercase',

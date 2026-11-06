@@ -432,7 +432,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-primary)',
   },
   meshBadge: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 700,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
@@ -478,7 +478,7 @@ const styles: Record<string, React.CSSProperties> = {
   metricLabel: {
     display: 'block',
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 700,
     textTransform: 'uppercase',
     letterSpacing: 0,
@@ -515,7 +515,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   diagnosticBadge: {
     flexShrink: 0,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 900,
     textTransform: 'uppercase',
     borderRadius: 999,
@@ -531,8 +531,8 @@ const styles: Record<string, React.CSSProperties> = {
   featureBody: { flex: 1, minWidth: 0 },
   featureTop: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 },
   featureLabel: { color: 'var(--text-primary)', fontSize: 11, fontWeight: 750, minWidth: 0 },
-  featureStatus: { fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0, flexShrink: 0 },
-  featureDetail: { margin: '2px 0 0', color: 'var(--text-muted)', fontSize: 10, lineHeight: 1.3 },
+  featureStatus: { fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0, flexShrink: 0 },
+  featureDetail: { margin: '2px 0 0', color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.3 },
   actionList: {
     display: 'flex',
     flexDirection: 'column',
@@ -540,10 +540,10 @@ const styles: Record<string, React.CSSProperties> = {
     paddingTop: 8,
     borderTop: '1px solid var(--border)',
   },
-  actionTitle: { fontSize: 10, fontWeight: 900, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: 0 },
+  actionTitle: { fontSize: 11, fontWeight: 900, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: 0 },
   actionItem: {
     color: 'var(--text-secondary)',
-    fontSize: 10,
+    fontSize: 12,
     lineHeight: 1.35,
     padding: '6px 7px',
     borderRadius: 7,
@@ -574,6 +574,6 @@ const styles: Record<string, React.CSSProperties> = {
   checkBody: { flex: 1, minWidth: 0 },
   checkTop: { display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' },
   checkLabel: { fontSize: 13, fontWeight: 650, color: 'var(--text-primary)' },
-  checkStatus: { fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0, flexShrink: 0 },
+  checkStatus: { fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0, flexShrink: 0 },
   checkDetail: { margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.4 },
 };

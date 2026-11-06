@@ -1207,7 +1207,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#a5f3fc',
   },
   registrationBadge: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 800,
     color: '#22c55e',
     background: 'rgba(34, 197, 94, 0.12)',
