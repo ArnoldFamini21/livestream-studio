@@ -116,6 +116,21 @@ export class IceConfigLoader {
   }
 
   /**
+   * The seat was just admitted from the green room. The server hands relays
+   * only to admitted seats, so what was fetched while waiting is STUN-only:
+   * fetch again (with the same credential), and subscribers apply the relays.
+   */
+  refetchAfterAdmission(): void {
+    if (!getIceConfigCredentials()) return;
+    this.latestFromSeat = false;
+    if (this.running) {
+      this.refetchAfterRun = true;
+      return;
+    }
+    this.start(true);
+  }
+
+  /**
    * Like ready(), but once this page holds a seat it also waits (up to
    * `timeoutMs`) for the configuration fetched with that seat, which is the
    * one carrying TURN relays. Connections created right after joining (the

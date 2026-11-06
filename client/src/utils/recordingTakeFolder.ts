@@ -290,6 +290,13 @@ export interface TakeFolder {
   readonly takeName: string;
   readonly directory: TakeDirectoryHandle;
   createTrackWriter(participantName: string, fileName: string, options?: FolderTrackWriterOptions): Promise<FolderTrackWriter>;
+  /**
+   * The folder name for one participant (by a stable key such as the
+   * participant id), unique within the take: two guests both called "Maria"
+   * get "Maria" and "Maria (2)", and a guest named like the host does not
+   * write into the host's folder.
+   */
+  participantFolder(ownerKey: string, participantName: string): string;
   writeJson(name: string, value: unknown): Promise<void>;
 }
 
@@ -316,11 +323,27 @@ export async function openTakeFolder(
     return entry;
   };
 
+  const folderOwners = new Map<string, string>();
+  const ownedFolders = new Set<string>();
+  const participantFolder = (ownerKey: string, participantName: string) => {
+    const assigned = folderOwners.get(ownerKey);
+    if (assigned) return assigned;
+    const base = recordingPathSegment(participantName, 'Participant', 56);
+    let candidate = base;
+    for (let index = 2; ownedFolders.has(candidate.toLowerCase()) || participantDirectories.has(candidate.toLowerCase()); index += 1) {
+      candidate = `${base} (${index})`;
+    }
+    folderOwners.set(ownerKey, candidate);
+    ownedFolders.add(candidate.toLowerCase());
+    return candidate;
+  };
+
   return {
     path: `${studioName}/${take.name}`,
     studioName,
     takeName: take.name,
     directory: take.directory,
+    participantFolder,
     async createTrackWriter(participantName, fileName, options) {
       const { name, directory } = await participantDirectory(participantName);
       const reserved = reservedNames.get(name.toLowerCase()) || new Set<string>();

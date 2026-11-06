@@ -113,6 +113,12 @@ interface RoomState {
   participants: Map<string, ParticipantEntry>;
   /** Private id of the public watch page; the room id is the guest join capability and is never published. */
   watchId: string;
+  /**
+   * A studio from before private watch ids: its watch links were published as
+   * /watch/<roomId>, so that id keeps resolving (to the canonical watch id).
+   * Never set for studios created since.
+   */
+  legacyWatchByRoomId?: boolean;
   bannedJoinSessionIds: Set<string>;
   /** Banned network addresses and when the ban lapses; a fresh browser session alone cannot undo a ban. */
   bannedIps: Map<string, number>;
@@ -306,6 +312,8 @@ const EMPTY_ROOM_GRACE_MS = parseBoundedDurationMs(
 const rooms = new Map<string, RoomState>();
 const wsToParticipant = new Map<WebSocket, { roomId: string; participantId: string }>();
 const socketIps = new WeakMap<WebSocket, string>();
+/** The upgrade request's Cookie header, for proving an owner account session on a host join. */
+const socketCookies = new WeakMap<WebSocket, string>();
 /** Sockets with a join still being checked (password hashing is asynchronous). */
 const pendingJoins = new WeakSet<WebSocket>();
 const failedJoinsBySocket = new WeakMap<WebSocket, number>();
@@ -454,6 +462,8 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
     room: snapshot.room,
     participants: new Map(),
     watchId: session?.watchId || createWatchId(),
+    // No watch id in the snapshot: saved before watch ids existed, so /watch/<roomId> links are out there.
+    ...(!session?.watchId || session.legacyWatchByRoomId ? { legacyWatchByRoomId: true } : {}),
     bannedJoinSessionIds: new Set(session?.bannedJoinSessionIds || []),
     bannedIps: new Map((session?.bannedIps || []).filter((ban) => ban.expiresAt > nowMs).map((ban) => [ban.ip, ban.expiresAt])),
     removedJoinSessionIds: new Map((session?.removedJoinSessionIds || [])
@@ -501,6 +511,7 @@ function buildRoomSessionSnapshot(roomState: RoomState): RoomSessionSnapshot {
   }
   return {
     watchId: roomState.watchId,
+    ...(roomState.legacyWatchByRoomId ? { legacyWatchByRoomId: true } : {}),
     ...(roomState.createdByOwner ? { createdByOwner: true } : {}),
     ...(roomState.recordingSessionId ? {
       recording: {
@@ -1164,6 +1175,8 @@ export function setupSignalingServer(wss: WebSocketServer) {
       return;
     }
     socketIps.set(ws, ip);
+    const cookie = req?.headers.cookie;
+    if (typeof cookie === 'string' && cookie) socketCookies.set(ws, cookie.slice(0, 8_192));
     console.log('New WebSocket connection');
 
     // Fix #3: Mark connection as alive on connect and on pong
@@ -1429,12 +1442,14 @@ function findResumableEntry(roomState: RoomState, token: unknown): ParticipantEn
 
 /**
  * Whether a per-seat credential (the resume token each participant receives in
- * room-joined) belongs to someone holding a seat in this studio. Gates the
- * TURN relay credentials handed out by /api/ice-config.
+ * room-joined) belongs to someone holding an admitted seat in this studio.
+ * Gates the TURN relay credentials handed out by /api/ice-config. Green-room
+ * visitors never exchange media, so they get no relays until admitted.
  */
 export function isRoomMemberCredential(roomId: unknown, credential: unknown): boolean {
   const roomState = typeof roomId === 'string' ? rooms.get(roomId) : undefined;
-  return Boolean(roomState && findResumableEntry(roomState, credential));
+  const entry = roomState ? findResumableEntry(roomState, credential) : undefined;
+  return Boolean(entry && entry.participant.status !== 'green-room');
 }
 
 function issueRestoreTicket(roomState: RoomState): string | undefined {
@@ -1459,6 +1474,7 @@ function issueRestoreTicket(roomState: RoomState): string | undefined {
       watchId: roomState.watchId,
       creatorIp: roomState.creatorIp,
       ...(roomState.createdByOwner ? { createdByOwner: true } : {}),
+      ...(roomState.legacyWatchByRoomId ? { legacyWatchByRoomId: true } : {}),
       ...(roomState.passwordHash && roomState.passwordSalt
         ? { passwordHash: roomState.passwordHash, passwordSalt: roomState.passwordSalt }
         : {}),
@@ -1476,12 +1492,19 @@ function issueRestoreTicket(roomState: RoomState): string | undefined {
  * same id, settings, password and watch link, so guests reconnecting a moment
  * later find it again.
  */
-function restoreRoomFromTicket(roomId: string, payload: JoinRoomPayload): RoomState | undefined {
+function restoreRoomFromTicket(roomId: string, payload: JoinRoomPayload, ownerProven = false): RoomState | undefined {
   if (payload.role !== 'host' || typeof payload.hostToken !== 'string' || !payload.restoreTicket) return undefined;
   const secret = getLiveStreamTokenSecret();
   if (!secret || rooms.size >= MAX_ROOMS) return undefined;
   const claims = verifyRoomRestoreTicket(payload.restoreTicket, secret, { roomId, hostToken: payload.hostToken });
   if (!claims) return undefined;
+  // With owner-only creation, a ticket is not a way around the gate: only the
+  // owner's studios (or a host who proves ownership now) come back.
+  const createdByOwner = claims.createdByOwner === true || ownerProven;
+  if (isStudioCreationGated() && !createdByOwner) {
+    console.warn(`Refused to rebuild room ${roomId} from a restore ticket: the studio was not created by the owner`);
+    return undefined;
+  }
   let snapshot: RoomSnapshot;
   try {
     const scheduledAtMs = Date.parse(claims.room.scheduledFor || '');
@@ -1502,7 +1525,11 @@ function restoreRoomFromTicket(roomId: string, payload: JoinRoomPayload): RoomSt
       creatorIp: claims.creatorIp,
       hasBeenJoined: true,
       ...(claims.passwordHash && claims.passwordSalt ? { passwordHash: claims.passwordHash, passwordSalt: claims.passwordSalt } : {}),
-      sessionState: { watchId: claims.watchId, ...(claims.createdByOwner === true ? { createdByOwner: true } : {}) },
+      sessionState: {
+        watchId: claims.watchId,
+        ...(createdByOwner ? { createdByOwner: true } : {}),
+        ...(claims.legacyWatchByRoomId === true ? { legacyWatchByRoomId: true } : {}),
+      },
     });
   } catch {
     return undefined;
@@ -1513,6 +1540,30 @@ function restoreRoomFromTicket(roomId: string, payload: JoinRoomPayload): RoomSt
   persistRoomSnapshot(roomId);
   console.log(`Room ${roomId} was rebuilt from its host's restore ticket after a server restart`);
   return roomState;
+}
+
+/**
+ * Whether a host's join proves they are the studio owner: the studio access
+ * key (STUDIO_CREATE_SECRET) sent with the join, or an owner account session
+ * on the WebSocket's upgrade request. Studios made before the owner gate was
+ * configured are upgraded this way the first time the owner hosts them, so
+ * they keep YouTube/Facebook chat and survive restarts like new ones.
+ */
+async function joinProvesStudioOwner(ws: WebSocket, payload: JoinRoomPayload): Promise<boolean> {
+  if (!isStudioCreationGated()) return false;
+  const accessKey = typeof payload.studioAccessKey === 'string' ? payload.studioAccessKey.trim().slice(0, 512) : '';
+  const cookie = socketCookies.get(ws);
+  if (!accessKey && !cookie) return false;
+  try {
+    const { authorizeStudioCreator, STUDIO_ACCESS_KEY_HEADER } = await import('./studioAccess.js');
+    const headers: Record<string, string> = {};
+    if (accessKey) headers[STUDIO_ACCESS_KEY_HEADER] = accessKey;
+    if (cookie) headers.cookie = cookie;
+    const result = await authorizeStudioCreator({ headers } as unknown as Parameters<typeof authorizeStudioCreator>[0]);
+    return result.ok && result.createdByOwner;
+  } catch {
+    return false;
+  }
 }
 
 /** Everything a participant needs to (re)build their view of the studio. Waiting guests see only the hosts. */
@@ -1630,12 +1681,24 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   const joinSessionId = normalizeJoinSessionId(payload.joinSessionId);
   // Sanitize and validate participant name
   const name = (typeof payload.name === 'string' ? payload.name : '').trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, MAX_PARTICIPANT_NAME_LENGTH) || 'Anonymous';
-  const roomState = rooms.get(roomId) ?? restoreRoomFromTicket(roomId, payload);
+  let knownRoom = rooms.get(roomId);
+  if (!knownRoom && payload.role === 'host' && payload.restoreTicket) {
+    pendingJoins.add(ws);
+    let ownerProven = false;
+    try {
+      ownerProven = await joinProvesStudioOwner(ws, payload);
+    } finally {
+      pendingJoins.delete(ws);
+    }
+    if (ws.readyState !== WebSocket.OPEN || wsToParticipant.has(ws)) return;
+    knownRoom = rooms.get(roomId) ?? restoreRoomFromTicket(roomId, payload, ownerProven);
+  }
 
-  if (!roomState) {
+  if (!knownRoom) {
     sendError(ws, 'Room not found', 'ROOM_NOT_FOUND');
     return;
   }
+  const roomState = knownRoom;
 
   // A dropped connection coming back within the grace window keeps its seat:
   // same participant id, role and place, so healthy media stays connected.
@@ -1661,6 +1724,24 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       return;
     }
     effectiveRole = 'host';
+    // A studio from before the owner gate: the owner proves it once and it is
+    // theirs from then on (persisted, and carried by the next restore ticket).
+    if (isStudioCreationGated() && !roomState.createdByOwner) {
+      const state = roomState;
+      pendingJoins.add(ws);
+      let ownerProven = false;
+      try {
+        ownerProven = await joinProvesStudioOwner(ws, payload);
+      } finally {
+        pendingJoins.delete(ws);
+      }
+      if (rooms.get(roomId) !== state || ws.readyState !== WebSocket.OPEN || wsToParticipant.has(ws)) return;
+      if (ownerProven) {
+        state.createdByOwner = true;
+        persistRoomSnapshot(roomId);
+        console.log(`Room ${roomId} is now marked as created by the studio owner`);
+      }
+    }
   }
 
   // Single-use co-host links. Once redeemed, the same browser keeps the role
@@ -2246,10 +2327,24 @@ export function readStageImage(roomId: string, imageId: string, token: string): 
 
 /** Public facts about the studio behind a watch-page id, for the watch page. Never the participant list. */
 export function findRoomByWatchId(watchId: string): Room | undefined {
-  if (typeof watchId !== 'string' || !/^[A-Za-z0-9_-]{12,64}$/.test(watchId)) return undefined;
+  return findWatchLinkRoom(watchId)?.room;
+}
+
+/**
+ * The studio a watch link points to, with its canonical watch id. Links are
+ * /watch/<watchId>; studios from before private watch ids published
+ * /watch/<roomId>, so for those (and only those) the room id still works and
+ * the page switches to the canonical id.
+ */
+export function findWatchLinkRoom(id: string): { room: Room; watchId: string } | undefined {
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) return undefined;
   for (const roomState of rooms.values()) {
-    if (roomState.watchId.length === watchId.length && safeEqual(roomState.watchId, watchId)) return roomState.room;
+    if (roomState.watchId.length === id.length && safeEqual(roomState.watchId, id)) {
+      return { room: roomState.room, watchId: roomState.watchId };
+    }
   }
+  const legacy = rooms.get(id);
+  if (legacy?.legacyWatchByRoomId && legacy.room.status !== 'ended') return { room: legacy.room, watchId: legacy.watchId };
   return undefined;
 }
 
@@ -2481,7 +2576,7 @@ function handleRecordingUploadControl(
   });
 }
 
-const RECORDING_TRANSFER_SIGNAL_KINDS = new Set(['invite', 'offer', 'answer', 'hangup']);
+const RECORDING_TRANSFER_SIGNAL_KINDS = new Set(['invite', 'offer', 'answer', 'hangup', 'ready']);
 const RECORDING_TRANSFER_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /**
@@ -2518,8 +2613,22 @@ function handleRecordingTransferSignal(
   const senderIsOperator = isRoomOperator(sender.participant);
   const targetIsOperator = isRoomOperator(target.participant);
   // Exactly one side must be an operator: participant <-> host/co-host only.
-  if (senderIsOperator === targetIsOperator || (payload.kind === 'invite' && !senderIsOperator)) {
+  if (
+    senderIsOperator === targetIsOperator ||
+    (payload.kind === 'invite' && !senderIsOperator) ||
+    (payload.kind === 'ready' && senderIsOperator)
+  ) {
     sendError(ws, 'Recording transfers connect participants with hosts only', 'UNAUTHORIZED');
+    return;
+  }
+  // Like studio media: nobody in the private green room takes part. An
+  // operator may still hang up on a participant sent back there.
+  const targetInGreenRoom = target.participant.status === 'green-room';
+  if (
+    sender.participant.status === 'green-room' ||
+    (targetInGreenRoom && !(payload.kind === 'hangup' && senderIsOperator))
+  ) {
+    sendError(ws, 'Recording transfers are only for admitted participants', 'UNAUTHORIZED');
     return;
   }
 

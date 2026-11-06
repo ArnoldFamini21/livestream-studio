@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { pollWatchStatus } from '../src/utils/watchStatus.ts';
+import { canonicalWatchPath, looksLikeReplacedWatchLink, pollWatchStatus } from '../src/utils/watchStatus.ts';
 
 it('does not overlap requests and aborts an in-flight poll on cleanup', async () => {
   let calls = 0;
@@ -62,4 +62,13 @@ it('rejects malformed status instead of declaring a broadcast offline', async ()
     await failed;
     assert.equal(updates, 0);
   } finally { stop(); }
+});
+
+it('moves an older /watch/<roomId> link to the canonical watch id', () => {
+  assert.equal(canonicalWatchPath('abcDEF1234', 'Zq3kP0aB9xYw_-12', '/watch/abcDEF1234'), '/watch/Zq3kP0aB9xYw_-12');
+  assert.equal(canonicalWatchPath('Zq3kP0aB9xYw_-12', 'Zq3kP0aB9xYw_-12', '/watch/Zq3kP0aB9xYw_-12'), null, 'already canonical');
+  assert.equal(canonicalWatchPath('abcDEF1234', undefined, '/watch/abcDEF1234'), null);
+  assert.equal(canonicalWatchPath('abcDEF1234', 'Zq3kP0aB9xYw_-12', '/elsewhere'), null);
+  assert.equal(looksLikeReplacedWatchLink('abcDEF1234'), true, 'room ids are 10 characters');
+  assert.equal(looksLikeReplacedWatchLink('Zq3kP0aB9xYw_-12'), false, 'watch ids are longer');
 });

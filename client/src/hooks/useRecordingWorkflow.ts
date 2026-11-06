@@ -100,7 +100,7 @@ export function useRecordingWorkflow(options: UseRecordingWorkflowOptions) {
       const registry = registryRef.current;
       if (!registry) return;
       const group = [...registry.tracks.values()].filter((candidate) => (
-        candidate.participantName === entry.participantName && candidate.announcement.sessionId === entry.announcement.sessionId
+        candidate.participantId === entry.participantId && candidate.announcement.sessionId === entry.announcement.sessionId
       ));
       const files = destination.recordReceivedTrack(entry, registry.getClockOffset(entry.participantId), group);
       if (files?.length) {

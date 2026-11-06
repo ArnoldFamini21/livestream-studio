@@ -421,6 +421,11 @@ export interface JoinRoomPayload {
   resumeToken?: string;
   /** Host only: the signed studio description from room-joined, used to rebuild the studio after a server restart. */
   restoreTicket?: string;
+  /**
+   * Host only: the owner's studio access key (STUDIO_CREATE_SECRET), when this
+   * browser has it. Marks a studio made before the owner gate as the owner's.
+   */
+  studioAccessKey?: string;
 }
 
 export interface RoomJoinedPayload {
@@ -622,10 +627,12 @@ export interface RecordingUploadControlPayload {
  * Peer-to-peer recording transfer signaling. A host or co-host invites a
  * participant to send their local tracks straight to the host's recording
  * folder over a dedicated RTCPeerConnection; the participant then offers and
- * the operator answers. The server relays these only between a participant
- * and the room's operators, and stamps the sender.
+ * the operator answers. The server relays these only between an admitted
+ * (non-green-room) participant and the room's operators, and stamps the
+ * sender. A participant whose seat was resumed sends 'ready' to ask the
+ * operators for a fresh invite.
  */
-export type RecordingTransferSignalKind = 'invite' | 'offer' | 'answer' | 'hangup';
+export type RecordingTransferSignalKind = 'invite' | 'offer' | 'answer' | 'hangup' | 'ready';
 
 export interface RecordingTransferSignalOptions {
   /** Ask participants to also capture a lossless 48 kHz WAV of their microphone. */

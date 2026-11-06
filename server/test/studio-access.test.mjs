@@ -136,6 +136,13 @@ describe('external chat keys and the owner gate', () => {
       assert.equal(isRoomMemberCredential(room.id, joinedMessage.payload.resumeToken), true);
       assert.equal(isRoomMemberCredential(room.id, 'x'.repeat(32)), false);
       assert.equal(isRoomMemberCredential('missing-room', joinedMessage.payload.resumeToken), false);
+      // A seat still waiting in the green room gets no relays until admitted.
+      const seat = getRooms().get(room.id).participants.get(joinedMessage.payload.participant.id);
+      const admittedStatus = seat.participant.status;
+      seat.participant.status = 'green-room';
+      assert.equal(isRoomMemberCredential(room.id, joinedMessage.payload.resumeToken), false);
+      seat.participant.status = admittedStatus;
+      assert.equal(isRoomMemberCredential(room.id, joinedMessage.payload.resumeToken), true);
 
       const status = waitForMessage(ws, 'external-chat-status');
       ws.send(JSON.stringify({ type: 'external-chat-connect', payload: { platform: 'youtube', liveChatId: 'Cg0KC2FiY2RlZmdoaWpr' } }));

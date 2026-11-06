@@ -21,6 +21,21 @@ describe('take folder layout', () => {
     assert.equal(second.fileName, 'María audio 2.webm', 'a name already in use is never overwritten');
   });
 
+  it('gives two participants with the same name separate folders', async () => {
+    const root = new MemoryDirectoryHandle('SSD');
+    const take = await openTakeFolder(root, { studioName: 'Studio', startedAt });
+    // The host's own tracks already use the "Arnold" folder.
+    await take.createTrackWriter('Arnold', 'Arnold audio.webm');
+    assert.equal(take.participantFolder('guest-1', 'Maria'), 'Maria');
+    assert.equal(take.participantFolder('guest-2', 'maria'), 'maria (2)', 'names differing only in case would share a folder on macOS');
+    assert.equal(take.participantFolder('guest-1', 'Maria'), 'Maria', 'one participant keeps one folder');
+    assert.equal(take.participantFolder('guest-3', 'Arnold'), 'Arnold (2)', 'a guest named like the host gets its own folder');
+    const first = await take.createTrackWriter(take.participantFolder('guest-1', 'Maria'), 'mic.webm');
+    const second = await take.createTrackWriter(take.participantFolder('guest-2', 'maria'), 'mic.webm');
+    assert.equal(first.path, 'Studio/2026-11-05 2130 take/Maria/mic.webm');
+    assert.equal(second.path, 'Studio/2026-11-05 2130 take/maria (2)/mic.webm');
+  });
+
   it('never mixes a new take into an earlier take folder from the same minute', async () => {
     const root = new MemoryDirectoryHandle('SSD');
     const first = await openTakeFolder(root, { studioName: 'Studio', startedAt });

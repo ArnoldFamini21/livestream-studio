@@ -27,6 +27,8 @@ export interface RoomRestoreTicketClaims {
   watchId: string;
   creatorIp: string;
   createdByOwner?: boolean;
+  /** The studio's /watch/<roomId> links predate private watch ids and keep working. */
+  legacyWatchByRoomId?: boolean;
   passwordHash?: string;
   passwordSalt?: string;
   iat: number;

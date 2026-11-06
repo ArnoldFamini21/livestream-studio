@@ -206,17 +206,20 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
       scheduleManifest(take);
     };
     const factories = new Map<string, RecordingTrackStoreFactory>();
+    // Claimed up front, so a guest with the same name gets "<name> (2)" instead.
+    const programFolder = folder.participantFolder('local:Program', 'Program');
     const forParticipant = (participantName: string) => {
       let factory = factories.get(participantName);
       if (!factory) {
-        factory = createFolderRecordingTrackStoreFactory({ take: folder, participantName, onTrackFinished: track(participantName, 'host') });
+        const folderName = folder.participantFolder(`local:${participantName}`, participantName);
+        factory = createFolderRecordingTrackStoreFactory({ take: folder, participantName: folderName, onTrackFinished: track(participantName, 'host') });
         factories.set(participantName, factory);
       }
       return factory;
     };
     return {
       folder,
-      program: createFolderRecordingTrackStoreFactory({ take: folder, participantName: 'Program', onTrackFinished: track('Program', 'program') }),
+      program: createFolderRecordingTrackStoreFactory({ take: folder, participantName: programFolder, onTrackFinished: track('Program', 'program') }),
       host: forParticipant(hostName),
       forParticipant,
     };
@@ -278,7 +281,8 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
       ...(capture ? { capture } : {}),
     });
     scheduleManifest(take);
-    const groupKey = `${entry.participantName}`;
+    // By participant, not display name: two guests called "Maria" are two groups.
+    const groupKey = `participant:${entry.participantId}`;
     if (take.persistedGroups.has(groupKey) || groupEntries.some((candidate) => candidate.status === 'receiving')) return null;
     take.persistedGroups.add(groupKey);
     return groupEntries.filter((candidate) => candidate.status === 'complete' && candidate.file).map((candidate) => {

@@ -102,6 +102,36 @@ describe('shared ICE configuration loader', () => {
     assert.deepEqual(buildIceConfigRequestHeaders(), {});
   });
 
+  it('fetches relays again once a green-room seat is admitted', async () => {
+    setIceConfigCredentials(null);
+    const stunOnly: ClientIceConfigWithStatus = { config: DEFAULT_ICE_CONFIG, status: DEFAULT_ICE_CONFIG_STATUS };
+    let admitted = false;
+    let fetches = 0;
+    const loader = new IceConfigLoader({
+      fetchConfig: async () => {
+        fetches += 1;
+        return buildIceConfigRequestHeaders()['X-Room-Credential'] && admitted ? turnConfig : stunOnly;
+      },
+    });
+    const updates: ClientIceConfigWithStatus[] = [];
+    loader.subscribe((value) => updates.push(value));
+    await loader.ready();
+    loader.setCredentials({ roomId: 'room-3', credential: 'seat-secret-dddddddddddd' });
+    for (let i = 0; i < 10 && updates.length < 2; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(hasTurnServers(loader.latest.config), false, 'the waiting room gets no relays');
+
+    admitted = true;
+    loader.refetchAfterAdmission();
+    const pending = loader.readyForSeat(5_000);
+    for (let i = 0; i < 10 && updates.length < 3; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(await pending, turnConfig);
+    assert.equal(fetches, 3);
+    setIceConfigCredentials(null);
+    loader.refetchAfterAdmission();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fetches, 3, 'nothing to refetch without a seat');
+  });
+
   it('makes a connection created right after joining wait for the seat configuration', async () => {
     setIceConfigCredentials(null);
     const stunOnly: ClientIceConfigWithStatus = { config: DEFAULT_ICE_CONFIG, status: DEFAULT_ICE_CONFIG_STATUS };

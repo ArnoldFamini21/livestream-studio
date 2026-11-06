@@ -68,6 +68,8 @@ export interface StudioJoinInput {
   joinSessionId?: string;
   resumeToken?: string;
   restoreTicket?: string;
+  /** Host only: the owner's saved studio access key. */
+  studioAccessKey?: string;
 }
 
 /** The join-room payload for a first join or a rejoin. */
@@ -80,6 +82,8 @@ export function buildStudioJoinPayload(input: StudioJoinInput): JoinRoomPayload 
   };
   if (input.role === 'host' && input.hostToken) payload.hostToken = input.hostToken;
   if (input.role === 'host' && input.restoreTicket) payload.restoreTicket = input.restoreTicket;
+  // Proves the owner's older studios are theirs (YouTube/Facebook chat keys, restore after restarts).
+  if (input.role === 'host' && input.hostToken && input.studioAccessKey) payload.studioAccessKey = input.studioAccessKey;
   // Spent single-use links are not re-sent on a rejoin; the seat (or, after
   // the grace window, the redeemed invite) carries the role instead.
   if (!resuming && input.role === 'co-host' && input.coHostInviteToken) payload.coHostInviteToken = input.coHostInviteToken;

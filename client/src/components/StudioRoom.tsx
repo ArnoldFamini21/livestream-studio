@@ -24,6 +24,7 @@ import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
 import { getSharedIceConfigLoader, getSharedIceConfiguration } from '../utils/iceConfigLoader.ts';
+import { getStoredStudioAccessKey } from '../utils/studioAccessKey.ts';
 import {
   buildStudioJoinPayload,
   getRoomLostRetryDelayMs,
@@ -33,7 +34,7 @@ import {
   saveStudioResumeToken,
   shouldKeepRetryingLostRoom,
 } from '../utils/studioSession.ts';
-import { mixScreenAudioWithVoice } from '../utils/screenShareAudio.ts';
+import { SfuScreenAudioMix } from '../utils/sfuScreenAudioMix.ts';
 import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
 import { reportClientError } from '../utils/clientErrorReporter.ts';
 import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
@@ -62,6 +63,7 @@ import {
   useProgramAudioMix,
   type ProgramAudioTrackLease,
 } from '../audio/useProgramAudioMix.ts';
+import { getLocalProgramPresence } from '../audio/programAudioMixer.ts';
 import { useBackgroundMusicPlayer } from '../audio/useBackgroundMusicPlayer.ts';
 import { useSoundBoardPlayer } from '../audio/useSoundBoardPlayer.ts';
 import { useSessionHealth } from '../hooks/useSessionHealth.ts';
@@ -1336,6 +1338,7 @@ export function StudioRoom() {
     [localStream, outboundAudioTrack]
   );
   const peerAudioTrackRef = useRef<MediaStreamTrack | null>(null);
+  const sfuScreenAudioMixRef = useRef<SfuScreenAudioMix | null>(null);
   peerAudioTrackRef.current = peerLocalStream?.getAudioTracks()[0] ?? null;
 
   const {
@@ -1425,6 +1428,13 @@ export function StudioRoom() {
     remoteScreenStreams: meshRemoteScreenStreams,
     screenStream,
     participantVolumes,
+    // Same rule as displayedStageVideoItems: a backstage host presenting is heard.
+    localPresence: getLocalProgramPresence({
+      status: myParticipant?.status,
+      isOperator: isStudioOperator(myParticipant),
+      isScreenSharing,
+      hasActiveMedia: Boolean(activeMedia),
+    }),
   });
   const {
     isRecording: isLocalRecording,
@@ -2270,6 +2280,15 @@ export function StudioRoom() {
     });
   }, [lowerThirds]);
 
+  // TURN relays are only handed to admitted seats: fetch them once we leave the green room.
+  const myStatus = myParticipant?.status;
+  const previousStatusRef = useRef(myStatus);
+  useEffect(() => {
+    const previous = previousStatusRef.current;
+    previousStatusRef.current = myStatus;
+    if (previous === 'green-room' && myStatus && myStatus !== 'green-room') getSharedIceConfigLoader().refetchAfterAdmission();
+  }, [myStatus]);
+
   useEffect(() => {
     if (!autoSpeakerLowerThirds || !isHostOrCoHost || myParticipant?.status === 'green-room') return;
     if (lowerThirds.some((lowerThird) => lowerThird.visible && lowerThird.source !== 'auto-speaker')) return;
@@ -2523,6 +2542,7 @@ export function StudioRoom() {
           role: userRole,
           hostToken: userRole === 'host' ? roomHostToken || undefined : undefined,
           restoreTicket: userRole === 'host' ? getStudioRestoreTicket(roomId) : undefined,
+          studioAccessKey: userRole === 'host' ? getStoredStudioAccessKey() || undefined : undefined,
           coHostInviteToken: userRole === 'co-host' ? readSession(`coHostInviteToken:${roomId}`) : undefined,
           guestInviteToken: userRole === 'guest' ? readSession(`guestInviteToken:${roomId}`) : undefined,
           roomPassword: userRole === 'host' ? undefined : readSession(`roomPassword:${roomId}`),
@@ -3118,7 +3138,9 @@ export function StudioRoom() {
       if (audioTrack) {
         replaceTrack(audioTrack).catch((err) => console.error('Failed to publish audio track:', err));
       }
-      sfuSessionRef.current?.setLocalAudioTrack(audioTrack || null);
+      // While screen audio is mixed in for the SFU, keep publishing the mix (rebuilt around the new voice).
+      const screenMix = sfuScreenAudioMixRef.current;
+      sfuSessionRef.current?.setLocalAudioTrack(screenMix ? screenMix.trackFor(audioTrack || null) : (audioTrack || null));
     }
 
     if (!isScreenSharing && videoTrack?.id !== published.video) {
@@ -3320,15 +3342,20 @@ export function StudioRoom() {
           let screenAudioCleanup: (() => void) | null = null;
           if (screenAudioTrack) {
             const context = acquireAudioContext();
-            const mixed = mixScreenAudioWithVoice(context, peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null, screenAudioTrack);
-            if (mixed) {
-              sfuSessionRef.current?.setLocalAudioTrack(mixed.track);
+            // Kept in a ref so a later voice-track change rebuilds the mix instead of replacing it.
+            const mix = new SfuScreenAudioMix(context, screenAudioTrack);
+            const mixedTrack = mix.trackFor(peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null);
+            if (mix.active) {
+              sfuScreenAudioMixRef.current = mix;
+              sfuSessionRef.current?.setLocalAudioTrack(mixedTrack);
               screenAudioCleanup = () => {
+                if (sfuScreenAudioMixRef.current === mix) sfuScreenAudioMixRef.current = null;
                 sfuSessionRef.current?.setLocalAudioTrack(peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null);
-                mixed.dispose();
+                mix.dispose();
                 releaseAudioContext();
               };
             } else {
+              mix.dispose();
               releaseAudioContext();
             }
           }

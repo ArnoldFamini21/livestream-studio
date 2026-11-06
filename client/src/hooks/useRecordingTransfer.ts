@@ -19,6 +19,12 @@ import { RECORDING_TRANSFER_CHANNEL_LABEL } from '../utils/recordingTransferProt
 import { listTransferableRecordings, markRecoveredRecordingDelivered } from '../utils/recordingRecovery.ts';
 import { getTrackFileName } from '../utils/recordingTrackStore.ts';
 import type { TakeFolder } from '../utils/recordingTakeFolder.ts';
+import {
+  invitesToRevoke,
+  isTransferParticipant,
+  participantsToInvite,
+  readyRequestTargets,
+} from '../utils/recordingTransferPolicy.ts';
 
 /**
  * Peer-to-peer delivery of guests' local recordings into the host's
@@ -101,9 +107,11 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
   const [summaries, setSummaries] = useState<ParticipantTransferSummary[]>([]);
   const hostPeersRef = useRef(new Map<string, { pc: RTCPeerConnection; transferId: string; receiver?: TransferReceiver }>());
   const invitedRef = useRef(new Map<string, string>());
-  const registry = useMemo(() => new HostTransferRegistry(async ({ participantName, track }): Promise<ReceivedTrackSink> => {
+  const registry = useMemo(() => new HostTransferRegistry(async ({ participantId, participantName, track }): Promise<ReceivedTrackSink> => {
     const take = await optionsRef.current.getTakeFolder(track.sessionId);
-    const writer = await take.createTrackWriter(participantName, getTrackFileName(track.label, track.mimeType));
+    // One folder per participant, even when two guests share a display name.
+    const folder = take.participantFolder(participantId, participantName);
+    const writer = await take.createTrackWriter(folder, getTrackFileName(track.label, track.mimeType));
     return {
       write: (bytes) => writer.append(new Blob([bytes as Uint8Array<ArrayBuffer>])),
       accepted: () => writer.acceptedBytes(),
@@ -128,6 +136,8 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
     try { peer.pc.close(); } catch { /* Already closed. */ }
   }, []);
 
+  /** The take the last inviteAll announced, for invites sent later (a resumed seat). */
+  const currentSessionRef = useRef<string | undefined>(undefined);
   const sendInvite = useCallback((participantId: string, sessionId?: string) => {
     const transferId = newTransferId();
     invitedRef.current.set(participantId, sessionId || '');
@@ -146,23 +156,26 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
   /** Invite every participant (call before announcing a new take). */
   const inviteAll = useCallback((sessionId?: string) => {
     if (!optionsRef.current.isOperator || !optionsRef.current.hostReceiving) return;
-    for (const participant of optionsRef.current.participants.values()) {
-      if (participant.role === 'host' || participant.role === 'co-host') continue;
-      sendInvite(participant.id, sessionId);
+    if (sessionId) currentSessionRef.current = sessionId;
+    // Admitted participants only: the private green room never gets a link to the host.
+    for (const id of participantsToInvite(optionsRef.current.participants.values(), { has: () => false })) {
+      sendInvite(id, sessionId);
     }
   }, [sendInvite]);
 
-  // Invite participants who join while the folder is connected (and on connect).
+  // Invite participants who join (or are admitted) while the folder is connected (and on connect).
   useEffect(() => {
     if (!isOperator || !hostReceiving) return;
-    for (const participant of participants.values()) {
-      if (participant.role === 'host' || participant.role === 'co-host') continue;
-      if (!invitedRef.current.has(participant.id)) sendInvite(participant.id);
+    for (const id of participantsToInvite(participants.values(), invitedRef.current)) sendInvite(id);
+    for (const id of invitesToRevoke(participants, [...invitedRef.current.keys()])) {
+      invitedRef.current.delete(id);
+      closeHostPeer(id);
+      // Sent back to the green room: tell their page to stop sending.
+      if (participants.has(id)) {
+        send({ type: 'recording-transfer-signal', payload: { targetParticipantId: id, transferId: newTransferId(), kind: 'hangup' } });
+      }
     }
-    for (const id of [...invitedRef.current.keys()]) {
-      if (!participants.has(id)) { invitedRef.current.delete(id); closeHostPeer(id); }
-    }
-  }, [closeHostPeer, hostReceiving, isOperator, participants, sendInvite]);
+  }, [closeHostPeer, hostReceiving, isOperator, participants, send, sendInvite]);
 
   // Disconnecting the folder tells guests to stop sending.
   useEffect(() => {
@@ -177,7 +190,9 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
   const acceptOffer = useCallback(async (payload: RecordingTransferSignalPayload) => {
     const participantId = payload.fromParticipantId;
     if (!participantId || !payload.sdp) return;
-    if (!optionsRef.current.hostReceiving) {
+    // Only participants this host invited (admitted, folder connected) may connect.
+    if (!optionsRef.current.hostReceiving || !invitedRef.current.has(participantId)
+      || !isTransferParticipant(optionsRef.current.participants.get(participantId))) {
       send({ type: 'recording-transfer-signal', payload: { targetParticipantId: participantId, transferId: payload.transferId, kind: 'hangup' } });
       return;
     }
@@ -351,6 +366,15 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
   }, [closeGuestPeer, connectToHost]);
 
   useEffect(() => addHandler((message) => {
+    if (message.type === 'room-joined') {
+      // A resumed seat keeps its participant id, so the host will not invite
+      // it again by itself (and an invite sent while the seat was held never
+      // arrived): ask the operators for a fresh one.
+      for (const operatorId of readyRequestTargets(message.payload)) {
+        send({ type: 'recording-transfer-signal', payload: { targetParticipantId: operatorId, transferId: newTransferId(), kind: 'ready' } });
+      }
+      return;
+    }
     if (message.type !== 'recording-transfer-signal') return;
     const payload = message.payload;
     const self = optionsRef.current.me;
@@ -359,6 +383,13 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
       case 'invite':
         if (!optionsRef.current.isOperator) void handleInvite(payload);
         return;
+      case 'ready': {
+        const from = payload.fromParticipantId;
+        if (!optionsRef.current.isOperator || !optionsRef.current.hostReceiving || !from) return;
+        if (!isTransferParticipant(optionsRef.current.participants.get(from))) return;
+        sendInvite(from, invitedRef.current.get(from) || currentSessionRef.current);
+        return;
+      }
       case 'offer':
         if (optionsRef.current.isOperator) void acceptOffer(payload);
         return;
@@ -383,7 +414,7 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
         }
         return;
     }
-  }), [acceptOffer, addHandler, closeGuestPeer, closeHostPeer, handleInvite, updateGuestStatus]);
+  }), [acceptOffer, addHandler, closeGuestPeer, closeHostPeer, handleInvite, send, sendInvite, updateGuestStatus]);
 
   // New tracks or a finished take: send them (connecting first if needed).
   useEffect(() => {

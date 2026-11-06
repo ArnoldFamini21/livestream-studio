@@ -9,6 +9,7 @@ const {
   MAX_GREEN_ROOM_PARTICIPANTS,
   createRoom,
   findRoomByWatchId,
+  findWatchLinkRoom,
   getRooms,
   restoreRoomSnapshots,
   setSfuMembershipNotifier,
@@ -524,6 +525,21 @@ describe('restarts', () => {
     assert.ok(restored.recordingStartedAt);
     assert.equal(restored.bannedJoinSessionIds.has('banned-browser-1'), true);
     assert.equal(restored.recentGuestSessions.get('persist-guest-01').status, 'backstage');
+    assert.notEqual(restored.legacyWatchByRoomId, true, 'a studio with a watch id never answers to its room id');
+    assert.equal(findWatchLinkRoom(room.id), undefined);
+
+    // A snapshot saved before watch ids existed: its /watch/<roomId> links were shared.
+    const legacySnapshot = JSON.parse(JSON.stringify(normalized));
+    legacySnapshot.room.id = `${room.id.slice(0, 6)}lgcy`;
+    delete legacySnapshot.sessionState;
+    assert.equal(restoreRoomSnapshots([normalizeRoomSnapshot(legacySnapshot)]), 1);
+    const legacy = getRooms().get(legacySnapshot.room.id);
+    assert.equal(legacy.legacyWatchByRoomId, true);
+    const viaRoomId = findWatchLinkRoom(legacySnapshot.room.id);
+    assert.equal(viaRoomId.room.id, legacySnapshot.room.id);
+    assert.equal(viaRoomId.watchId, legacy.watchId, 'the old link resolves to the canonical watch id');
+    assert.equal(findWatchLinkRoom(legacy.watchId).room.id, legacySnapshot.room.id);
+    getRooms().delete(legacySnapshot.room.id);
 
     const harness2 = await createHarness();
     try {
@@ -574,6 +590,57 @@ describe('restarts', () => {
       const guestJoined = await waitFor(guestBefore, 'room-joined');
       assert.equal(guestJoined.payload.participant.status, 'green-room');
     } finally {
+      await harness.close();
+    }
+  });
+
+  it('enabling the owner gate later: tickets of non-owner studios are refused, the owner upgrades theirs', async () => {
+    const OWNER_KEY = 'owner-create-secret-lifecycle-0123';
+    const previous = process.env.STUDIO_CREATE_SECRET;
+    const harness = await createHarness();
+    // Both studios were created while creation was still open.
+    const stranger = makeRoom('gate-later-stranger');
+    const owner = makeRoom('gate-later-owner');
+    try {
+      const strangerHost = await join(harness.url, { roomId: stranger.room.id, name: 'Stranger', role: 'host', hostToken: stranger.hostToken });
+      const ownerHost = await join(harness.url, { roomId: owner.room.id, name: 'Arnold', role: 'host', hostToken: owner.hostToken });
+      const strangerTicket = strangerHost.joined.payload.restoreTicket;
+      const ownerTicket = ownerHost.joined.payload.restoreTicket;
+      strangerHost.ws.close(1000);
+      ownerHost.ws.close(1000);
+      await sleep(50);
+
+      process.env.STUDIO_CREATE_SECRET = OWNER_KEY;
+      getRooms().delete(stranger.room.id);
+      getRooms().delete(owner.room.id);
+
+      // A ticket is no way around owner-only creation.
+      const refused = await connect(harness.url);
+      const notFound = waitFor(refused, 'error', (m) => m.payload.code === 'ROOM_NOT_FOUND');
+      sendMessage(refused, 'join-room', { roomId: stranger.room.id, name: 'Stranger', role: 'host', hostToken: stranger.hostToken, restoreTicket: strangerTicket, studioAccessKey: 'wrong-key' });
+      await notFound;
+      assert.equal(getRooms().has(stranger.room.id), false);
+
+      // The owner proves it with the access key: rebuilt, and the studio is theirs from now on.
+      const back = await join(harness.url, { roomId: owner.room.id, name: 'Arnold', role: 'host', hostToken: owner.hostToken, restoreTicket: ownerTicket, studioAccessKey: OWNER_KEY });
+      assert.equal(back.joined.payload.participant.role, 'host');
+      assert.equal(getRooms().get(owner.room.id).createdByOwner, true);
+      back.ws.close(1000);
+      await sleep(50);
+
+      // An older studio still in memory is upgraded on the owner's next host join.
+      const live = makeRoom('gate-later-live');
+      assert.notEqual(live.state.createdByOwner, true);
+      const plain = await join(harness.url, { roomId: live.room.id, name: 'Arnold', role: 'host', hostToken: live.hostToken });
+      assert.notEqual(getRooms().get(live.room.id).createdByOwner, true, 'no proof, no upgrade');
+      plain.ws.close(1000);
+      await sleep(50);
+      const proven = await join(harness.url, { roomId: live.room.id, name: 'Arnold', role: 'host', hostToken: live.hostToken, studioAccessKey: OWNER_KEY });
+      assert.equal(getRooms().get(live.room.id).createdByOwner, true);
+      proven.ws.close(1000);
+    } finally {
+      if (previous === undefined) delete process.env.STUDIO_CREATE_SECRET;
+      else process.env.STUDIO_CREATE_SECRET = previous;
       await harness.close();
     }
   });

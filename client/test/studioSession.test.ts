@@ -56,6 +56,14 @@ describe('studio seat resume', () => {
     assert.equal(guest.roomPassword, 'p');
   });
 
+  it('sends the owner access key only with a host join that carries the host token', () => {
+    const host = buildStudioJoinPayload({ roomId: 'r', name: 'Arnold', role: 'host', hostToken: 'h', studioAccessKey: 'owner-key' });
+    assert.equal(host.studioAccessKey, 'owner-key');
+    assert.equal(buildStudioJoinPayload({ roomId: 'r', name: 'Arnold', role: 'host', studioAccessKey: 'owner-key' }).studioAccessKey, undefined);
+    assert.equal(buildStudioJoinPayload({ roomId: 'r', name: 'G', role: 'guest', studioAccessKey: 'owner-key' }).studioAccessKey, undefined);
+    assert.equal(buildStudioJoinPayload({ roomId: 'r', name: 'C', role: 'co-host', studioAccessKey: 'owner-key' }).studioAccessKey, undefined);
+  });
+
   it('keeps retrying a studio the server forgot for a few minutes, with growing waits', () => {
     assert.deepEqual([0, 1, 2, 3, 4].map(getRoomLostRetryDelayMs), [2_000, 4_000, 8_000, 15_000, 15_000]);
     assert.equal(shouldKeepRetryingLostRoom(0, ROOM_LOST_RETRY_WINDOW_MS - 1), true);

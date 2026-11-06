@@ -9,7 +9,7 @@ import {
 } from '../utils/audioDucking.ts';
 import { createLiveAudioMix, type LiveAudioMix } from './liveAudioMix.ts';
 import { ProgramAudioController, type ProgramAudioLease } from './programAudioController.ts';
-import { buildProgramAudioInputs, type ProgramAudioMembershipState } from './programAudioMixer.ts';
+import { buildProgramAudioInputs, type LocalProgramPresence, type ProgramAudioMembershipState } from './programAudioMixer.ts';
 
 export type ProgramAudioTrackLease = ProgramAudioLease<MediaStreamTrack>;
 
@@ -61,6 +61,8 @@ export interface UseProgramAudioMixOptions {
   remoteScreenStreams: Map<string, MediaStream>;
   screenStream: MediaStream | null;
   participantVolumes: Record<string, number>;
+  /** Which local tiles the compositor puts on the program (getLocalProgramPresence). */
+  localPresence?: LocalProgramPresence;
 }
 
 export interface ProgramAudioMix {
@@ -90,6 +92,7 @@ export function useProgramAudioMix(options: UseProgramAudioMixOptions): ProgramA
     remoteScreenStreams: options.remoteScreenStreams,
     localScreenStream: options.screenStream,
     participantVolumes: options.participantVolumes,
+    ...(options.localPresence ? { localPresence: options.localPresence } : {}),
   };
   const busRef = useRef(options.bus);
   busRef.current = options.bus;
@@ -120,6 +123,8 @@ export function useProgramAudioMix(options: UseProgramAudioMixOptions): ProgramA
     options.remoteScreenStreams,
     options.screenStream,
     options.participantVolumes,
+    options.localPresence?.camera,
+    options.localPresence?.screen,
     trackVersion,
   ]);
 

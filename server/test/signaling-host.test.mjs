@@ -885,6 +885,44 @@ describe('progressive recording upload reporting', () => {
         payload: { targetParticipantId: guestId, transferId: 'transfer-4', kind: 'answer' },
       });
       await missingSdp;
+
+      // A resumed participant asks the operators for a fresh invite.
+      const ready = waitForMessage(host, 'recording-transfer-signal', (message) => message.payload.kind === 'ready');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: hostId, transferId: 'transfer-5', kind: 'ready' },
+      });
+      assert.equal((await ready).payload.fromParticipantId, guestId);
+      const hostReady = waitForMessage(host, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'transfer-6', kind: 'ready' },
+      });
+      await hostReady;
+
+      // Nobody in the private green room gets a link to the host.
+      const guestEntry = getRooms().get(roomId).participants.get(guestId);
+      guestEntry.participant.status = 'green-room';
+      const hostSilent = expectNoMessage(host, 'recording-transfer-signal');
+      const greenRoomOffer = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: hostId, transferId: 'transfer-7', kind: 'offer', sdp: 'v=0' },
+      });
+      await greenRoomOffer;
+      await hostSilent;
+      const greenRoomInvite = waitForMessage(host, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'transfer-8', kind: 'invite' },
+      });
+      await greenRoomInvite;
+      const hangup = waitForMessage(guest, 'recording-transfer-signal', (message) => message.payload.kind === 'hangup');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'transfer-9', kind: 'hangup' },
+      });
+      assert.equal((await hangup).payload.fromParticipantId, hostId);
     } finally {
       await harness.close();
     }

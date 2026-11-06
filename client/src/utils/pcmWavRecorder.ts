@@ -62,6 +62,28 @@ export interface PcmWavRecorderOptions {
   bitsPerSample?: WavFormat['bitsPerSample'];
   channels?: number;
   createContext?: () => AudioContext;
+  /**
+   * The participant-facing mic track (the one mute toggles). The raw capture
+   * is a separate getUserMedia track that mute never touches, so while this
+   * track is disabled or has ended the recorder writes silence instead of
+   * the live microphone. The timeline keeps its length either way.
+   */
+  gateTrack?: MediaStreamTrack | null;
+}
+
+/** True when the gate says the microphone must not be heard right now. */
+export function isPcmGateClosed(gate: Pick<MediaStreamTrack, 'enabled' | 'readyState'> | null | undefined): boolean {
+  if (!gate) return false;
+  return !gate.enabled || gate.readyState === 'ended';
+}
+
+/** Replace a batch with silence of the same length while the gate is closed. */
+export function gatePcmChannels(
+  channels: Float32Array[],
+  gate: Pick<MediaStreamTrack, 'enabled' | 'readyState'> | null | undefined,
+): Float32Array[] {
+  if (!isPcmGateClosed(gate)) return channels;
+  return channels.map((channel) => new Float32Array(channel.length));
 }
 
 export class PcmWavRecorder {
@@ -154,7 +176,7 @@ export class PcmWavRecorder {
     });
     this.node.port.onmessage = (event: MessageEvent<{ channels?: Float32Array[] }>) => {
       if (!event.data.channels) return;
-      const bytes = encodePcmFrames(event.data.channels, this.format.bitsPerSample);
+      const bytes = encodePcmFrames(gatePcmChannels(event.data.channels, this.options.gateTrack), this.format.bitsPerSample);
       this.pending.push(bytes);
       this.pendingBytes += bytes.byteLength;
     };

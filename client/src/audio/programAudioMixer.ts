@@ -150,6 +150,41 @@ export interface ProgramAudioMembershipState<TTrack extends AudioTrackLike = Aud
   /** The local screen share (tab or system audio). */
   localScreenStream?: AudioStreamLike<TTrack> | null;
   participantVolumes: Record<string, number>;
+  /**
+   * Whether the local camera and screen tiles are on the program (see
+   * getLocalProgramPresence). Without it, the local mic follows on-stage
+   * status and local screen audio is always mixed.
+   */
+  localPresence?: LocalProgramPresence;
+}
+
+export interface LocalProgramPresence {
+  /** The local camera tile is on the program, so the local mic is on air. */
+  camera: boolean;
+  /** The local screen tile is on the program, so its tab/system sound is on air. */
+  screen: boolean;
+}
+
+/**
+ * Mirrors the stage the compositor draws (StudioRoom displayedStageVideoItems):
+ * on stage, the local camera (and screen while sharing) are shown; a host or
+ * co-host who is backstage but presents (shares the screen or plays media) is
+ * put on the program too: camera with the media, camera and screen while
+ * sharing. The audio must follow, so a presenter is heard with their slides
+ * and backstage talk stays off air otherwise.
+ */
+export function getLocalProgramPresence(input: {
+  status: ProgramStageStatus | null | undefined;
+  isOperator: boolean;
+  isScreenSharing: boolean;
+  hasActiveMedia: boolean;
+}): LocalProgramPresence {
+  const onStage = input.status === 'on-stage';
+  const presenter = input.isOperator && Boolean(input.status) && input.status !== 'green-room';
+  return {
+    camera: onStage || (presenter && (input.hasActiveMedia || input.isScreenSharing)),
+    screen: input.isScreenSharing && (onStage || (presenter && !input.hasActiveMedia)),
+  };
 }
 
 function liveAudioTracks<TTrack extends AudioTrackLike>(stream: AudioStreamLike<TTrack> | null | undefined): TTrack[] {
@@ -159,7 +194,8 @@ function liveAudioTracks<TTrack extends AudioTrackLike>(stream: AudioStreamLike<
 
 /**
  * The inputs the program mix should hear right now. Only on-stage people are
- * audible on air; backstage and green-room audio never reaches the program.
+ * audible on air; backstage and green-room audio never reaches the program,
+ * except a backstage host who presents (localPresence), whose tiles are on it.
  * A track is only mixed once even if two streams carry it.
  */
 export function buildProgramAudioInputs<TTrack extends AudioTrackLike>(
@@ -176,7 +212,8 @@ export function buildProgramAudioInputs<TTrack extends AudioTrackLike>(
   };
 
   const local = state.localParticipant;
-  if (local && local.status === 'on-stage') {
+  const presence = state.localPresence ?? { camera: local?.status === 'on-stage', screen: true };
+  if (local && presence.camera) {
     push(`participant:${local.id}`, state.localStream, state.participantVolumes[local.id] ?? 1);
   }
 
@@ -192,6 +229,6 @@ export function buildProgramAudioInputs<TTrack extends AudioTrackLike>(
     push(`screen:${id}`, state.remoteScreenStreams?.get(id), 1);
   }
 
-  push('screen:local', state.localScreenStream, 1);
+  if (presence.screen) push('screen:local', state.localScreenStream, 1);
   return inputs;
 }

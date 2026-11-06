@@ -410,7 +410,10 @@ export function useLocalRecording(roomName = 'Studio') {
       // Lossless mic: prefer an unprocessed capture of the same microphone.
       const raw = await openRawMicrophone(source.rawDeviceId);
       if (raw) rawCleanup = () => raw.stop();
-      wav = new PcmWavRecorder(raw ? new MediaStream([raw]) : new MediaStream(stream.getAudioTracks()));
+      // Mute only disables the processed track, so it gates the raw capture.
+      wav = new PcmWavRecorder(raw ? new MediaStream([raw]) : new MediaStream(stream.getAudioTracks()), {
+        gateTrack: stream.getAudioTracks()[0] || null,
+      });
       // PcmWavRecorder implements the MediaRecorder surface used below.
       recorder = wav as unknown as MediaRecorder;
       mimeType = wav.mimeType;

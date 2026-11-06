@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   ProgramAudioMixer,
   buildProgramAudioInputs,
+  getLocalProgramPresence,
   type AudioTrackLike,
   type ProgramAudioGraph,
   type ProgramAudioMembershipState,
@@ -88,6 +89,36 @@ describe('program audio membership', () => {
       localStream: stream(track('host-mic')),
     }));
     assert.deepEqual(inputs, []);
+  });
+
+  it('follows the compositor for a backstage host who presents', () => {
+    const presence = (status: Status, opts: { operator?: boolean; sharing?: boolean; media?: boolean } = {}) => getLocalProgramPresence({
+      status, isOperator: opts.operator ?? true, isScreenSharing: opts.sharing ?? false, hasActiveMedia: opts.media ?? false,
+    });
+    assert.deepEqual(presence('backstage'), { camera: false, screen: false }, 'backstage talk stays off air');
+    assert.deepEqual(presence('backstage', { sharing: true }), { camera: true, screen: true });
+    assert.deepEqual(presence('backstage', { media: true }), { camera: true, screen: false });
+    assert.deepEqual(presence('backstage', { sharing: true, media: true }), { camera: true, screen: false }, 'media replaces the screen tile');
+    assert.deepEqual(presence('on-stage', { sharing: true }), { camera: true, screen: true });
+    assert.deepEqual(presence('on-stage'), { camera: true, screen: false });
+    assert.deepEqual(presence('backstage', { operator: false, sharing: true }), { camera: false, screen: false }, 'a backstage guest is not shown');
+    assert.deepEqual(presence('green-room', { sharing: true, media: true }), { camera: false, screen: false });
+
+    const sharing = buildProgramAudioInputs(state({
+      localParticipant: { id: 'host', status: 'backstage' },
+      localStream: stream(track('host-mic')),
+      localScreenStream: stream(track('host-tab')),
+      localPresence: presence('backstage', { sharing: true }),
+    }));
+    assert.deepEqual(sharing.map((input) => input.track.id), ['host-mic', 'host-tab'], 'the presenter is heard with their screen');
+
+    const quiet = buildProgramAudioInputs(state({
+      localParticipant: { id: 'host', status: 'backstage' },
+      localStream: stream(track('host-mic')),
+      localScreenStream: stream(track('host-tab')),
+      localPresence: presence('backstage', { operator: false, sharing: true }),
+    }));
+    assert.deepEqual(quiet, [], 'a screen that is not on the program is not on air');
   });
 
   it('skips ended tracks and a track carried by two streams', () => {
