@@ -7,6 +7,9 @@
  * refuses to start until the blocking ones are fixed.
  */
 
+import { getAiAccessPolicy } from './aiAccessPolicy.js';
+import { isStudioCreationGated } from './studioAccessPolicy.js';
+
 const DATABASE_URL_KEYS = ['DATABASE_URL', 'POSTGRES_URL', 'POSTGRES_PRISMA_URL'];
 const TOKEN_SECRET_MIN_LENGTH = 32;
 
@@ -93,6 +96,39 @@ export function buildProductionReadiness(
       id: 'account-email-missing',
       severity: 'warning',
       message: 'No account email provider (ACCOUNT_EMAIL_FROM with RESEND_API_KEY or POSTMARK_SERVER_TOKEN); password reset by email is unavailable.',
+    });
+  }
+
+  if (!isStudioCreationGated(env)) {
+    issues.push({
+      id: 'studio-creation-open',
+      severity: 'warning',
+      message: 'Anyone can create a studio and use this server’s media relay, TURN and chat keys. Set STUDIO_OWNER_EMAILS or STUDIO_CREATE_SECRET.',
+    });
+  }
+
+  const aiPolicy = getAiAccessPolicy(env);
+  if (aiPolicy.mode === 'locked') {
+    issues.push({
+      id: 'ai-access-locked',
+      severity: 'warning',
+      message: 'OPENAI_API_KEY is set but no AI access policy is: AI features return 503 until OPENAI_ALLOWED_ACCOUNT_EMAILS, STUDIO_OWNER_EMAILS or OPENAI_ACCESS_TOKEN is set.',
+    });
+  } else if (aiPolicy.mode === 'any-account' || aiPolicy.mode === 'anonymous') {
+    issues.push({
+      id: 'ai-access-open',
+      severity: 'warning',
+      message: aiPolicy.mode === 'anonymous'
+        ? 'OPENAI_ALLOW_ANONYMOUS=true lets anyone spend the OpenAI budget.'
+        : 'OPENAI_REQUIRE_ACCOUNT_AUTH alone lets any registered account spend the OpenAI budget; add OPENAI_ALLOWED_ACCOUNT_EMAILS.',
+    });
+  }
+
+  if (secret.length >= TOKEN_SECRET_MIN_LENGTH && !env.MEDIA_SERVER_URL?.trim()) {
+    issues.push({
+      id: 'sfu-revocation-disabled',
+      severity: 'warning',
+      message: 'MEDIA_SERVER_URL is not set, so removing a guest cannot revoke their media-server session; it lapses only when its token expires.',
     });
   }
 

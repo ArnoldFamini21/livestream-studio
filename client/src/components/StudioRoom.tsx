@@ -23,7 +23,7 @@ function assertNever(value: never): never {
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
-import { getSharedIceConfiguration } from '../utils/iceConfigLoader.ts';
+import { getSharedIceConfigLoader, getSharedIceConfiguration } from '../utils/iceConfigLoader.ts';
 import {
   buildStudioJoinPayload,
   getRoomLostRetryDelayMs,
@@ -145,6 +145,8 @@ import {
   selectVisibleStageItems,
 } from '../utils/mediaShareLayouts.ts';
 import { buildGuestInviteUrl, buildSecureGuestInviteUrl } from '../utils/inviteLinks.ts';
+import { buildCoHostInviteUrl } from '../utils/inviteTokens.ts';
+import { createCachedTokenSource } from '../utils/presentationRenderToken.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
   buildLiveSessionSummary,
@@ -555,18 +557,6 @@ function LazyPanelFallback() {
   );
 }
 
-function buildCoHostInviteUrl(baseInviteUrl: string, token: string): string {
-  try {
-    const url = new URL(baseInviteUrl);
-    url.searchParams.set('role', 'co-host');
-    url.searchParams.set('invite', token);
-    return url.toString();
-  } catch {
-    const separator = baseInviteUrl.includes('?') ? '&' : '?';
-    return `${baseInviteUrl}${separator}role=co-host&invite=${encodeURIComponent(token)}`;
-  }
-}
-
 function getHealthColor(status: HealthStatus): string {
   switch (status) {
     case 'good': return 'var(--success)';
@@ -709,6 +699,9 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
     return type === 'pdf'
       ? 'PDF rendering timed out. Try a smaller PDF or upload it again.'
       : 'PowerPoint rendering timed out. Try a smaller deck, or export it to PDF and upload that.';
+  }
+  if (code === 'PRESENTATION_RENDER_DEFERRED' || code === 'PRESENTATION_RENDER_BUSY') {
+    return 'The media server is busy with the live broadcast, so this deck could not be prepared there. Export it to PDF and upload that, or try again after the show.';
   }
   if (code === 'PRESENTATION_TOO_LARGE') {
     return 'This presentation is too large to prepare for broadcast. Export a compressed PDF or split the deck.';
@@ -2606,6 +2599,7 @@ export function StudioRoom() {
           }
           if (roomId) {
             saveStudioResumeToken(roomId, message.payload.resumeToken);
+            if (message.payload.resumeToken) getSharedIceConfigLoader().setCredentials({ roomId, credential: message.payload.resumeToken });
             if (message.payload.restoreTicket) saveStudioRestoreTicket(roomId, message.payload.restoreTicket);
           }
           everJoinedRef.current = true;
@@ -3974,7 +3968,7 @@ export function StudioRoom() {
     });
   }, [send]);
 
-  const requestLiveStreamToken = useCallback((): Promise<string> => {
+  const requestLiveStreamToken = useCallback((purpose?: 'presentation-render'): Promise<string> => {
     const requestId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     // A request sent while the studio connection is down is dropped; fail now
     // so a reconnecting broadcast retries in seconds instead of waiting out the timeout.
@@ -3990,10 +3984,16 @@ export function StudioRoom() {
       liveTokenRequestsRef.current.set(requestId, { resolve, reject, timer });
       send({
         type: 'live-stream-token-request',
-        payload: { requestId },
+        payload: purpose ? { requestId, purpose } : { requestId },
       });
     });
   }, [send]);
+
+  // Deck renders on the media server need a short-lived token for hosts and co-hosts.
+  const getPresentationRenderToken = useMemo(
+    () => createCachedTokenSource(() => requestLiveStreamToken('presentation-render')),
+    [requestLiveStreamToken]
+  );
 
   const requestRecordingUploadToken = useCallback((sessionId: string): Promise<string> => {
     if (recordingUploadTokenRef.current?.sessionId === sessionId) {
@@ -4930,6 +4930,7 @@ export function StudioRoom() {
             requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
             allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
             skipServerRender: skipUnavailableServerRender,
+            getAuthToken: isHostOrCoHost ? getPresentationRenderToken : undefined,
             onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
             onProgress: ({ preview: partial, renderedCount, totalCount }) => {
               updateAsset(asset.id, {

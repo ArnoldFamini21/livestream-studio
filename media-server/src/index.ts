@@ -23,6 +23,10 @@ import {
   verifySfuMembershipControlToken,
 } from './auth.js';
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
+import { checkRtmpDestinationHosts } from './rtmpHostPolicy.js';
+import { countActiveRelaySessions, isRelayCapacityAvailable } from './relayAdmission.js';
+import { checkPresentationRenderAdmission } from './presentationAdmission.js';
+import { authorizePresentationRender, isPresentationRenderAuthRequired } from './presentationAuth.js';
 import {
   buildLiveBackupLatestKey,
   buildLiveBackupObjectKeys,
@@ -69,6 +73,7 @@ import {
   getPresentationRenderSourceFormat,
   getPresentationRendererHealth,
   isPresentationRenderQueueFull,
+  tryReservePresentationRender,
   renderPresentationPreview,
   convertPresentationToPdf,
   type PresentationRendererHealth,
@@ -279,16 +284,20 @@ async function healthPayload() {
           dependencies: presentationRenderer.dependencies,
         },
       },
-      recordingStorage: getRecordingStorageHealth(),
+      recordingStorage: await getRecordingStorageHealth(),
     },
   };
 }
 
 /** Whether uploaded recordings survive a restart (object storage) or not (temp folder). */
-function getRecordingStorageHealth() {
+async function getRecordingStorageHealth() {
   const persistent = Boolean(getRecordingObjectStorageConfig(process.env));
+  const freeBytes = await recordingUploads.getFreeBytes();
   return {
     ready: persistent,
+    // Free space for uploads on this instance's disk (shared with HLS and the live backup).
+    ...(freeBytes !== null ? { freeBytes } : {}),
+    storedUploadBytes: recordingUploads.getStoredBytes(),
     message: persistent
       ? 'Uploaded recordings are saved to object storage.'
       : 'Uploaded recordings are kept in a temporary folder and are lost when the media server restarts or sleeps. Set the RECORDING_STORAGE_* variables to keep them.',
@@ -1320,9 +1329,13 @@ async function handleStart(
     return;
   }
 
-  const destinationIssue = validateDestinations(payload.destinations);
+  const destinationIssue = validateDestinations(payload.destinations) || await checkRtmpDestinationHosts(payload.destinations);
   if (destinationIssue) {
     sendError(ws, 'INVALID_DESTINATIONS', destinationIssue);
+    return;
+  }
+  if (session.started) {
+    sendError(ws, 'ALREADY_STARTED', 'This relay session is already live');
     return;
   }
 
@@ -1338,6 +1351,17 @@ async function handleStart(
       await resumeSession(ws, held, claims, payload, ffmpegPath, onResume);
       return;
     }
+  }
+
+  // The same studio restarting with new settings replaces its own held broadcast.
+  for (const other of new Set(sessions.values())) {
+    if (other !== session && other.clientGone && other.started && other.claims?.roomId === claims.roomId) {
+      stopSession(other, 'replaced by a new broadcast from the same studio');
+    }
+  }
+  if (!isRelayCapacityAvailable(sessions.values(), session)) {
+    sendError(ws, 'RELAY_CAPACITY_REACHED', 'This media server is already running another broadcast. Try again when it ends.');
+    return;
   }
 
   session.started = true;
@@ -1942,33 +1966,10 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
     return true;
   }
 
+  let releaseReservation: (() => void) | null = null;
   try {
-    if (process.env.PRESENTATION_RENDER_REQUIRE_AUTH === 'true') {
-      const secret = getLiveStreamTokenSecret();
-      const token = getBearerToken(req);
-      if (!secret || !token) {
-        throw new PresentationRenderError(401, 'UNAUTHORIZED', 'Presentation rendering requires a valid studio token');
-      }
-      let authorized = false;
-      try {
-        verifyLiveStreamToken(token, secret);
-        authorized = true;
-      } catch {
-        try {
-          verifyRecordingUploadToken(token, secret);
-          authorized = true;
-        } catch {
-          try {
-            verifySfuIdentity(token, secret);
-            authorized = true;
-          } catch {
-            authorized = false;
-          }
-        }
-      }
-      if (!authorized) {
-        throw new PresentationRenderError(401, 'UNAUTHORIZED', 'Invalid presentation rendering token');
-      }
+    if (isPresentationRenderAuthRequired()) {
+      authorizePresentationRender(getBearerToken(req) || '', getLiveStreamTokenSecret());
     }
 
     const fileNameHeader = req.headers['x-file-name'];
@@ -1979,7 +1980,19 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
     if (!getPresentationRenderSourceFormat(fileName, contentType)) {
       throw new PresentationRenderError(415, 'PRESENTATION_UNSUPPORTED', 'Only PDF and PowerPoint files can be rendered');
     }
-    if (isPresentationRenderQueueFull()) {
+    const declaredLength = Number(req.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_PRESENTATION_RENDER_BYTES) {
+      throw new PresentationRenderError(413, 'PRESENTATION_TOO_LARGE', 'Presentation file is too large');
+    }
+    // A PDF asked for as a PDF passes straight through; everything else runs
+    // LibreOffice or pdftoppm next to the live relay.
+    const passThrough = wantsPdf && getPresentationRenderSourceFormat(fileName, contentType) === 'pdf';
+    if (!passThrough) {
+      checkPresentationRenderAdmission({ liveRelayActive: countActiveRelaySessions(sessions.values()) > 0 });
+    }
+    // The slot is taken before the body is buffered, so concurrent uploads cannot pile up in memory.
+    releaseReservation = isPresentationRenderQueueFull() ? null : tryReservePresentationRender(declaredLength);
+    if (!releaseReservation) {
       throw new PresentationRenderError(429, 'PRESENTATION_RENDER_BUSY', 'Presentation renderer is busy; please try again in a moment.');
     }
 
@@ -2020,6 +2033,8 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
     console.error('Presentation preview render failed:', err);
     writeJson(res, 500, { error: 'Presentation preview render failed', code: 'PRESENTATION_RENDER_FAILED' });
     return true;
+  } finally {
+    releaseReservation?.();
   }
 }
 

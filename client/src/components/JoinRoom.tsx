@@ -34,7 +34,8 @@ import {
   upsertSavedHostStudio,
 } from '../utils/hostSession.ts';
 import { getApiErrorMessage, getJson, isAbortError, postJson } from '../utils/apiClient.ts';
-import { getGuestInviteToken, getInviteStudioName } from '../utils/inviteLinks.ts';
+import { getInviteStudioName } from '../utils/inviteLinks.ts';
+import { captureInviteTokens, clearPendingInviteTokens, getBrowserInviteStorage } from '../utils/inviteTokens.ts';
 import {
   GUEST_REGISTRATION_EMAIL_STORAGE_KEY,
   getRegistrationSessionKey,
@@ -90,9 +91,16 @@ export function JoinRoom() {
   const hostSession = roomId ? getHostSession(roomId, urlHostToken) : null;
   const hostToken = hostSession?.hostToken || '';
   const isHostEntryRequested = searchParams.get('role') === 'host';
-  const coHostInviteToken = searchParams.get('invite') || searchParams.get('token') || '';
+  // Invite tokens arrive in the URL fragment (older links: the query); read once, then removed from the address bar.
+  const [inviteTokens] = useState(() => captureInviteTokens(
+    roomId,
+    window.location,
+    getBrowserInviteStorage(),
+    (url) => window.history.replaceState(window.history.state, '', url)
+  ));
+  const coHostInviteToken = inviteTokens.coHost;
   const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
-  const guestInviteToken = getGuestInviteToken(searchParams);
+  const guestInviteToken = inviteTokens.guest;
   const isSecureGuestInvite = !isCoHostInvite && guestInviteToken.length > 0;
   const inviteStudioName = getInviteStudioName(searchParams);
   const isHostSession = Boolean(hostSession);
@@ -414,6 +422,8 @@ export function JoinRoom() {
         }
       }
     }
+    // The studio page now reads the role-specific keys above; the pending copy is no longer needed.
+    clearPendingInviteTokens(roomId, getBrowserInviteStorage());
     sessionStorage.setItem('userName', guestName);
     rememberDisplayName(guestName);
     sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));

@@ -137,6 +137,18 @@ export interface ProgressiveRecordingUploader {
   getState(): ProgressiveUploadState;
 }
 
+/**
+ * The media server refused to store more (its disk or shared upload budget is
+ * full, or this participant has too many unfinished uploads). Retrying cannot
+ * help; the take stays on this device and is exported from there.
+ */
+export function isUploadStorageRefusal(error: unknown): boolean {
+  return error instanceof ProgressiveUploadHttpError && (
+    error.status === 507 ||
+    (error.status === 429 && error.code === 'RECORDING_UPLOAD_SESSION_LIMIT')
+  );
+}
+
 class ProgressiveUploadHttpError extends Error {
   constructor(
     readonly status: number,
@@ -215,6 +227,8 @@ export function createProgressiveRecordingUploader(
   let pausedByHost = false;
   let stopped = false;
   let finishing = false;
+  /** Set once the server refused to store this upload; no more retries. */
+  let storageRefused = false;
   let consecutiveFailures = 0;
   let lastError: string | undefined;
   let timer: unknown = null;
@@ -392,7 +406,7 @@ export function createProgressiveRecordingUploader(
   };
 
   const runCycle = async (): Promise<void> => {
-    if (stopped || finishing || tracks.size === 0) return;
+    if (stopped || finishing || storageRefused || tracks.size === 0) return;
     if (pausedByHost) {
       setStatus('paused');
       return;
@@ -409,7 +423,11 @@ export function createProgressiveRecordingUploader(
       if (!stopped && !finishing) status = pausedByHost ? 'paused' : 'uploading';
       emit();
     } catch (error) {
-      if (recoverLostSession(error)) {
+      if (isUploadStorageRefusal(error)) {
+        storageRefused = true;
+        lastError = describeError(error);
+        status = 'error';
+      } else if (recoverLostSession(error)) {
         lastError = 'The media server restarted; re-sending this recording.';
       } else {
         consecutiveFailures += 1;
@@ -420,7 +438,7 @@ export function createProgressiveRecordingUploader(
   };
 
   const scheduleNext = () => {
-    if (!autoSchedule || stopped || finishing) return;
+    if (!autoSchedule || stopped || finishing || storageRefused) return;
     if (timer !== null) clearTimer(timer);
     const backoff = consecutiveFailures > 0
       ? Math.min(maxRetryDelayMs, retryBaseMs * 2 ** (consecutiveFailures - 1))
@@ -473,6 +491,11 @@ export function createProgressiveRecordingUploader(
       timer = null;
     }
     if (activeCycle) await activeCycle;
+    if (storageRefused) {
+      status = 'error';
+      emit();
+      throw new Error(lastError || 'The media server has no room for this recording; it stays on this device.');
+    }
     setStatus('finishing');
 
     for (const [id, track] of tracks) {
@@ -522,6 +545,7 @@ export function createProgressiveRecordingUploader(
         const sessionLost = recoverLostSession(error);
         if (
           attempt >= finishAttempts ||
+          isUploadStorageRefusal(error) ||
           (!sessionLost && error instanceof ProgressiveUploadHttpError && (
             [400, 403, 413].includes(error.status) ||
             (error.status === 409 && ['RECORDING_TRACK_COMPLETE', 'RECORDING_TRACK_WRITE_FAILED'].includes(error.code))

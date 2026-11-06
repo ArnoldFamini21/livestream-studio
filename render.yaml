@@ -17,11 +17,30 @@ services:
         value: https://studio.arnoldfamini.com
       - key: LIVE_STREAM_TOKEN_SECRET
         sync: false
+      # Owner-only studio creation. Set at least one: the owner's account
+      # email(s) (comma-separated), and/or a long random key the owner enters
+      # once per browser. With neither set, anyone can create a studio and
+      # /health reports the warning "studio-creation-open".
+      - key: STUDIO_OWNER_EMAILS
+        sync: false
+      - key: STUDIO_CREATE_SECRET
+        sync: false
+      # Control plane: lets signaling revoke a removed guest's media-server
+      # (SFU) session and recording uploads right away.
+      - key: MEDIA_SERVER_URL
+        value: https://livestream-studio-media-server.onrender.com
       - key: DATABASE_URL
         sync: false
       - key: PGSSLMODE
         value: require
       - key: OPENAI_API_KEY
+        sync: false
+      # AI routes stay locked (503) while OPENAI_API_KEY is set without a
+      # policy. Studio owners (STUDIO_OWNER_EMAILS) are allowed by default;
+      # these narrow or widen that.
+      - key: OPENAI_ALLOWED_ACCOUNT_EMAILS
+        sync: false
+      - key: OPENAI_ACCESS_TOKEN
         sync: false
       - key: YOUTUBE_API_KEY
         sync: false
@@ -37,6 +56,12 @@ services:
         value: gpt-4o-mini
       - key: ICE_TRANSPORT_POLICY
         value: all
+      # Cloudflare Realtime TURN (free allowance; recommended). Without it the
+      # server falls back to the shared Open Relay.
+      - key: CLOUDFLARE_TURN_KEY_ID
+        sync: false
+      - key: CLOUDFLARE_TURN_API_TOKEN
+        sync: false
       - key: ICE_SERVERS_JSON
         sync: false
       - key: STUN_URLS
@@ -87,3 +112,12 @@ services:
         value: livestream-studio
       - key: RECORDING_STORAGE_PUBLIC_BASE_URL
         sync: false
+      # One broadcast at a time on the free instance.
+      - key: MAX_RELAY_SESSIONS
+        value: "1"
+      # Deck rendering needs a studio token (the default in production).
+      - key: PRESENTATION_RENDER_REQUIRE_AUTH
+        value: "true"
+      # Keep at least this much disk free for HLS and the live backup.
+      - key: RECORDING_UPLOAD_MIN_FREE_MB
+        value: "1024"

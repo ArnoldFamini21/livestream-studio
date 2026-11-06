@@ -376,6 +376,24 @@ async function fetchCloudflareIceServers(
 }
 
 /**
+ * The STUN-only part of the configuration, for callers that have not proven
+ * studio membership (pre-join device checks, or anyone without a seat). TURN
+ * relay credentials are only handed to participants of a studio.
+ */
+export function buildStunOnlyIceConfigWithStatus(
+  env: NodeJS.ProcessEnv = process.env,
+  options: BuildIceConfigOptions = {}
+): StudioIceConfigWithStatus & { membershipRequiredForTurn: true } {
+  const base = buildIceConfigWithStatusFromEnv(env, options);
+  const stunServers = base.iceServers
+    .filter((server) => hasUrlScheme(server, ['stun', 'stuns']) && !hasUrlScheme(server, ['turn', 'turns']))
+    .map((server) => ({ urls: server.urls }));
+  const iceServers = stunServers.length > 0 ? stunServers : DEFAULT_STUN_SERVERS.map((server) => ({ urls: server.urls }));
+  // A relay-only policy cannot work without relays; STUN-only always gathers all candidates.
+  return { ...withStatus({ iceServers, iceTransportPolicy: 'all' }, 'default'), membershipRequiredForTurn: true };
+}
+
+/**
  * The ICE config for a browser. Uses Cloudflare's relay when
  * CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN are set, falling back
  * to the env/default config if Cloudflare cannot be reached.

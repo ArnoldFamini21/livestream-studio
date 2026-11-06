@@ -53,18 +53,8 @@ export function buildGuestInviteUrl(baseUrl: string, roomId: string, roomName?: 
   return `${url}?${GUEST_INVITE_STUDIO_PARAM}=${encodeURIComponent(studioName)}`;
 }
 
-export function buildSecureGuestInviteUrl(baseInviteUrl: string, token: string): string {
-  const trimmedToken = typeof token === 'string' ? token.trim() : '';
-  if (!trimmedToken) return baseInviteUrl;
-  try {
-    const url = new URL(baseInviteUrl);
-    url.searchParams.set(GUEST_INVITE_TOKEN_PARAM, trimmedToken);
-    return url.toString();
-  } catch {
-    const separator = baseInviteUrl.includes('?') ? '&' : '?';
-    return `${baseInviteUrl}${separator}${GUEST_INVITE_TOKEN_PARAM}=${encodeURIComponent(trimmedToken)}`;
-  }
-}
+/** Single-use guest links carry the token in the URL fragment (see inviteTokens.ts). */
+export { buildSecureGuestInviteUrl } from './inviteTokens.ts';
 
 export function getInviteStudioName(searchParams: URLSearchParams): string {
   return normalizeInviteStudioName(searchParams.get(GUEST_INVITE_STUDIO_PARAM));

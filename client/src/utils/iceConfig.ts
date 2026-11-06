@@ -180,9 +180,34 @@ export function normalizeIceConfigWithStatus(value: unknown): ClientIceConfigWit
  */
 export const ICE_CONFIG_REQUEST_TIMEOUT_MS = 12_000;
 
+/**
+ * Proof of a seat in a studio, sent with ICE requests so the server hands out
+ * TURN relay credentials. Without it the server answers with STUN only.
+ */
+export interface IceConfigCredentials {
+  roomId: string;
+  /** The per-seat resume token from room-joined. */
+  credential: string;
+}
+
+let iceConfigCredentials: IceConfigCredentials | null = null;
+
+export function setIceConfigCredentials(next: IceConfigCredentials | null): void {
+  iceConfigCredentials = next && next.roomId && next.credential ? { ...next } : null;
+}
+
+export function getIceConfigCredentials(): IceConfigCredentials | null {
+  return iceConfigCredentials;
+}
+
+export function buildIceConfigRequestHeaders(credentials: IceConfigCredentials | null = iceConfigCredentials): Record<string, string> {
+  if (!credentials) return {};
+  return { 'X-Room-Id': credentials.roomId, 'X-Room-Credential': credentials.credential };
+}
+
 /** Fetch the relay configuration; throws when the server could not be reached or answered nonsense. */
 export async function tryFetchIceConfigWithStatus(timeoutMs = ICE_CONFIG_REQUEST_TIMEOUT_MS): Promise<ClientIceConfigWithStatus> {
-  const response = await getJson<unknown>('/api/ice-config', { timeoutMs });
+  const response = await getJson<unknown>('/api/ice-config', { timeoutMs, headers: buildIceConfigRequestHeaders() });
   const normalized = normalizeIceConfigWithStatus(response);
   if (!normalized) throw new Error('The studio server returned no usable ICE servers');
   return normalized;
@@ -195,7 +220,10 @@ export function hasTurnServers(config: RTCConfiguration | null | undefined): boo
 
 export async function fetchIceConfigWithStatus(): Promise<ClientIceConfigWithStatus> {
   try {
-    const response = await getJson<unknown>('/api/ice-config', { timeoutMs: ICE_CONFIG_REQUEST_TIMEOUT_MS });
+    const response = await getJson<unknown>('/api/ice-config', {
+      timeoutMs: ICE_CONFIG_REQUEST_TIMEOUT_MS,
+      headers: buildIceConfigRequestHeaders(),
+    });
     return normalizeIceConfigWithStatus(response) || {
       config: DEFAULT_ICE_CONFIG,
       status: DEFAULT_ICE_CONFIG_STATUS,

@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   LiveStreamTokenClaims,
   ParticipantRole,
+  PresentationRenderTokenClaims,
   RecordingUploadTokenClaims,
   SfuMembershipControlAction,
   SfuMembershipControlClaims,
@@ -27,7 +28,7 @@ function safeSignatureEquals(actual: string, expected: string): boolean {
 }
 
 export function signLiveStreamToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -160,4 +161,31 @@ export function verifySfuMembershipControlToken(
     throw new Error('SFU membership control token expired');
   }
   return claims as SfuMembershipControlClaims;
+}
+
+export function verifyPresentationRenderToken(
+  token: string,
+  secret: string,
+  now = Date.now()
+): PresentationRenderTokenClaims {
+  const claims = verifyTokenPayload(token, secret) as Partial<PresentationRenderTokenClaims> | null;
+  if (
+    !claims ||
+    claims.v !== 1 ||
+    claims.purpose !== 'presentation-render' ||
+    typeof claims.roomId !== 'string' ||
+    !claims.roomId ||
+    typeof claims.participantId !== 'string' ||
+    !claims.participantId ||
+    (claims.role !== 'host' && claims.role !== 'co-host') ||
+    typeof claims.nonce !== 'string' ||
+    typeof claims.iat !== 'number' ||
+    !Number.isFinite(claims.iat) ||
+    typeof claims.exp !== 'number' ||
+    !Number.isFinite(claims.exp)
+  ) {
+    throw new Error('Invalid presentation render token claims');
+  }
+  if (claims.exp <= now) throw new Error('Presentation render token expired');
+  return claims as PresentationRenderTokenClaims;
 }

@@ -29,6 +29,8 @@ export interface RoomSnapshot {
  */
 export interface RoomSessionSnapshot {
   watchId?: string;
+  /** The studio was created through the owner gate. */
+  createdByOwner?: boolean;
   recording?: { sessionId: string; startedAt?: string; paused?: boolean };
   bannedJoinSessionIds?: string[];
   bannedIps?: Array<{ ip: string; expiresAt: number }>;
@@ -61,6 +63,7 @@ export function normalizeRoomSessionSnapshot(value: unknown): RoomSessionSnapsho
   const result: RoomSessionSnapshot = {};
   const watchId = safeText(input.watchId, 64);
   if (/^[A-Za-z0-9_-]{12,64}$/.test(watchId)) result.watchId = watchId;
+  if (input.createdByOwner === true) result.createdByOwner = true;
 
   const recordingInput = input.recording && typeof input.recording === 'object' ? input.recording as Record<string, unknown> : null;
   const recordingSessionId = safeText(recordingInput?.sessionId, 128);

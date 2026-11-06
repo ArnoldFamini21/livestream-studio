@@ -535,7 +535,12 @@ export class PresentationPdfCache {
   private readonly entries = new Map<string, Buffer>();
   private bytes = 0;
 
-  constructor(private readonly maxEntries = 12, private readonly maxBytes = 200 * 1024 * 1024) {}
+  // Small by default: it lives in the same 512 MB as the live relay. A typical
+  // converted deck is a few MB; PRESENTATION_PDF_CACHE_MAX_MB changes it.
+  constructor(
+    private readonly maxEntries = 6,
+    private readonly maxBytes = getPresentationPdfCacheMaxBytes()
+  ) {}
 
   get(key: string): Buffer | undefined {
     const value = this.entries.get(key);
@@ -567,9 +572,21 @@ export class PresentationPdfCache {
   }
 }
 
+export const DEFAULT_PRESENTATION_PDF_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+
+export function getPresentationPdfCacheMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PRESENTATION_PDF_CACHE_MAX_MB;
+  const megabytes = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  return Number.isFinite(megabytes) && megabytes >= 0
+    ? Math.floor(megabytes * 1024 * 1024)
+    : DEFAULT_PRESENTATION_PDF_CACHE_MAX_BYTES;
+}
+
 export class PresentationRenderQueue {
   private active = 0;
   private readonly waiting: Array<() => void> = [];
+  private reservations = 0;
+  private reservedBytes = 0;
 
   constructor(
     private readonly maxConcurrent = Math.max(1, Number(process.env.PRESENTATION_RENDER_CONCURRENCY) || 1),
@@ -586,6 +603,32 @@ export class PresentationRenderQueue {
 
   isFull(): boolean {
     return this.active >= this.maxConcurrent && this.waiting.length >= this.maxQueue;
+  }
+
+  get reservedCount(): number {
+    return this.reservations;
+  }
+
+  /**
+   * Admit a request before its body is read. Each admitted request may buffer
+   * its upload in memory, so admissions are capped by count (the renderer's
+   * concurrency plus its queue) and by declared bytes (twice the largest
+   * allowed deck). Returns a release function, or null when full.
+   */
+  tryReserve(bytes: number, maxReservedBytes = MAX_PRESENTATION_RENDER_BYTES * 2): (() => void) | null {
+    const declared = Number.isFinite(bytes) && bytes >= 0 ? bytes : MAX_PRESENTATION_RENDER_BYTES;
+    const size = Math.min(MAX_PRESENTATION_RENDER_BYTES, declared);
+    if (this.reservations >= this.maxConcurrent + this.maxQueue) return null;
+    if (this.reservations > 0 && this.reservedBytes + size > maxReservedBytes) return null;
+    this.reservations += 1;
+    this.reservedBytes += size;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.reservations -= 1;
+      this.reservedBytes -= size;
+    };
   }
 
   async run<T>(task: () => Promise<T>): Promise<T> {
@@ -618,6 +661,11 @@ const inFlightPdfConversions = new Map<string, Promise<Buffer>>();
 
 export function isPresentationRenderQueueFull(): boolean {
   return sharedPresentationRenderQueue.isFull();
+}
+
+/** Admission for one HTTP render request on the shared renderer (see PresentationRenderQueue.tryReserve). */
+export function tryReservePresentationRender(bytes: number): (() => void) | null {
+  return sharedPresentationRenderQueue.tryReserve(bytes);
 }
 
 function validatePresentationInput(input: PresentationRenderInput): PresentationRenderSourceFormat {

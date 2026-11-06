@@ -26,6 +26,8 @@ import {
   registerAccount,
 } from '../utils/accountAuth.ts';
 import { postWhenStudioServerReady } from '../utils/studioServerWake.ts';
+import { buildStudioCreateHeaders, getStoredStudioAccessKey, isStudioAccessRequiredError, saveStudioAccessKey } from '../utils/studioAccessKey.ts';
+import { StudioAccessKeyField, StudioAccessKeySettings } from './StudioAccessKey.tsx';
 import { AccountSecurity, ForgotPasswordForm } from './AccountSecurity.tsx';
 import {
   hasCreatedRoomDetails,
@@ -339,6 +341,18 @@ export function HomePage() {
   const missingRecordingCatalogRoomsRef = useRef(new Set<string>());
 
   const [error, setError] = useState<string | null>(null);
+  // Shown once the server answers that creating a studio needs the owner's access key.
+  const [studioAccessKeyNeeded, setStudioAccessKeyNeeded] = useState(false);
+  const [studioAccessKeyDraft, setStudioAccessKeyDraft] = useState('');
+  const studioCreateRequestInit = (): RequestInit => {
+    const accessKey = studioAccessKeyDraft.trim() ? saveStudioAccessKey(studioAccessKeyDraft) : getStoredStudioAccessKey();
+    return { headers: buildStudioCreateHeaders(accessKey), credentials: 'include' };
+  };
+  const noteStudioCreateError = (err: unknown) => {
+    const needsKey = isStudioAccessRequiredError(err);
+    setStudioAccessKeyNeeded(needsKey);
+    if (needsKey) setStudioAccessKeyDraft('');
+  };
 
   // Invite link modal state
   const [scheduledRoom, setScheduledRoom] = useState<ScheduledRoomModal | null>(null);
@@ -368,7 +382,9 @@ export function HomePage() {
         registrationEnabled,
       }, {
         onWaiting: () => setProgressMessage('Still creating. The studio server is restarting; trying again.'),
+        requestInit: studioCreateRequestInit(),
       });
+      setStudioAccessKeyNeeded(false);
       if (!hasCreatedRoomDetails(createdRoom)) {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
@@ -385,6 +401,7 @@ export function HomePage() {
       navigate(buildHostEntryPath(room.id, hostToken));
     } catch (err) {
       console.error('Failed to create room:', err);
+      noteStudioCreateError(err);
       setError(getApiErrorMessage(err, 'Failed to create studio. Please try again.'));
     } finally {
       window.clearTimeout(progressTimer);
@@ -411,7 +428,9 @@ export function HomePage() {
         registrationEnabled,
       }, {
         onWaiting: () => setProgressMessage('Still scheduling. The studio server is restarting; trying again.'),
+        requestInit: studioCreateRequestInit(),
       });
+      setStudioAccessKeyNeeded(false);
       if (!hasCreatedRoomDetails(createdRoom)) {
         setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
         return;
@@ -429,6 +448,7 @@ export function HomePage() {
       setHostCopied(false);
     } catch (err) {
       console.error('Failed to schedule room:', err);
+      noteStudioCreateError(err);
       setError(getApiErrorMessage(err, 'Failed to schedule studio. Please try again.'));
     } finally {
       window.clearTimeout(progressTimer);
@@ -1686,6 +1706,7 @@ export function HomePage() {
               </div>
 
               <GoogleDriveStorage />
+              <StudioAccessKeySettings />
 </section>}
           {workspaceView === 'team' && <section className="workspace-surface">              <div className="ws-workspaceSection" style={styles.workspaceSection}>
                 <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>
@@ -1961,6 +1982,17 @@ export function HomePage() {
               </label>
 
               </details>
+              {studioAccessKeyNeeded && (
+                <StudioAccessKeyField
+                  value={studioAccessKeyDraft}
+                  onChange={setStudioAccessKeyDraft}
+                  onSubmit={createRoom}
+                  fieldStyle={styles.field}
+                  labelStyle={styles.label}
+                  inputStyle={styles.input}
+                  hintStyle={styles.fieldHint}
+                />
+              )}
               {error && (
                 <p className="ws-error" style={styles.error}>{error}</p>
               )}

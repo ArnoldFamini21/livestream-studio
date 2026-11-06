@@ -1,6 +1,9 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { getAccountSessionForRequest } from '../routes/auth.js';
+import { getAiAccessPolicy } from './aiAccessPolicy.js';
+
+export { getAiAccessPolicy, type AiAccessPolicyMode } from './aiAccessPolicy.js';
 
 const DEFAULT_GLOBAL_HOURLY_BUDGET = 60;
 const DEFAULT_ACTOR_HOURLY_BUDGET = 15;
@@ -120,16 +123,6 @@ function safeTokenMatch(provided: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-function parseAllowedEmails(raw: string | undefined): Set<string> {
-  const set = new Set<string>();
-  if (!raw) return set;
-  for (const item of raw.split(',')) {
-    const email = item.trim().toLowerCase();
-    if (email) set.add(email);
-  }
-  return set;
-}
-
 export interface AuthorizeAiRequestOptions {
   env?: NodeJS.ProcessEnv;
   resolveAccountUser?: (req: Request) => Promise<{ id: string; email: string } | null>;
@@ -140,11 +133,17 @@ export async function authorizeAiRequest(
   options: AuthorizeAiRequestOptions = {}
 ): Promise<{ ok: true; actorKey: string } | { ok: false; status: number; code: string; error: string }> {
   const env = options.env || process.env;
-  const allowedEmails = parseAllowedEmails(env.OPENAI_ALLOWED_ACCOUNT_EMAILS);
-  const configuredToken = (env.OPENAI_ACCESS_TOKEN || '').trim();
-  const requireAccountAuth =
-    env.OPENAI_REQUIRE_ACCOUNT_AUTH === 'true' ||
-    allowedEmails.size > 0;
+  const policy = getAiAccessPolicy(env);
+  const { allowedEmails, token: configuredToken, requireAccount: requireAccountAuth } = policy;
+
+  if (policy.mode === 'locked') {
+    return {
+      ok: false,
+      status: 503,
+      code: 'AI_NOT_ENTITLED',
+      error: 'AI features are locked on this server until the owner sets OPENAI_ALLOWED_ACCOUNT_EMAILS, STUDIO_OWNER_EMAILS or OPENAI_ACCESS_TOKEN.',
+    };
+  }
 
   if (configuredToken) {
     const headerToken = getHeaderValue(req.headers['x-studio-ai-token']);

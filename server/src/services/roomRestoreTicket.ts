@@ -26,6 +26,7 @@ export interface RoomRestoreTicketClaims {
   hostTokenHash: string;
   watchId: string;
   creatorIp: string;
+  createdByOwner?: boolean;
   passwordHash?: string;
   passwordSalt?: string;
   iat: number;

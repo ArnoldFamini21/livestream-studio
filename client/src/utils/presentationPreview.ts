@@ -52,6 +52,25 @@ interface PresentationPreviewOptions {
   allowTextPowerPointFallback?: boolean;
   pptxSlideImageRenderer?: (arrayBuffer: ArrayBuffer, expectedSlideCount: number) => Promise<string[]>;
   onServerRenderFailure?: (failure: PresentationServerRenderFailure) => void;
+  /**
+   * A media-server render token for this studio (hosts and co-hosts get one
+   * from signaling). The production renderer refuses requests without it.
+   */
+  getAuthToken?: () => Promise<string | undefined>;
+}
+
+/** Request headers for a render call: the deck's type and name, plus the studio's render token when it has one. */
+export async function buildPresentationRenderHeaders(
+  file: Pick<File, 'name' | 'type'>,
+  options: Pick<PresentationPreviewOptions, 'getAuthToken'> = {}
+): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    'Content-Type': file.type || 'application/octet-stream',
+    'X-File-Name': getSafeFileNameHeader(file.name),
+  };
+  const token = options.getAuthToken ? await options.getAuthToken().catch(() => undefined) : undefined;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
 }
 
 interface ServerPresentationPreviewResponse {
@@ -85,7 +104,9 @@ export function isRecoverablePowerPointServerRenderFailure(failure: Presentation
     code === 'PRESENTATION_RENDERER_UNAVAILABLE' ||
     code === 'PRESENTATION_RENDER_INCOMPLETE' ||
     code === 'PRESENTATION_RENDER_FAILED' ||
-    code === 'PRESENTATION_RENDER_EMPTY'
+    code === 'PRESENTATION_RENDER_EMPTY' ||
+    code === 'PRESENTATION_RENDER_DEFERRED' ||
+    code === 'PRESENTATION_RENDER_BUSY'
   );
 }
 
@@ -555,10 +576,7 @@ export async function buildServerRenderedPresentationPreview(
   try {
     const response = await fetchImpl(buildMediaServerUrl(mediaHttpUrl, '/presentation-preview'), {
       method: 'POST',
-      headers: {
-        'Content-Type': file.type || 'application/octet-stream',
-        'X-File-Name': getSafeFileNameHeader(file.name),
-      },
+      headers: await buildPresentationRenderHeaders(file, options),
       body: file,
       signal: controller.signal,
     });
@@ -1009,10 +1027,7 @@ export async function fetchServerPresentationPdf(
   try {
     const response = await fetchImpl(buildMediaServerUrl(mediaHttpUrl, '/presentation-pdf'), {
       method: 'POST',
-      headers: {
-        'Content-Type': file.type || 'application/octet-stream',
-        'X-File-Name': getSafeFileNameHeader(file.name),
-      },
+      headers: await buildPresentationRenderHeaders(file, options),
       body: file,
       signal: controller.signal,
     });

@@ -653,6 +653,11 @@ export interface LiveStreamStatePayload {
 
 export interface LiveStreamTokenRequestPayload {
   requestId: string;
+  /**
+   * Omitted for a live-stream (relay) token. 'presentation-render' asks for a
+   * short-lived token that only authorizes the media server's deck renderer.
+   */
+  purpose?: 'presentation-render';
 }
 
 export interface LiveStreamTokenIssuedPayload {
@@ -1072,6 +1077,21 @@ export interface SfuTokenClaims {
   participantId: string;
   role: ParticipantRole;
   iat?: number;
+  exp: number;
+  nonce: string;
+}
+
+/**
+ * Authorizes POST /presentation-preview and /presentation-pdf on the media
+ * server for an admitted host or co-host, and nothing else.
+ */
+export interface PresentationRenderTokenClaims {
+  v: 1;
+  purpose: 'presentation-render';
+  roomId: string;
+  participantId: string;
+  role: Extract<ParticipantRole, 'host' | 'co-host'>;
+  iat: number;
   exp: number;
   nonce: string;
 }

@@ -44,11 +44,16 @@ describe('guest invite links', () => {
       'https://studio.example.com/join/abc123?studio=Launch%20Show',
       'secure_guest_token_1234567890'
     );
-    const params = new URL(inviteUrl).searchParams;
+    const parsed = new URL(inviteUrl);
+    const params = parsed.searchParams;
 
-    assert.equal(new URL(inviteUrl).pathname, '/join/abc123');
+    assert.equal(parsed.pathname, '/join/abc123');
     assert.equal(params.get('studio'), 'Launch Show');
-    assert.equal(getGuestInviteToken(params), 'secure_guest_token_1234567890');
+    // The token rides in the fragment, which never reaches the static host's logs.
+    assert.equal(params.has('guestInvite'), false);
+    assert.equal(new URLSearchParams(parsed.hash.slice(1)).get('guestInvite'), 'secure_guest_token_1234567890');
+    // Links sent before the change still read from the query string.
+    assert.equal(getGuestInviteToken(new URLSearchParams({ guestInvite: 'secure_guest_token_1234567890' })), 'secure_guest_token_1234567890');
     assert.equal(getGuestInviteToken(new URLSearchParams({ guestInvite: 'short' })), '');
   });
 

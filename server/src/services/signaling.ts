@@ -21,6 +21,7 @@ import type {
   RecordingUploadProgressPayload,
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
+  PresentationRenderTokenClaims,
   RecordingUploadTokenClaims,
   SfuMembershipControlAction,
   SfuMembershipControlClaims,
@@ -80,6 +81,8 @@ import {
   signRoomRestoreTicket,
   verifyRoomRestoreTicket,
 } from './roomRestoreTicket.js';
+import { isStudioCreationGated } from './studioAccessPolicy.js';
+import { buildPresentationRenderClaims } from './presentationRenderToken.js';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
 
@@ -144,6 +147,8 @@ interface RoomState {
   passwordSalt?: string;
   // Creator IP, used to enforce a per-IP active-room quota.
   creatorIp: string;
+  /** Created through the owner gate (STUDIO_OWNER_EMAILS / STUDIO_CREATE_SECRET); unlocks server-held chat keys. */
+  createdByOwner?: boolean;
   // True once any participant successfully joined; used for shorter idle expiry.
   hasBeenJoined: boolean;
   emptyRoomTimer?: ReturnType<typeof setTimeout>;
@@ -190,6 +195,11 @@ export interface StageImage {
 export const STAGE_IMAGE_MAX_BYTES = 1024 * 1024;
 const STAGE_IMAGE_LIMIT_PER_ROOM = 60;
 const STAGE_IMAGE_BYTES_PER_ROOM = 20 * 1024 * 1024;
+const STAGE_IMAGE_GLOBAL_DEFAULT_BYTES = 64 * 1024 * 1024;
+function getStageImageGlobalMaxBytes(): number {
+  const megabytes = Number(process.env.STAGE_IMAGE_GLOBAL_MAX_MB);
+  return Number.isFinite(megabytes) && megabytes > 0 ? megabytes * 1024 * 1024 : STAGE_IMAGE_GLOBAL_DEFAULT_BYTES;
+}
 const STAGE_IMAGE_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const STAGE_MEDIA_TYPES = new Set<StudioMediaType>(['video', 'image', 'pdf', 'presentation', 'file']);
 const STAGE_LAYOUTS = new Set<LayoutMode>(['grid', 'spotlight', 'side-by-side', 'pip', 'single', 'featured']);
@@ -465,6 +475,7 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
     coHostInviteTokens: new Map(),
     hostToken: snapshot.hostToken,
     creatorIp: snapshot.creatorIp,
+    ...(session?.createdByOwner ? { createdByOwner: true } : {}),
     hasBeenJoined: snapshot.hasBeenJoined,
     ...(snapshot.studioBranding ? { studioBranding: snapshot.studioBranding } : {}),
     ...(snapshot.passwordHash ? { passwordHash: snapshot.passwordHash } : {}),
@@ -485,6 +496,7 @@ function buildRoomSessionSnapshot(roomState: RoomState): RoomSessionSnapshot {
   }
   return {
     watchId: roomState.watchId,
+    ...(roomState.createdByOwner ? { createdByOwner: true } : {}),
     ...(roomState.recordingSessionId ? {
       recording: {
         sessionId: roomState.recordingSessionId,
@@ -738,6 +750,7 @@ export function createRoom(
     creatorIp: string;
     password?: string;
     registrationEnabled?: boolean;
+    createdByOwner?: boolean;
   }
 ): CreatedRoom {
   if (rooms.size >= MAX_ROOMS) {
@@ -785,7 +798,7 @@ export function createRoom(
     creatorIp: options.creatorIp,
     hasBeenJoined: false,
     ...passwordVerifier,
-    sessionState: { watchId: createWatchId() },
+    sessionState: { watchId: createWatchId(), ...(options.createdByOwner ? { createdByOwner: true } : {}) },
   }));
 
   indexRoomCreator(room.id, options.creatorIp);
@@ -926,7 +939,7 @@ function getLiveStreamTokenSecret(): string | null {
 }
 
 function signMediaToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -1403,6 +1416,16 @@ function findResumableEntry(roomState: RoomState, token: unknown): ParticipantEn
   return undefined;
 }
 
+/**
+ * Whether a per-seat credential (the resume token each participant receives in
+ * room-joined) belongs to someone holding a seat in this studio. Gates the
+ * TURN relay credentials handed out by /api/ice-config.
+ */
+export function isRoomMemberCredential(roomId: unknown, credential: unknown): boolean {
+  const roomState = typeof roomId === 'string' ? rooms.get(roomId) : undefined;
+  return Boolean(roomState && findResumableEntry(roomState, credential));
+}
+
 function issueRestoreTicket(roomState: RoomState): string | undefined {
   const secret = getLiveStreamTokenSecret();
   if (!secret) return undefined;
@@ -1424,6 +1447,7 @@ function issueRestoreTicket(roomState: RoomState): string | undefined {
       hostTokenHash: hashHostToken(roomState.hostToken),
       watchId: roomState.watchId,
       creatorIp: roomState.creatorIp,
+      ...(roomState.createdByOwner ? { createdByOwner: true } : {}),
       ...(roomState.passwordHash && roomState.passwordSalt
         ? { passwordHash: roomState.passwordHash, passwordSalt: roomState.passwordSalt }
         : {}),
@@ -1467,7 +1491,7 @@ function restoreRoomFromTicket(roomId: string, payload: JoinRoomPayload): RoomSt
       creatorIp: claims.creatorIp,
       hasBeenJoined: true,
       ...(claims.passwordHash && claims.passwordSalt ? { passwordHash: claims.passwordHash, passwordSalt: claims.passwordSalt } : {}),
-      sessionState: { watchId: claims.watchId },
+      sessionState: { watchId: claims.watchId, ...(claims.createdByOwner === true ? { createdByOwner: true } : {}) },
     });
   } catch {
     return undefined;
@@ -2160,11 +2184,22 @@ export function storeStageImage(input: {
   const onStage = roomState.stageContent?.media?.imageId;
   let totalBytes = 0;
   for (const image of images.values()) totalBytes += image.data.length;
+  // All studios share one memory budget on the 512 MB instance.
+  let otherRoomsBytes = 0;
+  for (const other of rooms.values()) {
+    if (other === roomState || !other.stageImages) continue;
+    for (const image of other.stageImages.values()) otherRoomsBytes += image.data.length;
+  }
+  const roomBudget = Math.min(STAGE_IMAGE_BYTES_PER_ROOM, Math.max(0, getStageImageGlobalMaxBytes() - otherRoomsBytes));
   for (const [id, image] of images) {
-    if (images.size <= STAGE_IMAGE_LIMIT_PER_ROOM && totalBytes <= STAGE_IMAGE_BYTES_PER_ROOM) break;
+    if (images.size <= STAGE_IMAGE_LIMIT_PER_ROOM && totalBytes <= roomBudget) break;
     if (id === onStage || id === imageId) continue;
     images.delete(id);
     totalBytes -= image.data.length;
+  }
+  if (totalBytes > roomBudget) {
+    images.delete(imageId);
+    return { ok: false, status: 507, error: 'The studio server has no room for more stage images right now' };
   }
   return { ok: true, imageId };
 }
@@ -2642,6 +2677,15 @@ function handleLiveStreamTokenRequest(
   const secret = getLiveStreamTokenSecret();
   if (!secret) {
     sendError(ws, 'Live streaming is not configured on this server', 'LIVE_STREAM_NOT_CONFIGURED');
+    return;
+  }
+
+  if (payload.purpose === 'presentation-render') {
+    const renderClaims = buildPresentationRenderClaims({ roomId: mapping.roomId, participantId: mapping.participantId, role: performer.participant.role });
+    send(ws, {
+      type: 'live-stream-token-issued',
+      payload: { requestId: payload.requestId, token: signMediaToken(renderClaims, secret), expiresAt: new Date(renderClaims.exp).toISOString() },
+    });
     return;
   }
 
@@ -3314,6 +3358,19 @@ function handleExternalChatConnect(
         : 'A valid Facebook live video id is required',
       'VALIDATION_ERROR'
     );
+    return;
+  }
+
+  if (isStudioCreationGated() && !operator.roomState.createdByOwner) {
+    send(ws, {
+      type: 'external-chat-status',
+      payload: {
+        platform,
+        status: 'error',
+        liveChatId,
+        message: 'Server chat keys are reserved for studios the owner created. Create the studio with the owner account or studio access key.',
+      },
+    });
     return;
   }
 

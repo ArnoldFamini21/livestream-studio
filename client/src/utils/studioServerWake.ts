@@ -70,17 +70,18 @@ export function isLostRequest(error: unknown): boolean {
 export async function postWhenStudioServerReady<T>(
   path: string,
   body: unknown,
-  deps: WakeDependencies & { post?: typeof postJson; onWaiting?: () => void } = {}
+  deps: WakeDependencies & { post?: typeof postJson; onWaiting?: () => void; requestInit?: RequestInit } = {}
 ): Promise<T> {
   const post = deps.post || postJson;
+  const init = { ...deps.requestInit, timeoutMs: REQUEST_TIMEOUT_MS };
   await waitForStudioServer(DEFAULT_WAKE_TIMEOUT_MS, deps);
   try {
-    return await post<T>(path, body, { timeoutMs: REQUEST_TIMEOUT_MS });
+    return await post<T>(path, body, init);
   } catch (error) {
     if (!isLostRequest(error)) throw error;
     deps.onWaiting?.();
     await waitForStudioServer(DEFAULT_WAKE_TIMEOUT_MS, deps);
-    return post<T>(path, body, { timeoutMs: REQUEST_TIMEOUT_MS });
+    return post<T>(path, body, init);
   }
 }
 

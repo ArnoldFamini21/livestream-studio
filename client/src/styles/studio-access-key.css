@@ -1,0 +1,8 @@
+.studio-access-key { margin-top: 28px; padding-top: 28px; border-top: 1px solid #e5e3ec; }
+.studio-access-key h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+.studio-access-key p { margin: 0; color: #706d7e; font-size: 14px; line-height: 1.5; }
+.studio-access-key-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+.studio-access-key-row input { flex: 1 1 220px; min-width: 0; border: 1px solid #ded8f3; border-radius: 9px; padding: 10px 12px; font: inherit; font-size: 14px; }
+.studio-access-key-row button { font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid #ded8f3; border-radius: 9px; padding: 10px 14px; background: #f0ecfa; color: #5940a9; }
+.studio-access-key-row button.studio-access-key-forget { background: transparent; border-color: transparent; color: #706d7e; font-weight: 500; }
+.studio-access-key-status { margin-top: 10px !important; font-size: 13px !important; }

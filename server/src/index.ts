@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws';
 import { buildServiceHealthPayload } from '@studio/shared';
 import {
   configureRoomSnapshotStore,
+  isRoomMemberCredential,
   readStageImage,
   restoreRoomSnapshots,
   setupSignalingServer,
@@ -23,7 +24,8 @@ import { highlightRouter } from './routes/highlights.js';
 import { episodeContentRouter } from './routes/episodeContent.js';
 import { captionTranslationRouter } from './routes/captionTranslation.js';
 import { createAiRouteAccessMiddleware } from './services/aiAccess.js';
-import { buildIceConfigStatusFromEnv, resolveIceConfigWithStatus } from './services/ice-config.js';
+import { buildIceConfigStatusFromEnv, buildStunOnlyIceConfigWithStatus, resolveIceConfigWithStatus } from './services/ice-config.js';
+import { warnIfStudioCreationOpen } from './services/studioAccess.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { buildProductionReadiness, getStrictStartupFailure } from './services/productionReadiness.js';
 import { parseClientErrorReport, recordClientError } from './services/clientErrors.js';
@@ -95,7 +97,9 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '256kb' }));
+// Browsers never compress request bodies; refusing gzip/deflate bodies closes the
+// decompression-bomb path in body-parser (GHSA-27r3-jxmh-p828).
+app.use(express.json({ limit: '256kb', inflate: false }));
 
 // Security headers (CSP, X-Frame-Options, etc.).
 // Note: the SPA is served from a separate static host (Hostinger), so this CSP
@@ -278,6 +282,7 @@ app.use(
   express.raw({
     type: ['audio/*', 'video/mp4', 'video/webm', 'application/octet-stream'],
     limit: '25mb',
+    inflate: false,
   }),
   transcriptionRouter
 );
@@ -298,7 +303,7 @@ app.get('/api/health', (_req, res) => {
 app.post(
   '/api/client-errors',
   clientErrorLimiter.middleware,
-  express.text({ type: ['text/plain', 'application/json'], limit: '16kb' }),
+  express.text({ type: ['text/plain', 'application/json'], limit: '16kb', inflate: false }),
   (req, res) => {
     let body: unknown = req.body;
     if (typeof body === 'string') {
@@ -322,7 +327,7 @@ app.post(
 // authorized by the per-join token the host or co-host received on join.
 app.post(
   '/api/rooms/:roomId/stage-images',
-  express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: STAGE_IMAGE_MAX_BYTES }),
+  express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: STAGE_IMAGE_MAX_BYTES, inflate: false }),
   (req, res) => {
     const header = (name: string) => {
       const value = req.headers[name];
@@ -361,8 +366,19 @@ app.get('/api/rooms/:roomId/stage-images/:imageId', (req, res) => {
   res.send(image.data);
 });
 
-app.get('/api/ice-config', async (_req, res) => {
+// TURN credentials only for someone holding a seat in a studio: the browser sends
+// the room id and its per-seat credential (the resume token from room-joined).
+// Anyone else, such as a pre-join device check, gets STUN servers only.
+app.get('/api/ice-config', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
+  const header = (name: string) => {
+    const value = req.headers[name];
+    return (Array.isArray(value) ? value[0] : value) || '';
+  };
+  if (!isRoomMemberCredential(header('x-room-id'), header('x-room-credential'))) {
+    res.json(buildStunOnlyIceConfigWithStatus(process.env));
+    return;
+  }
   res.json(await resolveIceConfigWithStatus(process.env, {
     onError: (error) => console.warn('Cloudflare TURN unavailable; using the fallback relay:', error instanceof Error ? error.message : error),
   }));
@@ -552,6 +568,8 @@ if (serverReadiness.production) {
   for (const issue of serverReadiness.issues) {
     console.warn(`Production readiness (${issue.severity}): ${issue.message}`);
   }
+} else {
+  warnIfStudioCreationOpen();
 }
 
 server.listen(PORT, () => {
