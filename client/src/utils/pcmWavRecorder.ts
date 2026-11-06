@@ -14,62 +14,21 @@ import { createWavHeader, encodePcmFrames, WAV_HEADER_BYTES, type WavFormat } fr
 export const WAV_MIME_TYPE = 'audio/wav';
 export const PCM_WAV_SAMPLE_RATE = 48_000;
 
-const WORKLET_NAME = 'studio-pcm-tap';
-const WORKLET_SOURCE = `
-class StudioPcmTap extends AudioWorkletProcessor {
-  constructor(options) {
-    super();
-    this.channels = Math.max(1, Math.min(2, (options.processorOptions && options.processorOptions.channels) || 1));
-    this.batchFrames = (options.processorOptions && options.processorOptions.batchFrames) || 4800;
-    this.active = true;
-    this.reset();
-    this.port.onmessage = (event) => {
-      if (event.data === 'pause') { this.flush(); this.active = false; }
-      else if (event.data === 'resume') { this.active = true; }
-      else if (event.data === 'flush') { this.flush(); this.port.postMessage({ flushed: true }); }
-    };
-  }
-  reset() {
-    this.buffers = [];
-    for (let c = 0; c < this.channels; c++) this.buffers.push(new Float32Array(this.batchFrames));
-    this.filled = 0;
-  }
-  flush() {
-    if (!this.filled) return;
-    const out = this.buffers.map((buffer) => buffer.slice(0, this.filled));
-    this.port.postMessage({ channels: out }, out.map((channel) => channel.buffer));
-    this.reset();
-  }
-  process(inputs) {
-    if (!this.active) return true;
-    const input = inputs[0] || [];
-    const frames = input.length ? input[0].length : 128;
-    for (let offset = 0; offset < frames;) {
-      const count = Math.min(frames - offset, this.batchFrames - this.filled);
-      for (let c = 0; c < this.channels; c++) {
-        const source = input[c] || input[0];
-        if (source) this.buffers[c].set(source.subarray(offset, offset + count), this.filled);
-        else this.buffers[c].fill(0, this.filled, this.filled + count);
-      }
-      this.filled += count;
-      offset += count;
-      if (this.filled >= this.batchFrames) this.flush();
-    }
-    return true;
-  }
-}
-registerProcessor('${WORKLET_NAME}', StudioPcmTap);
-`;
+/** Must match registerProcessor() in pcmWavTap.worklet.js. */
+export const PCM_WAV_WORKLET_NAME = 'studio-pcm-tap';
+const WORKLET_NAME = PCM_WAV_WORKLET_NAME;
+/**
+ * Same-origin module URL (Vite emits it as an asset). The production CSP only
+ * lets scripts, worklets included, load from 'self', so a blob: URL is refused.
+ */
+export const PCM_WAV_WORKLET_URL = new URL('./pcmWavTap.worklet.js', import.meta.url);
 
 const loadedContexts = new WeakSet<BaseAudioContext>();
 
 async function ensureWorklet(context: AudioContext): Promise<void> {
   if (loadedContexts.has(context)) return;
-  const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'text/javascript' }));
-  try {
-    await context.audioWorklet.addModule(url);
-    loadedContexts.add(context);
-  } finally { URL.revokeObjectURL(url); }
+  await context.audioWorklet.addModule(PCM_WAV_WORKLET_URL.href);
+  loadedContexts.add(context);
 }
 
 export function isPcmWavRecordingSupported(): boolean {

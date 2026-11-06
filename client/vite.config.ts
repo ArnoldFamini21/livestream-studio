@@ -4,6 +4,9 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   build: {
+    // Never inline AudioWorklet modules as data: URLs. The production CSP
+    // (public/.htaccess) only lets scripts and worklets load from 'self'.
+    assetsInlineLimit: (filePath) => (/\.worklet\.js$/.test(filePath) ? false : undefined),
     rollupOptions: {
       output: {
         // Emit .mjs assets (the PDF.js worker) as .js. Static hosts such as
