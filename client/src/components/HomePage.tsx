@@ -26,6 +26,12 @@ import {
   registerAccount,
 } from '../utils/accountAuth.ts';
 import { postWhenStudioServerReady } from '../utils/studioServerWake.ts';
+import {
+  NO_STUDIO_SYNC_ISSUES,
+  describeStudioSyncIssues,
+  getSavedStudioAvailability,
+  type StudioSyncIssues,
+} from '../utils/savedStudioAvailability.ts';
 import { buildStudioCreateHeaders, getStoredStudioAccessKey, isStudioAccessRequiredError, saveStudioAccessKey } from '../utils/studioAccessKey.ts';
 import { StudioAccessKeyField, StudioAccessKeySettings } from './StudioAccessKey.tsx';
 import { AccountSecurity, ForgotPasswordForm } from './AccountSecurity.tsx';
@@ -322,6 +328,9 @@ export function HomePage() {
   const [serverWorkspaceStudioCatalog, setServerWorkspaceStudioCatalog] = useState<WorkspaceStudioCatalogEntry[]>([]);
   const [serverWorkspaceStudioCatalogLoading, setServerWorkspaceStudioCatalogLoading] = useState(false);
   const [serverWorkspaceStudioCatalogError, setServerWorkspaceStudioCatalogError] = useState<string | null>(null);
+  // Which saved studios the server no longer knows (or could not be asked about), per card.
+  const [studioSyncIssues, setStudioSyncIssues] = useState<StudioSyncIssues>(NO_STUDIO_SYNC_ISSUES);
+  const [recreatingStudioId, setRecreatingStudioId] = useState<string | null>(null);
   const [accountWorkspaceStudioCatalog, setAccountWorkspaceStudioCatalog] = useState<WorkspaceStudioCatalogEntry[]>([]);
   const [accountWorkspaceStudioCatalogLoading, setAccountWorkspaceStudioCatalogLoading] = useState(false);
   const [accountWorkspaceStudioCatalogError, setAccountWorkspaceStudioCatalogError] = useState<string | null>(null);
@@ -576,11 +585,12 @@ export function HomePage() {
       .then((response) => {
         if (cancelled) return;
         setServerWorkspaceStudioCatalog(response.studios);
-        const failedCount = new Set([...response.failedCatalogIds, ...response.rejectedStudioIds]).size;
-        setServerWorkspaceStudioCatalogError(failedCount > 0
-          ? `${failedCount} saved studio${failedCount === 1 ? ' is' : 's are'} unavailable. Your local studios are still here.`
-          : null
-        );
+        const issues: StudioSyncIssues = {
+          rejectedStudioIds: new Set(response.rejectedStudioIds),
+          failedStudioIds: new Set(response.failedCatalogIds),
+        };
+        setStudioSyncIssues(issues);
+        setServerWorkspaceStudioCatalogError(describeStudioSyncIssues(hostAccessibleStudios, issues));
       })
       .catch(() => {
         if (!cancelled) {
@@ -991,6 +1001,52 @@ export function HomePage() {
     navigate(buildHostEntryPath(room.id, hostToken));
   };
 
+  /**
+   * A saved studio the server forgot (free hosting restarted): make a new one
+   * with the same name and schedule, and replace the saved card.
+   */
+  const recreateSavedStudio = async (room: SavedScheduledStudio) => {
+    if (recreatingStudioId) return;
+    setRecreatingStudioId(room.id);
+    setError(null);
+    try {
+      const scheduledAt = room.scheduledFor ? Date.parse(room.scheduledFor) : NaN;
+      const scheduled = Number.isFinite(scheduledAt) && scheduledAt > Date.now();
+      const createdRoom = await postWhenStudioServerReady<CreatedRoomResponse>(scheduled ? '/api/rooms/schedule' : '/api/rooms', {
+        name: room.name,
+        hostName: room.hostName || hostName || 'Host',
+        ...(scheduled ? { scheduledFor: room.scheduledFor } : {}),
+        registrationEnabled: Boolean(room.registrationEnabled),
+      }, { requestInit: studioCreateRequestInit() });
+      if (!hasCreatedRoomDetails(createdRoom)) {
+        setError('The studio was recreated, but its details were incomplete. Please create a new studio.');
+        return;
+      }
+      const { room: created } = await resolveCreatedRoomHostAccess(createdRoom);
+      const savedHostName = created.hostName || room.hostName || hostName;
+      const hostToken = getValidHostToken(created.hostToken);
+      persistHostSession({ roomId: created.id, hostName: savedHostName, hostToken });
+      removeSavedScheduledStudio(room.id);
+      void deleteWorkspaceStudioFromSavedStudios(room.id, dashboardStudios);
+      void deleteAccountWorkspaceStudio(room.id);
+      const nextStudios = upsertSavedScheduledStudio(toSavedScheduledRoom(created, savedHostName, hostToken));
+      setSavedScheduledRooms(nextStudios);
+      setStudioSyncIssues((current) => {
+        const rejected = new Set(current.rejectedStudioIds);
+        rejected.delete(room.id);
+        return { rejectedStudioIds: rejected, failedStudioIds: current.failedStudioIds };
+      });
+      setServerWorkspaceStudioCatalogError(null);
+      setDashboardNotice(`"${room.name}" was recreated. Share its new guest link; the old one no longer works.${room.passwordProtected ? ' Set its room password again in the studio settings.' : ''}`);
+      void syncWorkspaceStudiosToSavedStudios(nextStudios, nextStudios, false);
+    } catch (err) {
+      noteStudioCreateError(err);
+      setError(getApiErrorMessage(err, 'Could not recreate that studio. Please try again.'));
+    } finally {
+      setRecreatingStudioId(null);
+    }
+  };
+
   const forgetScheduledRoom = (roomId: string) => {
     const currentDashboardStudios = dashboardStudios;
     setSavedScheduledRooms(removeSavedScheduledStudio(roomId));
@@ -1110,9 +1166,13 @@ export function HomePage() {
     try {
       const response = await syncWorkspaceStudioCatalogs(syncableStudios, hostAccessibleCatalogs);
       mergeSyncedWorkspaceStudios(response.studios);
+      const issues: StudioSyncIssues = {
+        rejectedStudioIds: new Set(response.rejectedStudioIds),
+        failedStudioIds: new Set(response.failedCatalogIds),
+      };
+      setStudioSyncIssues(issues);
       if (showErrors) {
-        const failedCount = new Set([...response.failedCatalogIds, ...response.rejectedStudioIds]).size;
-        setServerWorkspaceStudioCatalogError(failedCount ? 'Saved locally. Some cloud studios could not be synced.' : null);
+        setServerWorkspaceStudioCatalogError(describeStudioSyncIssues(hostAccessibleCatalogs, issues));
       }
     } catch {
       if (showErrors) setServerWorkspaceStudioCatalogError('Saved locally. Cloud sync is temporarily unavailable.');
@@ -1439,16 +1499,16 @@ export function HomePage() {
           {workspaceSyncNotice && !dashboardError && !recordingLibrary.error && <p className="workspace-notice" role="status">{workspaceSyncNotice}</p>}
           {error && !showCreate && <p className="workspace-alert" role="alert">{error}</p>}
           {workspaceView === 'studios' && <>
-            <section className="workspace-hero">
+            {dashboardStudios.length === 0 && <section className="workspace-hero">
               <div className="hero-copy"><span className="hero-kicker"><span /> YOUR NEXT GREAT CONVERSATION</span><h2>Big ideas.<br />Beautifully broadcast.</h2><p>Your guests, your brand, your stage.<br />One space to bring it all together.</p><button className="hero-action" onClick={() => setShowCreate(true)}>Let's create something <span>↗</span></button></div>
               <div className="hero-illustration" aria-hidden="true"><div className="mini-studio"><div className="mini-top"><span className="mini-dot" />Studio preview <span>16:9</span></div><div className="mini-stage"><div className="mini-person person-one"><StudioIcon name="person" /><span>You</span></div><div className="mini-person person-two"><StudioIcon name="person" /><span>Your guest</span></div></div><div className="mini-controls"><span><StudioIcon name="mic" /></span><span><StudioIcon name="video" /></span><i /><b>Go live</b></div></div><span className="illustration-caption">MAKE ROOM FOR YOUR STORY.</span></div>
-            </section>
+            </section>}
             {dashboardStudios.length === 0 && <section className="workspace-empty"><span className="empty-icon"><StudioIcon name="studios" /></span><h2>A fresh stage, just for you</h2><p>Create your first studio to invite guests, record a conversation,<br />or prepare your next live show.</p><button className="workspace-secondary" onClick={() => setShowCreate(true)}><StudioIcon name="plus" />Create your first studio</button></section>}
           </>}
           {workspaceView === 'studios' && dashboardStudios.length > 0 && (
             <section className="ws-schedulePanel" style={styles.schedulePanel}>
               <div className="ws-schedulePanelHeader" style={styles.schedulePanelHeader}>
-                <h2 className="ws-schedulePanelTitle" style={styles.schedulePanelTitle}>Your Studios</h2>
+                <h2 className="ws-schedulePanelTitle" style={styles.schedulePanelTitle}>Saved studios</h2>
                 <span className="ws-schedulePanelCount" style={styles.schedulePanelCount}>{dashboardStudios.length}</span>
               </div>
               <div className="studio-list-tools">
@@ -1461,7 +1521,7 @@ export function HomePage() {
               {filteredStudios.length === 0 && <p className="search-empty" role="status">No studios match your search.</p>}
               <div className="ws-savedRoomList" style={styles.savedRoomList}>
                 {filteredStudios.map((room) => {
-                  const scheduleState = getScheduleState(room);
+                  const availability = getSavedStudioAvailability(room, studioSyncIssues);
                   return (
                     <div key={room.id} className="ws-savedRoomCard" style={styles.savedRoomCard}>
                       <div className="ws-savedRoomTop" style={styles.savedRoomTop}><span className="room-art"><StudioIcon name="video" /></span>
@@ -1469,11 +1529,8 @@ export function HomePage() {
                           <span className="ws-savedRoomName" style={styles.savedRoomName}>{room.name}</span>
                           <span className="ws-savedRoomMeta" style={styles.savedRoomMeta}>{formatScheduledDate(room.scheduledFor)}</span>
                         </div>
-                        <span style={{
-                          ...styles.savedRoomBadge,
-                          ...(scheduleState === 'Upcoming' ? styles.savedRoomBadgeUpcoming : {}),
-                        }}>
-                          {scheduleState}
+                        <span className={`ws-studio-badge ws-studio-badge--${availability.kind}`}>
+                          {availability.label}
                         </span>
                       </div>
 
@@ -1485,12 +1542,31 @@ export function HomePage() {
                         >
                           {savedRoomCopiedId === room.id ? 'Copied' : 'Guest Link'}
                         </button>
-                        <button
-                          className="ws-savedRoomPrimaryAction" style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
-                          onClick={() => openScheduledAsHost(room)}
-                        >
-                          Enter studio
-                        </button>
+                        {availability.canEnter ? (
+                          <button
+                            className="ws-savedRoomPrimaryAction" style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
+                            onClick={() => openScheduledAsHost(room)}
+                          >
+                            Enter studio
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              className="ws-savedRoomAction ws-savedRoomRemoveAction" style={styles.savedRoomAction}
+                              onClick={() => forgetScheduledRoom(room.id)}
+                            >
+                              Remove
+                            </button>
+                            <button
+                              className="ws-savedRoomPrimaryAction" style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
+                              onClick={() => void recreateSavedStudio(room)}
+                              disabled={recreatingStudioId !== null}
+                              aria-label={`Recreate ${room.name}`}
+                            >
+                              {recreatingStudioId === room.id ? 'Recreating…' : 'Recreate studio'}
+                            </button>
+                          </>
+                        )}
                         <details className="studio-row-more"><summary aria-label={`More actions for ${room.name}`}><StudioIcon name="more" /></summary><div>
                         <button
                           className="ws-savedRoomAction" style={styles.savedRoomAction}
@@ -2764,7 +2840,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderColor: '#2563eb',
   },
   savedRoomDangerAction: {
-    color: '#f87171',
+    color: '#b91c1c',
     borderColor: 'rgba(248, 113, 113, 0.18)',
   },
 

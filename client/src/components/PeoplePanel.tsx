@@ -5,6 +5,7 @@ import { formatPeerBandwidthHealthTitle } from '../utils/peerBandwidthDisplay.ts
 import { describeRecordingUploadProgress } from '../utils/recordingUploadProgress.ts';
 import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import { StudioIcon } from './StudioIcon.tsx';
+import { NameTagEditor } from './NameTagEditor.tsx';
 import '../styles/people-panel.css';
 
 export interface PeoplePanelProps {
@@ -28,6 +29,8 @@ export interface PeoplePanelProps {
   /** Latest background recording upload report per participant (hosts only). */
   recordingUploads?: Record<string, RecordingUploadProgressPayload>;
   onRecordingUploadControl?: (participantId: string, action: 'pause' | 'resume') => void;
+  /** Hosts and co-hosts: fix a display name or set a name-tag title. */
+  onEditNameTag?: (participantId: string, profile: { name: string; title: string }) => void;
 }
 
 export function PeoplePanel(props: PeoplePanelProps) {
@@ -200,6 +203,7 @@ function PersonRow({
             {person.name}
             {isMe ? ' (you)' : ''}
           </strong>
+          {person.title && <span className="people-title" title={person.title}>{person.title}</span>}
           <span>
             {spotlight
               ? 'Spotlighted'
@@ -326,6 +330,9 @@ function PersonRow({
                     ? 'poor'
                     : 'checking'}
             </p>
+          )}
+          {host && props.onEditNameTag && (person.role !== 'host' || props.myRole === 'host') && (
+            <NameTagEditor person={person} onSave={(profile) => props.onEditNameTag?.(person.id, profile)} />
           )}
           <div className="people-actions">
             {canMix && (

@@ -73,7 +73,10 @@ const LOWER_THIRD_FONT_IDS = new Set<LowerThirdFont>(
   LOWER_THIRD_FONT_PRESETS.map((preset) => preset.id)
 );
 
-export function getParticipantLowerThirdTitle(role: ParticipantRole): string {
+/** The name-tag subtitle: the title a host set for this person, otherwise their role. */
+export function getParticipantLowerThirdTitle(role: ParticipantRole, customTitle?: string): string {
+  const title = customTitle?.trim();
+  if (title) return title;
   switch (role) {
     case 'host':
       return 'Host';

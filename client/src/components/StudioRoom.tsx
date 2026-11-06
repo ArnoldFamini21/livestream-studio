@@ -301,6 +301,8 @@ import {
 } from '../utils/streamScreens.ts';
 import { useToast } from './Toast.tsx';
 import { StudioMediaBanner } from './StudioMediaBanner.tsx';
+import { EmptyStageInvite } from './EmptyStageInvite.tsx';
+import { useRecordingCountdownMirror } from '../hooks/useRecordingCountdownMirror.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 import { alertGuestArrival, requestArrivalNotificationPermission } from '../utils/guestArrivalAlert.ts';
 
@@ -973,6 +975,8 @@ export function StudioRoom() {
   // A short on-stage countdown before a recording starts. Escape or Cancel
   // stops it, so a misclick never produces a stray take.
   const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
+  // The host's countdown as guests see it (one message from the host, ticked locally).
+  const { value: remoteRecordingCountdown, start: startRemoteRecordingCountdown, stop: stopRemoteRecordingCountdown } = useRecordingCountdownMirror();
   const isPortraitPhone = useIsPortraitPhone();
   // Phones and tablets have no screen capture (iOS Safari, Android Chrome): offer no button that cannot work.
   const screenShareSupported = typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
@@ -2275,7 +2279,7 @@ export function StudioRoom() {
       candidates.push({
         participantId: myParticipant.id,
         name: myParticipant.name,
-        title: getParticipantLowerThirdTitle(myParticipant.role),
+        title: getParticipantLowerThirdTitle(myParticipant.role, myParticipant.title),
         audioLevel: stageAudioLevels[myParticipant.id] || 0,
         eligible: myParticipant.status === 'on-stage' && effectiveAudioEnabled,
       });
@@ -2285,7 +2289,7 @@ export function StudioRoom() {
       candidates.push({
         participantId,
         name: participant.name,
-        title: getParticipantLowerThirdTitle(participant.role),
+        title: getParticipantLowerThirdTitle(participant.role, participant.title),
         audioLevel: stageAudioLevels[participantId] || 0,
         eligible: participant.status === 'on-stage' && participant.audioEnabled && !participant.screenSharing,
       });
@@ -2809,7 +2813,15 @@ export function StudioRoom() {
         case 'host-changed':
           setRoom((prev) => prev ? { ...prev, hostId: message.payload.newHostId } : prev);
           break;
+        case 'recording-countdown':
+          if (message.payload.cancelled) stopRemoteRecordingCountdown();
+          else startRemoteRecordingCountdown(message.payload.seconds);
+          break;
+        case 'update-participant-profile':
+          // A request to the server only; the change arrives as participant-updated.
+          break;
         case 'recording-state-changed':
+          if (message.payload.recording) stopRemoteRecordingCountdown();
           sessionRecordingStartedAtRef.current = message.payload.recording ? message.payload.startedAt || new Date().toISOString() : null;
           setSessionRecordingStartedAt(sessionRecordingStartedAtRef.current);
           if (message.payload.sessionId) {
@@ -3576,7 +3588,12 @@ export function StudioRoom() {
         ));
         if (!startCheck.proceed) return;
         if (startCheck.headroom.status === 'warning') addToast(startCheck.headroom.message, 'warning');
-        if (!(await runRecordingCountdown())) return;
+        // Guests see the same 3-2-1 (and its cancellation) on their screens.
+        send({ type: 'recording-countdown', payload: { seconds: RECORDING_COUNTDOWN_SECONDS } });
+        if (!(await runRecordingCountdown())) {
+          send({ type: 'recording-countdown', payload: { seconds: 0, cancelled: true } });
+          return;
+        }
         const streams = new Map<string, RecordingStreamInput>();
         const programSource = createProgramRecordingSource({
           compositeStream: compositeStreamRef.current,
@@ -5572,17 +5589,23 @@ export function StudioRoom() {
       });
     }
 
+    // On stage, the strip is for people who are not on stage: on-stage co-hosts
+    // already have a stage tile. Backstage guests also see the hosts here.
+    const viewerBackstage = myParticipant.status === 'backstage';
+    // Anyone with a stage tile is already heard there: never play them twice.
+    const stageIds = new Set(videoItems.map((item) => item.id));
     for (const [id, participant] of participants) {
       if (!canExchangeStudioMedia(myParticipant, participant)) continue;
-      if (participant.status !== 'backstage' && !isStudioOperator(participant)) continue;
+      if (participant.status !== 'backstage' && !(viewerBackstage && isStudioOperator(participant))) continue;
+      const heardOnStage = stageIds.has(id);
 
       items.push({
         id,
         name: participant.status === 'backstage' ? participant.name : `${participant.name} · ${participant.role === 'co-host' ? 'Co-host' : 'Host'}`,
         stream: remoteStreams.get(id) || null,
         isLocal: false,
-        audioEnabled: participant.screenSharing ? false : participant.audioEnabled,
-        audibleWhileMuted: !participant.screenSharing,
+        audioEnabled: participant.screenSharing || heardOnStage ? false : participant.audioEnabled,
+        audibleWhileMuted: !participant.screenSharing && !heardOnStage,
         videoEnabled: participant.videoEnabled || participant.screenSharing,
         volume: participantVolumes[id] ?? 1,
         isScreenShare: participant.screenSharing || false,
@@ -5591,7 +5614,7 @@ export function StudioRoom() {
     }
 
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, participantVolumes, peerBandwidthHealth]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, participantVolumes, peerBandwidthHealth, videoItems]);
 
   const availableStageItemIds = useMemo(() => videoItems.map((item) => item.id), [videoItems]);
 
@@ -6865,6 +6888,20 @@ export function StudioRoom() {
               <button type="button" onClick={() => recordingCountdownCancelRef.current?.()}>Cancel</button>
             </div>
           )}
+          {recordingCountdown === null && remoteRecordingCountdown !== null && (
+            <div className="studio-recording-countdown" role="status" aria-live="assertive">
+              <span className="studio-recording-countdown-number">{remoteRecordingCountdown}</span>
+              <span className="studio-recording-countdown-label">Recording starts</span>
+            </div>
+          )}
+          {isHostOrCoHost && allParticipantsMap.size <= 1 && !liveStatus.active && !recordingStatus.active && recordingCountdown === null && (
+            <EmptyStageInvite
+              roomId={roomId || ''}
+              inviteUrl={inviteUrl}
+              onOpenInvite={openInvitePanel}
+              onChooseRecordingFolder={canControlRecording ? () => setShowRecordingPanel(true) : undefined}
+            />
+          )}
           {/* Scale the complete broadcast composition; panels never reflow it. */}
           {useMobileStage ? (
             <div className="studio-mobile-stage" role="region" aria-label="Stage">
@@ -7540,6 +7577,10 @@ export function StudioRoom() {
             peerBandwidthHealth={peerBandwidthHealth}
             recordingUploads={canControlRecording ? participantRecordingUploads : undefined}
             onRecordingUploadControl={canControlRecording ? controlParticipantRecordingUpload : undefined}
+            onEditNameTag={isHostOrCoHost ? (participantId, profile) => send({
+              type: 'update-participant-profile',
+              payload: { targetParticipantId: participantId, name: profile.name, title: profile.title },
+            }) : undefined}
             localStream={localStream}
             participantVolumes={participantVolumes}
             onParticipantVolumeChange={handleParticipantVolumeChange}

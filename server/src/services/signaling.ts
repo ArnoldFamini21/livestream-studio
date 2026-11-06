@@ -10,6 +10,8 @@ import type {
   JoinRoomPayload,
   MediaStatePayload,
   UpdateNamePayload,
+  UpdateParticipantProfilePayload,
+  RecordingCountdownPayload,
   ChatMessage,
   ChatTypingPayload,
   ChatReactionType,
@@ -40,6 +42,7 @@ import type {
 import {
   RECORDING_UPLOAD_PROGRESS_STATUSES,
   MAX_RECORDING_TRANSFER_SDP_LENGTH,
+  MAX_PARTICIPANT_TITLE_LENGTH,
   ROOM_NOT_OPEN_ERROR_CODE,
   SCHEDULED_GUEST_ACCESS_MESSAGE,
   canExchangeStudioMedia,
@@ -251,6 +254,8 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'stage-action',
   'studio-branding-updated',
   'recording-state-changed',
+  'recording-countdown',
+  'update-participant-profile',
   'recording-upload-token-request',
   'recording-upload-progress',
   'recording-upload-control',
@@ -1241,6 +1246,12 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'update-name':
       handleUpdateName(ws, message.payload);
+      break;
+    case 'update-participant-profile':
+      handleUpdateParticipantProfile(ws, message.payload);
+      break;
+    case 'recording-countdown':
+      handleRecordingCountdown(ws, message.payload);
       break;
     case 'chat-message':
       handleChatMessage(ws, message.payload);
@@ -2969,6 +2980,93 @@ export function sanitizeParticipantName(value: unknown): string {
   return (typeof value === 'string' ? value : '').replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, MAX_PARTICIPANT_NAME_LENGTH);
 }
 
+/** A name-tag title: same cleaning as names, longer limit; empty clears it. */
+export function sanitizeParticipantTitle(value: unknown): string {
+  return (typeof value === 'string' ? value : '').replace(/[\x00-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim().slice(0, MAX_PARTICIPANT_TITLE_LENGTH);
+}
+
+/** Look up the sender as an admitted host or co-host, or tell them why not. */
+function getAdmittedOperator(ws: WebSocket, action: string) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return null;
+  const roomState = rooms.get(mapping.roomId);
+  const performer = roomState?.participants.get(mapping.participantId);
+  if (!roomState || !performer) return null;
+  if (!isOperatorRole(performer.participant.role)) {
+    sendError(ws, `Only hosts and co-hosts can ${action}`, 'UNAUTHORIZED');
+    return null;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, `Wait until you are admitted before you ${action}`, 'PARTICIPANT_NOT_ADMITTED');
+    return null;
+  }
+  return { mapping, roomState, performer };
+}
+
+/**
+ * A host or co-host fixes someone's display name (a typo, a nickname) or sets
+ * the subtitle on their name tag. Everyone gets the updated participant.
+ */
+function handleUpdateParticipantProfile(ws: WebSocket, payload: UpdateParticipantProfilePayload) {
+  const operator = getAdmittedOperator(ws, 'edit name tags');
+  if (!operator) return;
+  const { mapping, roomState } = operator;
+  if (typeof payload?.targetParticipantId !== 'string') {
+    sendError(ws, 'Invalid name tag update', 'VALIDATION_ERROR');
+    return;
+  }
+  const target = roomState.participants.get(payload.targetParticipantId);
+  if (!target) return;
+  // Co-hosts cannot rename the host.
+  if (target.participant.id === roomState.room.hostId && mapping.participantId !== roomState.room.hostId) {
+    sendError(ws, 'Only the host can edit the host name tag', 'HOST_PROTECTED');
+    return;
+  }
+
+  let changed = false;
+  if (payload.name !== undefined) {
+    const name = sanitizeParticipantName(payload.name);
+    if (!name) {
+      sendError(ws, 'Enter a name to use in the studio', 'VALIDATION_ERROR');
+      return;
+    }
+    if (name !== target.participant.name) {
+      target.participant.name = name;
+      changed = true;
+    }
+  }
+  if (payload.title !== undefined) {
+    const title = sanitizeParticipantTitle(payload.title);
+    if ((target.participant.title || '') !== title) {
+      if (title) target.participant.title = title;
+      else delete target.participant.title;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  broadcastToRoom(mapping.roomId, { type: 'participant-updated', payload: target.participant });
+  persistRoomSnapshot(mapping.roomId);
+}
+
+/** The 3-2-1 before recording: relayed so guests see it (no recording state changes here). */
+function handleRecordingCountdown(ws: WebSocket, payload: RecordingCountdownPayload) {
+  const operator = getAdmittedOperator(ws, 'start a recording countdown');
+  if (!operator) return;
+  const { mapping } = operator;
+  const cancelled = Boolean(payload?.cancelled);
+  const rawSeconds = typeof payload?.seconds === 'number' && Number.isFinite(payload.seconds) ? Math.round(payload.seconds) : NaN;
+  if (!cancelled && !(rawSeconds >= 1 && rawSeconds <= 10)) {
+    sendError(ws, 'Invalid recording countdown', 'VALIDATION_ERROR');
+    return;
+  }
+  broadcastToRoom(mapping.roomId, {
+    type: 'recording-countdown',
+    payload: cancelled
+      ? { seconds: 0, cancelled: true, performedBy: mapping.participantId }
+      : { seconds: rawSeconds, performedBy: mapping.participantId },
+  }, mapping.participantId);
+}
+
 /** Whether `participantId` names a host or co-host in the room. */
 function isOperatorParticipant(roomState: RoomState, participantId: unknown): boolean {
   if (typeof participantId !== 'string' || !participantId.trim()) return false;
@@ -4435,6 +4533,7 @@ function isVisibleInGreenRoom(message: SignalMessage, recipientId: string, roomS
     case 'poll-updated':
     case 'qa-question-updated':
     case 'external-chat-status':
+    case 'recording-countdown':
       return false;
     default:
       return true;

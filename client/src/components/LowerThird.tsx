@@ -143,7 +143,7 @@ export function LowerThirdManager({
                 style={styles.quickParticipantBtn}
                 onClick={() => onAdd({
                   name: participant.name,
-                  title: getParticipantLowerThirdTitle(participant.role),
+                  title: getParticipantLowerThirdTitle(participant.role, participant.title),
                   style: 'bold',
                   durationSeconds: 10,
                   animation: 'slide',
@@ -157,7 +157,7 @@ export function LowerThirdManager({
                 title={`Show lower third for ${participant.name}`}
               >
                 <span style={styles.quickParticipantName}>{participant.name}</span>
-                <span style={styles.quickParticipantRole}>{getParticipantLowerThirdTitle(participant.role)}</span>
+                <span style={styles.quickParticipantRole}>{getParticipantLowerThirdTitle(participant.role, participant.title)}</span>
               </button>
             ))}
           </div>

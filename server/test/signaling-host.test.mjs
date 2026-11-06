@@ -2758,6 +2758,90 @@ describe('participant rename', () => {
   });
 });
 
+describe('host-edited name tags', () => {
+  it('lets the host fix a guest name and set a title, and not the guest', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Name tag test', 'Arnold', { creatorIp: `nametag-${Date.now()}` });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostId = (await hostJoined).payload.participant.id;
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'nica123', role: 'guest' });
+      const guestId = (await guestJoined).payload.participant.id;
+
+      const guestSaw = waitForMessage(guest, 'participant-updated', (m) => m.payload.id === guestId);
+      sendSignal(host, { type: 'update-participant-profile', payload: { targetParticipantId: guestId, name: ' Dr. Nica Santos ', title: '  Author,\u0007 The   Long Game ' } });
+      const updated = await guestSaw;
+      assert.equal(updated.payload.name, 'Dr. Nica Santos');
+      assert.equal(updated.payload.title, 'Author, The Long Game');
+
+      const cleared = waitForMessage(host, 'participant-updated', (m) => m.payload.id === guestId);
+      sendSignal(host, { type: 'update-participant-profile', payload: { targetParticipantId: guestId, title: '' } });
+      assert.equal((await cleared).payload.title, undefined);
+      assert.equal(roomState.participants.get(guestId).participant.name, 'Dr. Nica Santos');
+
+      const denied = waitForMessage(guest, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, { type: 'update-participant-profile', payload: { targetParticipantId: hostId, name: 'Not the host' } });
+      await denied;
+      assert.equal(roomState.participants.get(hostId).participant.name, 'Arnold');
+
+      const empty = waitForMessage(host, 'error', (m) => m.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, { type: 'update-participant-profile', payload: { targetParticipantId: guestId, name: '   ' } });
+      await empty;
+      host.close(); guest.close();
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('recording countdown for guests', () => {
+  it('relays the host countdown and its cancellation, and only from operators', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Countdown test', 'Arnold', { creatorIp: `countdown-${Date.now()}` });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostId = (await hostJoined).payload.participant.id;
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Nica', role: 'guest' });
+      await guestJoined;
+
+      const started = waitForMessage(guest, 'recording-countdown');
+      sendSignal(host, { type: 'recording-countdown', payload: { seconds: 3 } });
+      const relayed = await started;
+      assert.equal(relayed.payload.seconds, 3);
+      assert.equal(relayed.payload.performedBy, hostId);
+
+      const cancelled = waitForMessage(guest, 'recording-countdown');
+      sendSignal(host, { type: 'recording-countdown', payload: { seconds: 0, cancelled: true } });
+      assert.equal((await cancelled).payload.cancelled, true);
+
+      const invalid = waitForMessage(host, 'error', (m) => m.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, { type: 'recording-countdown', payload: { seconds: 600 } });
+      await invalid;
+
+      const denied = waitForMessage(guest, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, { type: 'recording-countdown', payload: { seconds: 3 } });
+      await denied;
+      host.close(); guest.close();
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('ending the room', () => {
   it('lets the host keep the room open during the end countdown, and only the host', async () => {
     const harness = await createSignalingHarness();

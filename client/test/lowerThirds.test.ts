@@ -227,3 +227,12 @@ describe('lower third visibility utilities', () => {
     assert.equal(next[2].visible, true);
   });
 });
+
+describe("host-set name-tag titles", () => {
+  it("prefers the title a host set over the role label", async () => {
+    const { getParticipantLowerThirdTitle } = await import("../src/utils/lowerThirds.ts");
+    assert.equal(getParticipantLowerThirdTitle("guest", "Author, The Long Game"), "Author, The Long Game");
+    assert.equal(getParticipantLowerThirdTitle("guest", "   "), "Guest");
+    assert.equal(getParticipantLowerThirdTitle("co-host"), "Co-host");
+  });
+});

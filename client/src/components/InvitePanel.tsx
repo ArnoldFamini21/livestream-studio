@@ -125,6 +125,9 @@ export function InvitePanel({
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [guestInvite, setGuestInvite] = useState<{ inviteUrl: string; expiresAt: string } | null>(null);
+  // Every one-time link made while the panel is open, newest first: one per guest.
+  const [guestInvites, setGuestInvites] = useState<Array<{ inviteUrl: string; expiresAt: string }>>([]);
+  const [copiedGuestInviteUrl, setCopiedGuestInviteUrl] = useState<string | null>(null);
   const [guestInviteError, setGuestInviteError] = useState<string | null>(null);
   const [isCreatingGuestInvite, setIsCreatingGuestInvite] = useState(false);
   const [coHostInvite, setCoHostInvite] = useState<{ inviteUrl: string; expiresAt: string } | null>(null);
@@ -199,20 +202,21 @@ export function InvitePanel({
     });
   }, [guestInvite]);
 
-  const guestInviteMailtoHref = useMemo(() => {
-    if (!guestInvite) return '';
+  const buildGuestInviteMailto = (invite: { inviteUrl: string; expiresAt: string }, recipient = guestEmail) => {
+    const expiresLabel = new Date(invite.expiresAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
     const details = [
       `${roomName}`,
       hostName ? `Host: ${hostName}` : null,
       'Role: Guest',
-      guestInviteExpiresLabel ? `Expires: ${guestInviteExpiresLabel}` : null,
+      `Expires: ${expiresLabel}`,
       passwordProtected ? 'This secure link bypasses the room password.' : 'This is a one-time secure guest link.',
-      `Join: ${guestInvite.inviteUrl}`,
+      `Join: ${invite.inviteUrl}`,
     ].filter(Boolean);
     const subject = encodeURIComponent(`Guest invite for ${roomName}`);
     const body = encodeURIComponent(details.join('\n'));
-    return `mailto:${guestEmail ? encodeURIComponent(guestEmail) : ''}?subject=${subject}&body=${body}`;
-  }, [guestEmail, guestInvite, guestInviteExpiresLabel, hostName, passwordProtected, roomName]);
+    return `mailto:${recipient ? encodeURIComponent(recipient) : ''}?subject=${subject}&body=${body}`;
+  };
+  const guestInviteMailtoHref = guestInvite ? buildGuestInviteMailto(guestInvite) : '';
 
   const coHostMailtoHref = useMemo(() => {
     if (!coHostInvite) return '';
@@ -310,7 +314,9 @@ export function InvitePanel({
     try {
       const invite = await onCreateGuestInvite();
       setGuestInvite(invite);
+      setGuestInvites((current) => [invite, ...current.filter((item) => item.inviteUrl !== invite.inviteUrl)]);
       await copyText(invite.inviteUrl);
+      setCopiedGuestInviteUrl(invite.inviteUrl);
       setCopied('guest-secure');
       setCopyError(null);
     } catch (err) {
@@ -477,59 +483,56 @@ export function InvitePanel({
               <span style={styles.linkLabel}>Secure Guest Link</span>
               {guestInviteExpiresLabel && <span style={styles.expiryText}>Expires {guestInviteExpiresLabel}</span>}
             </div>
-            {!guestInvite && (
-              <button
-                type="button"
-                style={styles.secondaryBtn}
-                onClick={() => void handleCreateGuestInvite()}
-                disabled={isCreatingGuestInvite}
-              >
-                {isCreatingGuestInvite ? 'Creating...' : 'Create'}
-              </button>
-            )}
+            <button
+              type="button"
+              style={styles.secondaryBtn}
+              onClick={() => void handleCreateGuestInvite()}
+              disabled={isCreatingGuestInvite}
+            >
+              {isCreatingGuestInvite ? 'Creating...' : guestInvites.length > 0 ? 'Create another' : 'Create'}
+            </button>
           </div>
           <p style={styles.secureInviteText}>
             {passwordProtected
               ? 'One-time guest link that bypasses the room password and still lands in the green room.'
               : 'One-time private guest link for guests who should not reuse the public invite.'}
+            {' '}Make one link per guest. Each works once: if you open it and join yourself, it is used up.
           </p>
-          {guestInvite && (
-            <div style={styles.linkRow}>
-              <input
-                style={styles.linkInput}
-                value={guestInvite.inviteUrl}
-                readOnly
-                onFocus={(event) => event.currentTarget.select()}
-                aria-label="Secure guest invite link"
-              />
-              <button
-                type="button"
-                style={{ ...styles.copyBtn, ...(copied === 'guest-secure' ? styles.copyBtnDone : {}) }}
-                onClick={() => void handleCopy('guest-secure', guestInvite.inviteUrl)}
-              >
-                {copied === 'guest-secure' ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-          )}
-          {guestInvite && (
-            <div style={styles.coHostActions}>
-              <a style={styles.coHostActionBtn} href={guestInviteMailtoHref}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="4" width="20" height="16" rx="2" />
-                  <path d="m22 7-10 6L2 7" />
-                </svg>
-                Email Guest
-              </a>
-              <a style={styles.coHostActionBtn} href={guestInvite.inviteUrl} target="_blank" rel="noreferrer">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M15 3h6v6" />
-                  <path d="M10 14 21 3" />
-                  <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
-                </svg>
-                Open
-              </a>
-            </div>
-          )}
+          {guestInvites.map((invite, index) => {
+            const number = guestInvites.length - index;
+            const isCopied = copiedGuestInviteUrl === invite.inviteUrl && copied === 'guest-secure';
+            return (
+              <div key={invite.inviteUrl} style={styles.coHostActions}>
+                <div style={{ ...styles.linkRow, flex: '1 1 100%' }}>
+                  <input
+                    style={styles.linkInput}
+                    value={invite.inviteUrl}
+                    readOnly
+                    onFocus={(event) => event.currentTarget.select()}
+                    aria-label={`Secure guest link ${number}`}
+                  />
+                  <button
+                    type="button"
+                    style={{ ...styles.copyBtn, ...(isCopied ? styles.copyBtnDone : {}) }}
+                    onClick={() => {
+                      setCopiedGuestInviteUrl(invite.inviteUrl);
+                      void handleCopy('guest-secure', invite.inviteUrl);
+                    }}
+                    aria-label={`Copy secure guest link ${number}`}
+                  >
+                    {isCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <a style={styles.coHostActionBtn} href={buildGuestInviteMailto(invite)} aria-label={`Email secure guest link ${number}`}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="2" y="4" width="20" height="16" rx="2" />
+                    <path d="m22 7-10 6L2 7" />
+                  </svg>
+                  Email guest {number}
+                </a>
+              </div>
+            );
+          })}
           {guestInviteError && <span style={styles.errorText}>{guestInviteError}</span>}
         </div>
 

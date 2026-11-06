@@ -185,6 +185,7 @@ interface SidebarProps {
   onAudioDuckingEnabledChange: (enabled: boolean) => void;
   recordingUploads?: Record<string, RecordingUploadProgressPayload>;
   onRecordingUploadControl?: (participantId: string, action: 'pause' | 'resume') => void;
+  onEditNameTag?: (participantId: string, profile: { name: string; title: string }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +422,7 @@ export function Sidebar(props: SidebarProps) {
               onAudioDuckingEnabledChange={props.onAudioDuckingEnabledChange}
               recordingUploads={props.recordingUploads}
               onRecordingUploadControl={props.onRecordingUploadControl}
+              onEditNameTag={props.onEditNameTag}
             />
           )}
 

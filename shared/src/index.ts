@@ -304,7 +304,12 @@ export interface Participant {
   screenSharing: boolean;
   joinedAt: string;
   status: ParticipantStatus;
+  /** Optional name-tag subtitle a host set, e.g. "Author, The Long Game". */
+  title?: string;
 }
+
+/** Longest participant name-tag title (subtitle) the server keeps. */
+export const MAX_PARTICIPANT_TITLE_LENGTH = 80;
 
 export type ParticipantRole = 'host' | 'co-host' | 'guest';
 export type ParticipantStatus = 'green-room' | 'on-stage' | 'backstage';
@@ -366,6 +371,10 @@ export type SignalMessage =
   | { type: 'studio-branding-updated'; payload: StudioBrandingPayload }
   | { type: 'stage-content-updated'; payload: StageContentPayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
+  /** Host/co-host only: the 3-2-1 before recording, so guests see it too. */
+  | { type: 'recording-countdown'; payload: RecordingCountdownPayload }
+  /** Host/co-host only: fix a participant's display name or set their name-tag title. */
+  | { type: 'update-participant-profile'; payload: UpdateParticipantProfilePayload }
   | { type: 'recording-upload-token-request'; payload: RecordingUploadTokenRequestPayload }
   | { type: 'recording-upload-token-issued'; payload: RecordingUploadTokenIssuedPayload }
   | { type: 'recording-upload-progress'; payload: RecordingUploadProgressPayload }
@@ -539,6 +548,22 @@ export interface StudioBrandingPayload {
   waitingRoom: WaitingRoomBranding;
   updatedAt?: string;
   updatedBy?: string;
+}
+
+export interface RecordingCountdownPayload {
+  /** Seconds until recording starts (1-10); 0 with `cancelled` ends it. */
+  seconds: number;
+  cancelled?: boolean;
+  /** Set by the server. */
+  performedBy?: string;
+}
+
+export interface UpdateParticipantProfilePayload {
+  targetParticipantId: string;
+  /** New display name; omitted keeps the current one. */
+  name?: string;
+  /** Name-tag subtitle; an empty string clears it, omitted keeps it. */
+  title?: string;
 }
 
 export interface RecordingStatePayload {
