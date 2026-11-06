@@ -6,7 +6,7 @@
  * restart.
  */
 
-import { ApiRequestError, buildApiUrl, postJson, resolveMediaHttpUrl } from './apiClient.ts';
+import { ApiRequestError, buildApiUrl, getJson, postJson, resolveMediaHttpUrl } from './apiClient.ts';
 
 const HEALTH_REQUEST_TIMEOUT_MS = 10_000;
 const HEALTH_POLL_INTERVAL_MS = 3_000;
@@ -21,6 +21,16 @@ interface WakeDependencies {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   healthUrl?: string;
+  /** Stop waiting (for example when the page that asked is closed). */
+  signal?: AbortSignal;
+  /** Called before each health poll with the time spent waiting so far. */
+  onProgress?: (elapsedMs: number) => void;
+}
+
+function abortError(): Error {
+  return typeof DOMException === 'function'
+    ? new DOMException('The wait was cancelled.', 'AbortError')
+    : Object.assign(new Error('The wait was cancelled.'), { name: 'AbortError' });
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => globalThis.setTimeout(resolve, ms));
@@ -47,9 +57,13 @@ export async function waitForStudioServer(
   const now = deps.now || Date.now;
   const sleep = deps.sleep || defaultSleep;
   const url = deps.healthUrl || buildApiUrl('/health');
-  const deadline = now() + timeoutMs;
+  const startedAt = now();
+  const deadline = startedAt + timeoutMs;
   for (;;) {
+    if (deps.signal?.aborted) throw abortError();
+    deps.onProgress?.(now() - startedAt);
     if (await isHealthy(url, fetchImpl)) return;
+    if (deps.signal?.aborted) throw abortError();
     if (now() + HEALTH_POLL_INTERVAL_MS >= deadline) {
       throw new ApiRequestError(STUDIO_SERVER_UNAVAILABLE_MESSAGE, { timedOut: true });
     }
@@ -60,6 +74,47 @@ export async function waitForStudioServer(
 /** A request that never got an answer: timed out, or the connection dropped. */
 export function isLostRequest(error: unknown): boolean {
   return error instanceof ApiRequestError && (error.timedOut || error.status === undefined || error.status >= 502);
+}
+
+/** How long a guest's join page waits for a sleeping studio server before offering a manual retry. */
+export const STUDIO_LOOKUP_WAKE_TIMEOUT_MS = 90_000;
+const FIRST_LOOKUP_TIMEOUT_MS = 12_000;
+
+export type StudioLookupFailure = 'not-found' | 'unreachable' | 'error';
+
+/**
+ * Only a real 404 means the studio does not exist. A timeout, a dropped
+ * connection or a 502/503 is the free host waking up (or restarting).
+ */
+export function classifyStudioLookupError(error: unknown): StudioLookupFailure {
+  if (error instanceof ApiRequestError && error.status === 404) return 'not-found';
+  if (isLostRequest(error)) return 'unreachable';
+  return 'error';
+}
+
+/**
+ * GET with a quick first attempt; if that is lost to a sleeping or restarting
+ * server, tell the caller (`onWaking`), wait for `/health` and try once more.
+ * A 404 or any other real answer is returned (or thrown) at once.
+ */
+export async function getWhenStudioServerReady<T>(
+  path: string,
+  deps: WakeDependencies & {
+    get?: typeof getJson;
+    onWaking?: () => void;
+    wakeTimeoutMs?: number;
+    firstAttemptTimeoutMs?: number;
+  } = {}
+): Promise<T> {
+  const get = deps.get || getJson;
+  try {
+    return await get<T>(path, { signal: deps.signal, timeoutMs: deps.firstAttemptTimeoutMs ?? FIRST_LOOKUP_TIMEOUT_MS });
+  } catch (error) {
+    if (!isLostRequest(error)) throw error;
+  }
+  deps.onWaking?.();
+  await waitForStudioServer(deps.wakeTimeoutMs ?? STUDIO_LOOKUP_WAKE_TIMEOUT_MS, deps);
+  return get<T>(path, { signal: deps.signal, timeoutMs: REQUEST_TIMEOUT_MS });
 }
 
 /**

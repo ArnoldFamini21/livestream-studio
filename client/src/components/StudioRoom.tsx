@@ -1,7 +1,7 @@
 import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
 import { countUnreadChatMessages } from '../utils/chatUnread.ts';
 import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, loadStageImageObjectUrl, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
-import { applyParticipantMediaState, withLocalJoinMedia, withLocalMediaChoice } from '../utils/joinMediaState.ts';
+import { applyParticipantMediaState, getLocalTrackKinds, withLocalJoinMedia, withLocalMediaChoice, type LocalTrackKinds } from '../utils/joinMediaState.ts';
 import { CONTENT_EXIT_DURATION_MS, measureStageTiles, playStageFlip, STAGE_FLIP_DURATION_MS, type StageTileRects } from '../utils/stageFlip.ts';
 import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraSize } from '../utils/presentationLayout.ts';
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
@@ -64,7 +64,9 @@ import {
 } from '../audio/useProgramAudioMix.ts';
 import { useBackgroundMusicPlayer } from '../audio/useBackgroundMusicPlayer.ts';
 import { useSoundBoardPlayer } from '../audio/useSoundBoardPlayer.ts';
-import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
+import { useSessionHealth } from '../hooks/useSessionHealth.ts';
+import { SessionHealthPill } from './SessionHealthPill.tsx';
+import { StudioStatusAnnouncer } from './StudioStatusAnnouncer.tsx';
 import { useMediaServerHealth } from '../hooks/useMediaServerHealth.ts';
 import { useIsPortraitPhone } from '../hooks/usePortraitPhone.ts';
 import type { SessionPeerHealthParticipant } from '../utils/sessionPeerHealth.ts';
@@ -298,6 +300,7 @@ import {
   type StreamScreenKind,
 } from '../utils/streamScreens.ts';
 import { useToast } from './Toast.tsx';
+import { StudioMediaBanner } from './StudioMediaBanner.tsx';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 import { alertGuestArrival, requestArrivalNotificationPermission } from '../utils/guestArrivalAlert.ts';
 
@@ -557,13 +560,6 @@ function LazyPanelFallback() {
   );
 }
 
-function getHealthColor(status: HealthStatus): string {
-  switch (status) {
-    case 'good': return 'var(--success)';
-    case 'warning': return 'var(--warning)';
-    case 'bad': return 'var(--danger)';
-  }
-}
 
 function getDestinationStatusMessage(status: RtmpRelayDestinationStatus, message?: string): string | undefined {
   const trimmed = message?.trim();
@@ -1280,6 +1276,8 @@ export function StudioRoom() {
   const {
     localStream: rawLocalStream, audioEnabled, videoEnabled,
     error: mediaError,
+    errorProblem: mediaProblem,
+    retryMedia,
     startMedia, stopMedia, setAudioTrackEnabled, setVideoTrackEnabled, toggleAudio, toggleVideo,
     switchAudioDevice, switchVideoDevice,
     audioDevices, videoDevices, audioOutputDevices,
@@ -2445,6 +2443,8 @@ export function StudioRoom() {
       videoEnabled: sessionStorage.getItem('preferredVideoEnabled') !== 'false',
       videoQuality,
       ...audioProcessing,
+      // The join page's preview has only just released the camera; Safari can fail once here.
+      retryDelayMs: 400,
     }).finally(() => {
       if (!active) return;
       clearTimeout(fallbackTimer);
@@ -3123,8 +3123,12 @@ export function StudioRoom() {
   }, [isScreenSharing, localStream, peerLocalStream, replaceTrack]);
 
   // Sync local tracks when remotely muted/unmuted
+  const localTrackKindsRef = useRef<LocalTrackKinds>({ audio: false, video: false });
   useEffect(() => {
-    applyParticipantMediaState(myParticipant, localStream, setAudioTrackEnabled, setVideoTrackEnabled);
+    // A device that only now started (retry, or turned on after a failure) keeps the user's choice.
+    const previousKinds = localTrackKindsRef.current;
+    localTrackKindsRef.current = getLocalTrackKinds(localStream);
+    applyParticipantMediaState(myParticipant, localStream, setAudioTrackEnabled, setVideoTrackEnabled, previousKinds);
   }, [myParticipant?.audioEnabled, myParticipant?.videoEnabled, localStream, setAudioTrackEnabled, setVideoTrackEnabled]);
 
   useEffect(() => {
@@ -4752,6 +4756,10 @@ export function StudioRoom() {
     const operation = liveStartOperationRef.current.begin();
     if (!operation) return;
     try {
+      // The relay check can take up to a minute while a sleeping media server wakes; show that it is working.
+      setDestinations((prev) => prev.map((d) => (
+        d.enabled ? { ...d, status: 'connecting', statusMessage: 'Checking the media server (waking it can take up to a minute)…' } : d
+      )));
       const readiness = await operation.run(checkRelayReadiness);
       operation.assertActive();
       if (readiness.status !== 'ready') {
@@ -6461,23 +6469,12 @@ export function StudioRoom() {
               </span>
             )}
             {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
-            <button
-              style={{
-                ...styles.healthBtn,
-                borderColor: getHealthColor(sessionHealth.status),
-                color: getHealthColor(sessionHealth.status),
-              }}
-              onClick={() => toggleToolPanel('health', true)}
-              title="Session health"
-              aria-label={`Session health: ${sessionHealth.label}, ${sessionHealth.score}`}
-            >
-              <span style={{ ...styles.healthDot, background: getHealthColor(sessionHealth.status) }} />
-              {sessionHealth.score}
-            </button>
+            <SessionHealthPill summary={sessionHealth} audience="guest" onClick={() => toggleToolPanel('health', true)} />
 
           </div>
         </div>
 
+        <StudioMediaBanner problem={mediaProblem} onRetry={retryMedia} />
         <div style={styles.waitingBody}>
         <div role="main" style={{ ...styles.waitingMain, ...waitingRoomBackgroundStyle }}>
           <div style={styles.waitingStack}>
@@ -6596,7 +6593,7 @@ export function StudioRoom() {
 
 
         {showHealthPanel && (
-          <SessionHealthPanel
+          <SessionHealthPanel audience={isHostOrCoHost ? 'operator' : 'guest'}
             summary={sessionHealth}
             meshCapacity={meshCapacity}
             sfuMediaStatus={sfuTransportStatus}
@@ -6719,9 +6716,10 @@ export function StudioRoom() {
               CC
             </span>
           )}
-          {myParticipant && (
-            <span style={styles.roleBadge}>{myParticipant.role}</span>
+          {myParticipant && myParticipant.role !== 'host' && (
+            <span style={styles.roleBadge}>{myParticipant.role === 'co-host' ? 'Co-host' : 'Guest'}</span>
           )}
+          <StudioStatusAnnouncer recording={recordingStatus.active} paused={Boolean(recordingStatus.paused)} live={liveStatus.active} />
         </div>
         <div className="studio-headerRight" style={styles.headerRight}>
           {(!connected || studioServerLost) && (
@@ -6730,19 +6728,7 @@ export function StudioRoom() {
             </span>
           )}
           {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
-          <button
-            style={{
-              ...styles.healthBtn,
-              borderColor: getHealthColor(sessionHealth.status),
-              color: getHealthColor(sessionHealth.status),
-            }}
-            onClick={() => toggleToolPanel('health', true)}
-            title="Session health"
-            aria-label={`Session health: ${sessionHealth.label}, ${sessionHealth.score}`}
-          >
-            <span style={{ ...styles.healthDot, background: getHealthColor(sessionHealth.status) }} />
-            {sessionHealth.score}
-          </button>
+          <SessionHealthPill summary={sessionHealth} audience={isHostOrCoHost ? 'operator' : 'guest'} onClick={() => toggleToolPanel('health', true)} />
           {isHostOrCoHost && (
             <button
               style={{ ...styles.headerBtn, ...(showSidebar ? styles.headerBtnActive : {}) }}
@@ -6864,6 +6850,7 @@ export function StudioRoom() {
       )}
 
       <CameraKeepAlive stream={localStream} />
+      <StudioMediaBanner problem={mediaProblem} onRetry={retryMedia} />
 
       {/* Main Area */}
       <main className="studio-main" style={styles.main}>
@@ -7779,7 +7766,7 @@ export function StudioRoom() {
 
       {/* Session Health Panel */}
       {showHealthPanel && (
-        <SessionHealthPanel
+        <SessionHealthPanel audience={isHostOrCoHost ? 'operator' : 'guest'}
           summary={sessionHealth}
           meshCapacity={meshCapacity}
           sfuMediaStatus={sfuTransportStatus}
@@ -8055,16 +8042,16 @@ const styles: Record<string, React.CSSProperties> = {
   badge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, padding: '3px 10px', borderRadius: 20,
-    background: 'var(--success-subtle)', color: 'var(--success)', fontWeight: 500,
+    background: 'var(--success-subtle)', color: 'var(--success-text, var(--success))', fontWeight: 500,
   },
   badgeDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', animation: 'pulse 2s infinite' },
   waitingBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, padding: '3px 10px', borderRadius: 20,
-    background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24', fontWeight: 600,
+    background: 'var(--warning-subtle, rgba(245, 158, 11, 0.12))', color: 'var(--warning-text, #fbbf24)', fontWeight: 600,
   },
-  waitingDot: { width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 2s infinite' },
-  waitingBadgeButton: { border: '1px solid rgba(245, 158, 11, 0.35)', cursor: 'pointer', lineHeight: 'inherit' },
+  waitingDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--warning, #f59e0b)', animation: 'pulse 2s infinite' },
+  waitingBadgeButton: { border: '1px solid var(--warning-border, rgba(245, 158, 11, 0.35))', cursor: 'pointer', lineHeight: 'inherit' },
   recBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
@@ -8077,8 +8064,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   liveBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
-    fontSize: 11, fontWeight: 700, padding: '3px 12px', borderRadius: 20,
-    background: '#ef4444', color: 'white',
+    fontSize: 12, fontWeight: 700, padding: '3px 12px', borderRadius: 20,
+    // White on #dc2626 is 4.8:1 (the old #ef4444 was 3.8:1).
+    background: 'var(--danger-strong, #dc2626)', color: 'white',
     textTransform: 'uppercase' as const, letterSpacing: 0,
     fontFamily: 'monospace',
     fontVariantNumeric: 'tabular-nums',
@@ -8091,13 +8079,13 @@ const styles: Record<string, React.CSSProperties> = {
   captionBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20,
-    background: 'rgba(14, 165, 233, 0.14)', color: '#bae6fd',
+    background: 'var(--cyan-subtle, rgba(14, 165, 233, 0.14))', color: 'var(--cyan, #bae6fd)',
   },
   captionBadgeDot: {
     width: 6, height: 6, borderRadius: '50%',
   },
   roleBadge: {
-    fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
     background: 'var(--accent-subtle)', color: 'var(--accent)',
     textTransform: 'uppercase' as const, letterSpacing: '0.04em',
   },

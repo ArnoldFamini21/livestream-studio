@@ -627,7 +627,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     padding: '14px 22px',
     background: 'var(--bg-secondary)',
-    borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+    borderTop: '1px solid var(--border)',
     flexShrink: 0,
     gap: 12,
     backdropFilter: 'blur(12px)',
@@ -651,8 +651,8 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'stretch',
     borderRadius: 8,
     overflow: 'hidden',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    background: 'rgba(255, 255, 255, 0.06)',
+    border: '1px solid var(--control-border)',
+    background: 'var(--control-bg)',
   },
   mediaBtn: {
     width: 40,
@@ -668,7 +668,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.12s ease',
   },
   mediaBtnOff: {
-    background: 'var(--danger)',
+    background: 'var(--danger-strong, #dc2626)',
     color: 'white',
   },
   chevronBtn: {
@@ -712,8 +712,8 @@ const styles: Record<string, React.CSSProperties> = {
     width: 36,
     height: 36,
     borderRadius: 8,
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    background: 'rgba(255, 255, 255, 0.06)',
+    border: '1px solid var(--control-border)',
+    background: 'var(--control-bg)',
     color: 'var(--text-primary)',
     display: 'flex',
     alignItems: 'center',
@@ -725,8 +725,8 @@ const styles: Record<string, React.CSSProperties> = {
   shareModeSelect: {
     height: 36,
     borderRadius: 8,
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    background: 'rgba(255, 255, 255, 0.06)',
+    border: '1px solid var(--control-border)',
+    background: 'var(--control-bg)',
     color: 'var(--text-primary)',
     fontSize: 12,
     padding: '0 6px',
@@ -734,7 +734,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   iconBtnGreen: {
     background: 'var(--success)',
-    color: 'white',
+    // Dark text on the light green (white was about 1.6:1).
+    color: 'var(--bg-primary)',
     border: '1px solid var(--success)',
   },
 
@@ -751,12 +752,12 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 5,
     padding: '10px 13px',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: 500,
     borderRadius: 8,
-    background: 'rgba(255, 255, 255, 0.04)',
+    background: 'var(--control-bg)',
     color: 'var(--text-secondary)',
-    border: '1px solid rgba(255, 255, 255, 0.06)',
+    border: '1px solid var(--control-border)',
     cursor: 'pointer',
     transition: 'all 0.15s ease',
     whiteSpace: 'nowrap' as const,
@@ -769,14 +770,14 @@ const styles: Record<string, React.CSSProperties> = {
   pillRecording: {
     background: 'rgba(239, 68, 68, 0.15)',
     border: '1px solid rgba(239, 68, 68, 0.3)',
-    color: '#ef4444',
+    color: 'var(--danger-text, #fca5a5)',
     fontFamily: 'monospace',
     fontWeight: 600,
   },
   pillRecordingPaused: {
     background: 'rgba(250, 204, 21, 0.14)',
     border: '1px solid rgba(250, 204, 21, 0.28)',
-    color: '#facc15',
+    color: 'var(--warning-text, #facc15)',
   },
   pillCopied: {
     background: 'var(--success-subtle)',

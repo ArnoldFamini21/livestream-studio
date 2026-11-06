@@ -383,14 +383,16 @@ async function fetchCloudflareIceServers(
 export function buildStunOnlyIceConfigWithStatus(
   env: NodeJS.ProcessEnv = process.env,
   options: BuildIceConfigOptions = {}
-): StudioIceConfigWithStatus & { membershipRequiredForTurn: true } {
+): StudioIceConfigWithStatus & { membershipRequiredForTurn: true; relayConfigured: boolean } {
   const base = buildIceConfigWithStatusFromEnv(env, options);
   const stunServers = base.iceServers
     .filter((server) => hasUrlScheme(server, ['stun', 'stuns']) && !hasUrlScheme(server, ['turn', 'turns']))
     .map((server) => ({ urls: server.urls }));
   const iceServers = stunServers.length > 0 ? stunServers : DEFAULT_STUN_SERVERS.map((server) => ({ urls: server.urls }));
+  // Whether participants will get a relay once they join (no credentials or URLs leave here).
+  const relayConfigured = Boolean(readCloudflareTurnEnv(env)) || base.status.hasConfiguredTurn || base.status.hasTurn;
   // A relay-only policy cannot work without relays; STUN-only always gathers all candidates.
-  return { ...withStatus({ iceServers, iceTransportPolicy: 'all' }, 'default'), membershipRequiredForTurn: true };
+  return { ...withStatus({ iceServers, iceTransportPolicy: 'all' }, 'default'), membershipRequiredForTurn: true, relayConfigured };
 }
 
 /**

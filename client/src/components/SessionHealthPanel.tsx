@@ -3,12 +3,17 @@ import { buildMediaServerParityDiagnostics } from '../utils/mediaServerHealth.ts
 import type { MediaServerParityFeatureStatus, MediaServerParityDiagnostics } from '../utils/mediaServerHealth.ts';
 import type { MeshCapacityPlan, MeshCapacityStatus } from '../utils/meshCapacityPlanner.ts';
 import type { SfuTransportStatus } from '../utils/sfuRuntime.ts';
+import { useRef } from 'react';
+import { useDialogFocus } from '../hooks/useDialogFocus.ts';
+import { filterHealthChecksForAudience, summarizeHealthChecks, type HealthAudience } from '../utils/sessionHealthSummary.ts';
 
 interface SessionHealthPanelProps {
   summary: SessionHealthSummary;
   meshCapacity?: MeshCapacityPlan | null;
   sfuMediaStatus?: SfuTransportStatus;
   onClose: () => void;
+  /** Guests see their own setup only, in plain words; relays and servers are the host's business. */
+  audience?: HealthAudience;
 }
 
 function meshStatusColor(status: MeshCapacityStatus): string {
@@ -189,19 +194,29 @@ function MediaServerDiagnosticsCard({ diagnostics }: { diagnostics: MediaServerP
   );
 }
 
-export function SessionHealthPanel({ summary, meshCapacity, sfuMediaStatus, onClose }: SessionHealthPanelProps) {
+export function SessionHealthPanel({ summary, meshCapacity, sfuMediaStatus, onClose, audience = 'operator' }: SessionHealthPanelProps) {
   const mediaServerDiagnostics = buildMediaServerParityDiagnostics(summary.mediaServer);
-  const showMeshCapacity = Boolean(meshCapacity && meshCapacity.outgoingPeerCount > 0);
+  const isOperator = audience === 'operator';
+  const showMeshCapacity = isOperator && Boolean(meshCapacity && meshCapacity.outgoingPeerCount > 0);
+  const view = summarizeHealthChecks(summary.checks, audience);
+  const visibleChecks = filterHealthChecksForAudience(summary.checks, audience);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useDialogFocus(panelRef, onClose, closeRef);
 
   return (
-    <div style={styles.overlay} role="dialog" aria-modal="true" aria-label="Session health">
-      <div style={styles.panel}>
+    <div
+      className="studio-modal-overlay"
+      style={styles.overlay}
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <div ref={panelRef} className="studio-side-sheet" style={styles.panel} role="dialog" aria-modal="true" aria-labelledby="session-health-title">
         <div style={styles.header}>
           <div>
-            <h2 style={styles.title}>Session Health</h2>
-            <p style={styles.subtitle}>Broadcast and recording readiness</p>
+            <h2 id="session-health-title" style={styles.title}>{isOperator ? 'Session Health' : 'Your setup'}</h2>
+            <p style={styles.subtitle}>{isOperator ? 'Broadcast and recording readiness' : 'Your connection, microphone and camera'}</p>
           </div>
-          <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} aria-label="Close session health">
+          <button ref={closeRef} className="panel-close-btn" style={styles.closeBtn} onClick={onClose} aria-label="Close session health">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -210,19 +225,23 @@ export function SessionHealthPanel({ summary, meshCapacity, sfuMediaStatus, onCl
         </div>
 
         <div style={styles.scoreWrap}>
-          <div style={{ ...styles.scoreRing, borderColor: statusColor(summary.status) }}>
-            <span style={styles.scoreNumber}>{summary.score}</span>
+          <div style={{ ...styles.scoreRing, borderColor: statusColor(view.status) }} aria-hidden="true">
+            <span style={styles.scoreNumber}>{view.score}</span>
           </div>
           <div style={styles.scoreCopy}>
-            <span style={{ ...styles.summaryBadge, color: statusColor(summary.status), borderColor: statusColor(summary.status) }}>
-              {summary.label}
+            <span style={{ ...styles.summaryBadge, color: statusColor(view.status), borderColor: statusColor(view.status) }}>
+              {view.label}
             </span>
             <p style={styles.summaryText}>
-              {summary.status === 'good'
-                ? 'This browser is ready for a production session.'
-                : summary.status === 'warning'
-                  ? 'You can continue, but review the items below before going live.'
-                  : 'Resolve blocked items before recording or streaming.'}
+              {!isOperator
+                ? view.status === 'good'
+                  ? 'Your connection, microphone and camera look good.'
+                  : 'Something on your side needs a look. The items below say what to check.'
+                : view.status === 'good'
+                  ? 'This browser is ready for a production session.'
+                  : view.status === 'warning'
+                    ? 'You can continue, but review the items below before going live.'
+                    : 'Resolve blocked items before recording or streaming.'}
             </p>
           </div>
         </div>
@@ -262,7 +281,7 @@ export function SessionHealthPanel({ summary, meshCapacity, sfuMediaStatus, onCl
           </div>
         )}
 
-        <div style={styles.metricGrid}>
+        {isOperator && <div style={styles.metricGrid}>
           <div style={styles.metric}>
             <span style={styles.metricLabel}>Network</span>
             <span style={styles.metricValue}>
@@ -297,14 +316,16 @@ export function SessionHealthPanel({ summary, meshCapacity, sfuMediaStatus, onCl
             <span style={styles.metricLabel}>Remote Links</span>
             <span style={styles.metricValue}>{formatRemoteLinkMetric(summary)}</span>
           </div>
-        </div>
+        </div>}
 
-        <div style={styles.diagnosticWrap}>
-          <MediaServerDiagnosticsCard diagnostics={mediaServerDiagnostics} />
-        </div>
+        {isOperator && (
+          <div style={styles.diagnosticWrap}>
+            <MediaServerDiagnosticsCard diagnostics={mediaServerDiagnostics} />
+          </div>
+        )}
 
         <div style={styles.list} tabIndex={0} role="region" aria-label="Readiness checks">
-          {summary.checks.map((check) => (
+          {visibleChecks.map((check) => (
             <CheckRow key={check.id} check={check} />
           ))}
         </div>

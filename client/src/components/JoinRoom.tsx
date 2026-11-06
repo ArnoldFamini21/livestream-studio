@@ -33,7 +33,14 @@ import {
   persistHostSession,
   upsertSavedHostStudio,
 } from '../utils/hostSession.ts';
-import { getApiErrorMessage, getJson, isAbortError, postJson } from '../utils/apiClient.ts';
+import { getApiErrorMessage, isAbortError, postJson } from '../utils/apiClient.ts';
+import {
+  STUDIO_LOOKUP_WAKE_TIMEOUT_MS,
+  classifyStudioLookupError,
+  getWhenStudioServerReady,
+} from '../utils/studioServerWake.ts';
+import { MediaAccessHelp } from './MediaAccessHelp.tsx';
+import { PreJoinChecks } from './PreJoinChecks.tsx';
 import { getInviteStudioName } from '../utils/inviteLinks.ts';
 import { captureInviteTokens, clearPendingInviteTokens, getBrowserInviteStorage } from '../utils/inviteTokens.ts';
 import {
@@ -120,6 +127,11 @@ export function JoinRoom() {
   const [loading, setLoading] = useState(true);
   const [joining, setJoining] = useState(false);
   const [notFound, setNotFound] = useState(false);
+  // A sleeping free-tier server is not a missing studio: show progress and keep trying.
+  const [lookupPhase, setLookupPhase] = useState<'loading' | 'waking' | 'unreachable' | 'error'>('loading');
+  const [wakeElapsedMs, setWakeElapsedMs] = useState(0);
+  const [lookupAttempt, setLookupAttempt] = useState(0);
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const [registrationSubmitted, setRegistrationSubmitted] = useState(() => hasStoredRegistration(roomId));
   const [registrationError, setRegistrationError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -156,6 +168,8 @@ export function JoinRoom() {
   const {
     localStream,
     error: mediaError,
+    errorProblem: mediaProblem,
+    retryMedia,
     audioEnabled,
     videoEnabled,
     startMedia,
@@ -280,18 +294,45 @@ export function JoinRoom() {
       return;
     }
     const controller = new AbortController();
-    getJson<RoomExistsResponse>(`/api/rooms/${encodeURIComponent(roomId)}/exists`, { signal: controller.signal })
+    setLoading(true);
+    setNotFound(false);
+    setLookupPhase('loading');
+    setWakeElapsedMs(0);
+    getWhenStudioServerReady<RoomExistsResponse>(`/api/rooms/${encodeURIComponent(roomId)}/exists`, {
+      signal: controller.signal,
+      onWaking: () => setLookupPhase('waking'),
+      onProgress: (elapsedMs) => setWakeElapsedMs(elapsedMs),
+    })
       .then((data) => {
         setRoomInfo(data);
         setLoading(false);
       })
       .catch((err) => {
-        if (isAbortError(err)) return;
-        setNotFound(true);
-        setLoading(false);
+        if (isAbortError(err) || controller.signal.aborted) return;
+        const failure = classifyStudioLookupError(err);
+        if (failure === 'not-found') {
+          setNotFound(true);
+          setLoading(false);
+          return;
+        }
+        setLookupPhase(failure === 'unreachable' ? 'unreachable' : 'error');
       });
     return () => controller.abort();
-  }, [roomId]);
+  }, [roomId, lookupAttempt]);
+
+  // The wake-up poll reports progress every few seconds; tick the visible clock every second.
+  useEffect(() => {
+    if (lookupPhase !== 'waking') return;
+    const timer = window.setInterval(() => setWakeElapsedMs((ms) => ms + 1000), 1000);
+    return () => window.clearInterval(timer);
+  }, [lookupPhase]);
+
+  // Focus the name field only with a mouse or trackpad: on phones the keyboard would cover the preview.
+  useEffect(() => {
+    if (loading || notFound) return;
+    if (typeof window.matchMedia === 'function' && !window.matchMedia('(pointer: fine)').matches) return;
+    nameInputRef.current?.focus({ preventScroll: true });
+  }, [loading, notFound]);
 
   useEffect(() => {
     if (!scheduledGuestBlocked) return;
@@ -384,7 +425,11 @@ export function JoinRoom() {
   };
 
   const joinStudioAsync = async () => {
-    if (!guestName.trim()) return;
+    if (!guestName.trim()) {
+      nameInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      nameInputRef.current?.focus();
+      return;
+    }
     if (hostAccessMissing) return;
     if (scheduledGuestBlocked) {
       if (registrationRequired && !registrationSubmitted) {
@@ -437,6 +482,8 @@ export function JoinRoom() {
     }
     navigate(`/studio/${roomId}`);
   };
+
+  const hasLiveAudio = Boolean(localStream?.getAudioTracks().some((track) => track.readyState === 'live'));
 
   const joinDisabled = Boolean(
     joining ||
@@ -523,11 +570,47 @@ export function JoinRoom() {
     }
   }, [applyAudioOutput]);
 
+  if (loading && lookupPhase === 'waking') {
+    const elapsedSeconds = Math.floor(wakeElapsedMs / 1000);
+    const progress = Math.min(95, Math.round((wakeElapsedMs / STUDIO_LOOKUP_WAKE_TIMEOUT_MS) * 100));
+    return (
+      <div className="join-page" style={styles.page}>
+        <div className="entry-wake" role="status" aria-live="polite">
+          <div style={styles.spinner} aria-hidden="true" />
+          <h2>Waking up the studio server…</h2>
+          <p>Free hosting puts the studio to sleep when nobody is using it, and it can take up to a minute to start. Keep this page open; it will continue on its own.</p>
+          <div className="entry-wake-progress" aria-hidden="true"><span style={{ width: `${Math.max(4, progress)}%` }} /></div>
+          <span className="entry-wake-elapsed">{elapsedSeconds}s</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading && (lookupPhase === 'unreachable' || lookupPhase === 'error')) {
+    return (
+      <div className="join-page" style={styles.page}>
+        <div className="join-card entry-wake" style={styles.card} role="alert">
+          <h2 className="join-cardTitle" style={styles.cardTitle}>Can't reach the studio right now</h2>
+          <p style={styles.text}>
+            {lookupPhase === 'unreachable'
+              ? 'The studio server did not wake up in time. This usually fixes itself; try again in a moment.'
+              : 'The studio server had a problem looking up this studio. Try again in a moment.'}
+          </p>
+          <div className="entry-wake-actions">
+            <button className="btn-primary" style={styles.joinButton} onClick={() => setLookupAttempt((n) => n + 1)}>
+              Try again
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="join-page" style={styles.page}>
-        <div style={styles.loadingWrap}>
-          <div style={styles.spinner} />
+        <div style={styles.loadingWrap} role="status">
+          <div style={styles.spinner} aria-hidden="true" />
           <p style={styles.loadingText}>Looking for {inviteStudioName || 'studio'}...</p>
         </div>
       </div>
@@ -657,7 +740,19 @@ export function JoinRoom() {
         </div>
 
 
-          {mediaError ? <p className="entry-media-error" role="alert">{mediaError}</p> : <p className="entry-preview-note">Only you can see this preview.</p>}
+          {mediaProblem ? (
+            <MediaAccessHelp problem={mediaProblem} onRetry={retryMedia} />
+          ) : mediaError ? (
+            <p className="entry-media-error" role="alert">{mediaError}</p>
+          ) : (
+            <p className="entry-preview-note">Only you can see this preview.</p>
+          )}
+          <PreJoinChecks
+            stream={localStream}
+            applyAudioOutput={applyAudioOutput}
+            onPlaySpeakerTest={() => void playSpeakerTest()}
+            speakerTestPlaying={speakerTestPlaying}
+          />
         </section>
         <section className="entry-form" aria-labelledby="entry-heading">
           <p className="entry-studio-name">{roomInfo?.name || inviteStudioName || 'Your studio'}</p>
@@ -701,7 +796,8 @@ export function JoinRoom() {
             value={guestName}
             onChange={(e) => setGuestName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && joinStudio()}
-            autoFocus
+            ref={nameInputRef}
+            autoComplete="name"
             maxLength={50}
           />
         </div>
@@ -761,6 +857,11 @@ export function JoinRoom() {
           {joinButtonLabel}
         </button>
         {joinHint && <p id="entry-join-hint" style={styles.joinHint}>{joinHint}</p>}
+        {!joinHint && !hasLiveAudio && (
+          <p className="entry-mic-warning" role="status">
+            You're joining without a microphone, so nobody will hear you. Use Try again to fix it first.
+          </p>
+        )}
 
 
         </section>

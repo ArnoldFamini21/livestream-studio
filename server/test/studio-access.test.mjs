@@ -192,5 +192,10 @@ describe('ICE configuration without studio membership', () => {
     assert.equal(config.iceTransportPolicy, 'all');
     assert.equal(config.status.hasTurn, false);
     assert.equal(config.membershipRequiredForTurn, true);
+    // The pre-join connection check can say a relay will be there, without seeing it.
+    assert.equal(config.relayConfigured, true);
+    assert.equal(JSON.stringify(config).includes('secret'), false);
+    const stunOnly = buildStunOnlyIceConfigWithStatus({ ICE_SERVERS_JSON: JSON.stringify({ iceServers: [{ urls: 'stun:stun.example.test:3478' }] }) });
+    assert.equal(stunOnly.relayConfigured, false);
   });
 });

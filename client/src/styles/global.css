@@ -22,7 +22,8 @@
   /* Text — warm slate tones */
   --text-primary: rgba(226, 232, 240, 0.92);
   --text-secondary: rgba(255, 255, 255, 0.65);
-  --text-muted: rgba(255, 255, 255, 0.4);
+  /* 0.6 keeps muted text at about 6:1 on the navy background (0.4 was 3.7:1). */
+  --text-muted: rgba(255, 255, 255, 0.6);
 
   /* Brand — purple + cyan accents */
   --accent: #a78bfa;
@@ -36,10 +37,35 @@
   /* Semantic */
   --danger: #ef4444;
   --danger-hover: #dc2626;
+  /* Solid fills behind white text: #dc2626 is 4.8:1, #b91c1c 6.5:1 (AA). */
+  --danger-strong: #dc2626;
+  --danger-strong-hover: #b91c1c;
+  --danger-text: #fca5a5;
   --success: #6ee7b7;
   --success-subtle: rgba(110, 231, 183, 0.1);
+  --success-text: #6ee7b7;
   --warning: #f59e0b;
+  --warning-text: #fbbf24;
+  --warning-subtle: rgba(245, 158, 11, 0.12);
+  --warning-border: rgba(245, 158, 11, 0.4);
   --live-red: #ef4444;
+  --accent-solid-hover: #8b5cf6;
+
+  /* Controls that sit on panels (icon buttons, pills) */
+  --control-bg: rgba(255, 255, 255, 0.06);
+  --control-bg-hover: rgba(255, 255, 255, 0.1);
+  --control-border: rgba(255, 255, 255, 0.1);
+  --surface-hover: rgba(255, 255, 255, 0.06);
+
+  /* Type scale: nothing functional below 12px; 11px only for uppercase eyebrows. */
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-panel: 220ms;
+  --duration-modal: 200ms;
 
   /* Borders & Radii */
   --border: rgba(255, 255, 255, 0.06);
@@ -85,7 +111,7 @@ body[data-studio-theme='light'] {
   --glass-border: rgba(15, 23, 42, 0.1);
   --text-primary: rgba(15, 23, 42, 0.94);
   --text-secondary: rgba(30, 41, 59, 0.72);
-  --text-muted: rgba(51, 65, 85, 0.52);
+  --text-muted: rgba(51, 65, 85, 0.78);
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
   --accent-subtle: rgba(37, 99, 235, 0.12);
@@ -98,6 +124,22 @@ body[data-studio-theme='light'] {
   --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.12);
   --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.14);
   --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.18);
+  /* Status colors dark enough to read on white (all at least 4.5:1). */
+  --success: #15803d;
+  --success-subtle: rgba(21, 128, 61, 0.12);
+  --success-text: #15803d;
+  --warning: #b45309;
+  --warning-text: #92400e;
+  --warning-subtle: rgba(180, 83, 9, 0.1);
+  --warning-border: rgba(180, 83, 9, 0.35);
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --danger-text: #b91c1c;
+  --accent-solid-hover: #1d4ed8;
+  --control-bg: rgba(15, 23, 42, 0.05);
+  --control-bg-hover: rgba(15, 23, 42, 0.09);
+  --control-border: rgba(15, 23, 42, 0.16);
+  --surface-hover: rgba(15, 23, 42, 0.06);
   background: linear-gradient(135deg, #f8fafc, #dbeafe);
 }
 
@@ -119,6 +161,18 @@ body[data-studio-theme='colorful'] {
   --cyan-subtle: rgba(34, 211, 238, 0.13);
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(251, 146, 60, 0.18);
+  --success: #86efac;
+  --success-subtle: rgba(134, 239, 172, 0.12);
+  --success-text: #86efac;
+  --warning: #fbbf24;
+  --warning-text: #fde68a;
+  --warning-subtle: rgba(251, 191, 36, 0.12);
+  --warning-border: rgba(251, 191, 36, 0.4);
+  --accent-solid-hover: #f97316;
+  --control-bg: rgba(255, 255, 255, 0.08);
+  --control-bg-hover: rgba(255, 255, 255, 0.13);
+  --control-border: rgba(251, 146, 60, 0.24);
+  --surface-hover: rgba(255, 255, 255, 0.08);
   background: linear-gradient(135deg, #111827, #164e63 52%, #7c2d12);
 }
 
@@ -146,7 +200,7 @@ button {
   position: relative;
 }
 
-button:active {
+button:active:not(:disabled) {
   transform: scale(0.97);
 }
 
@@ -162,7 +216,7 @@ button:disabled {
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #8b5cf6;
+  background: var(--accent-solid-hover);
   box-shadow: var(--shadow-md), var(--shadow-glow);
   transform: translateY(-1px);
 }
@@ -172,12 +226,12 @@ button:disabled {
 }
 
 .btn-danger {
-  background: var(--danger);
+  background: var(--danger-strong);
   color: white;
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: var(--danger-hover);
+  background: var(--danger-strong-hover);
   transform: translateY(-1px);
 }
 
@@ -189,7 +243,7 @@ button:disabled {
 
 .btn-secondary:hover:not(:disabled) {
   background: var(--bg-elevated);
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: var(--control-border);
 }
 
 .btn-ghost {
@@ -229,13 +283,13 @@ button:disabled {
 }
 
 .btn-icon.active {
-  background: var(--danger);
-  border-color: var(--danger);
+  background: var(--danger-strong);
+  border-color: var(--danger-strong);
   color: white;
 }
 
 .btn-icon.active:hover:not(:disabled) {
-  background: var(--danger-hover);
+  background: var(--danger-strong-hover);
 }
 
 /* ---------- Inputs ---------- */
@@ -388,21 +442,11 @@ textarea:focus {
   box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 
-/* ---------- Reduced Motion ---------- */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-}
-
 /* ---------- Panel Slide In ---------- */
 @keyframes panelSlideIn {
   from {
     opacity: 0;
-    transform: translateX(20px);
+    transform: translateX(16px);
   }
   to {
     opacity: 1;
@@ -410,8 +454,58 @@ textarea:focus {
   }
 }
 
+@keyframes panelSlideOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+
+@keyframes sheetSlideIn {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes modalEnter {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes tileEnter {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
 .panel-slide-in {
-  animation: panelSlideIn 0.2s ease-out;
+  animation: panelSlideIn var(--duration-panel) var(--ease-out);
+}
+
+.panel-slide-out {
+  animation: panelSlideOut 180ms ease-in forwards;
+  pointer-events: none;
+}
+
+/* Overlay dialogs and side sheets share one entrance. */
+.studio-modal-overlay {
+  animation: fadeIn var(--duration-modal) ease-out;
+}
+.studio-modal-panel {
+  animation: modalEnter var(--duration-modal) var(--ease-out);
+}
+.studio-side-sheet {
+  animation: sheetSlideIn var(--duration-panel) var(--ease-out);
+}
+dialog[open].entry-device-dialog {
+  animation: modalEnter var(--duration-modal) var(--ease-out);
+}
+
+/* A camera arriving on stage fades in instead of popping. */
+.stage-tile-enter {
+  animation: tileEnter 240ms var(--ease-out);
 }
 
 /* ---------- Modal Overlay ---------- */
@@ -431,43 +525,117 @@ textarea:focus {
 @keyframes toastSlideIn {
   from {
     opacity: 0;
-    transform: translateX(100%);
+    transform: translateY(8px) scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0) scale(1);
   }
 }
 
 @keyframes toastSlideOut {
   from {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0);
   }
   to {
     opacity: 0;
-    transform: translateX(100%);
+    transform: translateY(6px);
   }
 }
 
+/* Sits above the studio control bar (taller on phones) so it never covers mic, camera or End. */
+.toast-region {
+  position: fixed;
+  right: 24px;
+  bottom: calc(var(--studio-control-bar-h, 96px) + 12px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  z-index: 9999;
+  pointer-events: none;
+  max-width: min(400px, calc(100vw - 32px));
+}
+
 .toast {
+  --toast-color: var(--accent);
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 16px;
+  padding: 12px 12px 12px 14px;
   border-radius: var(--radius);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--toast-color);
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 500;
+  line-height: 1.4;
   box-shadow: var(--shadow-lg);
-  animation: toastSlideIn 0.25s ease-out;
+  animation: toastSlideIn 200ms var(--ease-out);
   pointer-events: auto;
+  max-width: 100%;
+}
+.toast--success { --toast-color: var(--success); }
+.toast--warning { --toast-color: var(--warning); }
+.toast--error { --toast-color: var(--danger); }
+
+.toast-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--toast-color);
+  color: var(--bg-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.toast-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-dismiss {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.toast-dismiss:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 .toast.toast-exit {
-  animation: toastSlideOut 0.2s ease-in forwards;
+  animation: toastSlideOut 180ms ease-in forwards;
+}
+
+@media (max-width: 760px) {
+  .toast-region {
+    left: 16px;
+    right: 16px;
+    align-items: stretch;
+    max-width: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .toast-dismiss {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 /* ---------- 404 Page ---------- */
@@ -526,7 +694,7 @@ textarea:focus {
 }
 
 .chat-send-btn:hover {
-  background: #8b5cf6 !important;
+  background: var(--accent-solid-hover) !important;
   transform: translateY(-1px) !important;
   box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4) !important;
 }
@@ -608,8 +776,8 @@ textarea:focus {
   transition: all var(--transition-fast) ease;
 }
 .sidebar-icon-btn:hover:not(.active) {
-  background: rgba(255, 255, 255, 0.06) !important;
-  color: rgba(255, 255, 255, 0.7) !important;
+  background: var(--glass-bg-hover) !important;
+  color: var(--text-primary) !important;
   transform: scale(1.05);
 }
 
@@ -625,5 +793,18 @@ textarea:focus {
 @media (hover: none) {
   .stage-tile .stage-tile-controls {
     opacity: 1;
+  }
+}
+
+/* ---------- Reduced Motion (last, so it wins over every animation above) ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  button:active:not(:disabled) {
+    transform: none;
   }
 }

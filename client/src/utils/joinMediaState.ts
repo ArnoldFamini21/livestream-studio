@@ -15,21 +15,40 @@ export function withLocalMediaChoice(participant: Participant, kind: 'audio' | '
   return { ...participant, [kind === 'audio' ? 'audioEnabled' : 'videoEnabled']: enabled };
 }
 
-/** Apply the host's current media controls after a device track is replaced. */
+export interface LocalTrackKinds {
+  audio: boolean;
+  video: boolean;
+}
+
+/** Which kinds of live capture track a stream has. */
+export function getLocalTrackKinds(stream: MediaStream | null): LocalTrackKinds {
+  return {
+    audio: Boolean(stream?.getAudioTracks().some((track) => track.readyState === 'live')),
+    video: Boolean(stream?.getVideoTracks().some((track) => track.readyState === 'live')),
+  };
+}
+
+/**
+ * Apply the host's current media controls after a device track is replaced.
+ * A kind that had no track before (`previousKinds`) is a device that just
+ * started (a retry, or the user turning it on); its own enabled state is the
+ * user's choice and must not be switched off by the stale participant flag.
+ */
 export function applyParticipantMediaState(
   participant: Participant | null,
   stream: MediaStream | null,
   setAudioEnabled: (enabled: boolean) => unknown,
   setVideoEnabled: (enabled: boolean) => unknown,
+  previousKinds: LocalTrackKinds = { audio: true, video: true },
 ): void {
   if (!participant || !stream) return;
   const audioTrack = stream.getAudioTracks()[0];
-  if (audioTrack && audioTrack.enabled !== participant.audioEnabled) {
+  if (audioTrack && previousKinds.audio && audioTrack.enabled !== participant.audioEnabled) {
     audioTrack.enabled = participant.audioEnabled;
     setAudioEnabled(participant.audioEnabled);
   }
   const videoTrack = stream.getVideoTracks()[0];
-  if (videoTrack && videoTrack.enabled !== participant.videoEnabled) {
+  if (videoTrack && previousKinds.video && videoTrack.enabled !== participant.videoEnabled) {
     videoTrack.enabled = participant.videoEnabled;
     setVideoEnabled(participant.videoEnabled);
   }

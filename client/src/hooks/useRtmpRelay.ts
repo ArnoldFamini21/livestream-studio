@@ -36,6 +36,7 @@ import {
 } from '../utils/relayEncoding.ts';
 import { createRelayVideoStream, type RelayVideoResources } from '../utils/relayVideoStream.ts';
 import { reportClientError } from '../utils/clientErrorReporter.ts';
+import { formatRelayWakeMessage, probeUntilAwake } from '../utils/relayWake.ts';
 import {
   isRelayOperationCancelled,
   RelayOperationCancelledError,
@@ -133,7 +134,7 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
 
 const BITRATE_WINDOW_MS = 5_000;
 const BITRATE_HISTORY_WINDOW_MS = 60_000;
-const RELAY_PREFLIGHT_TIMEOUT_MS = 4_000;
+const RELAY_PREFLIGHT_TIMEOUT_MS = 6_000;
 const RELAY_HEARTBEAT_INTERVAL_MS = 5_000;
 const MAX_PENDING_RELAY_PINGS = 8;
 const RELAY_RECORDER_TIMESLICE_MS = 1_000;
@@ -428,7 +429,19 @@ export function useRtmpRelay({
     }
 
     try {
-      await probeRelayWebSocket(mediaWsUrl);
+      // A sleeping free-tier media server needs up to a minute: keep probing and say so.
+      await probeUntilAwake(() => probeRelayWebSocket(mediaWsUrl), {
+        shouldContinue: () => readinessCheckIdRef.current === checkId,
+        onWaiting: (elapsedMs) => {
+          if (readinessCheckIdRef.current !== checkId) return;
+          setReadiness({
+            status: 'checking',
+            message: formatRelayWakeMessage(elapsedMs),
+            mediaWsUrl,
+            checkedAt: Date.now(),
+          });
+        },
+      });
       const ready: RtmpRelayReadiness = {
         status: 'ready',
         message: 'Media relay is reachable.',

@@ -8,6 +8,7 @@ import {
 } from '../utils/mediaPreferences.ts';
 import { VirtualBackgroundPicker } from './VirtualBackgroundPicker.tsx';
 import { setMirrorSelfView, useMirrorSelfView } from '../utils/selfViewMirror.ts';
+import { useDialogFocus } from '../hooks/useDialogFocus.ts';
 
 interface DeviceSelectorProps {
   audioDevices: MediaDeviceInfo[];
@@ -85,21 +86,16 @@ export function DeviceSelector({
     };
   }, [onClose]);
 
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  // Focus moves in on open, Tab stays inside, Escape closes, focus returns to the opener.
+  useDialogFocus(panelRef, onClose);
 
   return (
-    <div style={styles.backdrop} role="dialog" aria-modal="true" aria-label="Device Settings">
-      <div ref={panelRef} style={styles.panel}>
+    <div className="studio-modal-overlay" style={styles.backdrop}>
+      <div ref={panelRef} className="studio-modal-panel" style={styles.panel} role="dialog" aria-modal="true" aria-labelledby="device-settings-title">
         {/* Header */}
         <div style={styles.header}>
           <div>
-            <h3 style={styles.title}>Device Settings</h3>
+            <h3 id="device-settings-title" style={styles.title}>Device Settings</h3>
             <p style={styles.subtitle}>Choose your audio and video sources</p>
           </div>
           <button className="panel-close-btn" style={styles.closeBtn} onClick={onClose} aria-label="Close device settings">

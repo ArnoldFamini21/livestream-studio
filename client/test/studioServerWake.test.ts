@@ -82,6 +82,63 @@ describe('studio server wake-up', () => {
   });
 });
 
+describe('studio lookup while the server wakes', () => {
+  it('only treats a real 404 as a missing studio', async () => {
+    const { classifyStudioLookupError } = await import('../src/utils/studioServerWake.ts');
+    assert.equal(classifyStudioLookupError(new ApiRequestError('gone', { status: 404 })), 'not-found');
+    assert.equal(classifyStudioLookupError(new ApiRequestError('t', { timedOut: true })), 'unreachable');
+    assert.equal(classifyStudioLookupError(new ApiRequestError('net')), 'unreachable');
+    assert.equal(classifyStudioLookupError(new ApiRequestError('booting', { status: 503 })), 'unreachable');
+    assert.equal(classifyStudioLookupError(new ApiRequestError('oops', { status: 500 })), 'error');
+  });
+
+  it('waits for the health check and retries a lookup lost to a cold start', async () => {
+    const { getWhenStudioServerReady } = await import('../src/utils/studioServerWake.ts');
+    const health = healthSequence([false, false, true]);
+    let attempts = 0;
+    let waking = 0;
+    const progress: number[] = [];
+    const get = (async () => {
+      attempts += 1;
+      if (attempts === 1) throw new ApiRequestError('Studio server timed out.', { timedOut: true });
+      return { name: 'Show' };
+    }) as never;
+    const result = await getWhenStudioServerReady<{ name: string }>('/api/rooms/x/exists', {
+      ...clock(), fetchImpl: health.fetchImpl, healthUrl: '/health', get,
+      onWaking: () => { waking += 1; },
+      onProgress: (ms) => progress.push(ms),
+    });
+    assert.deepEqual(result, { name: 'Show' });
+    assert.equal(attempts, 2);
+    assert.equal(waking, 1);
+    assert.deepEqual(progress, [0, 3_000, 6_000]);
+  });
+
+  it('returns a 404 at once without waiting', async () => {
+    const { getWhenStudioServerReady } = await import('../src/utils/studioServerWake.ts');
+    const health = healthSequence([true]);
+    let waking = false;
+    const get = (async () => { throw new ApiRequestError('missing', { status: 404 }); }) as never;
+    await assert.rejects(
+      () => getWhenStudioServerReady('/api/rooms/x/exists', { ...clock(), fetchImpl: health.fetchImpl, healthUrl: '/health', get, onWaking: () => { waking = true; } }),
+      (error: unknown) => error instanceof ApiRequestError && error.status === 404
+    );
+    assert.equal(waking, false);
+    assert.equal(health.calls(), 0);
+  });
+
+  it('stops waiting when the page is closed', async () => {
+    const health = healthSequence([false]);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => waitForStudioServer(90_000, { ...clock(), fetchImpl: health.fetchImpl, healthUrl: '/health', signal: controller.signal }),
+      (error: unknown) => error instanceof Error && error.name === 'AbortError'
+    );
+    assert.equal(health.calls(), 0);
+  });
+});
+
 describe('studio server prewarm', () => {
   it('wakes every server once and not again within five minutes', async () => {
     const { prewarmStudioServers, resetStudioServerPrewarm } = await import('../src/utils/studioServerWake.ts');

@@ -1,6 +1,7 @@
 import type { ChatTranscriptScope } from '../utils/chatTranscript.ts';
 import { formatUnreadBadge } from '../utils/chatUnread.ts';
 import { PeoplePanel } from './PeoplePanel.tsx';
+import { useExitTransition } from '../hooks/useExitTransition.ts';
 import { StudioChat } from './StudioChat.tsx';
 import '../styles/overlay-panel.css';
 import '../styles/media-library.css';
@@ -282,6 +283,8 @@ export function Sidebar(props: SidebarProps) {
   const logoInputRef = useRef<HTMLInputElement>(null);
   const activeTab = props.activeTab !== undefined ? props.activeTab : internalActiveTab;
   const setActiveTab = props.onActiveTabChange || setInternalActiveTab;
+  // The panel slides out before it unmounts.
+  const { shown: shownTab, exiting: panelExiting } = useExitTransition(activeTab, 180);
 
   const handleTabClick = (tabId: SidebarTab) => {
     setActiveTab(activeTab === tabId ? null : tabId);
@@ -397,10 +400,10 @@ export function Sidebar(props: SidebarProps) {
   return (
     <div className="studio-sidebar" role="complementary" aria-label="Studio side panel" style={st.wrapper}>
       {/* Content panel — only visible when a tab is active */}
-      {activeTab && (
-        <div className="studio-sidebar-panel" style={st.contentPanel}>
-          <div className="studio-panel-heading"><span>{tabDefs.find(tab => tab.id === activeTab)?.label}</span><button aria-label="Close sidebar panel" onClick={() => setActiveTab(null)}>×</button></div>
-          {activeTab === 'people' && (
+      {shownTab && (
+        <div className={`studio-sidebar-panel${panelExiting ? ' panel-slide-out' : ''}`} aria-hidden={panelExiting || undefined} style={st.contentPanel}>
+          <div className="studio-panel-heading"><span>{tabDefs.find(tab => tab.id === shownTab)?.label}</span><button aria-label="Close sidebar panel" onClick={() => setActiveTab(null)}>×</button></div>
+          {shownTab === 'people' && (
             <PeoplePanel
               onMessageParticipant={id => { setChatRecipient(id); setChatMode('direct'); setActiveTab('chat'); }}
               participants={props.allParticipants}
@@ -421,7 +424,7 @@ export function Sidebar(props: SidebarProps) {
             />
           )}
 
-          {activeTab === 'chat' && (
+          {shownTab === 'chat' && (
             <StudioChat
               initialRecipientId={chatRecipient}
               initialMode={chatMode}
@@ -450,7 +453,7 @@ export function Sidebar(props: SidebarProps) {
             />
           )}
 
-          {activeTab === 'media' && (
+          {shownTab === 'media' && (
             <MediaLibrary
               assets={props.mediaAssets}
               activeMedia={props.activeMedia}
@@ -466,9 +469,9 @@ export function Sidebar(props: SidebarProps) {
             />
           )}
 
-          {activeTab === 'overlays' && <OverlayPanel {...props} />}
+          {shownTab === 'overlays' && <OverlayPanel {...props} />}
 
-          {activeTab === 'brand' && (
+          {shownTab === 'brand' && (
             <div className="studio-brand-panel" style={st.scrollContent}>
               <p className="studio-brand-intro">See your changes on the stage.</p>
               <div className="studio-brand-field">
@@ -829,7 +832,7 @@ export function Sidebar(props: SidebarProps) {
             </div>
           )}
 
-          {activeTab === 'scenes' && (
+          {shownTab === 'scenes' && (
             <div style={st.scrollContent}>
               <div style={st.section}>
                 <SceneManager
@@ -1060,10 +1063,10 @@ const st: Record<string, React.CSSProperties> = {
   contentPanel: { width: 340, display: 'flex', flexDirection: 'column', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border)', height: '100%', overflow: 'hidden', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)' },
   scrollContent: { flex: 1, overflowY: 'auto' },
   iconStrip: { width: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, gap: 2, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%', flexShrink: 0 },
-  iconBadge: { position: 'absolute', top: 2, right: 4, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: 'var(--danger, #ef4444)', color: '#fff', fontSize: 10, fontWeight: 700, lineHeight: '16px', textAlign: 'center', boxSizing: 'border-box' },
+  iconBadge: { position: 'absolute', top: 2, right: 4, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: 'var(--danger, #ef4444)', color: '#fff', fontSize: 11, fontWeight: 700, lineHeight: '16px', textAlign: 'center', boxSizing: 'border-box' },
   iconBtn: { position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, width: 48, height: 48, borderRadius: 10, background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.15s ease' },
   iconBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
-  iconLabel: { fontSize: 9, fontWeight: 500, lineHeight: 1 },
+  iconLabel: { fontSize: 12, fontWeight: 500, lineHeight: 1 },
   section: { padding: 16 },
   divider: { height: 1, background: 'var(--border)', margin: '4px 16px 8px' },
   brandLabelRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 },
@@ -1076,12 +1079,12 @@ const st: Record<string, React.CSSProperties> = {
   themeBtnActive: { borderColor: 'var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)', boxShadow: 'inset 0 0 0 1px var(--accent)' },
   themeSwatches: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 2, height: 24, overflow: 'hidden', borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' },
   themeSwatch: { display: 'block', minWidth: 0 },
-  themeLabel: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, fontWeight: 800, textAlign: 'center' },
+  themeLabel: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, fontWeight: 800, textAlign: 'center' },
   brandSaveRow: { display: 'grid', gridTemplateColumns: '1fr auto', gap: 6, marginBottom: 8 },
   brandKitInput: { minWidth: 0, width: '100%', padding: '7px 9px', fontSize: 12, background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 8, outline: 'none' },
   brandSaveBtn: { padding: '7px 10px', fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--accent)', border: 'none', borderRadius: 8, cursor: 'pointer' },
   brandSaveBtnDisabled: { opacity: 0.45, cursor: 'not-allowed' },
-  brandKitMessage: { display: 'block', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 8 },
+  brandKitMessage: { display: 'block', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 8 },
   savedBrandKitList: { display: 'flex', flexDirection: 'column', gap: 6 },
   savedBrandKitCard: { display: 'grid', gridTemplateColumns: '1fr 28px', alignItems: 'stretch', gap: 4 },
   savedBrandKitApply: { minWidth: 0, display: 'grid', gridTemplateColumns: '42px 1fr', alignItems: 'center', gap: 8, padding: 6, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', borderRadius: 8, cursor: 'pointer', textAlign: 'left' },
@@ -1089,7 +1092,7 @@ const st: Record<string, React.CSSProperties> = {
   savedBrandKitLogoDot: { position: 'absolute', right: 4, bottom: 4, width: 8, height: 8, borderRadius: 2, background: 'rgba(255,255,255,0.9)', boxShadow: '0 0 0 1px rgba(0,0,0,0.25)' },
   savedBrandKitText: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
   savedBrandKitName: { minWidth: 0, fontSize: 11, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  savedBrandKitMeta: { minWidth: 0, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'capitalize' },
+  savedBrandKitMeta: { minWidth: 0, fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'capitalize' },
   savedBrandKitDelete: { display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, minWidth: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 },
   uploadBtn: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, fontSize: 12, fontWeight: 500, background: 'none', color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 10, cursor: 'pointer', transition: 'all var(--transition-fast)' },
   logoPreview: { position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', padding: '8px 40px 8px 10px', gap: 12, height: 60, borderRadius: 8, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', overflow: 'hidden' },
@@ -1114,12 +1117,12 @@ const st: Record<string, React.CSSProperties> = {
   checkboxRow: { display: 'flex', alignItems: 'center', gap: 7, color: 'var(--text-secondary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' },
   opacitySlider: { width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' },
   opacityPresets: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, marginTop: 8 },
-  opacityPresetBtn: { minWidth: 0, padding: '6px 4px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 10, fontWeight: 700, cursor: 'pointer' },
+  opacityPresetBtn: { minWidth: 0, padding: '6px 4px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 12, fontWeight: 700, cursor: 'pointer' },
   opacityPresetBtnActive: { borderColor: 'var(--accent)', background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
   shapeGrid: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 },
   shapeBtn: { minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 2px', background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s ease' },
   shapeVisual: { width: 32, background: 'var(--border-strong)' },
-  shapeText: { fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)', textTransform: 'capitalize' },
+  shapeText: { fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', textTransform: 'capitalize' },
   selectInput: { width: '100%', padding: '8px 12px', fontSize: 13, background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 8, outline: 'none' },
   // Panel layout
   panelFull: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
@@ -1155,21 +1158,21 @@ const st: Record<string, React.CSSProperties> = {
   mediaIndicators: { display: 'flex', gap: 4, alignItems: 'center' },
   mediaIcon: { width: 20, height: 20, borderRadius: 4, background: 'rgba(255, 255, 255, 0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   badges: { display: 'flex', gap: 4, marginTop: 2 },
-  roleBadge: { fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.04em' },
-  qualityBadge: { fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'var(--bg-surface)', color: 'var(--text-muted)' },
-  muteBadge: { fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'rgba(239,68,68,0.1)', color: '#ef4444' },
+  roleBadge: { fontSize: 11, fontWeight: 600, padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.04em' },
+  qualityBadge: { fontSize: 12, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'var(--bg-surface)', color: 'var(--text-muted)' },
+  muteBadge: { fontSize: 12, fontWeight: 500, padding: '1px 5px', borderRadius: 4, background: 'rgba(239,68,68,0.1)', color: '#ef4444' },
   personActions: { display: 'flex', flexWrap: 'wrap' as const, justifyContent: 'flex-end', gap: 3, flexShrink: 1, maxWidth: 220 },
-  smallBtn: { fontSize: 10, fontWeight: 600, padding: '3px 7px', borderRadius: 5, background: 'transparent', border: '1px solid', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 150ms' },
+  smallBtn: { fontSize: 12, fontWeight: 600, padding: '3px 7px', borderRadius: 5, background: 'transparent', border: '1px solid', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 150ms' },
   volumeControl: { display: 'grid', gridTemplateColumns: '18px minmax(0, 1fr) 34px', alignItems: 'center', gap: 7, paddingLeft: 56 },
   volumeIcon: { width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' },
   volumeStack: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 },
   volumeMeter: { width: '100%', minWidth: 0, height: 3 },
   volumeSlider: { width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' },
-  volumeValue: { fontSize: 10, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)', textAlign: 'right' },
+  volumeValue: { fontSize: 12, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)', textAlign: 'right' },
   duckingControl: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, margin: '0 16px 8px', padding: '9px 10px', borderRadius: 8, border: '1px solid rgba(96, 165, 250, 0.24)', background: 'rgba(96, 165, 250, 0.08)', cursor: 'pointer' },
   duckingText: { minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 },
   duckingTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
-  duckingState: { fontSize: 10, fontWeight: 800, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  duckingState: { fontSize: 11, fontWeight: 800, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.04em' },
   duckingCheckbox: { width: 16, height: 16, margin: 0, accentColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 },
   admitAllBtn: { margin: '8px 16px', width: 'calc(100% - 32px)', fontSize: 13, padding: '8px 14px' },
   // Chat

@@ -16,8 +16,9 @@ import {
   type ClientIceConfigStatus,
 } from '../utils/iceConfig.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
+import { summarizeHealthChecks, type HealthStatus } from '../utils/sessionHealthSummary.ts';
 
-export type HealthStatus = 'good' | 'warning' | 'bad';
+export type { HealthStatus };
 
 export interface SessionHealthCheck {
   id: string;
@@ -102,27 +103,6 @@ function formatAudioLabel(track: MediaStreamTrack | null): string {
   return track.enabled ? 'Microphone ready' : 'Microphone muted';
 }
 
-function scoreForStatus(status: HealthStatus): number {
-  switch (status) {
-    case 'good': return 100;
-    case 'warning': return 58;
-    case 'bad': return 0;
-  }
-}
-
-function statusFromScore(score: number): HealthStatus {
-  if (score >= 80) return 'good';
-  if (score >= 50) return 'warning';
-  return 'bad';
-}
-
-function labelFromStatus(status: HealthStatus): string {
-  switch (status) {
-    case 'good': return 'Ready';
-    case 'warning': return 'Needs attention';
-    case 'bad': return 'Blocked';
-  }
-}
 
 function healthStatusFromEncoding(status: VideoEncodingReadinessStatus): HealthStatus {
   switch (status) {
@@ -393,12 +373,12 @@ export function useSessionHealth({
       });
     }
 
-    const score = Math.round(checks.reduce((sum, check) => sum + scoreForStatus(check.status), 0) / checks.length);
-    const status = statusFromScore(score);
+    // Any blocked essential check (connection, mic, camera...) decides the status; never averaged away.
+    const { status, label, score } = summarizeHealthChecks(checks, 'operator');
 
     return {
       status,
-      label: labelFromStatus(status),
+      label,
       score,
       checks,
       storage,
