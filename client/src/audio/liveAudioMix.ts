@@ -8,7 +8,9 @@ import { connectSilentKeepAlive, createWebAudioProgramGraph, type WebAudioInputH
 
 /**
  * A mix with a stable output track: live inputs are added and swapped behind
- * it, and the media bus (effects, music, clips) is always part of it.
+ * it, and the media bus (effects, music, clips) is part of it unless
+ * includeBus is false (the program return, whose receivers already hear the
+ * bus in the host's own audio).
  */
 export interface LiveAudioMix {
   readonly track: MediaStreamTrack;
@@ -17,7 +19,10 @@ export interface LiveAudioMix {
   dispose(): void;
 }
 
-export function createLiveAudioMix(bus: Pick<BroadcastAudioBus, 'getContext' | 'connectOutput'>): LiveAudioMix {
+export function createLiveAudioMix(
+  bus: Pick<BroadcastAudioBus, 'getContext' | 'connectOutput'>,
+  options: { includeBus?: boolean } = {}
+): LiveAudioMix {
   const context = bus.getContext();
   const destination = context.createMediaStreamDestination();
   const track = destination.stream.getAudioTracks()[0];
@@ -27,7 +32,7 @@ export function createLiveAudioMix(bus: Pick<BroadcastAudioBus, 'getContext' | '
     createWebAudioProgramGraph(context, destination)
   );
   const stopKeepAlive = connectSilentKeepAlive(context, destination);
-  const disconnectBus = bus.connectOutput(destination);
+  const disconnectBus = options.includeBus === false ? () => {} : bus.connectOutput(destination);
   let disposed = false;
 
   return {

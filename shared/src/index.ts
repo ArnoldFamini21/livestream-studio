@@ -336,6 +336,41 @@ export function canExchangeStudioMedia(
   return false;
 }
 
+type StageOwnerCandidate = Pick<Participant, 'id' | 'role' | 'status'> & { joinedAt?: string };
+
+/**
+ * Whose stage guests mirror and whose compositor feeds the program return:
+ * the host while they are in the studio, otherwise the co-host who joined
+ * first. Only that client mirrors stage content, so a co-host joining or
+ * reconnecting never replaces what the host presents.
+ */
+export function getStageOwnerId(participants: Iterable<StageOwnerCandidate>): string | null {
+  let coHost: StageOwnerCandidate | null = null;
+  for (const participant of participants) {
+    if (participant.status === 'green-room') continue;
+    if (participant.role === 'host') return participant.id;
+    if (participant.role !== 'co-host') continue;
+    if (!coHost) {
+      coHost = participant;
+      continue;
+    }
+    const a = participant.joinedAt || '';
+    const b = coHost.joinedAt || '';
+    if (a < b || (a === b && participant.id < coHost.id)) coHost = participant;
+  }
+  return coHost?.id ?? null;
+}
+
+/** MediaStream ids are UUIDs (Firefox wraps them in braces). */
+export const PROGRAM_RETURN_STREAM_ID_PATTERN = /^[\w{}-]{1,80}$/;
+
+export function isValidProgramReturnStreamId(value: unknown): value is string {
+  return typeof value === 'string' && PROGRAM_RETURN_STREAM_ID_PATTERN.test(value);
+}
+
+export const STAGE_CONTROL_ACTIONS = ['next', 'previous', 'goto', 'clear'] as const;
+export type StageControlAction = typeof STAGE_CONTROL_ACTIONS[number];
+
 // ============ Signaling Types ============
 
 export type SignalMessage =
@@ -370,6 +405,10 @@ export type SignalMessage =
   | { type: 'participant-notification'; payload: ParticipantNotificationPayload }
   | { type: 'studio-branding-updated'; payload: StudioBrandingPayload }
   | { type: 'stage-content-updated'; payload: StageContentPayload }
+  /** Co-host (or host) remote for the stage owner's deck: next/previous/goto/clear. Relayed to the stage owner only. */
+  | { type: 'stage-control'; payload: StageControlPayload }
+  /** Stage owner to one admitted peer: which of its incoming streams is the program return feed. */
+  | { type: 'program-return-announce'; payload: ProgramReturnAnnouncePayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   /** Host/co-host only: the 3-2-1 before recording, so guests see it too. */
   | { type: 'recording-countdown'; payload: RecordingCountdownPayload }
@@ -467,6 +506,29 @@ export interface StageContentPayload {
   layout?: LayoutMode;
   /** The host chose the "Me" view: shared content (including a screen share) is off stage. */
   contentHidden?: boolean;
+}
+
+export interface StageControlPayload {
+  action: StageControlAction;
+  /** For 'goto': the zero-based slide to show. */
+  slideIndex?: number;
+  /** The StageContentMedia id the sender saw; a stale command for other media is ignored. */
+  mediaId?: string;
+  /** Set by the server: who sent it. */
+  from?: string;
+}
+
+/**
+ * The program return is a low-bitrate copy of the program (compositor video,
+ * and for backstage guests the program audio) on its own MediaStream. Peers
+ * are told its stream id before the track arrives so it is never taken for a
+ * camera or a screen share.
+ */
+export interface ProgramReturnAnnouncePayload {
+  to: string;
+  streamId: string | null;
+  /** Set by the server. */
+  from?: string;
 }
 
 export interface StageContentMedia {

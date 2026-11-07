@@ -63,6 +63,8 @@ export interface UseProgramAudioMixOptions {
   participantVolumes: Record<string, number>;
   /** Which local tiles the compositor puts on the program (getLocalProgramPresence). */
   localPresence?: LocalProgramPresence;
+  /** Mix the media bus in (default). Fixed for the life of the hook. */
+  includeBus?: boolean;
 }
 
 export interface ProgramAudioMix {
@@ -100,7 +102,7 @@ export function useProgramAudioMix(options: UseProgramAudioMixOptions): ProgramA
   const controllerRef = useRef<ProgramAudioController<MediaStreamTrack> | null>(null);
   if (!controllerRef.current) {
     controllerRef.current = new ProgramAudioController<MediaStreamTrack>(
-      () => createLiveAudioMix(busRef.current),
+      () => createLiveAudioMix(busRef.current, { includeBus: options.includeBus !== false }),
       () => buildProgramAudioInputs(stateRef.current)
     );
   }

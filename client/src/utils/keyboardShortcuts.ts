@@ -25,6 +25,9 @@ export const STUDIO_SHORTCUTS: StudioShortcut[] = [
   { id: 'admit-all', key: 'a', shift: true, label: 'Admit everyone waiting in the green room', category: 'Production', hostOnly: true },
   { id: 'toggle-auto-director', key: 'a', label: 'Auto-spotlight whoever is speaking', category: 'Production', hostOnly: true },
   { id: 'stop-presenting', key: 'x', label: 'Stop presenting media', category: 'Production', hostOnly: true },
+  // Push-to-talk is handled by useTalkback (keydown and keyup).
+  { id: 'talkback-hold', key: 'k', display: 'Hold K', label: 'Talk backstage while held (your mic leaves the broadcast)', category: 'Production', hostOnly: true },
+  { id: 'toggle-talkback', key: 'k', shift: true, label: 'Talk backstage on / off (off air)', category: 'Production', hostOnly: true },
   // Handled by the sound board (by physical key, so it works on any keyboard layout).
   { id: 'sound-pads', key: 'Digit', shift: true, display: 'Shift + 1 … 0', label: 'Play sound board pads 1-10', category: 'Production', hostOnly: true },
   ...Array.from({ length: LAYOUT_SHORTCUT_COUNT }, (_, index): StudioShortcut => ({

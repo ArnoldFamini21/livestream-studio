@@ -31,6 +31,8 @@ import type {
   StudioBrandingPayload,
   StageContentPayload,
   StageContentMedia,
+  StageControlPayload,
+  ProgramReturnAnnouncePayload,
   LayoutMode,
   StudioMediaType,
   RoomRegistrant,
@@ -45,8 +47,11 @@ import {
   MAX_PARTICIPANT_TITLE_LENGTH,
   ROOM_NOT_OPEN_ERROR_CODE,
   SCHEDULED_GUEST_ACCESS_MESSAGE,
+  STAGE_CONTROL_ACTIONS,
   canExchangeStudioMedia,
+  getStageOwnerId,
   isChatReactionType,
+  isValidProgramReturnStreamId,
   isScheduledGuestAccessBlocked,
 } from '@studio/shared';
 import {
@@ -140,6 +145,8 @@ interface RoomState {
   externalChatConnections: Map<ExternalChatPlatform, ExternalChatConnectionState>;
   studioBranding?: StudioBrandingPayload;
   stageContent?: StageContentPayload;
+  /** Who set stageContent, so a co-host cannot clear what the host presents. */
+  stageContentSetBy?: { participantId: string; role: Participant['role'] };
   /** Pictures of what is on stage, newest last; served to guests by id. */
   stageImages?: Map<string, StageImage>;
   guestInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
@@ -240,6 +247,8 @@ interface AliveWebSocket extends WebSocket {
 const KNOWN_MESSAGE_TYPES = new Set([
   'heartbeat',
   'stage-content-updated',
+  'stage-control',
+  'program-return-announce',
   'join-room',
   'offer',
   'answer',
@@ -343,6 +352,13 @@ staleRoomCleanupTimer.unref?.();
 
 // WebSocket per-connection rate limiting: negotiation messages get their own, larger budget.
 const wsRateLimiter = new WsRateLimiter<WebSocket>();
+/** Slide remote clicks: generous for a presenter, tight enough that a stuck key cannot flood the host. */
+export const STAGE_CONTROL_RATE_LIMIT_MAX = 20;
+export const STAGE_CONTROL_RATE_LIMIT_WINDOW_MS = 5_000;
+const stageControlRateLimiter = new WsRateLimiter<WebSocket>(
+  { control: STAGE_CONTROL_RATE_LIMIT_MAX, relay: STAGE_CONTROL_RATE_LIMIT_MAX },
+  STAGE_CONTROL_RATE_LIMIT_WINDOW_MS,
+);
 
 /**
  * How long a seat is held after its connection drops (Wi-Fi blip, proxy reset,
@@ -1308,6 +1324,12 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'stage-content-updated':
       handleStageContentUpdate(ws, message.payload);
       break;
+    case 'stage-control':
+      handleStageControl(ws, message.payload);
+      break;
+    case 'program-return-announce':
+      handleProgramReturnAnnounce(ws, message.payload);
+      break;
     case 'recording-state-changed':
       handleRecordingStateChange(ws, message.payload);
       break;
@@ -2240,8 +2262,109 @@ function handleStageContentUpdate(ws: WebSocket, payload: StageContentPayload) {
     sendError(ws, 'Invalid stage content', 'INVALID_PAYLOAD');
     return;
   }
+  if (isCoHostClearingHostStage(roomState, performer.participant, content)) {
+    // An older co-host client mirrors its own empty stage on join: keep the host's slides for guests.
+    sendError(ws, 'The host is presenting. Use the slide controls to drive the host\'s deck.', 'STAGE_OWNED_BY_HOST');
+    return;
+  }
   roomState.stageContent = content;
+  roomState.stageContentSetBy = { participantId: mapping.participantId, role: performer.participant.role };
   broadcastToRoom(mapping.roomId, { type: 'stage-content-updated', payload: content }, mapping.participantId);
+}
+
+/**
+ * A co-host's update that would take down media the host put on stage, while
+ * that host is still in the studio. The host's compositor owns the broadcast,
+ * so guests must keep seeing what the host presents.
+ */
+function isCoHostClearingHostStage(
+  roomState: RoomState,
+  performer: Participant,
+  content: StageContentPayload,
+): boolean {
+  if (performer.role !== 'co-host') return false;
+  if (content.media) return false;
+  if (!roomState.stageContent?.media) return false;
+  const setBy = roomState.stageContentSetBy;
+  if (!setBy || setBy.role !== 'host') return false;
+  const host = roomState.participants.get(setBy.participantId)?.participant;
+  return Boolean(host && host.role === 'host' && host.status !== 'green-room');
+}
+
+const STAGE_CONTROL_ACTION_SET = new Set<string>(STAGE_CONTROL_ACTIONS);
+
+/** A host or co-host drives the stage owner's deck (next/previous/goto/clear). */
+function handleStageControl(ws: WebSocket, payload: StageControlPayload) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+  const performer = roomState.participants.get(mapping.participantId)?.participant;
+  if (!performer) return;
+  if (!isOperatorRole(performer.role) || performer.status === 'green-room') {
+    sendError(ws, 'Only hosts and co-hosts can change slides', 'UNAUTHORIZED');
+    return;
+  }
+  const rate = stageControlRateLimiter.check(ws, 'stage-control');
+  if (!rate.allowed) {
+    if (rate.notify) sendError(ws, 'Too many slide changes. Please slow down.', 'RATE_LIMITED');
+    return;
+  }
+  const raw = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+  const action = typeof raw.action === 'string' && STAGE_CONTROL_ACTION_SET.has(raw.action)
+    ? raw.action as StageControlPayload['action']
+    : null;
+  const slideIndex = raw.slideIndex;
+  const validIndex = typeof slideIndex === 'number' && Number.isInteger(slideIndex) && slideIndex >= 0 && slideIndex < 10_000;
+  if (!action || (action === 'goto' && !validIndex)) {
+    sendError(ws, 'Invalid slide control', 'INVALID_PAYLOAD');
+    return;
+  }
+  const mediaId = typeof raw.mediaId === 'string' && raw.mediaId ? raw.mediaId.slice(0, 128) : undefined;
+  const ownerId = getStageOwnerId(Array.from(roomState.participants.values(), (entry) => entry.participant));
+  if (!ownerId || ownerId === mapping.participantId) {
+    sendError(ws, 'There is no host deck to control', 'NO_STAGE_OWNER');
+    return;
+  }
+  const owner = roomState.participants.get(ownerId);
+  if (!owner || owner.ws.readyState !== WebSocket.OPEN) return;
+  send(owner.ws, {
+    type: 'stage-control',
+    payload: {
+      action,
+      ...(action === 'goto' ? { slideIndex: slideIndex as number } : {}),
+      ...(mediaId ? { mediaId } : {}),
+      from: mapping.participantId,
+    },
+  });
+}
+
+/**
+ * The stage owner tells one admitted peer which incoming stream is the
+ * program return, ahead of the offer that carries it (same socket, so it
+ * arrives first). Never relayed to the green room.
+ */
+function handleProgramReturnAnnounce(ws: WebSocket, payload: ProgramReturnAnnouncePayload) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+  const sender = roomState.participants.get(mapping.participantId)?.participant;
+  if (!sender || !isOperatorRole(sender.role)) {
+    sendError(ws, 'Only hosts and co-hosts send the program return', 'UNAUTHORIZED');
+    return;
+  }
+  const to = typeof payload?.to === 'string' ? payload.to : '';
+  const streamId = payload?.streamId === null ? null : isValidProgramReturnStreamId(payload?.streamId) ? payload.streamId : undefined;
+  if (!to || to === mapping.participantId || streamId === undefined) {
+    sendError(ws, 'Invalid program return announcement', 'VALIDATION_ERROR');
+    return;
+  }
+  // Same rule as offers: only peers this sender may exchange media with.
+  if (!canRelayMediaSignal(roomState, mapping.participantId, to)) return;
+  const target = roomState.participants.get(to);
+  if (!target || target.ws.readyState !== WebSocket.OPEN) return;
+  send(target.ws, { type: 'program-return-announce', payload: { to, streamId, from: mapping.participantId } });
 }
 
 export type StoreStageImageResult =
@@ -4494,6 +4617,7 @@ const DELIBERATE_CLOSE_CODES = new Set([1000, 1005]);
 
 function handleDisconnect(ws: WebSocket, code?: number) {
   wsRateLimiter.forget(ws);
+  stageControlRateLimiter.forget(ws);
   pendingJoins.delete(ws);
 
   const mapping = wsToParticipant.get(ws);
@@ -4639,6 +4763,8 @@ function isVisibleInGreenRoom(message: SignalMessage, recipientId: string, roomS
     case 'stage-action':
       return message.payload.targetParticipantId === recipientId;
     case 'stage-content-updated':
+    case 'stage-control':
+    case 'program-return-announce':
     case 'poll-updated':
     case 'qa-question-updated':
     case 'external-chat-status':

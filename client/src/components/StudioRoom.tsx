@@ -13,8 +13,15 @@ import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
-import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
+import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload, StageControlAction, StageControlPayload } from '@studio/shared';
+import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia, getStageOwnerId } from '@studio/shared';
+import { NO_PROGRAM_RETURN, getProgramReturnDemand, getProgramReturnRoute, isStageOwner, pickProgramReturnStream, stageContentNeedsProgramVideo } from '../utils/programReturn.ts';
+import { useProgramReturnFeed } from '../hooks/useProgramReturnFeed.ts';
+import { useTalkback } from '../hooks/useTalkback.ts';
+import { applyTalkbackVolumes, TALKBACK_BADGE_TEXT } from '../utils/talkback.ts';
+import { buildStageControl, resolveStageControl } from '../utils/stageControl.ts';
+import { ProgramReturnMonitor, ProgramReturnVideo } from './ProgramReturnMonitor.tsx';
+import { StageRemoteControl } from './StageRemoteControl.tsx';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
@@ -1346,6 +1353,10 @@ export function StudioRoom() {
   const {
     remoteStreams: meshRemoteStreams,
     remoteScreenStreams: meshRemoteScreenStreams,
+    remoteProgramReturnStreams,
+    setProgramReturnSource,
+    setProgramReturnRouting,
+    setRemoteProgramReturnStreamId,
     publishScreenTrack,
     setScreenShareOptimization,
     setRemoteScreenStreamId,
@@ -1421,6 +1432,13 @@ export function StudioRoom() {
     takeProgressiveUpload: takeProgramProgressiveUpload,
   } = useRecording(room?.name || 'Studio');
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
+  // Talk backstage (hold K, or latch it): the operator's mic leaves the program
+  // mix (live relay and program recording) while the mesh still carries it to guests.
+  const talkback = useTalkback(isStudioOperator(myParticipant) && myParticipant?.status !== 'green-room');
+  const programMixVolumes = useMemo(
+    () => applyTalkbackVolumes(participantVolumes, myParticipant?.id, talkback.active),
+    [myParticipant?.id, participantVolumes, talkback.active]
+  );
   // One live program audio graph for the relay and the program recording.
   const programAudioMix = useProgramAudioMix({
     bus: broadcastAudioBus,
@@ -1430,7 +1448,7 @@ export function StudioRoom() {
     remoteStreams,
     remoteScreenStreams: meshRemoteScreenStreams,
     screenStream,
-    participantVolumes,
+    participantVolumes: programMixVolumes,
     // Same rule as displayedStageVideoItems: a backstage host presenting is heard.
     localPresence: getLocalProgramPresence({
       status: myParticipant?.status,
@@ -1439,6 +1457,35 @@ export function StudioRoom() {
       hasActiveMedia: Boolean(activeMedia),
     }),
   });
+  // The program audio for backstage guests' program return: the on-stage
+  // guests and their screens. Our own mic, screen sound and the media bus are
+  // left out because the mesh already brings them to those guests directly;
+  // mixing them in again would double them.
+  const programReturnAudioMix = useProgramAudioMix({
+    bus: broadcastAudioBus,
+    localParticipant: myParticipant,
+    localStream: null,
+    participants,
+    remoteStreams,
+    remoteScreenStreams: meshRemoteScreenStreams,
+    screenStream: null,
+    participantVolumes,
+    includeBus: false,
+  });
+  // Only the stage owner (the host, or the first co-host while no host is in)
+  // mirrors the stage and publishes the program return.
+  const amStageOwner = useMemo(() => isStageOwner(myParticipant, participants.values()), [myParticipant, participants]);
+  const stageOwnerId = useMemo(
+    () => getStageOwnerId([...participants.values(), ...(myParticipant ? [myParticipant] : [])]),
+    [myParticipant, participants]
+  );
+  // Set by the stage mirror: what is staged has no picture guests can see.
+  const [stageMirrorNeedsVideo, setStageMirrorNeedsVideo] = useState(false);
+  const programReturnDemand = useMemo(() => (
+    amStageOwner
+      ? getProgramReturnDemand(participants, myParticipant?.id, { stageNeedsVideo: stageMirrorNeedsVideo })
+      : NO_PROGRAM_RETURN
+  ), [amStageOwner, myParticipant?.id, participants, stageMirrorNeedsVideo]);
   const {
     isRecording: isLocalRecording,
     isPaused: isLocalRecordingPaused,
@@ -1755,6 +1802,10 @@ export function StudioRoom() {
   const replaceTrackRef = useRef(replaceTrack);
   const publishScreenTrackRef = useRef(publishScreenTrack);
   const setRemoteScreenStreamIdRef = useRef(setRemoteScreenStreamId);
+  const setRemoteProgramReturnStreamIdRef = useRef(setRemoteProgramReturnStreamId);
+  setRemoteProgramReturnStreamIdRef.current = setRemoteProgramReturnStreamId;
+  // Applies a co-host's slide command to our deck (stage owner only; set below).
+  const stageControlHandlerRef = useRef<(payload: StageControlPayload) => void>(() => {});
   // True while our screen goes out as a second track (mesh); false when it
   // replaces the camera (SFU).
   const separateScreenTrackRef = useRef(false);
@@ -1771,7 +1822,7 @@ export function StudioRoom() {
   // Initialize Canvas Compositor for RTMP
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     containerRef: stageRef,
-    isActive: shouldRunCompositor({ live: isLive, mixRecording: isRecording, localRecording: isLocalRecording }),
+    isActive: shouldRunCompositor({ live: isLive, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
     banners,
     lowerThirds,
     timers,
@@ -1794,6 +1845,29 @@ export function StudioRoom() {
     streamScreen: activeStreamScreen,
     sceneTransition: compositorSceneTransition,
   });
+
+  // The program return (640x360, 15 fps, ~500 kbps) to backstage guests, and
+  // to on-stage guests while a clip or document is on the program.
+  const programReturnSource = useProgramReturnFeed({
+    enabled: programReturnDemand.video,
+    audioWanted: programReturnDemand.audio,
+    compositeCanvasRef,
+    acquireAudio: programReturnAudioMix.acquire,
+  });
+  const programReturnRoutingRef = useRef({ participants, stageNeedsVideo: stageMirrorNeedsVideo });
+  programReturnRoutingRef.current = { participants, stageNeedsVideo: stageMirrorNeedsVideo };
+  useEffect(() => {
+    setProgramReturnRouting((participantId) => getProgramReturnRoute(
+      programReturnRoutingRef.current.participants.get(participantId),
+      { stageNeedsVideo: programReturnRoutingRef.current.stageNeedsVideo },
+    ));
+    void setProgramReturnSource(programReturnSource);
+  }, [participants, programReturnSource, setProgramReturnRouting, setProgramReturnSource, stageMirrorNeedsVideo]);
+  // Guests: the program return the stage owner sends us, if any.
+  const programReturnStream = useMemo(
+    () => pickProgramReturnStream(remoteProgramReturnStreams, stageOwnerId),
+    [remoteProgramReturnStreams, stageOwnerId]
+  );
 
   const handleLogoPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (!canUseOperatorControls || !stageRef.current) return;
@@ -2818,6 +2892,12 @@ export function StudioRoom() {
           break;
         case 'stage-content-updated':
           setRemoteStageContent(message.payload);
+          break;
+        case 'stage-control':
+          stageControlHandlerRef.current(message.payload);
+          break;
+        case 'program-return-announce':
+          if (message.payload.from) setRemoteProgramReturnStreamIdRef.current(message.payload.from, message.payload.streamId);
           break;
         case 'room-ending': {
           const endsAt = Date.parse(message.payload.endsAt);
@@ -5084,6 +5164,19 @@ export function StudioRoom() {
     setActiveMediaSlideIndex(0);
   };
 
+  // A co-host drives our deck: we own the stage, so our compositor shows the
+  // slide they picked and the mirror tells guests.
+  stageControlHandlerRef.current = (payload: StageControlPayload) => {
+    if (!amStageOwner) return;
+    const outcome = resolveStageControl(payload, { media: stagedMedia, slideIndex: activeMediaSlideIndex });
+    if (outcome.kind === 'slide') setActiveMediaSlideIndex(outcome.slideIndex);
+    else if (outcome.kind === 'clear') onStopMedia();
+  };
+  // Co-hosts: drive the stage owner's deck instead of staging a copy of our own.
+  const onRemoteStageControl = (action: StageControlAction, slideIndex?: number) => {
+    send({ type: 'stage-control', payload: buildStageControl(action, remoteStageContent, slideIndex) });
+  };
+
   // Helper to convert blob URL to data URL
   const blobToDataUrl = async (blobUrl: string, maxBytes = MAX_PERSISTED_IMAGE_BYTES): Promise<string> => {
     const response = await fetch(blobUrl);
@@ -5927,6 +6020,7 @@ export function StudioRoom() {
         return true;
       }
       case 'toggle-auto-director': setAutoDirectorEnabled((current) => !current); return true;
+      case 'toggle-talkback': talkback.toggle(); return true;
       case 'stop-presenting':
         if (!activeMedia) return false;
         onStopMedia();
@@ -5967,13 +6061,16 @@ export function StudioRoom() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [closeToolPanels, roleShortcuts]);
 
-  // Hosts and co-hosts: tell guests what is on stage. Each slide or image is
-  // uploaded once as a small JPEG; the signaling message only names it. In the
-  // "Me" view nothing is staged, so guests see the cameras too.
+  // The stage owner (the host, or the first co-host while no host is in) tells
+  // guests what is on stage. Each slide or image is uploaded once as a small
+  // JPEG; the signaling message only names it. In the "Me" view nothing is
+  // staged, so guests see the cameras too. Other co-hosts never mirror: their
+  // empty stage on join used to replace the host's slides for every guest.
   const stageMirrorParticipantId = myParticipant?.id;
   const stageMirrorAdmitted = myParticipant?.status !== 'green-room';
   useEffect(() => {
-    if (!isHostOrCoHost || !roomId || !stageMirrorParticipantId || !stageMirrorAdmitted) return;
+    if (!amStageOwner) setStageMirrorNeedsVideo(false);
+    if (!amStageOwner || !roomId || !stageMirrorParticipantId || !stageMirrorAdmitted) return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       let content: StageContentPayload;
@@ -6000,6 +6097,8 @@ export function StudioRoom() {
       }
       // In the "Me" view a screen share stays live but off stage; tell guests.
       if (contentHidden && sharedContentAvailable) content = { ...content, contentHidden: true };
+      // A clip or a document has no picture for guests: the program return shows it.
+      setStageMirrorNeedsVideo(stageContentNeedsProgramVideo(content));
       const signature = JSON.stringify(content);
       if (signature === lastStageContentSignatureRef.current) return;
       lastStageContentSignatureRef.current = signature;
@@ -6009,7 +6108,7 @@ export function StudioRoom() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [contentHidden, sharedContentAvailable, stagedMedia, activeMediaSlideIndex, isHostOrCoHost, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
+  }, [amStageOwner, contentHidden, sharedContentAvailable, stagedMedia, activeMediaSlideIndex, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
 
   // Guests: show what the host has on stage. The next picture is loaded before
   // it replaces the current one, so slides change without a blank frame.
@@ -6579,6 +6678,17 @@ export function StudioRoom() {
               </div>
             </div>
 
+            {offStageGuestStatus === 'backstage' && (
+              <PanelErrorBoundary label="Live program">
+                <ProgramReturnMonitor
+                  stream={programReturnStream}
+                  live={isLive}
+                  audioOutputDeviceId={selectedAudioOutputDeviceId || undefined}
+                  brandColor={waitingBrandColor}
+                />
+              </PanelErrorBoundary>
+            )}
+
             {offStageGuestStatus === 'backstage' && backstagePrivateItems.length > 1 && (
               <BackstagePrivateRoom
                 items={backstagePrivateItems}
@@ -6726,6 +6836,15 @@ export function StudioRoom() {
                       <object data={`${stagedMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
                         <iframe src={`${stagedMedia.url}#view=FitH`} style={styles.mediaContent} title={stagedMedia.name} />
                       </object>
+                    ) : !isHostOrCoHost && programReturnStream ? (
+                      // Guests: a clip or document the host plays has no picture to
+                      // mirror, so show the program return (what the audience sees).
+                      <ProgramReturnVideo
+                        stream={programReturnStream}
+                        muted
+                        label={`${stagedMedia.name} on the program`}
+                        style={styles.mediaContent}
+                      />
                     ) : (
                       <MediaDocumentCard media={stagedMedia} />
                     )
@@ -6762,6 +6881,12 @@ export function StudioRoom() {
               <span style={styles.waitingDot} />
               {waitingCount} waiting
             </button>
+          )}
+          {talkback.active && (
+            <span role="status" style={styles.talkbackBadge} data-testid="talkback-badge">
+              <span style={styles.talkbackDot} />
+              {TALKBACK_BADGE_TEXT}
+            </span>
           )}
           {recordingStatus.active && (
             <span style={styles.recBadge}>
@@ -6995,6 +7120,15 @@ export function StudioRoom() {
             </div>
           ) : (
           <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }} footer={
+            // A co-host while the host presents: remote for the host's deck.
+            isHostOrCoHost && !amStageOwner && remoteStageContent?.media ? (
+              <StageRemoteControl
+                content={remoteStageContent}
+                hostName={(stageOwnerId && participants.get(stageOwnerId)?.name) || 'The host'}
+                hasLocalMedia={Boolean(activeMedia)}
+                onControl={onRemoteStageControl}
+              />
+            ) :
             isHostOrCoHost && sharedContentAvailable && <PresentationToolbar
               media={activeMedia}
               slideIndex={activeMediaSlideIndex}
@@ -7824,6 +7958,8 @@ export function StudioRoom() {
         participantCount={allParticipantsMap.size}
         isLive={isLive}
         captionsActive={captionsEnabled}
+        talkbackActive={talkback.active}
+        onToggleTalkback={isHostOrCoHost ? talkback.toggle : undefined}
       />
 
       {/* Producer Panel (full-screen overlay) */}
@@ -8173,6 +8309,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   waitingDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--warning, #f59e0b)', animation: 'pulse 2s infinite' },
   waitingBadgeButton: { border: '1px solid var(--warning-border, rgba(245, 158, 11, 0.35))', cursor: 'pointer', lineHeight: 'inherit' },
+  talkbackBadge: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
+    // Dark text on amber: the host must not miss that they are off air.
+    background: 'var(--warning, #f59e0b)', color: '#1f1300',
+    whiteSpace: 'nowrap' as const,
+  },
+  talkbackDot: {
+    width: 8, height: 8, borderRadius: '50%', background: '#1f1300',
+  },
   recBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
