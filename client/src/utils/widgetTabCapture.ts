@@ -1,11 +1,17 @@
 /**
  * Web widgets are cross-origin iframes, which a canvas cannot read, so the
  * program draws a placeholder for them. In Chromium the host can opt in to
- * capturing this tab (getDisplayMedia with preferCurrentTab) and cropping the
- * capture to each widget's element (Region Capture: CropTarget.fromElement +
- * track.cropTo). Each widget gets its own cropped clone of the one capture,
- * played in a detached <video> the compositor draws into the widget's box.
- * Everything runs in the browser; nothing is uploaded.
+ * capturing this tab (getDisplayMedia with preferCurrentTab) and limiting the
+ * capture to each widget's element. Each widget gets its own clone of the one
+ * capture, played in a detached <video> the compositor draws into the
+ * widget's box. Everything runs in the browser; nothing is uploaded.
+ *
+ * Element Capture (RestrictionTarget.fromElement + track.restrictTo, Chrome
+ * 132+) is used whenever it exists: it captures only the widget's own
+ * subtree, so a dialog, toast or green-room prompt drawn over the widget never
+ * reaches viewers. Region Capture (CropTarget.fromElement + track.cropTo) is
+ * the fallback; it crops to the element's box and takes whatever is painted
+ * there, so the host is warned that overlapping studio UI will be broadcast.
  */
 
 /** Captured widget frames by widget id, read by the compositor every frame. */
@@ -23,20 +29,37 @@ export interface WidgetCaptureSupport {
 interface CaptureGlobals {
   navigator?: { mediaDevices?: { getDisplayMedia?: unknown } };
   CropTarget?: { fromElement?: unknown };
-  BrowserCaptureMediaStreamTrack?: { prototype?: { cropTo?: unknown } };
+  RestrictionTarget?: { fromElement?: unknown };
+  BrowserCaptureMediaStreamTrack?: { prototype?: { cropTo?: unknown; restrictTo?: unknown } };
   isSecureContext?: boolean;
 }
 
-/** Region Capture is Chromium-only (Chrome/Edge 104+ on desktop). */
-export function getWidgetTabCaptureSupport(scope: CaptureGlobals = globalThis as unknown as CaptureGlobals): WidgetCaptureSupport {
-  if (scope.isSecureContext === false) return { supported: false, reason: 'Tab capture needs a secure (https) page.' };
+/** How a capture clone is limited to a widget. */
+export type WidgetCaptureMethod = 'element' | 'region';
+
+/** Shown while Region Capture is in use: it takes whatever is painted over the widget. */
+export const WIDGET_REGION_CAPTURE_WARNING =
+  'This browser can only crop the tab to each widget, so anything shown on top of a widget (a dialog, a toast, a guest waiting to be let in) is broadcast too. Update Chrome or Edge to capture just the widget.';
+
+function hasElementCapture(scope: CaptureGlobals): boolean {
+  return typeof scope.RestrictionTarget?.fromElement === 'function'
+    && typeof scope.BrowserCaptureMediaStreamTrack?.prototype?.restrictTo === 'function';
+}
+
+function hasRegionCapture(scope: CaptureGlobals): boolean {
+  return typeof scope.CropTarget?.fromElement === 'function'
+    && typeof scope.BrowserCaptureMediaStreamTrack?.prototype?.cropTo === 'function';
+}
+
+/** Element Capture (Chrome/Edge 132+) or, failing that, Region Capture (104+); Chromium desktop only. */
+export function getWidgetTabCaptureSupport(scope: CaptureGlobals = globalThis as unknown as CaptureGlobals): WidgetCaptureSupport & { method: WidgetCaptureMethod | null } {
+  if (scope.isSecureContext === false) return { supported: false, reason: 'Tab capture needs a secure (https) page.', method: null };
   if (typeof scope.navigator?.mediaDevices?.getDisplayMedia !== 'function') {
-    return { supported: false, reason: 'This browser cannot capture a tab.' };
+    return { supported: false, reason: 'This browser cannot capture a tab.', method: null };
   }
-  if (typeof scope.CropTarget?.fromElement !== 'function' || typeof scope.BrowserCaptureMediaStreamTrack?.prototype?.cropTo !== 'function') {
-    return { supported: false, reason: 'Widget capture needs Chrome or Edge on a computer.' };
-  }
-  return { supported: true, reason: null };
+  if (hasElementCapture(scope)) return { supported: true, reason: null, method: 'element' };
+  if (hasRegionCapture(scope)) return { supported: true, reason: null, method: 'region' };
+  return { supported: false, reason: 'Widget capture needs Chrome or Edge on a computer.', method: null };
 }
 
 /** getDisplayMedia options that offer this tab first and capture no audio. */
@@ -58,21 +81,59 @@ export function isTabCaptureTrack(track: Pick<MediaStreamTrack, 'getSettings'>):
 }
 
 export interface CropCapableTrack extends MediaStreamTrack {
-  cropTo(target: unknown): Promise<void>;
+  cropTo?(target: unknown): Promise<void>;
+  restrictTo?(target: unknown): Promise<void>;
 }
 
-interface CropTargetFactory {
+interface TargetFactory {
   fromElement(element: Element): Promise<unknown>;
 }
 
-/** Crops a capture clone to an element of the captured tab. */
+export interface CaptureTargetFactories {
+  RestrictionTarget?: TargetFactory;
+  CropTarget?: TargetFactory;
+}
+
+function globalTargetFactories(): CaptureTargetFactories {
+  const scope = globalThis as unknown as CaptureTargetFactories;
+  return { RestrictionTarget: scope.RestrictionTarget, CropTarget: scope.CropTarget };
+}
+
+/**
+ * Limits a capture clone to one element of the captured tab. Element Capture
+ * first (only the element's own pixels); Region Capture when Element Capture
+ * is missing or refuses this element. Returns the method that was applied.
+ */
+export async function limitTrackToElement(
+  track: MediaStreamTrack,
+  element: Element,
+  factories: CaptureTargetFactories = globalTargetFactories()
+): Promise<WidgetCaptureMethod> {
+  const capable = track as CropCapableTrack;
+  if (typeof factories.RestrictionTarget?.fromElement === 'function' && typeof capable.restrictTo === 'function') {
+    try {
+      const target = await factories.RestrictionTarget.fromElement(element);
+      await capable.restrictTo(target);
+      return 'element';
+    } catch (error) {
+      if (typeof factories.CropTarget?.fromElement !== 'function' || typeof capable.cropTo !== 'function') throw error;
+    }
+  }
+  if (typeof factories.CropTarget?.fromElement !== 'function' || typeof capable.cropTo !== 'function') {
+    throw new Error('This browser cannot limit a tab capture to an element.');
+  }
+  const target = await factories.CropTarget.fromElement(element);
+  await capable.cropTo(target);
+  return 'region';
+}
+
+/** Region Capture only (kept for callers that need the box crop explicitly). */
 export async function cropTrackToElement(
   track: MediaStreamTrack,
   element: Element,
-  cropTarget: CropTargetFactory = (globalThis as unknown as { CropTarget: CropTargetFactory }).CropTarget
+  cropTarget: TargetFactory = (globalThis as unknown as { CropTarget: TargetFactory }).CropTarget
 ): Promise<void> {
-  const target = await cropTarget.fromElement(element);
-  await (track as CropCapableTrack).cropTo(target);
+  await limitTrackToElement(track, element, { CropTarget: cropTarget });
 }
 
 export interface WidgetCaptureRect {

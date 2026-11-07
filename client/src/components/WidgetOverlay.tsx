@@ -49,6 +49,7 @@ export function WidgetBroadcastNotice({ capture }: { capture?: WidgetCaptureCont
         ? 'Viewers see the live widgets. Keep this tab in front: a hidden tab freezes the captured picture.'
         : 'Capture this tab to send the live widgets to viewers. When the browser asks, choose "This tab".'}
     </span>
+    {capture.overlapWarning && <span style={styles.captureNoticeError} role="note">{capture.overlapWarning}</span>}
     {capture.error && <span style={styles.captureNoticeError} role="alert">{capture.error}</span>}
     <button
       type="button"
@@ -293,10 +294,13 @@ export function WidgetOverlayDisplay({ data }: { data: WidgetOverlayData }) {
   return (
     <div
       aria-label={`Widget overlay ${data.name}`}
-      // The element tab capture crops to (see useWidgetTabCapture).
+      // The element tab capture is limited to (see useWidgetTabCapture).
       {...{ [WIDGET_CAPTURE_ATTRIBUTE]: data.id }}
       style={{
         ...overlayBase,
+        // Element Capture needs the element to be its own flat stacking context.
+        isolation: 'isolate',
+        transformStyle: 'flat',
         ...getWidgetOverlayPositionStyle(data),
         opacity: normalizeWidgetOverlayOpacity(data.opacity),
       }}

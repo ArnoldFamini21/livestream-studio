@@ -104,3 +104,9 @@ test('keeps ambiguous root lockfile changes service-wide', () => {
   assert.deepEqual(result.signalingFiles, ['package-lock.json']);
   assert.deepEqual(result.mediaFiles, ['package-lock.json']);
 });
+
+test('treats the npm install config as a change to both services', () => {
+  const result = classifyProductionChanges(['.npmrc']);
+  assert.equal(result.signalingChanged, true);
+  assert.equal(result.mediaChanged, true);
+});

@@ -306,6 +306,42 @@ export interface Participant {
   status: ParticipantStatus;
   /** Optional name-tag subtitle a host set, e.g. "Author, The Long Game". */
   title?: string;
+  /**
+   * Studio features this participant's client understands (sent in join-room,
+   * kept by the server). Absent for clients and servers older than the flag,
+   * so a feature that needs the other side's help is used only when present.
+   */
+  capabilities?: StudioCapability[];
+}
+
+/**
+ * Client features that change what peers send each other:
+ * - 'program-return': recognises the program-return stream (announced with
+ *   program-return-announce) instead of taking it for a screen share.
+ * - 'talkback': silences other operators' talkback-state in its program mix.
+ */
+export const STUDIO_CAPABILITIES = ['program-return', 'talkback'] as const;
+export type StudioCapability = typeof STUDIO_CAPABILITIES[number];
+
+const STUDIO_CAPABILITY_SET: ReadonlySet<string> = new Set(STUDIO_CAPABILITIES);
+
+/** The known, de-duplicated capabilities from a client's claim; anything unknown is dropped. */
+export function sanitizeStudioCapabilities(raw: unknown): StudioCapability[] {
+  if (!Array.isArray(raw)) return [];
+  const result: StudioCapability[] = [];
+  for (const value of raw.slice(0, 16)) {
+    if (typeof value !== 'string' || !STUDIO_CAPABILITY_SET.has(value)) continue;
+    const capability = value as StudioCapability;
+    if (!result.includes(capability)) result.push(capability);
+  }
+  return result;
+}
+
+export function hasStudioCapability(
+  participant: Pick<Participant, 'capabilities'> | null | undefined,
+  capability: StudioCapability
+): boolean {
+  return Boolean(participant?.capabilities?.includes(capability));
 }
 
 /** Longest participant name-tag title (subtitle) the server keeps. */
@@ -416,6 +452,12 @@ export type SignalMessage =
   | { type: 'captions-state'; payload: CaptionsStatePayload }
   /** Stage owner to one admitted peer: which of its incoming streams is the program return feed. */
   | { type: 'program-return-announce'; payload: ProgramReturnAnnouncePayload }
+  /**
+   * Host/co-host: their mic is off the program right now (talk backstage).
+   * Relayed to admitted operators, who silence that person in any program
+   * mix they build, and echoed back to the sender as confirmation.
+   */
+  | { type: 'talkback-state'; payload: TalkbackStatePayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   /** Host/co-host only: the 3-2-1 before recording, so guests see it too. */
   | { type: 'recording-countdown'; payload: RecordingCountdownPayload }
@@ -472,6 +514,8 @@ export interface JoinRoomPayload {
    * browser has it. Marks a studio made before the owner gate as the owner's.
    */
   studioAccessKey?: string;
+  /** Features this client understands (see STUDIO_CAPABILITIES). */
+  capabilities?: StudioCapability[];
 }
 
 export interface RoomJoinedPayload {
@@ -501,6 +545,12 @@ export interface RoomJoinedPayload {
   features?: {
     chatTyping?: boolean;
   };
+  /**
+   * Admitted hosts and co-hosts only: the other operators talking backstage
+   * right now, so a newcomer (or a reconnect that missed talkback-state)
+   * keeps them off its program mix.
+   */
+  talkbackParticipantIds?: string[];
 }
 
 /**
@@ -578,6 +628,12 @@ export function sanitizeCaptionsState(raw: unknown): Omit<CaptionsStatePayload, 
   if (typeof value.enabled !== 'boolean') return null;
   const language = typeof value.language === 'string' && CAPTION_LANGUAGE_PATTERN.test(value.language) ? value.language : 'en-US';
   return { enabled: value.enabled, language };
+}
+
+export interface TalkbackStatePayload {
+  active: boolean;
+  /** Set by the server: which operator is talking backstage. */
+  from?: string;
 }
 
 export interface StageControlPayload {

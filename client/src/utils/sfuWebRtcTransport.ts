@@ -4,6 +4,7 @@ import type {
   SfuProducerMids,
   SfuTransportSide,
 } from './sfuClient.ts';
+import { transformDescriptionForMusicMode } from './audioTransport.ts';
 
 export interface SfuTransportOffer {
   side: SfuTransportSide;
@@ -38,6 +39,13 @@ export interface SfuWebRtcTransportOptions {
   onRemoteStreamRemoved?: (producerId: string) => void;
   onTransportReady?: (side: SfuTransportSide) => void;
   onError?: (message: string) => void;
+  /**
+   * Music mode: the publish connection carries stereo Opus at up to 128 kbps,
+   * as on the mesh. The browser's encoder follows the SFU's offer, so the
+   * offer is rewritten before it is applied, and our answer says the same so
+   * the media server knows the stream is stereo.
+   */
+  musicMode?: boolean;
 }
 
 const MAX_PENDING_ICE = 50;
@@ -102,11 +110,13 @@ export class SfuWebRtcTransport {
     if (offer.side === 'subscribe') this.setProducerMids(offer.producerMids);
 
     try {
-      await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
+      // Only what we send changes with music mode; what we receive is untouched.
+      const musicMode = offer.side === 'publish' && Boolean(this.options.musicMode);
+      await pc.setRemoteDescription(transformDescriptionForMusicMode({ type: 'offer', sdp: offer.sdp }, musicMode));
       if (offer.side === 'publish') await this.attachPublishTrack(pc);
       await this.drainPendingIce(offer.side, pc);
       const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+      await pc.setLocalDescription(transformDescriptionForMusicMode(answer, musicMode));
       if (!pc.localDescription?.sdp) throw new Error('Unable to create an SFU transport answer.');
       this.send({ type: 'sfu-transport-answer', side: offer.side, sdp: pc.localDescription.sdp });
       // Ready means media can flow: wait for ICE + DTLS ('connected'), not

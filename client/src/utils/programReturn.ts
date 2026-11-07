@@ -10,7 +10,7 @@
  * on a Philippines-US link, so it goes only to the peers who need it.
  */
 import type { Participant, StageContentPayload } from '@studio/shared';
-import { getStageOwnerId } from '@studio/shared';
+import { getStageOwnerId, hasStudioCapability } from '@studio/shared';
 import { sendScreenOnConnection, stopScreenOnConnection } from './screenTransceiver.ts';
 
 export const PROGRAM_RETURN_WIDTH = 640;
@@ -41,11 +41,14 @@ export interface ProgramReturnRoutingContext {
   stageNeedsVideo: boolean;
 }
 
-type RouteTarget = Pick<Participant, 'role' | 'status'> | null | undefined;
+type RouteTarget = Pick<Participant, 'role' | 'status' | 'capabilities'> | null | undefined;
 
 /**
  * What the program return sends to one peer:
  * - waiting (green room) guests never get it, for privacy;
+ * - peers whose client did not advertise 'program-return' (a tab loaded
+ *   before it existed, or anyone while the server is older) never get it:
+ *   they would show it as the host's screen share and play its audio;
  * - hosts and co-hosts run their own compositor preview, so they never need it;
  * - backstage guests get video and the program audio;
  * - on-stage guests get the video only while staged media has no mirrored
@@ -55,10 +58,30 @@ type RouteTarget = Pick<Participant, 'role' | 'status'> | null | undefined;
 export function getProgramReturnRoute(target: RouteTarget, context: ProgramReturnRoutingContext): ProgramReturnRoute {
   if (!target) return NO_PROGRAM_RETURN;
   if (target.status === 'green-room') return NO_PROGRAM_RETURN;
+  if (!hasStudioCapability(target, 'program-return')) return NO_PROGRAM_RETURN;
   if (target.role === 'host' || target.role === 'co-host') return NO_PROGRAM_RETURN;
   if (target.status === 'backstage') return { video: true, audio: true };
   if (target.status === 'on-stage' && context.stageNeedsVideo) return { video: true, audio: false };
   return NO_PROGRAM_RETURN;
+}
+
+/**
+ * Who the program return audio carries: on-stage guests only. Hosts and
+ * co-hosts reach backstage guests directly over the mesh (canExchangeStudioMedia
+ * sends every operator's mic and screen sound to the backstage), so mixing
+ * them in again would play each operator twice, the return copy 100-300 ms
+ * late: an echo. Same Map back when nobody needs filtering.
+ */
+export function getProgramReturnAudioParticipants<TParticipant extends Pick<Participant, 'role'>>(
+  participants: Map<string, TParticipant>,
+): Map<string, TParticipant> {
+  let filtered: Map<string, TParticipant> | null = null;
+  for (const [id, participant] of participants) {
+    if (participant.role !== 'host' && participant.role !== 'co-host') continue;
+    filtered ??= new Map(participants);
+    filtered.delete(id);
+  }
+  return filtered ?? participants;
 }
 
 /** Whether anyone needs the feed now (it is only built, and the compositor only runs for it, then). */

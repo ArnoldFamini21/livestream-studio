@@ -35,6 +35,8 @@ export interface SfuSocketSessionOptions {
   url?: string;
   createWebSocket?: (url: string) => SfuSocketLike;
   iceConfiguration?: RTCConfiguration;
+  /** Stereo, 128 kbps Opus on the publish connection (see SfuWebRtcTransportOptions.musicMode). */
+  musicMode?: boolean;
   onRemoteStream?: (producerId: string, stream: MediaStream) => void;
   onRemoteStreamRemoved?: (producerId: string) => void;
   onRemoteMediaReady?: () => void;
@@ -183,6 +185,7 @@ export class SfuSocketSession {
     this.downlinkEstimator = new SfuDownlinkEstimator(options.downlinkKbps);
     this.transport = new SfuWebRtcTransport((message) => this.send(message), {
       iceConfiguration: options.iceConfiguration,
+      musicMode: options.musicMode,
       onRemoteStream: (producerId, stream) => {
         this.remoteStreams.set(producerId, stream);
         options.onRemoteStream?.(producerId, stream);

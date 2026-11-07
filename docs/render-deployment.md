@@ -18,6 +18,13 @@ livestream-studio-media-server
 
 Both services must be connected to the default branch and use the commands from `render.yaml`.
 
+### Installs stay small and offline-safe
+
+- The signaling build installs only the `server` and `shared` workspaces (plus the root TypeScript): `npm ci --include=dev --workspace=server --workspace=shared --include-workspace-root`. The client's in-browser AI packages (`@huggingface/transformers` and its `onnxruntime-node` / `sharp` dependencies) are never installed on the free 512 MB instance. A service managed outside a Blueprint must have this exact build command in the dashboard.
+- The root `.npmrc` sets `onnxruntime-node-install=skip`. Without it, every Linux `npm ci` (Render, the Dockerfile, CI) runs onnxruntime-node's postinstall, which downloads CUDA binaries from nuget.org and fails the install when that feed is down. The browser build never loads onnxruntime-node. The Dockerfile copies `.npmrc` into each install stage.
+- `@huggingface/transformers` 4.3.2 currently resolves `onnxruntime-web` to a nightly prerelease (`1.31.0-dev.20260914`), which ships in the client bundle. Move to the next stable transformers/onnxruntime-web pair as soon as one is published, and re-test in-browser Whisper and AI noise removal after the upgrade.
+- Third-party licences for code bundled into the client are listed in `client/public/THIRD_PARTY_LICENSES.txt` (served at `/THIRD_PARTY_LICENSES.txt`). `scripts/dependency-policy.test.mjs` fails when a new dependency is not permissively licensed and not reviewed there.
+
 ## Free setup checklist
 
 Everything below runs on free tiers. Work through it once after the first deploy, then check `/health` → `readiness.issues` on the signaling server: each item that is still open shows up there as a warning.

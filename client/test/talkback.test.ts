@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { applyTalkbackVolumes, getTalkbackKeyAction, TALKBACK_BADGE_TEXT } from '../src/utils/talkback.ts';
+import {
+  applyTalkbackVolumes,
+  applyTalkbackVolumesForIds,
+  getTalkbackBadge,
+  getTalkbackKeyAction,
+  selectRemoteTalkbackIds,
+  TALKBACK_BADGE_TEXT,
+  TALKBACK_UNCONFIRMED_TEXT,
+} from '../src/utils/talkback.ts';
 import { ProgramAudioMixer, buildProgramAudioInputs } from '../src/audio/programAudioMixer.ts';
 import { STUDIO_SHORTCUTS, getShortcutsForRole, resolveShortcutId } from '../src/utils/keyboardShortcuts.ts';
 
@@ -73,5 +81,51 @@ describe('push-to-talk key', () => {
     assert.ok(!getShortcutsForRole(false).some((shortcut) => shortcut.id.includes('talkback')));
     assert.equal(resolveShortcutId({ key: 'K', shiftKey: true }), 'toggle-talkback');
     assert.equal(resolveShortcutId({ key: 'k' }), null, 'plain K is push-to-talk, not a one-shot shortcut');
+  });
+});
+
+describe('studio-wide talkback', () => {
+  it('silences a remote operator who is talking backstage in the program mix built here', () => {
+    const volumes = { host: 1, cohost: 0.9, guest: 1 };
+    const silenced = applyTalkbackVolumesForIds(volumes, ['cohost']);
+    assert.deepEqual(silenced, { host: 1, cohost: 0, guest: 1 });
+    assert.equal(applyTalkbackVolumesForIds(volumes, []), volumes, 'same object when nobody talks backstage');
+
+    const gains: Array<[string, number]> = [];
+    const mixer = new ProgramAudioMixer<{ id: string; readyState: string }, string>({
+      connectTrack: (track) => track.id,
+      setGain: (handle, gain) => { gains.push([handle, gain]); },
+      disconnect: () => {},
+    });
+    const coHostMic = { id: 'cohost-mic', readyState: 'live' };
+    const state = (ids: string[]) => ({
+      localParticipant: { id: 'host', status: 'on-stage' },
+      localStream: null,
+      participants: [['cohost', { status: 'on-stage' }]] as Array<[string, { status: string }]>,
+      remoteStreams: new Map([['cohost', { getAudioTracks: () => [coHostMic] }]]),
+      participantVolumes: applyTalkbackVolumesForIds({}, ids),
+    });
+    mixer.update(buildProgramAudioInputs(state([])));
+    mixer.update(buildProgramAudioInputs(state(['cohost'])));
+    assert.deepEqual(gains.at(-1), ['cohost-mic', 0]);
+  });
+
+  it('keeps only admitted operators who said they are talking backstage', () => {
+    const reported = new Set(['cohost', 'guest', 'waiting', 'gone', 'me']);
+    const participants = [
+      { id: 'cohost', role: 'co-host', status: 'on-stage' },
+      { id: 'guest', role: 'guest', status: 'on-stage' },
+      { id: 'waiting', role: 'co-host', status: 'green-room' },
+      { id: 'me', role: 'host', status: 'on-stage' },
+    ];
+    assert.deepEqual(selectRemoteTalkbackIds(reported, participants, 'me'), ['cohost']);
+    assert.deepEqual(selectRemoteTalkbackIds(new Set(), participants, 'me'), []);
+  });
+
+  it('says off air only when the server confirmed and every operator can apply it', () => {
+    assert.equal(getTalkbackBadge({ active: false, confirmed: true, operatorsWithoutSupport: 0 }), null);
+    assert.deepEqual(getTalkbackBadge({ active: true, confirmed: true, operatorsWithoutSupport: 0 }), { text: TALKBACK_BADGE_TEXT, confirmed: true });
+    assert.deepEqual(getTalkbackBadge({ active: true, confirmed: false, operatorsWithoutSupport: 0 }), { text: TALKBACK_UNCONFIRMED_TEXT, confirmed: false });
+    assert.deepEqual(getTalkbackBadge({ active: true, confirmed: true, operatorsWithoutSupport: 1 }), { text: TALKBACK_UNCONFIRMED_TEXT, confirmed: false });
   });
 });

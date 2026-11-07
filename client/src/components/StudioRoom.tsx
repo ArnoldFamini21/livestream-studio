@@ -16,10 +16,11 @@ import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffe
 import { useParams, useNavigate } from 'react-router-dom';
 import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload, StageControlAction, StageControlPayload } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia, getStageOwnerId } from '@studio/shared';
-import { NO_PROGRAM_RETURN, getProgramReturnDemand, getProgramReturnRoute, isStageOwner, pickProgramReturnStream, stageContentNeedsProgramVideo } from '../utils/programReturn.ts';
+import { NO_PROGRAM_RETURN, getProgramReturnAudioParticipants, getProgramReturnDemand, getProgramReturnRoute, isStageOwner, pickProgramReturnStream, stageContentNeedsProgramVideo } from '../utils/programReturn.ts';
 import { useProgramReturnFeed } from '../hooks/useProgramReturnFeed.ts';
 import { useTalkback } from '../hooks/useTalkback.ts';
-import { applyTalkbackVolumes, TALKBACK_BADGE_TEXT } from '../utils/talkback.ts';
+import { applyTalkbackVolumes, applyTalkbackVolumesForIds, getTalkbackBadge } from '../utils/talkback.ts';
+import { useTalkbackRelay } from '../hooks/useTalkbackRelay.ts';
 import { buildStageControl, resolveStageControl } from '../utils/stageControl.ts';
 import { ProgramReturnMonitor, ProgramReturnVideo } from './ProgramReturnMonitor.tsx';
 import { StageRemoteControl } from './StageRemoteControl.tsx';
@@ -1452,10 +1453,29 @@ export function StudioRoom() {
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
   // Talk backstage (hold K, or latch it): the operator's mic leaves the program
   // mix (live relay and program recording) while the mesh still carries it to guests.
-  const talkback = useTalkback(isStudioOperator(myParticipant) && myParticipant?.status !== 'green-room');
+  const talkbackAllowed = isStudioOperator(myParticipant) && myParticipant?.status !== 'green-room';
+  const talkback = useTalkback(talkbackAllowed);
+  // Talkback is studio-wide: whoever runs the program mix silences every operator talking backstage.
+  const talkbackRelay = useTalkbackRelay({
+    send,
+    addHandler,
+    connected,
+    localParticipant: myParticipant,
+    enabled: talkbackAllowed,
+    localActive: talkback.active,
+    participants,
+  });
+  const talkbackBadge = getTalkbackBadge({
+    active: talkback.active,
+    confirmed: talkbackRelay.confirmed,
+    operatorsWithoutSupport: talkbackRelay.operatorsWithoutSupport,
+  });
   const programMixVolumes = useMemo(
-    () => applyTalkbackVolumes(participantVolumes, myParticipant?.id, talkback.active),
-    [myParticipant?.id, participantVolumes, talkback.active]
+    () => applyTalkbackVolumesForIds(
+      applyTalkbackVolumes(participantVolumes, myParticipant?.id, talkback.active),
+      talkbackRelay.remoteTalkbackIds
+    ),
+    [myParticipant?.id, participantVolumes, talkback.active, talkbackRelay.remoteTalkbackIds]
   );
   // One live program audio graph for the relay and the program recording.
   const programAudioMix = useProgramAudioMix({
@@ -1478,12 +1498,14 @@ export function StudioRoom() {
   // The program audio for backstage guests' program return: the on-stage
   // guests and their screens. Our own mic, screen sound and the media bus are
   // left out because the mesh already brings them to those guests directly;
-  // mixing them in again would double them.
+  // mixing them in again would double them. On-stage co-hosts are left out
+  // for the same reason: the mesh carries every operator to the backstage.
+  const programReturnAudioParticipants = useMemo(() => getProgramReturnAudioParticipants(participants), [participants]);
   const programReturnAudioMix = useProgramAudioMix({
     bus: broadcastAudioBus,
     localParticipant: myParticipant,
     localStream: null,
-    participants,
+    participants: programReturnAudioParticipants,
     remoteStreams,
     remoteScreenStreams: meshRemoteScreenStreams,
     screenStream: null,
@@ -1711,16 +1733,28 @@ export function StudioRoom() {
     screenStream,
     sessionHealth.encoding,
   ]);
+  // Speech recognition hears the device, not the published track: never caption a muted mic or talkback.
+  const localCaptionsBlocked = !effectiveAudioEnabled || talkback.active;
+  const remoteTalkbackIds = talkbackRelay.remoteTalkbackIds;
+  const acceptRemoteCaption = useCallback((participantId: string) => {
+    const speaker = participants.get(participantId);
+    return Boolean(speaker?.audioEnabled) && !remoteTalkbackIds.includes(participantId);
+  }, [participants, remoteTalkbackIds]);
   const captionRelay = useCaptionRelay({
     send,
     addHandler,
     connected,
+    roomId: roomId ?? null,
     localParticipantId: myParticipant?.id ?? null,
     isOperator: captionsAllowed,
     isOnStage: myParticipant?.status === 'on-stage',
+    isStageOwner: amStageOwner,
+    stageOwnerId,
     captionsEnabled: captionsAllowed && captionsEnabled,
     captionLanguage,
     admittedParticipantKey: onStageParticipantIds.join(','),
+    localCaptionsBlocked,
+    acceptRemoteCaption,
   });
   const {
     supported: captionsSupported,
@@ -1730,7 +1764,7 @@ export function StudioRoom() {
     segments: localCaptionSegments,
     clearCaptions: clearLocalCaptions,
   } = useLiveCaptions({
-    enabled: (captionsAllowed && captionsEnabled) || captionRelay.guestCaptionsActive,
+    enabled: ((captionsAllowed && captionsEnabled) || captionRelay.guestCaptionsActive) && !localCaptionsBlocked,
     language: captionsAllowed ? captionLanguage : captionRelay.guestCaptionLanguage,
     speakerName: myParticipant?.name || userName,
     maxSegments: 500,
@@ -1747,7 +1781,7 @@ export function StudioRoom() {
     clearRemoteCaptions();
   }, [clearLocalCaptions, clearRemoteCaptions]);
   const broadcastCaption = captionsAllowed
-    ? selectBroadcastCaption(captionsEnabled ? activeCaption : null, captionRelay.remote, captionRelay.clock)
+    ? selectBroadcastCaption(captionsEnabled && !localCaptionsBlocked ? activeCaption : null, captionRelay.remote, captionRelay.clock)
     : null;
   const clipBrand = useMemo(() => ({
     fontFamily: brandFontState.fontFamily || DEFAULT_CANVAS_FONT_FAMILY,
@@ -2975,6 +3009,8 @@ export function StudioRoom() {
         // Live captions from on-stage guests are handled by useCaptionRelay.
         case 'caption-segment':
         case 'captions-state':
+        // Talk backstage from other operators is handled by useTalkbackRelay.
+        case 'talkback-state':
           break;
         case 'program-return-announce':
           if (message.payload.from) setRemoteProgramReturnStreamIdRef.current(message.payload.from, message.payload.streamId);
@@ -4285,6 +4321,8 @@ export function StudioRoom() {
         localAudioTrack,
         downlinkKbps: 6_000,
         iceConfiguration,
+        // The SFU answer is negotiated once per session, so a music mode change rebuilds it (deps below).
+        musicMode: audioProcessing.musicMode,
         onReady: () => {
           if (!cancelled && sfuSessionRef.current === session) setSfuTransportStatus('ready');
         },
@@ -4356,7 +4394,7 @@ export function StudioRoom() {
       void setAudioForwardingEnabled(true);
       void setVideoForwardingEnabled(true);
     };
-  }, [requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, sfuSessionParticipantId]);
+  }, [audioProcessing.musicMode, requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, sfuSessionParticipantId]);
 
   useEffect(() => {
     if (
@@ -7022,10 +7060,16 @@ export function StudioRoom() {
               {waitingCount} waiting
             </button>
           )}
-          {talkback.active && (
-            <span role="status" style={styles.talkbackBadge} data-testid="talkback-badge">
+          {talkbackBadge && (
+            <span
+              role="status"
+              style={styles.talkbackBadge}
+              data-testid="talkback-badge"
+              data-confirmed={talkbackBadge.confirmed ? 'true' : 'false'}
+              title={talkbackBadge.confirmed ? undefined : 'Another operator may be streaming or recording with an older studio page, or the studio server has not confirmed talkback yet.'}
+            >
               <span style={styles.talkbackDot} />
-              {TALKBACK_BADGE_TEXT}
+              {talkbackBadge.text}
             </span>
           )}
           {recordingStatus.active && (

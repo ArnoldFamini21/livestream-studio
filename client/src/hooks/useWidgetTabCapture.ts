@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react';
 import {
-  cropTrackToElement,
   getWidgetTabCaptureOptions,
   getWidgetTabCaptureSupport,
   isTabCaptureTrack,
+  limitTrackToElement,
   planWidgetCaptureCrops,
   WIDGET_CAPTURE_ATTRIBUTE,
+  WIDGET_REGION_CAPTURE_WARNING,
+  type WidgetCaptureMethod,
   type WidgetCaptureSources,
   type WidgetCaptureSupport,
 } from '../utils/widgetTabCapture.ts';
@@ -17,6 +19,8 @@ export interface WidgetCaptureControls {
   error: string | null;
   /** Widgets whose live picture goes out (the rest show a placeholder). */
   capturedWidgetIds: string[];
+  /** Set while any widget is captured by box crop, which also takes UI drawn over it. */
+  overlapWarning: string | null;
   start: () => void;
   stop: () => void;
 }
@@ -25,6 +29,7 @@ interface CropEntry {
   element: Element;
   track: MediaStreamTrack;
   video: HTMLVideoElement;
+  method: WidgetCaptureMethod;
 }
 
 function stopEntry(entry: CropEntry) {
@@ -52,6 +57,7 @@ export function useWidgetTabCapture(
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [capturedWidgetIds, setCapturedWidgetIds] = useState<string[]>([]);
+  const [regionCaptureInUse, setRegionCaptureInUse] = useState(false);
   const visibleKey = visibleWidgetIds.join('|');
 
   const publish = useCallback(() => {
@@ -59,6 +65,7 @@ export function useWidgetTabCapture(
     for (const [id, entry] of entriesRef.current) sources.set(id, entry.video);
     sourcesRef.current = sources;
     setCapturedWidgetIds(Array.from(sources.keys()));
+    setRegionCaptureInUse(Array.from(entriesRef.current.values()).some((entry) => entry.method === 'region'));
   }, []);
 
   const stop = useCallback(() => {
@@ -94,13 +101,13 @@ export function useWidgetTabCapture(
         if (!element) continue;
         const track = base.clone();
         try {
-          await cropTrackToElement(track, element);
+          const method = await limitTrackToElement(track, element);
           const video = document.createElement('video');
           video.muted = true;
           video.playsInline = true;
           video.srcObject = new MediaStream([track]);
           await video.play().catch(() => undefined);
-          entriesRef.current.set(id, { element, track, video });
+          entriesRef.current.set(id, { element, track, video, method });
         } catch {
           track.stop();
           failure = 'Could not crop the capture to a widget. Choose "This tab" when the browser asks.';
@@ -158,7 +165,16 @@ export function useWidgetTabCapture(
   }, []);
 
   return {
-    controls: { support, active, starting, error, capturedWidgetIds, start, stop },
+    controls: {
+      support,
+      active,
+      starting,
+      error,
+      capturedWidgetIds,
+      overlapWarning: active && regionCaptureInUse ? WIDGET_REGION_CAPTURE_WARNING : null,
+      start,
+      stop,
+    },
     sourcesRef,
   };
 }

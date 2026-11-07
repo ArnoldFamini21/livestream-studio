@@ -8,6 +8,7 @@ import {
   ProgramReturnPeerSender,
   applyProgramReturnEncoding,
   getProgramReturnDemand,
+  getProgramReturnAudioParticipants,
   getProgramReturnLabel,
   getProgramReturnRoute,
   isStageOwner,
@@ -18,7 +19,7 @@ import {
 import { createLiveAudioMix } from '../src/audio/liveAudioMix.ts';
 import { buildProgramAudioInputs } from '../src/audio/programAudioMixer.ts';
 
-const person = (id: string, role: Participant['role'], status: Participant['status'], joinedAt = '2026-11-07T10:00:00.000Z'): Participant => ({
+const person = (id: string, role: Participant['role'], status: Participant['status'], joinedAt = '2026-11-07T10:00:00.000Z', capabilities: Participant['capabilities'] = ['program-return']): Participant => ({
   id,
   name: id,
   role,
@@ -27,6 +28,7 @@ const person = (id: string, role: Participant['role'], status: Participant['stat
   videoEnabled: true,
   screenSharing: false,
   joinedAt,
+  ...(capabilities ? { capabilities } : {}),
 });
 
 describe('program return routing', () => {
@@ -38,6 +40,14 @@ describe('program return routing', () => {
     assert.deepEqual(getProgramReturnRoute(person('c', 'co-host', 'backstage'), clip), NO_PROGRAM_RETURN);
     assert.deepEqual(getProgramReturnRoute(person('h', 'host', 'on-stage'), clip), NO_PROGRAM_RETURN);
     assert.deepEqual(getProgramReturnRoute(undefined, clip), NO_PROGRAM_RETURN);
+  });
+
+  it('never reaches a peer whose client (or the server) does not understand the program return', () => {
+    const { capabilities: _none, ...stale } = person('old', 'guest', 'backstage');
+    assert.ok(_none);
+    assert.deepEqual(getProgramReturnRoute(stale, clip), NO_PROGRAM_RETURN);
+    assert.deepEqual(getProgramReturnRoute(person('t', 'guest', 'backstage', undefined, ['talkback']), clip), NO_PROGRAM_RETURN);
+    assert.deepEqual(getProgramReturnDemand(new Map([['old', stale]]), 'host', clip), { video: false, audio: false });
   });
 
   it('gives backstage guests the picture and the program sound, live or not', () => {
@@ -277,5 +287,29 @@ describe('program return audio', () => {
       participantVolumes: {},
     });
     assert.deepEqual(inputs.map((input) => input.track.id), ['maria-mic', 'maria-tab']);
+  });
+
+  it('leaves on-stage co-hosts out of the return, since the mesh already brings them to the backstage', () => {
+    const track = (id: string) => ({ id, readyState: 'live' });
+    const stream = (...ids: string[]) => ({ getAudioTracks: () => ids.map(track) });
+    const participants = new Map<string, Participant>([
+      ['cohost', person('cohost', 'co-host', 'on-stage')],
+      ['maria', person('maria', 'guest', 'on-stage')],
+      ['nica', person('nica', 'guest', 'backstage')],
+    ]);
+    const filtered = getProgramReturnAudioParticipants(participants);
+    const inputs = buildProgramAudioInputs({
+      localParticipant: { id: 'host', status: 'on-stage' },
+      localStream: null,
+      localScreenStream: null,
+      participants: filtered,
+      remoteStreams: new Map([['cohost', stream('cohost-mic')], ['maria', stream('maria-mic')]]),
+      remoteScreenStreams: new Map([['cohost', stream('cohost-tab')]]),
+      participantVolumes: {},
+    });
+    assert.deepEqual(inputs.map((input) => input.track.id), ['maria-mic']);
+    assert.equal(participants.size, 3, 'the studio map is not changed');
+    const guestsOnly = new Map([['maria', person('maria', 'guest', 'on-stage')]]);
+    assert.equal(getProgramReturnAudioParticipants(guestsOnly), guestsOnly);
   });
 });

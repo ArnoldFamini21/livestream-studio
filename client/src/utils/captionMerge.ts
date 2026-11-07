@@ -113,6 +113,29 @@ export function selectBroadcastCaption(
 }
 
 /**
+ * How long until selectBroadcastCaption's remote candidates (or the interim
+ * pruning) can next change on their own: when the oldest interim or the
+ * newest final runs out of CAPTION_ACTIVE_MS. Null when nothing will expire,
+ * so no timer runs (and the studio does not re-render) once captions go
+ * quiet, however many finals the session keeps.
+ */
+export function getNextCaptionExpiryDelayMs(state: RemoteCaptionState, nowMs: number): number | null {
+  let next: number | null = null;
+  const consider = (deadline: number) => {
+    const delay = Math.max(0, deadline - nowMs);
+    if (next === null || delay < next) next = delay;
+  };
+  // An interim counts while nowMs - updatedAtMs <= CAPTION_ACTIVE_MS; it is pruned just after.
+  for (const entry of Object.values(state.interims)) consider(entry.updatedAtMs + CAPTION_ACTIVE_MS + 1);
+  const lastFinal = state.finals[state.finals.length - 1];
+  if (lastFinal) {
+    const expiresAt = timeOf(lastFinal) + CAPTION_ACTIVE_MS;
+    if (expiresAt > nowMs) consider(expiresAt);
+  }
+  return next;
+}
+
+/**
  * Throttles interim caption updates per utterance so a talkative guest stays
  * well inside the server's caption rate limit; finals always go out.
  */

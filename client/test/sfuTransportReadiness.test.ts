@@ -139,3 +139,44 @@ describe('SFU downlink estimate', () => {
     assert.equal(estimator.update({ bytesReceived: 10, packetsReceived: 5, packetsLost: 5, timestampMs: 2000 }), 3000);
   });
 });
+
+describe('SFU music mode', () => {
+  const OFFER = [
+    'v=0',
+    'm=audio 9 UDP/TLS/RTP/SAVPF 111',
+    'a=mid:0',
+    'a=rtpmap:111 opus/48000/2',
+    'a=fmtp:111 minptime=10;useinbandfec=1',
+    '',
+  ].join('\r\n');
+
+  function musicSetup(musicMode: boolean) {
+    const peer = new StatefulPeer();
+    peer.createAnswer = async () => ({ type: 'answer', sdp: OFFER });
+    const sent: unknown[] = [];
+    const transport = new SfuWebRtcTransport((message) => sent.push(message), {
+      createPeerConnection: () => peer,
+      musicMode,
+    });
+    transport.setPublishTrack(camera);
+    return { peer, transport, sent };
+  }
+
+  it('sends stereo 128 kbps Opus on the publish connection in music mode', async () => {
+    const { peer, transport, sent } = musicSetup(true);
+    await transport.handleOffer({ side: 'publish', sdp: OFFER });
+    assert.match(peer.remoteDescription?.sdp ?? '', /a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=128000/);
+    assert.match(peer.localDescription?.sdp ?? '', /stereo=1;sprop-stereo=1;maxaveragebitrate=128000/);
+    const answer = sent.find((message) => (message as { type: string }).type === 'sfu-transport-answer') as { sdp: string };
+    assert.match(answer.sdp, /stereo=1/, 'the SFU answer carries stereo');
+  });
+
+  it('leaves voice mode and the subscribe connection untouched', async () => {
+    const voice = musicSetup(false);
+    await voice.transport.handleOffer({ side: 'publish', sdp: OFFER });
+    assert.equal(voice.peer.remoteDescription?.sdp, OFFER);
+    const music = musicSetup(true);
+    await music.transport.handleOffer({ side: 'subscribe', sdp: OFFER });
+    assert.equal(music.peer.remoteDescription?.sdp, OFFER);
+  });
+});

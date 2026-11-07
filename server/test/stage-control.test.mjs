@@ -172,7 +172,7 @@ describe('stage-control', () => {
     const harness = await createHarness();
     try {
       const { host, guest, coHost } = await studioWithCoHost(harness, 'stage-control-guards');
-      const guestRefused = waitFor(guest.ws, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      const guestRefused = waitFor(guest.ws, 'error', (m) => m.payload.code === 'STAGE_CONTROL_FORBIDDEN');
       const hostNothing = expectNone(host.ws, 'stage-control');
       sendMessage(guest.ws, 'stage-control', { action: 'next' });
       await Promise.all([guestRefused, hostNothing]);
@@ -230,11 +230,11 @@ describe('program-return-announce', () => {
       sendMessage(host.ws, 'program-return-announce', { to: waiting.id, streamId });
       await waitingNothing;
 
-      const notOperator = waitFor(backstage.ws, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      const notOperator = waitFor(backstage.ws, 'error', (m) => m.payload.code === 'PROGRAM_RETURN_FORBIDDEN');
       sendMessage(backstage.ws, 'program-return-announce', { to: host.id, streamId });
       await notOperator;
 
-      const invalid = waitFor(host.ws, 'error', (m) => m.payload.code === 'VALIDATION_ERROR');
+      const invalid = waitFor(host.ws, 'error', (m) => m.payload.code === 'PROGRAM_RETURN_INVALID');
       sendMessage(host.ws, 'program-return-announce', { to: backstage.id, streamId: 'not a stream id' });
       await invalid;
     } finally {

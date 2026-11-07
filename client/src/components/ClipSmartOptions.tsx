@@ -9,6 +9,8 @@ interface ClipSmartOptionsProps {
   onBurnCaptionsChange: (value: boolean) => void;
   /** Word timings exist for this recording (in-browser or cloud transcript). */
   captionsAvailable: boolean;
+  /** Why captions are off for this file, or a caveat about them (e.g. whose words they are). */
+  captionsNote?: string | null;
   /** Several participants' own audio tracks exist, so framing can follow who talks. */
   speakerTracksAvailable: boolean;
   disabled: boolean;
@@ -23,6 +25,7 @@ export function ClipSmartOptions({
   burnCaptions,
   onBurnCaptionsChange,
   captionsAvailable,
+  captionsNote = null,
   speakerTracksAvailable,
   disabled,
   notice,
@@ -45,7 +48,7 @@ export function ClipSmartOptions({
       )}
       <label
         style={{ ...styles.option, ...(captionsAvailable ? {} : styles.optionDisabled) }}
-        title={captionsAvailable ? 'Draw word-synced captions in the brand font and colour' : 'Generate a transcript first'}
+        title={captionsAvailable ? 'Draw word-synced captions in the brand font and colour' : captionsNote || 'Generate a transcript first'}
       >
         <input
           type="checkbox"
@@ -53,8 +56,9 @@ export function ClipSmartOptions({
           disabled={disabled || !captionsAvailable}
           onChange={(event) => onBurnCaptionsChange(event.target.checked)}
         />
-        <span>Burn in captions{captionsAvailable ? '' : ' (generate a transcript first)'}</span>
+        <span>Burn in captions{captionsAvailable || captionsNote ? '' : ' (generate a transcript first)'}</span>
       </label>
+      {captionsNote && <span style={styles.hint}>{captionsNote}</span>}
       <span style={styles.hint}>
         Applies to Export clip in this browser. Smart framing downloads a small face model once.
       </span>

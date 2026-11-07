@@ -45,6 +45,11 @@ describe('studio seat resume', () => {
     assert.equal(secureGuest.guestInviteToken, undefined);
   });
 
+  it('advertises the features this client understands on every join', () => {
+    const join = buildStudioJoinPayload({ roomId: 'r', name: 'G', role: 'guest' });
+    assert.deepEqual(join.capabilities, ['program-return', 'talkback']);
+  });
+
   it('sends host credentials only for the host, and the password only for guests', () => {
     const host = buildStudioJoinPayload({ roomId: 'r', name: 'Arnold', role: 'host', hostToken: 'h', restoreTicket: 't', roomPassword: 'p' });
     assert.equal(host.hostToken, 'h');

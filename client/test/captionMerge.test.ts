@@ -6,10 +6,18 @@ import {
   anchorRemoteCaptionTiming,
   applyRemoteCaption,
   createCaptionSendThrottle,
+  getNextCaptionExpiryDelayMs,
   mergeCaptionSegments,
   pruneRemoteInterims,
   selectBroadcastCaption,
 } from '../src/utils/captionMerge.ts';
+import {
+  CAPTION_SHARE_STORAGE_PREFIX,
+  LEGACY_CAPTION_SHARE_STORAGE_KEY,
+  pickAuthoritativeCaptionsState,
+  readCaptionShareChoice,
+  writeCaptionShareChoice,
+} from '../src/utils/captionShareConsent.ts';
 import type { LiveCaptionSegment } from '../src/hooks/useLiveCaptions.ts';
 
 const HOST_NOW = Date.parse('2026-11-08T12:00:00.000Z');
@@ -77,5 +85,77 @@ describe('caption merge', () => {
     assert.equal(allow('a', false, 900), true);
     assert.equal(allow('a', true, 950), true);
     assert.equal(allow('b', false, 960), true);
+  });
+});
+
+describe('caption clock', () => {
+  it('stops ticking once the newest remote line is older than the active window', () => {
+    const state = applyRemoteCaption(EMPTY_REMOTE_CAPTIONS, remote('u1', 'Hello.', true), HOST_NOW);
+    assert.equal(getNextCaptionExpiryDelayMs(state, HOST_NOW + 1000), CAPTION_ACTIVE_MS - 1000);
+    assert.equal(getNextCaptionExpiryDelayMs(state, HOST_NOW + CAPTION_ACTIVE_MS), null);
+    assert.equal(getNextCaptionExpiryDelayMs(state, HOST_NOW + 60_000), null, 'a session full of old finals runs no timer');
+    assert.equal(getNextCaptionExpiryDelayMs(EMPTY_REMOTE_CAPTIONS, HOST_NOW), null);
+  });
+
+  it('wakes when an interim goes stale so it can be pruned', () => {
+    const state = applyRemoteCaption(EMPTY_REMOTE_CAPTIONS, remote('u2', 'Hel', false), HOST_NOW);
+    const delay = getNextCaptionExpiryDelayMs(state, HOST_NOW);
+    assert.equal(delay, CAPTION_ACTIVE_MS + 1);
+    const later = HOST_NOW + (delay ?? 0);
+    const pruned = pruneRemoteInterims(state, later);
+    assert.deepEqual(Object.keys(pruned.interims), []);
+    assert.equal(getNextCaptionExpiryDelayMs(pruned, later), null);
+    assert.equal(getNextCaptionExpiryDelayMs(state, HOST_NOW + 60_000), 0, 'an overdue interim is pruned right away');
+  });
+});
+
+function memoryStorage() {
+  const values = new Map<string, string>();
+  return {
+    values,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+}
+
+describe('caption share consent', () => {
+  it('is kept for one studio only and starts off in every other', () => {
+    const session = memoryStorage();
+    const local = memoryStorage();
+    assert.equal(readCaptionShareChoice('room-a', session, local), false);
+    writeCaptionShareChoice('room-a', true, session);
+    assert.equal(readCaptionShareChoice('room-a', session, local), true);
+    assert.equal(readCaptionShareChoice('room-b', session, local), false);
+    assert.equal(readCaptionShareChoice(null, session, local), false);
+    writeCaptionShareChoice('room-a', false, session);
+    assert.equal(session.values.has(CAPTION_SHARE_STORAGE_PREFIX + 'room-a'), false);
+  });
+
+  it('drops the old global yes instead of reusing it', () => {
+    const session = memoryStorage();
+    const local = memoryStorage();
+    local.setItem(LEGACY_CAPTION_SHARE_STORAGE_KEY, '1');
+    assert.equal(readCaptionShareChoice('room-a', session, local), false);
+    assert.equal(local.values.has(LEGACY_CAPTION_SHARE_STORAGE_KEY), false);
+  });
+
+  it('survives blocked storage', () => {
+    const throwing = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); }, removeItem: () => { throw new Error('blocked'); } };
+    assert.equal(readCaptionShareChoice('room-a', throwing, throwing), false);
+    assert.doesNotThrow(() => writeCaptionShareChoice('room-a', true, throwing));
+  });
+});
+
+describe('authoritative captions state', () => {
+  it('follows the stage owner, so a co-host sending enabled:false after the host sent enabled:true changes nothing', () => {
+    const states = {
+      host: { enabled: true, language: 'en-US', from: 'host' },
+      cohost: { enabled: false, language: 'en-US', from: 'cohost' },
+    };
+    assert.equal(pickAuthoritativeCaptionsState(states, 'host')?.enabled, true);
+    assert.equal(pickAuthoritativeCaptionsState(states, 'cohost')?.enabled, false, 'the co-host speaks only once it owns the stage');
+    assert.equal(pickAuthoritativeCaptionsState(states, null), null);
+    assert.equal(pickAuthoritativeCaptionsState({ cohost: states.cohost }, 'host'), null);
   });
 });

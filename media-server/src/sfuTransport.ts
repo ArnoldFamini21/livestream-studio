@@ -127,6 +127,12 @@ export class SfuMediaTransport {
   private readonly publishers = new Map<string, PublisherState>();
   private readonly subscribers = new Map<string, SubscriberState>();
   private readonly publishAttempts = new Map<string, symbol>();
+  /**
+   * One token per subscriber lifecycle. closeParticipant drops it, so a
+   * subscribe offer still waiting for TURN credentials when its participant
+   * leaves does not then build (and leak) a peer connection for them.
+   */
+  private readonly subscribeLifecycles = new Map<string, symbol>();
 
   private readonly resolveIceConfig?: SfuIceConfigProvider;
   private readonly keyframeRequestIntervalMs: number;
@@ -338,7 +344,14 @@ export class SfuMediaTransport {
     consumerId: string,
     producers: SfuProducerMedia[]
   ): Promise<{ description: SfuSessionDescription; producerMids: Record<string, SfuProducerMids> }> {
+    let lifecycle = this.subscribeLifecycles.get(consumerId);
+    if (!lifecycle) {
+      lifecycle = Symbol(consumerId);
+      this.subscribeLifecycles.set(consumerId, lifecycle);
+    }
     const ice = this.resolveIceConfig && !this.subscribers.has(consumerId) ? await this.iceConfig() : null;
+    // The participant left (or the room closed) while TURN credentials were minted.
+    if (this.subscribeLifecycles.get(consumerId) !== lifecycle) throw new Error('Subscribe transport was superseded');
     let state = this.subscribers.get(consumerId);
     if (!state) {
       const pc = this.newPeerConnection(false, ice);
@@ -502,6 +515,7 @@ export class SfuMediaTransport {
     const publisher = this.publishers.get(participantId);
     const subscriber = this.subscribers.get(participantId);
     this.publishAttempts.delete(participantId);
+    this.subscribeLifecycles.delete(participantId);
     this.publishers.delete(participantId);
     this.subscribers.delete(participantId);
     this.removeProducer(participantId);
@@ -512,7 +526,12 @@ export class SfuMediaTransport {
   }
 
   async closeAll(): Promise<void> {
-    const ids = new Set([...this.publishers.keys(), ...this.subscribers.keys(), ...this.publishAttempts.keys()]);
+    const ids = new Set([
+      ...this.publishers.keys(),
+      ...this.subscribers.keys(),
+      ...this.publishAttempts.keys(),
+      ...this.subscribeLifecycles.keys(),
+    ]);
     await Promise.all([...ids].map((id) => this.closeParticipant(id)));
   }
 }

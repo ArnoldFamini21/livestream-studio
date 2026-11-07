@@ -47,6 +47,7 @@ import {
 import { buildClipSuggestions, type ClipSuggestion, type ClipSuggestionCaptionSegment } from '../utils/clipSuggestions.ts';
 import { hasEnoughCaptionsForAiHighlights, requestAiHighlights } from '../utils/aiHighlights.ts';
 import { buildTimedSegmentsFromWords } from '../utils/autoChapters.ts';
+import { alignTranscriptWords, getClipTranscriptAlignment } from '../utils/clipTranscriptAlignment.ts';
 import { LocalAiStatusNote } from './LocalAiStatusNote.tsx';
 import { ClipSmartOptions } from './ClipSmartOptions.tsx';
 import {
@@ -3353,15 +3354,22 @@ export function RecordingPanel({
 
   const clipSuggestions = aiSuggestions.length > 0 ? aiSuggestions : heuristicClipSuggestions;
 
-  // The in-browser transcript belongs to the session just recorded; its word timings are on the track timeline.
+  // The in-browser transcript belongs to the session just recorded; its word timings are on the
+  // transcribed track's timeline, so they are moved onto the previewed file's timeline first.
+  const clipTranscriptAlignment = useMemo(() => (
+    clipSuggestionContext.isActiveSession && generatedTranscript?.words?.length && preview
+      ? getClipTranscriptAlignment(recordedFiles, generatedTranscript.sourceFileName, preview.file)
+      : null
+  ), [clipSuggestionContext.isActiveSession, generatedTranscript, preview, recordedFiles]);
+  const clipAlignedWords = useMemo(() => (
+    clipTranscriptAlignment?.usable && generatedTranscript?.words?.length
+      ? alignTranscriptWords(generatedTranscript.words, clipTranscriptAlignment.shiftSeconds)
+      : null
+  ), [clipTranscriptAlignment, generatedTranscript]);
   const previewTranscriptSegments = useMemo(() => (
-    clipSuggestionContext.isActiveSession && generatedTranscript?.words?.length
-      ? buildTimedSegmentsFromWords(generatedTranscript.words)
-      : []
-  ), [clipSuggestionContext.isActiveSession, generatedTranscript]);
-  const clipCaptionWords = clipSuggestionContext.isActiveSession && generatedTranscript?.words?.length
-    ? generatedTranscript.words
-    : null;
+    clipAlignedWords?.length ? buildTimedSegmentsFromWords(clipAlignedWords) : []
+  ), [clipAlignedWords]);
+  const clipCaptionWords = clipAlignedWords?.length ? clipAlignedWords : null;
   // Each participant's own mic track, in recording order (the host first), for active-speaker framing of program clips.
   const clipSpeakerTracks = useMemo(() => (
     clipSuggestionContext.isActiveSession
@@ -4725,6 +4733,7 @@ export function RecordingPanel({
                   burnCaptions={clipBurnCaptions}
                   onBurnCaptionsChange={setClipBurnCaptions}
                   captionsAvailable={Boolean(clipCaptionWords)}
+                  captionsNote={clipTranscriptAlignment?.note ?? null}
                   speakerTracksAvailable={preview.file.kind === 'program' && clipSpeakerTracks.length > 1}
                   disabled={isExportingClip}
                   notice={clipExportNotice}

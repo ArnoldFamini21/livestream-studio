@@ -6,7 +6,9 @@ import {
   getWidgetTabCaptureOptions,
   getWidgetTabCaptureSupport,
   isTabCaptureTrack,
+  limitTrackToElement,
   planWidgetCaptureCrops,
+  WIDGET_REGION_CAPTURE_WARNING,
   WIDGET_STUDIO_ONLY_LABEL,
 } from '../src/utils/widgetTabCapture.ts';
 import { getWidgetCanvasRect } from '../src/hooks/useCompositor.ts';
@@ -20,7 +22,7 @@ const chromium = {
 
 describe('widget tab capture support', () => {
   it('needs getDisplayMedia and Region Capture on a secure page', () => {
-    assert.deepEqual(getWidgetTabCaptureSupport(chromium), { supported: true, reason: null });
+    assert.deepEqual(getWidgetTabCaptureSupport(chromium), { supported: true, reason: null, method: 'region' });
     assert.equal(getWidgetTabCaptureSupport({ ...chromium, isSecureContext: false }).supported, false);
     assert.equal(getWidgetTabCaptureSupport({ ...chromium, navigator: {} }).supported, false);
     const safari = getWidgetTabCaptureSupport({ ...chromium, CropTarget: undefined });
@@ -61,6 +63,48 @@ describe('widget crop planning', () => {
     const track = { cropTo: async (target: unknown) => { calls.push(target); } } as unknown as MediaStreamTrack;
     await cropTrackToElement(track, element, { fromElement: async (el) => ({ el }) });
     assert.deepEqual(calls, [{ el: element }]);
+  });
+
+  it('prefers Element Capture, which leaves out studio UI drawn over the widget', async () => {
+    const elementCapture = {
+      ...chromium,
+      RestrictionTarget: { fromElement: () => undefined },
+      BrowserCaptureMediaStreamTrack: { prototype: { cropTo: () => undefined, restrictTo: () => undefined } },
+    };
+    assert.deepEqual(getWidgetTabCaptureSupport(elementCapture), { supported: true, reason: null, method: 'element' });
+    assert.equal(getWidgetTabCaptureSupport({ ...elementCapture, CropTarget: undefined }).method, 'element');
+
+    const element = {} as Element;
+    const calls: string[] = [];
+    const track = {
+      restrictTo: async () => { calls.push('restrictTo'); },
+      cropTo: async () => { calls.push('cropTo'); },
+    } as unknown as MediaStreamTrack;
+    const method = await limitTrackToElement(track, element, {
+      RestrictionTarget: { fromElement: async () => ({ restriction: true }) },
+      CropTarget: { fromElement: async () => ({ crop: true }) },
+    });
+    assert.equal(method, 'element');
+    assert.deepEqual(calls, ['restrictTo']);
+  });
+
+  it('falls back to Region Capture (and says so) when Element Capture is missing or refuses', async () => {
+    const element = {} as Element;
+    const calls: string[] = [];
+    const track = {
+      restrictTo: async () => { calls.push('restrictTo'); throw new Error('not a stacking context'); },
+      cropTo: async () => { calls.push('cropTo'); },
+    } as unknown as MediaStreamTrack;
+    const method = await limitTrackToElement(track, element, {
+      RestrictionTarget: { fromElement: async () => ({}) },
+      CropTarget: { fromElement: async () => ({}) },
+    });
+    assert.equal(method, 'region');
+    assert.deepEqual(calls, ['restrictTo', 'cropTo']);
+    assert.match(WIDGET_REGION_CAPTURE_WARNING, /on top of a widget/);
+    const cropOnly = { cropTo: async () => undefined } as unknown as MediaStreamTrack;
+    assert.equal(await limitTrackToElement(cropOnly, element, { CropTarget: { fromElement: async () => ({}) } }), 'region');
+    await assert.rejects(limitTrackToElement({} as MediaStreamTrack, element, {}), /cannot limit/);
   });
 });
 

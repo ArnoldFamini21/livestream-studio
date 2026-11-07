@@ -74,8 +74,8 @@
 .workspace-empty .empty-icon { display: inline-grid; place-items: center; width: 44px; height: 44px; background: #eeedf3; border-radius: 12px; color: #7b758d; }
 .workspace-empty h2 { font-size: 16px; font-weight: 550; margin-top: 17px; letter-spacing: -.35px; }
 .workspace-empty p { color: var(--text-secondary); font-size: 12px; line-height: 1.8; margin: 9px 0 20px; }
-.workspace-footer { display: flex; justify-content: space-between; color: #5f606d; border-top: 1px solid var(--border); padding-top: 22px; margin-top: 22px; font-size: 12px; }
-.workspace-footer div { display: flex; gap: 20px; }
+.workspace-footer { display: flex; flex-wrap: wrap; gap: 10px 20px; justify-content: space-between; color: #5f606d; border-top: 1px solid var(--border); padding-top: 22px; margin-top: 22px; font-size: 12px; }
+.workspace-footer div { display: flex; flex-wrap: wrap; gap: 8px 20px; }
 .workspace-surface { border: 1px solid var(--border); background: white; border-radius: 12px; padding: 26px; }
 .workspace-alert, .workspace-notice { padding: 12px 16px; margin-bottom: 20px; line-height: 1.5; border-radius: 8px; font-size: 12px; }
 .workspace-alert { background: #fff0ee; color: #ae3b32; }

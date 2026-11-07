@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 const SIGNALING_PREFIXES = ['server/', 'shared/'];
 const MEDIA_PREFIXES = ['media-server/', 'shared/'];
-const GLOBAL_SERVICE_FILES = new Set(['package.json', 'render.yaml']);
+const GLOBAL_SERVICE_FILES = new Set(['package.json', 'render.yaml', '.npmrc']);
 
 function normalizePath(value) {
   return String(value || '').trim().replace(/\\/g, '/').replace(/^\.\/+/, '');

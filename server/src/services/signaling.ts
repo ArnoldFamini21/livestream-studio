@@ -54,6 +54,7 @@ import {
   getStageOwnerId,
   sanitizeCaptionSegment,
   sanitizeCaptionsState,
+  sanitizeStudioCapabilities,
   isChatReactionType,
   isValidProgramReturnStreamId,
   isScheduledGuestAccessBlocked,
@@ -151,6 +152,8 @@ interface RoomState {
   stageContent?: StageContentPayload;
   /** Who set stageContent, so a co-host cannot clear what the host presents. */
   stageContentSetBy?: { participantId: string; role: Participant['role'] };
+  /** Operators whose last talkback-state was on (filtered by current role and presence when read). */
+  talkbackParticipantIds?: Set<string>;
   /** Pictures of what is on stage, newest last; served to guests by id. */
   stageImages?: Map<string, StageImage>;
   guestInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
@@ -255,6 +258,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'caption-segment',
   'captions-state',
   'program-return-announce',
+  'talkback-state',
   'join-room',
   'offer',
   'answer',
@@ -369,6 +373,13 @@ const stageControlRateLimiter = new WsRateLimiter<WebSocket>(
 const captionSegmentRateLimiter = new WsRateLimiter<WebSocket>(
   { control: CAPTION_SEGMENT_RATE_LIMIT_MAX, relay: CAPTION_SEGMENT_RATE_LIMIT_MAX },
   CAPTION_SEGMENT_RATE_LIMIT_WINDOW_MS,
+);
+/** Talk backstage on/off: a held key toggles twice per press, so allow a busy producer, not a flood. */
+export const TALKBACK_STATE_RATE_LIMIT_MAX = 30;
+export const TALKBACK_STATE_RATE_LIMIT_WINDOW_MS = 10_000;
+const talkbackStateRateLimiter = new WsRateLimiter<WebSocket>(
+  { control: TALKBACK_STATE_RATE_LIMIT_MAX, relay: TALKBACK_STATE_RATE_LIMIT_MAX },
+  TALKBACK_STATE_RATE_LIMIT_WINDOW_MS,
 );
 
 /**
@@ -1347,6 +1358,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'program-return-announce':
       handleProgramReturnAnnounce(ws, message.payload);
       break;
+    case 'talkback-state':
+      handleTalkbackState(ws, message.payload);
+      break;
     case 'recording-state-changed':
       handleRecordingStateChange(ws, message.payload);
       break;
@@ -1396,6 +1410,13 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
 
 function isOperatorRole(role: Participant['role'] | undefined): boolean {
   return role === 'host' || role === 'co-host';
+}
+
+/** Keeps the features a client says it understands; peers relay-gate on them (e.g. program return). */
+function applyClientCapabilities(participant: Participant, raw: unknown) {
+  const capabilities = sanitizeStudioCapabilities(raw);
+  if (capabilities.length > 0) participant.capabilities = capabilities;
+  else delete participant.capabilities;
 }
 
 /** Seats on stage and backstage. Waiting guests do not take one. */
@@ -1628,6 +1649,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
       }
     : undefined;
   const restoreTicket = participant.role === 'host' ? issueRestoreTicket(roomState) : undefined;
+  const talkbackParticipantIds = operator && admitted ? getTalkbackParticipantIds(roomState, participant.id) : [];
 
   send(ws, {
     type: 'room-joined',
@@ -1656,6 +1678,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
       ...(resumed ? { resumed: true } : {}),
       ...(operator && admitted ? { watchId: roomState.watchId } : {}),
       ...(restoreTicket ? { restoreTicket } : {}),
+      ...(talkbackParticipantIds.length > 0 ? { talkbackParticipantIds } : {}),
       features: {
         chatTyping: true,
       },
@@ -1743,6 +1766,8 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   // same participant id, role and place, so healthy media stays connected.
   const resumable = findResumableEntry(roomState, payload.resumeToken);
   if (resumable) {
+    // A reload may bring a newer (or older) client into the same seat.
+    applyClientCapabilities(resumable.participant, payload.capabilities);
     resumeSeat(ws, roomId, roomState, resumable, ip);
     return;
   }
@@ -1946,6 +1971,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     joinedAt: new Date().toISOString(),
     status,
   };
+  applyClientCapabilities(participant, payload.capabilities);
 
   if (effectiveRole === 'host') {
     if (roomState.hostReconnectTimer) console.log(`Host returned to room ${roomId}; keeping it open.`);
@@ -2319,7 +2345,7 @@ function handleStageControl(ws: WebSocket, payload: StageControlPayload) {
   const performer = roomState.participants.get(mapping.participantId)?.participant;
   if (!performer) return;
   if (!isOperatorRole(performer.role) || performer.status === 'green-room') {
-    sendError(ws, 'Only hosts and co-hosts can change slides', 'UNAUTHORIZED');
+    sendError(ws, 'Only hosts and co-hosts can change slides', 'STAGE_CONTROL_FORBIDDEN');
     return;
   }
   const rate = stageControlRateLimiter.check(ws, 'stage-control');
@@ -2370,7 +2396,7 @@ function handleCaptionSegment(ws: WebSocket, payload: unknown) {
   const sender = roomState.participants.get(mapping.participantId)?.participant;
   if (!sender) return;
   if (sender.status !== 'on-stage') {
-    sendError(ws, 'Only people on stage can share captions', 'UNAUTHORIZED');
+    sendError(ws, 'Only people on stage can share captions', 'CAPTION_NOT_ON_STAGE');
     return;
   }
   const rate = captionSegmentRateLimiter.check(ws, 'caption-segment');
@@ -2407,7 +2433,7 @@ function handleCaptionsState(ws: WebSocket, payload: unknown) {
   if (!roomState) return;
   const sender = roomState.participants.get(mapping.participantId)?.participant;
   if (!sender || !isOperatorRole(sender.role) || sender.status === 'green-room') {
-    sendError(ws, 'Only hosts and co-hosts can turn captions on', 'UNAUTHORIZED');
+    sendError(ws, 'Only hosts and co-hosts can turn captions on', 'CAPTIONS_STATE_FORBIDDEN');
     return;
   }
   const state = sanitizeCaptionsState(payload);
@@ -2415,7 +2441,74 @@ function handleCaptionsState(ws: WebSocket, payload: unknown) {
     sendError(ws, 'Invalid captions state', 'INVALID_PAYLOAD');
     return;
   }
+  // One operator speaks for the studio: the stage owner (the host, or the
+  // first co-host while no host is in). A co-host's own captions switch must
+  // not turn guests' caption sharing off. Dropped quietly: during an owner
+  // hand-over a client can briefly think it is the owner.
+  const ownerId = getStageOwnerId(Array.from(roomState.participants.values(), (entry) => entry.participant));
+  if (ownerId !== sender.id) return;
   broadcastToRoom(mapping.roomId, { type: 'captions-state', payload: { ...state, from: sender.id } }, mapping.participantId);
+}
+
+/** Admitted operators (other than `exceptId`) whose talkback is on; drops anyone who left. */
+function getTalkbackParticipantIds(roomState: RoomState, exceptId: string): string[] {
+  const ids = roomState.talkbackParticipantIds;
+  if (!ids || ids.size === 0) return [];
+  const result: string[] = [];
+  for (const id of ids) {
+    const participant = roomState.participants.get(id)?.participant;
+    if (!participant) {
+      ids.delete(id);
+      continue;
+    }
+    if (id === exceptId || !isOperatorRole(participant.role) || participant.status === 'green-room') continue;
+    result.push(id);
+  }
+  return result;
+}
+
+/**
+ * A host or co-host started or stopped talking backstage. Every operator who
+ * builds a program mix (live relay, program recording) silences them while it
+ * is on, so the private talk stays off air whoever is streaming. Relayed to
+ * admitted operators only and echoed to the sender, whose badge waits for it.
+ */
+function handleTalkbackState(ws: WebSocket, payload: unknown) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+  const sender = roomState.participants.get(mapping.participantId)?.participant;
+  if (!sender) return;
+  if (!isOperatorRole(sender.role) || sender.status === 'green-room') {
+    sendError(ws, 'Only hosts and co-hosts can talk backstage', 'TALKBACK_FORBIDDEN');
+    return;
+  }
+  const rate = talkbackStateRateLimiter.check(ws, 'talkback-state');
+  if (!rate.allowed) {
+    if (rate.notify) sendError(ws, 'Too many talkback changes. Please slow down.', 'RATE_LIMITED');
+    return;
+  }
+  const raw = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+  if (typeof raw.active !== 'boolean') {
+    sendError(ws, 'Invalid talkback state', 'INVALID_PAYLOAD');
+    return;
+  }
+  roomState.talkbackParticipantIds ??= new Set();
+  if (raw.active) roomState.talkbackParticipantIds.add(sender.id);
+  else roomState.talkbackParticipantIds.delete(sender.id);
+  const message: SignalMessage = { type: 'talkback-state', payload: { active: raw.active, from: sender.id } };
+  for (const [id, entry] of roomState.participants) {
+    if (id !== mapping.participantId) {
+      if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') continue;
+    }
+    if (entry.ws.readyState !== WebSocket.OPEN) continue;
+    try {
+      send(entry.ws, message);
+    } catch (err) {
+      console.error(`Failed to relay talkback state to ${id}:`, (err as Error).message);
+    }
+  }
 }
 
 /**
@@ -2430,13 +2523,13 @@ function handleProgramReturnAnnounce(ws: WebSocket, payload: ProgramReturnAnnoun
   if (!roomState) return;
   const sender = roomState.participants.get(mapping.participantId)?.participant;
   if (!sender || !isOperatorRole(sender.role)) {
-    sendError(ws, 'Only hosts and co-hosts send the program return', 'UNAUTHORIZED');
+    sendError(ws, 'Only hosts and co-hosts send the program return', 'PROGRAM_RETURN_FORBIDDEN');
     return;
   }
   const to = typeof payload?.to === 'string' ? payload.to : '';
   const streamId = payload?.streamId === null ? null : isValidProgramReturnStreamId(payload?.streamId) ? payload.streamId : undefined;
   if (!to || to === mapping.participantId || streamId === undefined) {
-    sendError(ws, 'Invalid program return announcement', 'VALIDATION_ERROR');
+    sendError(ws, 'Invalid program return announcement', 'PROGRAM_RETURN_INVALID');
     return;
   }
   // Same rule as offers: only peers this sender may exchange media with.
@@ -4698,6 +4791,7 @@ function handleDisconnect(ws: WebSocket, code?: number) {
   wsRateLimiter.forget(ws);
   stageControlRateLimiter.forget(ws);
   captionSegmentRateLimiter.forget(ws);
+  talkbackStateRateLimiter.forget(ws);
   pendingJoins.delete(ws);
 
   const mapping = wsToParticipant.get(ws);
@@ -4847,6 +4941,7 @@ function isVisibleInGreenRoom(message: SignalMessage, recipientId: string, roomS
     case 'caption-segment':
     case 'captions-state':
     case 'program-return-announce':
+    case 'talkback-state':
     case 'poll-updated':
     case 'qa-question-updated':
     case 'external-chat-status':

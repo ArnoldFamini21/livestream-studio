@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { MediaStreamTrack, RTCPeerConnection, RtpPacket } from 'werift';
 import { SfuMediaTransport, type SfuSessionDescription } from './sfuTransport.js';
+import type { SfuIceConfig } from './sfuIceServers.js';
 
 function deferred() {
   let resolve!: () => void;
@@ -51,7 +52,10 @@ class FakePeerConnection {
 
 const PRODUCERS = [{ producerId: 'bob', hasVideo: true, hasAudio: true }];
 
-function createHarness(configurePeer?: (peer: FakePeerConnection) => void) {
+function createHarness(
+  configurePeer?: (peer: FakePeerConnection) => void,
+  resolveIceConfig?: () => Promise<SfuIceConfig | null>,
+) {
   const peers: FakePeerConnection[] = [];
   const ice: string[] = [];
   const transport = new SfuMediaTransport({
@@ -61,7 +65,7 @@ function createHarness(configurePeer?: (peer: FakePeerConnection) => void) {
     configurePeer?.(peer);
     peers.push(peer);
     return peer as unknown as RTCPeerConnection;
-  });
+  }, resolveIceConfig ? { resolveIceConfig } : {});
   return { transport, peers, ice };
 }
 
@@ -162,5 +166,41 @@ describe('SFU transport lifecycle ownership', () => {
     await assert.rejects(pending, /superseded/);
     assert.equal(transport.getPublisherCount(), 0);
     assert.equal(peers.length, 1);
+  });
+
+  it('does not build a subscriber for a participant who left while TURN credentials were minted', async () => {
+    const turn = deferred();
+    const { transport, peers } = createHarness(undefined, async () => {
+      await turn.promise;
+      return { iceServers: [], iceTransportPolicy: 'all' };
+    });
+    const pending = transport.createSubscribeOffer('carol', PRODUCERS);
+    await transport.closeParticipant('carol');
+    turn.resolve();
+    await assert.rejects(pending, /superseded/);
+    assert.equal(transport.getSubscriberCount(), 0);
+    assert.equal(peers.length, 0, 'no peer connection (or TURN allocation) was made');
+
+    // Coming back later gets a fresh subscriber.
+    const again = await transport.createSubscribeOffer('carol', PRODUCERS);
+    assert.ok(again.description.sdp);
+    assert.equal(transport.getSubscriberCount(), 1);
+    await transport.closeAll();
+    assert.equal(transport.getSubscriberCount(), 0);
+  });
+
+  it('lets two overlapping subscribe offers for one participant share a subscriber', async () => {
+    const turn = deferred();
+    const { transport, peers } = createHarness(undefined, async () => {
+      await turn.promise;
+      return { iceServers: [], iceTransportPolicy: 'all' };
+    });
+    const first = transport.createSubscribeOffer('dave', PRODUCERS);
+    const second = transport.createSubscribeOffer('dave', PRODUCERS);
+    turn.resolve();
+    await Promise.all([first, second]);
+    assert.equal(transport.getSubscriberCount(), 1);
+    assert.equal(peers.length, 1);
+    await transport.closeAll();
   });
 });

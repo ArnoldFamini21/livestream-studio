@@ -141,7 +141,7 @@ describe('caption-segment relay', () => {
       const moved = waitFor(guest.ws, 'participant-updated', (m) => m.payload.id === guest.id && m.payload.status === 'backstage');
       sendMessage(host.ws, 'stage-action', { action: 'move-to-backstage', targetParticipantId: guest.id, performedBy: 'x' });
       await moved;
-      const refused = waitFor(guest.ws, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      const refused = waitFor(guest.ws, 'error', (m) => m.payload.code === 'CAPTION_NOT_ON_STAGE');
       const hostNothing = expectNone(host.ws, 'caption-segment');
       sendMessage(guest.ws, 'caption-segment', caption());
       await Promise.all([refused, hostNothing]);
@@ -181,10 +181,97 @@ describe('captions-state', () => {
       const [message] = await Promise.all([guestSees, coHostSees]);
       assert.deepEqual(message.payload, { enabled: true, language: 'en-US', from: host.id });
 
-      const refused = waitFor(guest.ws, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      const refused = waitFor(guest.ws, 'error', (m) => m.payload.code === 'CAPTIONS_STATE_FORBIDDEN');
       const hostNothing = expectNone(host.ws, 'captions-state');
       sendMessage(guest.ws, 'captions-state', { enabled: false, language: 'en-US' });
       await Promise.all([refused, hostNothing]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('relays only the stage owner, so a co-host joining with captions off cannot switch guests off', async () => {
+    const harness = await createHarness();
+    try {
+      const { host, guest, coHost } = await studioWithCoHost(harness, 'captions-owner');
+      const on = waitFor(guest.ws, 'captions-state', (m) => m.payload.enabled === true);
+      sendMessage(host.ws, 'captions-state', { enabled: true, language: 'en-US' });
+      await on;
+
+      const guestNothing = expectNone(guest.ws, 'captions-state');
+      const hostNothing = expectNone(host.ws, 'captions-state');
+      const noError = expectNone(coHost.ws, 'error');
+      sendMessage(coHost.ws, 'captions-state', { enabled: false, language: 'en-US' });
+      await Promise.all([guestNothing, hostNothing, noError]);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('talkback-state', () => {
+  it('relays an operator talking backstage to admitted operators only, echoes it, and keeps guests out', async () => {
+    const harness = await createHarness();
+    try {
+      const { host, guest, coHost } = await studioWithCoHost(harness, 'talkback');
+      const hostSees = waitFor(host.ws, 'talkback-state');
+      const echo = waitFor(coHost.ws, 'talkback-state');
+      const guestNothing = expectNone(guest.ws, 'talkback-state');
+      sendMessage(coHost.ws, 'talkback-state', { active: true, from: 'forged' });
+      const [atHost, atCoHost] = await Promise.all([hostSees, echo, guestNothing]);
+      assert.deepEqual(atHost.payload, { active: true, from: coHost.id });
+      assert.deepEqual(atCoHost.payload, { active: true, from: coHost.id });
+
+      const refused = waitFor(guest.ws, 'error', (m) => m.payload.code === 'TALKBACK_FORBIDDEN');
+      const hostQuiet = expectNone(host.ws, 'talkback-state');
+      sendMessage(guest.ws, 'talkback-state', { active: true });
+      await Promise.all([refused, hostQuiet]);
+
+      const invalid = waitFor(host.ws, 'error', (m) => m.payload.code === 'INVALID_PAYLOAD');
+      sendMessage(host.ws, 'talkback-state', { active: 'yes' });
+      await invalid;
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('tells an operator who joins later who is talking backstage, and forgets it when turned off', async () => {
+    const harness = await createHarness();
+    try {
+      const { room, host, coHost } = await studioWithCoHost(harness, 'talkback-replay');
+      const echo = waitFor(coHost.ws, 'talkback-state', (m) => m.payload.active === true);
+      sendMessage(coHost.ws, 'talkback-state', { active: true });
+      await echo;
+      // The host's connection drops and comes back: it learns the co-host is off air.
+      host.ws.terminate();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const resumed = await join(harness.url, { roomId: room.id, name: 'Arnold', role: 'host', resumeToken: host.joined.payload.resumeToken });
+      assert.equal(resumed.joined.payload.resumed, true);
+      assert.deepEqual(resumed.joined.payload.talkbackParticipantIds, [coHost.id]);
+      const lateGuest = await join(harness.url, { roomId: room.id, name: 'Lee', role: 'guest', joinSessionId: 'talkback-replay-lee' });
+      assert.equal(lateGuest.joined.payload.talkbackParticipantIds, undefined, 'guests are never told');
+
+      const off = waitFor(coHost.ws, 'talkback-state', (m) => m.payload.active === false);
+      sendMessage(coHost.ws, 'talkback-state', { active: false });
+      await off;
+      assert.equal(getRooms().get(room.id).talkbackParticipantIds.has(coHost.id), false);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('client capabilities', () => {
+  it('keeps the known capabilities a client sends and shares them with peers', async () => {
+    const harness = await createHarness();
+    try {
+      const { room, hostToken } = makeRoom('capabilities');
+      const host = await join(harness.url, { roomId: room.id, name: 'Arnold', role: 'host', hostToken, capabilities: ['program-return', 'bogus'] });
+      assert.deepEqual(host.joined.payload.participant.capabilities, ['program-return']);
+      const old = await join(harness.url, { roomId: room.id, name: 'Old tab', role: 'guest', joinSessionId: 'capabilities-old' });
+      assert.equal(old.joined.payload.participant.capabilities, undefined);
+      const seenHost = old.joined.payload.participants.find((p) => p.id === host.id);
+      assert.deepEqual(seenHost.capabilities, ['program-return']);
     } finally {
       await harness.close();
     }
