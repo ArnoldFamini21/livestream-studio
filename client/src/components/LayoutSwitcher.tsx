@@ -139,14 +139,16 @@ export function LayoutSwitcher({
   return (
     <div style={styles.wrap}>
       <style>{`
-        .ls-btn:hover:not(:disabled) {
+        .ls-btn:hover:not(:disabled):not([aria-disabled="true"]) {
           color: white !important;
           background: rgba(255, 255, 255, 0.1) !important;
           transform: scale(1.1);
         }
-        .ls-btn:active:not(:disabled) {
+        .ls-btn:active:not(:disabled):not([aria-disabled="true"]) {
           transform: scale(0.95);
         }
+        .ls-btn[aria-disabled="true"] { cursor: not-allowed; }
+        .ls-hint { font-size: 12px; color: var(--text-secondary); text-align: center; line-height: 1.4; }
         .ls-btn.active {
           background: var(--accent) !important;
           color: white !important;
@@ -169,11 +171,13 @@ export function LayoutSwitcher({
                 className={`ls-btn ${isActive ? 'active' : ''}`}
                 role="radio"
                 aria-checked={isActive}
-                aria-label={`${label} layout - ${description}`}
-                onClick={() => onLayoutChange(mode)}
-                disabled={isDisabled}
+                aria-label={isDisabled ? `${label} layout - unlocks when a guest joins the stage` : `${label} layout - ${description}`}
+                aria-describedby={isDisabled ? 'layout-switcher-hint' : undefined}
+                // Still focusable (aria-disabled), so keyboard and screen-reader users learn why.
+                onClick={() => { if (!isDisabled) onLayoutChange(mode); }}
+                aria-disabled={isDisabled || undefined}
                 aria-keyshortcuts={String(index + 1)}
-                title={isDisabled ? `${label} (Requires 2+ people)` : `${label} - ${description} (${index + 1})`}
+                title={isDisabled ? `${label}: unlocks when a guest joins the stage` : `${label} - ${description} (${index + 1})`}
                 style={{
                   ...styles.btn,
                   ...(isDisabled ? styles.btnDisabled : {}),
@@ -185,6 +189,9 @@ export function LayoutSwitcher({
           })}
         </div>
       </div>
+      {STUDIO_LAYOUT_PRESET_ORDER.some((mode) => isStudioLayoutDisabled(mode, participantCount)) && (
+        <p id="layout-switcher-hint" className="ls-hint">Multi-person layouts unlock when a guest joins the stage.</p>
+      )}
     </div>
   );
 }

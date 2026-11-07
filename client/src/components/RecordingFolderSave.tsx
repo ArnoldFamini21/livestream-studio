@@ -99,7 +99,7 @@ export function RecordingFolderSave({ getRecording, disabled, compact = false, o
         {busy ? 'Saving…' : 'Save to folder'}
       </button>
       {!compact && supported && <p className="recording-folder-save-help">Choose a folder on your external drive. Saves original tracks without a cloud upload. Browser recording storage is separate.</p>}
-      {!supported && <p className="recording-folder-save-help">For folder saving, open this studio in desktop Chrome or Edge. You can also use the ZIP download and choose your drive in your browser’s download settings.</p>}
+      {!supported && <p className="recording-folder-save-help">This browser cannot write into a folder. Use <strong>Download all</strong>: every original track downloads as its own file, straight from browser storage (set your browser’s download location to your SSD first). Desktop Chrome or Edge records directly to your SSD while you record and collects guests’ tracks there too.</p>}
       {progress && <p role="status" className="recording-folder-save-status">{progress}</p>}
       {error && <p role="alert" className="recording-folder-save-error">{error}</p>}
       {saved && !busy && (

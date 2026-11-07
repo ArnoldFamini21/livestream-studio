@@ -21,6 +21,8 @@ const READY_ENV = {
   YOUTUBE_API_KEY: 'key',
   ACCOUNT_EMAIL_FROM: 'Studio <studio@example.test>',
   RESEND_API_KEY: 're_test',
+  STUDIO_OWNER_EMAILS: 'owner@example.test',
+  MEDIA_SERVER_URL: 'https://media.example.test',
 };
 
 describe('production readiness', () => {
@@ -36,6 +38,22 @@ describe('production readiness', () => {
     const blocking = readiness.issues.filter((issue) => issue.severity === 'blocking').map((issue) => issue.id);
     assert.deepEqual(blocking, ['database-missing', 'token-secret-missing', 'turn-missing']);
     assert.ok(readiness.issues.some((issue) => issue.id === 'client-url-missing' && issue.severity === 'warning'));
+  });
+
+  it('warns when studio creation, AI access or SFU revocation are left open', () => {
+    const open = buildProductionReadiness({ ...READY_ENV, STUDIO_OWNER_EMAILS: '', MEDIA_SERVER_URL: '', OPENAI_API_KEY: 'sk-test' }, { turnReady: true });
+    const ids = open.issues.map((issue) => issue.id);
+    assert.equal(open.ready, true, 'these are warnings, not blocking');
+    assert.ok(ids.includes('studio-creation-open'));
+    assert.ok(ids.includes('sfu-revocation-disabled'));
+    // STUDIO_OWNER_EMAILS is cleared, so the key has no policy and AI is locked.
+    assert.ok(ids.includes('ai-access-locked'));
+
+    const anyAccount = buildProductionReadiness({ ...READY_ENV, OPENAI_API_KEY: 'sk-test', OPENAI_REQUIRE_ACCOUNT_AUTH: 'true' }, { turnReady: true });
+    assert.ok(anyAccount.issues.some((issue) => issue.id === 'ai-access-open'));
+
+    const secretOnly = buildProductionReadiness({ ...READY_ENV, STUDIO_OWNER_EMAILS: '', STUDIO_CREATE_SECRET: 's'.repeat(24) }, { turnReady: true });
+    assert.equal(secretOnly.issues.some((issue) => issue.id === 'studio-creation-open'), false);
   });
 
   it('reports stores that fell back to memory even when a database URL is set', () => {

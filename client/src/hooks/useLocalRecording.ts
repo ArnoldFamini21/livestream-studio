@@ -1,5 +1,20 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { createRecoverableRecordingStore } from '../utils/recordingRecovery.ts';
+import type { RecordingRecoveryTransferMetadata } from '../utils/recordingRecovery.ts';
+import {
+  browserRecordingTrackStoreFactory,
+  type RecordingTrackStore,
+  type RecordingTrackStoreFactory,
+} from '../utils/recordingTrackStore.ts';
+import { getStreamRecordingVideoBitsPerSecond } from '../utils/recordingBitrate.ts';
+import {
+  createCaptureTimeline,
+  pauseCaptureTimeline,
+  resumeCaptureTimeline,
+  stopCaptureTimeline,
+  timelineNow,
+} from '../utils/recordingTakeManifest.ts';
+import { PcmWavRecorder, openRawMicrophone } from '../utils/pcmWavRecorder.ts';
+import type { TransferSourceTrack } from '../utils/recordingTransferSession.ts';
 import {
   createRecordingCaptureMetadata,
   finalizeRecordingCaptureMetadata,
@@ -41,6 +56,8 @@ export interface RecordingResult {
   /** Present when the take was uploaded progressively; finishes the remaining bytes. */
   progressiveUpload?: {
     finish(): Promise<ProgressiveUploadResult>;
+    /** Files (later segments, mid-take screen shares) the upload session does not include. */
+    uncoveredFiles: LocalRecordingFileResult[];
   };
 }
 
@@ -63,6 +80,10 @@ export interface StartLocalRecordingOptions {
   progressiveUpload?: LocalProgressiveUploadConfig;
   /** Opt in to capturing a raw WebCodecs bitstream sidecar alongside playable MediaRecorder video files. */
   enableWebCodecsSidecar?: boolean;
+  /** Where track bytes land: the host's recording folder, or browser storage (default). */
+  storage?: RecordingTrackStoreFactory;
+  /** Tags browser backups with the take, so they can be resumed and sent to the host. */
+  transfer?: Omit<RecordingRecoveryTransferMetadata, 'sourceId' | 'segmentIndex' | 'capture'>;
 }
 
 interface ActiveProgressiveUpload {
@@ -79,6 +100,10 @@ export interface LocalRecordingSource {
   bitsPerSecond?: number;
   enableWebCodecsSidecar?: boolean;
   cleanup?: () => void;
+  /** 'wav' records lossless 48 kHz PCM from the (raw) microphone instead of MediaRecorder. */
+  format?: 'wav';
+  /** Microphone device for the raw (unprocessed) WAV capture. */
+  rawDeviceId?: string;
 }
 
 interface TrackRecorder {
@@ -86,7 +111,16 @@ interface TrackRecorder {
   label: string;
   kind: LocalRecordingSource['kind'];
   recorder: MediaRecorder;
-  chunkStore: ReturnType<typeof createRecoverableRecordingStore>;
+  chunkStore: RecordingTrackStore;
+  /** Source id shared by every segment of the source. */
+  sourceId: string;
+  /** Base label without a segment suffix. */
+  baseLabel: string;
+  segmentIndex: number;
+  /** The live input tracks this recorder captures, to detect device changes. */
+  inputTrackIds: string[];
+  wav?: PcmWavRecorder;
+  detachEnded?: () => void;
   finished: Promise<Blob>;
   started: boolean;
   capture: RecordingCaptureMetadata;
@@ -121,7 +155,17 @@ export function useLocalRecording(roomName = 'Studio') {
   const [recordingLabels, setRecordingLabels] = useState<string[]>([]);
 
   const [uploadState, setUploadState] = useState<ProgressiveUploadState | null>(null);
+  /** Bumps when a recorded input track ends (device switch, screen share stopped). */
+  const [inputEndedVersion, setInputEndedVersion] = useState(0);
+  /** Bumps when the list of transferable tracks changes or a track finishes. */
+  const [transferVersion, setTransferVersion] = useState(0);
   const recordersRef = useRef<TrackRecorder[]>([]);
+  const startOptionsRef = useRef<StartLocalRecordingOptions | undefined>(undefined);
+  /** Segments that ended mid-take (device changes); returned with the take. */
+  const retiredRef = useRef<Array<{ recorder: TrackRecorder; result: StoppedTrackRecorderResult }>>([]);
+  const segmentCountsRef = useRef(new Map<string, number>());
+  const updatingRef = useRef(false);
+  const transferTracksRef = useRef(new Map<string, TransferSourceTrack & { store: RecordingTrackStore }>());
   const progressiveUploadRef = useRef<ActiveProgressiveUpload | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
@@ -156,10 +200,9 @@ export function useLocalRecording(roomName = 'Studio') {
     if (source.bitsPerSecond) return source.bitsPerSecond;
     if (source.kind === 'audio') return 256_000;
     if (source.kind === 'program') return 10_000_000;
-    if (source.kind === 'iso') return 8_500_000;
-    if (source.kind === 'screen') return 8_000_000;
     const hasVideo = source.stream.getVideoTracks().some((track) => track.readyState === 'live');
-    return hasVideo ? 8_000_000 : 256_000;
+    // Scale with the captured resolution: 720p 5 Mbps, 1080p 10, 4K 40.
+    return hasVideo ? getStreamRecordingVideoBitsPerSecond(source.stream) : 256_000;
   };
 
   const getEncoderMetadataForSource = (
@@ -351,34 +394,68 @@ export function useLocalRecording(roomName = 'Studio') {
 
   const createTrackRecorder = async (
     source: LocalRecordingSource,
-    enableWebCodecsSidecarOption = false
+    enableWebCodecsSidecarOption = false,
+    segmentIndex = 0,
   ): Promise<TrackRecorder | null> => {
     const stream = new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live'));
     if (stream.getTracks().length === 0) return null;
-    const mimeType = getMimeTypeForSource({ ...source, stream });
+    const recorderId = segmentIndex ? `${source.id}-part${segmentIndex + 1}` : source.id;
+    const label = segmentIndex ? `${source.label} (part ${segmentIndex + 1})` : source.label;
+    let wav: PcmWavRecorder | undefined;
+    let recorder: MediaRecorder;
+    let rawCleanup: (() => void) | undefined;
     const bitsPerSecond = getBitsPerSecondForSource({ ...source, stream });
-    if (!mimeType) {
-      console.error(`No supported MIME type for ${source.label} recording`);
-      return null;
+    let mimeType = '';
+    if (source.format === 'wav') {
+      // Lossless mic: prefer an unprocessed capture of the same microphone.
+      const raw = await openRawMicrophone(source.rawDeviceId);
+      if (raw) rawCleanup = () => raw.stop();
+      // Mute only disables the processed track, so it gates the raw capture.
+      wav = new PcmWavRecorder(raw ? new MediaStream([raw]) : new MediaStream(stream.getAudioTracks()), {
+        gateTrack: stream.getAudioTracks()[0] || null,
+      });
+      // PcmWavRecorder implements the MediaRecorder surface used below.
+      recorder = wav as unknown as MediaRecorder;
+      mimeType = wav.mimeType;
+    } else {
+      mimeType = getMimeTypeForSource({ ...source, stream });
+      if (!mimeType) {
+        console.error(`No supported MIME type for ${source.label} recording`);
+        return null;
+      }
+      // Separate rates: with one combined figure Chrome gives audio 10% of it
+      // (850 kbps for an 8.5 Mbps camera) and then clamps it to 510 kbps.
+      const hasVideo = stream.getVideoTracks().length > 0;
+      const hasAudio = stream.getAudioTracks().length > 0;
+      recorder = new MediaRecorder(stream, {
+        mimeType,
+        ...(hasVideo ? { videoBitsPerSecond: bitsPerSecond } : {}),
+        ...(hasAudio ? { audioBitsPerSecond: hasVideo ? LOCAL_RECORDING_AUDIO_BITS_PER_SECOND : bitsPerSecond } : {}),
+      });
     }
-
-    // Separate rates: with one combined figure Chrome gives audio 10% of it
-    // (850 kbps for an 8.5 Mbps camera) and then clamps it to 510 kbps.
-    const hasVideo = stream.getVideoTracks().length > 0;
-    const hasAudio = stream.getAudioTracks().length > 0;
-    const recorder = new MediaRecorder(stream, {
-      mimeType,
-      ...(hasVideo ? { videoBitsPerSecond: bitsPerSecond } : {}),
-      ...(hasAudio ? { audioBitsPerSecond: hasVideo ? LOCAL_RECORDING_AUDIO_BITS_PER_SECOND : bitsPerSecond } : {}),
-    });
-    const chunkStore = createRecoverableRecordingStore({
-      roomName, label: source.label, kind: source.kind, mimeType: recorder.mimeType,
-    }, () => setStorageWarning('Recording is continuing in memory. Keep this tab open until it has been saved.'));
+    const startOptions = startOptionsRef.current;
+    const chunkStore = (startOptions?.storage || browserRecordingTrackStoreFactory)({
+      roomName,
+      label,
+      kind: source.kind,
+      mimeType: recorder.mimeType || mimeType,
+      sourceId: source.id,
+      ...(startOptions?.transfer ? { transfer: { ...startOptions.transfer, sourceId: source.id, segmentIndex } } : {}),
+    }, (message) => setStorageWarning(message));
     // Finalize even when capture stops unexpectedly, after its final data event.
     let resolveFinished!: (blob: Blob) => void;
     let rejectFinished!: (error: unknown) => void;
     const finished = new Promise<Blob>((resolve, reject) => { resolveFinished = resolve; rejectFinished = reject; });
-    recorder.onstop = () => { void chunkStore.finish(recorder.mimeType).then(resolveFinished, rejectFinished); };
+    recorder.onstop = () => {
+      const header = wav ? new Blob([wav.headerBytes() as BlobPart], { type: wav.mimeType }) : undefined;
+      void chunkStore.finish(recorder.mimeType, header ? { header } : undefined).then(resolveFinished, rejectFinished);
+    };
+    // A device switch stops the old input track; the caller then continues
+    // the source in a new segment file.
+    const inputTracks = stream.getTracks();
+    const onInputEnded = () => setInputEndedVersion((version) => version + 1);
+    inputTracks.forEach((track) => track.addEventListener('ended', onInputEnded));
+    const detachEnded = () => inputTracks.forEach((track) => track.removeEventListener('ended', onInputEnded));
     void finished.catch(() => {});
     const enableWebCodecsSidecar = Boolean(source.enableWebCodecsSidecar ?? enableWebCodecsSidecarOption);
     const webCodecsSidecar = enableWebCodecsSidecar
@@ -387,12 +464,14 @@ export function useLocalRecording(roomName = 'Studio') {
     const capture = createRecordingCaptureMetadata({
       sourceId: source.id,
       sourceKind: source.kind,
-      sourceLabel: source.label,
-      stream,
+      sourceLabel: label,
+      stream: wav ? wav.stream : stream,
       mimeType,
-      requestedBitsPerSecond: bitsPerSecond,
+      requestedBitsPerSecond: wav ? wav.format.sampleRate * wav.format.channels * wav.format.bitsPerSample : bitsPerSecond,
       startedAt: new Date().toISOString(),
-      encoder: getEncoderMetadataForSource(stream, mimeType, bitsPerSecond),
+      encoder: wav
+        ? { pipeline: 'media-recorder', container: 'browser', codec: `pcm_s${wav.format.bitsPerSample}le`, fallbackReason: 'Lossless 48 kHz PCM captured with an AudioWorklet.' }
+        : getEncoderMetadataForSource(stream, mimeType, bitsPerSecond),
     });
 
     recorder.ondataavailable = (event) => chunkStore.append(event.data);
@@ -404,19 +483,73 @@ export function useLocalRecording(roomName = 'Studio') {
     };
 
     return {
-      id: source.id,
-      label: source.label,
+      id: recorderId,
+      sourceId: source.id,
+      label,
+      baseLabel: source.label,
+      segmentIndex,
+      inputTrackIds: inputTracks.map((track) => track.id),
       kind: source.kind,
       recorder,
       chunkStore,
       finished,
       started: false,
       capture,
-      enableWebCodecsSidecar,
+      enableWebCodecsSidecar: enableWebCodecsSidecar && !wav,
       sidecarResults: [],
-      webCodecsSidecar,
-      cleanup: source.cleanup,
+      webCodecsSidecar: wav ? undefined : webCodecsSidecar,
+      wav,
+      detachEnded,
+      cleanup: () => { detachEnded(); rawCleanup?.(); source.cleanup?.(); },
     };
+  };
+
+  const bumpTransfer = () => setTransferVersion((version) => version + 1);
+
+  /** Make a started recorder available to the peer-to-peer transfer. */
+  const registerTransferTrack = (trackRecorder: TrackRecorder) => {
+    const transfer = startOptionsRef.current?.transfer;
+    if (!transfer) return;
+    const mimeType = trackRecorder.recorder.mimeType;
+    transferTracksRef.current.set(trackRecorder.chunkStore.id, {
+      id: trackRecorder.chunkStore.id,
+      sessionId: transfer.sessionId,
+      label: trackRecorder.label,
+      kind: trackRecorder.kind,
+      mimeType,
+      ...(trackRecorder.wav ? { lossless: true } : {}),
+      store: trackRecorder.chunkStore,
+      read: () => trackRecorder.chunkStore.snapshot(mimeType),
+    });
+    bumpTransfer();
+  };
+
+  const completeTransferTrack = (trackRecorder: TrackRecorder, blob: Blob | null) => {
+    const entry = transferTracksRef.current.get(trackRecorder.chunkStore.id);
+    if (!entry) return;
+    const finalBlob = blob || new Blob([], { type: entry.mimeType });
+    entry.read = async () => finalBlob;
+    entry.finished = {
+      totalBytes: finalBlob.size,
+      ...(trackRecorder.wav ? { header: trackRecorder.wav.headerBytes() } : {}),
+      capture: trackRecorder.capture,
+    };
+    void trackRecorder.chunkStore.updateTransferCapture?.(trackRecorder.capture)?.catch(() => {});
+    bumpTransfer();
+  };
+
+  /** Start a recorder now (also used for segments added mid-take). */
+  const startTrackRecorder = (trackRecorder: TrackRecorder, paused: boolean) => {
+    const trackStartedAt = new Date().toISOString();
+    let timeline = createCaptureTimeline(trackRecorder.segmentIndex, timelineNow());
+    trackRecorder.recorder.start(1000);
+    trackRecorder.started = true;
+    if (paused) {
+      try { trackRecorder.recorder.pause(); } catch { /* Keep recording rather than lose it. */ }
+      timeline = pauseCaptureTimeline(timeline, timeline.startMs);
+    }
+    trackRecorder.capture = { ...trackRecorder.capture, startedAt: trackStartedAt, timeline };
+    registerTransferTrack(trackRecorder);
   };
 
   const getDefaultSources = (localStream: MediaStream, screenStream?: MediaStream | null): LocalRecordingSource[] => {
@@ -440,7 +573,6 @@ export function useLocalRecording(roomName = 'Studio') {
         label: 'Video',
         kind: 'video',
         stream: new MediaStream(videoTracks),
-        bitsPerSecond: 8_000_000,
       });
     }
 
@@ -450,7 +582,6 @@ export function useLocalRecording(roomName = 'Studio') {
         label: 'Screen',
         kind: 'screen',
         stream: screenStream,
-        bitsPerSecond: 8_000_000,
       });
     }
 
@@ -506,6 +637,9 @@ export function useLocalRecording(roomName = 'Studio') {
       startingRef.current = true;
       setStorageWarning(null);
       stopPromiseRef.current = null;
+      startOptionsRef.current = options;
+      retiredRef.current = [];
+      segmentCountsRef.current = new Map();
       const generation = generationRef.current;
       try {
         const sources = (Array.isArray(input) ? input : getDefaultSources(input, screenStream))
@@ -539,10 +673,8 @@ export function useLocalRecording(roomName = 'Studio') {
         try {
           for (const trackRecorder of recorders) {
             if (generation !== generationRef.current) throw new Error('Studio closed before recording started.');
-            const trackStartedAt = new Date().toISOString();
-            trackRecorder.capture = { ...trackRecorder.capture, startedAt: trackStartedAt };
-            trackRecorder.recorder.start(1000);
-            trackRecorder.started = true;
+            startTrackRecorder(trackRecorder, false);
+            segmentCountsRef.current.set(trackRecorder.sourceId, 1);
           }
           await Promise.all(
             recorders.map((trackRecorder) => startWebCodecsSidecar(trackRecorder, trackRecorder.capture.startedAt))
@@ -607,6 +739,12 @@ export function useLocalRecording(roomName = 'Studio') {
     if (!pausedAny) return;
     const pausedAt = Date.now();
     pausedAtRef.current = pausedAt;
+    const pausedTimelineAt = timelineNow();
+    for (const trackRecorder of recordersRef.current) {
+      if (trackRecorder.capture.timeline) {
+        trackRecorder.capture = { ...trackRecorder.capture, timeline: pauseCaptureTimeline(trackRecorder.capture.timeline, pausedTimelineAt) };
+      }
+    }
     setRecordingDuration(getElapsedSeconds());
     setIsPaused(true);
 
@@ -633,6 +771,12 @@ export function useLocalRecording(roomName = 'Studio') {
     }
 
     if (!resumedAny) return;
+    const resumedTimelineAt = timelineNow();
+    for (const trackRecorder of recordersRef.current) {
+      if (trackRecorder.capture.timeline) {
+        trackRecorder.capture = { ...trackRecorder.capture, timeline: resumeCaptureTimeline(trackRecorder.capture.timeline, resumedTimelineAt) };
+      }
+    }
     const pausedAt = pausedAtRef.current;
     if (pausedAt !== null) {
       accumulatedPausedMsRef.current += Date.now() - pausedAt;
@@ -672,10 +816,16 @@ export function useLocalRecording(roomName = 'Studio') {
       if (recorder.state !== 'inactive') {
         try { recorder.stop(); } catch { stopFailed = true; }
       }
+      const stopTimelineAt = timelineNow();
       // Wait for MediaRecorder's final data event, including spontaneous stops.
       const blob = await (stopFailed ? chunkStore.finish(recorder.mimeType) : trackRecorder.finished);
       const stoppedAt = new Date().toISOString();
-      trackRecorder.capture = finalizeRecordingCaptureMetadata(trackRecorder.capture, stoppedAt);
+      const timeline = trackRecorder.capture.timeline;
+      trackRecorder.capture = finalizeRecordingCaptureMetadata(
+        timeline ? { ...trackRecorder.capture, timeline: stopCaptureTimeline(timeline, stopTimelineAt) } : trackRecorder.capture,
+        stoppedAt,
+      );
+      completeTransferTrack(trackRecorder, blob);
       const sidecar = await stopWebCodecsSidecar(trackRecorder.webCodecsSidecar, stoppedAt);
       return { blob, sidecars: sidecar ? [sidecar] : [] };
     } finally { cleanup?.(); }
@@ -695,15 +845,20 @@ export function useLocalRecording(roomName = 'Studio') {
     pausedAtRef.current = null;
     accumulatedPausedMsRef.current = 0;
 
-    const activeRecorders = [...recordersRef.current];
+    const liveRecorders = [...recordersRef.current];
+    const retired = retiredRef.current;
+    retiredRef.current = [];
     const activeUpload = progressiveUploadRef.current;
     progressiveUploadRef.current = null;
     // Halt background cycles; finish() still uploads the remainder when the caller asks.
     activeUpload?.uploader.stop();
-    const stopPromises = activeRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder));
+    const stopPromises = liveRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder));
 
     stopPromiseRef.current = Promise.all(stopPromises).then(
-      (results) => {
+      (liveResults) => {
+        // Earlier segments (before a device change) come first, in capture order.
+        const activeRecorders = [...retired.map((entry) => entry.recorder), ...liveRecorders];
+        const results = [...retired.map((entry) => entry.result), ...liveResults];
         const files = activeRecorders.flatMap((recorder, index): LocalRecordingFileResult[] => {
           const result = results[index];
           const primary = result.blob && result.blob.size > 0
@@ -740,8 +895,15 @@ export function useLocalRecording(roomName = 'Studio') {
               capture: recorder.capture as unknown as Record<string, unknown>,
             });
           });
+          // Segments and tracks added mid-take are not part of the upload session.
+          const uncoveredFiles = activeRecorders.flatMap((recorder, index) => {
+            const blob = results[index].blob;
+            if (activeUpload.trackIds.has(recorder.id) || !blob || blob.size === 0) return [];
+            return [{ label: recorder.label, kind: recorder.kind, blob, capture: recorder.capture, sourceId: recorder.id }];
+          });
           result.progressiveUpload = {
             finish: () => activeUpload.uploader.finish(finalBlobs, metadata),
+            uncoveredFiles,
           };
         }
 
@@ -791,10 +953,16 @@ export function useLocalRecording(roomName = 'Studio') {
     accumulatedPausedMsRef.current = 0;
 
     const activeRecorders = [...recordersRef.current];
+    const retired = retiredRef.current;
+    retiredRef.current = [];
     progressiveUploadRef.current?.uploader.stop();
     progressiveUploadRef.current = null;
     setUploadState(null);
     await Promise.all(activeRecorders.map(discardSingleRecorder));
+    await Promise.all(retired.map((entry) => entry.recorder.chunkStore.discard().catch(() => {})));
+    for (const entry of [...activeRecorders, ...retired.map((item) => item.recorder)]) {
+      transferTracksRef.current.delete(entry.chunkStore.id);
+    }
 
     recordersRef.current = [];
     stopPromiseRef.current = null;
@@ -803,6 +971,113 @@ export function useLocalRecording(roomName = 'Studio') {
     setRecordingDuration(0);
     setRecordingLabels([]);
     stoppingRef.current = false;
+  }, []);
+
+  /**
+   * Keep every source recording through device and setting changes: a
+   * source whose input tracks changed (new mic, camera, processing or quality)
+   * continues in a new segment file; a source that appears mid-take (a screen
+   * share) gets its own track; a source whose inputs all ended is closed.
+   */
+  const updateSources = useCallback(async (input: LocalRecordingSource[]): Promise<void> => {
+    const cleanupAll = () => input.forEach((source) => source.cleanup?.());
+    if (!recordersRef.current.length || startingRef.current || stoppingRef.current || updatingRef.current) {
+      cleanupAll();
+      return;
+    }
+    updatingRef.current = true;
+    const generation = generationRef.current;
+    try {
+      const sources = input
+        .map((source) => ({ ...source, stream: new MediaStream(source.stream.getTracks().filter((track) => track.readyState === 'live')) }))
+        .filter((source) => source.stream.getTracks().length > 0);
+      const bySource = new Map(sources.map((source) => [source.id, source]));
+      const used = new Set<string>();
+      const kept: TrackRecorder[] = [];
+      const toRetire: TrackRecorder[] = [];
+      const toStart: Array<{ source: LocalRecordingSource; segmentIndex: number }> = [];
+
+      for (const trackRecorder of recordersRef.current) {
+        const source = bySource.get(trackRecorder.sourceId);
+        const inputs = trackRecorder.wav ? trackRecorder.wav.stream.getTracks() : trackRecorder.recorder.stream.getTracks();
+        const allEnded = trackRecorder.recorder.state === 'inactive' || inputs.every((track) => track.readyState === 'ended');
+        if (!source) {
+          if (allEnded) toRetire.push(trackRecorder); else kept.push(trackRecorder);
+          continue;
+        }
+        used.add(source.id);
+        const sourceTrackIds = source.stream.getTracks().map((track) => track.id).sort().join(',');
+        const recordedTrackIds = [...trackRecorder.inputTrackIds].sort().join(',');
+        if (sourceTrackIds === recordedTrackIds && !allEnded) {
+          kept.push(trackRecorder);
+          continue;
+        }
+        toRetire.push(trackRecorder);
+        const segmentIndex = segmentCountsRef.current.get(source.id) || trackRecorder.segmentIndex + 1;
+        toStart.push({ source, segmentIndex });
+      }
+      for (const source of sources) {
+        if (used.has(source.id)) continue;
+        used.add(source.id);
+        toStart.push({ source, segmentIndex: segmentCountsRef.current.get(source.id) || 0 });
+      }
+      for (const source of input) {
+        if (!toStart.some((entry) => entry.source.id === source.id)) source.cleanup?.();
+      }
+      if (!toRetire.length && !toStart.length) return;
+
+      const started: TrackRecorder[] = [];
+      for (const { source, segmentIndex } of toStart) {
+        if (generation !== generationRef.current || stoppingRef.current) { source.cleanup?.(); continue; }
+        try {
+          const trackRecorder = await createTrackRecorder(source, Boolean(startOptionsRef.current?.enableWebCodecsSidecar), segmentIndex);
+          if (!trackRecorder) { source.cleanup?.(); continue; }
+          startTrackRecorder(trackRecorder, pausedAtRef.current !== null);
+          segmentCountsRef.current.set(source.id, segmentIndex + 1);
+          started.push(trackRecorder);
+        } catch (error) {
+          source.cleanup?.();
+          console.warn(`Could not continue the ${source.label} track:`, error);
+          setStorageWarning(`The ${source.label} track could not continue after a device change.`);
+        }
+      }
+      if (stoppingRef.current || generation !== generationRef.current) {
+        await Promise.all(started.map(discardSingleRecorder));
+        return;
+      }
+      recordersRef.current = [...kept, ...started];
+      setRecordingLabels(recordersRef.current.map((recorder) => recorder.label));
+      // Close the old segments after the new ones are running, so no audio is lost.
+      for (const trackRecorder of toRetire) {
+        try {
+          const result = await stopSingleRecorder(trackRecorder);
+          retiredRef.current.push({ recorder: trackRecorder, result });
+        } catch (error) {
+          console.warn(`A recording segment for ${trackRecorder.label} could not be closed:`, error);
+        }
+      }
+    } finally {
+      updatingRef.current = false;
+    }
+  }, [roomName]);
+
+  /** Stop the background media-server upload (the host collects tracks directly). */
+  const cancelUpload = useCallback(() => {
+    progressiveUploadRef.current?.uploader.stop();
+    progressiveUploadRef.current = null;
+    setUploadState(null);
+  }, []);
+
+  /** Tracks of this page's takes that can be streamed to the host. */
+  const getTransferTracks = useCallback((): TransferSourceTrack[] => [...transferTracksRef.current.values()], []);
+
+  /** The host confirmed it holds this track; remember it in the browser backup. */
+  const markTransferDelivered = useCallback((trackId: string) => {
+    const entry = transferTracksRef.current.get(trackId);
+    if (!entry) return;
+    void entry.store.markDelivered?.().catch(() => {});
+    if (entry.finished) transferTracksRef.current.delete(trackId);
+    setTransferVersion((version) => version + 1);
   }, []);
 
   const formatTime = (seconds: number): string => {
@@ -858,5 +1133,11 @@ export function useLocalRecording(roomName = 'Studio') {
     resumeRecording,
     stopRecording,
     cancelRecording,
+    updateSources,
+    cancelUpload,
+    inputEndedVersion,
+    transferVersion,
+    getTransferTracks,
+    markTransferDelivered,
   };
 }

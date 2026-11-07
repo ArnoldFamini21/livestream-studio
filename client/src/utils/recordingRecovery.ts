@@ -16,6 +16,21 @@ export interface RecordingRecoveryMetadata {
   savedToLibrary?: boolean;
   /** New library metadata records explicit ownership of this backing directory. */
   libraryOwnershipVersion?: 1;
+  /** Which take and participant this track belongs to, so it can be resumed and sent to the host. */
+  transfer?: RecordingRecoveryTransferMetadata;
+  /** The host confirmed it holds every byte of this track in its recording folder. */
+  deliveredToHost?: boolean;
+}
+export interface RecordingRecoveryTransferMetadata {
+  roomId: string;
+  sessionId: string;
+  participantId: string;
+  participantName: string;
+  sourceId?: string;
+  /** Segment number when a device change split the track. */
+  segmentIndex?: number;
+  /** Capture metadata (timing) to forward with the track. */
+  capture?: unknown;
 }
 export interface RecoverableRecording extends RecordingRecoveryMetadata {
   size: number;
@@ -95,7 +110,27 @@ async function readManifest(directory: RecoveryDirectory, id: string): Promise<R
     || !['audio', 'video', 'screen', 'program', 'iso'].includes(m.kind)
     || typeof m.mimeType !== 'string' || !/^(audio|video)\//.test(m.mimeType)
     || !Number.isFinite(Date.parse(m.createdAt))) throw new Error('Invalid recording metadata');
-  return { ...m, complete: m.complete === true, savedToLibrary: m.savedToLibrary === true };
+  return {
+    ...m,
+    complete: m.complete === true,
+    savedToLibrary: m.savedToLibrary === true,
+    deliveredToHost: m.deliveredToHost === true,
+    transfer: normalizeTransferMetadata(m.transfer),
+  };
+}
+function normalizeTransferMetadata(value: unknown): RecordingRecoveryTransferMetadata | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const t = value as Record<string, unknown>;
+  const text = (v: unknown, max = 200) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
+  const roomId = text(t.roomId), sessionId = text(t.sessionId), participantId = text(t.participantId);
+  if (!roomId || !sessionId || !participantId) return undefined;
+  return {
+    roomId, sessionId, participantId,
+    participantName: text(t.participantName) || 'Participant',
+    ...(text(t.sourceId) ? { sourceId: text(t.sourceId) } : {}),
+    ...(Number.isSafeInteger(t.segmentIndex) && (t.segmentIndex as number) >= 0 ? { segmentIndex: t.segmentIndex as number } : {}),
+    ...(t.capture && typeof t.capture === 'object' ? { capture: t.capture } : {}),
+  };
 }
 /** Only a contiguous prefix starting with the container header can be recovered. */
 export async function readRecoveryChunks(directory: RecoveryDirectory): Promise<{ chunks: Blob[]; truncated: boolean }> {
@@ -116,13 +151,14 @@ export async function readRecoveryChunks(directory: RecoveryDirectory): Promise<
 
 /** Capture to committed files, retaining an ordered RAM fallback if storage fails. */
 export function createRecoverableRecordingStore(
-  input: Pick<RecordingRecoveryMetadata, 'roomName' | 'label' | 'kind' | 'mimeType'>,
+  input: Pick<RecordingRecoveryMetadata, 'roomName' | 'label' | 'kind' | 'mimeType' | 'transfer'>,
   onStorageFailure?: (error: unknown) => void,
   environment = browserRecoveryEnvironment(),
 ) {
-  const metadata: RecordingRecoveryMetadata = {
+  let metadata: RecordingRecoveryMetadata = {
     ...input, id: `take-${crypto.randomUUID()}`, createdAt: new Date().toISOString(), complete: false,
   };
+  if (!metadata.transfer) delete metadata.transfer;
   let release = () => {};
   let storageFailed = false;
   const fail = (error: unknown) => {
@@ -161,25 +197,51 @@ export function createRecoverableRecordingStore(
   };
   const store = createRecordingChunkStore(proxy, 'chunk', fail);
   let finishing: Promise<Blob> | undefined;
+  // Manifest updates are serialised so a later flag never loses an earlier one.
+  let manifestQueue: Promise<void> = Promise.resolve();
+  const updateManifest = (patch: Partial<RecordingRecoveryMetadata>) => {
+    metadata = { ...metadata, ...patch };
+    const snapshot = metadata;
+    const run = manifestQueue.then(async () => {
+      const target = await directory;
+      if (target) await writeManifest(target, snapshot);
+    });
+    manifestQueue = run.catch(() => {});
+    return run;
+  };
   return {
+    id: metadata.id,
     append: store.append,
     flush: store.flush,
     snapshot: (mimeType = input.mimeType): Promise<Blob> => store.snapshot(mimeType),
-    finish(mimeType = input.mimeType): Promise<Blob> {
+    /** `header` replaces the first bytes of the result (e.g. a patched WAV header). */
+    finish(mimeType = input.mimeType, options?: { header?: Blob }): Promise<Blob> {
       return finishing ??= (async () => {
-        const blob = await store.finish(mimeType);
+        const raw = await store.finish(mimeType);
+        const header = options?.header;
+        const blob = header && header.size && raw.size >= header.size
+          ? new Blob([header, raw.slice(header.size)], { type: mimeType })
+          : raw;
         const target = await directory;
         if (target) {
-          const completed = { ...metadata, complete: !storageFailed };
-          try { await writeManifest(target, completed); } catch (error) { fail(error); }
+          try { await updateManifest({ complete: !storageFailed }); } catch (error) { fail(error); }
           savedBlobs.set(blob, { id: metadata.id, acknowledge: async () => {
             // Mark, but do not delete: File-backed Blobs become unreadable if
             // their source disappears, even after an IndexedDB copy is saved.
-            await writeManifest(target, { ...completed, savedToLibrary: true, libraryOwnershipVersion: 1 });
+            await updateManifest({ savedToLibrary: true, libraryOwnershipVersion: 1 });
           } });
         }
         return blob;
       })();
+    },
+    /** Record that the host's folder now holds this whole track. */
+    async markDelivered(): Promise<void> {
+      await updateManifest({ deliveredToHost: true });
+    },
+    /** Attach timing metadata once it is known (after the track stops). */
+    async updateTransferCapture(capture: unknown): Promise<void> {
+      if (!metadata.transfer) return;
+      await updateManifest({ transfer: { ...metadata.transfer, capture } });
     },
     async discard() {
       try { await store.discard(); await directory; await root?.removeEntry(metadata.id, { recursive: true }); }
@@ -264,4 +326,54 @@ export async function recoverRecording(
     // committed library ownership is checked before any future recovery/cleanup.
     try { await savedBlobs.get(blob)?.acknowledge(); } catch { /* Ownership remains authoritative. */ }
   });
+}
+
+export interface TransferableRecording {
+  id: string;
+  metadata: RecordingRecoveryMetadata;
+  /** Committed bytes on disk (a contiguous prefix of the track). */
+  blob: Blob;
+  complete: boolean;
+}
+
+/**
+ * Tracks from this room that have not reached the host yet, e.g. after the
+ * guest's tab crashed or reloaded mid-take. `excludeIds` are this document's
+ * own live recorders (they are sent from memory instead).
+ */
+export async function listTransferableRecordings(
+  filter: { roomId: string; excludeIds?: Set<string> },
+  environment = browserRecoveryEnvironment(),
+): Promise<TransferableRecording[]> {
+  if (!environment) return [];
+  const root = await environment.root();
+  const results: TransferableRecording[] = [];
+  for await (const [id, handle] of root.entries()) {
+    if (handle.kind !== 'directory' || !validId(id) || filter.excludeIds?.has(id)) continue;
+    try {
+      await environment.lock(id, async available => {
+        if (!available) return;
+        const directory = await root.getDirectoryHandle(id, { create: false });
+        const metadata = await readManifest(directory, id);
+        if (metadata.deliveredToHost || metadata.transfer?.roomId !== filter.roomId) return;
+        const { chunks, truncated } = await readRecoveryChunks(directory);
+        if (!chunks.length) return;
+        results.push({ id, metadata, blob: new Blob(chunks, { type: metadata.mimeType }), complete: metadata.complete && !truncated });
+      }, { mode: 'shared' });
+    } catch { /* Skip unreadable or foreign entries. */ }
+  }
+  // Keep the backing files alive while they are being sent.
+  await retainRecordingBackups(results.map(result => result.id), environment).catch(() => {});
+  return results.sort((a, b) => a.metadata.createdAt.localeCompare(b.metadata.createdAt));
+}
+
+/** Record host delivery for a recovered track (live tracks use their store). */
+export async function markRecoveredRecordingDelivered(id: string, environment = browserRecoveryEnvironment()): Promise<void> {
+  if (!environment || !validId(id)) return;
+  await environment.lock(id, async () => {
+    const root = await environment.root();
+    const directory = await root.getDirectoryHandle(id, { create: false });
+    const metadata = await readManifest(directory, id);
+    await writeManifest(directory, { ...metadata, deliveredToHost: true });
+  }, { mode: 'shared', wait: true });
 }

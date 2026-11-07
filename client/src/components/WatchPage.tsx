@@ -4,7 +4,7 @@ import type Hls from 'hls.js';
 import '../styles/studio-chrome.css';
 import { StudioIcon } from './StudioIcon.tsx';
 import { ApiRequestError, requestJson, resolveMediaHttpUrl } from '../utils/apiClient.ts';
-import { pollWatchStatus, type WatchStatus } from '../utils/watchStatus.ts';
+import { canonicalWatchPath, looksLikeReplacedWatchLink, pollWatchStatus, type WatchStatus } from '../utils/watchStatus.ts';
 import { HlsRecoveryPolicy } from '../utils/hlsRecovery.ts';
 
 // The player library loads only once there is something to play, so the
@@ -65,10 +65,16 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     if (!roomId) { setRoomError('missing'); return; }
     const controller = new AbortController();
     setRoomError(null);
-    requestJson<WatchRoom>(`/api/rooms/${encodeURIComponent(roomId)}`, { signal: controller.signal })
+    requestJson<WatchRoom>(`/api/watch/${encodeURIComponent(roomId)}`, { signal: controller.signal })
       .then((data) => {
         if (!data || typeof data.id !== 'string' || typeof data.name !== 'string') throw new Error('Invalid room response');
-        if (!controller.signal.aborted) setRoom(data);
+        if (controller.signal.aborted) return;
+        setRoom(data);
+        // An older /watch/<roomId> link: show the canonical address from now on.
+        const canonical = canonicalWatchPath(roomId, data.id, window.location.pathname);
+        if (canonical) {
+          try { window.history.replaceState(window.history.state, '', `${canonical}${window.location.search}${window.location.hash}`); } catch { /* Keep the old address. */ }
+        }
       })
       .catch((error) => {
         if (!controller.signal.aborted) setRoomError(error instanceof ApiRequestError && error.status === 404 ? 'missing' : 'failed');
@@ -78,16 +84,18 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
 
   const gated = Boolean(room?.registration?.enabled) && !registered;
   const ready = Boolean(room) && !roomError && !gated;
+  // The media server publishes under the canonical watch id (an old link may carry the room id).
+  const watchId = room?.id || roomId;
 
   // Wait for room details and registration before requesting any live media.
   useEffect(() => {
     if (!ready || !mediaHttpUrl) return;
-    return pollWatchStatus(`${mediaHttpUrl}/watch/${encodeURIComponent(roomId)}/status`, (next) => {
+    return pollWatchStatus(`${mediaHttpUrl}/watch/${encodeURIComponent(watchId)}/status`, (next) => {
       setStatus(next);
       setStatusFailed(false);
       if (next.live) setWasLive(true);
     }, () => setStatusFailed(true));
-  }, [ready, mediaHttpUrl, roomId, retry]);
+  }, [ready, mediaHttpUrl, watchId, retry]);
 
   const playlistUrl = ready && status?.live && status.playlistPath ? `${mediaHttpUrl}${status.playlistPath}` : '';
 
@@ -187,7 +195,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     setFormBusy(true);
     setFormError('');
     try {
-      await requestJson(`/api/rooms/${encodeURIComponent(roomId)}/registrants`, {
+      await requestJson(`/api/watch/${encodeURIComponent(watchId)}/registrants`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name: form.name.trim(), email: form.email.trim() }),
@@ -199,7 +207,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     } finally {
       setFormBusy(false);
     }
-  }, [form.email, form.name, roomId]);
+  }, [form.email, form.name, roomId, watchId]);
 
   const title = room?.name || 'Live broadcast';
   const schedule = formatSchedule(room?.scheduledFor);
@@ -215,8 +223,17 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
       <main className="watch-main">
         {roomError === 'missing' ? (
           <section className="watch-card" role="alert">
-            <h1>Broadcast not found</h1>
-            <p>This link doesn't point to a studio. Check the link you were given.</p>
+            {looksLikeReplacedWatchLink(roomId) ? (
+              <>
+                <h1>This watch link was replaced</h1>
+                <p>The studio now uses a new watch link. Ask the host for the new link.</p>
+              </>
+            ) : (
+              <>
+                <h1>Broadcast not found</h1>
+                <p>This link doesn't point to a studio. Check the link you were given.</p>
+              </>
+            )}
           </section>
         ) : roomError === 'failed' ? (
           <section className="watch-card" role="alert">

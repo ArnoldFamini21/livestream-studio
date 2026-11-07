@@ -10,6 +10,7 @@ import type { Readable, Writable } from 'node:stream';
 import ffmpegStaticPath from 'ffmpeg-static';
 import type { RtmpRelayDestination } from '@studio/shared';
 import { createFfmpegArgs } from './rtmp.js';
+import { FfmpegProgressParser } from './ffmpegProgress.js';
 import {
   WEBM_CLUSTER_ID,
   WEBM_SEGMENT_ID,
@@ -72,7 +73,11 @@ function startRelay(outputPath: string) {
     stdio: ['pipe', 'ignore', 'pipe'],
   });
   let stderr = '';
-  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+  // Progress reports are expected on stderr; only log lines count as errors.
+  const progress = new FfmpegProgressParser();
+  child.stderr.on('data', (chunk: Buffer) => {
+    for (const line of progress.push(chunk).logLines) stderr += `${line}\n`;
+  });
   const closed = once(child, 'close').then(([code, signal]) => ({
     code: code as number | null,
     signal: signal as NodeJS.Signals | null,

@@ -16,6 +16,106 @@ export interface RoomSnapshot {
   studioBranding?: StudioBrandingPayload;
   passwordHash?: string;
   passwordSalt?: string;
+  /** Live-session state that must survive a restart (see RoomSessionSnapshot). */
+  sessionState?: RoomSessionSnapshot;
+}
+
+/**
+ * What a studio needs to carry on after a server restart besides its settings:
+ * the private watch-link id, an in-progress recording (so guests still finalize
+ * and upload their takes), bans and removals, the guests who were admitted
+ * (so they return to their place rather than the green room), and redeemed
+ * single-use invite links.
+ */
+export interface RoomSessionSnapshot {
+  watchId?: string;
+  /** The studio was created through the owner gate. */
+  createdByOwner?: boolean;
+  /** Saved before private watch ids: /watch/<roomId> links keep working for it. */
+  legacyWatchByRoomId?: boolean;
+  recording?: { sessionId: string; startedAt?: string; paused?: boolean };
+  bannedJoinSessionIds?: string[];
+  bannedIps?: Array<{ ip: string; expiresAt: number }>;
+  returningGuests?: Array<{ joinSessionId: string; status: 'on-stage' | 'backstage'; leftAtMs: number; present?: boolean }>;
+  removedJoinSessionIds?: Array<{ joinSessionId: string; removedAt: number }>;
+  redeemedInvites?: Array<{ joinSessionId: string; kind: 'co-host' | 'guest-secure'; expiresAt: number }>;
+}
+
+const MAX_SESSION_LIST = 200;
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normalizeSessionList<T>(value: unknown, mapItem: (item: Record<string, unknown>) => T | null): T[] {
+  if (!Array.isArray(value)) return [];
+  const result: T[] = [];
+  for (const item of value.slice(0, MAX_SESSION_LIST)) {
+    if (!item || typeof item !== 'object') continue;
+    const mapped = mapItem(item as Record<string, unknown>);
+    if (mapped) result.push(mapped);
+  }
+  return result;
+}
+
+export function normalizeRoomSessionSnapshot(value: unknown): RoomSessionSnapshot | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Record<string, unknown>;
+  const result: RoomSessionSnapshot = {};
+  const watchId = safeText(input.watchId, 64);
+  if (/^[A-Za-z0-9_-]{12,64}$/.test(watchId)) result.watchId = watchId;
+  if (input.createdByOwner === true) result.createdByOwner = true;
+  if (input.legacyWatchByRoomId === true) result.legacyWatchByRoomId = true;
+
+  const recordingInput = input.recording && typeof input.recording === 'object' ? input.recording as Record<string, unknown> : null;
+  const recordingSessionId = safeText(recordingInput?.sessionId, 128);
+  if (recordingInput && /^[A-Za-z0-9_.:-]{1,128}$/.test(recordingSessionId)) {
+    const startedAt = safeIsoDate(recordingInput.startedAt);
+    result.recording = {
+      sessionId: recordingSessionId,
+      ...(startedAt ? { startedAt } : {}),
+      ...(recordingInput.paused === true ? { paused: true } : {}),
+    };
+  }
+
+  const banned = Array.isArray(input.bannedJoinSessionIds)
+    ? input.bannedJoinSessionIds.filter((id): id is string => typeof id === 'string' && SESSION_ID_PATTERN.test(id)).slice(0, MAX_SESSION_LIST)
+    : [];
+  if (banned.length) result.bannedJoinSessionIds = banned;
+
+  const bannedIps = normalizeSessionList(input.bannedIps, (item) => {
+    const ip = safeText(item.ip, 64);
+    const expiresAt = finiteNumber(item.expiresAt);
+    return ip && expiresAt ? { ip, expiresAt } : null;
+  });
+  if (bannedIps.length) result.bannedIps = bannedIps;
+
+  const returningGuests = normalizeSessionList(input.returningGuests, (item) => {
+    const joinSessionId = safeText(item.joinSessionId, 128);
+    const leftAtMs = finiteNumber(item.leftAtMs);
+    const status: 'on-stage' | 'backstage' | null = item.status === 'on-stage' || item.status === 'backstage' ? item.status : null;
+    if (!SESSION_ID_PATTERN.test(joinSessionId) || leftAtMs === null || !status) return null;
+    return { joinSessionId, status, leftAtMs, ...(item.present === true ? { present: true } : {}) };
+  });
+  if (returningGuests.length) result.returningGuests = returningGuests;
+
+  const removed = normalizeSessionList(input.removedJoinSessionIds, (item) => {
+    const joinSessionId = safeText(item.joinSessionId, 128);
+    const removedAt = finiteNumber(item.removedAt);
+    return SESSION_ID_PATTERN.test(joinSessionId) && removedAt !== null ? { joinSessionId, removedAt } : null;
+  });
+  if (removed.length) result.removedJoinSessionIds = removed;
+
+  const redeemed = normalizeSessionList(input.redeemedInvites, (item) => {
+    const joinSessionId = safeText(item.joinSessionId, 128);
+    const expiresAt = finiteNumber(item.expiresAt);
+    const kind: 'co-host' | 'guest-secure' | null = item.kind === 'co-host' || item.kind === 'guest-secure' ? item.kind : null;
+    return SESSION_ID_PATTERN.test(joinSessionId) && expiresAt !== null && kind ? { joinSessionId, kind, expiresAt } : null;
+  });
+  if (redeemed.length) result.redeemedInvites = redeemed;
+
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 export interface RoomSnapshotStore {
@@ -40,6 +140,7 @@ interface PgRoomRow {
   studio_branding?: unknown;
   password_hash?: unknown;
   password_salt?: unknown;
+  session_state?: unknown;
 }
 
 function firstConfiguredDatabaseUrl(env: Record<string, string | undefined>): string {
@@ -100,6 +201,7 @@ function normalizeRoomSettings(value: unknown): RoomSettings {
     enableStreaming: input.enableStreaming === true,
     greenRoomEnabled: input.greenRoomEnabled !== false,
     passwordProtected: input.passwordProtected === true,
+    ...(input.coHostsJoinOnStage === true ? { coHostsJoinOnStage: true } : {}),
   };
 }
 
@@ -189,6 +291,7 @@ export function normalizeRoomSnapshot(value: unknown): RoomSnapshot | null {
   const passwordHash = safeText(input.passwordHash, 256);
   const passwordSalt = safeText(input.passwordSalt, 128);
   const studioBranding = normalizeStudioBranding(input.studioBranding);
+  const sessionState = normalizeRoomSessionSnapshot(input.sessionState);
 
   return {
     room: {
@@ -210,6 +313,7 @@ export function normalizeRoomSnapshot(value: unknown): RoomSnapshot | null {
     ...(studioBranding ? { studioBranding } : {}),
     ...(passwordHash ? { passwordHash } : {}),
     ...(passwordSalt ? { passwordSalt } : {}),
+    ...(sessionState ? { sessionState } : {}),
   };
 }
 
@@ -258,6 +362,8 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
         updated_at timestamptz NOT NULL DEFAULT now()
       )
     `);
+    // Added after the first release; older tables gain the column in place.
+    await this.db.query('ALTER TABLE studio_room_snapshots ADD COLUMN IF NOT EXISTS session_state jsonb');
     await this.db.query(`
       CREATE INDEX IF NOT EXISTS studio_room_snapshots_updated_at_idx
         ON studio_room_snapshots (updated_at)
@@ -266,7 +372,7 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
 
   async loadRoomSnapshots(): Promise<RoomSnapshot[]> {
     const result = await this.db.query(`
-      SELECT room, host_token, creator_ip, has_been_joined, registrants, studio_branding, password_hash, password_salt
+      SELECT room, host_token, creator_ip, has_been_joined, registrants, studio_branding, password_hash, password_salt, session_state
       FROM studio_room_snapshots
       WHERE room->>'status' <> 'ended'
       ORDER BY created_at ASC
@@ -291,10 +397,11 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
         studio_branding,
         password_hash,
         password_salt,
+        session_state,
         created_at,
         updated_at
       )
-      VALUES ($1, $2::jsonb, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10::timestamptz, now())
+      VALUES ($1, $2::jsonb, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10::jsonb, $11::timestamptz, now())
       ON CONFLICT (room_id) DO UPDATE SET
         room = EXCLUDED.room,
         host_token = EXCLUDED.host_token,
@@ -304,6 +411,7 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
         studio_branding = EXCLUDED.studio_branding,
         password_hash = EXCLUDED.password_hash,
         password_salt = EXCLUDED.password_salt,
+        session_state = EXCLUDED.session_state,
         updated_at = now()
     `, [
       normalized.room.id,
@@ -315,6 +423,7 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
       normalized.studioBranding ? JSON.stringify(normalized.studioBranding) : null,
       normalized.passwordHash || null,
       normalized.passwordSalt || null,
+      normalized.sessionState ? JSON.stringify(normalized.sessionState) : null,
       normalized.room.createdAt,
     ]);
   }
@@ -339,6 +448,7 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
       studioBranding: row.studio_branding,
       passwordHash: row.password_hash,
       passwordSalt: row.password_salt,
+      sessionState: row.session_state,
     });
   }
 }

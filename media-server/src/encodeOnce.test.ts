@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import ffmpegStaticPath from 'ffmpeg-static';
 import { createFfmpegEncoderArgs, createFfmpegPushArgs } from './rtmp.js';
+import { createFfmpegLiveBackupArgs } from './liveBackupRecording.js';
 import { FlvSinkFeed, FlvTagStream } from './flvStream.js';
 import { WebmSinkFeed, WebmStreamTracker } from './webmStream.js';
 
@@ -130,5 +131,87 @@ describe('encode-once fan-out with real FFmpeg', { skip: !ffmpegAvailable && 'FF
     assert.ok(full.durationSeconds >= DURATION_SECONDS - 0.5, `on-time output covers the show (${full.durationSeconds}s)`);
     assert.ok(joined.frames > 0 && joined.frames < full.frames, 'the late joiner starts mid-show');
     assert.ok(recovered.frames > 0 && recovered.frames < full.frames, 'the stalled uploader skipped ahead');
+  });
+});
+
+async function probeVideoCodec(file: string): Promise<string> {
+  // ffmpeg-static ships without ffprobe; FFmpeg's own input report names the codec.
+  const result = await run(['-hide_banner', '-i', file]);
+  const match = result.stderr.match(/Video: (\w+)/);
+  return match ? match[1] : '';
+}
+
+describe('copy mode with real FFmpeg: browser H.264 passes through', { skip: !ffmpegAvailable && 'FFmpeg is not available' }, () => {
+  let dir = '';
+  let mkv: Buffer = Buffer.alloc(0);
+  const copyOptions = { ...options, videoMode: 'copy' as const };
+
+  before(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'relay-copy-'));
+    // What Chrome's MediaRecorder uploads for video/x-matroska;codecs=avc1,opus:
+    // H.264 with a keyframe every 2 s and Opus audio in Matroska.
+    const source = await run([
+      '-v', 'error',
+      '-f', 'lavfi', '-i', `testsrc2=size=320x180:rate=15:duration=${DURATION_SECONDS}`,
+      '-f', 'lavfi', '-i', `sine=frequency=440:sample_rate=48000:duration=${DURATION_SECONDS}`,
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-g', '30', '-pix_fmt', 'yuv420p',
+      '-c:a', 'libopus', '-f', 'matroska', 'pipe:1',
+    ]);
+    assert.equal(source.code, 0, source.stderr);
+    mkv = source.stdout;
+  });
+
+  after(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it('copies the video, encodes AAC, and the backup copies the program', { timeout: 60_000 }, async () => {
+    const encoder = spawn(ffmpegPath, createFfmpegEncoderArgs(copyOptions), { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = '';
+    encoder.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    const tracker = new WebmStreamTracker();
+    const encoderFeed = new WebmSinkFeed(encoder.stdin);
+    encoderFeed.join(tracker);
+    const flv = new FlvTagStream();
+    const programFile = path.join(dir, 'program.flv');
+    const backupFile = path.join(dir, 'backup.mp4');
+    const uploader = spawnUploader(programFile);
+    const uploaderFeed = new FlvSinkFeed(uploader.stdin, flv);
+    uploaderFeed.join();
+    const backupArgs = createFfmpegLiveBackupArgs(backupFile, { ...options, maxBytes: 64 * 1024 * 1024 });
+    assert.ok(backupArgs);
+    const backup = spawn(ffmpegPath, ['-y', ...backupArgs], { stdio: ['pipe', 'ignore', 'ignore'] });
+    const backupFeed = new FlvSinkFeed(backup.stdin, flv);
+    backupFeed.join();
+
+    encoder.stdout.on('data', (data: Buffer) => {
+      const chunk = flv.push(data);
+      if (!chunk) return;
+      uploaderFeed.write(chunk);
+      backupFeed.write(chunk);
+    });
+    const encoderDone = once(encoder.stdout, 'end');
+    const startedAt = Date.now();
+    const step = Math.ceil(mkv.length / 20);
+    for (let offset = 0; offset < mkv.length; offset += step) {
+      const chunk = mkv.subarray(offset, offset + step);
+      encoderFeed.write(chunk, tracker.push(chunk));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    encoder.stdin.end();
+    await encoderDone;
+    const closed = [once(uploader, 'close'), once(backup, 'close')];
+    uploader.stdin.end();
+    backup.stdin.end();
+    await Promise.all(closed);
+
+    assert.ok(tracker.joinPoint() !== null, 'the Matroska upload is tracked like WebM');
+    assert.ok(Date.now() - startedAt < DURATION_SECONDS * 1000, 'a copy keeps up far faster than real time');
+    assert.match(stderr, /progress=end/, 'the encoder reports progress');
+    assert.equal(await probeVideoCodec(programFile), 'h264');
+    const program = await probe(programFile);
+    const backupProbe = await probe(backupFile);
+    assert.equal(program.frames, DURATION_SECONDS * 15, 'every browser frame arrives, none re-encoded or dropped');
+    assert.ok(backupProbe.durationSeconds >= DURATION_SECONDS - 0.5, `the backup covers the show (${backupProbe.durationSeconds}s)`);
   });
 });

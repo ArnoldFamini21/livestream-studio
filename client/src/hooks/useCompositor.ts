@@ -24,6 +24,25 @@ import { applyCompositorClipShapes, getCompositorClipShapes, type CompositorClip
 import type { ActiveStreamScreen } from '../utils/streamScreens.ts';
 import type { LiveCaptionSegment } from './useLiveCaptions.ts';
 import { createFrameTicker } from '../utils/frameTicker.ts';
+import { OverlayPresenceTracker } from '../utils/canvasMotion.ts';
+import {
+  applyCanvasMotion,
+  drawBannerOverlay,
+  drawSceneTransitionOverlay,
+  drawTickerOverlay,
+  getLowerThirdCanvasMotion,
+  LOWER_THIRD_CANVAS_EXIT_MS,
+  STILL_MOTION,
+  type CanvasMotion,
+  type CompositorSceneTransition,
+  type OverlayScale,
+} from '../utils/compositorOverlays.ts';
+import {
+  CompositorLayoutCache,
+  hasLayoutAnimation,
+  observeCompositorLayout,
+} from '../utils/compositorLayoutCache.ts';
+import { loadCanvasFonts } from '../utils/canvasFonts.ts';
 
 /** The program's frame rate: the canvas stream and the draw timer. */
 const COMPOSITOR_FPS = 30;
@@ -51,7 +70,29 @@ interface CompositorProps {
   logoSize?: LogoSize;
   logoOpacity?: number;
   streamScreen?: ActiveStreamScreen | null;
+  /** The scene transition the stage is showing, drawn into the program too. */
+  sceneTransition?: CompositorSceneTransition | null;
 }
+
+/** A stage video's place on the canvas, cached until the layout changes. */
+interface CompositorVideoPlan {
+  video: HTMLVideoElement;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fade: number;
+  clipShapes: CompositorClipShape[];
+  objectFit: ReturnType<typeof getCompositorVideoObjectFit>;
+}
+
+interface CompositorStagePlan {
+  stageOpacity: number;
+  videos: CompositorVideoPlan[];
+}
+
+/** The stage's scene-transition overlay; its stinger clip is drawn with the overlay, not as a tile. */
+const SCENE_TRANSITION_SELECTOR = '[data-compositor-scene-transition]';
 
 const AVATAR_COLORS = [
   '#6366f1', '#8b5cf6', '#a855f7', '#d946ef',
@@ -574,14 +615,14 @@ function drawVideoElementFrame(
   x: number,
   y: number,
   width: number,
-  height: number
+  height: number,
+  cachedObjectFit?: ReturnType<typeof getCompositorVideoObjectFit>
 ): boolean {
   if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0 || width <= 0 || height <= 0) {
     return false;
   }
 
-
-  const objectFit = getCompositorVideoObjectFit(video);
+  const objectFit = cachedObjectFit ?? getCompositorVideoObjectFit(video);
   const plan = getCompositorVideoDrawPlan(video.videoWidth, video.videoHeight, width, height, objectFit);
   if (!plan) return false;
 
@@ -709,7 +750,8 @@ function drawLowerThird(
   ctx: CanvasRenderingContext2D,
   lowerThird: LowerThirdData,
   brandColor: string,
-  options: { hasBanner: boolean; hasTicker: boolean }
+  options: { hasBanner: boolean; hasTicker: boolean },
+  motion: CanvasMotion = STILL_MOTION
 ) {
   const paddingX = 34;
   const nameHeight = lowerThird.style === 'minimal' ? 58 : 64;
@@ -731,6 +773,8 @@ function drawLowerThird(
   ctx.font = buildLowerThirdCanvasFont(500, 24, lowerThird.fontFamily);
   const titleWidth = lowerThird.title ? ctx.measureText(lowerThird.title).width : 0;
   const width = Math.min(maxWidth, Math.max(minWidth, Math.ceil(Math.max(nameWidth, titleWidth) + paddingX * 2)));
+  // Enter/exit motion chosen for this lower third, as in the preview.
+  applyCanvasMotion(ctx, motion, { x, y, width, height });
 
   ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
   ctx.shadowBlur = 28;
@@ -1237,6 +1281,7 @@ export function useCompositor({
   logoSize = 'medium',
   logoOpacity = DEFAULT_LOGO_OPACITY,
   streamScreen,
+  sceneTransition = null,
 }: CompositorProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const compositeStreamRef = useRef<MediaStream | null>(null);
@@ -1244,6 +1289,11 @@ export function useCompositor({
   const backgroundImageRef = useRef<HTMLImageElement | null>(null);
   const activePresentationSlideImageRef = useRef<HTMLImageElement | null>(null);
   const frameTargetRef = useRef<CompositorFrameTarget | null>(null);
+  const lowerThirdPresenceRef = useRef(new OverlayPresenceTracker<LowerThirdData>(LOWER_THIRD_CANVAS_EXIT_MS));
+  // When each banner and ticker appeared: their scrolling starts from there.
+  const bannerPresenceRef = useRef(new OverlayPresenceTracker<BannerData>(0));
+  const tickerPresenceRef = useRef(new OverlayPresenceTracker<TickerData>(0));
+  const layoutCacheRef = useRef(new CompositorLayoutCache<CompositorStagePlan>());
   const activePresentationSlideImageUrl = getPresentationSlideImageUrl(activeMedia, activeMediaSlideIndex);
 
   useEffect(() => {
@@ -1352,11 +1402,43 @@ export function useCompositor({
     
     const { displayScaleX: scaleX, displayScaleY: scaleY, logicalScaleX, logicalScaleY } = scales;
 
-    // The stage fades when the presenting view changes; the broadcast fades with it.
-    const stageLayer = containerRef.current.querySelector('[data-compositor-stage-layer]');
-    const stageOpacity = stageLayer ? Number.parseFloat(getComputedStyle(stageLayer).opacity) : 1;
+    const container = containerRef.current;
+    const now = performance.now();
+    // Tile rectangles, clips, fit and fades are read from the DOM only when the
+    // layout changes or animates; otherwise the cached plan is drawn.
+    const stagePlan = layoutCacheRef.current.get(now, () => {
+      // The stage fades when the presenting view changes; the broadcast fades with it.
+      const stageLayer = container.querySelector('[data-compositor-stage-layer]');
+      const stageOpacity = stageLayer ? Number.parseFloat(getComputedStyle(stageLayer).opacity) : 1;
+      const plans: CompositorVideoPlan[] = [];
+      container.querySelectorAll('video').forEach((video) => {
+        if (video.hasAttribute('data-compositor-output')) return;
+        if (video.classList.contains('studio-stage-background-video')) return;
+        if (activeMedia && video.closest('.studio-active-media')) return;
+        if (video.closest(SCENE_TRANSITION_SELECTOR)) return;
+        // Tiles and shared screens fade in and out on layout changes.
+        const fade = getElementOpacity(video.closest('.studio-active-media, [data-stage-item-id]'));
+        if (fade <= 0.01) return;
+        const rect = video.getBoundingClientRect();
+        plans.push({
+          video,
+          x: (rect.left - containerBounds.left) * scaleX,
+          y: (rect.top - containerBounds.top) * scaleY,
+          width: rect.width * scaleX,
+          height: rect.height * scaleY,
+          fade,
+          // Mirror rounded and circular tile masks so the output matches the preview.
+          clipShapes: getCompositorClipShapes(video, container, containerBounds, scales, now),
+          objectFit: getCompositorVideoObjectFit(video),
+        });
+      });
+      return {
+        stageOpacity: Number.isFinite(stageOpacity) ? Math.min(1, Math.max(0, stageOpacity)) : 1,
+        videos: plans,
+      };
+    }, () => hasLayoutAnimation(container.getAnimations?.({ subtree: true }) ?? []));
     ctx.save();
-    ctx.globalAlpha = Number.isFinite(stageOpacity) ? Math.min(1, Math.max(0, stageOpacity)) : 1;
+    ctx.globalAlpha = stagePlan.stageOpacity;
 
     // 2. Draw shared media first so participant PiP tiles can remain visible above it.
     if (activeMedia) {
@@ -1379,32 +1461,21 @@ export function useCompositor({
     }
 
     // 3. Draw Videos mapped precisely from DOM coordinates
-    const videos = containerRef.current.querySelectorAll('video');
-    videos.forEach((video) => {
-      if (video.hasAttribute('data-compositor-output') || isCompositorFeedbackSource(video.srcObject, compositeStreamRef.current)) return;
-      if (video.classList.contains('studio-stage-background-video')) return;
-      if (activeMedia && video.closest('.studio-active-media')) return;
-
-      // Tiles and shared screens fade in and out on layout changes.
-      const fade = getElementOpacity(video.closest('.studio-active-media, [data-stage-item-id]'));
-      if (fade <= 0.01) return;
+    stagePlan.videos.forEach((plan) => {
+      const { video } = plan;
+      if (!video.isConnected || isCompositorFeedbackSource(video.srcObject, compositeStreamRef.current)) return;
+      // A file or URL video without CORS would taint the canvas and stop the
+      // broadcast and recording for good; skip it instead.
+      if (!video.srcObject && !canDrawMediaVideo(video, window.location.href)) return;
       const baseAlpha = ctx.globalAlpha;
-      ctx.globalAlpha = baseAlpha * fade;
-      const rect = video.getBoundingClientRect();
-      const x = (rect.left - containerBounds.left) * scaleX;
-      const y = (rect.top - containerBounds.top) * scaleY;
-      const w = rect.width * scaleX;
-      const h = rect.height * scaleY;
-
-      // Mirror rounded and circular tile masks so the output matches the preview.
-      const clipShapes = getCompositorClipShapes(video, containerRef.current!, containerBounds, scales);
-      if (clipShapes.length > 0) {
+      ctx.globalAlpha = baseAlpha * plan.fade;
+      if (plan.clipShapes.length > 0) {
         ctx.save();
-        applyCompositorClipShapes(ctx, clipShapes);
-        drawVideoElementFrame(ctx, video, x, y, w, h);
+        applyCompositorClipShapes(ctx, plan.clipShapes);
+        drawVideoElementFrame(ctx, video, plan.x, plan.y, plan.width, plan.height, plan.objectFit);
         ctx.restore();
       } else {
-        drawVideoElementFrame(ctx, video, x, y, w, h);
+        drawVideoElementFrame(ctx, video, plan.x, plan.y, plan.width, plan.height, plan.objectFit);
       }
       ctx.globalAlpha = baseAlpha;
     });
@@ -1434,45 +1505,36 @@ export function useCompositor({
     const activeBanners = banners.filter(b => b.visible);
     const activeTickers = tickers.filter(t => t.visible);
     const activeLowerThird = lowerThirds.find(lt => lt.visible);
-    if (activeLowerThird) {
-      drawLowerThird(ctx, activeLowerThird, brandColor, {
-        hasBanner: activeBanners.length > 0,
-        hasTicker: activeTickers.length > 0,
-      });
-    }
+    const hasBottomBanner = activeBanners.some((banner) => banner.position !== 'top');
+    // Overlays use the preview's CSS sizes, scaled from the stage to the output.
+    const overlayScale: OverlayScale = { x: logicalScaleX, y: logicalScaleY };
 
-    // 4. Draw Active Banners
-    if (activeBanners.length > 0) {
-      const banner = activeBanners[0]; // Streaming engines typically composite one primary banner
-      const bh = 100;
-      const by = 1080 - bh - 80; // 80px margin from bottom
-      const bw = 1760;
-      const bx = 80;
-      
-      ctx.fillStyle = banner.style === 'custom' ? (banner.customColor || brandColor) : banner.style === 'breaking' ? '#dc2626' : banner.style === 'alert' ? '#d97706' : banner.style === 'info' ? '#2563eb' : brandColor;
-      ctx.beginPath();
-      ctx.roundRect(bx, by, bw, bh, 12);
-      ctx.fill();
-      
-      ctx.fillStyle = 'white';
-      ctx.font = 'bold 38px Inter, sans-serif';
-      ctx.fillText(banner.text, bx + 40, by + 62);
-    }
-    
-    // 5. Draw Active Tickers
-    if (activeTickers.length > 0) {
-      const ticker = activeTickers[0];
-      const th = 60;
-      const ty = 1080 - th;
-      
-      ctx.fillStyle = brandColor;
-      ctx.fillRect(0, ty, 1920, th);
-      
-      ctx.fillStyle = 'white';
-      ctx.font = '28px Inter, sans-serif';
-      // Simple static text since marquee animation speed is hard to sync efficiently in raw canvas without an offset counter
-      ctx.fillText(ticker.text, 40, ty + 40);
-    }
+    // Lower thirds slide, fade or bounce in and out as chosen; a hidden one
+    // keeps drawing through its exit.
+    const lowerThirdPresence = lowerThirdPresenceRef.current.update(
+      activeLowerThird ? [{ id: activeLowerThird.id, data: activeLowerThird }] : [],
+      now
+    );
+    lowerThirdPresence.forEach((item) => {
+      ctx.save();
+      drawLowerThird(ctx, item.data, brandColor, {
+        hasBanner: hasBottomBanner,
+        hasTicker: activeTickers.length > 0,
+      }, getLowerThirdCanvasMotion(item.data, item.phase, now - item.since, overlayScale));
+      ctx.restore();
+    });
+
+    // 4. Banners: top or bottom as placed, scrolling when set as a ticker.
+    bannerPresenceRef.current.update(activeBanners.map((banner) => ({ id: banner.id, data: banner })), now)
+      .forEach((item) => {
+        if (item.phase === 'entering') drawBannerOverlay(ctx, item.data, now - item.since, overlayScale);
+      });
+
+    // 5. Tickers scroll at the preview's speed in their own colors.
+    tickerPresenceRef.current.update(activeTickers.map((ticker) => ({ id: ticker.id, data: ticker })), now)
+      .forEach((item) => {
+        if (item.phase === 'entering') drawTickerOverlay(ctx, item.data, now - item.since, overlayScale);
+      });
 
     widgets.filter((widget) => widget.visible).forEach((widget) => {
       drawBroadcastWidgetOverlay(ctx, widget, brandColor);
@@ -1480,7 +1542,7 @@ export function useCompositor({
 
     timers.filter((timer) => timer.visible).forEach((timer) => {
       drawBroadcastTimer(ctx, timer, brandColor, {
-        hasBanner: activeBanners.length > 0,
+        hasBanner: hasBottomBanner,
         hasTicker: activeTickers.length > 0,
         hasLowerThird: Boolean(activeLowerThird),
       });
@@ -1488,14 +1550,14 @@ export function useCompositor({
 
     if (caption) {
       drawLiveCaption(ctx, caption, brandColor, {
-        hasBanner: activeBanners.length > 0,
+        hasBanner: hasBottomBanner,
         hasTicker: activeTickers.length > 0,
         hasLowerThird: Boolean(activeLowerThird),
         hasCenterOverlay: Boolean(highlightedComment),
       });
     }
 
-    const reservedBottom = activeBanners.length > 0 ? 204 : activeTickers.length > 0 ? 84 : 48;
+    const reservedBottom = hasBottomBanner ? 204 : activeTickers.length > 0 ? 84 : 48;
     let leftOverlayBottom = reservedBottom;
     if (highlightedPoll) {
       leftOverlayBottom += drawBroadcastPoll(ctx, highlightedPoll, brandColor, leftOverlayBottom) + 24;
@@ -1507,8 +1569,17 @@ export function useCompositor({
       drawBroadcastComment(ctx, highlightedComment, Math.max(reservedBottom, 96));
     }
     drawBroadcastReactions(ctx, floatingReactions, Date.now());
+
+    // 6. Scene transitions run over the whole program, as on the stage.
+    if (sceneTransition) {
+      drawSceneTransitionOverlay(ctx, sceneTransition, now, brandColor, overlayScale, () => {
+        const stinger = container.querySelector(`${SCENE_TRANSITION_SELECTOR} video`) as HTMLVideoElement | null;
+        if (!stinger || !canDrawMediaVideo(stinger, window.location.href)) return false;
+        return drawVideoElementFrame(ctx, stinger, 0, 0, 1920, 1080, 'cover');
+      });
+    }
     target?.commit();
-  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition]);
 
   // Frames come from a worker timer at the output rate, not requestAnimationFrame,
   // so the stream and recording keep moving when the studio tab is hidden or covered.
@@ -1516,9 +1587,28 @@ export function useCompositor({
   drawLoopRef.current = drawLoop;
   useEffect(() => {
     if (!isActive) return;
-    const ticker = createFrameTicker(COMPOSITOR_FPS, () => drawLoopRef.current());
-    return () => ticker.stop();
+    let cancelled = false;
+    let ticker: ReturnType<typeof createFrameTicker> | null = null;
+    // Canvas text falls back to Arial if drawn before Inter loads; wait for
+    // the faces (bounded, so a missing font never holds the program back).
+    void loadCanvasFonts().then(() => {
+      if (cancelled) return;
+      ticker = createFrameTicker(COMPOSITOR_FPS, () => drawLoopRef.current());
+    });
+    return () => {
+      cancelled = true;
+      ticker?.stop();
+    };
   }, [isActive]);
+
+  // The cached stage plan is rebuilt while the stage layout changes.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!isActive || !container) return;
+    const cache = layoutCacheRef.current;
+    cache.invalidate(performance.now());
+    return observeCompositorLayout(container, () => cache.invalidate(performance.now()));
+  }, [containerRef, isActive]);
 
   return { compositeStreamRef, compositeCanvasRef: canvasRef };
 }

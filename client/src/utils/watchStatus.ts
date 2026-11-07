@@ -1,3 +1,20 @@
+/**
+ * Watch links used to be /watch/<roomId> (10-character ids). They now use a
+ * private watch id; a link of the old shape that the server no longer
+ * resolves was replaced, which is worth saying instead of "not found".
+ */
+export function looksLikeReplacedWatchLink(id: string): boolean {
+  return /^[A-Za-z0-9_-]{10}$/.test(id);
+}
+
+/** Where the address bar should point once the server named the canonical watch id. */
+export function canonicalWatchPath(requestedId: string, canonicalId: string | undefined, pathname: string): string | null {
+  if (!canonicalId || canonicalId === requestedId) return null;
+  const prefix = `/watch/${encodeURIComponent(requestedId)}`;
+  if (!pathname.startsWith(prefix)) return null;
+  return `/watch/${encodeURIComponent(canonicalId)}${pathname.slice(prefix.length)}`;
+}
+
 export interface WatchStatus {
   live: boolean;
   startedAt?: string;

@@ -18,6 +18,20 @@ livestream-studio-media-server
 
 Both services must be connected to the default branch and use the commands from `render.yaml`.
 
+## Free setup checklist
+
+Everything below runs on free tiers. Work through it once after the first deploy, then check `/health` → `readiness.issues` on the signaling server: each item that is still open shows up there as a warning.
+
+1. **Shared secret.** Generate one long random value (`openssl rand -base64 48`) and set it as `LIVE_STREAM_TOKEN_SECRET` on **both** Render services.
+2. **Owner-only studios.** On `livestream-studio-server`, set `STUDIO_OWNER_EMAILS` to your account email (comma-separated for more than one) and/or `STUDIO_CREATE_SECRET` to a long random key. Until one is set anyone can create a studio and use your relay, TURN and chat keys (warning `studio-creation-open`); nothing breaks when you add them later. With the key set, the **Create studio** dialog asks for the "Studio access key" once per browser (it can also be saved under **Settings & account → Studio access key**). Studios created that way are the only ones allowed to use the server's YouTube/Facebook chat keys. Studios you made before setting the key become yours the first time you host them from a browser that has the access key saved (or while signed in with an owner account), so they keep chat import; until then, and for studios other people made, chat keys are refused and a restore ticket no longer rebuilds them after a restart.
+3. **TURN relay.** Create a free Cloudflare Realtime TURN key and set `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_API_TOKEN` on the server (details below). Relay credentials are only handed to browsers holding an admitted seat in a studio (not the green room; a guest gets them the moment they are admitted); the pre-join device check gets STUN servers only.
+4. **Control plane.** `MEDIA_SERVER_URL` (already in `render.yaml`) must point at the media server so removing a guest revokes their SFU session and uploads at once (warning `sfu-revocation-disabled` otherwise).
+5. **Database.** Paste a free Postgres connection string (Neon, Supabase) as `DATABASE_URL` so studios survive restarts.
+6. **Optional chat import.** `YOUTUBE_API_KEY` / `FACEBOOK_ACCESS_TOKEN` on the server.
+7. **Optional AI.** Only with an `OPENAI_API_KEY` (paid). With a key but no policy the AI routes stay locked (`ai-access-locked`); studio owners from `STUDIO_OWNER_EMAILS` may use them, or set `OPENAI_ALLOWED_ACCOUNT_EMAILS` / `OPENAI_ACCESS_TOKEN`.
+8. **Media server limits (defaults suit the free plan).** `MAX_RELAY_SESSIONS=1` broadcast at a time; RTMP destinations must be public hosts (`RTMP_ALLOW_PRIVATE_HOSTS=true` only for local testing); deck rendering requires a studio token (`PRESENTATION_RENDER_REQUIRE_AUTH`, on by default in production) and is deferred while a live relay leaves too little memory (`PRESENTATION_RENDER_LIVE_HEADROOM_MB`, default 256); recording uploads stop with HTTP 507 before free disk drops under `RECORDING_UPLOAD_MIN_FREE_MB` (default 1024) or all uploads exceed `RECORDING_UPLOAD_TOTAL_MAX_MB` (default 16384), and each participant may keep `RECORDING_UPLOADS_PER_PARTICIPANT` (default 4) unfinished uploads. Refused footage stays on the participant's computer.
+9. **Static host.** Upload the built client (`client/dist`, including `.htaccess`) to Hostinger. The `.htaccess` sets the Content-Security-Policy, Permissions-Policy (camera, microphone and screen sharing for this site only) and the SPA fallback. Deploy the client together with the server: the new client sends the seat credential that unlocks TURN and the deck-render token.
+
 ## Required Environment
 
 Set these values in Render:
@@ -30,6 +44,17 @@ PGSSLMODE=require
 ```
 
 The signaling server uses `DATABASE_URL` for PostgreSQL room snapshots and host-scoped recording catalog metadata. This keeps scheduled and newly created studios recoverable across Render restarts and lets hosts sync recording dashboard summaries across browser sessions. Recording blobs and export artifacts are not stored in this database; they stay in browser storage, media-server export storage, Google Drive handoffs, or S3-compatible artifact storage when configured. If `DATABASE_URL` is not set, the server logs that room snapshot persistence is disabled and continues with memory-only rooms and recording catalog metadata.
+
+With `DATABASE_URL` set, each studio snapshot also keeps its live-session state (`session_state` column, added automatically on startup): the private watch-page id, an in-progress recording session (so guests still finalize and upload their takes after a restart), bans, removed guests, the guests who were admitted (they return to their place instead of the green room) and redeemed single-use invite links. A free PostgreSQL database (for example a Neon or Supabase free-tier project) is enough; paste its connection string as `DATABASE_URL`.
+
+Without a database, a restart (every deploy, a crash, the free instance waking from sleep) forgets every studio. The host's browser keeps a signed restore ticket next to its host token (signed with `LIVE_STREAM_TOKEN_SECRET`, so that secret must be set): when the host reconnects, the server rebuilds the studio with the same id, settings, password and watch link. Guests who reconnect first are told the studio is missing; their studio page keeps retrying for about three minutes and shows "Reconnecting to studio server…" instead of ending the session, so they get back in once the host is back. Admitted guests then wait in the green room until the host lets them in again.
+
+Signaling connection lifecycle:
+
+- A dropped connection (Wi-Fi blip, proxy reset, page reload) holds the participant's seat for `SIGNALING_RESUME_GRACE_MS` (default 30000). The client presents the resume token it was given and gets the same participant id, role and place back, so peer connections that are still carrying media stay up. Leaving the studio frees the seat at once.
+- Offers, answers and ICE candidates have their own per-socket budget (600 per 10 s) separate from other messages (100 per 10 s); the client is told when anything is dropped.
+- Wrong room passwords are checked off the event loop, and five wrong guesses from one address lock that address out of the studio for a minute (doubling up to 15 minutes). One address may hold at most `SIGNALING_MAX_SOCKETS_PER_IP` (default 20) studio connections.
+- The public watch page uses a private watch id (`/watch/<watchId>`), never the room id, which is what admits guests to the green room. Waiting guests see only the hosts, not the chat, the stage or other guests, and stage pictures need an admitted participant's token.
 
 Toolbar recording coordinates device-local capture for every on-stage participant. The signaling server signs participant-scoped upload tokens with `LIVE_STREAM_TOKEN_SECRET`; the media-server verifies the same secret, groups completed uploads by room and recording session, and gives only a host/co-host token access to the combined MP4, isolated video, and audio-stem export. The secret must therefore match on both Render services.
 
@@ -47,6 +72,8 @@ OPENAI_HIGHLIGHT_MODEL=gpt-4o-mini
 OPENAI_EPISODE_CONTENT_MODEL=gpt-4o-mini
 OPENAI_CAPTION_TRANSLATION_MODEL=gpt-4o-mini
 ```
+
+The AI routes spend the owner's OpenAI budget, so with a key set they default to closed: they return HTTP 503 `AI_NOT_ENTITLED` until an access policy exists. Accounts in `STUDIO_OWNER_EMAILS` are allowed automatically; `OPENAI_ALLOWED_ACCOUNT_EMAILS` replaces that list, `OPENAI_ACCESS_TOKEN` admits callers presenting the token, and `OPENAI_REQUIRE_ACCOUNT_AUTH=true` admits any signed-in account (reported as a warning because registration is open). `OPENAI_ALLOW_ANONYMOUS=true` is for local development only.
 
 These power the "Generate Transcript" (`/api/transcriptions`), "AI highlights" (`/api/highlights`), "AI Show Notes" (`/api/episode-content`), and "Translate VTT" caption translation (`/api/translate-captions`) actions in the recording and live-caption panels. When `OPENAI_API_KEY` is not set, each endpoint returns HTTP 503 and the studio falls back gracefully — clip suggestions still come from the offline marker/caption heuristics, and manual transcript/show-notes/translation generation is simply unavailable. No transcript or caption text is sent anywhere unless the key is configured and the host triggers the action.
 
@@ -100,6 +127,8 @@ ICE_TRANSPORT_POLICY=all
 ```
 
 When `TURN_STATIC_AUTH_SECRET` and `TURN_URLS` are both set (and `ICE_SERVERS_JSON` is not), `/api/ice-config` reports `source: "turn_rest_secret"` and returns freshly generated credentials on every request. Configure coturn with a matching `static-auth-secret` and `use-auth-secret`.
+
+`/api/ice-config` returns TURN relays only when the request carries `X-Room-Id` and `X-Room-Credential` (the per-seat resume token the browser receives in `room-joined`); without them it answers with STUN servers only and `membershipRequiredForTurn: true`, which is all the pre-join device check needs. The studio refetches the configuration as soon as it holds a seat and applies the relays to its peer connections.
 
 `/health` and `/api/ice-config` expose non-secret ICE readiness metadata. `ice.turnReady: true` means the signaling server is using configured TURN credentials rather than the fallback.
 

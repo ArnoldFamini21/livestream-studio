@@ -72,3 +72,13 @@ describe('screen capture lifecycle', () => {
     assert.equal(source.stopped(), 2);
   });
 });
+
+describe('screen share optimization', () => {
+  it('marks a share optimized for motion so a shared video stays smooth', async () => {
+    const source = fakeStream();
+    const session = createScreenCaptureSession(async () => source.stream);
+    assert.equal(await session.start('motion'), source.stream);
+    assert.equal(source.video.contentHint, 'motion');
+    session.stop();
+  });
+});

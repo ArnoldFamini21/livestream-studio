@@ -55,7 +55,6 @@ export function buildParticipantRecordingSources(
       label: `${options.localParticipant.name} ISO`,
       kind: 'iso',
       stream: createStream([...videoTracks, ...audioTracks]),
-      bitsPerSecond: 8_500_000,
     });
   }
   if (audioTracks.length > 0) {
@@ -77,7 +76,6 @@ export function buildParticipantRecordingSources(
         label: `${options.localParticipant.name} screen`,
         kind: 'screen',
         stream: createStream([...screenVideoTracks, ...screenAudioTracks]),
-        bitsPerSecond: 8_000_000,
       });
     }
   }
@@ -99,7 +97,6 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
       label: `${options.localParticipant.name} ISO`,
       kind: 'iso',
       stream: createStream([...localVideoTracks, ...localAudioTracks]),
-      bitsPerSecond: 8_500_000,
     });
   }
 
@@ -119,7 +116,6 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
       label: `${options.localParticipant.name} camera`,
       kind: 'video',
       stream: createStream(localVideoTracks),
-      bitsPerSecond: 8_000_000,
     });
   }
 
@@ -139,7 +135,6 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
         label: `${participant.name} screen`,
         kind: 'screen',
         stream: createStream(separateScreenTracks),
-        bitsPerSecond: 8_000_000,
       });
     }
 
@@ -149,7 +144,6 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
         label: `${participant.name} ISO`,
         kind: 'iso',
         stream: createStream([...remoteVideoTracks, ...remoteAudioTracks]),
-        bitsPerSecond: 8_500_000,
       });
     }
 
@@ -169,7 +163,6 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
         label: `${participant.name} ${isRemoteScreen ? 'screen' : 'camera'}`,
         kind: isRemoteScreen ? 'screen' : 'video',
         stream: createStream(remoteVideoTracks),
-        bitsPerSecond: 8_000_000,
       });
     }
   }
@@ -183,7 +176,6 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
         label: `${options.localParticipant.name} screen`,
         kind: 'screen',
         stream: createStream(screenVideoTracks),
-        bitsPerSecond: 8_000_000,
       });
       const screenPipSource = options.createScreenPictureInPictureSource?.({
         id: `${localId}-screen-pip`,
@@ -205,4 +197,28 @@ export function buildLocalRecordingSources(options: BuildLocalRecordingSourcesOp
   }
 
   return sources;
+}
+
+/**
+ * Optional lossless track: 48 kHz PCM WAV of the same microphone, captured
+ * before voice processing (echo cancellation, noise suppression and gain
+ * control are turned off on a second capture of the device when possible).
+ */
+export function buildLosslessMicrophoneSource(options: {
+  localParticipant: Participant;
+  localStream: MediaStream | null;
+}): LocalRecordingSource | null {
+  if (options.localParticipant.status !== 'on-stage') return null;
+  const [audioTrack] = liveTracks(options.localStream?.getAudioTracks() || []);
+  if (!audioTrack) return null;
+  let deviceId: string | undefined;
+  try { deviceId = audioTrack.getSettings?.().deviceId || undefined; } catch { deviceId = undefined; }
+  return {
+    id: `${getRecordingSourceId(options.localParticipant.id)}-wav`,
+    label: `${options.localParticipant.name} mic (lossless)`,
+    kind: 'audio',
+    stream: createStream([audioTrack]),
+    format: 'wav',
+    ...(deviceId ? { rawDeviceId: deviceId } : {}),
+  };
 }

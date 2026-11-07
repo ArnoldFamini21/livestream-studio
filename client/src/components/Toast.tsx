@@ -5,23 +5,36 @@ import {
   useCallback,
   useRef,
   useEffect,
+  useMemo,
   type ReactNode,
 } from 'react';
+import {
+  getToastDurationMs,
+  getToastRole,
+  pauseToastTimer,
+  resumeToastTimer,
+  selectToastsToKeep,
+  type ToastTimerState,
+  type ToastType,
+} from '../utils/toastPolicy.ts';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-type ToastType = 'success' | 'error' | 'warning' | 'info';
 
 interface Toast {
   id: string;
   message: string;
   type: ToastType;
   exiting: boolean;
+  persistent: boolean;
 }
 
 interface ToastContextValue {
+  /**
+   * Show a notice. Errors stay until dismissed (pass `durationMs` to change
+   * that); warnings stay 8 s and others 5 s, paused while hovered or focused.
+   */
   addToast: (message: string, type?: ToastType, options?: { durationMs?: number }) => void;
 }
 
@@ -39,168 +52,134 @@ export function useToast(): ToastContextValue {
   return ctx;
 }
 
+const EXIT_ANIMATION_MS = 180;
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [toasts, setToastState] = useState<Toast[]>([]);
+  const toastsRef = useRef<Toast[]>([]);
+  const setToasts = useCallback((update: Toast[] | ((prev: Toast[]) => Toast[])) => {
+    const next = typeof update === 'function' ? update(toastsRef.current) : update;
+    toastsRef.current = next;
+    setToastState(next);
+  }, []);
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const timerStatesRef = useRef<Map<string, ToastTimerState>>(new Map());
+
+  const clearTimer = useCallback((id: string) => {
+    const timer = timersRef.current.get(id);
+    if (timer) clearTimeout(timer);
+    timersRef.current.delete(id);
+  }, []);
 
   const removeToast = useCallback((id: string) => {
-    // Start exit animation
-    setToasts((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, exiting: true } : t))
-    );
-    // Remove after animation completes
+    clearTimer(id);
+    timerStatesRef.current.delete(id);
+    setToasts((prev) => prev.map((t) => (t.id === id ? { ...t, exiting: true } : t)));
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 200);
-  }, []);
+    }, EXIT_ANIMATION_MS);
+  }, [clearTimer, setToasts]);
+
+  const schedule = useCallback((id: string) => {
+    const state = timerStatesRef.current.get(id);
+    if (!state || state.startedAt === null) return;
+    clearTimer(id);
+    timersRef.current.set(id, setTimeout(() => removeToast(id), state.remainingMs));
+  }, [clearTimer, removeToast]);
+
+  const pause = useCallback((id: string) => {
+    const state = timerStatesRef.current.get(id);
+    if (!state) return;
+    clearTimer(id);
+    timerStatesRef.current.set(id, pauseToastTimer(state, Date.now()));
+  }, [clearTimer]);
+
+  const resume = useCallback((id: string) => {
+    const state = timerStatesRef.current.get(id);
+    if (!state) return;
+    timerStatesRef.current.set(id, resumeToastTimer(state, Date.now()));
+    schedule(id);
+  }, [schedule]);
 
   const addToast = useCallback(
     (message: string, type: ToastType = 'info', options?: { durationMs?: number }) => {
-      const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      setToasts((prev) => [...prev, { id, message, type, exiting: false }]);
-
-      const durationMs = options?.durationMs ?? 4000;
-      if (durationMs > 0) {
-        const timer = setTimeout(() => {
-          removeToast(id);
-          timersRef.current.delete(id);
-        }, durationMs);
-        timersRef.current.set(id, timer);
+      const durationMs = getToastDurationMs(type, options?.durationMs);
+      const persistent = durationMs === 0;
+      const current = toastsRef.current;
+      // The same notice again restarts its timer instead of stacking a copy.
+      const duplicate = current.find((t) => !t.exiting && t.message === message && t.type === type);
+      const id = duplicate?.id || `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      if (!duplicate) {
+        const live = current.filter((t) => !t.exiting);
+        const next = selectToastsToKeep([...live, { id, message, type, exiting: false, persistent }]);
+        for (const dropped of live) {
+          if (!next.includes(dropped)) {
+            clearTimer(dropped.id);
+            timerStatesRef.current.delete(dropped.id);
+          }
+        }
+        setToasts(next);
+      }
+      if (!persistent) {
+        timerStatesRef.current.set(id, { remainingMs: durationMs, startedAt: Date.now() });
+        schedule(id);
       }
     },
-    [removeToast]
+    [clearTimer, schedule, setToasts]
   );
 
-  // Cleanup timers on unmount
   useEffect(() => {
+    const timers = timersRef.current;
     return () => {
-      timersRef.current.forEach((timer) => clearTimeout(timer));
+      timers.forEach((timer) => clearTimeout(timer));
     };
   }, []);
 
+  const value = useMemo(() => ({ addToast }), [addToast]);
+
   return (
-    <ToastContext.Provider value={{ addToast }}>
+    <ToastContext.Provider value={value}>
       {children}
-      {toasts.length > 0 && (
-        <div style={styles.container} aria-live="polite">
-          {toasts.map((toast) => (
-            <div
-              key={toast.id}
-              className={`toast${toast.exiting ? ' toast-exit' : ''}`}
-              style={{
-                ...styles.toast,
-                borderLeft: `3px solid ${typeColors[toast.type]}`,
-              }}
-              role="alert"
+      <div className="toast-region" aria-label="Notifications">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`toast toast--${toast.type}${toast.exiting ? ' toast-exit' : ''}`}
+            role={getToastRole(toast.type)}
+            onMouseEnter={() => pause(toast.id)}
+            onMouseLeave={() => resume(toast.id)}
+            onFocus={() => pause(toast.id)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) resume(toast.id);
+            }}
+          >
+            <span className="toast-icon" aria-hidden="true">{typeIcons[toast.type]}</span>
+            <span className="toast-message">{toast.message}</span>
+            <button
+              type="button"
+              className="toast-dismiss"
+              onClick={() => removeToast(toast.id)}
+              aria-label="Dismiss notification"
             >
-              <span style={{ ...styles.icon, color: typeColors[toast.type] }}>
-                {typeIcons[toast.type]}
-              </span>
-              <span style={styles.message}>{toast.message}</span>
-              <button
-                className="panel-close-btn"
-                style={styles.dismissBtn}
-                onClick={() => removeToast(toast.id)}
-                aria-label="Dismiss notification"
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        ))}
+      </div>
     </ToastContext.Provider>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const typeColors: Record<ToastType, string> = {
-  success: '#22c55e',
-  error: '#ef4444',
-  warning: '#f59e0b',
-  info: '#a78bfa',
-};
-
 const typeIcons: Record<ToastType, string> = {
-  success: '\u2713',
-  error: '\u2717',
-  warning: '\u26A0',
-  info: '\u2139',
-};
-
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    position: 'fixed',
-    // Above the studio control bar, so notices never cover Go Live or End.
-    bottom: 96,
-    right: 24,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    zIndex: 9999,
-    pointerEvents: 'none',
-  },
-  toast: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    padding: '12px 16px',
-    borderRadius: 10,
-    background: '#1e1e22',
-    border: '1px solid rgba(255,255,255,0.1)',
-    color: '#fafafa',
-    fontSize: 13,
-    fontWeight: 500,
-    boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
-    pointerEvents: 'auto',
-    maxWidth: 380,
-    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-  },
-  icon: {
-    fontSize: 16,
-    fontWeight: 700,
-    flexShrink: 0,
-    width: 20,
-    textAlign: 'center',
-  },
-  message: {
-    flex: 1,
-    lineHeight: 1.4,
-  },
-  dismissBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    background: 'transparent',
-    border: 'none',
-    color: '#71717a',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    flexShrink: 0,
-  },
+  success: '✓',
+  error: '!',
+  warning: '!',
+  info: 'i',
 };

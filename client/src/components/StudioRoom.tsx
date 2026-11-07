@@ -1,7 +1,7 @@
 import { getPresentationShortcut } from '../utils/presentationShortcuts.ts';
 import { countUnreadChatMessages } from '../utils/chatUnread.ts';
-import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
-import { applyParticipantMediaState, withLocalJoinMedia, withLocalMediaChoice } from '../utils/joinMediaState.ts';
+import { buildStageContent, EMPTY_STAGE_CONTENT_SIGNATURE, getStageMirrorSource, getStageMirrorSourceKey, loadStageImageObjectUrl, stageContentToActiveMedia, uploadStageImage } from '../utils/stageMirror.ts';
+import { applyParticipantMediaState, getLocalTrackKinds, withLocalJoinMedia, withLocalMediaChoice, type LocalTrackKinds } from '../utils/joinMediaState.ts';
 import { CONTENT_EXIT_DURATION_MS, measureStageTiles, playStageFlip, STAGE_FLIP_DURATION_MS, type StageTileRects } from '../utils/stageFlip.ts';
 import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraSize } from '../utils/presentationLayout.ts';
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
@@ -11,7 +11,7 @@ import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isP
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
-import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
@@ -23,7 +23,20 @@ function assertNever(value: never): never {
 import { useSignaling } from '../hooks/useSignaling.ts';
 import { useMediaDevices } from '../hooks/useMediaDevices.ts';
 import { useWebRTC } from '../hooks/useWebRTC.ts';
-import { DEFAULT_ICE_CONFIG, fetchIceConfig } from '../utils/iceConfig.ts';
+import { getSharedIceConfigLoader, getSharedIceConfiguration } from '../utils/iceConfigLoader.ts';
+import { getStoredStudioAccessKey } from '../utils/studioAccessKey.ts';
+import {
+  buildStudioJoinPayload,
+  getRoomLostRetryDelayMs,
+  getStudioRestoreTicket,
+  getStudioResumeToken,
+  saveStudioRestoreTicket,
+  saveStudioResumeToken,
+  shouldKeepRetryingLostRoom,
+} from '../utils/studioSession.ts';
+import { SfuScreenAudioMix } from '../utils/sfuScreenAudioMix.ts';
+import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.ts';
+import { reportClientError } from '../utils/clientErrorReporter.ts';
 import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
 import { SfuSocketSession } from '../utils/sfuSocket.ts';
 import { getSfuSessionParticipantId, mergeSfuMediaWithMeshFallback, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
@@ -31,14 +44,31 @@ import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/use
 import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
-import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
+import { useRecordingWorkflow } from '../hooks/useRecordingWorkflow.ts';
+import { RecordingDestinationPanel, RecordingTransferBadge } from './RecordingDestinationPanel.tsx';
+import { planParticipantRecording, shouldPauseOwnUploadWhileLive, type ParticipantRecordingPlan } from '../utils/recordingWorkflowPolicy.ts';
+import { isPcmWavRecordingSupported } from '../utils/pcmWavRecorder.ts';
+import { estimateRecordingBitsPerSecond } from '../utils/recordingBitrate.ts';
+import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalRecordingFileInput, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
-import { useSessionHealth, type HealthStatus } from '../hooks/useSessionHealth.ts';
+import {
+  buildPeerLocalStream,
+  useMusicDucking,
+  useOutboundAudioMix,
+  useProgramAudioMix,
+  type ProgramAudioTrackLease,
+} from '../audio/useProgramAudioMix.ts';
+import { getLocalProgramPresence } from '../audio/programAudioMixer.ts';
+import { useBackgroundMusicPlayer } from '../audio/useBackgroundMusicPlayer.ts';
+import { useSoundBoardPlayer } from '../audio/useSoundBoardPlayer.ts';
+import { useSessionHealth } from '../hooks/useSessionHealth.ts';
+import { SessionHealthPill } from './SessionHealthPill.tsx';
+import { StudioStatusAnnouncer } from './StudioStatusAnnouncer.tsx';
 import { useMediaServerHealth } from '../hooks/useMediaServerHealth.ts';
 import { useIsPortraitPhone } from '../hooks/usePortraitPhone.ts';
 import type { SessionPeerHealthParticipant } from '../utils/sessionPeerHealth.ts';
@@ -119,6 +149,8 @@ import {
   selectVisibleStageItems,
 } from '../utils/mediaShareLayouts.ts';
 import { buildGuestInviteUrl, buildSecureGuestInviteUrl } from '../utils/inviteLinks.ts';
+import { buildCoHostInviteUrl } from '../utils/inviteTokens.ts';
+import { createCachedTokenSource } from '../utils/presentationRenderToken.ts';
 import { getStudioRecordingStatus } from '../utils/studioRecordingStatus.ts';
 import {
   buildLiveSessionSummary,
@@ -154,9 +186,8 @@ import {
   buildRecordingReadinessSummary,
   type RecordingParticipantReadiness,
 } from '../utils/recordingReadiness.ts';
-import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
 import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
-import { buildLocalRecordingSources, buildParticipantRecordingSources } from '../utils/localRecordingSources.ts';
+import { buildLocalRecordingSources, buildLosslessMicrophoneSource, buildParticipantRecordingSources } from '../utils/localRecordingSources.ts';
 import {
   downloadRecordingExportArtifact,
   exportDistributedRecordingSession,
@@ -178,6 +209,7 @@ import {
   formatRecordingTimestamp,
   getToolbarRecordingFallbackToast,
   getToolbarRecordingAction,
+  makeParticipantRecordingFileName,
   makeToolbarRecordingFileName,
 } from '../utils/toolbarRecording.ts';
 import {
@@ -270,6 +302,9 @@ import {
   type StreamScreenKind,
 } from '../utils/streamScreens.ts';
 import { useToast } from './Toast.tsx';
+import { StudioMediaBanner } from './StudioMediaBanner.tsx';
+import { EmptyStageInvite } from './EmptyStageInvite.tsx';
+import { useRecordingCountdownMirror } from '../hooks/useRecordingCountdownMirror.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 import { alertGuestArrival, requestArrivalNotificationPermission } from '../utils/guestArrivalAlert.ts';
 
@@ -395,6 +430,8 @@ interface StageVideoItem {
   stream: MediaStream | null;
   isLocal: boolean;
   audioEnabled: boolean;
+  /** A remote camera/mic stream: keep it audible when their mic is muted (studio sounds ride on it). */
+  audibleWhileMuted?: boolean;
   videoEnabled: boolean;
   volume: number;
   isScreenShare?: boolean;
@@ -432,6 +469,8 @@ interface SceneTransitionState {
   visible: boolean;
   durationMs: number;
   stingerClip?: SceneStingerClip | null;
+  /** performance.now() at the switch; the program canvas animates from it. */
+  startedAt: number;
 }
 
 interface ActiveStreamScreenState {
@@ -443,25 +482,10 @@ function getStudioStateKey(roomId: string): string {
   return `livestream-studio:room-state:${roomId}`;
 }
 
-type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
-
-interface ProgramRecordingAudioSource {
-  id?: string;
-  stream: MediaStream;
-  volume: number;
-}
-
 interface CreateProgramRecordingSourceOptions {
   compositeStream: MediaStream | null;
-  localStream: MediaStream | null;
-  localParticipant: Participant | null;
-  participants: Map<string, Participant>;
-  remoteStreams: Map<string, MediaStream>;
-  screenStream: MediaStream | null;
-  auxiliaryAudioStream: MediaStream | null;
-  participantVolumes: Record<string, number>;
-  participantAudioLevels: Record<string, number>;
-  audioDuckingEnabled: boolean;
+  /** Leases the studio's live program audio (the same mix the relay sends). */
+  acquireProgramAudio: () => ProgramAudioTrackLease | null;
 }
 
 interface CreateScreenPictureInPictureRecordingSourceOptions {
@@ -469,21 +493,6 @@ interface CreateScreenPictureInPictureRecordingSourceOptions {
   label: string;
   screenStream: MediaStream | null;
   cameraStream: MediaStream | null;
-}
-
-function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
-  const globalWithWebkit = globalThis as typeof globalThis & {
-    webkitAudioContext?: BrowserAudioContextConstructor;
-  };
-  return globalWithWebkit.AudioContext || globalWithWebkit.webkitAudioContext || null;
-}
-
-function createRecordingAudioContext(AudioContextConstructor: BrowserAudioContextConstructor): AudioContext {
-  try {
-    return new AudioContextConstructor({ sampleRate: 48_000 });
-  } catch {
-    return new AudioContextConstructor();
-  }
 }
 
 function createScreenPictureInPictureRecordingSource(
@@ -504,7 +513,6 @@ function createScreenPictureInPictureRecordingSource(
       pipStream.videoTrack,
       ...getLiveAudioTracks(options.screenStream),
     ]),
-    bitsPerSecond: 8_500_000,
     cleanup: pipStream.cleanup,
   };
 }
@@ -513,109 +521,18 @@ function createProgramRecordingSource(options: CreateProgramRecordingSourceOptio
   const videoTrack = options.compositeStream?.getVideoTracks().find((track) => track.readyState === 'live');
   if (!videoTrack) return null;
 
-  const AudioContextConstructor = getAudioContextConstructor();
-  if (!AudioContextConstructor) return null;
-
-  const audioContext = createRecordingAudioContext(AudioContextConstructor);
-  const destination = audioContext.createMediaStreamDestination();
-  const audioSources: ProgramRecordingAudioSource[] = [];
-  const participantIds: string[] = [];
-
-  if (options.localParticipant?.status === 'on-stage') {
-    participantIds.push(options.localParticipant.id);
-  }
-  for (const [id, participant] of options.participants) {
-    if (participant.status === 'on-stage') participantIds.push(id);
-  }
-
-  const programVolumes = getDuckedParticipantVolumes({
-    enabled: options.audioDuckingEnabled,
-    participantVolumes: options.participantVolumes,
-    participantAudioLevels: options.participantAudioLevels,
-    participantIds,
-  });
-
-  const localAudioTracks = options.localParticipant?.status === 'on-stage'
-    ? getLiveAudioTracks(options.localStream)
-    : [];
-  if (localAudioTracks.length > 0 && options.localParticipant) {
-    audioSources.push({
-      id: options.localParticipant.id,
-      stream: new MediaStream(localAudioTracks),
-      volume: programVolumes[options.localParticipant.id] ?? 1,
-    });
-  }
-
-  for (const [id, participant] of options.participants) {
-    if (participant.status !== 'on-stage') continue;
-    const audioTracks = getLiveAudioTracks(options.remoteStreams.get(id));
-    if (audioTracks.length > 0) {
-      audioSources.push({
-        id,
-        stream: new MediaStream(audioTracks),
-        volume: programVolumes[id] ?? 1,
-      });
-    }
-  }
-
-  const screenAudioTracks = getLiveAudioTracks(options.screenStream);
-  if (screenAudioTracks.length > 0) {
-    audioSources.push({ stream: new MediaStream(screenAudioTracks), volume: 1 });
-  }
-
-  const auxiliaryAudioTracks = getLiveAudioTracks(options.auxiliaryAudioStream);
-  if (auxiliaryAudioTracks.length > 0) {
-    audioSources.push({ stream: new MediaStream(auxiliaryAudioTracks), volume: 1 });
-  }
-
-  const sourceNodes: MediaStreamAudioSourceNode[] = [];
-  const gainNodes: GainNode[] = [];
-  let silentOscillator: OscillatorNode | null = null;
-
-  for (const source of audioSources) {
-    const sourceNode = audioContext.createMediaStreamSource(source.stream);
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = Math.min(1, Math.max(0, source.volume));
-    sourceNode.connect(gainNode);
-    gainNode.connect(destination);
-    sourceNodes.push(sourceNode);
-    gainNodes.push(gainNode);
-  }
-
-  if (audioSources.length === 0) {
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = 0;
-    oscillator.connect(gainNode);
-    gainNode.connect(destination);
-    oscillator.start();
-    silentOscillator = oscillator;
-    gainNodes.push(gainNode);
-  }
-
-  const audioTracks = destination.stream.getAudioTracks();
-  const stream = new MediaStream([videoTrack, ...audioTracks]);
-  let cleanedUp = false;
+  // One live graph feeds the relay and every program take: stage changes,
+  // mic switches, reconnects and volume moves reach the file while recording.
+  const programAudio = options.acquireProgramAudio();
+  if (!programAudio) return null;
 
   return {
     id: 'program-mix',
     label: 'Program mix',
     kind: 'program',
-    stream,
+    stream: new MediaStream([videoTrack, programAudio.track]),
     bitsPerSecond: 10_000_000,
-    cleanup: () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      try {
-        silentOscillator?.stop();
-      } catch {
-        // Already stopped.
-      }
-      sourceNodes.forEach((node) => node.disconnect());
-      gainNodes.forEach((node) => node.disconnect());
-      audioTracks.forEach((track) => track.stop());
-      void audioContext.close();
-    },
+    cleanup: programAudio.release,
   };
 }
 
@@ -647,25 +564,6 @@ function LazyPanelFallback() {
   );
 }
 
-function buildCoHostInviteUrl(baseInviteUrl: string, token: string): string {
-  try {
-    const url = new URL(baseInviteUrl);
-    url.searchParams.set('role', 'co-host');
-    url.searchParams.set('invite', token);
-    return url.toString();
-  } catch {
-    const separator = baseInviteUrl.includes('?') ? '&' : '?';
-    return `${baseInviteUrl}${separator}role=co-host&invite=${encodeURIComponent(token)}`;
-  }
-}
-
-function getHealthColor(status: HealthStatus): string {
-  switch (status) {
-    case 'good': return 'var(--success)';
-    case 'warning': return 'var(--warning)';
-    case 'bad': return 'var(--danger)';
-  }
-}
 
 function getDestinationStatusMessage(status: RtmpRelayDestinationStatus, message?: string): string | undefined {
   const trimmed = message?.trim();
@@ -801,6 +699,9 @@ function getDeckRenderFailureMessage(type: StudioMediaType, failure?: Presentati
     return type === 'pdf'
       ? 'PDF rendering timed out. Try a smaller PDF or upload it again.'
       : 'PowerPoint rendering timed out. Try a smaller deck, or export it to PDF and upload that.';
+  }
+  if (code === 'PRESENTATION_RENDER_DEFERRED' || code === 'PRESENTATION_RENDER_BUSY') {
+    return 'The media server is busy with the live broadcast, so this deck could not be prepared there. Export it to PDF and upload that, or try again after the show.';
   }
   if (code === 'PRESENTATION_TOO_LARGE') {
     return 'This presentation is too large to prepare for broadcast. Export a compressed PDF or split the deck.';
@@ -1046,6 +947,22 @@ export function StudioRoom() {
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [joined, setJoined] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  // The studio server restarted and forgot the studio; we keep rejoining while the host rebuilds it.
+  const [studioServerLost, setStudioServerLost] = useState(false);
+  const [joinRetryNonce, setJoinRetryNonce] = useState(0);
+  const everJoinedRef = useRef(false);
+  const roomLostSinceRef = useRef<number | null>(null);
+  const roomLostAttemptRef = useRef(0);
+  const roomLostRetryTimerRef = useRef<number | null>(null);
+  const lastRateLimitNoticeRef = useRef(0);
+  const [watchId, setWatchId] = useState<string | null>(null);
+  const stageReadTokenRef = useRef<string | null>(null);
+  const stageObjectUrlRef = useRef<string | null>(null);
+  const [screenShareOptimizeFor, setScreenShareOptimizeFor] = useState<'text' | 'motion'>(() => {
+    try { return localStorage.getItem('screenShareOptimizeFor') === 'motion' ? 'motion' : 'text'; } catch { return 'text'; }
+  });
+  const screenShareOptimizeForRef = useRef(screenShareOptimizeFor);
+  screenShareOptimizeForRef.current = screenShareOptimizeFor;
   const [mediaAttemptComplete, setMediaAttemptComplete] = useState(false);
 
   // UI panels
@@ -1060,6 +977,8 @@ export function StudioRoom() {
   // A short on-stage countdown before a recording starts. Escape or Cancel
   // stops it, so a misclick never produces a stray take.
   const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
+  // The host's countdown as guests see it (one message from the host, ticked locally).
+  const { value: remoteRecordingCountdown, start: startRemoteRecordingCountdown, stop: stopRemoteRecordingCountdown } = useRecordingCountdownMirror();
   const isPortraitPhone = useIsPortraitPhone();
   // Phones and tablets have no screen capture (iOS Safari, Android Chrome): offer no button that cannot work.
   const screenShareSupported = typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
@@ -1363,6 +1282,8 @@ export function StudioRoom() {
   const {
     localStream: rawLocalStream, audioEnabled, videoEnabled,
     error: mediaError,
+    errorProblem: mediaProblem,
+    retryMedia,
     startMedia, stopMedia, setAudioTrackEnabled, setVideoTrackEnabled, toggleAudio, toggleVideo,
     switchAudioDevice, switchVideoDevice,
     audioDevices, videoDevices, audioOutputDevices,
@@ -1405,10 +1326,26 @@ export function StudioRoom() {
   const [sfuReconnectNonce, setSfuReconnectNonce] = useState(0);
   const sfuSessionRef = useRef<SfuSocketSession | null>(null);
 
+  // Guests hear the host's mic plus the media bus (effects, music, clips) once
+  // the bus is in use. The host's own isolated recording keeps the mic alone.
+  const outboundAudioTrack = useOutboundAudioMix({
+    bus: broadcastAudioBus,
+    micStream: localStream,
+    enabled: broadcastAudioBus.active,
+  });
+  const peerLocalStream = useMemo(
+    () => buildPeerLocalStream(localStream, outboundAudioTrack),
+    [localStream, outboundAudioTrack]
+  );
+  const peerAudioTrackRef = useRef<MediaStreamTrack | null>(null);
+  const sfuScreenAudioMixRef = useRef<SfuScreenAudioMix | null>(null);
+  peerAudioTrackRef.current = peerLocalStream?.getAudioTracks()[0] ?? null;
+
   const {
     remoteStreams: meshRemoteStreams,
     remoteScreenStreams: meshRemoteScreenStreams,
     publishScreenTrack,
+    setScreenShareOptimization,
     setRemoteScreenStreamId,
     peerBandwidthHealth,
     reconnectingPeerIds,
@@ -1420,12 +1357,36 @@ export function StudioRoom() {
     replaceTrack,
     setAudioForwardingEnabled,
     setVideoForwardingEnabled,
+    setMeshForwardingExemption,
+    refreshMeshForwarding,
     cleanup,
   } = useWebRTC({
-    localStream,
+    localStream: peerLocalStream,
     myParticipantId: myParticipant?.id || null,
     send,
   });
+
+  // Backstage people are not on the SFU: while it carries our media to the
+  // stage, the mesh keeps carrying it to them (and theirs to us).
+  const participantsForMeshRef = useRef(participants);
+  participantsForMeshRef.current = participants;
+  useEffect(() => {
+    setMeshForwardingExemption((participantId) => {
+      const participant = participantsForMeshRef.current.get(participantId);
+      return Boolean(participant) && participant!.status !== 'on-stage';
+    });
+    return () => setMeshForwardingExemption(null);
+  }, [setMeshForwardingExemption]);
+  useEffect(() => {
+    void refreshMeshForwarding();
+  }, [participants, refreshMeshForwarding]);
+  useEffect(() => {
+    setScreenShareOptimization(screenShareOptimizeFor);
+    try { localStorage.setItem('screenShareOptimizeFor', screenShareOptimizeFor); } catch { /* Private mode. */ }
+  }, [screenShareOptimizeFor, setScreenShareOptimization]);
+  useEffect(() => () => {
+    if (roomLostRetryTimerRef.current !== null) window.clearTimeout(roomLostRetryTimerRef.current);
+  }, []);
 
   const remoteStreams = useMemo(() => (
     sfuTransportStatus === 'active'
@@ -1433,16 +1394,14 @@ export function StudioRoom() {
       : meshRemoteStreams
   ), [meshRemoteStreams, sfuRemoteStreams, sfuTransportStatus]);
 
-  const broadcastRemoteStreams = useMemo(() => {
-    const streams = new Map<string, MediaStream>();
+  const onStageParticipantIds = useMemo(() => {
+    const ids: string[] = [];
+    if (myParticipant?.status === 'on-stage') ids.push(myParticipant.id);
     for (const [id, participant] of participants) {
-      const stream = remoteStreams.get(id);
-      if (participant.status === 'on-stage' && stream) {
-        streams.set(id, stream);
-      }
+      if (participant.status === 'on-stage' && id !== myParticipant?.id) ids.push(id);
     }
-    return streams;
-  }, [participants, remoteStreams]);
+    return ids;
+  }, [myParticipant?.id, myParticipant?.status, participants]);
 
   const {
     isRecording,
@@ -1459,6 +1418,24 @@ export function StudioRoom() {
     takeProgressiveUpload: takeProgramProgressiveUpload,
   } = useRecording(room?.name || 'Studio');
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
+  // One live program audio graph for the relay and the program recording.
+  const programAudioMix = useProgramAudioMix({
+    bus: broadcastAudioBus,
+    localParticipant: myParticipant,
+    localStream,
+    participants,
+    remoteStreams,
+    remoteScreenStreams: meshRemoteScreenStreams,
+    screenStream,
+    participantVolumes,
+    // Same rule as displayedStageVideoItems: a backstage host presenting is heard.
+    localPresence: getLocalProgramPresence({
+      status: myParticipant?.status,
+      isOperator: isStudioOperator(myParticipant),
+      isScreenSharing,
+      hasActiveMedia: Boolean(activeMedia),
+    }),
+  });
   const {
     isRecording: isLocalRecording,
     isPaused: isLocalRecordingPaused,
@@ -1482,6 +1459,12 @@ export function StudioRoom() {
     uploadState: participantUploadState,
     pauseUpload: pauseParticipantUpload,
     resumeUpload: resumeParticipantUpload,
+    updateSources: updateParticipantSources,
+    cancelUpload: cancelParticipantUpload,
+    inputEndedVersion: participantInputEndedVersion,
+    transferVersion: participantTransferVersion,
+    getTransferTracks: getParticipantTransferTracks,
+    markTransferDelivered: markParticipantTransferDelivered,
   } = useLocalRecording(room?.name || 'Studio');
   // Hosts see each participant's background upload; guests act on host pause/resume requests.
   const [participantRecordingUploads, setParticipantRecordingUploads] = useState<Record<string, RecordingUploadProgressPayload>>({});
@@ -1489,6 +1472,14 @@ export function StudioRoom() {
   participantUploadControlRef.current = { pause: pauseParticipantUpload, resume: resumeParticipantUpload };
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
+  // What this browser is recording, so a take can be re-announced to a server that restarted.
+  const recordingResumeRef = useRef({ programRecording: false, participantRecording: false, sessionId: null as string | null, paused: false });
+  recordingResumeRef.current = {
+    programRecording: isRecording,
+    participantRecording: isParticipantLocalRecording,
+    sessionId: sessionRecordingSessionId,
+    paused: isRecordingPaused,
+  };
   const uploadProgressReportRef = useRef<{ sentAt: number; status: string | null; timer: number | null }>({
     sentAt: 0,
     status: null,
@@ -1515,6 +1506,45 @@ export function StudioRoom() {
     }))
   ), [participants, peerBandwidthHealth]);
   const { health: mediaServerHealth, refresh: refreshMediaServerHealth } = useMediaServerHealth();
+  // Direct-to-folder recording (host SSD), peer-to-peer guest track delivery,
+  // storage preflight and the screen wake lock.
+  const recordingWorkflow = useRecordingWorkflow({
+    send,
+    addHandler,
+    roomId,
+    studioName: room?.name || 'Studio',
+    me: myParticipant,
+    isOperator: isHostOrCoHost,
+    participants,
+    cloudAvailable: mediaServerHealth.status !== 'unavailable' && mediaServerHealth.recordingStorage?.ready === true,
+    keepAwake: isRecording || isLive || isLocalRecording || isParticipantLocalRecording || myParticipant?.status === 'on-stage',
+    getLocalTracks: getParticipantTransferTracks,
+    localTracksVersion: participantTransferVersion,
+    onLocalTrackDelivered: markParticipantTransferDelivered,
+    onGuestTracksSaved: (participantName, files) => {
+      const durationMs = files.find((file) => file.capture?.durationMs)?.capture?.durationMs;
+      void persistRecordingSession({
+        roomName: `${room?.name || 'Studio'} - ${participantName}`,
+        durationSeconds: durationMs ? Math.round(durationMs / 1000) : null,
+        files: files.map((file) => ({ ...file, kind: file.kind as LocalRecordingFileInput['kind'] })),
+      }).catch((error) => console.warn(`Could not add ${participantName}'s tracks to the recording library:`, error));
+    },
+  });
+  const recordingWorkflowRef = useRef(recordingWorkflow);
+  recordingWorkflowRef.current = recordingWorkflow;
+  const participantRecordingPlanRef = useRef<(ParticipantRecordingPlan & { sessionId: string; hostFolderTake: boolean; lossless: boolean }) | null>(null);
+  const localRecordingTakeRef = useRef<string | null>(null);
+  /** Stops the Recordings-panel local take and closes its folder take, if any. */
+  const stopLocalRecordingIntoFolder = useCallback(async () => {
+    const result = await stopLocalRecording();
+    const takeId = localRecordingTakeRef.current;
+    localRecordingTakeRef.current = null;
+    if (takeId) {
+      recordingWorkflowRef.current.attachCaptures(takeId, result.files);
+      recordingWorkflowRef.current.endTake(takeId);
+    }
+    return result;
+  }, [stopLocalRecording]);
   const sessionHealth = useSessionHealth({
     localStream,
     connected,
@@ -1532,13 +1562,19 @@ export function StudioRoom() {
       (participant) => participant.status === 'on-stage' || participant.status === 'backstage'
     );
     const onStageCount = onStageRemote.length + (myParticipant ? 1 : 0);
-    let uplinkKbps: number | null = null;
+    // Each peer connection estimates only its own share of our uplink, and all
+    // of them share it: the slowest share times the number of peers is what
+    // the uplink sustains for everyone.
+    let slowestShareKbps: number | null = null;
+    let measuredPeers = 0;
     for (const participant of onStageRemote) {
       const available = participant.health?.availableOutgoingBitrateKbps;
       if (typeof available === 'number' && Number.isFinite(available)) {
-        uplinkKbps = Math.max(uplinkKbps ?? 0, available);
+        slowestShareKbps = Math.min(slowestShareKbps ?? available, available);
+        measuredPeers += 1;
       }
     }
+    const uplinkKbps = slowestShareKbps === null ? null : slowestShareKbps * measuredPeers;
     return planMeshCapacity({ participantCount: onStageCount, uplinkKbps });
   }, [myParticipant, sessionPeerConnectionParticipants]);
   const sfuSessionParticipantId = useMemo(() => getSfuSessionParticipantId({
@@ -1722,6 +1758,13 @@ export function StudioRoom() {
   const startScreenShareRef = useRef(startScreenShare);
   const sendRef = useRef(send);
 
+  const compositorSceneTransition = useMemo(() => (sceneTransition ? {
+    presetId: sceneTransition.presetId,
+    sceneName: sceneTransition.sceneName,
+    startedAt: sceneTransition.startedAt,
+    durationMs: sceneTransition.durationMs,
+  } : null), [sceneTransition?.presetId, sceneTransition?.sceneName, sceneTransition?.startedAt, sceneTransition?.durationMs]);
+
   // Initialize Canvas Compositor for RTMP
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     containerRef: stageRef,
@@ -1746,6 +1789,7 @@ export function StudioRoom() {
     logoSize,
     logoOpacity,
     streamScreen: activeStreamScreen,
+    sceneTransition: compositorSceneTransition,
   });
 
   const handleLogoPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -1841,19 +1885,25 @@ export function StudioRoom() {
     checkRelayReadiness,
   } = useRtmpRelay({
     compositeStreamRef,
-    localStream,
-    localParticipantId: myParticipant?.id || null,
-    remoteStreams: broadcastRemoteStreams,
-    screenStream,
-    auxiliaryAudioStream: broadcastAudioBus.stream,
-    ensureAuxiliaryAudioStream: broadcastAudioBus.ensureStream,
-    participantVolumes,
-    participantAudioLevels: stageAudioLevels,
-    audioDuckingEnabled,
+    acquireProgramAudio: programAudioMix.acquire,
     readinessEnabled: canUseOperatorControls,
     onDestinationStatus: handleRelayDestinationStatus,
     onRelayStopped: handleRelayStopped,
   });
+  // Auto ducking dips music and clips (not people) while anyone on stage talks.
+  useMusicDucking({
+    bus: broadcastAudioBus,
+    enabled: audioDuckingEnabled,
+    participantAudioLevels: stageAudioLevels,
+    onStageIds: onStageParticipantIds,
+  });
+  const backgroundMusicPlayer = useBackgroundMusicPlayer(broadcastAudioBus);
+  const backgroundMusicPlaying = useSyncExternalStore(
+    backgroundMusicPlayer.subscribe,
+    () => backgroundMusicPlayer.getSnapshot().isPlaying,
+    () => false
+  );
+  const soundBoardPlayer = useSoundBoardPlayer(broadcastAudioBus, { hotkeysEnabled: canUseOperatorControls });
 
   // Whether this studio is sending a broadcast (live, or reconnecting after a drop).
   const relayActiveRef = useRef(false);
@@ -1957,23 +2007,31 @@ export function StudioRoom() {
       sceneTransitionTimerRef.current = null;
     }
     if (sceneTransitionFrameRef.current !== null) {
-      window.cancelAnimationFrame(sceneTransitionFrameRef.current);
+      window.clearTimeout(sceneTransitionFrameRef.current);
       sceneTransitionFrameRef.current = null;
     }
 
     const presetId = sceneTransitionPreset;
     const durationMs = presetId === 'stinger' ? STINGER_TRANSITION_DURATION_MS : SCENE_TRANSITION_DURATION_MS;
     const stingerClip = presetId === 'stinger' ? sceneStingerClip : null;
-    setSceneTransition({ sceneId: scene.id, sceneName: scene.name, presetId, visible: true, durationMs, stingerClip });
+    setSceneTransition({
+      sceneId: scene.id,
+      sceneName: scene.name,
+      presetId,
+      visible: true,
+      durationMs,
+      stingerClip,
+      startedAt: performance.now(),
+    });
     if (presetId !== 'stinger') {
-      sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
-        sceneTransitionFrameRef.current = window.requestAnimationFrame(() => {
-          setSceneTransition((current) => (
-            current?.sceneId === scene.id ? { ...current, visible: false } : current
-          ));
-          sceneTransitionFrameRef.current = null;
-        });
-      });
+      // Let the covering style paint, then start the reveal. A timer, not
+      // requestAnimationFrame, which never fires while the tab is hidden.
+      sceneTransitionFrameRef.current = window.setTimeout(() => {
+        setSceneTransition((current) => (
+          current?.sceneId === scene.id ? { ...current, visible: false } : current
+        ));
+        sceneTransitionFrameRef.current = null;
+      }, 32);
     }
     sceneTransitionTimerRef.current = window.setTimeout(() => {
       setSceneTransition((current) => (current?.sceneId === scene.id ? null : current));
@@ -2000,7 +2058,7 @@ export function StudioRoom() {
     return () => {
       if (liveStatusTimerRef.current) clearTimeout(liveStatusTimerRef.current);
       if (sceneTransitionTimerRef.current !== null) window.clearTimeout(sceneTransitionTimerRef.current);
-      if (sceneTransitionFrameRef.current !== null) window.cancelAnimationFrame(sceneTransitionFrameRef.current);
+      if (sceneTransitionFrameRef.current !== null) window.clearTimeout(sceneTransitionFrameRef.current);
       if (layoutTransitionTimerRef.current !== null) window.clearTimeout(layoutTransitionTimerRef.current);
       if (layoutTransitionFrameRef.current !== null) window.cancelAnimationFrame(layoutTransitionFrameRef.current);
       if (chatTypingExpiryTimerRef.current !== null) window.clearTimeout(chatTypingExpiryTimerRef.current);
@@ -2222,6 +2280,15 @@ export function StudioRoom() {
     });
   }, [lowerThirds]);
 
+  // TURN relays are only handed to admitted seats: fetch them once we leave the green room.
+  const myStatus = myParticipant?.status;
+  const previousStatusRef = useRef(myStatus);
+  useEffect(() => {
+    const previous = previousStatusRef.current;
+    previousStatusRef.current = myStatus;
+    if (previous === 'green-room' && myStatus && myStatus !== 'green-room') getSharedIceConfigLoader().refetchAfterAdmission();
+  }, [myStatus]);
+
   useEffect(() => {
     if (!autoSpeakerLowerThirds || !isHostOrCoHost || myParticipant?.status === 'green-room') return;
     if (lowerThirds.some((lowerThird) => lowerThird.visible && lowerThird.source !== 'auto-speaker')) return;
@@ -2231,7 +2298,7 @@ export function StudioRoom() {
       candidates.push({
         participantId: myParticipant.id,
         name: myParticipant.name,
-        title: getParticipantLowerThirdTitle(myParticipant.role),
+        title: getParticipantLowerThirdTitle(myParticipant.role, myParticipant.title),
         audioLevel: stageAudioLevels[myParticipant.id] || 0,
         eligible: myParticipant.status === 'on-stage' && effectiveAudioEnabled,
       });
@@ -2241,7 +2308,7 @@ export function StudioRoom() {
       candidates.push({
         participantId,
         name: participant.name,
-        title: getParticipantLowerThirdTitle(participant.role),
+        title: getParticipantLowerThirdTitle(participant.role, participant.title),
         audioLevel: stageAudioLevels[participantId] || 0,
         eligible: participant.status === 'on-stage' && participant.audioEnabled && !participant.screenSharing,
       });
@@ -2399,6 +2466,8 @@ export function StudioRoom() {
       videoEnabled: sessionStorage.getItem('preferredVideoEnabled') !== 'false',
       videoQuality,
       ...audioProcessing,
+      // The join page's preview has only just released the camera; Safari can fail once here.
+      retryDelayMs: 400,
     }).finally(() => {
       if (!active) return;
       clearTimeout(fallbackTimer);
@@ -2460,23 +2529,29 @@ export function StudioRoom() {
       if (missingHostAccess) return;
       joinedRef.current = true;
       // Only present hostToken when claiming host — guests never have one to send.
-      const hostToken = userRole === 'host'
-        ? roomHostToken || undefined
-        : undefined;
-      const coHostInviteToken = userRole === 'co-host'
-        ? sessionStorage.getItem(`coHostInviteToken:${roomId}`) || undefined
-        : undefined;
-      const guestInviteToken = userRole === 'guest'
-        ? sessionStorage.getItem(`guestInviteToken:${roomId}`) || undefined
-        : undefined;
-      const roomPassword = userRole === 'host' || coHostInviteToken ? undefined : sessionStorage.getItem(`roomPassword:${roomId}`) || undefined;
-      const joinSessionId = userRole === 'host' ? undefined : getGuestJoinSessionId();
+      const readSession = (key: string) => {
+        try { return sessionStorage.getItem(key) || undefined; } catch { return undefined; }
+      };
+      // A resume token keeps our seat (same id, role and place) through a
+      // dropped connection; spent single-use invite links are then not re-sent.
       send({
         type: 'join-room',
-        payload: { roomId, name: userName, role: userRole, hostToken, coHostInviteToken, guestInviteToken, roomPassword, joinSessionId },
+        payload: buildStudioJoinPayload({
+          roomId,
+          name: userName,
+          role: userRole,
+          hostToken: userRole === 'host' ? roomHostToken || undefined : undefined,
+          restoreTicket: userRole === 'host' ? getStudioRestoreTicket(roomId) : undefined,
+          studioAccessKey: userRole === 'host' ? getStoredStudioAccessKey() || undefined : undefined,
+          coHostInviteToken: userRole === 'co-host' ? readSession(`coHostInviteToken:${roomId}`) : undefined,
+          guestInviteToken: userRole === 'guest' ? readSession(`guestInviteToken:${roomId}`) : undefined,
+          roomPassword: userRole === 'host' ? undefined : readSession(`roomPassword:${roomId}`),
+          joinSessionId: userRole === 'host' ? undefined : getGuestJoinSessionId(),
+          resumeToken: getStudioResumeToken(roomId),
+        }),
       });
     }
-  }, [connected, localStream, mediaError, mediaAttemptComplete, missingHostAccess, roomId, roomHostToken, userName, userRole, send]);
+  }, [connected, joinRetryNonce, localStream, mediaError, mediaAttemptComplete, missingHostAccess, roomId, roomHostToken, userName, userRole, send]);
 
   useEffect(() => {
     if (!guestNotification) return;
@@ -2504,8 +2579,19 @@ export function StudioRoom() {
           const liveStartedAt = resumingOwnBroadcast && liveStartedAtRef.current
             ? liveStartedAtRef.current
             : live ? liveStreamState?.startedAt || new Date().toISOString() : null;
-          const recordingStartedAt = recordingState?.recording ? recordingState.startedAt || new Date().toISOString() : null;
-          const recordingSessionId = recordingState?.recording ? recordingState.sessionId || null : null;
+          // A restarted server may not know about a take still running here:
+          // the operator recording it says so again, and a guest recording its
+          // own tracks keeps the take, so both still finalize and upload.
+          const ongoingTake = recordingResumeRef.current;
+          const reassertOwnRecording = !recordingState?.recording && ongoingTake.programRecording
+            && isStudioOperator(participant) && Boolean(ongoingTake.sessionId);
+          const keepGuestTake = !recordingState?.recording && ongoingTake.participantRecording && Boolean(ongoingTake.sessionId);
+          const recordingStartedAt = recordingState?.recording
+            ? recordingState.startedAt || new Date().toISOString()
+            : reassertOwnRecording || keepGuestTake ? sessionRecordingStartedAtRef.current || new Date().toISOString() : null;
+          const recordingSessionId = recordingState?.recording
+            ? recordingState.sessionId || null
+            : reassertOwnRecording || keepGuestTake ? ongoingTake.sessionId : null;
           isLiveRef.current = live;
           liveStartedAtRef.current = liveStartedAt;
           sessionRecordingStartedAtRef.current = recordingStartedAt;
@@ -2529,6 +2615,23 @@ export function StudioRoom() {
               payload: { live: true, startedAt: liveStartedAt ?? undefined, performedBy: participant.id },
             });
           }
+          if (reassertOwnRecording && recordingSessionId) {
+            sendRef.current({
+              type: 'recording-state-changed',
+              payload: { recording: true, sessionId: recordingSessionId, paused: ongoingTake.paused, performedBy: participant.id },
+            });
+          }
+          if (roomId) {
+            saveStudioResumeToken(roomId, message.payload.resumeToken);
+            if (message.payload.resumeToken) getSharedIceConfigLoader().setCredentials({ roomId, credential: message.payload.resumeToken });
+            if (message.payload.restoreTicket) saveStudioRestoreTicket(roomId, message.payload.restoreTicket);
+          }
+          everJoinedRef.current = true;
+          roomLostSinceRef.current = null;
+          roomLostAttemptRef.current = 0;
+          setStudioServerLost(false);
+          setWatchId(message.payload.watchId || null);
+          stageReadTokenRef.current = message.payload.stageReadToken || null;
           setJoined(true);
           setChatMessages(existingChatMessages);
           setChatTypingIndicators([]);
@@ -2547,9 +2650,15 @@ export function StudioRoom() {
           setSessionRecordingStartedAt(recordingStartedAt);
           setSessionRecordingSessionId(recordingSessionId);
           setSessionRecordingPaused(Boolean(recordingState?.recording && recordingState.paused));
-          setSupportsCoordinatedRecording(Boolean(recordingState?.sessionId));
+          setSupportsCoordinatedRecording(Boolean(recordingSessionId));
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
+          // A resumed seat keeps its peer connections; drop only those to
+          // people who left while we were away (or whom we may no longer reach).
+          for (const previousId of participantsForMeshRef.current.keys()) {
+            const still = map.get(previousId);
+            if (!still || !canExchangeStudioMedia(participant, still)) removePeerRef.current(previousId);
+          }
           setParticipants(map);
           // Defer connectToPeer until myParticipant has propagated through useWebRTC's ref;
           // a dedicated effect below handles the initial connect-out.
@@ -2597,13 +2706,13 @@ export function StudioRoom() {
           break;
         }
         case 'offer':
-          handleOfferRef.current(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle offer:', err));
+          handleOfferRef.current(message.payload.from, message.payload.sdp, message.payload).catch(err => console.error('Failed to handle offer:', err));
           break;
         case 'answer':
-          handleAnswerRef.current(message.payload.from, message.payload.sdp).catch(err => console.error('Failed to handle answer:', err));
+          handleAnswerRef.current(message.payload.from, message.payload.sdp, message.payload).catch(err => console.error('Failed to handle answer:', err));
           break;
         case 'ice-candidate':
-          handleIceCandidateRef.current(message.payload.from, message.payload.candidate).catch(err => console.error('Failed to handle ICE candidate:', err));
+          handleIceCandidateRef.current(message.payload.from, message.payload.candidate, message.payload).catch(err => console.error('Failed to handle ICE candidate:', err));
           break;
         case 'media-state-changed': {
           const { participantId, audioEnabled: a, videoEnabled: v, screenSharing: s, screenStreamId } = message.payload;
@@ -2691,6 +2800,7 @@ export function StudioRoom() {
           break;
         }
         case 'participant-removed':
+          if (roomId) saveStudioResumeToken(roomId, null);
           cleanupRef.current();
           stopMediaRef.current();
           stopPublishedScreenShareRef.current();
@@ -2723,7 +2833,15 @@ export function StudioRoom() {
         case 'host-changed':
           setRoom((prev) => prev ? { ...prev, hostId: message.payload.newHostId } : prev);
           break;
+        case 'recording-countdown':
+          if (message.payload.cancelled) stopRemoteRecordingCountdown();
+          else startRemoteRecordingCountdown(message.payload.seconds);
+          break;
+        case 'update-participant-profile':
+          // A request to the server only; the change arrives as participant-updated.
+          break;
         case 'recording-state-changed':
+          if (message.payload.recording) stopRemoteRecordingCountdown();
           sessionRecordingStartedAtRef.current = message.payload.recording ? message.payload.startedAt || new Date().toISOString() : null;
           setSessionRecordingStartedAt(sessionRecordingStartedAtRef.current);
           if (message.payload.sessionId) {
@@ -2810,6 +2928,10 @@ export function StudioRoom() {
           break;
         }
         case 'room-ended':
+          if (roomId) {
+            saveStudioResumeToken(roomId, null);
+            saveStudioRestoreTicket(roomId, null);
+          }
           setRoomEnding(false);
           cleanupRef.current();
           stopMediaRef.current();
@@ -2818,12 +2940,42 @@ export function StudioRoom() {
           break;
         case 'error':
           console.error('Server error:', message.payload.message);
+          if (message.payload.code === 'RATE_LIMITED') {
+            // Negotiation retries on its own; say so once rather than fail silently.
+            reportClientError('media', new Error(`Signaling rate limited: ${message.payload.message}`));
+            const noticeAt = Date.now();
+            if (noticeAt - lastRateLimitNoticeRef.current > 60_000) {
+              lastRateLimitNoticeRef.current = noticeAt;
+              addToastRef.current('The studio connection is busy. Some updates were delayed and will be retried.', 'warning');
+            }
+            break;
+          }
           if (message.payload.code === 'ROOM_NOT_FOUND') {
+            // After a server restart the studio comes back when its host
+            // reconnects: keep the stage up and keep asking for a while.
+            const lostAt = Date.now();
+            if (everJoinedRef.current) {
+              roomLostSinceRef.current ??= lostAt;
+              if (shouldKeepRetryingLostRoom(roomLostSinceRef.current, lostAt)) {
+                setStudioServerLost(true);
+                const delay = getRoomLostRetryDelayMs(roomLostAttemptRef.current++);
+                if (roomLostRetryTimerRef.current !== null) window.clearTimeout(roomLostRetryTimerRef.current);
+                roomLostRetryTimerRef.current = window.setTimeout(() => {
+                  roomLostRetryTimerRef.current = null;
+                  joinedRef.current = false;
+                  setJoinRetryNonce((value) => value + 1);
+                }, delay);
+                break;
+              }
+            }
+            setStudioServerLost(false);
+            if (roomId) saveStudioResumeToken(roomId, null);
             setConnectionError('This room does not exist or has ended.');
           }
           if (
             message.payload.code === 'ROOM_PASSWORD_REQUIRED' ||
             message.payload.code === 'ROOM_PASSWORD_INVALID' ||
+            message.payload.code === 'ROOM_PASSWORD_LOCKED' ||
             message.payload.code === 'GUEST_INVITE_INVALID' ||
             message.payload.code === ROOM_NOT_OPEN_ERROR_CODE ||
             message.payload.code === 'PARTICIPANT_BANNED'
@@ -2842,6 +2994,7 @@ export function StudioRoom() {
           }
           if (message.payload.code === 'HOST_TOKEN_INVALID') {
             if (roomId) {
+              saveStudioRestoreTicket(roomId, null);
               sessionStorage.removeItem(`hostToken:${roomId}`);
               removeSavedHostStudio(roomId);
             }
@@ -2957,6 +3110,8 @@ export function StudioRoom() {
         case 'update-name':
         case 'end-room':
         case 'cancel-end-room':
+        // Peer-to-peer recording transfers are handled by useRecordingTransfer.
+        case 'recording-transfer-signal':
           break;
         default:
           assertNever(message);
@@ -2972,7 +3127,9 @@ export function StudioRoom() {
 
   // Keep active peer connections aligned when a device switch or fallback replaces tracks.
   useEffect(() => {
-    const audioTrack = localStream?.getAudioTracks()[0];
+    // Peers get the outbound mix (mic + studio sounds) when it exists; it is a
+    // stable track, so a mic switch only changes its input, not the sender.
+    const audioTrack = peerLocalStream?.getAudioTracks()[0];
     const videoTrack = localStream?.getVideoTracks()[0];
     const published = publishedTrackIdsRef.current;
 
@@ -2981,7 +3138,9 @@ export function StudioRoom() {
       if (audioTrack) {
         replaceTrack(audioTrack).catch((err) => console.error('Failed to publish audio track:', err));
       }
-      sfuSessionRef.current?.setLocalAudioTrack(audioTrack || null);
+      // While screen audio is mixed in for the SFU, keep publishing the mix (rebuilt around the new voice).
+      const screenMix = sfuScreenAudioMixRef.current;
+      sfuSessionRef.current?.setLocalAudioTrack(screenMix ? screenMix.trackFor(audioTrack || null) : (audioTrack || null));
     }
 
     if (!isScreenSharing && videoTrack?.id !== published.video) {
@@ -2995,11 +3154,15 @@ export function StudioRoom() {
         sfuSessionRef.current?.setLocalVideoTrack(null);
       }
     }
-  }, [isScreenSharing, localStream, replaceTrack]);
+  }, [isScreenSharing, localStream, peerLocalStream, replaceTrack]);
 
   // Sync local tracks when remotely muted/unmuted
+  const localTrackKindsRef = useRef<LocalTrackKinds>({ audio: false, video: false });
   useEffect(() => {
-    applyParticipantMediaState(myParticipant, localStream, setAudioTrackEnabled, setVideoTrackEnabled);
+    // A device that only now started (retry, or turned on after a failure) keeps the user's choice.
+    const previousKinds = localTrackKindsRef.current;
+    localTrackKindsRef.current = getLocalTrackKinds(localStream);
+    applyParticipantMediaState(myParticipant, localStream, setAudioTrackEnabled, setVideoTrackEnabled, previousKinds);
   }, [myParticipant?.audioEnabled, myParticipant?.videoEnabled, localStream, setAudioTrackEnabled, setVideoTrackEnabled]);
 
   useEffect(() => {
@@ -3085,11 +3248,12 @@ export function StudioRoom() {
   const keepRoomOpen = () => send({ type: 'cancel-end-room', payload: {} });
 
   const onAudioDeviceChange = async (id: string) => {
-    try { const t = await switchAudioDevice(id, audioProcessing); if (t) await replaceTrack(t); }
+    // With the outbound mix, peers keep its stable track; the mix swaps its mic input.
+    try { const t = await switchAudioDevice(id, audioProcessing); if (t && !outboundAudioTrack) await replaceTrack(t); }
     catch (err) { console.error('Failed to switch audio device:', err); }
   };
   const onAudioProcessingChange = async (next: AudioProcessingPreferences) => {
-    try { const t = await updateAudioProcessing(next); if (t) await replaceTrack(t); }
+    try { const t = await updateAudioProcessing(next); if (t && !outboundAudioTrack) await replaceTrack(t); }
     catch (err) { console.error('Failed to update audio processing:', err); }
   };
   const onVideoDeviceChange = async (id: string) => {
@@ -3152,18 +3316,21 @@ export function StudioRoom() {
       return;
     }
     try {
-      const stream = await startScreenShareRef.current();
+      const contentHint = screenShareOptimizeForRef.current === 'motion' ? 'motion' : 'detail';
+      const stream = await startScreenShareRef.current(contentHint);
       if (!stream || !myParticipantRef.current) return;
       const screenTrack = stream.getVideoTracks()[0];
+      const screenAudioTrack = stream.getAudioTracks()[0] || null;
       if (screenTrack) {
         // Mesh peers take the screen as a second video track, so the camera
         // stays on stage beside it. The SFU carries one video per publisher,
         // so there the screen replaces the camera with a camera inset.
         const separate = !sfuSessionRef.current;
         separateScreenTrackRef.current = separate;
-        try { screenTrack.contentHint = 'detail'; } catch { /* Optional encoder hint. */ }
+        try { screenTrack.contentHint = contentHint; } catch { /* Optional encoder hint. */ }
         if (separate) {
-          await publishScreenTrackRef.current(screenTrack, stream);
+          // The tab's or system's sound goes along as its own track.
+          await publishScreenTrackRef.current(screenTrack, stream, screenAudioTrack);
         } else {
           const screenPip = createScreenPictureInPictureStream({
             screenStream: stream,
@@ -3171,9 +3338,33 @@ export function StudioRoom() {
             frameRate: 30,
           });
           publishedScreenShareCleanupRef.current?.();
-          publishedScreenShareCleanupRef.current = screenPip?.cleanup || null;
+          // The SFU takes one audio track per publisher: mix the shared sound into ours.
+          let screenAudioCleanup: (() => void) | null = null;
+          if (screenAudioTrack) {
+            const context = acquireAudioContext();
+            // Kept in a ref so a later voice-track change rebuilds the mix instead of replacing it.
+            const mix = new SfuScreenAudioMix(context, screenAudioTrack);
+            const mixedTrack = mix.trackFor(peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null);
+            if (mix.active) {
+              sfuScreenAudioMixRef.current = mix;
+              sfuSessionRef.current?.setLocalAudioTrack(mixedTrack);
+              screenAudioCleanup = () => {
+                if (sfuScreenAudioMixRef.current === mix) sfuScreenAudioMixRef.current = null;
+                sfuSessionRef.current?.setLocalAudioTrack(peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null);
+                mix.dispose();
+                releaseAudioContext();
+              };
+            } else {
+              mix.dispose();
+              releaseAudioContext();
+            }
+          }
+          const pipCleanup = screenPip?.cleanup || null;
+          publishedScreenShareCleanupRef.current = pipCleanup || screenAudioCleanup
+            ? () => { pipCleanup?.(); screenAudioCleanup?.(); }
+            : null;
           const publishedVideoTrack = screenPip?.videoTrack || screenTrack;
-          try { publishedVideoTrack.contentHint = 'detail'; } catch { /* Optional encoder hint. */ }
+          try { publishedVideoTrack.contentHint = contentHint; } catch { /* Optional encoder hint. */ }
           publishedVideoTrackRef.current = publishedVideoTrack;
           await replaceTrackRef.current(publishedVideoTrack);
           sfuSessionRef.current?.setLocalVideoTrack(publishedVideoTrack);
@@ -3194,6 +3385,18 @@ export function StudioRoom() {
     }
   }, []); // All mutable values accessed via refs
 
+  // "Optimize for: Text / Motion" applies to a share in progress too.
+  useEffect(() => {
+    if (!isScreenSharing) return;
+    const hint = screenShareOptimizeFor === 'motion' ? 'motion' : 'detail';
+    const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
+    const tracks = [...(screenStream?.getVideoTracks() || []), publishedVideoTrackRef.current]
+      .filter((track): track is MediaStreamTrack => Boolean(track) && track !== cameraTrack);
+    for (const track of tracks) {
+      try { track.contentHint = hint; } catch { /* Optional encoder hint. */ }
+    }
+  }, [isScreenSharing, screenShareOptimizeFor, screenStream]);
+
   // Recording
   const onToggleRecordingPause = useCallback(() => {
     if (!myParticipantRef.current || !canControlRecording || !isRecording) return;
@@ -3204,6 +3407,7 @@ export function StudioRoom() {
       pauseRecording();
     }
     setSessionRecordingPaused(nextPaused);
+    if (sessionRecordingSessionId) recordingWorkflowRef.current.notePause(sessionRecordingSessionId, nextPaused);
     send({
       type: 'recording-state-changed',
       payload: {
@@ -3238,7 +3442,7 @@ export function StudioRoom() {
       }
       if (action === 'stop-local') {
         try {
-          const result = await stopLocalRecording();
+          const result = await stopLocalRecordingIntoFolder();
           const timestamp = formatRecordingTimestamp(new Date());
           const files = result.files.filter(file => file.blob.size > 0).map((file, index) => ({
             label: file.label,
@@ -3271,6 +3475,11 @@ export function StudioRoom() {
         });
         setSessionRecordingStartedAt(null);
         setSessionRecordingPaused(false);
+        const folderTake = recordingWorkflowRef.current.getActiveTake(recordingSessionId);
+        // With a recording folder, every track is already on the host's drive
+        // (guests' arrive over the transfer connection): no free-tier export.
+        const skipCloudExport = Boolean(folderTake) && !recordingWorkflowRef.current.cloudUploadPreferred;
+        if (folderTake) recordingWorkflowRef.current.endTake(recordingSessionId);
         try {
           const recordings = await stopRecording();
           const programUpload = takeProgramProgressiveUpload();
@@ -3294,95 +3503,104 @@ export function StudioRoom() {
               addToast('The recording library could not save this program. Keep the downloaded recording.', 'warning');
             }
 
-            try {
-              if (mediaServerHealth.status === 'unavailable') {
-                throw new Error(mediaServerHealth.message || 'Media-server is unavailable.');
-              }
-              addToast('Saving your recording. The MP4 is prepared in the background; you can keep going.', 'info');
-              let programUploaded = false;
-              if (programUpload) {
-                try {
-                  await programUpload.finish();
-                  programUploaded = true;
-                } catch (err) {
-                  console.warn('Progressive program upload could not finish; sending the full program instead:', err);
+            if (skipCloudExport && folderTake) {
+              const folderName = recordingWorkflowRef.current.destination.folderName || 'your recording folder';
+              addToast(`Recording saved to ${folderName}/${folderTake.folder.path}. Guests’ tracks keep arriving in the same folder.`, 'success');
+              setShowRecordingPanel(true);
+              void recordingWorkflowRef.current.waitForHostSettled(30 * 60_000).then((settled) => {
+                if (settled && recordingWorkflowRef.current.transfers.length > 0) addToast('Every guest track is in your recording folder.', 'success');
+              });
+            } else {
+              try {
+                if (mediaServerHealth.status === 'unavailable') {
+                  throw new Error(mediaServerHealth.message || 'Media-server is unavailable.');
                 }
-              }
-              const token = await requestLiveStreamToken();
-              const exportBasename = `${room?.name || 'Studio'} Recording ${timestamp}`;
-              if (!programUploaded) {
-                await uploadRecordingToMediaServer({
-                  token,
-                  roomId: roomId || '',
-                  sessionId: recordingSessionId,
-                  participantId: myParticipant.id,
-                  participantName: `${myParticipant.name} program`,
-                  files,
-                  startExport: false,
-                });
-              }
-              // Your tracks are uploaded; waiting for guests, the server export,
-              // and the download happens in the background so Record is free
-              // again right away (the exit guard still covers it).
-              const finishExport = async () => {
-                const distributed = await waitForDistributedRecordingSession({
-                  token,
-                  roomId: roomId || '',
-                  sessionId: recordingSessionId,
-                  expectedUploads,
-                  timeoutMs: 120_000,
-                  intervalMs: 1_500,
-                });
-                if (distributed.completedUploadCount < expectedUploads) {
-                  addToast(
-                    `Exporting ${distributed.completedUploadCount}/${expectedUploads} available local recordings.`,
-                    'warning'
-                  );
+                addToast('Saving your recording. The MP4 is prepared in the background; you can keep going.', 'info');
+                let programUploaded = false;
+                if (programUpload) {
+                  try {
+                    await programUpload.finish();
+                    programUploaded = true;
+                  } catch (err) {
+                    console.warn('Progressive program upload could not finish; sending the full program instead:', err);
+                  }
                 }
-                const exportJob = await exportDistributedRecordingSession({
-                  token,
-                  roomId: roomId || '',
-                  sessionId: recordingSessionId,
-                  basename: exportBasename,
-                  exportVideoCodec: 'h264',
-                  includeAudioStems: true,
-                  pollTimeoutMs: 180_000,
-                });
-                // Keep the whole export (every person's tracks, not only the MP4)
-                // reachable from the Recordings panel.
-                if (programSession) {
-                  await updateRecordingSessionMediaExport(programSession.id, exportJob).catch((error) => {
-                    console.warn('Could not link the export to the recording library:', error);
+                const token = await requestLiveStreamToken();
+                const exportBasename = `${room?.name || 'Studio'} Recording ${timestamp}`;
+                if (!programUploaded) {
+                  await uploadRecordingToMediaServer({
+                    token,
+                    roomId: roomId || '',
+                    sessionId: recordingSessionId,
+                    participantId: myParticipant.id,
+                    participantName: `${myParticipant.name} program`,
+                    files,
+                    startExport: false,
                   });
                 }
-                const mp4Artifact = getReadyMp4Artifact(exportJob);
-                if (!mp4Artifact) throw new Error(exportJob.error || 'MP4 export did not finish.');
-                const download = await downloadRecordingExportArtifact({
-                  token,
-                  uploadId: exportJob.uploadId,
-                  exportId: exportJob.exportId,
-                  artifactId: mp4Artifact.id,
-                  artifactLabel: mp4Artifact.label,
-                  format: mp4Artifact.format,
-                });
-                // Name it after the studio and time, not the export's generic "Final MP4",
-                // so takes do not pile up as Final_MP4 (1).mp4, (2)...
-                const extension = download.fileName.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4';
-                downloadBlobFile(download.blob, `${exportBasename.replace(/[^\w .()-]+/g, '_').trim()}${extension}`);
-                addToast('MP4 recording export downloaded.', 'success');
-              };
-              setBackgroundExportCount((count) => count + 1);
-              void finishExport()
-                .catch(async (err) => {
-                  console.warn('MP4 recording export failed, saving original tracks:', err);
-                  await downloadToolbarRecordingFallbackFiles(files, timestamp);
-                  addToast(getToolbarRecordingFallbackToast(files), 'warning');
-                })
-                .finally(() => setBackgroundExportCount((count) => Math.max(0, count - 1)));
-            } catch (err) {
-              console.warn('MP4 recording export failed, saving original tracks:', err);
-              await downloadToolbarRecordingFallbackFiles(files, timestamp);
-              addToast(getToolbarRecordingFallbackToast(files), 'warning');
+                // Your tracks are uploaded; waiting for guests, the server export,
+                // and the download happens in the background so Record is free
+                // again right away (the exit guard still covers it).
+                const finishExport = async () => {
+                  const distributed = await waitForDistributedRecordingSession({
+                    token,
+                    roomId: roomId || '',
+                    sessionId: recordingSessionId,
+                    expectedUploads,
+                    timeoutMs: 120_000,
+                    intervalMs: 1_500,
+                  });
+                  if (distributed.completedUploadCount < expectedUploads) {
+                    addToast(
+                      `Exporting ${distributed.completedUploadCount}/${expectedUploads} available local recordings.`,
+                      'warning'
+                    );
+                  }
+                  const exportJob = await exportDistributedRecordingSession({
+                    token,
+                    roomId: roomId || '',
+                    sessionId: recordingSessionId,
+                    basename: exportBasename,
+                    exportVideoCodec: 'h264',
+                    includeAudioStems: true,
+                    pollTimeoutMs: 180_000,
+                  });
+                  // Keep the whole export (every person's tracks, not only the MP4)
+                  // reachable from the Recordings panel.
+                  if (programSession) {
+                    await updateRecordingSessionMediaExport(programSession.id, exportJob).catch((error) => {
+                      console.warn('Could not link the export to the recording library:', error);
+                    });
+                  }
+                  const mp4Artifact = getReadyMp4Artifact(exportJob);
+                  if (!mp4Artifact) throw new Error(exportJob.error || 'MP4 export did not finish.');
+                  const download = await downloadRecordingExportArtifact({
+                    token,
+                    uploadId: exportJob.uploadId,
+                    exportId: exportJob.exportId,
+                    artifactId: mp4Artifact.id,
+                    artifactLabel: mp4Artifact.label,
+                    format: mp4Artifact.format,
+                  });
+                  // Name it after the studio and time, not the export's generic "Final MP4",
+                  // so takes do not pile up as Final_MP4 (1).mp4, (2)...
+                  const extension = download.fileName.match(/\.[a-z0-9]+$/i)?.[0] || '.mp4';
+                  downloadBlobFile(download.blob, `${exportBasename.replace(/[^\w .()-]+/g, '_').trim()}${extension}`);
+                  addToast('MP4 recording export downloaded.', 'success');
+                };
+                setBackgroundExportCount((count) => count + 1);
+                void finishExport()
+                  .catch(async (err) => {
+                    console.warn('MP4 recording export failed, saving original tracks:', err);
+                    await downloadToolbarRecordingFallbackFiles(files, timestamp);
+                    addToast(getToolbarRecordingFallbackToast(files), 'warning');
+                  })
+                  .finally(() => setBackgroundExportCount((count) => Math.max(0, count - 1)));
+              } catch (err) {
+                console.warn('MP4 recording export failed, saving original tracks:', err);
+                await downloadToolbarRecordingFallbackFiles(files, timestamp);
+                addToast(getToolbarRecordingFallbackToast(files), 'warning');
+              }
             }
           }
         } catch (err) {
@@ -3390,19 +3608,23 @@ export function StudioRoom() {
           addToast(err instanceof Error ? err.message : 'Failed to stop recording.', 'error');
         }
       } else {
-        if (!(await runRecordingCountdown())) return;
+        // Still inside the click: re-grant the remembered folder, ask for
+        // persistent storage and check browser storage headroom.
+        const startCheck = await recordingWorkflowRef.current.prepareStart(10_000_000 + estimateRecordingBitsPerSecond(
+          buildParticipantRecordingSources({ localParticipant: myParticipant, localStream, screenStream, isScreenSharing }),
+        ));
+        if (!startCheck.proceed) return;
+        if (startCheck.headroom.status === 'warning') addToast(startCheck.headroom.message, 'warning');
+        // Guests see the same 3-2-1 (and its cancellation) on their screens.
+        send({ type: 'recording-countdown', payload: { seconds: RECORDING_COUNTDOWN_SECONDS } });
+        if (!(await runRecordingCountdown())) {
+          send({ type: 'recording-countdown', payload: { seconds: 0, cancelled: true } });
+          return;
+        }
         const streams = new Map<string, RecordingStreamInput>();
         const programSource = createProgramRecordingSource({
           compositeStream: compositeStreamRef.current,
-          localStream,
-          localParticipant: myParticipant,
-          participants,
-          remoteStreams,
-          screenStream,
-          auxiliaryAudioStream: broadcastAudioBus.ensureStream() ?? broadcastAudioBus.stream,
-          participantVolumes,
-          participantAudioLevels: stageAudioLevels,
-          audioDuckingEnabled,
+          acquireProgramAudio: programAudioMix.acquire,
         });
 
         if (programSource) {
@@ -3425,8 +3647,16 @@ export function StudioRoom() {
         }
         if (streams.size === 0) return;
         const recordingSessionId = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        const mediaHttpUrl = roomId && mediaServerHealth.status !== 'unavailable' ? resolveMediaHttpUrl() : '';
+        const folderTake = startCheck.folderReady
+          ? await recordingWorkflowRef.current.beginTake(recordingSessionId, myParticipant.name)
+          : null;
+        if (!folderTake && recordingWorkflowRef.current.destination.status === 'none') {
+          addToast('Recording to browser storage. Choose a recording folder in Recordings to record straight to your SSD.', 'info');
+        }
+        const uploadProgram = !folderTake || recordingWorkflowRef.current.cloudUploadPreferred;
+        const mediaHttpUrl = uploadProgram && roomId && mediaServerHealth.status !== 'unavailable' ? resolveMediaHttpUrl() : '';
         const started = startRecording(streams, {
+          ...(folderTake ? { storage: folderTake.program } : {}),
           progressiveUpload: mediaHttpUrl && roomId
             ? {
                 mediaHttpUrl,
@@ -3440,7 +3670,10 @@ export function StudioRoom() {
               }
             : undefined,
         });
-        if (!started) return;
+        if (!started) {
+          if (folderTake) recordingWorkflowRef.current.endTake(recordingSessionId);
+          return;
+        }
         const startedAt = new Date().toISOString();
         const localCaptureCount = myParticipant.status === 'on-stage' && (myParticipant.audioEnabled || myParticipant.videoEnabled) ? 1 : 0;
         const remoteCaptureCount = Array.from(participants.values()).filter((participant) => (
@@ -3469,15 +3702,7 @@ export function StudioRoom() {
     if (!myParticipant || !canControlRecording || folderSaving || localRecordingFinalizing || programRecordingFinalizing || !recordingReadiness.canStart) return;
     const programSource = createProgramRecordingSource({
       compositeStream: compositeStreamRef.current,
-      localStream,
-      localParticipant: myParticipant,
-      participants,
-      remoteStreams,
-      screenStream,
-      auxiliaryAudioStream: broadcastAudioBus.ensureStream() ?? broadcastAudioBus.stream,
-      participantVolumes,
-      participantAudioLevels: stageAudioLevels,
-      audioDuckingEnabled,
+      acquireProgramAudio: programAudioMix.acquire,
     });
     const sources = buildLocalRecordingSources({
       localParticipant: myParticipant,
@@ -3492,25 +3717,26 @@ export function StudioRoom() {
     });
 
     if (sources.length === 0) return;
-    await startLocalRecording(sources);
+    const localTake = recordingWorkflowRef.current.destination.ready
+      ? await recordingWorkflowRef.current.beginTake(`local-${Date.now().toString(36)}`, myParticipant.name)
+      : null;
+    localRecordingTakeRef.current = localTake?.sessionId || null;
+    await startLocalRecording(sources, null, localTake ? { storage: localTake.forParticipant('Tracks') } : undefined);
   }, [
     localRecordingFinalizing,
     folderSaving,
     programRecordingFinalizing,
-    audioDuckingEnabled,
-    broadcastAudioBus,
+    programAudioMix,
     canControlRecording,
     createScreenPictureInPictureRecordingSource,
     isScreenSharing,
     localStream,
     myParticipant,
-    participantVolumes,
     participants,
     recordingReadiness.canStart,
     remoteStreams,
     meshRemoteScreenStreams,
     screenStream,
-    stageAudioLevels,
     startLocalRecording,
   ]);
 
@@ -3790,7 +4016,7 @@ export function StudioRoom() {
     });
   }, [send]);
 
-  const requestLiveStreamToken = useCallback((): Promise<string> => {
+  const requestLiveStreamToken = useCallback((purpose?: 'presentation-render'): Promise<string> => {
     const requestId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     // A request sent while the studio connection is down is dropped; fail now
     // so a reconnecting broadcast retries in seconds instead of waiting out the timeout.
@@ -3806,10 +4032,16 @@ export function StudioRoom() {
       liveTokenRequestsRef.current.set(requestId, { resolve, reject, timer });
       send({
         type: 'live-stream-token-request',
-        payload: { requestId },
+        payload: purpose ? { requestId, purpose } : { requestId },
       });
     });
   }, [send]);
+
+  // Deck renders on the media server need a short-lived token for hosts and co-hosts.
+  const getPresentationRenderToken = useMemo(
+    () => createCachedTokenSource(() => requestLiveStreamToken('presentation-render')),
+    [requestLiveStreamToken]
+  );
 
   const requestRecordingUploadToken = useCallback((sessionId: string): Promise<string> => {
     if (recordingUploadTokenRef.current?.sessionId === sessionId) {
@@ -3861,10 +4093,10 @@ export function StudioRoom() {
     setSfuTransportStatus('connecting');
     setSfuRemoteStreams(new Map());
     void requestSfuToken().then(async (token) => {
-      const iceConfiguration = await fetchIceConfig().catch(() => DEFAULT_ICE_CONFIG);
+      const iceConfiguration = await getSharedIceConfiguration();
       if (cancelled) return;
       const localVideoTrack = publishedVideoTrackRef.current || localStreamRef.current?.getVideoTracks()[0] || null;
-      const localAudioTrack = localStreamRef.current?.getAudioTracks()[0] || null;
+      const localAudioTrack = peerAudioTrackRef.current || localStreamRef.current?.getAudioTracks()[0] || null;
       let remoteMediaReady = false;
       let localPublishReady = localVideoTrack === null && localAudioTrack === null;
       const activateSfuMedia = () => {
@@ -4001,11 +4233,33 @@ export function StudioRoom() {
           },
         }
       : undefined;
-    void startParticipantLocalRecording(sources, null, { progressiveUpload })
+    const workflow = recordingWorkflowRef.current;
+    const hostTake = isHostOrCoHost ? workflow.getActiveTake(sessionId) : null;
+    const plan = planParticipantRecording({
+      isOperator: isHostOrCoHost,
+      hostFolderTake: Boolean(hostTake),
+      invitedByHost: !isHostOrCoHost && Boolean(workflow.invite),
+      cloudUpload: isHostOrCoHost ? workflow.cloudUploadPreferred : workflow.invite?.options.cloudUpload === true,
+    });
+    const lossless = workflow.losslessAudio && isPcmWavRecordingSupported();
+    if (lossless) {
+      const wavSource = buildLosslessMicrophoneSource({ localParticipant: myParticipant, localStream });
+      if (wavSource) sources.push(wavSource);
+    }
+    participantRecordingPlanRef.current = { ...plan, sessionId, hostFolderTake: Boolean(hostTake), lossless };
+    void startParticipantLocalRecording(sources, null, {
+      progressiveUpload: plan.progressiveUpload ? progressiveUpload : undefined,
+      ...(hostTake ? { storage: hostTake.forParticipant(myParticipant.name) } : {}),
+      // Tags the browser backup so it can resume to the host after a reload.
+      ...(!isHostOrCoHost && roomId
+        ? { transfer: { roomId, sessionId, participantId: myParticipant.id, participantName: myParticipant.name } }
+        : {}),
+    })
       .catch((err) => {
         console.warn('Participant local recording could not start:', err);
       });
   }, [
+    isHostOrCoHost,
     isParticipantLocalRecording,
     isScreenSharing,
     localStream,
@@ -4019,6 +4273,38 @@ export function StudioRoom() {
     startParticipantLocalRecording,
     supportsCoordinatedRecording,
   ]);
+
+  // A new mic, camera, processing or quality setting continues the track in a
+  // new segment file; a screen share started mid-take becomes its own track.
+  useEffect(() => {
+    if (!isParticipantLocalRecording || !myParticipant || myParticipant.status !== 'on-stage') return;
+    const sources = buildParticipantRecordingSources({ localParticipant: myParticipant, localStream, screenStream, isScreenSharing });
+    if (participantRecordingPlanRef.current?.lossless) {
+      const wavSource = buildLosslessMicrophoneSource({ localParticipant: myParticipant, localStream });
+      if (wavSource) sources.push(wavSource);
+    }
+    void updateParticipantSources(sources).catch((err) => console.warn('Recording could not follow the device change:', err));
+  }, [
+    isParticipantLocalRecording,
+    isScreenSharing,
+    localStream,
+    myParticipant,
+    participantInputEndedVersion,
+    screenStream,
+    updateParticipantSources,
+  ]);
+
+  // The host started collecting tracks mid-take: send them peer-to-peer and
+  // stop the media-server upload unless the host asked for a cloud copy.
+  useEffect(() => {
+    const plan = participantRecordingPlanRef.current;
+    const invite = recordingWorkflow.invite;
+    if (!isParticipantLocalRecording || isHostOrCoHost || !plan || !invite) return;
+    const cloud = invite.options.cloudUpload === true;
+    if (plan.sendToHost && plan.progressiveUpload === cloud) return;
+    if (!cloud && plan.progressiveUpload) cancelParticipantUpload();
+    participantRecordingPlanRef.current = { ...plan, sendToHost: true, progressiveUpload: plan.progressiveUpload && cloud, uploadAfterStop: cloud };
+  }, [cancelParticipantUpload, isHostOrCoHost, isParticipantLocalRecording, recordingWorkflow.invite]);
 
   useEffect(() => {
     if (!isParticipantLocalRecording) return;
@@ -4061,9 +4347,39 @@ export function StudioRoom() {
             blob: file.blob,
             kind: file.kind,
             capture: file.capture,
-            fileName: `${participant.name.replace(/[^a-z0-9_-]+/gi, '_') || 'participant'}_${file.kind}_${index + 1}_${timestamp}.${getRecordingFileExtension(file.blob.type)}`,
+            fileName: makeParticipantRecordingFileName(participant.name, file.kind, index + 1, file.blob, timestamp),
           }));
         if (files.length === 0) return;
+
+        const plan = participantRecordingPlanRef.current?.sessionId === sessionId ? participantRecordingPlanRef.current : null;
+        participantRecordingPlanRef.current = null;
+        const workflow = recordingWorkflowRef.current;
+        const durationMs = result.files.find((file) => file.capture?.durationMs)?.capture?.durationMs;
+        if (plan && !plan.uploadAfterStop && !result.progressiveUpload && (plan.hostFolderTake || workflow.invite)) {
+          // Nothing goes to the media-server: the host's folder holds the take.
+          try {
+            await persistRecordingSession({
+              roomName: `${room?.name || 'Studio'} - ${participant.name}`,
+              durationSeconds: durationMs ? Math.round(durationMs / 1000) : null,
+              files,
+            });
+          } catch (error) {
+            console.warn('Participant recording could not be added to the browser library:', error);
+          }
+          if (plan.hostFolderTake) {
+            workflow.attachCaptures(sessionId, result.files);
+            addToast('Your tracks were recorded straight into the recording folder.', 'success');
+          } else {
+            addToast('Recording saved in this browser. Sending your tracks to the host…', 'info');
+            void workflow.waitForDelivery(30 * 60_000).then((delivered) => addToast(
+              delivered
+                ? 'Your tracks reached the host’s recording folder.'
+                : 'Some of your tracks have not reached the host yet. They stay in this browser and are sent automatically when you rejoin this studio.',
+              delivered ? 'success' : 'warning',
+            ));
+          }
+          return;
+        }
 
         const saved = await saveParticipantRecording({
           saveLocal: () => persistRecordingSession({
@@ -4074,7 +4390,28 @@ export function StudioRoom() {
             files,
           }),
           finishProgressive: result.progressiveUpload
-            ? () => result.progressiveUpload!.finish()
+            ? async () => {
+                await result.progressiveUpload!.finish();
+                // Device-change segments and mid-take screen shares are not in the progressive session.
+                const extra = result.progressiveUpload!.uncoveredFiles.filter((file) => file.blob.size > 0);
+                if (!extra.length) return;
+                const token = await requestRecordingUploadToken(sessionId);
+                await uploadRecordingToMediaServer({
+                  token,
+                  roomId,
+                  sessionId,
+                  participantId: participant.id,
+                  participantName: participant.name,
+                  files: extra.map((file, index) => ({
+                    label: file.label,
+                    blob: file.blob,
+                    kind: file.kind,
+                    capture: file.capture,
+                    fileName: makeParticipantRecordingFileName(participant.name, file.kind, files.length + index + 1, file.blob, timestamp),
+                  })),
+                  startExport: false,
+                });
+              }
             : undefined,
           uploadFull: async () => {
             const token = await requestRecordingUploadToken(sessionId);
@@ -4163,6 +4500,13 @@ export function StudioRoom() {
     if (isLive) pauseProgramUpload();
     else resumeProgramUpload();
   }, [isLive, pauseProgramUpload, programUploadState, resumeProgramUpload]);
+
+  // The host's own ISO upload (only without a recording folder) also waits while live.
+  useEffect(() => {
+    if (!participantUploadState || !isHostOrCoHost) return;
+    if (shouldPauseOwnUploadWhileLive({ isOperator: isHostOrCoHost, isLive })) pauseParticipantUpload();
+    else resumeParticipantUpload();
+  }, [isHostOrCoHost, isLive, participantUploadState, pauseParticipantUpload, resumeParticipantUpload]);
 
   const controlParticipantRecordingUpload = useCallback((participantId: string, action: 'pause' | 'resume') => {
     send({ type: 'recording-upload-control', payload: { targetParticipantId: participantId, action } });
@@ -4456,6 +4800,10 @@ export function StudioRoom() {
     const operation = liveStartOperationRef.current.begin();
     if (!operation) return;
     try {
+      // The relay check can take up to a minute while a sleeping media server wakes; show that it is working.
+      setDestinations((prev) => prev.map((d) => (
+        d.enabled ? { ...d, status: 'connecting', statusMessage: 'Checking the media server (waking it can take up to a minute)…' } : d
+      )));
       const readiness = await operation.run(checkRelayReadiness);
       operation.assertActive();
       if (readiness.status !== 'ready') {
@@ -4634,6 +4982,7 @@ export function StudioRoom() {
             requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
             allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
             skipServerRender: skipUnavailableServerRender,
+            getAuthToken: isHostOrCoHost ? getPresentationRenderToken : undefined,
             onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
             onProgress: ({ preview: partial, renderedCount, totalCount }) => {
               updateAsset(asset.id, {
@@ -5215,8 +5564,9 @@ export function StudioRoom() {
         // otherwise (SFU) the screen has replaced the camera.
         const separateScreen = p.screenSharing ? meshRemoteScreenStreams.get(id) || null : null;
         const screenReplacesCamera = Boolean(p.screenSharing) && !separateScreen;
-        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: screenReplacesCamera ? false : p.audioEnabled, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
-        if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: false, videoEnabled: true, volume: 1, isScreenShare: true });
+        items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.audioEnabled, audibleWhileMuted: !screenReplacesCamera, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
+        // A shared tab's sound plays with the screen tile.
+        if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: separateScreen.getAudioTracks().length > 0, videoEnabled: true, volume: participantVolumes[id] ?? 1, isScreenShare: true });
       }
     }
     return items;
@@ -5266,16 +5616,23 @@ export function StudioRoom() {
       });
     }
 
+    // On stage, the strip is for people who are not on stage: on-stage co-hosts
+    // already have a stage tile. Backstage guests also see the hosts here.
+    const viewerBackstage = myParticipant.status === 'backstage';
+    // Anyone with a stage tile is already heard there: never play them twice.
+    const stageIds = new Set(videoItems.map((item) => item.id));
     for (const [id, participant] of participants) {
       if (!canExchangeStudioMedia(myParticipant, participant)) continue;
-      if (participant.status !== 'backstage' && !isStudioOperator(participant)) continue;
+      if (participant.status !== 'backstage' && !(viewerBackstage && isStudioOperator(participant))) continue;
+      const heardOnStage = stageIds.has(id);
 
       items.push({
         id,
         name: participant.status === 'backstage' ? participant.name : `${participant.name} · ${participant.role === 'co-host' ? 'Co-host' : 'Host'}`,
         stream: remoteStreams.get(id) || null,
         isLocal: false,
-        audioEnabled: participant.screenSharing ? false : participant.audioEnabled,
+        audioEnabled: participant.screenSharing || heardOnStage ? false : participant.audioEnabled,
+        audibleWhileMuted: !participant.screenSharing && !heardOnStage,
         videoEnabled: participant.videoEnabled || participant.screenSharing,
         volume: participantVolumes[id] ?? 1,
         isScreenShare: participant.screenSharing || false,
@@ -5284,7 +5641,7 @@ export function StudioRoom() {
     }
 
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, participantVolumes, peerBandwidthHealth]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, participantVolumes, peerBandwidthHealth, videoItems]);
 
   const availableStageItemIds = useMemo(() => videoItems.map((item) => item.id), [videoItems]);
 
@@ -5561,8 +5918,9 @@ export function StudioRoom() {
           addToast('No one is waiting in the green room.', 'info');
           return true;
         }
-        waiting.forEach((participant) => onStageAction('move-to-stage', participant.id));
-        addToast(waiting.length === 1 ? `Admitted ${waiting[0].name}.` : `Admitted ${waiting.length} guests.`, 'success');
+        // Admitted guests go backstage (off air); bringing them on stage is a separate step.
+        waiting.forEach((participant) => onStageAction('move-to-backstage', participant.id));
+        addToast(waiting.length === 1 ? `Admitted ${waiting[0].name} to backstage.` : `Admitted ${waiting.length} guests to backstage.`, 'success');
         return true;
       }
       case 'toggle-auto-director': setAutoDirectorEnabled((current) => !current); return true;
@@ -5666,12 +6024,30 @@ export function StudioRoom() {
       return;
     }
     let cancelled = false;
-    const image = new Image();
-    image.onload = () => { if (!cancelled) apply(); };
-    image.onerror = () => { if (!cancelled) apply(); };
-    image.src = next.url;
+    // Stage pictures are only for admitted participants: fetch with our read token.
+    void loadStageImageObjectUrl(next.url, stageReadTokenRef.current).then((objectUrl) => {
+      if (cancelled) {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      if (objectUrl) next.url = objectUrl;
+      const previousObjectUrl = stageObjectUrlRef.current;
+      stageObjectUrlRef.current = objectUrl;
+      const image = new Image();
+      const show = () => {
+        if (cancelled) return;
+        apply();
+        if (previousObjectUrl && previousObjectUrl !== objectUrl) URL.revokeObjectURL(previousObjectUrl);
+      };
+      image.onload = show;
+      image.onerror = show;
+      image.src = next.url;
+    });
     return () => { cancelled = true; };
   }, [isHostOrCoHost, remoteStageContent, roomId]);
+  useEffect(() => () => {
+    if (stageObjectUrlRef.current) URL.revokeObjectURL(stageObjectUrlRef.current);
+  }, []);
 
   const onStageTilePrimaryClick = useCallback((itemId: string, action: ReturnType<typeof getStageTilePrimaryClickAction>) => {
     if (action === 'cycle-pip-corner') {
@@ -6018,7 +6394,9 @@ export function StudioRoom() {
   const connectionTimedOut = connectionError === 'Unable to connect to server. Please check your connection and try again.';
   // Keep an existing stage mounted during a network interruption.
   if (connectionError && !connectionTimedOut) {
-    const passwordError = connectionError === 'This room requires a password' || connectionError === 'Incorrect room password';
+    const passwordError = connectionError === 'This room requires a password'
+      || connectionError.startsWith('Incorrect room password')
+      || connectionError.startsWith('Too many incorrect passwords');
     const hostAccessError = connectionError.includes('Host access is missing or expired');
     const joinRecoverableError =
       passwordError ||
@@ -6135,29 +6513,18 @@ export function StudioRoom() {
             </span>
           </div>
           <div className="studio-headerRight" style={styles.headerRight}>
-            {!connected && (
+            {(!connected || studioServerLost) && (
               <span role="status" style={{ color: 'var(--warning)', fontSize: 13 }}>
-                {reconnectFailed ? 'Connection lost' : 'Reconnecting…'}
+                {reconnectFailed ? 'Connection lost' : 'Reconnecting to studio server…'}
               </span>
             )}
             {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
-            <button
-              style={{
-                ...styles.healthBtn,
-                borderColor: getHealthColor(sessionHealth.status),
-                color: getHealthColor(sessionHealth.status),
-              }}
-              onClick={() => toggleToolPanel('health', true)}
-              title="Session health"
-              aria-label={`Session health: ${sessionHealth.label}, ${sessionHealth.score}`}
-            >
-              <span style={{ ...styles.healthDot, background: getHealthColor(sessionHealth.status) }} />
-              {sessionHealth.score}
-            </button>
+            <SessionHealthPill summary={sessionHealth} audience="guest" onClick={() => toggleToolPanel('health', true)} />
 
           </div>
         </div>
 
+        <StudioMediaBanner problem={mediaProblem} onRetry={retryMedia} />
         <div style={styles.waitingBody}>
         <div role="main" style={{ ...styles.waitingMain, ...waitingRoomBackgroundStyle }}>
           <div style={styles.waitingStack}>
@@ -6276,7 +6643,7 @@ export function StudioRoom() {
 
 
         {showHealthPanel && (
-          <SessionHealthPanel
+          <SessionHealthPanel audience={isHostOrCoHost ? 'operator' : 'guest'}
             summary={sessionHealth}
             meshCapacity={meshCapacity}
             sfuMediaStatus={sfuTransportStatus}
@@ -6399,30 +6766,19 @@ export function StudioRoom() {
               CC
             </span>
           )}
-          {myParticipant && (
-            <span style={styles.roleBadge}>{myParticipant.role}</span>
+          {myParticipant && myParticipant.role !== 'host' && (
+            <span style={styles.roleBadge}>{myParticipant.role === 'co-host' ? 'Co-host' : 'Guest'}</span>
           )}
+          <StudioStatusAnnouncer recording={recordingStatus.active} paused={Boolean(recordingStatus.paused)} live={liveStatus.active} />
         </div>
         <div className="studio-headerRight" style={styles.headerRight}>
-          {!connected && (
+          {(!connected || studioServerLost) && (
             <span role="status" style={{ color: 'var(--warning)', fontSize: 13 }}>
-              {reconnectFailed ? 'Connection lost' : 'Reconnecting…'}
+              {reconnectFailed ? 'Connection lost' : 'Reconnecting to studio server…'}
             </span>
           )}
           {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
-          <button
-            style={{
-              ...styles.healthBtn,
-              borderColor: getHealthColor(sessionHealth.status),
-              color: getHealthColor(sessionHealth.status),
-            }}
-            onClick={() => toggleToolPanel('health', true)}
-            title="Session health"
-            aria-label={`Session health: ${sessionHealth.label}, ${sessionHealth.score}`}
-          >
-            <span style={{ ...styles.healthDot, background: getHealthColor(sessionHealth.status) }} />
-            {sessionHealth.score}
-          </button>
+          <SessionHealthPill summary={sessionHealth} audience={isHostOrCoHost ? 'operator' : 'guest'} onClick={() => toggleToolPanel('health', true)} />
           {isHostOrCoHost && (
             <button
               style={{ ...styles.headerBtn, ...(showSidebar ? styles.headerBtnActive : {}) }}
@@ -6544,6 +6900,7 @@ export function StudioRoom() {
       )}
 
       <CameraKeepAlive stream={localStream} />
+      <StudioMediaBanner problem={mediaProblem} onRetry={retryMedia} />
 
       {/* Main Area */}
       <main className="studio-main" style={styles.main}>
@@ -6557,6 +6914,20 @@ export function StudioRoom() {
               <span className="studio-recording-countdown-label">Recording starts</span>
               <button type="button" onClick={() => recordingCountdownCancelRef.current?.()}>Cancel</button>
             </div>
+          )}
+          {recordingCountdown === null && remoteRecordingCountdown !== null && (
+            <div className="studio-recording-countdown" role="status" aria-live="assertive">
+              <span className="studio-recording-countdown-number">{remoteRecordingCountdown}</span>
+              <span className="studio-recording-countdown-label">Recording starts</span>
+            </div>
+          )}
+          {isHostOrCoHost && allParticipantsMap.size <= 1 && !liveStatus.active && !recordingStatus.active && recordingCountdown === null && (
+            <EmptyStageInvite
+              roomId={roomId || ''}
+              inviteUrl={inviteUrl}
+              onOpenInvite={openInvitePanel}
+              onChooseRecordingFolder={canControlRecording ? () => setShowRecordingPanel(true) : undefined}
+            />
           )}
           {/* Scale the complete broadcast composition; panels never reflow it. */}
           {useMobileStage ? (
@@ -6590,6 +6961,7 @@ export function StudioRoom() {
                       name={item.name}
                       isLocal={item.isLocal}
                       audioEnabled={item.audioEnabled}
+                      audibleWhileMuted={item.audibleWhileMuted}
                       videoEnabled={item.videoEnabled}
                       volume={item.volume}
                       brandColor={brandColor}
@@ -6802,6 +7174,7 @@ export function StudioRoom() {
                           isLocal={item.isLocal}
                           isScreenShare={item.isScreenShare}
                           audioEnabled={item.audioEnabled}
+                          audibleWhileMuted={item.audibleWhileMuted}
                           videoEnabled={item.videoEnabled}
                           volume={item.volume}
                           brandColor={brandColor}
@@ -6894,6 +7267,7 @@ export function StudioRoom() {
               {sceneTransition && (
                 <div
                   data-testid="scene-transition-overlay"
+                  data-compositor-scene-transition
                   role="status"
                   aria-live="polite"
                   aria-label={`Scene transition: ${sceneTransition.sceneName}`}
@@ -6911,6 +7285,9 @@ export function StudioRoom() {
                     <video
                       key={`${sceneTransition.sceneId}-${sceneTransition.stingerClip.url}`}
                       src={sceneTransition.stingerClip.url}
+                      // A URL clip must allow CORS, or drawing it would taint
+                      // the program canvas; without it the broadcast skips it.
+                      crossOrigin="anonymous"
                       style={styles.sceneTransitionVideo}
                       autoPlay
                       muted
@@ -7227,6 +7604,10 @@ export function StudioRoom() {
             peerBandwidthHealth={peerBandwidthHealth}
             recordingUploads={canControlRecording ? participantRecordingUploads : undefined}
             onRecordingUploadControl={canControlRecording ? controlParticipantRecordingUpload : undefined}
+            onEditNameTag={isHostOrCoHost ? (participantId, profile) => send({
+              type: 'update-participant-profile',
+              payload: { targetParticipantId: participantId, name: profile.name, title: profile.title },
+            }) : undefined}
             localStream={localStream}
             participantVolumes={participantVolumes}
             onParticipantVolumeChange={handleParticipantVolumeChange}
@@ -7294,6 +7675,7 @@ export function StudioRoom() {
             <InvitePanel
               roomName={room?.name || 'Studio'}
               roomId={roomId || ''}
+              watchId={watchId}
               hostName={room?.hostName}
               inviteUrl={inviteUrl}
               scheduledFor={room?.scheduledFor}
@@ -7309,6 +7691,8 @@ export function StudioRoom() {
           </Suspense>
         )}
 
+        <RecordingTransferBadge transfers={recordingWorkflow.transfers} guestLine={recordingWorkflow.guestLine} />
+
         {/* Recording Panel */}
         {canControlRecording && showRecordingPanel && (
           <Suspense fallback={<LazyPanelFallback />}>
@@ -7322,7 +7706,7 @@ export function StudioRoom() {
               onStartRecording={onStartLocalRecording}
               onPauseRecording={pauseLocalRecording}
               onResumeRecording={resumeLocalRecording}
-              onStopRecording={stopLocalRecording}
+              onStopRecording={stopLocalRecordingIntoFolder}
               onFinalizingChange={setLocalRecordingFinalizing}
               onFolderSavingChange={setFolderSaving}
               onCancelRecording={cancelLocalRecording}
@@ -7341,6 +7725,22 @@ export function StudioRoom() {
               captionSegments={captionSegments}
               captionLanguage={captionLanguage}
               onClose={() => setShowRecordingPanel(false)}
+              destinationPanel={(
+                <RecordingDestinationPanel
+                  status={recordingWorkflow.destination.status}
+                  folderName={recordingWorkflow.destination.folderName}
+                  error={recordingWorkflow.destination.error}
+                  persisted={recordingWorkflow.destination.persistence?.persisted ?? null}
+                  preferences={recordingWorkflow.destination.preferences}
+                  cloudAvailable={recordingWorkflow.cloudAvailable}
+                  transfers={recordingWorkflow.transfers}
+                  disabled={isRecording || isLocalRecording}
+                  onChooseFolder={() => void recordingWorkflow.destination.chooseFolder()}
+                  onReconnectFolder={() => void recordingWorkflow.destination.reconnectFolder()}
+                  onForgetFolder={() => void recordingWorkflow.destination.forgetFolder()}
+                  onPreferencesChange={recordingWorkflow.destination.setPreferences}
+                />
+              )}
             />
           </Suspense>
         )}
@@ -7365,6 +7765,8 @@ export function StudioRoom() {
         onToggleRecordingPause={canControlRecording && isRecording ? onToggleRecordingPause : undefined}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={screenShareSupported || isScreenSharing ? onToggleScreenShare : undefined}
+        screenShareOptimizeFor={screenShareOptimizeFor}
+        onScreenShareOptimizeForChange={screenShareSupported ? setScreenShareOptimizeFor : undefined}
         onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
         unreadChatCount={unreadChatCount}
         onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
@@ -7374,6 +7776,7 @@ export function StudioRoom() {
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
         onOpenMediaPanel={() => { setShowSidebar(true); setSidebarActiveTab('media'); }}
         onOpenBackgroundMusic={() => toggleToolPanel('backgroundMusic')}
+        backgroundMusicPlaying={backgroundMusicPlaying}
         onOpenRecordingPanel={canControlRecording ? () => toggleToolPanel('recording') : undefined}
         onOpenProducerPanel={() => toggleToolPanel('producer')}
         onOpenWebinarQA={() => toggleToolPanel('webinarQA')}
@@ -7414,24 +7817,24 @@ export function StudioRoom() {
         <Suspense fallback={<LazyPanelFallback />}>
           <SoundBoard
             onClose={() => setShowSoundBoard(false)}
-            broadcastAudio={broadcastAudioBus}
+            player={soundBoardPlayer}
           />
         </Suspense>
       )}
 
-      {/* Background Music Modal */}
+      {/* Background Music dock (playback lives in StudioRoom) */}
       {showBackgroundMusic && (
         <Suspense fallback={<LazyPanelFallback />}>
           <BackgroundMusic
             onClose={() => setShowBackgroundMusic(false)}
-            broadcastAudio={broadcastAudioBus}
+            player={backgroundMusicPlayer}
           />
         </Suspense>
       )}
 
       {/* Session Health Panel */}
       {showHealthPanel && (
-        <SessionHealthPanel
+        <SessionHealthPanel audience={isHostOrCoHost ? 'operator' : 'guest'}
           summary={sessionHealth}
           meshCapacity={meshCapacity}
           sfuMediaStatus={sfuTransportStatus}
@@ -7615,6 +8018,7 @@ function BackstagePrivateRoom({
                 isLocal={item.isLocal}
                 isScreenShare={item.isScreenShare}
                 audioEnabled={item.audioEnabled}
+                audibleWhileMuted={item.audibleWhileMuted}
                 videoEnabled={item.videoEnabled}
                 volume={item.volume}
                 brandColor={brandColor}
@@ -7706,16 +8110,16 @@ const styles: Record<string, React.CSSProperties> = {
   badge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, padding: '3px 10px', borderRadius: 20,
-    background: 'var(--success-subtle)', color: 'var(--success)', fontWeight: 500,
+    background: 'var(--success-subtle)', color: 'var(--success-text, var(--success))', fontWeight: 500,
   },
   badgeDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', animation: 'pulse 2s infinite' },
   waitingBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, padding: '3px 10px', borderRadius: 20,
-    background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24', fontWeight: 600,
+    background: 'var(--warning-subtle, rgba(245, 158, 11, 0.12))', color: 'var(--warning-text, #fbbf24)', fontWeight: 600,
   },
-  waitingDot: { width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 2s infinite' },
-  waitingBadgeButton: { border: '1px solid rgba(245, 158, 11, 0.35)', cursor: 'pointer', lineHeight: 'inherit' },
+  waitingDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--warning, #f59e0b)', animation: 'pulse 2s infinite' },
+  waitingBadgeButton: { border: '1px solid var(--warning-border, rgba(245, 158, 11, 0.35))', cursor: 'pointer', lineHeight: 'inherit' },
   recBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
@@ -7728,8 +8132,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   liveBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
-    fontSize: 11, fontWeight: 700, padding: '3px 12px', borderRadius: 20,
-    background: '#ef4444', color: 'white',
+    fontSize: 12, fontWeight: 700, padding: '3px 12px', borderRadius: 20,
+    // White on #dc2626 is 4.8:1 (the old #ef4444 was 3.8:1).
+    background: 'var(--danger-strong, #dc2626)', color: 'white',
     textTransform: 'uppercase' as const, letterSpacing: 0,
     fontFamily: 'monospace',
     fontVariantNumeric: 'tabular-nums',
@@ -7742,13 +8147,13 @@ const styles: Record<string, React.CSSProperties> = {
   captionBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20,
-    background: 'rgba(14, 165, 233, 0.14)', color: '#bae6fd',
+    background: 'var(--cyan-subtle, rgba(14, 165, 233, 0.14))', color: 'var(--cyan, #bae6fd)',
   },
   captionBadgeDot: {
     width: 6, height: 6, borderRadius: '50%',
   },
   roleBadge: {
-    fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
     background: 'var(--accent-subtle)', color: 'var(--accent)',
     textTransform: 'uppercase' as const, letterSpacing: '0.04em',
   },

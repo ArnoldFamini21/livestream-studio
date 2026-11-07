@@ -12,6 +12,7 @@ import {
   RoomQuotaError,
   RoomRegistrationError,
 } from '../services/signaling.js';
+import { requireStudioCreator, type StudioCreatorAuthorization } from '../services/studioAccess.js';
 
 export const roomRouter = Router();
 
@@ -58,8 +59,13 @@ function sendCreatorRoom(res: Response, room: Room, hostToken: string, statusCod
   });
 }
 
-// Create a new room
-roomRouter.post('/', (req, res) => {
+function createdByOwner(res: Response): boolean {
+  const creator = res.locals.studioCreator as StudioCreatorAuthorization | undefined;
+  return Boolean(creator?.ok && creator.createdByOwner);
+}
+
+// Create a new room (owner-only once STUDIO_OWNER_EMAILS or STUDIO_CREATE_SECRET is set)
+roomRouter.post('/', requireStudioCreator, (req, res) => {
   try {
     const name = sanitizeString(req.body.name);
     const hostName = sanitizeString(req.body.hostName);
@@ -84,7 +90,12 @@ roomRouter.post('/', (req, res) => {
       return;
     }
 
-    const { room, hostToken } = createRoom(name, hostName, { creatorIp: getClientIp(req), password, registrationEnabled });
+    const { room, hostToken } = createRoom(name, hostName, {
+      creatorIp: getClientIp(req),
+      password,
+      registrationEnabled,
+      createdByOwner: createdByOwner(res),
+    });
     sendCreatorRoom(res, room, hostToken, 201);
   } catch (err) {
     if (err instanceof RoomQuotaError) {
@@ -96,7 +107,7 @@ roomRouter.post('/', (req, res) => {
 });
 
 // Schedule a room in advance (creates with 'scheduled' status)
-roomRouter.post('/schedule', (req, res) => {
+roomRouter.post('/schedule', requireStudioCreator, (req, res) => {
   try {
     const name = sanitizeString(req.body.name);
     const hostName = sanitizeString(req.body.hostName);
@@ -140,6 +151,7 @@ roomRouter.post('/schedule', (req, res) => {
       creatorIp: getClientIp(req),
       password,
       registrationEnabled,
+      createdByOwner: createdByOwner(res),
     });
     sendCreatorRoom(res, room, hostToken, 201);
   } catch (err) {
@@ -236,7 +248,8 @@ roomRouter.post('/:id/invites/email', async (req, res) => {
   }
 });
 
-// Get room info (requires knowing the room ID)
+// Get room info (requires knowing the room ID). Who is in the studio is not
+// public: participants get that over the signaling connection once admitted.
 roomRouter.get('/:id', (req, res) => {
   try {
     const rooms = getRooms();
@@ -247,17 +260,6 @@ roomRouter.get('/:id', (req, res) => {
       return;
     }
 
-    const participants = Array.from(roomState.participants.values()).map((p) => ({
-      id: p.participant.id,
-      name: p.participant.name,
-      role: p.participant.role,
-      audioEnabled: p.participant.audioEnabled,
-      videoEnabled: p.participant.videoEnabled,
-      screenSharing: p.participant.screenSharing,
-      status: p.participant.status,
-      joinedAt: p.participant.joinedAt,
-    }));
-
     res.json({
       id: roomState.room.id,
       name: roomState.room.name,
@@ -267,8 +269,7 @@ roomRouter.get('/:id', (req, res) => {
       scheduledFor: roomState.room.scheduledFor,
       settings: roomState.room.settings,
       registration: roomState.room.registration,
-      participants,
-      participantCount: participants.length,
+      participantCount: roomState.participants.size,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get room' });

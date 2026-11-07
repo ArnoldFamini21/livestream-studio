@@ -17,7 +17,13 @@ describe('broadcast audio routing', () => {
     }), {
       stream: true,
       monitor: false,
+      duck: false,
     });
+  });
+
+  it('marks music and clips as duckable only when asked', () => {
+    assert.equal(normalizeBroadcastAudioRouting({ duck: true }).duck, true);
+    assert.equal(DEFAULT_BROADCAST_AUDIO_ROUTING.duck, false);
   });
 
   it('preserves explicit monitor-only routing', () => {
@@ -27,6 +33,7 @@ describe('broadcast audio routing', () => {
     }), {
       stream: false,
       monitor: true,
+      duck: false,
     });
   });
 });

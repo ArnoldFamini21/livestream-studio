@@ -5,8 +5,16 @@ import { signLiveStreamToken, verifyLiveStreamToken, verifyRecordingUploadToken 
 import {
   buildRtmpOutputUrl,
   createFfmpegArgs,
+  createFfmpegEncoderArgs,
+  createFfmpegPushArgs,
+  createFfmpegSlateArgs,
+  getRelayEncoderOptions,
+  getRelayOutputVideoConfig,
+  getRelayVideoMode,
   hasRemainingRelayWork,
+  normalizeRelayEncoding,
   normalizeVideoConfig,
+  TRANSCODE_MAX_VIDEO_BITRATE,
   redactDestinationUrl,
   validateDestinations,
   validateRtmpUrl,
@@ -88,101 +96,97 @@ describe('RTMP relay utilities', () => {
     assert.throws(() => verifyRecordingUploadToken(token, secret, claims.exp + 1), /expired/);
   });
 
-  it('builds FFmpeg args for 1080p RTMP relay', () => {
-    const args = createFfmpegArgs(destination, {
-      video: {
-        width: 1920,
-        height: 1080,
-        frameRate: 30,
-        videoBitsPerSecond: 4_500_000,
-      },
-      audio: {
-        sampleRate: 48_000,
-        channelCount: 2,
-        audioBitsPerSecond: 160_000,
-      },
-    });
+  const audio = {
+    sampleRate: 48_000,
+    channelCount: 2,
+    audioBitsPerSecond: 160_000,
+  };
+  const h264Encoding = {
+    container: 'matroska' as const,
+    videoCodec: 'h264' as const,
+    audioCodec: 'opus' as const,
+    keyframeIntervalMs: 2_000,
+  };
 
+  it('copies H.264 from the browser and only encodes the audio', () => {
+    const options = getRelayEncoderOptions({
+      video: { width: 1920, height: 1080, frameRate: 30, videoBitsPerSecond: 4_500_000 },
+      audio,
+      encoding: h264Encoding,
+    });
+    assert.equal(options.videoMode, 'copy');
+    const args = createFfmpegEncoderArgs(options);
+
+    assert.equal(args[args.indexOf('-c:v') + 1], 'copy');
+    assert.equal(args[args.indexOf('-c:a') + 1], 'aac');
+    assert.equal(args.includes('libx264'), false);
+    assert.equal(args.includes('-vf'), false, 'no scale filter: the browser sends the output size');
+    assert.equal(args.includes('-r'), false);
+    assert.deepEqual(args.slice(args.indexOf('-progress'), args.indexOf('-progress') + 4), ['-progress', 'pipe:2', '-stats_period', '2']);
+    assert.equal(args.at(-1), 'pipe:1');
+  });
+
+  it('re-encodes VP8, uncontrolled keyframes and older studios, capped at 720p30', () => {
+    assert.equal(getRelayVideoMode(undefined), 'transcode');
+    assert.equal(getRelayVideoMode({ ...h264Encoding, videoCodec: 'vp8' }), 'transcode');
+    assert.equal(getRelayVideoMode({ ...h264Encoding, keyframeIntervalMs: null }), 'transcode');
+    assert.equal(getRelayVideoMode({ ...h264Encoding, keyframeIntervalMs: 10_000 }), 'transcode');
+    assert.equal(getRelayVideoMode(h264Encoding), 'copy');
+
+    const args = createFfmpegArgs(destination, {
+      video: { width: 1920, height: 1080, frameRate: 30, videoBitsPerSecond: 4_500_000 },
+      audio,
+    });
     assert.equal(args.at(-1), 'rtmps://live.example.com/app/secret-stream-key');
     assert.equal(args.includes('libx264'), true);
+    assert.equal(args[args.indexOf('-preset') + 1], 'ultrafast');
+    assert.equal(args.includes('scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2'), true);
+    assert.equal(args[args.indexOf('-r') + 1], '30');
+    assert.equal(args[args.indexOf('-g') + 1], '60');
+    assert.equal(args[args.indexOf('-b:v') + 1], `${TRANSCODE_MAX_VIDEO_BITRATE / 1000}k`);
     assert.equal(args.includes('aac'), true);
     assert.equal(args.includes('flv'), true);
-    assert.equal(args.includes('30'), true);
   });
 
-  it('builds FFmpeg args for portrait 1080x1920 relay output', () => {
-    const args = createFfmpegArgs(destination, {
-      video: {
-        width: 1080,
-        height: 1920,
-        frameRate: 30,
-        videoBitsPerSecond: 4_500_000,
-      },
-      audio: {
-        sampleRate: 48_000,
-        channelCount: 2,
-        audioBitsPerSecond: 160_000,
-      },
+  it('keeps portrait output portrait in both modes', () => {
+    const video = { width: 1080, height: 1920, frameRate: 30, videoBitsPerSecond: 4_500_000 };
+    assert.deepEqual(getRelayOutputVideoConfig(video, 'copy'), video);
+    assert.deepEqual(getRelayOutputVideoConfig(video, 'transcode'), {
+      width: 720,
+      height: 1280,
+      frameRate: 30,
+      videoBitsPerSecond: TRANSCODE_MAX_VIDEO_BITRATE,
     });
-
-    assert.equal(args.includes('scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2'), true);
+    const args = createFfmpegArgs(destination, { video, audio });
+    assert.equal(args.includes('scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2'), true);
   });
 
-  it('builds FFmpeg args for 1080p60 relay output', () => {
-    const args = createFfmpegArgs(destination, {
-      video: {
-        width: 1920,
-        height: 1080,
-        frameRate: 60,
-        videoBitsPerSecond: 10_000_000,
-      },
-      audio: {
-        sampleRate: 48_000,
-        channelCount: 2,
-        audioBitsPerSecond: 160_000,
-      },
-    });
-
-    assert.equal(args.includes('scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2'), true);
-    assert.equal(args.includes('60'), true);
-    assert.equal(args.includes('120'), true);
-    assert.equal(args.includes('10000k'), true);
+  it('builds the reconnect slate at the program output size with the cheapest preset', () => {
+    const video = { width: 1920, height: 1080, frameRate: 30, videoBitsPerSecond: 4_500_000 };
+    const copySlate = createFfmpegSlateArgs({ video, audio, videoMode: 'copy' }, '/slate.jpg');
+    assert.equal(copySlate.includes('scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2'), true);
+    assert.equal(copySlate[copySlate.indexOf('-preset') + 1], 'ultrafast');
+    const transcodeSlate = createFfmpegSlateArgs({ video, audio, videoMode: 'transcode' }, '/slate.jpg');
+    assert.equal(transcodeSlate.includes('scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2'), true);
   });
 
-  it('builds FFmpeg args for 4K landscape and portrait relay output', () => {
-    const landscape = createFfmpegArgs(destination, {
-      video: {
-        width: 3840,
-        height: 2160,
-        frameRate: 30,
-        videoBitsPerSecond: 18_000_000,
-      },
-      audio: {
-        sampleRate: 48_000,
-        channelCount: 2,
-        audioBitsPerSecond: 160_000,
-      },
-    });
-    const portrait = createFfmpegArgs(destination, {
-      video: {
-        width: 2160,
-        height: 3840,
-        frameRate: 30,
-        videoBitsPerSecond: 18_000_000,
-      },
-      audio: {
-        sampleRate: 48_000,
-        channelCount: 2,
-        audioBitsPerSecond: 160_000,
-      },
-    });
-
-    assert.equal(landscape.includes('scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2'), true);
-    assert.equal(portrait.includes('scale=2160:3840:force_original_aspect_ratio=decrease,pad=2160:3840:(ow-iw)/2:(oh-ih)/2'), true);
-    assert.equal(landscape.includes('18000k'), true);
+  it('reports each destination uploader with FFmpeg progress', () => {
+    const args = createFfmpegPushArgs(destination);
+    assert.equal(args.includes('-progress'), true);
+    assert.equal(args[args.indexOf('-c') + 1], 'copy');
   });
 
-  it('bounds oversized relay video configs to 4K-class output', () => {
+  it('normalizes the declared encoding', () => {
+    assert.deepEqual(normalizeRelayEncoding(undefined), {
+      container: 'webm', videoCodec: 'vp8', audioCodec: 'opus', keyframeIntervalMs: null,
+    });
+    assert.deepEqual(normalizeRelayEncoding({ container: 'avi', videoCodec: 'hevc', keyframeIntervalMs: -1 }), {
+      container: 'webm', videoCodec: 'unknown', audioCodec: 'unknown', keyframeIntervalMs: null,
+    });
+    assert.deepEqual(normalizeRelayEncoding(h264Encoding), h264Encoding);
+  });
+
+  it('bounds relay video configs to what the studio composes: 1080p30', () => {
     const normalized = normalizeVideoConfig({
       width: 3840,
       height: 3840,
@@ -190,10 +194,10 @@ describe('RTMP relay utilities', () => {
       videoBitsPerSecond: 50_000_000,
     });
 
-    assert.ok(normalized.width * normalized.height <= 3840 * 2160);
+    assert.ok(normalized.width * normalized.height <= 1920 * 1080);
     assert.equal(normalized.width % 2, 0);
     assert.equal(normalized.height % 2, 0);
-    assert.equal(normalized.frameRate, 60);
-    assert.equal(normalized.videoBitsPerSecond, 24_000_000);
+    assert.equal(normalized.frameRate, 30);
+    assert.equal(normalized.videoBitsPerSecond, 10_000_000);
   });
 });

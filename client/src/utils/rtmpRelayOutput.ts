@@ -1,12 +1,16 @@
-import type { BroadcastOrientation, RtmpRelayVideoConfig } from '@studio/shared';
+import type { BroadcastOrientation, RtmpRelayVideoConfig, RtmpRelayVideoMode } from '@studio/shared';
 import type { VideoEncodingReadiness } from './videoEncodingCapabilities.ts';
 
+/**
+ * Output presets the studio can honestly deliver. The compositor draws a
+ * 1920x1080 program at 30 fps, so there is no 60 fps or 4K preset: those
+ * only duplicated frames or upscaled the picture at two to four times the
+ * upload.
+ */
 export type RtmpRelayOutputPresetId =
   | 'smooth-720p'
   | 'standard-1080p'
-  | 'maximum-1080p'
-  | 'motion-1080p60'
-  | 'ultra-4k30';
+  | 'maximum-1080p';
 
 export interface RtmpRelayOutputPreset {
   id: RtmpRelayOutputPresetId;
@@ -14,7 +18,7 @@ export interface RtmpRelayOutputPreset {
   detail: string;
   width: number;
   height: number;
-  frameRate: 30 | 60;
+  frameRate: 30;
   videoBitsPerSecond: number;
 }
 
@@ -53,24 +57,6 @@ export const RTMP_RELAY_OUTPUT_PRESETS: RtmpRelayOutputPreset[] = [
     height: 1080,
     frameRate: 30,
     videoBitsPerSecond: 8_000_000,
-  },
-  {
-    id: 'motion-1080p60',
-    label: '1080p 60',
-    detail: 'Fast motion, 10 Mbps',
-    width: 1920,
-    height: 1080,
-    frameRate: 60,
-    videoBitsPerSecond: 10_000_000,
-  },
-  {
-    id: 'ultra-4k30',
-    label: '4K 30',
-    detail: 'Ultra HD, 18 Mbps',
-    width: 3840,
-    height: 2160,
-    frameRate: 30,
-    videoBitsPerSecond: 18_000_000,
   },
 ];
 
@@ -111,41 +97,37 @@ export function formatRtmpRelayOutputSummary(
   return `${config.width}x${config.height} / ${config.frameRate} FPS / ${targetMbps.toFixed(1)} Mbps`;
 }
 
+/**
+ * Readiness of the chosen output. `relayVideoMode` is how the media server
+ * will handle this browser's upload: copy (H.264) or a server re-encode,
+ * which the free tier cannot run smoothly and which is capped at 720p30.
+ */
 export function getRtmpRelayOutputPreflight(
   orientation: BroadcastOrientation,
   presetId: RtmpRelayOutputPresetId,
-  encoding?: VideoEncodingReadiness
+  encoding?: VideoEncodingReadiness,
+  relayVideoMode: RtmpRelayVideoMode | null = null
 ): RtmpRelayOutputPreflight {
-  const config = getRtmpRelayVideoConfig(orientation, presetId);
   const summary = formatRtmpRelayOutputSummary(orientation, presetId);
-  const ultraHd = encoding?.presets.find((preset) => preset.presetId === '4k');
-  const ultraHdSmooth = ultraHd?.supported === true && ultraHd.smooth !== false;
-  const ultraHdHardware = ultraHd?.hardwareAccelerated === true;
 
-  if (config.frameRate > 30) {
+  if (relayVideoMode === 'transcode') {
     return {
       status: 'warning',
-      detail: `${summary}. 60 FPS doubles encoder work; test this browser and upload path before a long live session.`,
+      detail: `${summary}. This browser cannot upload H.264 with regular keyframes, so the media server must re-encode the stream (capped at 720p30, and it stutters on the free tier). Use a current Chrome or Edge for a smooth broadcast.`,
     };
   }
 
-  if (config.width > 1920 || config.height > 1920) {
-    if (ultraHdSmooth) {
-      return {
-        status: 'warning',
-        detail: ultraHdHardware
-          ? `${summary}. 4K hardware encoding is available, but confirm upload stability before going live.`
-          : `${summary}. Browser reports smooth 4K encoding, but hardware acceleration is not confirmed.`,
-      };
-    }
+  const config = getRtmpRelayVideoConfig(orientation, presetId);
+  const fullHd = encoding?.presets.find((preset) => preset.presetId === '1080p');
+  if (Math.max(config.width, config.height) > 1280 && fullHd?.supported === true && fullHd.smooth === false) {
     return {
       status: 'warning',
-      detail: `${summary}. 4K live relay is available, but this browser has not proven smooth 4K encoding.`,
+      detail: `${summary}. This browser reports that 1080p encoding may not be smooth; choose 720p Smooth if the preview stutters.`,
     };
   }
 
   return {
     status: 'good',
-    detail: summary,
+    detail: relayVideoMode === 'copy' ? `${summary}. Browser H.264, sent on without re-encoding.` : summary,
   };
 }

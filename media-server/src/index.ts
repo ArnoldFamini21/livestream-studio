@@ -23,6 +23,10 @@ import {
   verifySfuMembershipControlToken,
 } from './auth.js';
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
+import { checkRtmpDestinationHosts } from './rtmpHostPolicy.js';
+import { countActiveRelaySessions, isRelayCapacityAvailable } from './relayAdmission.js';
+import { checkPresentationRenderAdmission } from './presentationAdmission.js';
+import { authorizePresentationRender, isPresentationRenderAuthRequired } from './presentationAuth.js';
 import {
   buildLiveBackupLatestKey,
   buildLiveBackupObjectKeys,
@@ -38,6 +42,7 @@ import {
 import { buildAllowedOrigins, isAllowedOrigin, normalizeOrigin } from './origins.js';
 import { parseControlMessage } from './protocol.js';
 import { SfuManager } from './sfuManager.js';
+import { RecordingUploadRevocations } from './uploadRevocations.js';
 import { parseSfuAuthFrame, verifySfuIdentity } from './sfuAuth.js';
 import { SfuMediaTransport } from './sfuTransport.js';
 import {
@@ -68,6 +73,7 @@ import {
   getPresentationRenderSourceFormat,
   getPresentationRendererHealth,
   isPresentationRenderQueueFull,
+  tryReservePresentationRender,
   renderPresentationPreview,
   convertPresentationToPdf,
   type PresentationRendererHealth,
@@ -78,7 +84,12 @@ import {
   createFfmpegEncoderArgs,
   createFfmpegSlateArgs,
   createFfmpegPushArgs,
+  describeRelayVideoMode,
+  getRelayEncoderOptions,
+  getRelayVideoMode,
   hasRemainingRelayWork,
+  TRANSCODE_MAX_FRAME_RATE,
+  TRANSCODE_MAX_PIXELS,
   isEncodeOnceEnabled,
   normalizeAudioConfig,
   normalizeVideoConfig,
@@ -88,6 +99,7 @@ import {
 } from './rtmp.js';
 import { WebmSinkFeed, WebmStreamTracker } from './webmStream.js';
 import { FlvSinkFeed } from './flvStream.js';
+import { FfmpegProgressParser, FfmpegRateMeter, type FfmpegProgress } from './ffmpegProgress.js';
 import { FlvProgram, type FlvProgramSource } from './flvSplice.js';
 import { isSameRelaySetup, shouldShowSlate, STUDIO_RECONNECT_HOLD_MS } from './relayResume.js';
 import {
@@ -159,6 +171,7 @@ interface SlateProcess {
 
 /** The watch page's HLS writer: a copy of the shared encode, no re-encode. */
 interface HlsProcess {
+  /** The studio's private watch id (never the room id, which admits guests). */
   roomId: string;
   dir: string;
   process: ChildProcessByStdio<Writable, null, Readable>;
@@ -169,7 +182,10 @@ interface HlsProcess {
 interface BackupProcess {
   recording: LiveBackupRecording;
   process: ChildProcessByStdio<Writable, null, Readable>;
-  feed: WebmSinkFeed;
+  /** Per-destination encoding: the studio's upload, video copied. */
+  feed: WebmSinkFeed | null;
+  /** Encode-once: a stream copy of the program the destinations receive. */
+  flvFeed: FlvSinkFeed | null;
   exited: boolean;
 }
 
@@ -255,6 +271,11 @@ async function healthPayload() {
       liveRelay: {
         encodeOnce: isEncodeOnceEnabled(),
         backlogSeconds: RELAY_INPUT_BACKLOG_SECONDS,
+        // H.264 from the browser is copied; anything else is re-encoded,
+        // capped at this size (and slow on a free instance).
+        videoModes: ['copy', 'transcode'],
+        transcodeMaxPixels: TRANSCODE_MAX_PIXELS,
+        transcodeMaxFrameRate: TRANSCODE_MAX_FRAME_RATE,
       },
       presentationRenderer: {
         ready: presentationRenderer.ready,
@@ -263,16 +284,20 @@ async function healthPayload() {
           dependencies: presentationRenderer.dependencies,
         },
       },
-      recordingStorage: getRecordingStorageHealth(),
+      recordingStorage: await getRecordingStorageHealth(),
     },
   };
 }
 
 /** Whether uploaded recordings survive a restart (object storage) or not (temp folder). */
-function getRecordingStorageHealth() {
+async function getRecordingStorageHealth() {
   const persistent = Boolean(getRecordingObjectStorageConfig(process.env));
+  const freeBytes = await recordingUploads.getFreeBytes();
   return {
     ready: persistent,
+    // Free space for uploads on this instance's disk (shared with HLS and the live backup).
+    ...(freeBytes !== null ? { freeBytes } : {}),
+    storedUploadBytes: recordingUploads.getStoredBytes(),
     message: persistent
       ? 'Uploaded recordings are saved to object storage.'
       : 'Uploaded recordings are kept in a temporary folder and are lost when the media server restarts or sleeps. Set the RECORDING_STORAGE_* variables to keep them.',
@@ -327,6 +352,37 @@ function getRecordingExportStore(): RecordingExportJobStore {
     recordingExportsStorageFingerprint = storageFingerprint;
   }
   return recordingExports;
+}
+
+/**
+ * Splits FFmpeg's stderr into progress reports (from -progress pipe:2) and
+ * log lines. Log lines are redacted and logged as before. Reports carry the
+ * bitrate and speed over the last interval, not FFmpeg's running averages.
+ */
+function watchFfmpegStderr(
+  child: { stderr: Readable },
+  session: RelaySession,
+  label: string,
+  onProgress: (progress: FfmpegProgress) => void
+) {
+  const parser = new FfmpegProgressParser();
+  const meter = new FfmpegRateMeter();
+  child.stderr.on('data', (chunk: Buffer) => {
+    const { reports, logLines } = parser.push(chunk);
+    for (const line of logLines) {
+      const redacted = redactFfmpegLine(line, session.destinations);
+      if (redacted) console.warn(`ffmpeg ${label}: ${redacted}`);
+    }
+    for (const report of reports) {
+      onProgress({ ...report, ...meter.sample(report, Date.now()) });
+    }
+  });
+}
+
+function roundStat(value: number | null, digits = 2): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 function stopRelayProcess(session: RelaySession, relay: RelayProcess) {
@@ -440,7 +496,9 @@ function stopSessionIfNoRelayWork(session: RelaySession) {
 
 async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload: RtmpRelayStartPayload) {
   const program = session.program;
-  const roomId = session.claims?.roomId;
+  // Published under the studio's private watch id. The room id is what admits
+  // guests to the studio, so a watch link must never reveal it.
+  const roomId = session.claims?.watchId;
   if (!program || session.hls || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
   let dir: string;
   try {
@@ -498,8 +556,8 @@ function stopHlsWriter(session: RelaySession) {
 }
 
 /**
- * Public watch page endpoints. The room id is the capability, like an
- * unlisted video: status, the playlist, and its segments.
+ * Public watch page endpoints. The studio's private watch id is the
+ * capability, like an unlisted video: status, the playlist, and its segments.
  */
 async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const match = url.pathname.match(/^\/watch\/([^/]+)\/([^/]+)$/);
@@ -576,10 +634,7 @@ function spawnRelay(
   destination: RtmpRelayDestination,
   payload: RtmpRelayStartPayload
 ) {
-  const options = {
-    video: normalizeVideoConfig(payload.video),
-    audio: normalizeAudioConfig(payload.audio),
-  };
+  const options = getRelayEncoderOptions(payload);
   const program = session.encodeOnce ? session.program : null;
   const args = program ? createFfmpegPushArgs(destination) : createFfmpegArgs(destination, options);
   const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
@@ -651,9 +706,18 @@ function spawnRelay(
 
   console.log(`RTMP relay starting for ${destination.name}: ${redactDestinationUrl(destination)}`);
 
-  child.stderr.on('data', (chunk: Buffer) => {
-    const line = redactFfmpegLine(chunk.toString('utf8').trim(), session.destinations);
-    if (line) console.warn(`ffmpeg ${destination.name}: ${line}`);
+  // What actually leaves the server for this platform, every ~2 s.
+  watchFfmpegStderr(child, session, destination.name, (progress) => {
+    if (relay.exited || relay.retired || session.stopping || progress.ended) return;
+    sendJson(session.client, {
+      type: 'destination-stats',
+      payload: {
+        destinationId: destination.id,
+        bitrateKbps: roundStat(progress.bitrateKbps, 0),
+        speed: roundStat(progress.speed),
+        at: Date.now(),
+      },
+    });
   });
 
   child.on('error', (err) => {
@@ -758,10 +822,7 @@ function spawnEncoder(
   ffmpegPath: string,
   payload: RtmpRelayStartPayload
 ): EncoderProcess {
-  const options = {
-    video: normalizeVideoConfig(payload.video),
-    audio: normalizeAudioConfig(payload.audio),
-  };
+  const options = getRelayEncoderOptions(payload);
   const program = session.program;
   if (!program) throw new Error('The live program is not ready.');
   const child = spawn(ffmpegPath, createFfmpegEncoderArgs(options), { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -791,7 +852,12 @@ function spawnEncoder(
   }
   const encoder: EncoderProcess = { process: child, feed, source, exited: false };
   session.encoder = encoder;
-  console.log(`Live encoder starting for ${session.destinations.length} destination(s)`);
+  const modeDescription = describeRelayVideoMode(options);
+  if (options.videoMode === 'copy') {
+    console.log(`Live encoder starting for ${session.destinations.length} destination(s): ${modeDescription}`);
+  } else {
+    console.warn(`Live encoder starting for ${session.destinations.length} destination(s): ${modeDescription}`);
+  }
 
   // On air at once for a new broadcast; after a restart, at its first keyframe.
   program.switchTo(source);
@@ -800,9 +866,20 @@ function spawnEncoder(
     if (session.stopping) stopRelays(session);
   });
 
-  child.stderr.on('data', (chunk: Buffer) => {
-    const line = redactFfmpegLine(chunk.toString('utf8').trim(), session.destinations);
-    if (line) console.warn(`ffmpeg encoder: ${line}`);
+  watchFfmpegStderr(child, session, 'encoder', (progress) => {
+    if (encoder.exited || session.encoder !== encoder || session.stopping || progress.ended) return;
+    sendJson(session.client, {
+      type: 'encoder-stats',
+      payload: {
+        videoMode: options.videoMode,
+        speed: roundStat(progress.speed),
+        fps: roundStat(progress.fps, 1),
+        bitrateKbps: roundStat(progress.bitrateKbps, 0),
+        droppedFrames: progress.droppedFrames,
+        duplicatedFrames: progress.duplicatedFrames,
+        at: Date.now(),
+      },
+    });
   });
 
   let handled = false;
@@ -879,35 +956,66 @@ async function spawnLiveBackup(
     return;
   }
 
+  const options = getRelayEncoderOptions(payload);
+  const program = session.encodeOnce ? session.program : null;
+  // The backup is always a stream copy. Without the shared program (per-
+  // destination encoding) that needs H.264 from the browser.
+  const backupSource = program ? 'program-flv' : 'studio-webm';
+  if (!program && options.videoMode !== 'copy') {
+    console.warn('Live backup skipped: it would need a second server encode of a VP8 upload');
+    sendJson(session.client, {
+      type: 'backup-recording-status',
+      payload: {
+        backupId: '',
+        roomId: claims.roomId,
+        fileName: '',
+        startedAt: new Date().toISOString(),
+        status: 'disabled',
+        error: 'The server backup needs an H.264 upload from the studio browser.',
+      },
+    });
+    return;
+  }
+
   try {
     const recording = await createLiveBackupRecording({
       roomId: claims.roomId,
-      video: normalizeVideoConfig(payload.video),
-      audio: normalizeAudioConfig(payload.audio),
+      video: options.video,
+      audio: options.audio,
       maxBytes: getLiveBackupMaxBytes(),
     });
     const args = createFfmpegLiveBackupArgs(recording.filePath, {
-      video: normalizeVideoConfig(payload.video),
-      audio: normalizeAudioConfig(payload.audio),
+      video: options.video,
+      audio: options.audio,
       maxBytes: getLiveBackupMaxBytes(),
+      source: backupSource,
+      videoMode: options.videoMode,
     });
+    if (!args) throw new Error('The server backup cannot copy this stream.');
     const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
-    const feed = new WebmSinkFeed(child.stdin, (err) => {
+    const onInputError = (err: Error) => {
       console.warn(`ffmpeg live backup ${recording.backupId} input closed: ${err.message}`);
-    }, {
-      maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS * 2, {
-        video: normalizeVideoConfig(payload.video),
-        audio: normalizeAudioConfig(payload.audio),
-      }),
+    };
+    const backpressure = {
+      maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS * 2, options),
       onOverflow: () => {
         console.warn(`Live backup ${recording.backupId} fell behind; skipping ahead`);
       },
-    });
-    feed.join(session.webm);
+    };
+    let feed: WebmSinkFeed | null = null;
+    let flvFeed: FlvSinkFeed | null = null;
+    if (program) {
+      flvFeed = new FlvSinkFeed(child.stdin, program.stream, { ...backpressure, onError: onInputError });
+      flvFeed.join();
+    } else {
+      feed = new WebmSinkFeed(child.stdin, onInputError, backpressure);
+      feed.join(session.webm);
+    }
     const backup: BackupProcess = {
       recording,
       process: child,
       feed,
+      flvFeed,
       exited: false,
     };
     session.backup = backup;
@@ -1037,6 +1145,8 @@ function createProgram(session: RelaySession): FlvProgram {
   return new FlvProgram((chunk) => {
     const hls = session.hls;
     if (hls && !hls.exited) hls.feed.write(chunk);
+    const backup = session.backup;
+    if (backup && !backup.exited && backup.flvFeed) backup.flvFeed.write(chunk);
     for (const relay of session.relays.values()) {
       if (relay.exited || relay.retired || !relay.flvFeed) continue;
       if (!relay.flvFeed.write(chunk) || relay.live) continue;
@@ -1057,7 +1167,7 @@ function startSlate(session: RelaySession): boolean {
   const payload = session.payload;
   const ffmpegPath = getFfmpegPath();
   if (!program || !payload || !ffmpegPath || session.stopping || !existsSync(SLATE_IMAGE_PATH)) return false;
-  const options = { video: normalizeVideoConfig(payload.video), audio: normalizeAudioConfig(payload.audio) };
+  const options = getRelayEncoderOptions(payload);
   const child = spawn(ffmpegPath, createFfmpegSlateArgs(options, SLATE_IMAGE_PATH), { stdio: ['ignore', 'pipe', 'pipe'] });
   const source = program.createSource('slate');
   const slate: SlateProcess = { process: child, source, startedAtMs: Date.now(), exited: false };
@@ -1175,6 +1285,7 @@ async function resumeSession(
     payload: {
       roomId: claims.roomId,
       destinationIds: payload.destinations.map((destination) => destination.id),
+      videoMode: getRelayVideoMode(payload.encoding),
     },
   });
   for (const relay of held.relays.values()) {
@@ -1218,9 +1329,13 @@ async function handleStart(
     return;
   }
 
-  const destinationIssue = validateDestinations(payload.destinations);
+  const destinationIssue = validateDestinations(payload.destinations) || await checkRtmpDestinationHosts(payload.destinations);
   if (destinationIssue) {
     sendError(ws, 'INVALID_DESTINATIONS', destinationIssue);
+    return;
+  }
+  if (session.started) {
+    sendError(ws, 'ALREADY_STARTED', 'This relay session is already live');
     return;
   }
 
@@ -1236,6 +1351,17 @@ async function handleStart(
       await resumeSession(ws, held, claims, payload, ffmpegPath, onResume);
       return;
     }
+  }
+
+  // The same studio restarting with new settings replaces its own held broadcast.
+  for (const other of new Set(sessions.values())) {
+    if (other !== session && other.clientGone && other.started && other.claims?.roomId === claims.roomId) {
+      stopSession(other, 'replaced by a new broadcast from the same studio');
+    }
+  }
+  if (!isRelayCapacityAvailable(sessions.values(), session)) {
+    sendError(ws, 'RELAY_CAPACITY_REACHED', 'This media server is already running another broadcast. Try again when it ends.');
+    return;
   }
 
   session.started = true;
@@ -1265,6 +1391,7 @@ async function handleStart(
     payload: {
       roomId: claims.roomId,
       destinationIds: payload.destinations.map((destination) => destination.id),
+      videoMode: getRelayVideoMode(payload.encoding),
     },
   });
 }
@@ -1299,7 +1426,7 @@ function handleBinaryChunk(ws: WebSocket, session: RelaySession, data: RawData) 
     }
   }
   const backup = session.backup;
-  if (backup && !backup.exited) {
+  if (backup && !backup.exited && backup.feed) {
     backup.feed.write(chunk, info);
   }
 }
@@ -1339,6 +1466,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+const recordingUploadRevocations = new RecordingUploadRevocations();
+
+function issuedAtMs(claims: LiveStreamTokenClaims | RecordingUploadTokenClaims): number | undefined {
+  return typeof claims.iat === 'number' && Number.isFinite(claims.iat) ? claims.iat : undefined;
+}
+
 function authenticateRecordingUpload(
   req: IncomingMessage,
   roomId: string,
@@ -1367,6 +1500,9 @@ function authenticateRecordingUpload(
   }
   if (claims.roomId !== roomId) {
     throw new RecordingUploadError(403, 'ROOM_TOKEN_MISMATCH', 'Recording upload token does not match this room');
+  }
+  if (recordingUploadRevocations.isRevoked(claims.roomId, claims.participantId, issuedAtMs(claims))) {
+    throw new RecordingUploadError(403, 'RECORDING_UPLOAD_REVOKED', 'The host removed this participant; their uploads are no longer accepted');
   }
   if ('purpose' in claims && claims.purpose === 'recording-upload') {
     if (!sessionId || claims.sessionId !== sessionId) {
@@ -1830,33 +1966,10 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
     return true;
   }
 
+  let releaseReservation: (() => void) | null = null;
   try {
-    if (process.env.PRESENTATION_RENDER_REQUIRE_AUTH === 'true') {
-      const secret = getLiveStreamTokenSecret();
-      const token = getBearerToken(req);
-      if (!secret || !token) {
-        throw new PresentationRenderError(401, 'UNAUTHORIZED', 'Presentation rendering requires a valid studio token');
-      }
-      let authorized = false;
-      try {
-        verifyLiveStreamToken(token, secret);
-        authorized = true;
-      } catch {
-        try {
-          verifyRecordingUploadToken(token, secret);
-          authorized = true;
-        } catch {
-          try {
-            verifySfuIdentity(token, secret);
-            authorized = true;
-          } catch {
-            authorized = false;
-          }
-        }
-      }
-      if (!authorized) {
-        throw new PresentationRenderError(401, 'UNAUTHORIZED', 'Invalid presentation rendering token');
-      }
+    if (isPresentationRenderAuthRequired()) {
+      authorizePresentationRender(getBearerToken(req) || '', getLiveStreamTokenSecret());
     }
 
     const fileNameHeader = req.headers['x-file-name'];
@@ -1867,7 +1980,19 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
     if (!getPresentationRenderSourceFormat(fileName, contentType)) {
       throw new PresentationRenderError(415, 'PRESENTATION_UNSUPPORTED', 'Only PDF and PowerPoint files can be rendered');
     }
-    if (isPresentationRenderQueueFull()) {
+    const declaredLength = Number(req.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_PRESENTATION_RENDER_BYTES) {
+      throw new PresentationRenderError(413, 'PRESENTATION_TOO_LARGE', 'Presentation file is too large');
+    }
+    // A PDF asked for as a PDF passes straight through; everything else runs
+    // LibreOffice or pdftoppm next to the live relay.
+    const passThrough = wantsPdf && getPresentationRenderSourceFormat(fileName, contentType) === 'pdf';
+    if (!passThrough) {
+      checkPresentationRenderAdmission({ liveRelayActive: countActiveRelaySessions(sessions.values()) > 0 });
+    }
+    // The slot is taken before the body is buffered, so concurrent uploads cannot pile up in memory.
+    releaseReservation = isPresentationRenderQueueFull() ? null : tryReservePresentationRender(declaredLength);
+    if (!releaseReservation) {
       throw new PresentationRenderError(429, 'PRESENTATION_RENDER_BUSY', 'Presentation renderer is busy; please try again in a moment.');
     }
 
@@ -1908,6 +2033,8 @@ async function handlePresentationPreviewRequest(req: IncomingMessage, res: Serve
     console.error('Presentation preview render failed:', err);
     writeJson(res, 500, { error: 'Presentation preview render failed', code: 'PRESENTATION_RENDER_FAILED' });
     return true;
+  } finally {
+    releaseReservation?.();
   }
 }
 
@@ -1954,6 +2081,17 @@ async function handleSfuMembershipRequest(req: IncomingMessage, res: ServerRespo
     if (claims.action === 'allow-participant') {
       sfuManager.allowParticipant(claims.roomId, claims.participantId!);
       writeJson(res, 200, { ok: true, action: claims.action });
+      return true;
+    }
+    if (claims.action === 'revoke-recording-upload') {
+      recordingUploadRevocations.revoke(claims.roomId, claims.participantId!, claims.iat);
+      const disconnected = sfuManager.revokeParticipant(
+        claims.roomId,
+        claims.participantId!,
+        claims.reason || 'Removed by host',
+        claims.iat
+      );
+      writeJson(res, 200, { ok: true, action: claims.action, disconnected });
       return true;
     }
     const disconnected = sfuManager.revokeRoom(

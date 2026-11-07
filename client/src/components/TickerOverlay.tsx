@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { TICKER_SPEED_DURATION_SECONDS } from '../utils/compositorOverlays.ts';
 
 export interface TickerData {
   id: string;
@@ -18,11 +19,8 @@ interface TickerOverlayDisplayProps {
   data: TickerData;
 }
 
-const SPEED_DURATION: Record<TickerData['speed'], number> = {
-  slow: 30,
-  normal: 20,
-  fast: 12,
-};
+// Shared with the program compositor so the broadcast scrolls at the same speed.
+const SPEED_DURATION = TICKER_SPEED_DURATION_SECONDS;
 
 export function TickerOverlayDisplay({ data }: TickerOverlayDisplayProps) {
   const trackRef = useRef<HTMLDivElement>(null);

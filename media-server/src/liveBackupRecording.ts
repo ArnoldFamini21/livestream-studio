@@ -5,8 +5,9 @@ import path from 'node:path';
 import type {
   RtmpRelayAudioConfig,
   RtmpRelayVideoConfig,
+  RtmpRelayVideoMode,
 } from '@studio/shared';
-import { normalizeAudioConfig, normalizeVideoConfig } from './rtmp.js';
+import { normalizeAudioConfig } from './rtmp.js';
 
 const DEFAULT_LIVE_BACKUP_MAX_BYTES = 8 * 1024 * 1024 * 1024;
 const MIN_LIVE_BACKUP_MAX_BYTES = 64 * 1024 * 1024;
@@ -58,6 +59,9 @@ export interface FfmpegLiveBackupOptions {
   video: RtmpRelayVideoConfig;
   audio: RtmpRelayAudioConfig;
   maxBytes?: number;
+  /** Where the backup reads from; see createFfmpegLiveBackupArgs. */
+  source?: 'program-flv' | 'studio-webm';
+  videoMode?: RtmpRelayVideoMode;
 }
 
 export function isLiveBackupRecordingEnabled(env: Record<string, string | undefined> = process.env): boolean {
@@ -104,37 +108,49 @@ export async function createLiveBackupRecording(options: LiveBackupRecordingOpti
   };
 }
 
-export function createFfmpegLiveBackupArgs(outputPath: string, options: FfmpegLiveBackupOptions): string[] {
-  const video = normalizeVideoConfig(options.video);
+/**
+ * The backup never runs an encode of its own: a second real-time x264 encode
+ * next to the live one is more than a free instance's CPU can give.
+ *
+ * - program-flv (encode-once, the default): a stream copy of the H.264/AAC
+ *   program the destinations receive, like the watch page's HLS writer.
+ * - studio-webm (per-destination encoding): the studio's upload, with the
+ *   video copied; only possible when the browser sent H.264.
+ *
+ * Returns null when no copy is possible (studio-webm with VP8 input).
+ */
+export function createFfmpegLiveBackupArgs(outputPath: string, options: FfmpegLiveBackupOptions): string[] | null {
   const audio = normalizeAudioConfig(options.audio);
-  const videoBitrateKbps = Math.round(video.videoBitsPerSecond / 1000);
-  const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
-  const gop = video.frameRate * 2;
   const maxBytes = Math.max(MIN_LIVE_BACKUP_MAX_BYTES, Math.round(options.maxBytes || DEFAULT_LIVE_BACKUP_MAX_BYTES));
+  const output = ['-movflags', '+faststart', '-fs', String(maxBytes), '-f', 'mp4', outputPath];
+  const source = options.source ?? 'program-flv';
 
+  if (source === 'program-flv') {
+    return [
+      '-hide_banner',
+      '-loglevel', 'warning',
+      '-f', 'flv',
+      '-i', 'pipe:0',
+      '-c', 'copy',
+      ...output,
+    ];
+  }
+
+  if (options.videoMode !== 'copy') return null;
   return [
     '-hide_banner',
     '-loglevel', 'warning',
     '-fflags', '+genpts',
     '-f', 'webm',
     '-i', 'pipe:0',
-    '-vf', `scale=${video.width}:${video.height}:force_original_aspect_ratio=decrease,pad=${video.width}:${video.height}:(ow-iw)/2:(oh-ih)/2`,
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-pix_fmt', 'yuv420p',
-    '-r', String(video.frameRate),
-    '-g', String(gop),
-    '-b:v', `${videoBitrateKbps}k`,
-    '-maxrate', `${Math.round(videoBitrateKbps * 1.15)}k`,
-    '-bufsize', `${videoBitrateKbps * 2}k`,
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-c:v', 'copy',
     '-c:a', 'aac',
-    '-b:a', `${audioBitrateKbps}k`,
+    '-b:a', `${Math.round(audio.audioBitsPerSecond / 1000)}k`,
     '-ar', String(audio.sampleRate),
     '-ac', String(audio.channelCount),
-    '-movflags', '+faststart',
-    '-fs', String(maxBytes),
-    '-f', 'mp4',
-    outputPath,
+    ...output,
   ];
 }
 

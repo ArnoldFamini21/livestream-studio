@@ -5,7 +5,8 @@ import { WebSocketServer } from 'ws';
 import { buildServiceHealthPayload } from '@studio/shared';
 import {
   configureRoomSnapshotStore,
-  getStageImage,
+  isRoomMemberCredential,
+  readStageImage,
   restoreRoomSnapshots,
   setupSignalingServer,
   STAGE_IMAGE_MAX_BYTES,
@@ -13,6 +14,7 @@ import {
 } from './services/signaling.js';
 import { authRouter, configureAccountAuthStore } from './routes/auth.js';
 import { configureInviteEmailOrigins, roomRouter } from './routes/rooms.js';
+import { watchRouter } from './routes/watch.js';
 import { configureRecordingCatalogStore, recordingRouter } from './routes/recordings.js';
 import { brandKitRouter, configureBrandKitCatalogStore } from './routes/brandKits.js';
 import { configureWorkspaceStudioCatalogStore, workspaceStudioRouter } from './routes/workspaceStudios.js';
@@ -22,7 +24,8 @@ import { highlightRouter } from './routes/highlights.js';
 import { episodeContentRouter } from './routes/episodeContent.js';
 import { captionTranslationRouter } from './routes/captionTranslation.js';
 import { createAiRouteAccessMiddleware } from './services/aiAccess.js';
-import { buildIceConfigStatusFromEnv, resolveIceConfigWithStatus } from './services/ice-config.js';
+import { buildIceConfigStatusFromEnv, buildStunOnlyIceConfigWithStatus, resolveIceConfigWithStatus } from './services/ice-config.js';
+import { warnIfStudioCreationOpen } from './services/studioAccess.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { buildProductionReadiness, getStrictStartupFailure } from './services/productionReadiness.js';
 import { parseClientErrorReport, recordClientError } from './services/clientErrors.js';
@@ -94,7 +97,9 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '256kb' }));
+// Browsers never compress request bodies; refusing gzip/deflate bodies closes the
+// decompression-bomb path in body-parser (GHSA-27r3-jxmh-p828).
+app.use(express.json({ limit: '256kb', inflate: false }));
 
 // Security headers (CSP, X-Frame-Options, etc.).
 // Note: the SPA is served from a separate static host (Hostinger), so this CSP
@@ -254,6 +259,15 @@ app.use('/api/rooms', (req, res, next) => {
   next();
 }, roomRouter);
 
+// The public watch page, addressed by its private watch id. Registering shares the room budget.
+app.use('/api/watch', (req, res, next) => {
+  if (req.method === 'POST') {
+    roomCreateLimiter.middleware(req, res, next);
+    return;
+  }
+  next();
+}, watchRouter);
+
 app.use('/api/recordings', recordingRouter);
 app.use('/api/brand-kits', brandKitRouter);
 app.use('/api/workspace-studios', workspaceStudioRouter);
@@ -268,6 +282,7 @@ app.use(
   express.raw({
     type: ['audio/*', 'video/mp4', 'video/webm', 'application/octet-stream'],
     limit: '25mb',
+    inflate: false,
   }),
   transcriptionRouter
 );
@@ -288,7 +303,7 @@ app.get('/api/health', (_req, res) => {
 app.post(
   '/api/client-errors',
   clientErrorLimiter.middleware,
-  express.text({ type: ['text/plain', 'application/json'], limit: '16kb' }),
+  express.text({ type: ['text/plain', 'application/json'], limit: '16kb', inflate: false }),
   (req, res) => {
     let body: unknown = req.body;
     if (typeof body === 'string') {
@@ -312,7 +327,7 @@ app.post(
 // authorized by the per-join token the host or co-host received on join.
 app.post(
   '/api/rooms/:roomId/stage-images',
-  express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: STAGE_IMAGE_MAX_BYTES }),
+  express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: STAGE_IMAGE_MAX_BYTES, inflate: false }),
   (req, res) => {
     const header = (name: string) => {
       const value = req.headers[name];
@@ -333,12 +348,17 @@ app.post(
   }
 );
 
+// Reading needs the per-participant token admitted participants receive on
+// join, so the room id alone (or a seat in the green room) shows nothing.
 app.get('/api/rooms/:roomId/stage-images/:imageId', (req, res) => {
-  const image = getStageImage(req.params.roomId, req.params.imageId);
-  if (!image) {
-    res.status(404).end();
+  const header = req.headers['x-stage-token'];
+  const token = (Array.isArray(header) ? header[0] : header) || '';
+  const result = readStageImage(req.params.roomId, req.params.imageId, token);
+  if (!result.ok) {
+    res.status(result.status).end();
     return;
   }
+  const { image } = result;
   // Ids are random and never reused, so the picture can be cached for good.
   res.setHeader('Content-Type', image.contentType);
   res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
@@ -346,8 +366,19 @@ app.get('/api/rooms/:roomId/stage-images/:imageId', (req, res) => {
   res.send(image.data);
 });
 
-app.get('/api/ice-config', async (_req, res) => {
+// TURN credentials only for someone holding a seat in a studio: the browser sends
+// the room id and its per-seat credential (the resume token from room-joined).
+// Anyone else, such as a pre-join device check, gets STUN servers only.
+app.get('/api/ice-config', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
+  const header = (name: string) => {
+    const value = req.headers[name];
+    return (Array.isArray(value) ? value[0] : value) || '';
+  };
+  if (!isRoomMemberCredential(header('x-room-id'), header('x-room-credential'))) {
+    res.json(buildStunOnlyIceConfigWithStatus(process.env));
+    return;
+  }
   res.json(await resolveIceConfigWithStatus(process.env, {
     onError: (error) => console.warn('Cloudflare TURN unavailable; using the fallback relay:', error instanceof Error ? error.message : error),
   }));
@@ -537,6 +568,8 @@ if (serverReadiness.production) {
   for (const issue of serverReadiness.issues) {
     console.warn(`Production readiness (${issue.severity}): ${issue.message}`);
   }
+} else {
+  warnIfStudioCreationOpen();
 }
 
 server.listen(PORT, () => {
@@ -590,6 +623,12 @@ function gracefulShutdown(signal: string) {
     process.exit(1);
   }, 10_000);
 }
+
+// A stray rejected promise (a slow database, a dropped fetch) must be logged,
+// not take the studio down mid-show.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason instanceof Error ? reason.stack || reason.message : reason);
+});
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));

@@ -35,6 +35,7 @@ function createFakeMediaServer() {
     dropNextChunkResponse: false,
     unauthorizedNext: false,
     forbidAll: false,
+    storageFull: false,
   };
   const requests: string[] = [];
   const tokensSeen: string[] = [];
@@ -74,6 +75,9 @@ function createFakeMediaServer() {
     if (faults.unauthorizedNext) {
       faults.unauthorizedNext = false;
       return json({ error: 'Token expired', code: 'UNAUTHORIZED' }, 401);
+    }
+    if (faults.storageFull) {
+      return json({ error: 'The media server disk is almost full', code: 'RECORDING_STORAGE_FULL' }, 507);
     }
     if (faults.failNext > 0) {
       faults.failNext -= 1;
@@ -532,5 +536,24 @@ describe('progressive upload helpers', () => {
     assert.equal(getProgressiveUploadPercent({ status: 'uploading', recordedBytes: 1000, uploadedBytes: 505 }), 50);
     assert.equal(getProgressiveUploadPercent({ status: 'finishing', recordedBytes: 1000, uploadedBytes: 1000 }), 99);
     assert.equal(getProgressiveUploadPercent({ status: 'complete', recordedBytes: 1000, uploadedBytes: 1000 }), 100);
+  });
+});
+
+describe('progressive upload when the media server is out of storage', () => {
+  it('stops retrying after a 507 and keeps the take on this device', async () => {
+    const server = createFakeMediaServer();
+    const recording = createRecordingSource('camera', 600);
+    const { uploader, states } = createUploader(server);
+    server.faults.storageFull = true;
+    uploader.start([recording.source]);
+    recording.commit(300);
+    await uploader.flush();
+    assert.equal(states.at(-1)?.status, 'error');
+    const requestsAfterRefusal = server.requests.length;
+
+    // Later cycles and the final upload do not hammer the full server.
+    await uploader.flush();
+    await assert.rejects(uploader.finish(new Map([['camera', recording.finalBlob()]])), /full|room/i);
+    assert.equal(server.requests.length, requestsAfterRefusal);
   });
 });

@@ -1,0 +1,114 @@
+.media-help {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--warning-border, rgba(245, 158, 11, 0.4));
+  background: var(--warning-subtle, rgba(245, 158, 11, 0.12));
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  animation: slideUp 0.2s ease-out;
+}
+
+.media-help-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.media-help-icon {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--warning-text, #fbbf24);
+  color: var(--bg-primary);
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.media-help-message {
+  margin: 1px 0 0;
+  font-weight: 600;
+}
+
+.media-help-steps {
+  margin: 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+
+.media-help-details summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-weight: 600;
+  min-height: 24px;
+}
+
+.media-help-details[open] summary {
+  margin-bottom: 6px;
+}
+
+.media-help-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.media-help-retry,
+.media-help-dismiss {
+  min-height: 36px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.media-help-retry {
+  background: var(--accent-solid);
+  color: #fff;
+}
+
+.media-help-retry:hover:not(:disabled) {
+  background: var(--accent-hover-solid, var(--accent-solid));
+  filter: brightness(1.08);
+}
+
+.media-help-dismiss {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+}
+
+.media-help--compact {
+  padding: 10px 12px;
+  gap: 8px;
+}
+
+@media (pointer: coarse) {
+  .media-help-retry,
+  .media-help-dismiss {
+    min-height: 44px;
+  }
+}
+
+/* In the studio: float above the control bar without covering the stage controls. */
+.studio-media-help {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--studio-control-bar-h, 96px) + 16px);
+  transform: translateX(-50%);
+  width: min(440px, calc(100vw - 32px));
+  z-index: 950;
+  box-shadow: var(--shadow-lg);
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+}

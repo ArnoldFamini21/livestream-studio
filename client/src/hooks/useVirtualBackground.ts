@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createFrameTicker, type FrameTicker } from '../utils/frameTicker.ts';
 // Types only — the runtime is loaded lazily from CDN so we don't bake the
 // ~3MB MediaPipe bundle into the main app chunk.
 import type { SelfieSegmentation as SelfieSegmentationType, Results } from '@mediapipe/selfie_segmentation';
@@ -151,7 +152,9 @@ export function useVirtualBackground({
     setReady(false);
 
     let cancelled = false;
-    let raf = 0;
+    // Frames come from the worker-driven ticker, not requestAnimationFrame,
+    // so the camera keeps moving while the window is hidden or covered.
+    let ticker: FrameTicker | null = null;
     let composed: MediaStream | null = null;
 
     const driverVideo = document.createElement('video');
@@ -173,7 +176,8 @@ export function useVirtualBackground({
 
     const finalize = () => {
       cancelled = true;
-      cancelAnimationFrame(raf);
+      ticker?.stop();
+      ticker = null;
       try { driverVideo.pause(); } catch { /* ignore */ }
       driverVideo.srcObject = null;
       composed?.getVideoTracks().forEach((track) => track.stop());
@@ -217,14 +221,8 @@ export function useVirtualBackground({
       outputCtx.restore();
     };
 
-    const frameInterval = 1000 / TARGET_FPS;
-    let lastFrameTime = 0;
-
-    const renderLoop = (now: number) => {
-      if (cancelled) return;
-      raf = requestAnimationFrame(renderLoop);
-      if (now - lastFrameTime < frameInterval || driverVideo.readyState < 2) return;
-      lastFrameTime = now;
+    const renderLoop = () => {
+      if (cancelled || driverVideo.readyState < 2) return;
       sizeCanvasesToTrack();
       drawChromaComposite();
     };
@@ -247,7 +245,7 @@ export function useVirtualBackground({
         setReady(true);
         setError(null);
 
-        raf = requestAnimationFrame(renderLoop);
+        ticker = createFrameTicker(TARGET_FPS, renderLoop);
       } catch (err) {
         console.error('Failed to initialize green screen:', err);
         setError(err instanceof Error ? err.message : 'Green screen failed to start');
@@ -284,7 +282,8 @@ export function useVirtualBackground({
     }
 
     let cancelled = false;
-    let raf = 0;
+    // Worker-driven ticker: requestAnimationFrame stops in hidden tabs.
+    let ticker: FrameTicker | null = null;
     let segmenter: SelfieSegmentationType | null = null;
     let lastResults: Results | null = null;
     let inFlight = false;
@@ -315,7 +314,8 @@ export function useVirtualBackground({
 
     const finalize = () => {
       cancelled = true;
-      cancelAnimationFrame(raf);
+      ticker?.stop();
+      ticker = null;
       try { driverVideo.pause(); } catch { /* ignore */ }
       driverVideo.srcObject = null;
       if (segmenter) {
@@ -463,16 +463,9 @@ export function useVirtualBackground({
       ctx.restore();
     };
 
-    const frameInterval = 1000 / TARGET_FPS;
-    let lastFrameTime = 0;
-
-    const renderLoop = (now: number) => {
+    const renderLoop = () => {
       if (cancelled) return;
-      raf = requestAnimationFrame(renderLoop);
-
-      if (now - lastFrameTime < frameInterval) return;
-      lastFrameTime = now;
-
+      // One segmentation at a time; a slow frame skips ticks instead of queueing.
       if (driverVideo.readyState < 2 || !segmenter || inFlight) return;
       sizeCanvasToTrack();
 
@@ -517,7 +510,7 @@ export function useVirtualBackground({
         setReady(true);
         setError(null);
 
-        raf = requestAnimationFrame(renderLoop);
+        ticker = createFrameTicker(TARGET_FPS, renderLoop);
       } catch (err) {
         console.error('Failed to initialize virtual background:', err);
         setError(err instanceof Error ? err.message : 'Virtual background failed to start');

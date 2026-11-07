@@ -31,6 +31,13 @@ describe('isSameRelaySetup', () => {
     assert.equal(isSameRelaySetup(running, payload({ destinations: running.destinations.slice(0, 1) })), false);
     assert.equal(isSameRelaySetup(running, payload({ video: { ...running.video, width: 1080, height: 1920 } })), false);
   });
+
+  it('rejects a studio that now uploads in another video mode', () => {
+    const h264 = { container: 'matroska' as const, videoCodec: 'h264' as const, audioCodec: 'opus' as const, keyframeIntervalMs: 2_000 };
+    const copy = payload({ encoding: h264 });
+    assert.equal(isSameRelaySetup(copy, payload({ token: 'token-b', encoding: h264 })), true);
+    assert.equal(isSameRelaySetup(copy, payload()), false, 'VP8 after H.264 would change the output codec setup');
+  });
 });
 
 describe('shouldShowSlate', () => {

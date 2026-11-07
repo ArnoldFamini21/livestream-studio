@@ -12,6 +12,7 @@ import type {
   RecordingUploadTrackManifest,
   RecordingUploadTrackStatus,
 } from '@studio/shared';
+import { getFreeDiskBytes, getRecordingUploadLimits, type RecordingUploadLimits } from './recordingStorageGuard.js';
 
 export const MAX_RECORDING_UPLOAD_TRACKS = 64;
 export const MAX_RECORDING_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024;
@@ -322,10 +323,49 @@ export class RecordingUploadStore {
   private readonly sessions = new Map<string, RecordingUploadSession>();
   private readonly pendingMutations = new Map<string, Promise<void>>();
 
-  constructor(private readonly uploadRoot = process.env.RECORDING_UPLOAD_DIR || defaultUploadRoot()) {}
+  constructor(
+    private readonly uploadRoot = process.env.RECORDING_UPLOAD_DIR || defaultUploadRoot(),
+    private readonly limits: RecordingUploadLimits = getRecordingUploadLimits()
+  ) {}
 
   getUploadRoot(): string {
     return this.uploadRoot;
+  }
+
+  /** Bytes held by upload sessions that have not expired. */
+  getStoredBytes(nowMs = Date.now()): number {
+    let total = 0;
+    for (const session of this.sessions.values()) {
+      if (Date.parse(session.expiresAt) > nowMs) total += session.bytesReceived;
+    }
+    return total;
+  }
+
+  /** Free disk space for uploads, or null when the platform cannot tell. */
+  async getFreeBytes(): Promise<number | null> {
+    return (this.limits.freeBytes || getFreeDiskBytes)(this.uploadRoot).catch(() => null);
+  }
+
+  /** Refuse bytes that would break the shared disk budget or leave too little free space. */
+  private async assertStorageAvailable(incomingBytes: number, nowMs: number): Promise<void> {
+    if (this.getStoredBytes(nowMs) + incomingBytes > this.limits.totalMaxBytes) {
+      throw new RecordingUploadError(507, 'RECORDING_STORAGE_FULL', 'The media server has no room for more uploaded recordings; the recording stays on your computer.');
+    }
+    const free = await this.getFreeBytes();
+    if (free !== null && free - incomingBytes < this.limits.minFreeBytes) {
+      throw new RecordingUploadError(507, 'RECORDING_STORAGE_FULL', 'The media server disk is almost full; the recording stays on your computer.');
+    }
+  }
+
+  private countOpenParticipantSessions(roomId: string, sessionId: string | undefined, participantId: string, nowMs: number): number {
+    let open = 0;
+    for (const session of this.sessions.values()) {
+      if (session.roomId !== roomId || session.sessionId !== sessionId || session.participantId !== participantId) continue;
+      if (Date.parse(session.expiresAt) <= nowMs) continue;
+      const tracks = Array.from(session.tracks.values());
+      if (tracks.length === 0 || tracks.some((track) => !track.complete)) open += 1;
+    }
+    return open;
   }
 
   /** Serialize whole sessions: sequence checks and shared byte limits must commit together. */
@@ -464,6 +504,15 @@ export class RecordingUploadStore {
 
   async createSession(input: unknown, nowMs = Date.now()): Promise<RecordingUploadSessionResponse> {
     const normalized = normalizeCreateRequest(input);
+    if (normalized.participantId) {
+      this.hydrateAllFromDisk();
+      const open = this.countOpenParticipantSessions(normalized.roomId, normalized.sessionId, normalized.participantId, nowMs);
+      if (open >= this.limits.maxOpenSessionsPerParticipant) {
+        throw new RecordingUploadError(429, 'RECORDING_UPLOAD_SESSION_LIMIT', 'Too many unfinished uploads for this participant; finish or cancel one first.');
+      }
+    }
+    const expectedTotal = normalized.tracks.reduce((sum, track) => sum + (track.expectedBytes || 0), 0);
+    await this.assertStorageAvailable(expectedTotal, nowMs);
     const uploadId = randomUUID();
     const createdAt = new Date(nowMs).toISOString();
     const expiresAt = new Date(nowMs + RECORDING_UPLOAD_TTL_MS).toISOString();
@@ -491,7 +540,10 @@ export class RecordingUploadStore {
       createdAt,
       updatedAt: createdAt,
       expiresAt,
-      maxBytes: normalized.maxBytes || DEFAULT_RECORDING_UPLOAD_MAX_BYTES,
+      maxBytes: Math.min(
+        normalized.maxBytes || DEFAULT_RECORDING_UPLOAD_MAX_BYTES,
+        this.limits.maxSessionBytes || MAX_RECORDING_UPLOAD_MAX_BYTES
+      ),
       bytesReceived: 0,
       tracks,
     };
@@ -670,6 +722,7 @@ export class RecordingUploadStore {
     if (input.final && track.expectedBytes !== undefined && track.bytesReceived + input.data.length !== track.expectedBytes) {
       throw new RecordingUploadError(409, 'RECORDING_UPLOAD_INCOMPLETE', `${track.label} has not received all expected bytes`);
     }
+    await this.assertStorageAvailable(input.data.length, nowMs);
 
     try {
       await appendFile(track.filePath, input.data);

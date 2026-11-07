@@ -21,6 +21,13 @@ import {
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
 import { formatRelayLatency } from '../utils/rtmpRelayLatency.ts';
+import {
+  describeServerVideoMode,
+  evaluateRelayServerHealth,
+  formatRelaySpeed,
+  type RelayServerHealthStatus,
+} from '../utils/relayServerHealth.ts';
+import { getRelayRecorderFormat } from '../utils/relayEncoding.ts';
 import { RELAY_BACKLOG_WARNING_SECONDS, formatRelayBacklog } from '../utils/rtmpRelayBackpressure.ts';
 import { buildLivePreflightChecklist, type LivePreflightStatus } from '../utils/livePreflight.ts';
 import { isYouTubeConnectionConfigured, type YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
@@ -212,7 +219,8 @@ export function StreamDestinations({
   const selectedOutputPreflight = getRtmpRelayOutputPreflight(
     broadcastOrientation,
     relayOutputPreset,
-    sessionHealth?.encoding
+    sessionHealth?.encoding,
+    getRelayRecorderFormat()?.videoMode ?? null
   );
   const relayTargetKbps = getRtmpRelayTargetKbps(relayOutputPreset);
   const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
@@ -229,7 +237,21 @@ export function StreamDestinations({
   });
   const preflightIssue = livePreflight.blockingIssue || getEnabledDestinationPreflightIssue(destinations, relayIssue);
   const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue && !livePreflight.blockingIssue;
-  const relayQuality = relayStats ? getRelayQuality(relayStats, relayTargetKbps, selectedOutputPreset.label) : null;
+  const serverHealth = relayStats && isLive
+    ? evaluateRelayServerHealth({
+      encoder: relayStats.serverEncoder,
+      videoMode: relayStats.serverVideoMode,
+      destinationStats: relayStats.destinationStats,
+      destinationIds: enabledDestinations.map((dest) => dest.id),
+      upstreamKbps: relayStats.bitrateKbps,
+      now: relayStats.updatedAt || Date.now(),
+    })
+    : null;
+  const browserQuality = relayStats ? getRelayQuality(relayStats, relayTargetKbps, selectedOutputPreset.label) : null;
+  // Upload problems come first; past the browser, the server's own report decides.
+  const relayQuality = browserQuality && serverHealth?.headline && ['Stable', 'Low'].includes(browserQuality.label)
+    ? getServerQuality(serverHealth.headline.status, serverHealth.headline.detail)
+    : browserQuality;
   const bitrateBars = relayStats ? buildBitrateBars(relayStats.bitrateHistory, relayTargetKbps, BITRATE_BAR_COUNT) : [];
   const normalizedStreamScreens = normalizeStreamScreenConfig(streamScreenConfig);
   const updateStreamScreen = (kind: StreamScreenKind, patch: Partial<StreamScreenDraft>) => {
@@ -416,6 +438,20 @@ export function StreamDestinations({
                 <span style={styles.healthValue}>{formatElapsed(relayStats.startedAt)}</span>
                 <span style={styles.healthCaption}>Elapsed</span>
               </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{describeServerVideoMode(relayStats.serverEncoder?.videoMode ?? relayStats.serverVideoMode)}</span>
+                <span style={styles.healthCaption}>Server Video</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={{ ...styles.healthValue, color: getServerStatusColor(serverHealth?.encoder.status) }}>
+                  {formatRelaySpeed(relayStats.serverEncoder?.speed)}
+                </span>
+                <span style={styles.healthCaption}>Server Speed</span>
+              </div>
+              <div style={styles.healthMetric}>
+                <span style={styles.healthValue}>{relayStats.serverEncoder?.fps ?? '--'}</span>
+                <span style={styles.healthCaption}>Server FPS</span>
+              </div>
             </div>
           </div>
         )}
@@ -485,6 +521,11 @@ export function StreamDestinations({
                 </>
               )}
               {dest.statusMessage && !issue && <div style={styles.destStatusMessage}>{dest.statusMessage}</div>}
+              {isLive && dest.enabled && serverHealth?.destinations[dest.id] && serverHealth.destinations[dest.id].status !== 'unknown' && (
+                <div style={{ ...styles.destStatusMessage, color: getServerStatusColor(serverHealth.destinations[dest.id].status) }}>
+                  {serverHealth.destinations[dest.id].detail}
+                </div>
+              )}
               {issue && <div style={styles.destIssue}>{issue}</div>}
             </div>
           );
@@ -940,6 +981,31 @@ function formatLastChunkAge(lastChunkAt: number | null, updatedAt: number): stri
   const minutes = Math.floor(ageSeconds / 60);
   const seconds = ageSeconds % 60;
   return `${minutes}m ${seconds}s`;
+}
+
+function getServerStatusColor(status: RelayServerHealthStatus | undefined): string | undefined {
+  if (status === 'poor') return '#fca5a5';
+  if (status === 'warning') return '#fcd34d';
+  return undefined;
+}
+
+function getServerQuality(status: RelayServerHealthStatus, detail: string) {
+  if (status === 'poor') {
+    return {
+      label: 'Server behind',
+      detail,
+      color: '#fca5a5',
+      background: 'rgba(239, 68, 68, 0.12)',
+      border: 'rgba(239, 68, 68, 0.25)',
+    };
+  }
+  return {
+    label: 'Re-encoding',
+    detail,
+    color: '#fcd34d',
+    background: 'rgba(245, 158, 11, 0.12)',
+    border: 'rgba(245, 158, 11, 0.25)',
+  };
 }
 
 function getRelayQuality(stats: RtmpRelayStats, targetKbps: number, outputLabel: string) {

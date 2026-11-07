@@ -6,6 +6,7 @@ import {
   createRoom,
   getRooms,
   getStageImage,
+  readStageImage,
   setSfuMembershipNotifier,
   setupSignalingServer,
   storeStageImage,
@@ -393,14 +394,16 @@ describe('returning guests', () => {
       });
       await admitted;
 
-      // The connection drops; the same browser comes back.
-      const left = waitForMessage(host, 'participant-left');
+      // The connection drops (the seat is held); the same browser comes back
+      // without its resume token, e.g. from a new tab.
       guest.terminate();
-      await left;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const left = waitForMessage(host, 'participant-left', (m) => m.payload.participantId === first.payload.participant.id);
       const again = await connectClient(harness.url);
       const rejoined = waitForMessage(again, 'room-joined');
       joinRoom(again, { roomId: room.id, name: 'Guest', role: 'guest', joinSessionId });
       assert.equal((await rejoined).payload.participant.status, 'on-stage');
+      await left;
 
       // A different browser still waits to be admitted.
       const stranger = await connectClient(harness.url);
@@ -697,7 +700,7 @@ describe('progressive recording upload reporting', () => {
       payload: { recording: true, sessionId: 'recording-progress-123', performedBy: 'client-host' },
     });
     await started;
-    return { host, guest, observer, guestId: joinedGuest.payload.participant.id };
+    return { host, guest, observer, guestId: joinedGuest.payload.participant.id, roomId: room.id };
   }
 
   it('relays stamped participant progress to hosts but not to other guests', async () => {
@@ -811,6 +814,115 @@ describe('progressive recording upload reporting', () => {
         payload: { targetParticipantId: guestId, action: 'delete' },
       });
       await invalid;
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('relays recording transfer signals only between participants and hosts', async () => {
+    const harness = await createSignalingHarness();
+    try {
+      const { host, guest, observer, guestId, roomId } = await joinRecordingRoom(harness, 'transfer');
+      const entries = [...getRooms().get(roomId).participants.values()];
+      const hostId = entries.find((entry) => entry.participant.name === 'Arnold').participant.id;
+      const observerId = entries.find((entry) => entry.participant.name === 'Observer').participant.id;
+
+      const invite = waitForMessage(guest, 'recording-transfer-signal');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: {
+          targetParticipantId: guestId,
+          transferId: 'transfer-1',
+          kind: 'invite',
+          sessionId: 'recording-progress-123',
+          fromParticipantId: 'spoofed',
+          options: { losslessAudio: true, cloudUpload: false, extra: 'dropped' },
+        },
+      });
+      const received = await invite;
+      assert.equal(received.payload.kind, 'invite');
+      assert.equal(received.payload.fromParticipantId, hostId);
+      assert.equal(received.payload.sessionId, 'recording-progress-123');
+      assert.deepEqual(received.payload.options, { losslessAudio: true, cloudUpload: false });
+
+      const offer = waitForMessage(host, 'recording-transfer-signal');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: hostId, transferId: 'transfer-1', kind: 'offer', sdp: 'v=0', options: { cloudUpload: true } },
+      });
+      const relayed = await offer;
+      assert.equal(relayed.payload.kind, 'offer');
+      assert.equal(relayed.payload.fromParticipantId, guestId);
+      assert.equal(relayed.payload.sdp, 'v=0');
+      assert.equal(relayed.payload.options, undefined, 'participants cannot set transfer options');
+
+      const guestToGuest = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      const observerSilent = expectNoMessage(observer, 'recording-transfer-signal');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: observerId, transferId: 'transfer-2', kind: 'offer', sdp: 'v=0' },
+      });
+      await guestToGuest;
+      await observerSilent;
+
+      const guestInvite = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: hostId, transferId: 'transfer-3', kind: 'invite' },
+      });
+      await guestInvite;
+
+      const invalid = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'bad id with spaces', kind: 'offer', sdp: 'v=0' },
+      });
+      await invalid;
+
+      const missingSdp = waitForMessage(host, 'error', (message) => message.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'transfer-4', kind: 'answer' },
+      });
+      await missingSdp;
+
+      // A resumed participant asks the operators for a fresh invite.
+      const ready = waitForMessage(host, 'recording-transfer-signal', (message) => message.payload.kind === 'ready');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: hostId, transferId: 'transfer-5', kind: 'ready' },
+      });
+      assert.equal((await ready).payload.fromParticipantId, guestId);
+      const hostReady = waitForMessage(host, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'transfer-6', kind: 'ready' },
+      });
+      await hostReady;
+
+      // Nobody in the private green room gets a link to the host.
+      const guestEntry = getRooms().get(roomId).participants.get(guestId);
+      guestEntry.participant.status = 'green-room';
+      const hostSilent = expectNoMessage(host, 'recording-transfer-signal');
+      const greenRoomOffer = waitForMessage(guest, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: hostId, transferId: 'transfer-7', kind: 'offer', sdp: 'v=0' },
+      });
+      await greenRoomOffer;
+      await hostSilent;
+      const greenRoomInvite = waitForMessage(host, 'error', (message) => message.payload.code === 'UNAUTHORIZED');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'transfer-8', kind: 'invite' },
+      });
+      await greenRoomInvite;
+      const hangup = waitForMessage(guest, 'recording-transfer-signal', (message) => message.payload.kind === 'hangup');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'transfer-9', kind: 'hangup' },
+      });
+      assert.equal((await hangup).payload.fromParticipantId, hostId);
     } finally {
       await harness.close();
     }
@@ -2495,6 +2607,8 @@ describe('stage content sync', () => {
     const { room, hostToken } = createRoom('Stage sync test', 'Arnold', {
       creatorIp: `stage-sync-${Date.now()}`,
     });
+    // Admitted guests see the stage; waiting guests do not (see "green room privacy").
+    getRooms().get(room.id).room.settings.greenRoomEnabled = false;
 
     try {
       const host = await connectClient(harness.url);
@@ -2524,6 +2638,11 @@ describe('stage content sync', () => {
       const stored = storeStageImage({ roomId: room.id, participantId: hostId, token, contentType: 'image/jpeg', data: jpeg });
       assert.equal(stored.ok, true);
       assert.deepEqual(getStageImage(room.id, stored.imageId).data, jpeg);
+      // Reading a stage picture needs an admitted participant's token.
+      assert.equal(readStageImage(room.id, stored.imageId, '').status, 403);
+      assert.equal(readStageImage(room.id, stored.imageId, 'not-a-real-token').status, 403);
+      assert.equal(typeof guestSession.payload.stageReadToken, 'string');
+      assert.deepEqual(readStageImage(room.id, stored.imageId, guestSession.payload.stageReadToken).image.data, jpeg);
 
       const guestUpdate = waitForMessage(guest, 'stage-content-updated');
       sendSignal(host, {
@@ -2670,6 +2789,90 @@ describe('participant rename', () => {
       const rejected = waitForMessage(guest, 'error', (m) => m.payload.code === 'VALIDATION_ERROR');
       sendSignal(guest, { type: 'update-name', payload: { name: '   ' } });
       assert.match((await rejected).payload.message, /Enter a name/);
+      host.close(); guest.close();
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('host-edited name tags', () => {
+  it('lets the host fix a guest name and set a title, and not the guest', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Name tag test', 'Arnold', { creatorIp: `nametag-${Date.now()}` });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostId = (await hostJoined).payload.participant.id;
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'nica123', role: 'guest' });
+      const guestId = (await guestJoined).payload.participant.id;
+
+      const guestSaw = waitForMessage(guest, 'participant-updated', (m) => m.payload.id === guestId);
+      sendSignal(host, { type: 'update-participant-profile', payload: { targetParticipantId: guestId, name: ' Dr. Nica Santos ', title: '  Author,\u0007 The   Long Game ' } });
+      const updated = await guestSaw;
+      assert.equal(updated.payload.name, 'Dr. Nica Santos');
+      assert.equal(updated.payload.title, 'Author, The Long Game');
+
+      const cleared = waitForMessage(host, 'participant-updated', (m) => m.payload.id === guestId);
+      sendSignal(host, { type: 'update-participant-profile', payload: { targetParticipantId: guestId, title: '' } });
+      assert.equal((await cleared).payload.title, undefined);
+      assert.equal(roomState.participants.get(guestId).participant.name, 'Dr. Nica Santos');
+
+      const denied = waitForMessage(guest, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, { type: 'update-participant-profile', payload: { targetParticipantId: hostId, name: 'Not the host' } });
+      await denied;
+      assert.equal(roomState.participants.get(hostId).participant.name, 'Arnold');
+
+      const empty = waitForMessage(host, 'error', (m) => m.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, { type: 'update-participant-profile', payload: { targetParticipantId: guestId, name: '   ' } });
+      await empty;
+      host.close(); guest.close();
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('recording countdown for guests', () => {
+  it('relays the host countdown and its cancellation, and only from operators', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Countdown test', 'Arnold', { creatorIp: `countdown-${Date.now()}` });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostId = (await hostJoined).payload.participant.id;
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Nica', role: 'guest' });
+      await guestJoined;
+
+      const started = waitForMessage(guest, 'recording-countdown');
+      sendSignal(host, { type: 'recording-countdown', payload: { seconds: 3 } });
+      const relayed = await started;
+      assert.equal(relayed.payload.seconds, 3);
+      assert.equal(relayed.payload.performedBy, hostId);
+
+      const cancelled = waitForMessage(guest, 'recording-countdown');
+      sendSignal(host, { type: 'recording-countdown', payload: { seconds: 0, cancelled: true } });
+      assert.equal((await cancelled).payload.cancelled, true);
+
+      const invalid = waitForMessage(host, 'error', (m) => m.payload.code === 'VALIDATION_ERROR');
+      sendSignal(host, { type: 'recording-countdown', payload: { seconds: 600 } });
+      await invalid;
+
+      const denied = waitForMessage(guest, 'error', (m) => m.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, { type: 'recording-countdown', payload: { seconds: 3 } });
+      await denied;
       host.close(); guest.close();
     } finally {
       await harness.close();

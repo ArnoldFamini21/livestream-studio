@@ -9,6 +9,13 @@ import {
 } from '../utils/audioEnhancement.ts';
 import { replaceFallbackMediaTrack } from '../utils/mediaDeviceFallback.ts';
 import {
+  createMediaAccessProblem,
+  isMediaPermissionBlock,
+  isTransientMediaAccessError,
+  withMediaAccessDevice,
+  type MediaAccessProblem,
+} from '../utils/mediaAccessErrors.ts';
+import {
   createVideoTrackConstraints,
   getRecommendedVideoQualityPresetId,
   readPreferredAudioProcessing,
@@ -30,10 +37,26 @@ interface SinkIdElement {
   setSinkId?: (sinkId: string) => Promise<void>;
 }
 
-interface StartMediaOptions extends Partial<AudioProcessingPreferences> {
+export interface StartMediaOptions extends Partial<AudioProcessingPreferences> {
   audioEnabled?: boolean;
   videoEnabled?: boolean;
   videoQuality?: VideoQualityPresetId;
+  /**
+   * When a device fails for a reason other than a blocked permission, wait
+   * this long and try once more. Safari often fails right after the previous
+   * page's preview stream on the same camera stopped.
+   */
+  retryDelayMs?: number;
+}
+
+type AcquireResult =
+  | { stream: MediaStream; problem: MediaAccessProblem | null; usedFallback: boolean }
+  | { stream: null; problem: MediaAccessProblem; usedFallback: false };
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+function liveTrackCount(stream: MediaStream | null): number {
+  return stream ? stream.getTracks().filter((track) => track.readyState === 'live').length : 0;
 }
 
 export function useMediaDevices() {
@@ -41,6 +64,14 @@ export function useMediaDevices() {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // What exactly failed (blocked, busy, missing) so the page can show how to fix it.
+  const [errorProblem, setErrorProblemState] = useState<MediaAccessProblem | null>(null);
+  const errorProblemRef = useRef<MediaAccessProblem | null>(null);
+  const setErrorProblem = useCallback((problem: MediaAccessProblem | null) => {
+    errorProblemRef.current = problem;
+    setErrorProblemState(problem);
+  }, []);
+  const lastStartOptionsRef = useRef<StartMediaOptions>({});
 
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
@@ -137,8 +168,10 @@ export function useMediaDevices() {
   ) => {
     if (!navigator.mediaDevices?.getUserMedia) {
       setError('Media devices not available. Please use HTTPS or localhost.');
+      setErrorProblem({ kind: 'insecure-context', device: 'both', message: 'Camera and microphone are not available here. Open the studio link over https.' });
       return null;
     }
+    lastStartOptionsRef.current = { ...options };
 
     try {
       const nextAudioProcessing = normalizeAudioProcessingPreferences(options);
@@ -179,40 +212,79 @@ export function useMediaDevices() {
         for (let index = 0; index < attempts.length; index++) {
           try {
             const stream = await navigator.mediaDevices.getUserMedia(attempts[index]);
+            // A stream whose tracks already ended is as good as a failure (seen in Safari).
+            if (liveTrackCount(stream) === 0) {
+              stream.getTracks().forEach((track) => track.stop());
+              throw new DOMException('The device stopped as soon as it started.', 'NotReadableError');
+            }
             return { stream, usedFallback: index > 0 };
           } catch (err) {
             lastError = err;
+            // Another device id will not lift a blocked permission.
+            if (isMediaPermissionBlock(err)) break;
           }
         }
         throw lastError;
       };
 
-      let stream: MediaStream;
-      try {
-        const result = await tryMediaAttempts(avAttempts);
-        stream = result.stream;
-        setError(result.usedFallback ? 'Preferred device unavailable - using available camera and microphone' : null);
-      } catch {
-        // Audio+video failed -- try audio only
+      // Camera and mic together, then each alone. The error that is kept is
+      // the one that explains the problem, never a generic "no devices".
+      const acquire = async (): Promise<AcquireResult> => {
+        let avError: unknown;
+        try {
+          const result = await tryMediaAttempts(avAttempts);
+          return { stream: result.stream, problem: null, usedFallback: result.usedFallback };
+        } catch (err) {
+          avError = err;
+        }
+        // Asking again for a blocked permission only re-prompts (Safari) or fails again.
+        if (isMediaPermissionBlock(avError)) {
+          return { stream: null, problem: createMediaAccessProblem(avError, 'both'), usedFallback: false };
+        }
+        let audioError: unknown;
         try {
           const result = await tryMediaAttempts(audioOnlyAttempts);
-          stream = result.stream;
-          setError('Camera not available - audio only');
-        } catch {
-          // Audio only failed -- try video only
-          try {
-            const result = await tryMediaAttempts(videoOnlyAttempts);
-            stream = result.stream;
-            setError('Microphone not available - video only');
-          } catch (finalErr) {
-            setError('No media devices available');
-            setAudioEnabled(false);
-            setVideoEnabled(false);
-            stopCurrentStream();
-            return null;
-          }
+          return { stream: result.stream, problem: createMediaAccessProblem(avError, 'camera'), usedFallback: false };
+        } catch (err) {
+          audioError = err;
         }
+        try {
+          const result = await tryMediaAttempts(videoOnlyAttempts);
+          return { stream: result.stream, problem: createMediaAccessProblem(audioError, 'microphone'), usedFallback: false };
+        } catch {
+          return { stream: null, problem: createMediaAccessProblem(avError, 'both'), usedFallback: false };
+        }
+      };
+
+      let acquired = await acquire();
+      if (
+        acquired.problem &&
+        options.retryDelayMs &&
+        isTransientMediaAccessError(acquired.problem.kind)
+      ) {
+        // One more try after a short pause before telling the user anything.
+        await sleep(options.retryDelayMs);
+        // Release a partial stream first: Safari ends a track when the same device is requested again.
+        const hadPartialStream = Boolean(acquired.stream);
+        acquired.stream?.getTracks().forEach((track) => track.stop());
+        acquired = await acquire();
+        // If the retry got nothing, take back the devices that did work the first time.
+        if (!acquired.stream && hadPartialStream) acquired = await acquire();
       }
+
+      if (!acquired.stream) {
+        setError(acquired.problem.message);
+        setErrorProblem(acquired.problem);
+        setAudioEnabled(false);
+        setVideoEnabled(false);
+        stopCurrentStream();
+        return null;
+      }
+      let stream: MediaStream = acquired.stream;
+      setErrorProblem(acquired.problem);
+      setError(acquired.problem
+        ? acquired.problem.message
+        : acquired.usedFallback ? 'Preferred device unavailable - using available camera and microphone' : null);
       const enhancedAudio = createEnhancedAudioStream(stream, nextAudioProcessing);
       stream = enhancedAudio.stream;
       enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
@@ -287,13 +359,135 @@ export function useMediaDevices() {
         message = err instanceof Error ? err.message : 'Failed to access media devices';
       }
       setError(message);
+      setErrorProblem({ ...createMediaAccessProblem(err, 'both'), message });
       setAudioEnabled(false);
       setVideoEnabled(false);
       stopCurrentStream();
       console.error('Media device error:', err);
       return null;
     }
-  }, [enumerateDevices, stopCurrentStream]);
+  }, [enumerateDevices, setErrorProblem, stopCurrentStream]);
+
+  /**
+   * Add a camera or microphone track that is missing (blocked earlier, busy,
+   * unplugged) to the running stream, so a toggle is never silently dead.
+   * Resolves true when the track is now live and enabled.
+   */
+  const acquireMissingTrack = useCallback(async (kind: 'audio' | 'video'): Promise<boolean> => {
+    if (!navigator.mediaDevices?.getUserMedia) return false;
+    const device = kind === 'audio' ? 'microphone' : 'camera';
+    if (!streamRef.current) {
+      const previous = lastStartOptionsRef.current;
+      const stream = await startMedia(undefined, undefined, {
+        ...previous,
+        retryDelayMs: undefined,
+        audioEnabled: kind === 'audio' ? true : previous.audioEnabled ?? true,
+        videoEnabled: kind === 'video' ? true : previous.videoEnabled ?? true,
+      });
+      return Boolean(stream?.getTracks().some((track) => track.kind === kind && track.readyState === 'live'));
+    }
+    if (switchingRef.current) return false;
+    switchingRef.current = true;
+    try {
+      const preferredId = localStorage.getItem(kind === 'audio' ? 'preferredAudioDeviceId' : 'preferredVideoDeviceId');
+      const constraintsFor = (deviceId?: string | null): MediaStreamConstraints => (kind === 'audio'
+        ? { audio: createAudioTrackConstraints(deviceId, audioProcessingOptionsRef.current) }
+        : { video: createVideoTrackConstraints(deviceId, videoQualityRef.current) });
+      let raw: MediaStream;
+      try {
+        raw = await navigator.mediaDevices.getUserMedia(constraintsFor(preferredId));
+      } catch (err) {
+        if (!preferredId || isMediaPermissionBlock(err)) throw err;
+        raw = await navigator.mediaDevices.getUserMedia(constraintsFor());
+      }
+      const stream = streamRef.current;
+      if (!stream) {
+        raw.getTracks().forEach((track) => track.stop());
+        return false;
+      }
+      // Drop ended tracks of this kind (an unplugged device) before adding the new one.
+      for (const track of kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks()) {
+        if (track.readyState === 'ended') stream.removeTrack(track);
+      }
+      if (kind === 'audio') {
+        const enhancedAudio = createEnhancedAudioStream(raw, audioProcessingOptionsRef.current);
+        const track = enhancedAudio.stream.getAudioTracks()[0];
+        const sourceTrack = enhancedAudio.sourceTrack || track;
+        if (!track) {
+          enhancedAudio.cleanup({ stopSource: true });
+          throw new DOMException('The microphone did not return an audio track.', 'NotReadableError');
+        }
+        enhancedAudioRef.current?.cleanup({ stopSource: true });
+        enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
+        track.enabled = true;
+        if (sourceTrack !== track) sourceTrack.enabled = true;
+        sourceTrack.onended = () => {
+          setAudioEnabled(false);
+          setError('Audio device disconnected unexpectedly');
+        };
+        stream.addTrack(track);
+        const activeId = sourceTrack.getSettings().deviceId || '';
+        if (activeId) {
+          setSelectedAudioDeviceId(activeId);
+          localStorage.setItem('preferredAudioDeviceId', activeId);
+        }
+        setAudioEnabled(true);
+      } else {
+        const track = raw.getVideoTracks()[0];
+        if (!track) throw new DOMException('The camera did not return a video track.', 'NotReadableError');
+        track.enabled = true;
+        track.onended = () => {
+          setVideoEnabled(false);
+          setError('Video device disconnected unexpectedly');
+        };
+        stream.addTrack(track);
+        const activeId = track.getSettings().deviceId || '';
+        if (activeId) {
+          setSelectedVideoDeviceId(activeId);
+          localStorage.setItem('preferredVideoDeviceId', activeId);
+        }
+        setVideoEnabled(true);
+      }
+      publishStreamUpdate();
+      // Keep a remaining problem about the other device; clear this one.
+      const remaining = errorProblemRef.current;
+      const otherMissing = kind === 'audio' ? stream.getVideoTracks().length === 0 : stream.getAudioTracks().length === 0;
+      if (remaining && remaining.device === 'both' && otherMissing) {
+        const next = withMediaAccessDevice(remaining, kind === 'audio' ? 'camera' : 'microphone');
+        setErrorProblem(next);
+        setError(next.message);
+      } else if (!remaining || remaining.device === device || remaining.device === 'both') {
+        setErrorProblem(null);
+        setError(null);
+      }
+      void enumerateDevices();
+      return true;
+    } catch (err) {
+      const problem = createMediaAccessProblem(err, device);
+      setErrorProblem(problem);
+      setError(problem.message);
+      if (kind === 'audio') setAudioEnabled(false);
+      else setVideoEnabled(false);
+      console.error(`Could not start the ${device}:`, err);
+      return false;
+    } finally {
+      switchingRef.current = false;
+    }
+  }, [enumerateDevices, publishStreamUpdate, setErrorProblem, startMedia]);
+
+  /** "Try again": request whatever is missing with the choices the page started with. */
+  const retryMedia = useCallback(async (): Promise<boolean> => {
+    const stream = streamRef.current;
+    if (!stream || liveTrackCount(stream) === 0) {
+      const previous = lastStartOptionsRef.current;
+      const next = await startMedia(undefined, undefined, { ...previous, retryDelayMs: undefined });
+      return Boolean(next && liveTrackCount(next) > 0);
+    }
+    let ok = true;
+    if (!stream.getAudioTracks().some((track) => track.readyState === 'live')) ok = (await acquireMissingTrack('audio')) && ok;
+    if (!stream.getVideoTracks().some((track) => track.readyState === 'live')) ok = (await acquireMissingTrack('video')) && ok;
+    return ok;
+  }, [acquireMissingTrack, startMedia]);
 
   // Switch audio input device
   const switchAudioDevice = useCallback(async (
@@ -348,6 +542,7 @@ export function useMediaDevices() {
       setSelectedAudioDeviceId(activeDeviceId);
       if (activeDeviceId) localStorage.setItem('preferredAudioDeviceId', activeDeviceId);
       setError(null);
+      setErrorProblem(null);
 
       // Return the new track so WebRTC can replace it on peer connections
       return newAudioTrack;
@@ -415,6 +610,7 @@ export function useMediaDevices() {
       setSelectedVideoDeviceId(deviceId);
       localStorage.setItem('preferredVideoDeviceId', deviceId);
       setError(null);
+      setErrorProblem(null);
 
       return newVideoTrack;
     } catch (err) {
@@ -469,15 +665,25 @@ export function useMediaDevices() {
     return false;
   }, []);
 
+  // With no live track of that kind, turning it on asks for the device again
+  // (the result arrives through localStream); the toggle is never dead.
   const toggleAudio = useCallback(() => {
-    const audioTrack = streamRef.current?.getAudioTracks()[0];
-    return setAudioTrackEnabled(!audioTrack?.enabled);
-  }, [setAudioTrackEnabled]);
+    const audioTrack = streamRef.current?.getAudioTracks().find((track) => track.readyState === 'live');
+    if (!audioTrack) {
+      void acquireMissingTrack('audio');
+      return false;
+    }
+    return setAudioTrackEnabled(!audioTrack.enabled);
+  }, [acquireMissingTrack, setAudioTrackEnabled]);
 
   const toggleVideo = useCallback(() => {
-    const videoTrack = streamRef.current?.getVideoTracks()[0];
-    return setVideoTrackEnabled(!videoTrack?.enabled);
-  }, [setVideoTrackEnabled]);
+    const videoTrack = streamRef.current?.getVideoTracks().find((track) => track.readyState === 'live');
+    if (!videoTrack) {
+      void acquireMissingTrack('video');
+      return false;
+    }
+    return setVideoTrackEnabled(!videoTrack.enabled);
+  }, [acquireMissingTrack, setVideoTrackEnabled]);
 
   // Listen for device changes (plugging in / removing devices)
   useEffect(() => {
@@ -617,6 +823,7 @@ export function useMediaDevices() {
     audioEnabled,
     videoEnabled,
     error,
+    errorProblem,
     // Device lists
     audioDevices,
     videoDevices,
@@ -636,6 +843,8 @@ export function useMediaDevices() {
     setVideoTrackEnabled,
     toggleAudio,
     toggleVideo,
+    acquireMissingTrack,
+    retryMedia,
     switchAudioDevice,
     switchVideoDevice,
     updateAudioProcessing,

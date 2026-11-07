@@ -5,6 +5,7 @@ import { formatPeerBandwidthHealthTitle } from '../utils/peerBandwidthDisplay.ts
 import { describeRecordingUploadProgress } from '../utils/recordingUploadProgress.ts';
 import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import { StudioIcon } from './StudioIcon.tsx';
+import { NameTagEditor } from './NameTagEditor.tsx';
 import '../styles/people-panel.css';
 
 export interface PeoplePanelProps {
@@ -28,6 +29,8 @@ export interface PeoplePanelProps {
   /** Latest background recording upload report per participant (hosts only). */
   recordingUploads?: Record<string, RecordingUploadProgressPayload>;
   onRecordingUploadControl?: (participantId: string, action: 'pause' | 'resume') => void;
+  /** Hosts and co-hosts: fix a display name or set a name-tag title. */
+  onEditNameTag?: (participantId: string, profile: { name: string; title: string }) => void;
 }
 
 export function PeoplePanel(props: PeoplePanelProps) {
@@ -66,7 +69,7 @@ export function PeoplePanel(props: PeoplePanelProps) {
         <div id="people-settings" className="people-settings">
           <label>
             <span>
-              Auto ducking<small>Lower other audio while someone speaks.</small>
+              Auto ducking<small>Lower music and clips while someone on stage speaks.</small>
             </span>
             <input
               type="checkbox"
@@ -99,11 +102,12 @@ export function PeoplePanel(props: PeoplePanelProps) {
                   className="people-text"
                   onClick={() =>
                     waiting.forEach((person) =>
-                      props.onStageAction('move-to-stage', person.id)
+                      props.onStageAction('move-to-backstage', person.id)
                     )
                   }
+                  title="Let everyone in to backstage, off air"
                 >
-                  Admit all
+                  Admit all to backstage
                 </button>
               )}
             </div>
@@ -199,6 +203,7 @@ function PersonRow({
             {person.name}
             {isMe ? ' (you)' : ''}
           </strong>
+          {person.title && <span className="people-title" title={person.title}>{person.title}</span>}
           <span>
             {spotlight
               ? 'Spotlighted'
@@ -241,14 +246,29 @@ function PersonRow({
               <StudioIcon name="mic" />
             </button>
           ) : (
-            <button
-              type="button"
-              className="people-admit"
-              aria-label={`Bring ${person.name} on stage`}
-              onClick={() => action('move-to-stage')}
-            >
-              {person.status === 'green-room' ? 'Admit' : 'Add'}
-            </button>
+            // Admitting lets a waiting guest in backstage (off air); putting
+            // someone on air is always its own, explicit step.
+            person.status === 'green-room' ? (
+              <button
+                type="button"
+                className="people-admit"
+                aria-label={`Admit ${person.name} to backstage`}
+                title="Admit to backstage (off air)"
+                onClick={() => action('move-to-backstage')}
+              >
+                Admit
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="people-admit"
+                aria-label={`Bring ${person.name} on stage`}
+                title="Bring on stage (on air)"
+                onClick={() => action('move-to-stage')}
+              >
+                On stage
+              </button>
+            )
           ))}
         {(host || !isMe) && (
           <button
@@ -311,6 +331,9 @@ function PersonRow({
                     : 'checking'}
             </p>
           )}
+          {host && props.onEditNameTag && (person.role !== 'host' || props.myRole === 'host') && (
+            <NameTagEditor person={person} onSave={(profile) => props.onEditNameTag?.(person.id, profile)} />
+          )}
           <div className="people-actions">
             {canMix && (
               <button
@@ -360,12 +383,17 @@ function PersonRow({
                     Notify: you’re next
                   </button>
                 )}
-                {person.status === 'on-stage' && (
+                {person.status !== 'on-stage' && (
+                  <button type="button" onClick={() => action('move-to-stage')}>
+                    Bring on stage
+                  </button>
+                )}
+                {person.status !== 'backstage' && (
                   <button
                     type="button"
                     onClick={() => action('move-to-backstage')}
                   >
-                    Move backstage
+                    {person.status === 'green-room' ? 'Admit to backstage' : 'Move backstage'}
                   </button>
                 )}
                 {person.status !== 'green-room' && (

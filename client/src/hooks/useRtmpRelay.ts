@@ -3,9 +3,12 @@ import type {
   BroadcastOrientation,
   RtmpRelayBackupRecordingPayload,
   RtmpRelayDestination,
+  RtmpRelayDestinationStats,
   RtmpRelayDestinationStatus,
+  RtmpRelayEncoderStats,
   RtmpRelayServerMessage,
   RtmpRelayVideoConfig,
+  RtmpRelayVideoMode,
 } from '@studio/shared';
 import { resolveMediaWsUrl } from '../utils/apiClient.ts';
 import { getRelaySendBacklog } from '../utils/rtmpRelayBackpressure.ts';
@@ -25,9 +28,15 @@ import {
   RTMP_RELAY_AUDIO_BITS_PER_SECOND,
   type RtmpRelayOutputPresetId,
 } from '../utils/rtmpRelayOutput.ts';
-import { getDuckedParticipantVolumes } from '../utils/audioDucking.ts';
-import { getLiveAudioTracks } from '../utils/audioStreamTracks.ts';
+import type { ProgramAudioTrackLease } from '../audio/useProgramAudioMix.ts';
+import {
+  buildRelayRecorderOptions,
+  getRelayRecorderFormat,
+  getRelayUploadVideoConfig,
+} from '../utils/relayEncoding.ts';
+import { createRelayVideoStream, type RelayVideoResources } from '../utils/relayVideoStream.ts';
 import { reportClientError } from '../utils/clientErrorReporter.ts';
+import { formatRelayWakeMessage, probeUntilAwake } from '../utils/relayWake.ts';
 import {
   isRelayOperationCancelled,
   RelayOperationCancelledError,
@@ -38,15 +47,12 @@ import {
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
-  localStream: MediaStream | null;
-  localParticipantId?: string | null;
-  remoteStreams: Map<string, MediaStream>;
-  screenStream: MediaStream | null;
-  auxiliaryAudioStream?: MediaStream | null;
-  ensureAuxiliaryAudioStream?: () => MediaStream | null;
-  participantVolumes?: Record<string, number>;
-  participantAudioLevels?: Record<string, number>;
-  audioDuckingEnabled?: boolean;
+  /**
+   * Leases the studio's live program audio track (one dynamic mix shared with
+   * the program recording). Each relay connection, reconnects included, takes
+   * a fresh lease, so it always carries the current stage audio.
+   */
+  acquireProgramAudio: () => ProgramAudioTrackLease | null;
   readinessEnabled?: boolean;
   onDestinationStatus: (destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => void;
   onRelayStopped?: (message: string) => void;
@@ -61,18 +67,9 @@ interface StartRelayOptions {
 }
 
 interface MixerResources {
-  audioContext: AudioContext;
   stream: MediaStream;
   videoResources: RelayVideoResources;
-  sources: MediaStreamAudioSourceNode[];
-  gains: GainNode[];
-  participantGains: Map<string, GainNode>;
-  silentOscillator?: OscillatorNode;
-}
-
-interface RelayVideoResources {
-  stream: MediaStream;
-  cleanup: () => void;
+  programAudio: ProgramAudioTrackLease | null;
 }
 
 export interface RtmpRelayStats {
@@ -90,6 +87,12 @@ export interface RtmpRelayStats {
   relayLatencyMs: number | null;
   /** Seconds of video queued in the browser because the uplink is behind. */
   sendBacklogSeconds: number;
+  /** How the media server handles this upload: copy (H.264) or re-encode. */
+  serverVideoMode: RtmpRelayVideoMode | null;
+  /** The media server's live encoder, as FFmpeg reports it. */
+  serverEncoder: RtmpRelayEncoderStats | null;
+  /** What each destination's uploader actually sends, by destination id. */
+  destinationStats: Record<string, RtmpRelayDestinationStats>;
 }
 
 export interface RtmpRelayReadiness {
@@ -124,11 +127,14 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
   reconnectAttempts: 0,
   relayLatencyMs: null,
   sendBacklogSeconds: 0,
+  serverVideoMode: null,
+  serverEncoder: null,
+  destinationStats: {},
 };
 
 const BITRATE_WINDOW_MS = 5_000;
 const BITRATE_HISTORY_WINDOW_MS = 60_000;
-const RELAY_PREFLIGHT_TIMEOUT_MS = 4_000;
+const RELAY_PREFLIGHT_TIMEOUT_MS = 6_000;
 const RELAY_HEARTBEAT_INTERVAL_MS = 5_000;
 const MAX_PENDING_RELAY_PINGS = 8;
 const RELAY_RECORDER_TIMESLICE_MS = 1_000;
@@ -140,29 +146,14 @@ const INITIAL_RELAY_READINESS: RtmpRelayReadiness = {
   checkedAt: null,
 };
 
-function clampVolume(volume: number | undefined): number {
-  if (!Number.isFinite(volume)) return 1;
-  return Math.min(1, Math.max(0, volume ?? 1));
-}
-
 function getMediaWsUrl(): string {
   return resolveMediaWsUrl();
-}
-
-function getRelayMimeType(): string {
-  if (!('MediaRecorder' in window) || typeof MediaRecorder.isTypeSupported !== 'function') return '';
-  const candidates = [
-    'video/webm;codecs=vp8,opus',
-    'video/webm;codecs=vp9,opus',
-    'video/webm',
-  ];
-  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
 }
 
 function getBrowserRelayIssue(): string | null {
   if (!('WebSocket' in window)) return 'This browser does not support WebSocket streaming.';
   if (!('MediaRecorder' in window)) return 'This browser does not support MediaRecorder streaming.';
-  if (!getRelayMimeType()) return 'This browser does not support WebM recording for RTMP relay.';
+  if (!getRelayRecorderFormat()) return 'This browser does not support WebM recording for RTMP relay.';
   return null;
 }
 
@@ -201,141 +192,10 @@ function probeRelayWebSocket(mediaWsUrl: string): Promise<void> {
   });
 }
 
-function collectAudioSources(
-  localStream: MediaStream | null,
-  localParticipantId: string | null | undefined,
-  remoteStreams: Map<string, MediaStream>,
-  screenStream: MediaStream | null,
-  auxiliaryAudioStream: MediaStream | null | undefined,
-  participantVolumes: Record<string, number>
-): Array<{ stream: MediaStream; volume: number; participantId?: string }> {
-  const sources: Array<{ stream: MediaStream; volume: number; participantId?: string }> = [];
-  const localAudioTracks = getLiveAudioTracks(localStream);
-  if (localAudioTracks.length > 0) {
-    sources.push({
-      stream: new MediaStream(localAudioTracks),
-      volume: localParticipantId ? clampVolume(participantVolumes[localParticipantId]) : 1,
-      participantId: localParticipantId || undefined,
-    });
-  }
-  for (const [participantId, stream] of remoteStreams) {
-    const audioTracks = getLiveAudioTracks(stream);
-    if (audioTracks.length > 0) {
-      sources.push({
-        stream: new MediaStream(audioTracks),
-        volume: clampVolume(participantVolumes[participantId]),
-        participantId,
-      });
-    }
-  }
-  const screenAudioTracks = getLiveAudioTracks(screenStream);
-  if (screenAudioTracks.length > 0) sources.push({ stream: new MediaStream(screenAudioTracks), volume: 1 });
-  const auxiliaryAudioTracks = getLiveAudioTracks(auxiliaryAudioStream);
-  if (auxiliaryAudioTracks.length > 0) {
-    sources.push({ stream: new MediaStream(auxiliaryAudioTracks), volume: 1 });
-  }
-  return sources;
-}
-
-function drawVideoCover(
-  ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement,
-  width: number,
-  height: number
-) {
-  if (video.videoWidth <= 0 || video.videoHeight <= 0) return;
-
-  const sourceRatio = video.videoWidth / video.videoHeight;
-  const targetRatio = width / height;
-  let sourceX = 0;
-  let sourceY = 0;
-  let sourceWidth = video.videoWidth;
-  let sourceHeight = video.videoHeight;
-
-  if (sourceRatio > targetRatio) {
-    sourceWidth = video.videoHeight * targetRatio;
-    sourceX = (video.videoWidth - sourceWidth) / 2;
-  } else {
-    sourceHeight = video.videoWidth / targetRatio;
-    sourceY = (video.videoHeight - sourceHeight) / 2;
-  }
-
-  ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
-}
-
-async function createRelayVideoStream(
-  compositeStream: MediaStream,
-  videoConfig: RtmpRelayVideoConfig
-): Promise<RelayVideoResources> {
-  const videoTrack = compositeStream.getVideoTracks()[0];
-  if (!videoTrack || videoTrack.readyState !== 'live') {
-    throw new Error('The composited studio video stream is not ready.');
-  }
-
-  if (videoConfig.width === 1920 && videoConfig.height === 1080) {
-    return {
-      stream: new MediaStream([videoTrack]),
-      cleanup: () => undefined,
-    };
-  }
-
-  const sourceStream = new MediaStream([videoTrack]);
-  const sourceVideo = document.createElement('video');
-  sourceVideo.muted = true;
-  sourceVideo.playsInline = true;
-  sourceVideo.srcObject = sourceStream;
-
-  await new Promise<void>((resolve) => {
-    if (sourceVideo.readyState >= 1) {
-      resolve();
-      return;
-    }
-    const timeout = window.setTimeout(resolve, 1_000);
-    sourceVideo.onloadedmetadata = () => {
-      window.clearTimeout(timeout);
-      resolve();
-    };
-  });
-  await sourceVideo.play().catch(() => undefined);
-
-  const canvas = document.createElement('canvas');
-  canvas.width = videoConfig.width;
-  canvas.height = videoConfig.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas output is unavailable for portrait streaming.');
-
-  let frame = 0;
-  const draw = () => {
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    if (sourceVideo.readyState >= 2) {
-      drawVideoCover(ctx, sourceVideo, canvas.width, canvas.height);
-    }
-    frame = window.requestAnimationFrame(draw);
-  };
-  draw();
-
-  const stream = canvas.captureStream(videoConfig.frameRate);
-  return {
-    stream,
-    cleanup: () => {
-      window.cancelAnimationFrame(frame);
-      stream.getTracks().forEach((track) => track.stop());
-      sourceVideo.pause();
-      sourceVideo.srcObject = null;
-    },
-  };
-}
-
 async function createMixedBroadcastStream(
   compositeStream: MediaStream,
   videoConfig: RtmpRelayVideoConfig,
-  localStream: MediaStream | null,
-  localParticipantId: string | null | undefined,
-  remoteStreams: Map<string, MediaStream>,
-  screenStream: MediaStream | null,
-  auxiliaryAudioStream: MediaStream | null | undefined,
-  participantVolumes: Record<string, number>
+  acquireProgramAudio: () => ProgramAudioTrackLease | null
 ): Promise<MixerResources> {
   const videoResources = await createRelayVideoStream(compositeStream, videoConfig);
   const videoTrack = videoResources.stream.getVideoTracks()[0];
@@ -343,80 +203,28 @@ async function createMixedBroadcastStream(
     throw new Error('The composited studio video stream is not ready.');
   }
 
-  const AudioContextConstructor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextConstructor) {
+  // A clone of the studio's live program mix: its inputs follow the stage
+  // while the relay runs (late guests, mic switches, reconnects), so nothing
+  // is snapshotted here.
+  const programAudio = acquireProgramAudio();
+  if (!programAudio) {
+    videoResources.cleanup();
     throw new Error('Web Audio is not available in this browser.');
   }
 
-  const audioContext = new AudioContextConstructor({ sampleRate: RELAY_AUDIO.sampleRate });
-  const destination = audioContext.createMediaStreamDestination();
-  const sources: MediaStreamAudioSourceNode[] = [];
-  const gains: GainNode[] = [];
-  const participantGains = new Map<string, GainNode>();
-  const audioSources = collectAudioSources(
-    localStream,
-    localParticipantId,
-    remoteStreams,
-    screenStream,
-    auxiliaryAudioStream,
-    participantVolumes
-  );
-
-  for (const audioSource of audioSources) {
-    const source = audioContext.createMediaStreamSource(audioSource.stream);
-    const gain = audioContext.createGain();
-    gain.gain.value = audioSource.volume;
-    source.connect(gain);
-    gain.connect(destination);
-    sources.push(source);
-    gains.push(gain);
-    if (audioSource.participantId) participantGains.set(audioSource.participantId, gain);
-  }
-
-  let silentOscillator: OscillatorNode | undefined;
-  if (sources.length === 0) {
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    gain.gain.value = 0;
-    oscillator.connect(gain);
-    gain.connect(destination);
-    oscillator.start();
-    silentOscillator = oscillator;
-  }
-
-  const mixedStream = new MediaStream([
-    videoTrack,
-    ...destination.stream.getAudioTracks(),
-  ]);
-
-  return { audioContext, stream: mixedStream, videoResources, sources, gains, participantGains, silentOscillator };
+  const mixedStream = new MediaStream([videoTrack, programAudio.track]);
+  return { stream: mixedStream, videoResources, programAudio };
 }
 
 function cleanupMixer(mixer: MixerResources | null) {
   if (!mixer) return;
-  try {
-    mixer.silentOscillator?.stop();
-  } catch {
-    // Already stopped.
-  }
-  mixer.stream.getAudioTracks().forEach((track) => track.stop());
+  mixer.programAudio?.release();
   mixer.videoResources.cleanup();
-  mixer.sources.forEach((source) => source.disconnect());
-  mixer.gains.forEach((gain) => gain.disconnect());
-  void mixer.audioContext.close();
 }
 
 export function useRtmpRelay({
   compositeStreamRef,
-  localStream,
-  localParticipantId,
-  remoteStreams,
-  screenStream,
-  auxiliaryAudioStream,
-  ensureAuxiliaryAudioStream,
-  participantVolumes = {},
-  participantAudioLevels = {},
-  audioDuckingEnabled = false,
+  acquireProgramAudio,
   readinessEnabled = true,
   onDestinationStatus,
   onRelayStopped,
@@ -621,7 +429,19 @@ export function useRtmpRelay({
     }
 
     try {
-      await probeRelayWebSocket(mediaWsUrl);
+      // A sleeping free-tier media server needs up to a minute: keep probing and say so.
+      await probeUntilAwake(() => probeRelayWebSocket(mediaWsUrl), {
+        shouldContinue: () => readinessCheckIdRef.current === checkId,
+        onWaiting: (elapsedMs) => {
+          if (readinessCheckIdRef.current !== checkId) return;
+          setReadiness({
+            status: 'checking',
+            message: formatRelayWakeMessage(elapsedMs),
+            mediaWsUrl,
+            checkedAt: Date.now(),
+          });
+        },
+      });
       const ready: RtmpRelayReadiness = {
         status: 'ready',
         message: 'Media relay is reachable.',
@@ -661,12 +481,17 @@ export function useRtmpRelay({
         throw new Error('The composited studio stream is not ready.');
       }
 
-      const mimeType = getRelayMimeType();
-      if (!mimeType) {
+      const recorderFormat = getRelayRecorderFormat();
+      if (!recorderFormat) {
         throw new Error('This browser does not support WebM recording for RTMP relay.');
       }
 
-      const videoConfig = getRtmpRelayVideoConfig(orientation, outputPreset);
+      // H.264 goes out at the preset's size; a re-encode on the server is
+      // capped, so the upload is sized to what it will output.
+      const videoConfig: RtmpRelayVideoConfig = getRelayUploadVideoConfig(
+        getRtmpRelayVideoConfig(orientation, outputPreset),
+        recorderFormat.videoMode
+      );
       const operation = relayOperationRef.current.begin();
       if (!operation) throw new Error('A live relay session is already active.');
       activeDestinationIdsRef.current = destinations.map((destination) => destination.id);
@@ -703,25 +528,10 @@ export function useRtmpRelay({
           throw new Error('The composited studio stream is not ready.');
         }
 
-        const initialParticipantVolumes = getDuckedParticipantVolumes({
-          enabled: audioDuckingEnabled,
-          participantVolumes,
-          participantAudioLevels,
-          participantIds: [
-            ...(localParticipantId ? [localParticipantId] : []),
-            ...remoteStreams.keys(),
-          ],
-        });
-        const currentAuxiliaryAudioStream = ensureAuxiliaryAudioStream?.() ?? auxiliaryAudioStream ?? null;
         const mixer = await operation.run(() => createMixedBroadcastStream(
           currentCompositeStream,
           videoConfig,
-          localStream,
-          localParticipantId,
-          remoteStreams,
-          screenStream,
-          currentAuxiliaryAudioStream,
-          initialParticipantVolumes
+          acquireProgramAudio
         ), cleanupMixer);
         if (!operation.active) {
           cleanupMixer(mixer);
@@ -843,11 +653,10 @@ export function useRtmpRelay({
               videoConfig.frameRate,
               RELAY_RECORDER_TIMESLICE_MS
             );
-            const recorder = new MediaRecorder(mixer.stream, {
-              mimeType,
-              videoBitsPerSecond: videoConfig.videoBitsPerSecond,
-              audioBitsPerSecond: RELAY_AUDIO.audioBitsPerSecond,
-            });
+            const recorder = new MediaRecorder(
+              mixer.stream,
+              buildRelayRecorderOptions(recorderFormat, videoConfig, RELAY_AUDIO.audioBitsPerSecond)
+            );
             recorderRef.current = recorder;
 
             recorder.ondataavailable = (event) => {
@@ -902,6 +711,7 @@ export function useRtmpRelay({
                 destinations,
                 video: videoConfig,
                 audio: RELAY_AUDIO,
+                encoding: recorderFormat.encoding,
               },
             }));
           };
@@ -920,6 +730,8 @@ export function useRtmpRelay({
               started = true;
               relayConnectedAtRef.current = Date.now();
               setRelayStatus('live');
+              const serverVideoMode = message.payload.videoMode ?? null;
+              setStats((current) => ({ ...current, serverVideoMode, updatedAt: Date.now() }));
               startHeartbeatTimer(ws);
               startRecorder();
               resolve();
@@ -948,6 +760,27 @@ export function useRtmpRelay({
                 message.payload.status,
                 message.payload.message
               );
+              return;
+            }
+
+            if (message.type === 'encoder-stats') {
+              const serverEncoder = message.payload;
+              setStats((current) => ({
+                ...current,
+                serverEncoder,
+                serverVideoMode: serverEncoder.videoMode,
+                updatedAt: Date.now(),
+              }));
+              return;
+            }
+
+            if (message.type === 'destination-stats') {
+              const destinationStats = message.payload;
+              setStats((current) => ({
+                ...current,
+                destinationStats: { ...current.destinationStats, [destinationStats.destinationId]: destinationStats },
+                updatedAt: Date.now(),
+              }));
               return;
             }
 
@@ -1003,7 +836,7 @@ export function useRtmpRelay({
         throw error;
       }
     },
-    [audioDuckingEnabled, auxiliaryAudioStream, cleanup, clearReconnectTimer, compositeStreamRef, ensureAuxiliaryAudioStream, localParticipantId, localStream, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, participantAudioLevels, participantVolumes, remoteStreams, resetStats, screenStream, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
+    [acquireProgramAudio, cleanup, clearReconnectTimer, compositeStreamRef, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, resetStats, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
   );
 
   useEffect(() => {
@@ -1011,24 +844,6 @@ export function useRtmpRelay({
     if (wsRef.current || stats.status !== 'idle') return;
     void checkRelayReadiness();
   }, [checkRelayReadiness, readinessEnabled, stats.status]);
-
-  useEffect(() => {
-    const mixer = mixerRef.current;
-    if (!mixer) return;
-    const effectiveVolumes = getDuckedParticipantVolumes({
-      enabled: audioDuckingEnabled,
-      participantVolumes,
-      participantAudioLevels,
-      participantIds: mixer.participantGains.keys(),
-    });
-    for (const [participantId, gain] of mixer.participantGains) {
-      gain.gain.setTargetAtTime(
-        clampVolume(effectiveVolumes[participantId]),
-        mixer.audioContext.currentTime,
-        0.08
-      );
-    }
-  }, [audioDuckingEnabled, participantAudioLevels, participantVolumes]);
 
   useEffect(() => {
     if (stats.status === 'idle') return;

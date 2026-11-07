@@ -18,6 +18,27 @@ export function getStageImageUrl(roomId: string, imageId: string): string {
   return buildApiUrl(`/api/rooms/${encodeURIComponent(roomId)}/stage-images/${encodeURIComponent(imageId)}`);
 }
 
+/**
+ * Stage pictures are readable only by admitted participants: fetch with the
+ * read token from room-joined and hand back an object URL for the stage.
+ * Returns null when the picture cannot be loaded (the caller shows the name).
+ */
+export async function loadStageImageObjectUrl(
+  url: string,
+  readToken: string | null,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  if (!url || !readToken) return null;
+  try {
+    const response = await fetchImpl(url, { headers: { 'x-stage-token': readToken }, cache: 'force-cache' });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  } catch {
+    return null;
+  }
+}
+
 export function fitWithin(width: number, height: number, maxWidth: number, maxHeight: number): { width: number; height: number } {
   if (!(width > 0) || !(height > 0)) return { width: maxWidth, height: maxHeight };
   const scale = Math.min(1, maxWidth / width, maxHeight / height);

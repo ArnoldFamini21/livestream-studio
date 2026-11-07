@@ -8,7 +8,8 @@ export function createScreenCaptureSession(capture: () => Promise<MediaStream>) 
   const release = (value: MediaStream) => value.getTracks().forEach(track => track.stop());
 
   return {
-    async start(): Promise<MediaStream | null> {
+    /** `contentHint`: 'detail' keeps text sharp (slides, documents); 'motion' keeps a shared video smooth. */
+    async start(contentHint: 'detail' | 'motion' = 'detail'): Promise<MediaStream | null> {
       if (pending || stream) return null;
       pending = true;
       const request = ++generation;
@@ -19,8 +20,8 @@ export function createScreenCaptureSession(capture: () => Promise<MediaStream>) 
           release(result);
           return null;
         }
-        // Preserve text detail when the browser chooses an encoder strategy.
-        try { video.contentHint = 'detail'; } catch { /* Optional browser hint. */ }
+        // Tell the encoder what matters: text detail, or motion.
+        try { video.contentHint = contentHint; } catch { /* Optional browser hint. */ }
         stream = result;
         return result;
       } finally {

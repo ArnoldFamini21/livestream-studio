@@ -58,7 +58,8 @@ export function ParticipantManager({
             isHostOrCoHost={isHostOrCoHost}
             actions={(p) => (
               <>
-                <ActionBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-stage', p.id)} />
+                <ActionBtn label="Admit" color="var(--success)" onClick={() => onStageAction('move-to-backstage', p.id)} />
+                <ActionBtn label="On stage" color="var(--accent)" onClick={() => onStageAction('move-to-stage', p.id)} />
                 <ActionBtn label="Remove" color="var(--danger)" onClick={() => onStageAction('remove', p.id)} />
               </>
             )}
@@ -122,9 +123,10 @@ export function ParticipantManager({
           <button
             className="btn-primary"
             style={styles.admitAllBtn}
-            onClick={() => grouped['green-room'].forEach((p) => onStageAction('move-to-stage', p.id))}
+            onClick={() => grouped['green-room'].forEach((p) => onStageAction('move-to-backstage', p.id))}
+            title="Let everyone in to backstage, off air"
           >
-            Admit All ({grouped['green-room'].length})
+            Admit All to backstage ({grouped['green-room'].length})
           </button>
         )}
       </div>

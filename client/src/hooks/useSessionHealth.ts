@@ -1,3 +1,4 @@
+import { getSharedIceConfigLoader } from '../utils/iceConfigLoader.ts';
 import { useEffect, useMemo, useState } from 'react';
 import {
   detectBrowserVideoEncodingReadiness,
@@ -12,12 +13,12 @@ import {
 } from '../utils/sessionPeerHealth.ts';
 import {
   DEFAULT_ICE_CONFIG_STATUS,
-  fetchIceConfigWithStatus,
   type ClientIceConfigStatus,
 } from '../utils/iceConfig.ts';
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
+import { summarizeHealthChecks, type HealthStatus } from '../utils/sessionHealthSummary.ts';
 
-export type HealthStatus = 'good' | 'warning' | 'bad';
+export type { HealthStatus };
 
 export interface SessionHealthCheck {
   id: string;
@@ -102,27 +103,6 @@ function formatAudioLabel(track: MediaStreamTrack | null): string {
   return track.enabled ? 'Microphone ready' : 'Microphone muted';
 }
 
-function scoreForStatus(status: HealthStatus): number {
-  switch (status) {
-    case 'good': return 100;
-    case 'warning': return 58;
-    case 'bad': return 0;
-  }
-}
-
-function statusFromScore(score: number): HealthStatus {
-  if (score >= 80) return 'good';
-  if (score >= 50) return 'warning';
-  return 'bad';
-}
-
-function labelFromStatus(status: HealthStatus): string {
-  switch (status) {
-    case 'good': return 'Ready';
-    case 'warning': return 'Needs attention';
-    case 'bad': return 'Blocked';
-  }
-}
 
 function healthStatusFromEncoding(status: VideoEncodingReadinessStatus): HealthStatus {
   switch (status) {
@@ -240,9 +220,15 @@ export function useSessionHealth({
     };
   }, []);
 
+  // The same relay configuration the peer connections use, including when it
+  // arrives late (the studio server was waking up).
   useEffect(() => {
     let cancelled = false;
-    fetchIceConfigWithStatus()
+    const loader = getSharedIceConfigLoader();
+    const unsubscribe = loader.subscribe(({ status }) => {
+      if (!cancelled) setIceStatus(status);
+    });
+    loader.ready()
       .then(({ status }) => {
         if (!cancelled) setIceStatus(status);
       })
@@ -251,6 +237,7 @@ export function useSessionHealth({
       });
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 
@@ -386,12 +373,12 @@ export function useSessionHealth({
       });
     }
 
-    const score = Math.round(checks.reduce((sum, check) => sum + scoreForStatus(check.status), 0) / checks.length);
-    const status = statusFromScore(score);
+    // Any blocked essential check (connection, mic, camera...) decides the status; never averaged away.
+    const { status, label, score } = summarizeHealthChecks(checks, 'operator');
 
     return {
       status,
-      label: labelFromStatus(status),
+      label,
       score,
       checks,
       storage,

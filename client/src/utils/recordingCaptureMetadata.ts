@@ -30,6 +30,25 @@ export interface RecordingCaptureEncoderMetadata {
   fallbackReason?: string;
 }
 
+/**
+ * Precise timing for aligning tracks recorded on different machines.
+ * Times are milliseconds since the epoch on the recording machine's clock,
+ * derived from performance.timeOrigin + performance.now() (monotonic within
+ * the page, unaffected by clock adjustments during the take).
+ */
+export interface RecordingCaptureTimeline {
+  startMs: number;
+  stopMs?: number;
+  /** performance.timeOrigin of the recording page. */
+  timeOrigin: number;
+  /** Pause intervals; the file contains no media for them. */
+  pauses: Array<{ startMs: number; endMs?: number }>;
+  /** 0 for the first file of a source; device changes start a new segment. */
+  segmentIndex: number;
+  /** Add to this track's times to express them on the host's clock. */
+  clockOffsetMs?: number;
+}
+
 export interface RecordingCaptureMetadata {
   sourceId: string;
   sourceKind: RecordingCaptureSourceKind;
@@ -42,6 +61,7 @@ export interface RecordingCaptureMetadata {
   trackCount: number;
   tracks: RecordingCaptureTrackMetadata[];
   encoder?: RecordingCaptureEncoderMetadata;
+  timeline?: RecordingCaptureTimeline;
 }
 
 interface RecordingCaptureMetadataInput {
@@ -157,6 +177,22 @@ export function finalizeRecordingCaptureMetadata(
   const safeStoppedAt = safeIsoDate(stoppedAt);
   const startedMs = Date.parse(capture.startedAt);
   const stoppedMs = Date.parse(safeStoppedAt);
+  const timeline = capture.timeline;
+  if (timeline) {
+    const stopMs = timeline.stopMs ?? stoppedMs;
+    // Recorded media excludes paused time.
+    const pausedMs = timeline.pauses.reduce((sum, pause) => sum + Math.max(0, (pause.endMs ?? stopMs) - pause.startMs), 0);
+    return {
+      ...capture,
+      stoppedAt: safeStoppedAt,
+      durationMs: Math.max(0, Math.round(stopMs - timeline.startMs - pausedMs)),
+      timeline: {
+        ...timeline,
+        stopMs,
+        pauses: timeline.pauses.map((pause) => ({ startMs: pause.startMs, endMs: pause.endMs ?? stopMs })),
+      },
+    };
+  }
   const durationMs = Number.isFinite(startedMs) && Number.isFinite(stoppedMs)
     ? Math.max(0, Math.round(stoppedMs - startedMs))
     : undefined;
@@ -165,6 +201,36 @@ export function finalizeRecordingCaptureMetadata(
     ...capture,
     stoppedAt: safeStoppedAt,
     ...(durationMs !== undefined ? { durationMs } : {}),
+  };
+}
+
+function safeEpochMs(value: unknown): number | undefined {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? Number(numberValue.toFixed(3)) : undefined;
+}
+
+export function normalizeRecordingCaptureTimeline(value: unknown): RecordingCaptureTimeline | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Partial<RecordingCaptureTimeline>;
+  const startMs = safeEpochMs(input.startMs);
+  if (startMs === undefined) return undefined;
+  const stopMs = safeEpochMs(input.stopMs);
+  const pauses = Array.isArray(input.pauses)
+    ? input.pauses.slice(0, 2000).flatMap((pause) => {
+        const pauseStart = safeEpochMs(pause?.startMs);
+        if (pauseStart === undefined) return [];
+        const pauseEnd = safeEpochMs(pause?.endMs);
+        return [{ startMs: pauseStart, ...(pauseEnd !== undefined && pauseEnd >= pauseStart ? { endMs: pauseEnd } : {}) }];
+      })
+    : [];
+  const clockOffsetMs = Number(input.clockOffsetMs);
+  return {
+    startMs,
+    ...(stopMs !== undefined && stopMs >= startMs ? { stopMs } : {}),
+    timeOrigin: safeEpochMs(input.timeOrigin) ?? startMs,
+    pauses,
+    segmentIndex: Number.isSafeInteger(input.segmentIndex) && Number(input.segmentIndex) >= 0 ? Number(input.segmentIndex) : 0,
+    ...(Number.isFinite(clockOffsetMs) && Math.abs(clockOffsetMs) < 86_400_000 ? { clockOffsetMs: Number(clockOffsetMs.toFixed(3)) } : {}),
   };
 }
 
@@ -193,6 +259,7 @@ export function normalizeRecordingCaptureMetadata(value: unknown): RecordingCapt
   const stoppedAt = input.stoppedAt ? safeIsoDate(input.stoppedAt) : undefined;
   const durationMs = Number.isFinite(input.durationMs) ? Math.max(0, Math.round(Number(input.durationMs))) : undefined;
   const encoder = normalizeEncoderMetadata(input.encoder);
+  const timeline = normalizeRecordingCaptureTimeline(input.timeline);
 
   return {
     sourceId: safeText(input.sourceId, 'recording-source', 120),
@@ -206,5 +273,6 @@ export function normalizeRecordingCaptureMetadata(value: unknown): RecordingCapt
     trackCount: Number.isFinite(input.trackCount) ? Math.max(0, Math.floor(Number(input.trackCount))) : tracks.length,
     tracks,
     ...(encoder ? { encoder } : {}),
+    ...(timeline ? { timeline } : {}),
   };
 }

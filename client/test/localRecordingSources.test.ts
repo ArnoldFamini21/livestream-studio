@@ -101,12 +101,12 @@ describe('local recording source planner', () => {
       sources.map((source) => [source.id, source.label, source.kind, source.bitsPerSecond]),
       [
         ['program-mix', 'Program mix', 'program', 10_000_000],
-        ['host-1-iso', 'Host ISO', 'iso', 8_500_000],
+        ['host-1-iso', 'Host ISO', 'iso', undefined],
         ['host-1-audio', 'Host audio', 'audio', 256_000],
-        ['host-1-camera', 'Host camera', 'video', 8_000_000],
-        ['guest-alpha-iso', 'Guest Alpha ISO', 'iso', 8_500_000],
+        ['host-1-camera', 'Host camera', 'video', undefined],
+        ['guest-alpha-iso', 'Guest Alpha ISO', 'iso', undefined],
         ['guest-alpha-audio', 'Guest Alpha audio', 'audio', 256_000],
-        ['guest-alpha-camera', 'Guest Alpha camera', 'video', 8_000_000],
+        ['guest-alpha-camera', 'Guest Alpha camera', 'video', undefined],
       ]
     );
     assert.equal(sources.find((source) => source.id === 'host-1-iso')?.stream.getTracks().length, 2);

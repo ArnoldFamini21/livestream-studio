@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import type { IncomingMessage } from 'node:http';
 import { nanoid } from 'nanoid';
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type {
@@ -9,6 +10,8 @@ import type {
   JoinRoomPayload,
   MediaStatePayload,
   UpdateNamePayload,
+  UpdateParticipantProfilePayload,
+  RecordingCountdownPayload,
   ChatMessage,
   ChatTypingPayload,
   ChatReactionType,
@@ -20,6 +23,7 @@ import type {
   RecordingUploadProgressPayload,
   LiveStreamStatePayload,
   LiveStreamTokenClaims,
+  PresentationRenderTokenClaims,
   RecordingUploadTokenClaims,
   SfuMembershipControlAction,
   SfuMembershipControlClaims,
@@ -37,6 +41,8 @@ import type {
 } from '@studio/shared';
 import {
   RECORDING_UPLOAD_PROGRESS_STATUSES,
+  MAX_RECORDING_TRANSFER_SDP_LENGTH,
+  MAX_PARTICIPANT_TITLE_LENGTH,
   ROOM_NOT_OPEN_ERROR_CODE,
   SCHEDULED_GUEST_ACCESS_MESSAGE,
   canExchangeStudioMedia,
@@ -57,17 +63,71 @@ import {
 } from './facebookLiveComments.js';
 import {
   buildPersistentRoomSnapshot,
+  type RoomSessionSnapshot,
   type RoomSnapshot,
   type RoomSnapshotStore,
 } from './roomPersistence.js';
+import {
+  PasswordAttemptLimiter,
+  SocketsPerIpLimiter,
+  getUpgradeRequestIp,
+  verifyPasswordHashAsync,
+} from './joinProtection.js';
+import {
+  MAX_RELAYED_CANDIDATE_LENGTH,
+  MAX_RELAYED_SDP_LENGTH,
+  WsRateLimiter,
+} from './wsRateLimit.js';
+import {
+  ROOM_RESTORE_TICKET_TTL_MS,
+  hashHostToken,
+  signRoomRestoreTicket,
+  verifyRoomRestoreTicket,
+} from './roomRestoreTicket.js';
+import { isStudioCreationGated } from './studioAccessPolicy.js';
+import { buildPresentationRenderClaims } from './presentationRenderToken.js';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
 
-// In-memory store (replace with Redis/PostgreSQL later)
+interface ParticipantEntry {
+  participant: Participant;
+  ws: WebSocket;
+  joinSessionId?: string;
+  stageUploadToken?: string;
+  /** Reads stage pictures; issued once the participant is admitted. */
+  stageReadToken?: string;
+  /** Network address of the current connection (bans, password lockouts). */
+  ip: string;
+  /** Secret that lets this seat be resumed after a dropped connection. */
+  resumeToken: string;
+  /** Set while the connection is gone and the seat is held for a resume. */
+  disconnectedAt?: number;
+  resumeTimer?: ReturnType<typeof setTimeout>;
+}
+
+type RedeemedInviteKind = 'co-host' | 'guest-secure';
+
+// In-memory store, snapshotted to PostgreSQL when DATABASE_URL is set.
 interface RoomState {
   room: Room;
-  participants: Map<string, { participant: Participant; ws: WebSocket; joinSessionId?: string; stageUploadToken?: string }>;
+  participants: Map<string, ParticipantEntry>;
+  /** Private id of the public watch page; the room id is the guest join capability and is never published. */
+  watchId: string;
+  /**
+   * A studio from before private watch ids: its watch links were published as
+   * /watch/<roomId>, so that id keeps resolving (to the canonical watch id).
+   * Never set for studios created since.
+   */
+  legacyWatchByRoomId?: boolean;
   bannedJoinSessionIds: Set<string>;
+  /** Banned network addresses and when the ban lapses; a fresh browser session alone cannot undo a ban. */
+  bannedIps: Map<string, number>;
+  /** Join sessions the host removed, and when; they always go back through the green room. */
+  removedJoinSessionIds: Map<string, number>;
+  /** Single-use invite links already redeemed, by the join session that redeemed them, so a reconnect keeps the role. */
+  redeemedInvites: Map<string, { kind: RedeemedInviteKind; expiresAt: number }>;
+  /** The co-host who inherited the host seat while the host was away; handed back when the host returns. */
+  handedOffHostId?: string;
   /** Admitted guests who dropped, by join session, so a quick return skips the green room. */
   recentGuestSessions?: Map<string, { status: ParticipantStatus; leftAtMs: number }>;
   chatMessages: Map<string, ChatMessage>;
@@ -96,6 +156,8 @@ interface RoomState {
   passwordSalt?: string;
   // Creator IP, used to enforce a per-IP active-room quota.
   creatorIp: string;
+  /** Created through the owner gate (STUDIO_OWNER_EMAILS / STUDIO_CREATE_SECRET); unlocks server-held chat keys. */
+  createdByOwner?: boolean;
   // True once any participant successfully joined; used for shorter idle expiry.
   hasBeenJoined: boolean;
   emptyRoomTimer?: ReturnType<typeof setTimeout>;
@@ -142,6 +204,11 @@ export interface StageImage {
 export const STAGE_IMAGE_MAX_BYTES = 1024 * 1024;
 const STAGE_IMAGE_LIMIT_PER_ROOM = 60;
 const STAGE_IMAGE_BYTES_PER_ROOM = 20 * 1024 * 1024;
+const STAGE_IMAGE_GLOBAL_DEFAULT_BYTES = 64 * 1024 * 1024;
+function getStageImageGlobalMaxBytes(): number {
+  const megabytes = Number(process.env.STAGE_IMAGE_GLOBAL_MAX_MB);
+  return Number.isFinite(megabytes) && megabytes > 0 ? megabytes * 1024 * 1024 : STAGE_IMAGE_GLOBAL_DEFAULT_BYTES;
+}
 const STAGE_IMAGE_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const STAGE_MEDIA_TYPES = new Set<StudioMediaType>(['video', 'image', 'pdf', 'presentation', 'file']);
 const STAGE_LAYOUTS = new Set<LayoutMode>(['grid', 'spotlight', 'side-by-side', 'pip', 'single', 'featured']);
@@ -193,9 +260,12 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'stage-action',
   'studio-branding-updated',
   'recording-state-changed',
+  'recording-countdown',
+  'update-participant-profile',
   'recording-upload-token-request',
   'recording-upload-progress',
   'recording-upload-control',
+  'recording-transfer-signal',
   'sfu-token-request',
   'live-stream-state-changed',
   'live-stream-token-request',
@@ -241,6 +311,16 @@ const EMPTY_ROOM_GRACE_MS = parseBoundedDurationMs(
 
 const rooms = new Map<string, RoomState>();
 const wsToParticipant = new Map<WebSocket, { roomId: string; participantId: string }>();
+const socketIps = new WeakMap<WebSocket, string>();
+/** The upgrade request's Cookie header, for proving an owner account session on a host join. */
+const socketCookies = new WeakMap<WebSocket, string>();
+/** Sockets with a join still being checked (password hashing is asynchronous). */
+const pendingJoins = new WeakSet<WebSocket>();
+const failedJoinsBySocket = new WeakMap<WebSocket, number>();
+const passwordAttempts = new PasswordAttemptLimiter();
+const socketsPerIp = new SocketsPerIpLimiter(
+  parseBoundedDurationMs(process.env.SIGNALING_MAX_SOCKETS_PER_IP, 20, 2, 500)
+);
 const endingTimers = new Map<string, NodeJS.Timeout>();
 // IP -> Set<roomId> of rooms this IP created and that are still active.
 const roomsByCreatorIp = new Map<string, Set<string>>();
@@ -261,10 +341,23 @@ const staleRoomCleanupTimer = setInterval(() => {
 }, 10 * 60 * 1000); // Every 10 minutes
 staleRoomCleanupTimer.unref?.();
 
-// WebSocket per-connection rate limiting
-const wsMessageCounts = new Map<WebSocket, { count: number; resetAt: number }>();
-const WS_RATE_LIMIT_WINDOW = 10_000; // 10 seconds
-const WS_RATE_LIMIT_MAX = 100; // 100 messages per 10 seconds
+// WebSocket per-connection rate limiting: negotiation messages get their own, larger budget.
+const wsRateLimiter = new WsRateLimiter<WebSocket>();
+
+/**
+ * How long a seat is held after its connection drops (Wi-Fi blip, proxy reset,
+ * page reload) before the participant counts as gone. Within it, presenting
+ * the resume token returns the same participant id, so healthy peer
+ * connections are not torn down and nobody's tile flickers away.
+ */
+const RESUME_GRACE_MS = parseBoundedDurationMs(process.env.SIGNALING_RESUME_GRACE_MS, 30_000, 0, 120_000);
+/** Waiting guests have their own small cap; they do not take stage seats. */
+export const MAX_GREEN_ROOM_PARTICIPANTS = 5;
+const BANNED_IP_TTL_MS = 12 * 60 * 60 * 1000;
+const REMOVED_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
+/** A socket that keeps failing to join is closed. */
+const MAX_FAILED_JOINS_PER_SOCKET = 3;
+const PC_ID_PATTERN = /^[A-Za-z0-9_-]{4,64}$/;
 
 // Max lengths for user input
 const MAX_CHAT_MESSAGE_LENGTH = 2000;
@@ -305,20 +398,6 @@ function parseBoundedDurationMs(
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(Math.trunc(parsed), min), max);
-}
-
-function checkWsRateLimit(ws: WebSocket): boolean {
-  const now = Date.now();
-  const entry = wsMessageCounts.get(ws);
-  if (!entry || now > entry.resetAt) {
-    wsMessageCounts.set(ws, { count: 1, resetAt: now + WS_RATE_LIMIT_WINDOW });
-    return true;
-  }
-  entry.count++;
-  if (entry.count > WS_RATE_LIMIT_MAX) {
-    return false;
-  }
-  return true;
 }
 
 export function getRooms() {
@@ -365,11 +444,40 @@ function getRoomIdleReferenceMs(roomState: RoomState): number {
   return Number.isFinite(scheduledAtMs) ? Math.max(created, scheduledAtMs) : created;
 }
 
+function createWatchId(): string {
+  return randomBytes(12).toString('base64url');
+}
+
 function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
+  const session = snapshot.sessionState;
+  const nowMs = Date.now();
+  const recentGuestSessions = new Map<string, { status: ParticipantStatus; leftAtMs: number }>();
+  for (const guest of session?.returningGuests || []) {
+    // Guests who were in the studio when the snapshot was taken lost their
+    // connection to the restart itself: their grace starts now.
+    const leftAtMs = guest.present ? nowMs : guest.leftAtMs;
+    if (nowMs - leftAtMs <= GUEST_REJOIN_GRACE_MS) recentGuestSessions.set(guest.joinSessionId, { status: guest.status, leftAtMs });
+  }
   return {
     room: snapshot.room,
     participants: new Map(),
-    bannedJoinSessionIds: new Set(),
+    watchId: session?.watchId || createWatchId(),
+    // No watch id in the snapshot: saved before watch ids existed, so /watch/<roomId> links are out there.
+    ...(!session?.watchId || session.legacyWatchByRoomId ? { legacyWatchByRoomId: true } : {}),
+    bannedJoinSessionIds: new Set(session?.bannedJoinSessionIds || []),
+    bannedIps: new Map((session?.bannedIps || []).filter((ban) => ban.expiresAt > nowMs).map((ban) => [ban.ip, ban.expiresAt])),
+    removedJoinSessionIds: new Map((session?.removedJoinSessionIds || [])
+      .filter((entry) => nowMs - entry.removedAt <= REMOVED_SESSION_TTL_MS)
+      .map((entry) => [entry.joinSessionId, entry.removedAt])),
+    redeemedInvites: new Map((session?.redeemedInvites || [])
+      .filter((entry) => entry.expiresAt > nowMs)
+      .map((entry) => [entry.joinSessionId, { kind: entry.kind, expiresAt: entry.expiresAt }])),
+    ...(recentGuestSessions.size ? { recentGuestSessions } : {}),
+    ...(session?.recording ? {
+      recordingSessionId: session.recording.sessionId,
+      ...(session.recording.startedAt ? { recordingStartedAt: session.recording.startedAt } : {}),
+      ...(session.recording.paused ? { recordingPaused: true } : {}),
+    } : {}),
     chatMessages: new Map(),
     chatReactions: new Map(),
     qaQuestions: new Map(),
@@ -382,6 +490,7 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
     coHostInviteTokens: new Map(),
     hostToken: snapshot.hostToken,
     creatorIp: snapshot.creatorIp,
+    ...(session?.createdByOwner ? { createdByOwner: true } : {}),
     hasBeenJoined: snapshot.hasBeenJoined,
     ...(snapshot.studioBranding ? { studioBranding: snapshot.studioBranding } : {}),
     ...(snapshot.passwordHash ? { passwordHash: snapshot.passwordHash } : {}),
@@ -389,8 +498,41 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
   };
 }
 
+function buildRoomSessionSnapshot(roomState: RoomState): RoomSessionSnapshot {
+  const nowMs = Date.now();
+  const returningGuests: NonNullable<RoomSessionSnapshot['returningGuests']> = [];
+  for (const [joinSessionId, record] of roomState.recentGuestSessions || []) {
+    if (record.status === 'green-room' || nowMs - record.leftAtMs > GUEST_REJOIN_GRACE_MS) continue;
+    returningGuests.push({ joinSessionId, status: record.status, leftAtMs: record.leftAtMs });
+  }
+  for (const entry of roomState.participants.values()) {
+    if (entry.participant.role !== 'guest' || !entry.joinSessionId || entry.participant.status === 'green-room') continue;
+    returningGuests.push({ joinSessionId: entry.joinSessionId, status: entry.participant.status, leftAtMs: nowMs, present: true });
+  }
+  return {
+    watchId: roomState.watchId,
+    ...(roomState.legacyWatchByRoomId ? { legacyWatchByRoomId: true } : {}),
+    ...(roomState.createdByOwner ? { createdByOwner: true } : {}),
+    ...(roomState.recordingSessionId ? {
+      recording: {
+        sessionId: roomState.recordingSessionId,
+        ...(roomState.recordingStartedAt ? { startedAt: roomState.recordingStartedAt } : {}),
+        ...(roomState.recordingPaused ? { paused: true } : {}),
+      },
+    } : {}),
+    bannedJoinSessionIds: Array.from(roomState.bannedJoinSessionIds).slice(-200),
+    bannedIps: Array.from(roomState.bannedIps, ([ip, expiresAt]) => ({ ip, expiresAt })).filter((ban) => ban.expiresAt > nowMs).slice(-200),
+    returningGuests: returningGuests.slice(-200),
+    removedJoinSessionIds: Array.from(roomState.removedJoinSessionIds, ([joinSessionId, removedAt]) => ({ joinSessionId, removedAt }))
+      .filter((entry) => nowMs - entry.removedAt <= REMOVED_SESSION_TTL_MS).slice(-200),
+    redeemedInvites: Array.from(roomState.redeemedInvites, ([joinSessionId, invite]) => ({ joinSessionId, ...invite }))
+      .filter((entry) => entry.expiresAt > nowMs).slice(-200),
+  };
+}
+
 function buildRoomStateSnapshot(roomState: RoomState): RoomSnapshot {
   return buildPersistentRoomSnapshot({
+    sessionState: buildRoomSessionSnapshot(roomState),
     room: roomState.room,
     hostToken: roomState.hostToken,
     creatorIp: roomState.creatorIp,
@@ -480,6 +622,8 @@ function deleteRoom(roomId: string) {
     state.emptyRoomTimer = undefined;
   }
   clearHostReconnectTimer(state);
+  for (const entry of state.participants.values()) clearResumeTimer(entry);
+  passwordAttempts.forgetRoom(roomId);
   const endingTimer = endingTimers.get(roomId);
   if (endingTimer) {
     clearTimeout(endingTimer);
@@ -557,9 +701,15 @@ function clearLiveStreamStateForParticipant(roomId: string, roomState: RoomState
   return true;
 }
 
+function clearResumeTimer(entry: ParticipantEntry): void {
+  if (entry.resumeTimer) clearTimeout(entry.resumeTimer);
+  entry.resumeTimer = undefined;
+}
+
 function replaceGuestSession(roomId: string, roomState: RoomState, existingId: string) {
   const existing = roomState.participants.get(existingId);
   if (!existing) return;
+  clearResumeTimer(existing);
   // Seen only if the old connection is still alive, i.e. another tab.
   send(existing.ws, {
     type: 'participant-removed',
@@ -567,6 +717,7 @@ function replaceGuestSession(roomId: string, roomState: RoomState, existingId: s
   });
   roomState.participants.delete(existingId);
   wsToParticipant.delete(existing.ws);
+  roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== existingId);
   notifyMediaServerSfuMembership('revoke-participant', roomId, existingId, 'Guest session replaced');
   broadcastToRoom(roomId, {
     type: 'participant-left',
@@ -578,6 +729,7 @@ function replaceGuestSession(roomId: string, roomState: RoomState, existingId: s
 function replaceExistingHostSession(roomId: string, roomState: RoomState, existingHostId: string) {
   const existingHost = roomState.participants.get(existingHostId);
   if (!existingHost) return;
+  clearResumeTimer(existingHost);
 
   send(existingHost.ws, {
     type: 'participant-removed',
@@ -614,6 +766,7 @@ export function createRoom(
     creatorIp: string;
     password?: string;
     registrationEnabled?: boolean;
+    createdByOwner?: boolean;
   }
 ): CreatedRoom {
   if (rooms.size >= MAX_ROOMS) {
@@ -661,6 +814,7 @@ export function createRoom(
     creatorIp: options.creatorIp,
     hasBeenJoined: false,
     ...passwordVerifier,
+    sessionState: { watchId: createWatchId(), ...(options.createdByOwner ? { createdByOwner: true } : {}) },
   }));
 
   indexRoomCreator(room.id, options.creatorIp);
@@ -766,14 +920,13 @@ function createPasswordVerifier(password: string): { passwordHash: string; passw
   return { passwordHash, passwordSalt };
 }
 
-function verifyRoomPassword(roomState: RoomState, password: unknown): boolean {
+/** Checked off the event loop and one at a time (see joinProtection.ts). */
+async function verifyRoomPassword(roomState: RoomState, password: unknown): Promise<boolean> {
   if (!roomState.passwordHash || !roomState.passwordSalt) return true;
   if (typeof password !== 'string') return false;
   const sanitized = password.trim().replace(/[\x00-\x1F\x7F]/g, '');
   if (!sanitized || sanitized.length > MAX_ROOM_PASSWORD_LENGTH) return false;
-  const actual = scryptSync(sanitized, roomState.passwordSalt, 32);
-  const expected = Buffer.from(roomState.passwordHash, 'base64url');
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+  return verifyPasswordHashAsync(sanitized, roomState.passwordSalt, roomState.passwordHash);
 }
 
 function normalizeJoinSessionId(value: unknown): string | undefined {
@@ -802,7 +955,7 @@ function getLiveStreamTokenSecret(): string | null {
 }
 
 function signMediaToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -889,30 +1042,30 @@ function pruneExpiredGuestInviteTokens(roomState: RoomState, now = Date.now()) {
   }
 }
 
-function consumeCoHostInviteToken(roomState: RoomState, token: unknown): boolean {
-  if (typeof token !== 'string' || token.length < 20 || token.length > 120) return false;
+function consumeCoHostInviteToken(roomState: RoomState, token: unknown): { expiresAt: number } | null {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 120) return null;
   pruneExpiredCoHostInviteTokens(roomState);
 
-  for (const [candidateToken] of roomState.coHostInviteTokens) {
+  for (const [candidateToken, invite] of roomState.coHostInviteTokens) {
     if (safeEqual(candidateToken, token)) {
       roomState.coHostInviteTokens.delete(candidateToken);
-      return true;
+      return { expiresAt: invite.expiresAt };
     }
   }
-  return false;
+  return null;
 }
 
-function consumeGuestInviteToken(roomState: RoomState, token: unknown): boolean {
-  if (typeof token !== 'string' || token.length < 20 || token.length > 120) return false;
+function consumeGuestInviteToken(roomState: RoomState, token: unknown): { expiresAt: number } | null {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 120) return null;
   pruneExpiredGuestInviteTokens(roomState);
 
-  for (const [candidateToken] of roomState.guestInviteTokens) {
+  for (const [candidateToken, invite] of roomState.guestInviteTokens) {
     if (safeEqual(candidateToken, token)) {
       roomState.guestInviteTokens.delete(candidateToken);
-      return true;
+      return { expiresAt: invite.expiresAt };
     }
   }
-  return false;
+  return null;
 }
 
 function isValidRequestId(value: unknown): value is string {
@@ -1014,7 +1167,16 @@ export function setupSignalingServer(wss: WebSocketServer) {
     clearInterval(heartbeatInterval);
   });
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, req?: IncomingMessage) => {
+    const ip = getUpgradeRequestIp(req);
+    if (!socketsPerIp.tryAcquire(ip)) {
+      console.warn(`Too many studio connections from ${ip}; refusing another`);
+      ws.close(1013, 'Too many connections from this network');
+      return;
+    }
+    socketIps.set(ws, ip);
+    const cookie = req?.headers.cookie;
+    if (typeof cookie === 'string' && cookie) socketCookies.set(ws, cookie.slice(0, 8_192));
     console.log('New WebSocket connection');
 
     // Fix #3: Mark connection as alive on connect and on pong
@@ -1033,13 +1195,24 @@ export function setupSignalingServer(wss: WebSocketServer) {
     ws.on('message', (data: Buffer) => {
       // Fix #2: Wrap entire message handling in try/catch
       try {
-        // Rate limit WebSocket messages
-        if (!checkWsRateLimit(ws)) {
-          sendError(ws, 'Too many messages. Please slow down.', 'RATE_LIMITED');
+        const parsed = JSON.parse(data.toString());
+
+        // Rate limit per socket. Offers, answers and ICE candidates have their
+        // own larger budget so a burst of negotiation is never dropped by chat
+        // traffic (or vice versa); the client is told once per window.
+        const rate = wsRateLimiter.check(ws, (parsed as { type?: unknown } | null)?.type);
+        if (!rate.allowed) {
+          if (rate.notify) {
+            sendError(
+              ws,
+              rate.bucket === 'relay'
+                ? 'Too many connection messages. Some media negotiation was dropped; it will retry.'
+                : 'Too many messages. Please slow down.',
+              'RATE_LIMITED'
+            );
+          }
           return;
         }
-
-        const parsed = JSON.parse(data.toString());
 
         // Fix #10: Validate message structure before handling
         if (!validateMessage(parsed)) {
@@ -1053,8 +1226,9 @@ export function setupSignalingServer(wss: WebSocketServer) {
       }
     });
 
-    ws.on('close', () => {
-      handleDisconnect(ws);
+    ws.on('close', (code: number) => {
+      socketsPerIp.release(ip);
+      handleDisconnect(ws, code);
     });
   });
 }
@@ -1069,7 +1243,11 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     }
     case 'join-room':
-      handleJoinRoom(ws, message.payload);
+      void handleJoinRoom(ws, message.payload).catch((err) => {
+        pendingJoins.delete(ws);
+        console.error('Join failed:', err instanceof Error ? err.message : err);
+        sendError(ws, 'Could not join the studio. Please try again.', 'JOIN_FAILED');
+      });
       break;
     case 'offer':
     case 'answer':
@@ -1081,6 +1259,12 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'update-name':
       handleUpdateName(ws, message.payload);
+      break;
+    case 'update-participant-profile':
+      handleUpdateParticipantProfile(ws, message.payload);
+      break;
+    case 'recording-countdown':
+      handleRecordingCountdown(ws, message.payload);
       break;
     case 'chat-message':
       handleChatMessage(ws, message.payload);
@@ -1136,6 +1320,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'recording-upload-control':
       handleRecordingUploadControl(ws, message.payload);
       break;
+    case 'recording-transfer-signal':
+      handleRecordingTransferSignal(ws, message.payload);
+      break;
     case 'sfu-token-request':
       handleSfuTokenRequest(ws, message.payload);
       break;
@@ -1168,85 +1355,411 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
   }
 }
 
-function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
+function isOperatorRole(role: Participant['role'] | undefined): boolean {
+  return role === 'host' || role === 'co-host';
+}
+
+/** Seats on stage and backstage. Waiting guests do not take one. */
+function countAdmittedSeats(roomState: RoomState): number {
+  let count = 0;
+  for (const entry of roomState.participants.values()) {
+    if (entry.participant.status !== 'green-room') count++;
+  }
+  return count;
+}
+
+function countGreenRoom(roomState: RoomState): number {
+  let count = 0;
+  for (const entry of roomState.participants.values()) {
+    if (entry.participant.status === 'green-room') count++;
+  }
+  return count;
+}
+
+function newSecret(): string {
+  return randomBytes(24).toString('base64url');
+}
+
+function isBannedFromRoom(roomState: RoomState, joinSessionId: string | undefined, ip: string, nowMs: number): boolean {
+  if (joinSessionId && roomState.bannedJoinSessionIds.has(joinSessionId)) return true;
+  const bannedUntil = roomState.bannedIps.get(ip);
+  if (bannedUntil === undefined) return false;
+  if (bannedUntil > nowMs) return true;
+  roomState.bannedIps.delete(ip);
+  return false;
+}
+
+function wasRecentlyRemoved(roomState: RoomState, joinSessionId: string | undefined, nowMs: number): boolean {
+  if (!joinSessionId) return false;
+  const removedAt = roomState.removedJoinSessionIds.get(joinSessionId);
+  if (removedAt === undefined) return false;
+  if (nowMs - removedAt <= REMOVED_SESSION_TTL_MS) return true;
+  roomState.removedJoinSessionIds.delete(joinSessionId);
+  return false;
+}
+
+function hasRedeemedInvite(roomState: RoomState, joinSessionId: string | undefined, kind: RedeemedInviteKind, nowMs: number): boolean {
+  if (!joinSessionId) return false;
+  const redeemed = roomState.redeemedInvites.get(joinSessionId);
+  if (!redeemed) return false;
+  if (redeemed.expiresAt <= nowMs) {
+    roomState.redeemedInvites.delete(joinSessionId);
+    return false;
+  }
+  return redeemed.kind === kind;
+}
+
+/** Forget the invite links someone created once they lose the right to hand them out. */
+function revokeInvitesIssuedBy(roomState: RoomState, participantId: string): void {
+  for (const [token, invite] of roomState.coHostInviteTokens) {
+    if (invite.issuedBy === participantId) roomState.coHostInviteTokens.delete(token);
+  }
+  for (const [token, invite] of roomState.guestInviteTokens) {
+    if (invite.issuedBy === participantId) roomState.guestInviteTokens.delete(token);
+  }
+}
+
+/** Count a join attempt that guessed wrong; a socket that keeps guessing is closed. */
+function rejectJoinAttempt(ws: WebSocket, message: string, code: string): void {
+  sendError(ws, message, code);
+  const failures = (failedJoinsBySocket.get(ws) || 0) + 1;
+  failedJoinsBySocket.set(ws, failures);
+  if (failures >= MAX_FAILED_JOINS_PER_SOCKET) {
+    const timer = setTimeout(() => {
+      if (!wsToParticipant.has(ws)) ws.close(1008, 'Too many failed join attempts');
+    }, 50);
+    timer.unref?.();
+  }
+}
+
+function findResumableEntry(roomState: RoomState, token: unknown): ParticipantEntry | undefined {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 100) return undefined;
+  for (const entry of roomState.participants.values()) {
+    if (safeEqual(entry.resumeToken, token)) return entry;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a per-seat credential (the resume token each participant receives in
+ * room-joined) belongs to someone holding an admitted seat in this studio.
+ * Gates the TURN relay credentials handed out by /api/ice-config. Green-room
+ * visitors never exchange media, so they get no relays until admitted.
+ */
+export function isRoomMemberCredential(roomId: unknown, credential: unknown): boolean {
+  const roomState = typeof roomId === 'string' ? rooms.get(roomId) : undefined;
+  const entry = roomState ? findResumableEntry(roomState, credential) : undefined;
+  return Boolean(entry && entry.participant.status !== 'green-room');
+}
+
+function issueRestoreTicket(roomState: RoomState): string | undefined {
+  const secret = getLiveStreamTokenSecret();
+  if (!secret) return undefined;
+  const nowMs = Date.now();
+  const { room } = roomState;
+  try {
+    return signRoomRestoreTicket({
+      v: 1,
+      purpose: 'room-restore',
+      room: {
+        id: room.id,
+        name: room.name,
+        createdAt: room.createdAt,
+        settings: room.settings,
+        ...(room.hostName ? { hostName: room.hostName } : {}),
+        ...(room.scheduledFor ? { scheduledFor: room.scheduledFor } : {}),
+        ...(room.registration ? { registration: room.registration } : {}),
+      },
+      hostTokenHash: hashHostToken(roomState.hostToken),
+      watchId: roomState.watchId,
+      creatorIp: roomState.creatorIp,
+      ...(roomState.createdByOwner ? { createdByOwner: true } : {}),
+      ...(roomState.legacyWatchByRoomId ? { legacyWatchByRoomId: true } : {}),
+      ...(roomState.passwordHash && roomState.passwordSalt
+        ? { passwordHash: roomState.passwordHash, passwordSalt: roomState.passwordSalt }
+        : {}),
+      iat: nowMs,
+      exp: nowMs + ROOM_RESTORE_TICKET_TTL_MS,
+    }, secret);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The server restarted without a database and forgot this studio. Its host
+ * reconnects with the signed ticket it was given: rebuild the studio with the
+ * same id, settings, password and watch link, so guests reconnecting a moment
+ * later find it again.
+ */
+function restoreRoomFromTicket(roomId: string, payload: JoinRoomPayload, ownerProven = false): RoomState | undefined {
+  if (payload.role !== 'host' || typeof payload.hostToken !== 'string' || !payload.restoreTicket) return undefined;
+  const secret = getLiveStreamTokenSecret();
+  if (!secret || rooms.size >= MAX_ROOMS) return undefined;
+  const claims = verifyRoomRestoreTicket(payload.restoreTicket, secret, { roomId, hostToken: payload.hostToken });
+  if (!claims) return undefined;
+  // With owner-only creation, a ticket is not a way around the gate: only the
+  // owner's studios (or a host who proves ownership now) come back.
+  const createdByOwner = claims.createdByOwner === true || ownerProven;
+  if (isStudioCreationGated() && !createdByOwner) {
+    console.warn(`Refused to rebuild room ${roomId} from a restore ticket: the studio was not created by the owner`);
+    return undefined;
+  }
+  let snapshot: RoomSnapshot;
+  try {
+    const scheduledAtMs = Date.parse(claims.room.scheduledFor || '');
+    snapshot = buildPersistentRoomSnapshot({
+      room: {
+        id: claims.room.id,
+        name: claims.room.name,
+        hostId: '',
+        coHostIds: [],
+        createdAt: claims.room.createdAt,
+        status: Number.isFinite(scheduledAtMs) && scheduledAtMs > Date.now() ? 'scheduled' : 'waiting',
+        settings: claims.room.settings,
+        ...(claims.room.hostName ? { hostName: claims.room.hostName } : {}),
+        ...(claims.room.scheduledFor ? { scheduledFor: claims.room.scheduledFor } : {}),
+        registration: claims.room.registration || { enabled: false, fields: ['name', 'email'] },
+      },
+      hostToken: payload.hostToken,
+      creatorIp: claims.creatorIp,
+      hasBeenJoined: true,
+      ...(claims.passwordHash && claims.passwordSalt ? { passwordHash: claims.passwordHash, passwordSalt: claims.passwordSalt } : {}),
+      sessionState: {
+        watchId: claims.watchId,
+        ...(createdByOwner ? { createdByOwner: true } : {}),
+        ...(claims.legacyWatchByRoomId === true ? { legacyWatchByRoomId: true } : {}),
+      },
+    });
+  } catch {
+    return undefined;
+  }
+  const roomState = createRoomStateFromSnapshot(snapshot);
+  rooms.set(roomId, roomState);
+  indexRoomCreator(roomId, snapshot.creatorIp);
+  persistRoomSnapshot(roomId);
+  console.log(`Room ${roomId} was rebuilt from its host's restore ticket after a server restart`);
+  return roomState;
+}
+
+/**
+ * Whether a host's join proves they are the studio owner: the studio access
+ * key (STUDIO_CREATE_SECRET) sent with the join, or an owner account session
+ * on the WebSocket's upgrade request. Studios made before the owner gate was
+ * configured are upgraded this way the first time the owner hosts them, so
+ * they keep YouTube/Facebook chat and survive restarts like new ones.
+ */
+async function joinProvesStudioOwner(ws: WebSocket, payload: JoinRoomPayload): Promise<boolean> {
+  if (!isStudioCreationGated()) return false;
+  const accessKey = typeof payload.studioAccessKey === 'string' ? payload.studioAccessKey.trim().slice(0, 512) : '';
+  const cookie = socketCookies.get(ws);
+  if (!accessKey && !cookie) return false;
+  try {
+    const { authorizeStudioCreator, STUDIO_ACCESS_KEY_HEADER } = await import('./studioAccess.js');
+    const headers: Record<string, string> = {};
+    if (accessKey) headers[STUDIO_ACCESS_KEY_HEADER] = accessKey;
+    if (cookie) headers.cookie = cookie;
+    const result = await authorizeStudioCreator({ headers } as unknown as Parameters<typeof authorizeStudioCreator>[0]);
+    return result.ok && result.createdByOwner;
+  } catch {
+    return false;
+  }
+}
+
+/** Everything a participant needs to (re)build their view of the studio. Waiting guests see only the hosts. */
+function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, entry: ParticipantEntry, resumed = false) {
+  const { participant } = entry;
+  const admitted = participant.status !== 'green-room';
+  const operator = isOperatorRole(participant.role);
+  const otherParticipants = Array.from(roomState.participants.values())
+    .map((p) => p.participant)
+    .filter((p) => p.id !== participant.id && (admitted || isOperatorRole(p.role)));
+  const qaQuestions = admitted
+    ? Array.from(roomState.qaQuestions.values())
+      .filter((q) => operator || q.status === 'approved' || q.status === 'answered')
+    : [];
+  const polls = admitted
+    ? Array.from(roomState.polls.values()).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    : [];
+  const liveStreamState: LiveStreamStatePayload | undefined = roomState.liveStreamStartedAt
+    ? {
+        live: true,
+        startedAt: roomState.liveStreamStartedAt,
+        performedBy: roomState.liveStreamStartedBy || roomState.room.hostId,
+      }
+    : undefined;
+  const restoreTicket = participant.role === 'host' ? issueRestoreTicket(roomState) : undefined;
+
+  send(ws, {
+    type: 'room-joined',
+    payload: {
+      room: roomState.room,
+      participant,
+      participants: otherParticipants,
+      chatMessages: getVisibleChatMessages(roomState, participant, participant.id),
+      qaQuestions,
+      polls,
+      recordingState: roomState.recordingStartedAt
+        ? {
+            recording: true,
+            sessionId: roomState.recordingSessionId,
+            paused: Boolean(roomState.recordingPaused),
+            startedAt: roomState.recordingStartedAt,
+            performedBy: roomState.room.hostId,
+          }
+        : undefined,
+      liveStreamState,
+      studioBranding: roomState.studioBranding,
+      stageContent: admitted ? roomState.stageContent : undefined,
+      stageUploadToken: entry.stageUploadToken,
+      ...(admitted && entry.stageReadToken ? { stageReadToken: entry.stageReadToken } : {}),
+      resumeToken: entry.resumeToken,
+      ...(resumed ? { resumed: true } : {}),
+      ...(operator && admitted ? { watchId: roomState.watchId } : {}),
+      ...(restoreTicket ? { restoreTicket } : {}),
+      features: {
+        chatTyping: true,
+      },
+    },
+  });
+  if (admitted) sendExternalChatStatuses(ws, roomState);
+}
+
+/** Bind a held (or still lingering) seat to a new connection, keeping its participant id, role and place. */
+function resumeSeat(ws: WebSocket, roomId: string, roomState: RoomState, entry: ParticipantEntry, ip: string) {
+  const oldWs = entry.ws;
+  clearResumeTimer(entry);
+  if (oldWs !== ws) {
+    wsToParticipant.delete(oldWs);
+    if (oldWs.readyState === WebSocket.OPEN) {
+      // Seen only if the old connection is still alive, i.e. another tab.
+      send(oldWs, {
+        type: 'participant-removed',
+        payload: { reason: 'You joined this studio again from another tab or window.' },
+      });
+      oldWs.close(4000, 'Seat resumed elsewhere');
+    }
+  }
+  entry.ws = ws;
+  entry.ip = ip;
+  entry.disconnectedAt = undefined;
+  entry.resumeToken = newSecret();
+  wsToParticipant.set(ws, { roomId, participantId: entry.participant.id });
+  cancelEmptyRoomDeletion(roomId, roomState);
+  if (entry.participant.id === roomState.room.hostId) clearHostReconnectTimer(roomState);
+  sendRoomJoined(ws, roomId, roomState, entry, true);
+  broadcastToRoom(roomId, { type: 'participant-updated', payload: entry.participant }, entry.participant.id);
+  console.log(`${entry.participant.name} (${entry.participant.role}) resumed their seat in room ${roomId}`);
+}
+
+/** The co-host who stood in for the host goes back to being a co-host. */
+function handHostSeatBack(roomId: string, roomState: RoomState, standIn: ParticipantEntry) {
+  standIn.participant.role = 'co-host';
+  if (!roomState.room.coHostIds.includes(standIn.participant.id)) roomState.room.coHostIds.push(standIn.participant.id);
+  roomState.handedOffHostId = undefined;
+  broadcastToRoom(roomId, { type: 'participant-updated', payload: standIn.participant });
+  console.log(`Host returned to room ${roomId}; ${standIn.participant.name} is a co-host again`);
+}
+
+async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   // Duplicate join guard: prevent same WebSocket from joining twice
-  if (wsToParticipant.has(ws)) {
+  if (wsToParticipant.has(ws) || pendingJoins.has(ws)) {
     sendError(ws, 'Already in a room', 'ALREADY_JOINED');
     return;
   }
 
   // Validate payload field types
-  if (typeof payload.roomId !== 'string' || typeof payload.name !== 'string') {
+  if (!payload || typeof payload.roomId !== 'string' || typeof payload.name !== 'string') {
     sendError(ws, 'Invalid payload types', 'VALIDATION_ERROR');
     return;
   }
 
   const { roomId } = payload;
+  const ip = socketIps.get(ws) || 'unknown';
   const requestedRole: Participant['role'] =
     payload.role === 'host' || payload.role === 'co-host' ? payload.role : 'guest';
   const joinSessionId = normalizeJoinSessionId(payload.joinSessionId);
   // Sanitize and validate participant name
   const name = (typeof payload.name === 'string' ? payload.name : '').trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, MAX_PARTICIPANT_NAME_LENGTH) || 'Anonymous';
-  const roomState = rooms.get(roomId);
+  let knownRoom = rooms.get(roomId);
+  if (!knownRoom && payload.role === 'host' && payload.restoreTicket) {
+    pendingJoins.add(ws);
+    let ownerProven = false;
+    try {
+      ownerProven = await joinProvesStudioOwner(ws, payload);
+    } finally {
+      pendingJoins.delete(ws);
+    }
+    if (ws.readyState !== WebSocket.OPEN || wsToParticipant.has(ws)) return;
+    knownRoom = rooms.get(roomId) ?? restoreRoomFromTicket(roomId, payload, ownerProven);
+  }
 
-  if (!roomState) {
+  if (!knownRoom) {
     sendError(ws, 'Room not found', 'ROOM_NOT_FOUND');
     return;
   }
+  const roomState = knownRoom;
 
-  // Host role requires the secret token returned at room creation. If the token
-  // is valid, allow the creator to reclaim the host seat from a stale tab/socket.
-  let effectiveRole: Participant['role'] = requestedRole === 'host' ? 'host' : 'guest';
-  if (requestedRole === 'host') {
-    const presented = typeof payload.hostToken === 'string' ? payload.hostToken : '';
-    if (!presented || !safeEqual(presented, roomState.hostToken)) {
-      sendError(ws, 'Host access is missing or expired. Reopen this studio from the creator browser or saved host entry.', 'HOST_TOKEN_INVALID');
-      return;
-    } else {
-      const existingHostId = roomState.room.hostId;
-      const hostStillConnected =
-        existingHostId !== '' && roomState.participants.has(existingHostId);
-      if (hostStillConnected) {
-        replaceExistingHostSession(roomId, roomState, existingHostId);
-      }
-    }
-  }
-
-  // The same guest browser joining again while its old connection lingers
-  // (a connection that died without closing, or a reload) replaces it.
-  let returningGuestStatus: ParticipantStatus | undefined;
-  if (requestedRole === 'guest' && joinSessionId && !roomState.bannedJoinSessionIds.has(joinSessionId)) {
-    for (const [existingId, existing] of roomState.participants) {
-      if (existing.joinSessionId !== joinSessionId || existing.participant.role !== 'guest') continue;
-      returningGuestStatus = existing.participant.status === 'green-room' ? undefined : existing.participant.status;
-      replaceGuestSession(roomId, roomState, existingId);
-      break;
-    }
-    returningGuestStatus ??= getReturningGuestStatus(roomState.recentGuestSessions?.get(joinSessionId), Date.now());
-    roomState.recentGuestSessions?.delete(joinSessionId);
-  }
-
-  if (roomState.participants.size >= roomState.room.settings.maxParticipants) {
-    sendError(ws, 'Room is full (max 7 participants)', 'ROOM_FULL');
+  // A dropped connection coming back within the grace window keeps its seat:
+  // same participant id, role and place, so healthy media stays connected.
+  const resumable = findResumableEntry(roomState, payload.resumeToken);
+  if (resumable) {
+    resumeSeat(ws, roomId, roomState, resumable, ip);
     return;
   }
 
-  if (
-    requestedRole !== 'host' &&
-    joinSessionId &&
-    roomState.bannedJoinSessionIds.has(joinSessionId)
-  ) {
+  const nowMs = Date.now();
+  // Bans are checked before any single-use invite is spent.
+  if (requestedRole !== 'host' && isBannedFromRoom(roomState, joinSessionId, ip, nowMs)) {
     sendError(ws, 'You have been banned from this studio.', 'PARTICIPANT_BANNED');
     return;
   }
 
-  if (requestedRole === 'co-host') {
-    if (consumeCoHostInviteToken(roomState, payload.coHostInviteToken)) {
-      effectiveRole = 'co-host';
-    } else {
-      sendError(ws, 'Co-host invite link is invalid or expired', 'CO_HOST_INVITE_INVALID');
+  // Host role requires the secret token returned at room creation.
+  let effectiveRole: Participant['role'] = 'guest';
+  if (requestedRole === 'host') {
+    const presented = typeof payload.hostToken === 'string' ? payload.hostToken : '';
+    if (!presented || !safeEqual(presented, roomState.hostToken)) {
+      rejectJoinAttempt(ws, 'Host access is missing or expired. Reopen this studio from the creator browser or saved host entry.', 'HOST_TOKEN_INVALID');
       return;
     }
+    effectiveRole = 'host';
+    // A studio from before the owner gate: the owner proves it once and it is
+    // theirs from then on (persisted, and carried by the next restore ticket).
+    if (isStudioCreationGated() && !roomState.createdByOwner) {
+      const state = roomState;
+      pendingJoins.add(ws);
+      let ownerProven = false;
+      try {
+        ownerProven = await joinProvesStudioOwner(ws, payload);
+      } finally {
+        pendingJoins.delete(ws);
+      }
+      if (rooms.get(roomId) !== state || ws.readyState !== WebSocket.OPEN || wsToParticipant.has(ws)) return;
+      if (ownerProven) {
+        state.createdByOwner = true;
+        persistRoomSnapshot(roomId);
+        console.log(`Room ${roomId} is now marked as created by the studio owner`);
+      }
+    }
+  }
+
+  // Single-use co-host links. Once redeemed, the same browser keeps the role
+  // on later joins (a refresh or reconnect) without the spent token.
+  if (requestedRole === 'co-host') {
+    const invite = consumeCoHostInviteToken(roomState, payload.coHostInviteToken);
+    if (invite) {
+      effectiveRole = 'co-host';
+      if (joinSessionId) roomState.redeemedInvites.set(joinSessionId, { kind: 'co-host', expiresAt: invite.expiresAt });
+    } else if (hasRedeemedInvite(roomState, joinSessionId, 'co-host', nowMs)) {
+      effectiveRole = 'co-host';
+    } else {
+      rejectJoinAttempt(ws, 'Co-host invite link is invalid or expired', 'CO_HOST_INVITE_INVALID');
+      return;
+    }
+  } else if (requestedRole === 'guest' && hasRedeemedInvite(roomState, joinSessionId, 'co-host', nowMs)) {
+    // A guest promoted to co-host whose browser still says "guest".
+    effectiveRole = 'co-host';
   }
 
   if (
@@ -1257,25 +1770,124 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     return;
   }
 
-  let hasValidGuestInviteToken = false;
-  if (effectiveRole === 'guest' && payload.guestInviteToken) {
-    if (consumeGuestInviteToken(roomState, payload.guestInviteToken)) {
-      hasValidGuestInviteToken = true;
+  let hasSecureGuestAccess = false;
+  if (effectiveRole === 'guest') {
+    if (payload.guestInviteToken) {
+      const invite = consumeGuestInviteToken(roomState, payload.guestInviteToken);
+      if (invite) {
+        hasSecureGuestAccess = true;
+        if (joinSessionId) roomState.redeemedInvites.set(joinSessionId, { kind: 'guest-secure', expiresAt: invite.expiresAt });
+      } else if (hasRedeemedInvite(roomState, joinSessionId, 'guest-secure', nowMs)) {
+        hasSecureGuestAccess = true;
+      } else {
+        rejectJoinAttempt(ws, 'Guest invite link is invalid or expired', 'GUEST_INVITE_INVALID');
+        return;
+      }
     } else {
-      sendError(ws, 'Guest invite link is invalid or expired', 'GUEST_INVITE_INVALID');
-      return;
+      hasSecureGuestAccess = hasRedeemedInvite(roomState, joinSessionId, 'guest-secure', nowMs);
     }
   }
 
-  if (roomState.room.settings.passwordProtected && effectiveRole === 'guest') {
-    if (hasValidGuestInviteToken) {
-      // Host-issued secure guest links bypass only the room password. Guests still
-      // enter the green room and must be admitted by an operator.
-    } else if (typeof payload.roomPassword !== 'string' || payload.roomPassword.trim().length === 0) {
+  if (roomState.room.settings.passwordProtected && effectiveRole === 'guest' && !hasSecureGuestAccess) {
+    // Host-issued secure guest links bypass only the room password. Guests still
+    // enter the green room and must be admitted by an operator.
+    if (typeof payload.roomPassword !== 'string' || payload.roomPassword.trim().length === 0) {
       sendError(ws, 'This room requires a password', 'ROOM_PASSWORD_REQUIRED');
       return;
-    } else if (!verifyRoomPassword(roomState, payload.roomPassword)) {
-      sendError(ws, 'Incorrect room password', 'ROOM_PASSWORD_INVALID');
+    }
+    const lockedForMs = passwordAttempts.lockedForMs(roomId, ip, nowMs);
+    if (lockedForMs > 0) {
+      sendError(ws, `Too many incorrect passwords. Try again in ${Math.ceil(lockedForMs / 1000)} seconds.`, 'ROOM_PASSWORD_LOCKED');
+      return;
+    }
+    pendingJoins.add(ws);
+    let passwordOk = false;
+    try {
+      passwordOk = await verifyRoomPassword(roomState, payload.roomPassword);
+    } finally {
+      pendingJoins.delete(ws);
+    }
+    // The studio or the connection may have gone while the password was checked.
+    if (rooms.get(roomId) !== roomState || ws.readyState !== WebSocket.OPEN || wsToParticipant.has(ws)) return;
+    if (!passwordOk) {
+      const lockoutMs = passwordAttempts.recordFailure(roomId, ip);
+      rejectJoinAttempt(
+        ws,
+        lockoutMs > 0
+          ? `Incorrect room password. Too many attempts: try again in ${Math.ceil(lockoutMs / 1000)} seconds.`
+          : 'Incorrect room password',
+        lockoutMs > 0 ? 'ROOM_PASSWORD_LOCKED' : 'ROOM_PASSWORD_INVALID'
+      );
+      return;
+    }
+    passwordAttempts.recordSuccess(roomId, ip);
+  }
+
+  // Everything is authorized from here on.
+  let hostHandedBack = false;
+  if (effectiveRole === 'host') {
+    const existingHostId = roomState.room.hostId;
+    const existingHost = existingHostId ? roomState.participants.get(existingHostId) : undefined;
+    if (existingHost) {
+      if (roomState.handedOffHostId === existingHostId) {
+        // A co-host stood in while the host was away; they become a co-host again.
+        handHostSeatBack(roomId, roomState, existingHost);
+        hostHandedBack = true;
+      } else if (existingHost.disconnectedAt !== undefined) {
+        // The host's own seat, held after a dropped connection: take it back as is.
+        resumeSeat(ws, roomId, roomState, existingHost, ip);
+        return;
+      } else {
+        replaceExistingHostSession(roomId, roomState, existingHostId);
+      }
+    }
+  }
+
+  // The same browser joining again while its old connection lingers (a
+  // connection that died without closing, or a reload) replaces it and keeps
+  // its place. Someone the host removed always goes back to the green room.
+  const removed = wasRecentlyRemoved(roomState, joinSessionId, nowMs);
+  let returningStatus: ParticipantStatus | undefined;
+  if (effectiveRole !== 'host' && joinSessionId) {
+    for (const [existingId, existing] of roomState.participants) {
+      if (existing.joinSessionId !== joinSessionId || existing.participant.role === 'host') continue;
+      returningStatus = existing.participant.status === 'green-room' ? undefined : existing.participant.status;
+      replaceGuestSession(roomId, roomState, existingId);
+      break;
+    }
+    if (effectiveRole === 'guest') {
+      returningStatus ??= getReturningGuestStatus(roomState.recentGuestSessions?.get(joinSessionId), nowMs);
+    }
+    roomState.recentGuestSessions?.delete(joinSessionId);
+    if (removed) returningStatus = undefined;
+  }
+
+  let status: ParticipantStatus;
+  if (effectiveRole === 'host') {
+    status = 'on-stage';
+  } else if (effectiveRole === 'co-host') {
+    status = returningStatus ?? (roomState.room.settings.coHostsJoinOnStage ? 'on-stage' : 'backstage');
+  } else if (removed) {
+    status = 'green-room';
+  } else if (returningStatus) {
+    status = returningStatus;
+  } else {
+    status = roomState.room.settings.greenRoomEnabled ? 'green-room' : 'on-stage';
+  }
+
+  // The host always gets a seat. Everyone else needs a free stage/backstage
+  // seat, or waits in the green room, which has its own small cap.
+  if (effectiveRole !== 'host') {
+    const maxSeats = roomState.room.settings.maxParticipants;
+    if (status !== 'green-room' && countAdmittedSeats(roomState) >= maxSeats) {
+      if (effectiveRole !== 'guest') {
+        sendError(ws, `Room is full (max ${maxSeats} participants)`, 'ROOM_FULL');
+        return;
+      }
+      status = 'green-room';
+    }
+    if (status === 'green-room' && countGreenRoom(roomState) >= MAX_GREEN_ROOM_PARTICIPANTS) {
+      sendError(ws, 'The waiting room is full right now. Please try again in a few minutes.', 'ROOM_FULL');
       return;
     }
   }
@@ -1293,94 +1905,49 @@ function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     videoEnabled: true,
     screenSharing: false,
     joinedAt: new Date().toISOString(),
-    status: 'green-room',
+    status,
   };
 
-  // Host and server-issued co-host invites go directly on-stage.
   if (effectiveRole === 'host') {
     if (roomState.hostReconnectTimer) console.log(`Host returned to room ${roomId}; keeping it open.`);
     clearHostReconnectTimer(roomState);
     roomState.room.hostId = participant.id;
-    participant.status = 'on-stage';
   } else if (effectiveRole === 'co-host') {
     roomState.room.coHostIds.push(participant.id);
-    participant.status = 'on-stage';
-  } else {
-    // Guests: if green room is enabled, they wait; otherwise auto-admit.
-    // A guest already admitted who dropped and came straight back keeps their place.
-    if (returningGuestStatus) {
-      participant.status = returningGuestStatus;
-    } else if (roomState.room.settings.greenRoomEnabled) {
-      participant.status = 'green-room';
-    } else {
-      participant.status = 'on-stage';
-    }
   }
 
   cancelEmptyRoomDeletion(roomId, roomState);
 
-  // Store participant
-  const stageUploadToken = effectiveRole === 'host' || effectiveRole === 'co-host'
-    ? randomBytes(24).toString('base64url')
-    : undefined;
-  roomState.participants.set(participant.id, { participant, ws, joinSessionId, stageUploadToken });
+  const entry: ParticipantEntry = {
+    participant,
+    ws,
+    joinSessionId,
+    stageUploadToken: isOperatorRole(effectiveRole) ? newSecret() : undefined,
+    stageReadToken: status !== 'green-room' ? newSecret() : undefined,
+    ip,
+    resumeToken: newSecret(),
+  };
+  roomState.participants.set(participant.id, entry);
   wsToParticipant.set(ws, { roomId, participantId: participant.id });
+  failedJoinsBySocket.delete(ws);
   roomState.hasBeenJoined = true;
   persistRoomSnapshot(roomId);
 
-  // Send room-joined to the new participant (include ALL participants for awareness)
-  const allParticipants = Array.from(roomState.participants.values())
-    .map((p) => p.participant)
-    .filter((p) => p.id !== participant.id);
-  const chatMessages = getVisibleChatMessages(roomState, participant, participant.id);
-  const qaQuestions = Array.from(roomState.qaQuestions.values())
-    .filter((q) => effectiveRole === 'host' || effectiveRole === 'co-host' || q.status === 'approved' || q.status === 'answered');
-  const polls = Array.from(roomState.polls.values())
-    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-  const liveStreamState: LiveStreamStatePayload | undefined = roomState.liveStreamStartedAt
-    ? {
-        live: true,
-        startedAt: roomState.liveStreamStartedAt,
-        performedBy: roomState.liveStreamStartedBy || roomState.room.hostId,
-      }
-    : undefined;
-
-  send(ws, {
-    type: 'room-joined',
-    payload: {
-      room: roomState.room,
-      participant,
-      participants: allParticipants,
-      chatMessages,
-      qaQuestions,
-      polls,
-      recordingState: roomState.recordingStartedAt
-        ? {
-            recording: true,
-            sessionId: roomState.recordingSessionId,
-            paused: Boolean(roomState.recordingPaused),
-            startedAt: roomState.recordingStartedAt,
-            performedBy: roomState.room.hostId,
-          }
-        : undefined,
-      liveStreamState,
-      studioBranding: roomState.studioBranding,
-      stageContent: roomState.stageContent,
-      stageUploadToken,
-      features: {
-        chatTyping: true,
-      },
-    },
-  });
-  sendExternalChatStatuses(ws, roomState);
+  sendRoomJoined(ws, roomId, roomState, entry);
 
   // Notify existing participants about the new one
   broadcastToRoom(roomId, {
     type: 'participant-joined',
     payload: participant,
   }, participant.id);
+  if (hostHandedBack) {
+    broadcastToRoom(roomId, {
+      type: 'host-changed',
+      payload: { newHostId: participant.id, newHostName: participant.name },
+    });
+  }
 
-  console.log(`${name} (${effectiveRole}) joined room ${roomId} as ${participant.status} [${roomState.participants.size}/7 participants]`);
+  console.log(`${name} (${effectiveRole}) joined room ${roomId} as ${participant.status} [${roomState.participants.size} participants]`);
 }
 
 function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
@@ -1462,19 +2029,36 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     return;
   }
 
+  // Admitting someone from the green room, or making them a co-host, gives
+  // them a view of the studio they did not have: send them a fresh snapshot.
+  let resyncTarget = false;
   switch (payload.action) {
     case 'move-to-stage':
-      target.participant.status = 'on-stage';
-      notifyMediaServerSfuMembership('allow-participant', mapping.roomId, target.participant.id);
+    case 'move-to-backstage': {
+      const admitting = target.participant.status === 'green-room';
+      const maxSeats = roomState.room.settings.maxParticipants;
+      if (admitting && countAdmittedSeats(roomState) >= maxSeats) {
+        sendError(ws, `The studio is full (${maxSeats} people on stage and backstage). Move someone out first.`, 'ROOM_FULL');
+        return;
+      }
+      if (payload.action === 'move-to-stage') {
+        target.participant.status = 'on-stage';
+        notifyMediaServerSfuMembership('allow-participant', mapping.roomId, target.participant.id);
+      } else {
+        target.participant.status = 'backstage';
+        target.participant.screenSharing = false;
+        notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to backstage');
+      }
+      if (admitting) {
+        target.stageReadToken ??= newSecret();
+        resyncTarget = true;
+      }
       break;
-    case 'move-to-backstage':
-      target.participant.status = 'backstage';
-      target.participant.screenSharing = false;
-      notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to backstage');
-      break;
+    }
     case 'move-to-green-room':
       target.participant.status = 'green-room';
       target.participant.screenSharing = false;
+      target.stageReadToken = undefined;
       notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to green room');
       break;
     case 'promote-co-host':
@@ -1482,12 +2066,24 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       if (!roomState.room.coHostIds.includes(target.participant.id)) {
         roomState.room.coHostIds.push(target.participant.id);
       }
+      // Kept for this browser, so a reconnect or refresh stays a co-host.
+      if (target.joinSessionId) {
+        roomState.redeemedInvites.set(target.joinSessionId, { kind: 'co-host', expiresAt: Date.now() + CO_HOST_INVITE_TOKEN_TTL_MS });
+      }
+      target.stageUploadToken ??= newSecret();
+      resyncTarget = target.participant.status !== 'green-room';
       break;
     case 'demote-to-guest':
       target.participant.role = 'guest';
       roomState.room.coHostIds = roomState.room.coHostIds.filter(
         (id) => id !== target.participant.id
       );
+      target.stageUploadToken = undefined;
+      if (target.joinSessionId && roomState.redeemedInvites.get(target.joinSessionId)?.kind === 'co-host') {
+        roomState.redeemedInvites.delete(target.joinSessionId);
+      }
+      // Invite links they created stop working with their authority.
+      revokeInvitesIssuedBy(roomState, target.participant.id);
       break;
     case 'mute':
       target.participant.audioEnabled = false;
@@ -1524,26 +2120,35 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       console.log(`Stage action: unmute requested for ${target.participant.name} by ${performer.participant.name}`);
       return;
     case 'remove':
-      notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Removed by host');
-      send(target.ws, {
-        type: 'participant-removed',
-        payload: { reason: 'Removed by host' },
-      });
-      // Close the target's WebSocket to trigger disconnect
-      target.ws.close(1000, 'Removed by host');
-      return;
-    case 'ban':
+    case 'ban': {
+      const banned = payload.action === 'ban';
+      const reason = banned ? 'Banned by host' : 'Removed by host';
+      const nowMs = Date.now();
+      // A removed person does not get their old seat back through the
+      // returning-guest path, nor keep a redeemed invite; a banned one is
+      // also refused by browser session and by network address.
       if (target.joinSessionId) {
-        roomState.bannedJoinSessionIds.add(target.joinSessionId);
+        roomState.recentGuestSessions?.delete(target.joinSessionId);
+        roomState.removedJoinSessionIds.set(target.joinSessionId, nowMs);
+        roomState.redeemedInvites.delete(target.joinSessionId);
+        if (banned) roomState.bannedJoinSessionIds.add(target.joinSessionId);
       }
-      notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Banned by host');
+      if (banned && target.ip && target.ip !== 'unknown') {
+        roomState.bannedIps.set(target.ip, nowMs + BANNED_IP_TTL_MS);
+      }
+      revokeInvitesIssuedBy(roomState, target.participant.id);
+      notifyMediaServerSfuMembership('revoke-recording-upload', mapping.roomId, target.participant.id, reason);
       send(target.ws, {
         type: 'participant-removed',
-        payload: { reason: 'Banned by host' },
+        payload: { reason },
       });
-      // Close the target's WebSocket to trigger disconnect
-      target.ws.close(1000, 'Banned by host');
+      const targetWs = target.ws;
+      // Leave now, without the reconnect grace a dropped connection gets.
+      finalizeDeparture(mapping.roomId, roomState, target.participant.id, reason);
+      targetWs.close(1000, reason);
+      console.log(`Stage action: ${payload.action} on ${target.participant.name} by ${performer.participant.name}`);
       return;
+    }
   }
 
   // Broadcast the updated participant to everyone
@@ -1557,6 +2162,9 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     type: 'stage-action',
     payload: authoritativePayload,
   });
+
+  if (resyncTarget) sendRoomJoined(target.ws, mapping.roomId, roomState, target);
+  persistRoomSnapshot(mapping.roomId);
 
   console.log(`Stage action: ${payload.action} on ${target.participant.name} by ${performer.participant.name}`);
 }
@@ -1668,17 +2276,76 @@ export function storeStageImage(input: {
   const onStage = roomState.stageContent?.media?.imageId;
   let totalBytes = 0;
   for (const image of images.values()) totalBytes += image.data.length;
+  // All studios share one memory budget on the 512 MB instance.
+  let otherRoomsBytes = 0;
+  for (const other of rooms.values()) {
+    if (other === roomState || !other.stageImages) continue;
+    for (const image of other.stageImages.values()) otherRoomsBytes += image.data.length;
+  }
+  const roomBudget = Math.min(STAGE_IMAGE_BYTES_PER_ROOM, Math.max(0, getStageImageGlobalMaxBytes() - otherRoomsBytes));
   for (const [id, image] of images) {
-    if (images.size <= STAGE_IMAGE_LIMIT_PER_ROOM && totalBytes <= STAGE_IMAGE_BYTES_PER_ROOM) break;
+    if (images.size <= STAGE_IMAGE_LIMIT_PER_ROOM && totalBytes <= roomBudget) break;
     if (id === onStage || id === imageId) continue;
     images.delete(id);
     totalBytes -= image.data.length;
+  }
+  if (totalBytes > roomBudget) {
+    images.delete(imageId);
+    return { ok: false, status: 507, error: 'The studio server has no room for more stage images right now' };
   }
   return { ok: true, imageId };
 }
 
 export function getStageImage(roomId: string, imageId: string): StageImage | undefined {
   return rooms.get(roomId)?.stageImages?.get(imageId);
+}
+
+function tokenMatches(expected: string | undefined, presented: string): boolean {
+  if (!expected || expected.length !== presented.length) return false;
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(presented));
+}
+
+export type ReadStageImageResult =
+  | { ok: true; image: StageImage }
+  | { ok: false; status: 403 | 404 };
+
+/**
+ * A stage picture for an admitted participant of the studio. Waiting guests
+ * (and anyone holding only the room id) cannot read what is on stage.
+ */
+export function readStageImage(roomId: string, imageId: string, token: string): ReadStageImageResult {
+  const roomState = rooms.get(roomId);
+  if (!roomState) return { ok: false, status: 404 };
+  const authorized = Boolean(token) && Array.from(roomState.participants.values()).some((entry) => (
+    entry.participant.status !== 'green-room'
+    && (tokenMatches(entry.stageReadToken, token) || tokenMatches(entry.stageUploadToken, token))
+  ));
+  if (!authorized) return { ok: false, status: 403 };
+  const image = roomState.stageImages?.get(imageId);
+  return image ? { ok: true, image } : { ok: false, status: 404 };
+}
+
+/** Public facts about the studio behind a watch-page id, for the watch page. Never the participant list. */
+export function findRoomByWatchId(watchId: string): Room | undefined {
+  return findWatchLinkRoom(watchId)?.room;
+}
+
+/**
+ * The studio a watch link points to, with its canonical watch id. Links are
+ * /watch/<watchId>; studios from before private watch ids published
+ * /watch/<roomId>, so for those (and only those) the room id still works and
+ * the page switches to the canonical id.
+ */
+export function findWatchLinkRoom(id: string): { room: Room; watchId: string } | undefined {
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) return undefined;
+  for (const roomState of rooms.values()) {
+    if (roomState.watchId.length === id.length && safeEqual(roomState.watchId, id)) {
+      return { room: roomState.room, watchId: roomState.watchId };
+    }
+  }
+  const legacy = rooms.get(id);
+  if (legacy?.legacyWatchByRoomId && legacy.room.status !== 'ended') return { room: legacy.room, watchId: legacy.watchId };
+  return undefined;
 }
 
 function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayload) {
@@ -1717,6 +2384,10 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
     roomState.recordingStartedAt = roomState.recordingStartedAt || now;
     roomState.recordingPaused = Boolean(payload.paused);
   } else {
+    // After a restart the server may not know the session; the operator's
+    // stop names it, so guests still finalize and upload their takes.
+    const requestedSessionId = isValidRecordingSessionId(payload.sessionId) ? payload.sessionId : undefined;
+    roomState.recordingSessionId ??= requestedSessionId;
     roomState.recordingStartedAt = undefined;
     roomState.recordingPaused = false;
   }
@@ -1776,6 +2447,7 @@ function handleRecordingUploadTokenRequest(
     participantName: participantEntry.participant.name,
     role: participantEntry.participant.role,
     sessionId: payload.sessionId,
+    iat: Date.now(),
     exp: expiresAtMs,
     nonce: nanoid(16),
   };
@@ -1900,6 +2572,82 @@ function handleRecordingUploadControl(
       targetParticipantId: target.participant.id,
       action: payload.action,
       performedBy: mapping.participantId,
+    },
+  });
+}
+
+const RECORDING_TRANSFER_SIGNAL_KINDS = new Set(['invite', 'offer', 'answer', 'hangup', 'ready']);
+const RECORDING_TRANSFER_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/**
+ * Relay peer-to-peer recording transfer signaling between one participant and
+ * the room's operators only. Guests can never reach each other this way, only
+ * operators may invite, and the sender is stamped by the server.
+ */
+function handleRecordingTransferSignal(
+  ws: WebSocket,
+  payload: Extract<SignalMessage, { type: 'recording-transfer-signal' }>['payload']
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  const sender = roomState?.participants.get(mapping.participantId);
+  if (!roomState || !sender) return;
+
+  if (
+    !isRecord(payload) ||
+    typeof payload.targetParticipantId !== 'string' ||
+    typeof payload.transferId !== 'string' ||
+    !RECORDING_TRANSFER_ID_PATTERN.test(payload.transferId) ||
+    !RECORDING_TRANSFER_SIGNAL_KINDS.has(payload.kind) ||
+    (payload.sessionId !== undefined && !isValidRecordingSessionId(payload.sessionId)) ||
+    (payload.sdp !== undefined && (typeof payload.sdp !== 'string' || payload.sdp.length > MAX_RECORDING_TRANSFER_SDP_LENGTH)) ||
+    ((payload.kind === 'offer' || payload.kind === 'answer') && typeof payload.sdp !== 'string')
+  ) {
+    sendError(ws, 'Invalid recording transfer signal', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const target = roomState.participants.get(payload.targetParticipantId);
+  if (!target || target === sender) return;
+  const senderIsOperator = isRoomOperator(sender.participant);
+  const targetIsOperator = isRoomOperator(target.participant);
+  // Exactly one side must be an operator: participant <-> host/co-host only.
+  if (
+    senderIsOperator === targetIsOperator ||
+    (payload.kind === 'invite' && !senderIsOperator) ||
+    (payload.kind === 'ready' && senderIsOperator)
+  ) {
+    sendError(ws, 'Recording transfers connect participants with hosts only', 'UNAUTHORIZED');
+    return;
+  }
+  // Like studio media: nobody in the private green room takes part. An
+  // operator may still hang up on a participant sent back there.
+  const targetInGreenRoom = target.participant.status === 'green-room';
+  if (
+    sender.participant.status === 'green-room' ||
+    (targetInGreenRoom && !(payload.kind === 'hangup' && senderIsOperator))
+  ) {
+    sendError(ws, 'Recording transfers are only for admitted participants', 'UNAUTHORIZED');
+    return;
+  }
+
+  const options = isRecord(payload.options)
+    ? {
+        ...(typeof payload.options.losslessAudio === 'boolean' ? { losslessAudio: payload.options.losslessAudio } : {}),
+        ...(typeof payload.options.cloudUpload === 'boolean' ? { cloudUpload: payload.options.cloudUpload } : {}),
+      }
+    : undefined;
+  send(target.ws, {
+    type: 'recording-transfer-signal',
+    payload: {
+      targetParticipantId: target.participant.id,
+      fromParticipantId: mapping.participantId,
+      transferId: payload.transferId,
+      kind: payload.kind,
+      ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
+      ...(typeof payload.sdp === 'string' ? { sdp: payload.sdp } : {}),
+      ...(options && senderIsOperator ? { options } : {}),
     },
   });
 }
@@ -2052,12 +2800,23 @@ function handleLiveStreamTokenRequest(
     return;
   }
 
+  if (payload.purpose === 'presentation-render') {
+    const renderClaims = buildPresentationRenderClaims({ roomId: mapping.roomId, participantId: mapping.participantId, role: performer.participant.role });
+    send(ws, {
+      type: 'live-stream-token-issued',
+      payload: { requestId: payload.requestId, token: signMediaToken(renderClaims, secret), expiresAt: new Date(renderClaims.exp).toISOString() },
+    });
+    return;
+  }
+
   const expiresAtMs = Date.now() + LIVE_STREAM_TOKEN_TTL_MS;
   const claims: LiveStreamTokenClaims = {
     v: 1,
     roomId: mapping.roomId,
     participantId: mapping.participantId,
     role: performer.participant.role,
+    watchId: roomState.watchId,
+    iat: Date.now(),
     exp: expiresAtMs,
     nonce: nanoid(16),
   };
@@ -2178,16 +2937,23 @@ function handleGuestInviteTokenRequest(
   });
 }
 
+function hasValidPeerConnectionRef(p: Record<string, unknown>): boolean {
+  if (p.pcId !== undefined && (typeof p.pcId !== 'string' || !PC_ID_PATTERN.test(p.pcId))) return false;
+  if (p.toPcId !== undefined && (typeof p.toPcId !== 'string' || !PC_ID_PATTERN.test(p.toPcId))) return false;
+  return true;
+}
+
 function isValidSdpPayload(payload: unknown): payload is { to: string; sdp: { type: string; sdp: string } } {
   if (!payload || typeof payload !== 'object') return false;
   const p = payload as Record<string, unknown>;
   if (typeof p.to !== 'string') return false;
+  if (!hasValidPeerConnectionRef(p)) return false;
   if (!p.sdp || typeof p.sdp !== 'object') return false;
   const sdp = p.sdp as Record<string, unknown>;
   // RTCSessionDescriptionInit requires .type ('offer' | 'answer' | 'pranswer' | 'rollback'); .sdp is optional only for rollback.
   if (typeof sdp.type !== 'string') return false;
   if (!['offer', 'answer', 'pranswer', 'rollback'].includes(sdp.type)) return false;
-  if (sdp.sdp !== undefined && typeof sdp.sdp !== 'string') return false;
+  if (sdp.sdp !== undefined && (typeof sdp.sdp !== 'string' || sdp.sdp.length > MAX_RELAYED_SDP_LENGTH)) return false;
   return true;
 }
 
@@ -2195,11 +2961,12 @@ function isValidIcePayload(payload: unknown): payload is { to: string; candidate
   if (!payload || typeof payload !== 'object') return false;
   const p = payload as Record<string, unknown>;
   if (typeof p.to !== 'string') return false;
+  if (!hasValidPeerConnectionRef(p)) return false;
   // candidate may be null (end-of-candidates) or an object with .candidate/.sdpMid/.sdpMLineIndex
   if (p.candidate === null) return true;
   if (!p.candidate || typeof p.candidate !== 'object') return false;
   const c = p.candidate as Record<string, unknown>;
-  if (c.candidate !== undefined && typeof c.candidate !== 'string') return false;
+  if (c.candidate !== undefined && (typeof c.candidate !== 'string' || c.candidate.length > MAX_RELAYED_CANDIDATE_LENGTH)) return false;
   if (c.sdpMid !== undefined && c.sdpMid !== null && typeof c.sdpMid !== 'string') return false;
   if (c.sdpMLineIndex !== undefined && c.sdpMLineIndex !== null && typeof c.sdpMLineIndex !== 'number') return false;
   return true;
@@ -2322,6 +3089,93 @@ export function sanitizeParticipantName(value: unknown): string {
   return (typeof value === 'string' ? value : '').replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, MAX_PARTICIPANT_NAME_LENGTH);
 }
 
+/** A name-tag title: same cleaning as names, longer limit; empty clears it. */
+export function sanitizeParticipantTitle(value: unknown): string {
+  return (typeof value === 'string' ? value : '').replace(/[\x00-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim().slice(0, MAX_PARTICIPANT_TITLE_LENGTH);
+}
+
+/** Look up the sender as an admitted host or co-host, or tell them why not. */
+function getAdmittedOperator(ws: WebSocket, action: string) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return null;
+  const roomState = rooms.get(mapping.roomId);
+  const performer = roomState?.participants.get(mapping.participantId);
+  if (!roomState || !performer) return null;
+  if (!isOperatorRole(performer.participant.role)) {
+    sendError(ws, `Only hosts and co-hosts can ${action}`, 'UNAUTHORIZED');
+    return null;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, `Wait until you are admitted before you ${action}`, 'PARTICIPANT_NOT_ADMITTED');
+    return null;
+  }
+  return { mapping, roomState, performer };
+}
+
+/**
+ * A host or co-host fixes someone's display name (a typo, a nickname) or sets
+ * the subtitle on their name tag. Everyone gets the updated participant.
+ */
+function handleUpdateParticipantProfile(ws: WebSocket, payload: UpdateParticipantProfilePayload) {
+  const operator = getAdmittedOperator(ws, 'edit name tags');
+  if (!operator) return;
+  const { mapping, roomState } = operator;
+  if (typeof payload?.targetParticipantId !== 'string') {
+    sendError(ws, 'Invalid name tag update', 'VALIDATION_ERROR');
+    return;
+  }
+  const target = roomState.participants.get(payload.targetParticipantId);
+  if (!target) return;
+  // Co-hosts cannot rename the host.
+  if (target.participant.id === roomState.room.hostId && mapping.participantId !== roomState.room.hostId) {
+    sendError(ws, 'Only the host can edit the host name tag', 'HOST_PROTECTED');
+    return;
+  }
+
+  let changed = false;
+  if (payload.name !== undefined) {
+    const name = sanitizeParticipantName(payload.name);
+    if (!name) {
+      sendError(ws, 'Enter a name to use in the studio', 'VALIDATION_ERROR');
+      return;
+    }
+    if (name !== target.participant.name) {
+      target.participant.name = name;
+      changed = true;
+    }
+  }
+  if (payload.title !== undefined) {
+    const title = sanitizeParticipantTitle(payload.title);
+    if ((target.participant.title || '') !== title) {
+      if (title) target.participant.title = title;
+      else delete target.participant.title;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  broadcastToRoom(mapping.roomId, { type: 'participant-updated', payload: target.participant });
+  persistRoomSnapshot(mapping.roomId);
+}
+
+/** The 3-2-1 before recording: relayed so guests see it (no recording state changes here). */
+function handleRecordingCountdown(ws: WebSocket, payload: RecordingCountdownPayload) {
+  const operator = getAdmittedOperator(ws, 'start a recording countdown');
+  if (!operator) return;
+  const { mapping } = operator;
+  const cancelled = Boolean(payload?.cancelled);
+  const rawSeconds = typeof payload?.seconds === 'number' && Number.isFinite(payload.seconds) ? Math.round(payload.seconds) : NaN;
+  if (!cancelled && !(rawSeconds >= 1 && rawSeconds <= 10)) {
+    sendError(ws, 'Invalid recording countdown', 'VALIDATION_ERROR');
+    return;
+  }
+  broadcastToRoom(mapping.roomId, {
+    type: 'recording-countdown',
+    payload: cancelled
+      ? { seconds: 0, cancelled: true, performedBy: mapping.participantId }
+      : { seconds: rawSeconds, performedBy: mapping.participantId },
+  }, mapping.participantId);
+}
+
 /** Whether `participantId` names a host or co-host in the room. */
 function isOperatorParticipant(roomState: RoomState, participantId: unknown): boolean {
   if (typeof participantId !== 'string' || !participantId.trim()) return false;
@@ -2330,6 +3184,10 @@ function isOperatorParticipant(roomState: RoomState, participantId: unknown): bo
 }
 
 function canSeeChatMessage(message: ChatMessage, participant: Participant, participantId: string): boolean {
+  // Waiting guests see only their own private conversation with the hosts.
+  if (participant.status === 'green-room') {
+    return participantId === message.senderId || participantId === message.recipientId;
+  }
   if (message.recipientId) {
     return participantId === message.senderId || participantId === message.recipientId;
   }
@@ -2707,6 +3565,19 @@ function handleExternalChatConnect(
         : 'A valid Facebook live video id is required',
       'VALIDATION_ERROR'
     );
+    return;
+  }
+
+  if (isStudioCreationGated() && !operator.roomState.createdByOwner) {
+    send(ws, {
+      type: 'external-chat-status',
+      payload: {
+        platform,
+        status: 'error',
+        liveChatId,
+        message: 'Server chat keys are reserved for studios the owner created. Create the studio with the owner account or studio access key.',
+      },
+    });
     return;
   }
 
@@ -3539,7 +4410,9 @@ function endRoomImmediately(roomId: string) {
 
   broadcastToRoom(roomId, { type: 'room-ended', payload: {} });
 
-  for (const [, { ws: participantWs }] of state.participants) {
+  for (const entry of state.participants.values()) {
+    const participantWs = entry.ws;
+    clearResumeTimer(entry);
     wsToParticipant.delete(participantWs);
     try {
       participantWs.close(1000, 'Room ended');
@@ -3612,106 +4485,167 @@ function handleCancelEndRoom(ws: WebSocket) {
   });
 }
 
-function handleDisconnect(ws: WebSocket) {
-  // Clean up rate limit tracking
-  wsMessageCounts.delete(ws);
+/**
+ * Close codes that mean the participant chose to leave: the studio's own Leave
+ * (1000) or a close() without a code (1005). Anything else (a dropped network,
+ * a proxy reset, a reload, a missed heartbeat) holds the seat for a resume.
+ */
+const DELIBERATE_CLOSE_CODES = new Set([1000, 1005]);
+
+function handleDisconnect(ws: WebSocket, code?: number) {
+  wsRateLimiter.forget(ws);
+  pendingJoins.delete(ws);
 
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
+  wsToParticipant.delete(ws);
 
   const { roomId, participantId } = mapping;
   const roomState = rooms.get(roomId);
+  if (!roomState) return;
+  const entry = roomState.participants.get(participantId);
+  if (!entry || entry.ws !== ws) return;
 
-  if (roomState) {
-    const entry = roomState.participants.get(participantId);
-    const name = entry?.participant.name || 'Unknown';
-    const wasHost = participantId === roomState.room.hostId;
+  const deliberate = code !== undefined && DELIBERATE_CLOSE_CODES.has(code);
+  if (!deliberate && RESUME_GRACE_MS > 0 && !endingTimers.has(roomId)) {
+    // Hold the seat: others keep the tile and their peer connection, which
+    // may well still be carrying media. Nothing is announced unless the
+    // participant does not come back in time.
+    entry.disconnectedAt = Date.now();
+    clearResumeTimer(entry);
+    entry.resumeTimer = setTimeout(() => {
+      entry.resumeTimer = undefined;
+      if (rooms.get(roomId) !== roomState) return;
+      if (roomState.participants.get(participantId) !== entry || entry.disconnectedAt === undefined) return;
+      finalizeDeparture(roomId, roomState, participantId, 'Disconnected from signaling');
+    }, RESUME_GRACE_MS);
+    entry.resumeTimer.unref?.();
+    console.log(`${entry.participant.name} lost their connection to room ${roomId}; holding their seat for ${Math.round(RESUME_GRACE_MS / 1000)}s`);
+    return;
+  }
 
-    roomState.participants.delete(participantId);
-    wsToParticipant.delete(ws);
-    notifyMediaServerSfuMembership('revoke-participant', roomId, participantId, 'Disconnected from signaling');
+  finalizeDeparture(roomId, roomState, participantId, 'Disconnected from signaling');
+}
 
-    if (
-      entry?.participant.role === 'guest'
-      && entry.joinSessionId
-      && entry.participant.status !== 'green-room'
-      && !roomState.bannedJoinSessionIds.has(entry.joinSessionId)
-    ) {
-      rememberDepartedGuest(roomState, entry.joinSessionId, entry.participant.status, Date.now());
+/** The participant is gone for good: free the seat and tell everyone. */
+function finalizeDeparture(roomId: string, roomState: RoomState, participantId: string, reason: string) {
+  const entry = roomState.participants.get(participantId);
+  if (!entry) return;
+  clearResumeTimer(entry);
+  const name = entry.participant.name || 'Unknown';
+  const wasHost = participantId === roomState.room.hostId;
+  if (roomState.handedOffHostId === participantId) roomState.handedOffHostId = undefined;
+
+  roomState.participants.delete(participantId);
+  if (wsToParticipant.get(entry.ws)?.participantId === participantId) wsToParticipant.delete(entry.ws);
+  notifyMediaServerSfuMembership('revoke-participant', roomId, participantId, reason);
+
+  if (
+    entry.participant.role === 'guest'
+    && entry.joinSessionId
+    && entry.participant.status !== 'green-room'
+    && !roomState.bannedJoinSessionIds.has(entry.joinSessionId)
+    && !roomState.removedJoinSessionIds.has(entry.joinSessionId)
+  ) {
+    rememberDepartedGuest(roomState, entry.joinSessionId, entry.participant.status, Date.now());
+  }
+
+  clearLiveStreamStateForParticipant(roomId, roomState, participantId);
+
+  // Remove from co-host list if applicable
+  roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== participantId);
+
+  // If the host disconnected, clean up ending timer and attempt co-host handoff.
+  if (wasHost) {
+    // Clear any active ending timer for this room
+    if (clearRoomEndingTimer(roomId)) {
+      // Notify remaining participants that the end was cancelled
+      broadcastToRoom(roomId, {
+        type: 'room-ending-cancelled',
+        payload: {},
+      });
     }
 
-    clearLiveStreamStateForParticipant(roomId, roomState, participantId);
+    // Hand off only to an actual co-host. Promoting a random guest is
+    // surprising and gives someone uninvited authority over the room.
+    // A co-host who is connected right now is preferred over one whose seat is only being held.
+    const coHostCandidates = roomState.room.coHostIds.filter((id) => roomState.participants.has(id));
+    const newHostId: string | null = coHostCandidates.find((id) => roomState.participants.get(id)?.disconnectedAt === undefined)
+      ?? coHostCandidates[0]
+      ?? null;
 
-    // Remove from co-host list if applicable
-    roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== participantId);
+    if (newHostId) {
+      const newHost = roomState.participants.get(newHostId);
+      if (newHost) {
+        newHost.participant.role = 'host';
+        roomState.room.hostId = newHostId;
+        // Remember the stand-in: when the host comes back, they hand the seat back.
+        roomState.handedOffHostId = newHostId;
+        roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== newHostId);
 
-    // If the host disconnected, clean up ending timer and attempt co-host handoff.
-    if (wasHost) {
-      // Clear any active ending timer for this room
-      if (clearRoomEndingTimer(roomId)) {
-        // Notify remaining participants that the end was cancelled
+        console.log(`Host handoff: ${newHost.participant.name} is now host of room ${roomId}`);
+
         broadcastToRoom(roomId, {
-          type: 'room-ending-cancelled',
-          payload: {},
+          type: 'participant-updated',
+          payload: newHost.participant,
+        });
+        broadcastToRoom(roomId, {
+          type: 'host-changed',
+          payload: { newHostId, newHostName: newHost.participant.name },
         });
       }
-
-      // Hand off only to an actual co-host. Promoting a random guest is
-      // surprising and gives someone uninvited authority over the room.
-      let newHostId: string | null = null;
-      for (const coHostId of roomState.room.coHostIds) {
-        if (roomState.participants.has(coHostId)) {
-          newHostId = coHostId;
-          break;
-        }
-      }
-
-      if (newHostId) {
-        const newHost = roomState.participants.get(newHostId);
-        if (newHost) {
-          newHost.participant.role = 'host';
-          roomState.room.hostId = newHostId;
-          roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== newHostId);
-
-          console.log(`Host handoff: ${newHost.participant.name} is now host of room ${roomId}`);
-
-          broadcastToRoom(roomId, {
-            type: 'participant-updated',
-            payload: newHost.participant,
-          });
-          broadcastToRoom(roomId, {
-            type: 'host-changed',
-            payload: { newHostId, newHostName: newHost.participant.name },
-          });
-        }
-      } else if (roomState.participants.size > 0) {
-        // No co-host to inherit. Never crown a random guest; hold the room
-        // for the host to come back, and end it only if they do not.
-        clearHostReconnectTimer(roomState);
-        roomState.hostReconnectTimer = setTimeout(() => {
-          const current = rooms.get(roomId);
-          if (current !== roomState) return;
-          roomState.hostReconnectTimer = undefined;
-          if (roomState.participants.has(roomState.room.hostId)) return;
-          console.log(`Host of room ${roomId} did not return within ${HOST_RECONNECT_GRACE_MS / 1000}s. Ending room.`);
-          endRoomImmediately(roomId);
-        }, HOST_RECONNECT_GRACE_MS);
-        roomState.hostReconnectTimer.unref?.();
-        console.log(`Host of room ${roomId} disconnected with no co-host; holding the room for ${HOST_RECONNECT_GRACE_MS / 1000}s.`);
-      }
+    } else if (roomState.participants.size > 0) {
+      // No co-host to inherit. Never crown a random guest; hold the room
+      // for the host to come back, and end it only if they do not.
+      clearHostReconnectTimer(roomState);
+      roomState.hostReconnectTimer = setTimeout(() => {
+        const current = rooms.get(roomId);
+        if (current !== roomState) return;
+        roomState.hostReconnectTimer = undefined;
+        if (roomState.participants.has(roomState.room.hostId)) return;
+        console.log(`Host of room ${roomId} did not return within ${HOST_RECONNECT_GRACE_MS / 1000}s. Ending room.`);
+        endRoomImmediately(roomId);
+      }, HOST_RECONNECT_GRACE_MS);
+      roomState.hostReconnectTimer.unref?.();
+      console.log(`Host of room ${roomId} disconnected with no co-host; holding the room for ${HOST_RECONNECT_GRACE_MS / 1000}s.`);
     }
+  }
 
-    broadcastToRoom(roomId, {
-      type: 'participant-left',
-      payload: { participantId },
-    });
+  broadcastToRoom(roomId, {
+    type: 'participant-left',
+    payload: { participantId },
+  });
 
-    console.log(`${name} left room ${roomId} [${roomState.participants.size} participants]`);
+  console.log(`${name} left room ${roomId} [${roomState.participants.size} participants]`);
 
-    if (roomState.participants.size === 0) {
-      scheduleEmptyRoomDeletion(roomId, roomState);
-    }
-    persistRoomSnapshot(roomId);
+  if (roomState.participants.size === 0) {
+    scheduleEmptyRoomDeletion(roomId, roomState);
+  }
+  persistRoomSnapshot(roomId);
+}
+
+/**
+ * Waiting guests get only what the waiting room needs: their own updates, who
+ * the hosts are, branding and the studio's state. Not other guests' details,
+ * what is on stage, polls or Q&A.
+ */
+function isVisibleInGreenRoom(message: SignalMessage, recipientId: string, roomState: RoomState): boolean {
+  switch (message.type) {
+    case 'participant-joined':
+    case 'participant-updated':
+      return message.payload.id === recipientId || isOperatorRole(message.payload.role);
+    case 'media-state-changed':
+      return isOperatorParticipant(roomState, message.payload.participantId);
+    case 'stage-action':
+      return message.payload.targetParticipantId === recipientId;
+    case 'stage-content-updated':
+    case 'poll-updated':
+    case 'qa-question-updated':
+    case 'external-chat-status':
+    case 'recording-countdown':
+      return false;
+    default:
+      return true;
   }
 }
 
@@ -3719,7 +4653,8 @@ function broadcastToRoom(roomId: string, message: SignalMessage, excludeId?: str
   const roomState = rooms.get(roomId);
   if (!roomState) return;
 
-  for (const [id, { ws }] of roomState.participants) {
+  for (const [id, { ws, participant }] of roomState.participants) {
+    if (participant.status === 'green-room' && !isVisibleInGreenRoom(message, id, roomState)) continue;
     if (id !== excludeId && ws.readyState === WebSocket.OPEN) {
       // Fix #5: Wrap send in try/catch so one bad socket doesn't break the loop
       try {
@@ -3744,6 +4679,7 @@ function broadcastQAQuestion(roomId: string, question: QAQuestion) {
     ) {
       continue;
     }
+    if (participant.status === 'green-room' && id !== question.authorId) continue;
 
     try {
       send(ws, {

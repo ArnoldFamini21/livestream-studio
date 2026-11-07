@@ -113,3 +113,37 @@ describe('participant media state after device replacement', () => {
     assert.equal(processedVideo.enabled, true);
   });
 });
+
+describe('a device that starts after joining', () => {
+  it('keeps a camera that a retry just started on, even though the seat joined without one', () => {
+    const audio = track('audio');
+    const video = track('video', true);
+    const media = stream(audio, video);
+    // Joined with no camera: the participant still says video is off.
+    const current = { ...participant(), videoEnabled: false };
+
+    applyParticipantMediaState(current, media,
+      (enabled) => { audio.enabled = enabled; },
+      (enabled) => { video.enabled = enabled; },
+      { audio: true, video: false });
+
+    assert.equal(video.enabled, true);
+  });
+
+  it('still applies a remote mute to a track that was already there', () => {
+    const audio = track('audio', true);
+    const media = stream(audio, track('video'));
+    applyParticipantMediaState({ ...participant(), audioEnabled: false }, media,
+      (enabled) => { audio.enabled = enabled; },
+      () => undefined,
+      { audio: true, video: true });
+    assert.equal(audio.enabled, false);
+  });
+
+  it('reports which live kinds a stream has', async () => {
+    const { getLocalTrackKinds } = await import('../src/utils/joinMediaState.ts');
+    assert.deepEqual(getLocalTrackKinds(null), { audio: false, video: false });
+    const ended = { ...track('video'), readyState: 'ended' } as MediaStreamTrack;
+    assert.deepEqual(getLocalTrackKinds(stream(track('audio'), ended)), { audio: true, video: false });
+  });
+});

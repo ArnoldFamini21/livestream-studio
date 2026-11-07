@@ -254,6 +254,8 @@ export interface RoomSettings {
   enableStreaming: boolean;
   greenRoomEnabled: boolean;
   passwordProtected: boolean;
+  /** Co-hosts arriving from an invite link go straight on stage; by default they arrive backstage. */
+  coHostsJoinOnStage?: boolean;
 }
 
 export type RoomRegistrationField = 'name' | 'email';
@@ -302,7 +304,12 @@ export interface Participant {
   screenSharing: boolean;
   joinedAt: string;
   status: ParticipantStatus;
+  /** Optional name-tag subtitle a host set, e.g. "Author, The Long Game". */
+  title?: string;
 }
+
+/** Longest participant name-tag title (subtitle) the server keeps. */
+export const MAX_PARTICIPANT_TITLE_LENGTH = 80;
 
 export type ParticipantRole = 'host' | 'co-host' | 'guest';
 export type ParticipantStatus = 'green-room' | 'on-stage' | 'backstage';
@@ -364,10 +371,15 @@ export type SignalMessage =
   | { type: 'studio-branding-updated'; payload: StudioBrandingPayload }
   | { type: 'stage-content-updated'; payload: StageContentPayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
+  /** Host/co-host only: the 3-2-1 before recording, so guests see it too. */
+  | { type: 'recording-countdown'; payload: RecordingCountdownPayload }
+  /** Host/co-host only: fix a participant's display name or set their name-tag title. */
+  | { type: 'update-participant-profile'; payload: UpdateParticipantProfilePayload }
   | { type: 'recording-upload-token-request'; payload: RecordingUploadTokenRequestPayload }
   | { type: 'recording-upload-token-issued'; payload: RecordingUploadTokenIssuedPayload }
   | { type: 'recording-upload-progress'; payload: RecordingUploadProgressPayload }
   | { type: 'recording-upload-control'; payload: RecordingUploadControlPayload }
+  | { type: 'recording-transfer-signal'; payload: RecordingTransferSignalPayload }
   | { type: 'sfu-token-request'; payload: SfuTokenRequestPayload }
   | { type: 'sfu-token-issued'; payload: SfuTokenIssuedPayload }
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
@@ -400,6 +412,20 @@ export interface JoinRoomPayload {
   guestInviteToken?: string;
   roomPassword?: string;
   joinSessionId?: string;
+  /**
+   * Proof of an earlier seat in this studio (from room-joined). Within a short
+   * grace window after a dropped connection, presenting it returns the same
+   * participant id, role and place, so media connections that are still healthy
+   * stay up. Single-use invite tokens are not sent alongside it.
+   */
+  resumeToken?: string;
+  /** Host only: the signed studio description from room-joined, used to rebuild the studio after a server restart. */
+  restoreTicket?: string;
+  /**
+   * Host only: the owner's studio access key (STUDIO_CREATE_SECRET), when this
+   * browser has it. Marks a studio made before the owner gate as the owner's.
+   */
+  studioAccessKey?: string;
 }
 
 export interface RoomJoinedPayload {
@@ -416,6 +442,16 @@ export interface RoomJoinedPayload {
   stageContent?: StageContentPayload;
   /** Hosts and co-hosts only: authorizes uploads to `/api/rooms/:id/stage-images`. */
   stageUploadToken?: string;
+  /** Admitted participants only: authorizes reading `/api/rooms/:id/stage-images/:imageId` (header `x-stage-token`). */
+  stageReadToken?: string;
+  /** Present again on the next join-room to keep this seat through a dropped connection. */
+  resumeToken?: string;
+  /** True when this join resumed an earlier seat (same participant id); peers were kept. */
+  resumed?: boolean;
+  /** Hosts and co-hosts only: the private id of the public watch page (`/watch/:watchId`). */
+  watchId?: string;
+  /** Host only: signed studio description to keep with the host token (see JoinRoomPayload.restoreTicket). */
+  restoreTicket?: string;
   features?: {
     chatTyping?: boolean;
   };
@@ -443,13 +479,26 @@ export interface StageContentMedia {
   slideCount?: number;
 }
 
-export interface SDPPayload {
+/**
+ * Peer-connection identity carried with every offer, answer and candidate.
+ * `pcId` names the sender's RTCPeerConnection, `toPcId` the receiver's
+ * connection the sender is talking to. A new `pcId` on an offer means the
+ * other side rebuilt its connection (a reload that kept its participant id, or
+ * recovery after repeated ICE failures), so the receiver rebuilds too; messages
+ * aimed at a connection the receiver already replaced are ignored.
+ */
+export interface PeerConnectionRef {
+  pcId?: string;
+  toPcId?: string;
+}
+
+export interface SDPPayload extends PeerConnectionRef {
   from: string;
   to: string;
   sdp: RTCSessionDescriptionInit;
 }
 
-export interface ICEPayload {
+export interface ICEPayload extends PeerConnectionRef {
   from: string;
   to: string;
   candidate: RTCIceCandidateInit;
@@ -506,6 +555,22 @@ export interface StudioBrandingPayload {
   updatedBy?: string;
 }
 
+export interface RecordingCountdownPayload {
+  /** Seconds until recording starts (1-10); 0 with `cancelled` ends it. */
+  seconds: number;
+  cancelled?: boolean;
+  /** Set by the server. */
+  performedBy?: string;
+}
+
+export interface UpdateParticipantProfilePayload {
+  targetParticipantId: string;
+  /** New display name; omitted keeps the current one. */
+  name?: string;
+  /** Name-tag subtitle; an empty string clears it, omitted keeps it. */
+  title?: string;
+}
+
 export interface RecordingStatePayload {
   recording: boolean;
   sessionId?: string;
@@ -558,6 +623,40 @@ export interface RecordingUploadControlPayload {
   performedBy?: string;
 }
 
+/**
+ * Peer-to-peer recording transfer signaling. A host or co-host invites a
+ * participant to send their local tracks straight to the host's recording
+ * folder over a dedicated RTCPeerConnection; the participant then offers and
+ * the operator answers. The server relays these only between an admitted
+ * (non-green-room) participant and the room's operators, and stamps the
+ * sender. A participant whose seat was resumed sends 'ready' to ask the
+ * operators for a fresh invite.
+ */
+export type RecordingTransferSignalKind = 'invite' | 'offer' | 'answer' | 'hangup' | 'ready';
+
+export interface RecordingTransferSignalOptions {
+  /** Ask participants to also capture a lossless 48 kHz WAV of their microphone. */
+  losslessAudio?: boolean;
+  /** Keep the media-server upload running beside the peer-to-peer transfer. */
+  cloudUpload?: boolean;
+}
+
+export interface RecordingTransferSignalPayload {
+  targetParticipantId: string;
+  /** Set by the server to the authenticated sender. */
+  fromParticipantId?: string;
+  /** Identifies one transfer connection; a new offer replaces older ones. */
+  transferId: string;
+  kind: RecordingTransferSignalKind;
+  /** Recording session the invite belongs to, when a take is running. */
+  sessionId?: string;
+  /** Complete (non-trickle) SDP for offers and answers. */
+  sdp?: string;
+  options?: RecordingTransferSignalOptions;
+}
+
+export const MAX_RECORDING_TRANSFER_SDP_LENGTH = 32_000;
+
 export const RECORDING_UPLOAD_PROGRESS_STATUSES: readonly RecordingUploadProgressStatus[] = [
   'uploading',
   'paused',
@@ -586,6 +685,11 @@ export interface LiveStreamStatePayload {
 
 export interface LiveStreamTokenRequestPayload {
   requestId: string;
+  /**
+   * Omitted for a live-stream (relay) token. 'presentation-render' asks for a
+   * short-lived token that only authorizes the media server's deck renderer.
+   */
+  purpose?: 'presentation-render';
 }
 
 export interface LiveStreamTokenIssuedPayload {
@@ -987,6 +1091,9 @@ export interface LiveStreamTokenClaims {
   roomId: string;
   participantId: string;
   role: Extract<ParticipantRole, 'host' | 'co-host'>;
+  /** The studio's private watch-page id; the HLS watch page is published under it, never under the room id. */
+  watchId?: string;
+  iat?: number;
   exp: number;
   nonce: string;
 }
@@ -1006,7 +1113,22 @@ export interface SfuTokenClaims {
   nonce: string;
 }
 
-export type SfuMembershipControlAction = 'revoke-participant' | 'allow-participant' | 'revoke-room';
+/**
+ * Authorizes POST /presentation-preview and /presentation-pdf on the media
+ * server for an admitted host or co-host, and nothing else.
+ */
+export interface PresentationRenderTokenClaims {
+  v: 1;
+  purpose: 'presentation-render';
+  roomId: string;
+  participantId: string;
+  role: Extract<ParticipantRole, 'host' | 'co-host'>;
+  iat: number;
+  exp: number;
+  nonce: string;
+}
+
+export type SfuMembershipControlAction = 'revoke-participant' | 'allow-participant' | 'revoke-room' | 'revoke-recording-upload';
 
 export interface SfuMembershipControlClaims {
   v: 1;
@@ -1028,6 +1150,7 @@ export interface RecordingUploadTokenClaims {
   participantName: string;
   role: ParticipantRole;
   sessionId: string;
+  iat?: number;
   exp: number;
   nonce: string;
 }
@@ -1052,11 +1175,57 @@ export interface RtmpRelayAudioConfig {
   audioBitsPerSecond: number;
 }
 
+/** Codecs the browser's MediaRecorder produces for the relay upload. */
+export type RtmpRelayVideoCodec = 'h264' | 'vp8' | 'vp9' | 'unknown';
+export type RtmpRelayAudioCodec = 'opus' | 'aac' | 'unknown';
+
+/**
+ * What the studio uploads. H.264 with a known keyframe interval lets the
+ * media server copy the video instead of re-encoding it (the free tier's
+ * CPU cannot run a real-time x264 encode).
+ */
+export interface RtmpRelayEncoding {
+  container: 'webm' | 'matroska';
+  videoCodec: RtmpRelayVideoCodec;
+  audioCodec: RtmpRelayAudioCodec;
+  /** Keyframe interval the browser was asked for, or null when it cannot be controlled. */
+  keyframeIntervalMs: number | null;
+}
+
+/**
+ * copy: the browser's H.264 goes to the destinations untouched (audio to AAC).
+ * transcode: the server re-encodes with libx264 (slow on the free tier).
+ */
+export type RtmpRelayVideoMode = 'copy' | 'transcode';
+
 export interface RtmpRelayStartPayload {
   token: string;
   destinations: RtmpRelayDestination[];
   video: RtmpRelayVideoConfig;
   audio: RtmpRelayAudioConfig;
+  /** Missing on older studios: treated as VP8 WebM. */
+  encoding?: RtmpRelayEncoding;
+}
+
+/** The server's live encoder, from FFmpeg's progress report (every ~2 s). */
+export interface RtmpRelayEncoderStats {
+  videoMode: RtmpRelayVideoMode;
+  /** Processing speed against real time; below 1 the output falls behind. */
+  speed: number | null;
+  fps: number | null;
+  bitrateKbps: number | null;
+  /** Frames FFmpeg dropped or duplicated to keep the output rate. */
+  droppedFrames: number;
+  duplicatedFrames: number;
+  at: number;
+}
+
+/** One destination's uploader: what actually leaves the server for that platform. */
+export interface RtmpRelayDestinationStats {
+  destinationId: string;
+  bitrateKbps: number | null;
+  speed: number | null;
+  at: number;
 }
 
 export interface RtmpRelayPingPayload {
@@ -1087,7 +1256,9 @@ export interface RtmpRelayBackupRecordingPayload {
 }
 
 export type RtmpRelayServerMessage =
-  | { type: 'session-started'; payload: { roomId: string; destinationIds: string[] } }
+  | { type: 'session-started'; payload: { roomId: string; destinationIds: string[]; videoMode?: RtmpRelayVideoMode } }
+  | { type: 'encoder-stats'; payload: RtmpRelayEncoderStats }
+  | { type: 'destination-stats'; payload: RtmpRelayDestinationStats }
   | { type: 'session-stopped'; payload: { reason?: string } }
   | { type: 'pong'; payload: RtmpRelayPingPayload & { receivedAt: number } }
   | { type: 'destination-status'; payload: { destinationId: string; status: RtmpRelayDestinationStatus; message?: string } }

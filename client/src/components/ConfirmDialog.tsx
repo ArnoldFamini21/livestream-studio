@@ -25,11 +25,14 @@ export function ConfirmDialog({
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
   const cancelBtnRef = useRef<HTMLButtonElement>(null);
 
-  // Focus the cancel button when dialog opens
+  // Focus the cancel button when the dialog opens; give focus back to the opener when it closes.
   useEffect(() => {
-    if (open && cancelBtnRef.current) {
-      cancelBtnRef.current.focus();
-    }
+    if (!open) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    cancelBtnRef.current?.focus();
+    return () => {
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
   }, [open]);
 
   // Escape key closes dialog
@@ -93,7 +96,7 @@ export function ConfirmDialog({
       aria-labelledby="confirm-dialog-title"
       aria-describedby="confirm-dialog-message"
     >
-      <div ref={dialogRef} style={styles.dialog}>
+      <div ref={dialogRef} className="studio-modal-panel" style={styles.dialog}>
         <h2 id="confirm-dialog-title" style={styles.title}>
           {title}
         </h2>
@@ -114,7 +117,8 @@ export function ConfirmDialog({
             className="hover-lift"
             style={{
               ...styles.confirmBtn,
-              background: destructive ? '#ef4444' : '#7c3aed',
+              // #dc2626 keeps white text at 4.8:1 (AA); the old #ef4444 was 3.8:1.
+              background: destructive ? 'var(--danger-strong, #dc2626)' : 'var(--accent-solid, #7c3aed)',
             }}
             onClick={onConfirm}
           >
@@ -145,21 +149,20 @@ const styles: Record<string, React.CSSProperties> = {
     width: 400,
     maxWidth: '90vw',
     padding: '24px',
-    background: '#111114',
-    border: '1px solid rgba(255,255,255,0.06)',
+    background: 'var(--bg-elevated, #111114)',
+    border: '1px solid var(--border-strong, rgba(255,255,255,0.1))',
     borderRadius: 14,
-    boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
-    animation: 'scaleIn 0.15s ease-out',
+    boxShadow: 'var(--shadow-lg, 0 12px 40px rgba(0,0,0,0.5))',
   },
   title: {
     fontSize: 16,
     fontWeight: 700,
-    color: '#fafafa',
+    color: 'var(--text-primary, #fafafa)',
     margin: '0 0 8px 0',
   },
   message: {
     fontSize: 14,
-    color: '#a1a1aa',
+    color: 'var(--text-secondary, #a1a1aa)',
     lineHeight: 1.5,
     margin: '0 0 24px 0',
   },
@@ -170,9 +173,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   cancelBtn: {
     padding: '9px 18px',
-    background: '#27272a',
-    color: '#fafafa',
-    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'var(--bg-tertiary, #27272a)',
+    color: 'var(--text-primary, #fafafa)',
+    border: '1px solid var(--border-strong, rgba(255,255,255,0.1))',
     borderRadius: 10,
     fontSize: 13,
     fontWeight: 600,
