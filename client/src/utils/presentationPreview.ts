@@ -24,6 +24,12 @@ const TEXT_FIT_ATTEMPTS = 7;
 const RENDER_SETTLE_TIMEOUT_MS = 320;
 const PDF_RENDER_SCALE_LIMIT = 2;
 const SERVER_RENDER_TIMEOUT_MS = 120_000;
+/**
+ * A .pptx can always be drawn in this browser, so the media server only gets
+ * this long to convert it before the browser render takes over. A cold free
+ * Render instance can take minutes to wake; the host should not wait for it.
+ */
+export const PPTX_SERVER_RENDER_TIMEOUT_WITH_BROWSER_FALLBACK_MS = 40_000;
 
 // The media-server renderer is the exact path because it uses LibreOffice and
 // Poppler. Browser-rendered PPTX output remains opt-in so callers can use it as
@@ -52,6 +58,13 @@ interface PresentationPreviewOptions {
   allowTextPowerPointFallback?: boolean;
   pptxSlideImageRenderer?: (arrayBuffer: ArrayBuffer, expectedSlideCount: number) => Promise<string[]>;
   onServerRenderFailure?: (failure: PresentationServerRenderFailure) => void;
+  /**
+   * Start the browser .pptx render at the same time as the server request
+   * (used while the media server is still waking). The browser slides are
+   * shown as soon as they are ready and replaced by the exact LibreOffice
+   * render if it arrives in time.
+   */
+  browserRenderInParallel?: boolean;
   /**
    * A media-server render token for this studio (hosts and co-hosts get one
    * from signaling). The production renderer refuses requests without it.
@@ -1134,13 +1147,54 @@ export async function buildProgressivePresentationPreview(
     if (hasRenderedPresentationSlides(extracted)) return extracted;
   }
 
-  const pdf = await fetchServerPresentationPdf(file, options);
+  const browserFallback = options.allowBrowserPowerPointRenderFallback === true && canBrowserRenderPowerPointFile(file);
+  const browserOnlyOptions = { ...options, skipServerRender: true };
+  if (browserFallback && options.skipServerRender) return buildPresentationPreview(file, browserOnlyOptions);
+
+  // Remember a server failure so the deck never goes up a second time: once
+  // /presentation-pdf has answered with an error (or timed out), the browser
+  // renderer takes over at once instead of posting to /presentation-preview.
+  let serverFailed = false;
+  let serverSettled = false;
+  const serverOptions: typeof options = {
+    ...options,
+    serverRenderTimeoutMs: browserFallback
+      ? Math.min(options.serverRenderTimeoutMs || PPTX_SERVER_RENDER_TIMEOUT_WITH_BROWSER_FALLBACK_MS, PPTX_SERVER_RENDER_TIMEOUT_WITH_BROWSER_FALLBACK_MS)
+      : options.serverRenderTimeoutMs,
+    onServerRenderFailure: (failure) => {
+      serverFailed = true;
+      options.onServerRenderFailure?.(failure);
+    },
+  };
+
+  const parallelBrowserRender = browserFallback && options.browserRenderInParallel
+    ? buildPresentationPreview(file, browserOnlyOptions)
+      .catch(() => undefined)
+      .then((preview) => {
+        // Show the browser slides while the server is still converting.
+        if (preview && !serverSettled) {
+          options.onProgress?.({ preview, renderedCount: preview.slides.length, totalCount: preview.slides.length });
+        }
+        return preview;
+      })
+    : undefined;
+
+  const pdf = await fetchServerPresentationPdf(file, serverOptions);
+  serverSettled = true;
   if (pdf) {
     const metadata = metadataSlides.map(({ imageUrl: _imageUrl, rendered: _rendered, ...slide }) => slide);
     const rendered = await renderPdfDocumentProgressively(pdf, { sourceFormat: 'pptx', metadataSlides: metadata, onProgress: options.onProgress });
     if (rendered) return rendered;
   }
-  return buildPresentationPreview(file, options);
+  if (parallelBrowserRender) {
+    const browserPreview = await parallelBrowserRender;
+    if (browserPreview || serverFailed) return browserPreview;
+  }
+  if (serverFailed) {
+    // Legacy .ppt has no browser renderer; a second upload would only hit the same failure.
+    return browserFallback ? buildPresentationPreview(file, browserOnlyOptions) : undefined;
+  }
+  return buildPresentationPreview(file, serverOptions);
 }
 
 export async function buildPresentationPreview(

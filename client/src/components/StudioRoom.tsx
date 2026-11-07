@@ -7,6 +7,7 @@ import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraS
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
+import { deleteStoredMediaAsset, isStorableUploadedMediaAsset, loadStoredMediaAssets, mergeRestoredMediaAssets, saveStoredMediaAsset } from '../utils/mediaAssetStore.ts';
 import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, getPresentingViewLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
@@ -425,6 +426,8 @@ interface PersistedStudioState {
   pipCorner: 'TL' | 'TR' | 'BL' | 'BR';
   stageItemOrder: string[];
   mediaAssets: StudioMediaAsset[];
+  /** Highest media id handed out, so ids of uploads kept in IndexedDB are never reused. */
+  mediaIdCounter?: number;
   scenes: Scene[];
   activeSceneId: string | null;
   sceneTransitionPreset?: SceneTransitionPresetId;
@@ -812,7 +815,7 @@ function PresentationDeckStage({
 function getPersistableScenes(scenes: Scene[], mediaAssets: StudioMediaAsset[] = []): Scene[] {
   const persistableMediaIds = new Set(
     mediaAssets
-      .filter((asset) => asset.source === 'url')
+      .filter((asset) => asset.source === 'url' || isStorableUploadedMediaAsset(asset))
       .map((asset) => asset.id)
   );
 
@@ -2251,7 +2254,10 @@ export function StudioRoom() {
             timer: getMaxNumericSuffix(parsed.timers, 'timer'),
             ticker: getMaxNumericSuffix(parsed.tickers, 'ticker'),
             widget: getMaxNumericSuffix(parsed.widgets, 'widget'),
-            media: getMaxNumericSuffix(parsed.mediaAssets, 'media'),
+            media: Math.max(
+              getMaxNumericSuffix(parsed.mediaAssets, 'media'),
+              typeof parsed.mediaIdCounter === 'number' && Number.isFinite(parsed.mediaIdCounter) ? Math.floor(parsed.mediaIdCounter) : 0,
+            ),
           };
         }
       }
@@ -2263,7 +2269,27 @@ export function StudioRoom() {
       }, 0);
     }
 
+    // Uploaded decks, videos and images kept in IndexedDB come back with fresh
+    // object URLs and their rendered slides, so nothing has to be re-uploaded.
+    let restoreCancelled = false;
+    void loadStoredMediaAssets(roomId).then((restored) => {
+      if (restoreCancelled) {
+        for (const { asset } of restored) URL.revokeObjectURL(asset.url);
+        return;
+      }
+      if (restored.length === 0) return;
+      const assets = restored.map(({ asset }) => asset);
+      idCounters.current.media = Math.max(idCounters.current.media, getMaxNumericSuffix(assets, 'media'));
+      setMediaAssets((prev) => {
+        const merged = mergeRestoredMediaAssets(prev, assets);
+        const kept = new Set(merged.map((asset) => asset.url));
+        for (const asset of assets) if (!kept.has(asset.url)) URL.revokeObjectURL(asset.url);
+        return merged;
+      });
+    });
+
     return () => {
+      restoreCancelled = true;
       if (loadCompleteTimer) clearTimeout(loadCompleteTimer);
     };
   }, [applyLayout, handleSceneStingerClipChange, roomId]);
@@ -2292,6 +2318,7 @@ export function StudioRoom() {
         pipCorner,
         stageItemOrder,
         mediaAssets: getPersistableMediaAssets(mediaAssets),
+        mediaIdCounter: idCounters.current.media,
         scenes: getPersistableScenes(scenes, mediaAssets),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
         sceneTransitionPreset,
@@ -5033,6 +5060,15 @@ export function StudioRoom() {
       setMediaAssets((prev) => [...uploads.map((upload) => upload.asset), ...prev]);
     }
 
+    // Prepared uploads are kept in this browser so a reload brings them back.
+    const keepPreparedUpload = (asset: StudioMediaAsset, file: File, patch: Partial<StudioMediaAsset>) => {
+      if (!roomId) return;
+      void saveStoredMediaAsset(roomId, { ...asset, ...patch }, file).then((result) => {
+        if (!result.saved && result.reason === 'too-large') addToast(result.message, 'info');
+        else if (!result.saved && result.reason === 'error') console.warn('Could not keep upload in this browser:', result.message);
+      });
+    };
+
     const updateAsset = (id: string, patch: Partial<StudioMediaAsset>) => {
       setMediaAssets((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
       // A deck shown before all its pages were ready keeps gaining pages on stage.
@@ -5048,6 +5084,7 @@ export function StudioRoom() {
         try {
           await probeMediaAsset(asset.url, type as 'image' | 'video');
           updateAsset(asset.id, { processingStatus: 'ready', processingMessage: undefined });
+          keepPreparedUpload(asset, file, { processingStatus: 'ready', processingMessage: undefined });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'This media file could not be opened.';
           failures.push({ name: file.name, message });
@@ -5082,6 +5119,9 @@ export function StudioRoom() {
             requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
             allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
             skipServerRender: skipUnavailableServerRender,
+            // A sleeping free media server reports 'checking' while it wakes:
+            // draw the .pptx here meanwhile instead of waiting on it.
+            browserRenderInParallel: mediaServerHealth.status === 'checking',
             getAuthToken: isHostOrCoHost ? getPresentationRenderToken : undefined,
             onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
             onProgress: ({ preview: partial, renderedCount, totalCount }) => {
@@ -5099,6 +5139,7 @@ export function StudioRoom() {
           updateAsset(asset.id, preview
             ? { preview, processingStatus: 'ready', processingMessage: undefined }
             : { processingStatus: 'error', processingMessage: message });
+          if (preview) keepPreparedUpload(asset, file, { preview, processingStatus: 'ready', processingMessage: undefined });
         } catch (err) {
           console.error('Failed to render presentation media:', err);
           const message = getDeckRenderFailureMessage(type);
@@ -5174,6 +5215,7 @@ export function StudioRoom() {
     });
     setActiveMedia((current) => current?.assetId === assetId ? null : current);
     if (removedActiveMedia) setActiveMediaSlideIndex(0);
+    if (roomId) void deleteStoredMediaAsset(roomId, assetId);
   };
 
   const onStopMedia = () => {

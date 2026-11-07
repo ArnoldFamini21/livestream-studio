@@ -24,6 +24,7 @@
     "hls.js": "^1.7.3",
     "html-to-image": "^1.11.13",
     "jszip": "^3.10.1",
+    "mediabunny": "^1.62.1",
     "pdfjs-dist": "^6.3.289",
     "pptx-preview": "^1.0.7",
     "qrcode": "^1.5.4",

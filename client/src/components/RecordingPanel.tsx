@@ -4386,6 +4386,10 @@ export function RecordingPanel({
                   onDownload={downloadBlob}
                   serverExport={cleanupServerExport}
                   serverExportUnavailableReason={cleanupServerExportUnavailableReason}
+                  tracks={recordedFiles}
+                  sourceTrackIndex={recordedFiles.findIndex((file) => file === transcriptionCandidate)}
+                  studioName={roomName}
+                  markers={sortedRecordingMarkers}
                 />
               ) : generatedTranscript ? (
                 <div style={styles.transcriptPreview}>Regenerate the transcript to clean up filler words and pauses; this transcript has no word timings.</div>
