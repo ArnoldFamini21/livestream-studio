@@ -7081,13 +7081,15 @@ export function StudioRoom() {
       </div>
 
       {!captionsAllowed && myParticipant?.status === 'on-stage' && captionRelay.hostCaptionsState?.enabled && (
-        <GuestCaptionShare
-          sharing={captionRelay.shareOwnCaptions}
-          listening={captionsListening}
-          supported={captionsSupported}
-          error={captionsError}
-          onChange={captionRelay.setShareOwnCaptions}
-        />
+        <PanelErrorBoundary label="Caption sharing" placement="inline">
+          <GuestCaptionShare
+            sharing={captionRelay.shareOwnCaptions}
+            listening={captionsListening}
+            supported={captionsSupported}
+            error={captionsError}
+            onChange={captionRelay.setShareOwnCaptions}
+          />
+        </PanelErrorBoundary>
       )}
 
       {(guestNotification || (isHostOrCoHost && liveSessionSummary)) && (
@@ -7276,12 +7278,14 @@ export function StudioRoom() {
           }} footer={
             // A co-host while the host presents: remote for the host's deck.
             isHostOrCoHost && !amStageOwner && remoteStageContent?.media ? (
-              <StageRemoteControl
-                content={remoteStageContent}
-                hostName={(stageOwnerId && participants.get(stageOwnerId)?.name) || 'The host'}
-                hasLocalMedia={Boolean(activeMedia)}
-                onControl={onRemoteStageControl}
-              />
+              <PanelErrorBoundary label="Stage remote" placement="inline">
+                <StageRemoteControl
+                  content={remoteStageContent}
+                  hostName={(stageOwnerId && participants.get(stageOwnerId)?.name) || 'The host'}
+                  hasLocalMedia={Boolean(activeMedia)}
+                  onControl={onRemoteStageControl}
+                />
+              </PanelErrorBoundary>
             ) :
             isHostOrCoHost && sharedContentAvailable && <PresentationToolbar
               media={activeMedia}

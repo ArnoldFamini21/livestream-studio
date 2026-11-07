@@ -119,7 +119,9 @@ describe('StudioRoom panel boundaries', () => {
     assert.equal(depth, 0);
     for (const panel of ['ChatPanel', 'Sidebar', 'RecordingPanel', 'ProducerPanel', 'StreamDestinationsPanel', 'DeviceSelector',
       'LivePollsPanel', 'WebinarQAPanel', 'LiveCaptionsPanel', 'InvitePanel', 'SoundBoard', 'BackgroundMusic', 'ConfirmDialog',
-      'BannerOverlayDisplay', 'ReactionOverlay', 'LiveCaptionOverlay']) {
+      'BannerOverlayDisplay', 'ReactionOverlay', 'LiveCaptionOverlay',
+      // Wave 2 panels and editors.
+      'ProgramReturnMonitor', 'CustomLayoutEditor', 'GuestCaptionShare', 'StageRemoteControl']) {
       assert.ok(wrapped.has(panel), `${panel} is inside a PanelErrorBoundary`);
     }
   });
