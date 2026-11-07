@@ -306,6 +306,7 @@ import { StudioMediaBanner } from './StudioMediaBanner.tsx';
 import { EmptyStageInvite } from './EmptyStageInvite.tsx';
 import { useRecordingCountdownMirror } from '../hooks/useRecordingCountdownMirror.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
+import { PanelErrorBoundary } from './ErrorBoundary.tsx';
 import { alertGuestArrival, requestArrivalNotificationPermission } from '../utils/guestArrivalAlert.ts';
 
 const STUDIO_STATE_VERSION = 1;
@@ -1290,6 +1291,7 @@ export function StudioRoom() {
     selectedAudioDeviceId, selectedVideoDeviceId,
     selectedAudioOutputDeviceId,
     audioProcessing,
+    aiNoiseRemovalStatus,
     videoQuality,
     recommendedVideoQuality,
     updateAudioProcessing,
@@ -1364,6 +1366,7 @@ export function StudioRoom() {
     localStream: peerLocalStream,
     myParticipantId: myParticipant?.id || null,
     send,
+    musicMode: audioProcessing.musicMode,
   });
 
   // Backstage people are not on the SFU: while it carries our media to the
@@ -6310,6 +6313,12 @@ export function StudioRoom() {
   const displayedLowerThirdRef = useRef<LowerThirdData | null>(null);
   const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
   const highlightedPoll = useMemo(() => polls.find((poll) => poll.highlighted) || null, [polls]);
+  // The stage overlay boundary tries again once what it shows changes.
+  const stageOverlayResetKey = [
+    displayedLowerThird?.id, highlightedComment?.id, highlightedQA?.id, highlightedPoll?.id,
+    ...visibleBanners.map((b) => b.id), ...visibleTimers.map((t) => t.id),
+    ...visibleTickers.map((t) => t.id), ...visibleWidgets.map((w) => w.id),
+  ].join('|');
   const showCompositorDebug = import.meta.env.DEV && isLive;
   const recordingStatus = getStudioRecordingStatus({
     mixRecording: isRecording,
@@ -6584,6 +6593,7 @@ export function StudioRoom() {
         {/* A waiting guest can reach the host (and read the public chat) before
             being brought on stage, so nobody sits in the green room in silence. */}
         {offStageGuestStatus === 'green-room' && showGuestChat && (
+          <PanelErrorBoundary label="Chat">
           <ChatPanel
             messages={chatMessages.filter((msg) => !msg.isBackstage)}
             onSend={(content, recipientId) => onSendChat(content, false, recipientId)}
@@ -6607,6 +6617,7 @@ export function StudioRoom() {
             emptyText="No messages yet"
             emptyHint="Let the host know you're ready, or ask a question while you wait."
           />
+          </PanelErrorBoundary>
         )}
         </div>
         <ControlBar
@@ -6626,6 +6637,7 @@ export function StudioRoom() {
         />
 
         {offStageGuestStatus === 'backstage' && showGuestChat && (
+          <PanelErrorBoundary label="Backstage chat">
           <ChatPanel
             messages={chatMessages.filter((msg) => msg.isBackstage)}
             onSend={(content) => onSendChat(content, true)}
@@ -6639,19 +6651,23 @@ export function StudioRoom() {
             emptyText="No backstage notes yet"
             emptyHint="Coordinate with the host and backstage guests."
           />
+          </PanelErrorBoundary>
         )}
 
 
         {showHealthPanel && (
+          <PanelErrorBoundary label="Session health">
           <SessionHealthPanel audience={isHostOrCoHost ? 'operator' : 'guest'}
             summary={sessionHealth}
             meshCapacity={meshCapacity}
             sfuMediaStatus={sfuTransportStatus}
             onClose={() => setShowHealthPanel(false)}
           />
+          </PanelErrorBoundary>
         )}
 
         {showDeviceSettings && (
+          <PanelErrorBoundary label="Device settings">
           <DeviceSelector
             audioDevices={audioDevices}
             videoDevices={videoDevices}
@@ -6663,6 +6679,7 @@ export function StudioRoom() {
             onVideoDeviceChange={onVideoDeviceChange}
             onAudioOutputDeviceChange={onAudioOutputDeviceChange}
             audioProcessing={audioProcessing}
+            aiNoiseRemovalStatus={aiNoiseRemovalStatus}
             onAudioProcessingChange={onAudioProcessingChange}
             displayName={userName}
             onDisplayNameChange={onDisplayNameChange}
@@ -6675,6 +6692,7 @@ export function StudioRoom() {
             virtualBackgroundReady={vbReady}
             virtualBackgroundError={vbError}
           />
+          </PanelErrorBoundary>
         )}
       </div>
     );
@@ -7189,6 +7207,7 @@ export function StudioRoom() {
                   });
                 })()}
 
+                <PanelErrorBoundary label="Stage overlays" placement="overlay" resetKey={stageOverlayResetKey}>
                 {/* Lower Third Overlay */}
                 {displayedLowerThird && <LowerThirdOverlay key={displayedLowerThird.id} data={displayedLowerThird} />}
 
@@ -7230,6 +7249,7 @@ export function StudioRoom() {
                   brandColor={brandColor}
                   bottomOffset={captionBottomOffset}
                 />
+                </PanelErrorBoundary>
               </div>
 
               {/* Logo watermark */}
@@ -7425,14 +7445,17 @@ export function StudioRoom() {
 
           {/* Teleprompter overlay */}
           {showTeleprompter && (
+            <PanelErrorBoundary label="Teleprompter">
             <Suspense fallback={<LazyPanelFallback />}>
               <Teleprompter onClose={() => setShowTeleprompter(false)} />
             </Suspense>
+            </PanelErrorBoundary>
           )}
         </div>
 
         {/* Stream Destinations Panel */}
         {showStreamDest && (
+          <PanelErrorBoundary label="Stream destinations">
           <Suspense fallback={<LazyPanelFallback />}>
             <StreamDestinationsPanel
               destinations={destinations}
@@ -7462,10 +7485,12 @@ export function StudioRoom() {
               onYouTubeBroadcastCreated={onYouTubeBroadcastCreated}
             />
           </Suspense>
+          </PanelErrorBoundary>
         )}
 
         {/* Guest Chat Panel */}
         {!isHostOrCoHost && showGuestChat && (
+          <PanelErrorBoundary label="Chat">
           <ChatPanel
             messages={chatMessages.filter((msg) => !msg.isBackstage)}
             onSend={(content, recipientId) => onSendChat(content, false, recipientId)}
@@ -7485,10 +7510,12 @@ export function StudioRoom() {
                 role: participant.role,
               }))}
           />
+          </PanelErrorBoundary>
         )}
 
         {/* Sidebar (right) - host/co-host only */}
         {isHostOrCoHost && showSidebar && (
+          <PanelErrorBoundary label="Sidebar" resetKey={sidebarActiveTab}>
           <Sidebar
             activeTab={sidebarActiveTab}
             tabBadges={{ chat: unreadChatCount }}
@@ -7614,10 +7641,12 @@ export function StudioRoom() {
             audioDuckingEnabled={audioDuckingEnabled}
             onAudioDuckingEnabledChange={setAudioDuckingEnabled}
           />
+          </PanelErrorBoundary>
         )}
 
         {/* Webinar Q&A Panel (host) */}
         {isHostOrCoHost && showWebinarQA && (
+          <PanelErrorBoundary label="Q&A">
           <WebinarQAPanel
             questions={qaQuestions}
             onApprove={onApproveQuestion}
@@ -7627,6 +7656,7 @@ export function StudioRoom() {
             onUnhighlight={onUnhighlightQuestion}
             onClose={() => setShowWebinarQA(false)}
           />
+          </PanelErrorBoundary>
         )}
 
         {/* Webinar Q&A Audience (guest) */}
@@ -7640,6 +7670,7 @@ export function StudioRoom() {
         )}
 
         {showPolls && (
+          <PanelErrorBoundary label="Polls">
           <LivePollsPanel
             polls={polls}
             canManagePolls={canManagePolls}
@@ -7652,9 +7683,11 @@ export function StudioRoom() {
             onUnhighlightPoll={onUnhighlightPoll}
             onClose={() => setShowPolls(false)}
           />
+          </PanelErrorBoundary>
         )}
 
         {isHostOrCoHost && showCaptionsPanel && (
+          <PanelErrorBoundary label="Captions">
           <LiveCaptionsPanel
             enabled={captionsEnabled}
             listening={captionsListening}
@@ -7668,9 +7701,11 @@ export function StudioRoom() {
             onClear={clearCaptions}
             onClose={() => setShowCaptionsPanel(false)}
           />
+          </PanelErrorBoundary>
         )}
 
         {isHostOrCoHost && showInvitePanel && (
+          <PanelErrorBoundary label="Invite">
           <Suspense fallback={<LazyPanelFallback />}>
             <InvitePanel
               roomName={room?.name || 'Studio'}
@@ -7689,12 +7724,14 @@ export function StudioRoom() {
               onClose={() => setShowInvitePanel(false)}
             />
           </Suspense>
+          </PanelErrorBoundary>
         )}
 
         <RecordingTransferBadge transfers={recordingWorkflow.transfers} guestLine={recordingWorkflow.guestLine} />
 
         {/* Recording Panel */}
         {canControlRecording && showRecordingPanel && (
+          <PanelErrorBoundary label="Recording">
           <Suspense fallback={<LazyPanelFallback />}>
             <RecordingPanel
               isRecording={isLocalRecording}
@@ -7743,6 +7780,7 @@ export function StudioRoom() {
               )}
             />
           </Suspense>
+          </PanelErrorBoundary>
         )}
       </main>
 
@@ -7790,6 +7828,7 @@ export function StudioRoom() {
 
       {/* Producer Panel (full-screen overlay) */}
       {isHostOrCoHost && showProducerPanel && (
+        <PanelErrorBoundary label="Producer">
         <Suspense fallback={<LazyPanelFallback />}>
           <ProducerPanel
             participants={allParticipantsMap}
@@ -7810,40 +7849,48 @@ export function StudioRoom() {
             onClose={() => setShowProducerPanel(false)}
           />
         </Suspense>
+        </PanelErrorBoundary>
       )}
 
       {/* Sound Board Modal */}
       {showSoundBoard && (
+        <PanelErrorBoundary label="Sound board">
         <Suspense fallback={<LazyPanelFallback />}>
           <SoundBoard
             onClose={() => setShowSoundBoard(false)}
             player={soundBoardPlayer}
           />
         </Suspense>
+        </PanelErrorBoundary>
       )}
 
       {/* Background Music dock (playback lives in StudioRoom) */}
       {showBackgroundMusic && (
+        <PanelErrorBoundary label="Background music">
         <Suspense fallback={<LazyPanelFallback />}>
           <BackgroundMusic
             onClose={() => setShowBackgroundMusic(false)}
             player={backgroundMusicPlayer}
           />
         </Suspense>
+        </PanelErrorBoundary>
       )}
 
       {/* Session Health Panel */}
       {showHealthPanel && (
+        <PanelErrorBoundary label="Session health">
         <SessionHealthPanel audience={isHostOrCoHost ? 'operator' : 'guest'}
           summary={sessionHealth}
           meshCapacity={meshCapacity}
           sfuMediaStatus={sfuTransportStatus}
           onClose={() => setShowHealthPanel(false)}
         />
+        </PanelErrorBoundary>
       )}
 
       {/* Device Settings Modal */}
       {showDeviceSettings && (
+        <PanelErrorBoundary label="Device settings">
         <DeviceSelector
           audioDevices={audioDevices}
           videoDevices={videoDevices}
@@ -7855,6 +7902,7 @@ export function StudioRoom() {
           onVideoDeviceChange={onVideoDeviceChange}
           onAudioOutputDeviceChange={onAudioOutputDeviceChange}
           audioProcessing={audioProcessing}
+          aiNoiseRemovalStatus={aiNoiseRemovalStatus}
           onAudioProcessingChange={onAudioProcessingChange}
           displayName={userName}
           onDisplayNameChange={onDisplayNameChange}
@@ -7867,6 +7915,7 @@ export function StudioRoom() {
           virtualBackgroundReady={vbReady}
           virtualBackgroundError={vbError}
         />
+        </PanelErrorBoundary>
       )}
 
       {/* Room Ending Countdown Overlay */}
@@ -7899,6 +7948,7 @@ export function StudioRoom() {
         </div>
       )}
 
+      <PanelErrorBoundary label="End session" resetKey={endSessionStep}>
       <ConfirmDialog
         open={endSessionStep === 'confirm'}
         title={endSessionPrompt.title}
@@ -7908,6 +7958,8 @@ export function StudioRoom() {
         onConfirm={() => { void confirmEndSession(); }}
         onCancel={cancelEndSession}
       />
+      </PanelErrorBoundary>
+      <PanelErrorBoundary label="End session" resetKey={endSessionStep}>
       <ConfirmDialog
         open={endSessionStep === 'uploads'}
         title="Finishing guest recordings"
@@ -7917,6 +7969,7 @@ export function StudioRoom() {
         onConfirm={finishEndSession}
         onCancel={cancelEndSession}
       />
+      </PanelErrorBoundary>
     </div>
   );
 }

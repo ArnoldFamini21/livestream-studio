@@ -2,7 +2,9 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   createAudioTrackConstraints,
   normalizeAudioProcessingPreferences,
+  usesAiNoiseRemoval,
 } from '../utils/audioProcessing.ts';
+import type { AiNoiseRemovalStatus } from '../utils/aiNoiseRemoval.ts';
 import {
   createEnhancedAudioStream,
   type EnhancedAudioStream,
@@ -90,6 +92,17 @@ export function useMediaDevices() {
   const audioOutputIdRef = useRef<string>(selectedAudioOutputDeviceId);
   const audioProcessingOptionsRef = useRef<AudioProcessingPreferences>(readPreferredAudioProcessing());
   const videoQualityRef = useRef<VideoQualityPresetId>(readPreferredVideoQuality());
+  const [aiNoiseRemovalStatus, setAiNoiseRemovalStatus] = useState<AiNoiseRemovalStatus>('off');
+  const aiStatusOwnerRef = useRef<EnhancedAudioStream | null>(null);
+  /** Make this processed mic the current one and follow its RNNoise stage for the settings panel. */
+  const adoptEnhancedAudio = useCallback((enhancedAudio: EnhancedAudioStream) => {
+    enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
+    aiStatusOwnerRef.current = enhancedAudio;
+    setAiNoiseRemovalStatus(usesAiNoiseRemoval(audioProcessingOptionsRef.current) ? 'loading' : 'off');
+    void enhancedAudio.aiNoiseRemoval.then((status) => {
+      if (aiStatusOwnerRef.current === enhancedAudio) setAiNoiseRemovalStatus(status);
+    });
+  }, []);
 
   const publishStreamUpdate = useCallback(() => {
     if (!streamRef.current) {
@@ -287,7 +300,7 @@ export function useMediaDevices() {
         : acquired.usedFallback ? 'Preferred device unavailable - using available camera and microphone' : null);
       const enhancedAudio = createEnhancedAudioStream(stream, nextAudioProcessing);
       stream = enhancedAudio.stream;
-      enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
+      adoptEnhancedAudio(enhancedAudio);
       // Track which devices are actually active
       const activeAudioTrack = stream.getAudioTracks()[0];
       const activeSourceAudioTrack = enhancedAudio.sourceTrack || activeAudioTrack;
@@ -418,7 +431,7 @@ export function useMediaDevices() {
           throw new DOMException('The microphone did not return an audio track.', 'NotReadableError');
         }
         enhancedAudioRef.current?.cleanup({ stopSource: true });
-        enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
+        adoptEnhancedAudio(enhancedAudio);
         track.enabled = true;
         if (sourceTrack !== track) sourceTrack.enabled = true;
         sourceTrack.onended = () => {
@@ -528,7 +541,7 @@ export function useMediaDevices() {
         oldAudioTrack.stop();
       }
       previousEnhancedAudio?.cleanup({ stopSource: true });
-      enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
+      adoptEnhancedAudio(enhancedAudio);
 
       // Bug fix #15: Add track.onended listener for new audio track
       (newSourceAudioTrack || newAudioTrack).onended = () => {
@@ -718,7 +731,7 @@ export function useMediaDevices() {
                 throw new Error('Fallback microphone did not return an audio track.');
               }
               previousEnhancedAudio?.cleanup({ stopSource: true });
-              enhancedAudioRef.current = enhancedAudio.enhanced ? enhancedAudio : null;
+              adoptEnhancedAudio(enhancedAudio);
               const nextEnabled = replaceFallbackMediaTrack(streamRef.current, publishedAudioTrack, newTrack, newSourceTrack);
               publishStreamUpdate();
               setSelectedAudioDeviceId(fallbackAudio.deviceId);
@@ -831,6 +844,7 @@ export function useMediaDevices() {
     audioProcessing,
     videoQuality,
     recommendedVideoQuality,
+    aiNoiseRemovalStatus,
     // Selected devices
     selectedAudioDeviceId,
     selectedVideoDeviceId,

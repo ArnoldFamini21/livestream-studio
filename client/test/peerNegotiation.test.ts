@@ -417,3 +417,37 @@ test('a polite side whose peer never offers still starts the connection', async 
   assert.deepEqual(sent.map(d => d.type), ['offer']);
   negotiation.dispose();
 });
+
+test('applies codec preferences and description rewrites around every offer and answer', async () => {
+  const pc = new FakePeer();
+  const sent: RTCSessionDescriptionInit[] = [];
+  const prepared: string[] = [];
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, d => sent.push(d), () => true, 5_000, 10_000, 1_500, {
+    beforeCreateDescription: () => { prepared.push(pc.signalingState); },
+    transformLocalDescription: (d) => ({ type: d.type, sdp: `${d.sdp} +local` }),
+    transformRemoteDescription: (d) => ({ type: d.type, sdp: `${d.sdp} +remote` }),
+  });
+
+  await negotiation.offer();
+  assert.equal(pc.localDescription?.sdp, 'local offer +local');
+  assert.equal(sent[0].sdp, 'local offer +local', 'the rewritten offer is what goes out');
+  await negotiation.receiveAnswer(remoteAnswer);
+  assert.equal(pc.remoteDescription?.sdp, 'remote answer +remote');
+
+  await negotiation.receiveOffer(remoteOffer);
+  assert.equal(pc.remoteDescription?.sdp, 'remote offer +remote');
+  assert.equal(pc.localDescription?.sdp, 'local answer +local');
+  assert.deepEqual(prepared, ['stable', 'have-remote-offer'], 'codec order is set before createOffer and createAnswer');
+  negotiation.dispose();
+});
+
+test('a failing codec preference step does not block negotiation', async () => {
+  const pc = new FakePeer();
+  const sent: RTCSessionDescriptionInit[] = [];
+  const negotiation = new PeerNegotiation(pc as unknown as RTCPeerConnection, false, d => sent.push(d), () => true, 5_000, 10_000, 1_500, {
+    beforeCreateDescription: () => { throw new Error('InvalidModificationError'); },
+  });
+  await negotiation.offer();
+  assert.equal(sent.length, 1);
+  negotiation.dispose();
+});

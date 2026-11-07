@@ -121,3 +121,12 @@ services:
       # Keep at least this much disk free for HLS and the live backup.
       - key: RECORDING_UPLOAD_MIN_FREE_MB
         value: "1024"
+      # SFU relay: Render has no inbound UDP, so the werift SFU allocates its
+      # candidates on Cloudflare Realtime TURN (same free key as the server).
+      # Without it the SFU cannot connect on Render and stages stay on the mesh.
+      - key: CLOUDFLARE_TURN_KEY_ID
+        sync: false
+      - key: CLOUDFLARE_TURN_API_TOKEN
+        sync: false
+      - key: SFU_TURN_TRANSPORT
+        value: udp

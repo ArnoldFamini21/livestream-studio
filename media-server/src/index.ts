@@ -45,6 +45,7 @@ import { SfuManager } from './sfuManager.js';
 import { RecordingUploadRevocations } from './uploadRevocations.js';
 import { parseSfuAuthFrame, verifySfuIdentity } from './sfuAuth.js';
 import { SfuMediaTransport } from './sfuTransport.js';
+import { createSfuIceConfigProvider } from './sfuIceServers.js';
 import {
   createFfmpegLiveBackupArgs,
   createLiveBackupRecording,
@@ -2184,11 +2185,13 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
+// One TURN credential set for every SFU peer connection (Render has no inbound UDP).
+const resolveSfuIceConfig = createSfuIceConfigProvider();
 const sfuManager = new SfuManager({}, (roomSend) => new SfuMediaTransport({
   onIceCandidate: (participantId, side, candidate) => {
     roomSend(participantId, { type: 'sfu-transport-ice', side, candidate });
   },
-}));
+}, undefined, { resolveIceConfig: resolveSfuIceConfig }));
 
 sfuWss.on('connection', (ws) => {
   let sfuParticipantId: string | null = null;

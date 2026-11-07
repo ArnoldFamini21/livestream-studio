@@ -24,7 +24,7 @@ Everything below runs on free tiers. Work through it once after the first deploy
 
 1. **Shared secret.** Generate one long random value (`openssl rand -base64 48`) and set it as `LIVE_STREAM_TOKEN_SECRET` on **both** Render services.
 2. **Owner-only studios.** On `livestream-studio-server`, set `STUDIO_OWNER_EMAILS` to your account email (comma-separated for more than one) and/or `STUDIO_CREATE_SECRET` to a long random key. Until one is set anyone can create a studio and use your relay, TURN and chat keys (warning `studio-creation-open`); nothing breaks when you add them later. With the key set, the **Create studio** dialog asks for the "Studio access key" once per browser (it can also be saved under **Settings & account → Studio access key**). Studios created that way are the only ones allowed to use the server's YouTube/Facebook chat keys. Studios you made before setting the key become yours the first time you host them from a browser that has the access key saved (or while signed in with an owner account), so they keep chat import; until then, and for studios other people made, chat keys are refused and a restore ticket no longer rebuilds them after a restart.
-3. **TURN relay.** Create a free Cloudflare Realtime TURN key and set `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_API_TOKEN` on the server (details below). Relay credentials are only handed to browsers holding an admitted seat in a studio (not the green room; a guest gets them the moment they are admitted); the pre-join device check gets STUN servers only.
+3. **TURN relay.** Create a free Cloudflare Realtime TURN key and set `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_API_TOKEN` on the server (details below). Relay credentials are only handed to browsers holding an admitted seat in a studio (not the green room; a guest gets them the moment they are admitted); the pre-join device check gets STUN servers only. Set the **same two variables on `livestream-studio-media-server`** as well: the SFU (used once five or more people are on stage) needs its own relay on Render, see "SFU on Render needs TURN" below.
 4. **Control plane.** `MEDIA_SERVER_URL` (already in `render.yaml`) must point at the media server so removing a guest revokes their SFU session and uploads at once (warning `sfu-revocation-disabled` otherwise).
 5. **Database.** Paste a free Postgres connection string (Neon, Supabase) as `DATABASE_URL` so studios survive restarts.
 6. **Optional chat import.** `YOUTUBE_API_KEY` / `FACEBOOK_ACCESS_TOKEN` on the server.
@@ -96,6 +96,23 @@ CLOUDFLARE_TURN_API_TOKEN=<turn key api token>
 ```
 
 The server requests 24-hour credentials from Cloudflare, reuses them for 12 hours, and drops the port-53 URLs that browsers block. If Cloudflare cannot be reached, it falls back to the configuration below. `/health` reports `ice.source: "cloudflare"`.
+
+### SFU on Render needs TURN
+
+With five or more people on stage the studio moves stage media from the peer-to-peer mesh to the werift SFU on `livestream-studio-media-server`. A Render web service accepts only HTTP(S): no inbound UDP reaches the container, so the SFU's own (host) candidates are private addresses no browser can reach, and without a relay the SFU never connects there (the studio then stays on the mesh, which works but does not scale past a handful of people).
+
+Set the same Cloudflare TURN key on the media server:
+
+```bash
+CLOUDFLARE_TURN_KEY_ID=<turn key id>
+CLOUDFLARE_TURN_API_TOKEN=<turn key api token>
+# Optional: which TURN transport the SFU allocates on (udp, tcp or tls; default udp).
+SFU_TURN_TRANSPORT=udp
+```
+
+The media server mints 24-hour credentials the same way the signaling server does, shares them between all SFU connections, refreshes them after 12 hours, and keeps the old ones through a failed refresh while they are valid. With TURN configured the SFU gathers relay candidates only (`iceTransportPolicy: relay`); browsers reach it through the relay with their own candidates. If the variables are missing, or Cloudflare cannot be reached and no valid credentials are cached, the SFU offers host candidates as before and logs a warning; browsers whose SFU connection fails go back to the mesh by themselves. Use `SFU_TURN_TRANSPORT=tcp` only if outbound UDP from the container turns out to be blocked.
+
+The SFU also asks a publisher for a keyframe (RTCP PLI) whenever a subscriber joins, connects, switches simulcast layer or reports a lost picture, so late joiners do not see frozen video, and each browser reports its downlink budget from its inbound stats so the SFU picks layers that fit.
 
 **Fallback.** With no TURN settings at all, the server uses Metered's free Open Relay (`staticauth.openrelay.metered.ca`) and mints short-lived credentials from its published secret. The old static `openrelayproject` password no longer works. The free relay is shared by everyone and capped at 20 GB a month, so it is not treated as production ready by the health metadata.
 

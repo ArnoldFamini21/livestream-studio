@@ -29,6 +29,11 @@ import {
 import { sendScreenOnConnection, stopScreenOnConnection } from '../utils/screenTransceiver.ts';
 import { replacePeerMediaTrack } from '../utils/peerMediaSender.ts';
 import {
+  applyAudioCodecPreferences,
+  applyAudioSenderPriority,
+  transformDescriptionForMusicMode,
+} from '../utils/audioTransport.ts';
+import {
   decideIncomingAnswer,
   decideIncomingCandidate,
   decideIncomingOffer,
@@ -72,6 +77,8 @@ interface UseWebRTCProps {
   localStream: MediaStream | null;
   myParticipantId: string | null;
   send: (message: SignalMessage) => void;
+  /** Music mode: stereo 128 kbps Opus without RED; otherwise voice (RED first). */
+  musicMode?: boolean;
 }
 
 /** Same as the signaling server's PC_ID_PATTERN. */
@@ -95,7 +102,7 @@ function liveAudioTracks(stream: MediaStream | null): MediaStreamTrack[] {
   return stream ? stream.getAudioTracks().filter((track) => track.readyState === 'live') : [];
 }
 
-export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps) {
+export function useWebRTC({ localStream, myParticipantId, send, musicMode = false }: UseWebRTCProps) {
   const peersRef = useRef<Map<string, PeerState>>(new Map());
   const iceConfigRef = useRef<RTCConfiguration>(getSharedIceConfigLoader().latest.config || DEFAULT_ICE_CONFIG);
   const iceReadyRef = useRef<Promise<void>>(Promise.resolve());
@@ -144,6 +151,15 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
   const sendRef = useRef(send);
   useEffect(() => { sendRef.current = send; }, [send]);
+
+  const musicModeRef = useRef(musicMode);
+  useEffect(() => {
+    if (musicModeRef.current === musicMode) return;
+    musicModeRef.current = musicMode;
+    // Opus parameters and the codec order are negotiated: offer again on every
+    // mesh connection so the new mode takes effect without rebuilding it.
+    for (const peer of peersRef.current.values()) void peer.negotiation.offer().catch(() => {});
+  }, [musicMode]);
 
   const localStreamRef = useRef(localStream);
   const publishedTracksRef = useRef<Map<'audio' | 'video', MediaStreamTrack>>(new Map());
@@ -338,6 +354,9 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
           {
             // ICE restarts did not bring it back: start over with a new connection.
             onRecoveryExhausted: () => rebuildPeerRef.current(remoteParticipantId, peerState),
+            beforeCreateDescription: () => { applyAudioCodecPreferences(pc, musicModeRef.current); },
+            transformLocalDescription: (description) => transformDescriptionForMusicMode(description, musicModeRef.current),
+            transformRemoteDescription: (description) => transformDescriptionForMusicMode(description, musicModeRef.current),
           },
         ),
       };
@@ -429,6 +448,9 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
           const mode = bandwidthStatesRef.current.get(remoteParticipantId)?.mode || 'full';
           void applyPeerBandwidthMode(peerState, mode);
           void applyScreenSendLimits(peerState);
+          // Speech goes first when the link is congested.
+          void applyAudioSenderPriority(peerState.senders.get('audio'));
+          void applyAudioSenderPriority(peerState.screenAudioTransceiver?.sender);
         } else if (peerState.everConnected && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
           setPeerReconnecting(remoteParticipantId, true);
         } else if (pc.connectionState === 'closed') {

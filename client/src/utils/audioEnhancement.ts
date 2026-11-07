@@ -1,4 +1,10 @@
 import type { AudioProcessingPreferences } from './mediaPreferences.ts';
+import {
+  createAiNoiseRemovalNode,
+  disposeAiNoiseRemovalNode,
+  type AiNoiseRemovalStatus,
+} from './aiNoiseRemoval.ts';
+import { usesAiNoiseRemoval } from './audioProcessing.ts';
 
 type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
 
@@ -27,6 +33,8 @@ export interface EnhancedAudioStream {
   sourceTrack: MediaStreamTrack | null;
   outputTrack: MediaStreamTrack | null;
   enhanced: boolean;
+  /** Settles once the RNNoise stage is running ('active') or known not to ('off' / 'unavailable'). */
+  aiNoiseRemoval: Promise<AiNoiseRemovalStatus>;
   cleanup: (options?: { stopSource?: boolean }) => void;
 }
 
@@ -119,22 +127,35 @@ export function getVoiceGateState(
   };
 }
 
+
+export interface EnhancedAudioStreamOptions {
+  /** Builds the RNNoise node; injectable for tests. */
+  createDenoiser?: (context: AudioContext) => Promise<AudioNode>;
+  /** Frees a node createDenoiser made. */
+  disposeDenoiser?: (node: AudioNode) => void;
+}
+
 export function createEnhancedAudioStream(
   inputStream: MediaStream,
-  preferences: AudioProcessingPreferences
+  preferences: AudioProcessingPreferences,
+  options: EnhancedAudioStreamOptions = {}
 ): EnhancedAudioStream {
   const sourceTrack = inputStream.getAudioTracks()[0] || null;
+  const wantsAiNoiseRemoval = usesAiNoiseRemoval(preferences);
   const passthrough = (): EnhancedAudioStream => ({
     stream: inputStream,
     sourceTrack,
     outputTrack: sourceTrack,
     enhanced: false,
+    aiNoiseRemoval: Promise.resolve(wantsAiNoiseRemoval ? 'unavailable' : 'off'),
     cleanup: ({ stopSource = false } = {}) => {
       if (stopSource) sourceTrack?.stop();
     },
   });
 
-  if (!sourceTrack || (!preferences.noiseSuppression && !preferences.voiceIsolation)) return passthrough();
+  // Music mode is original sound: no gate, filters or compressor either.
+  if (!sourceTrack || preferences.musicMode) return passthrough();
+  if (!preferences.noiseSuppression && !preferences.voiceIsolation && !wantsAiNoiseRemoval) return passthrough();
 
   const AudioContextConstructor = getAudioContextConstructor();
   if (!AudioContextConstructor) return passthrough();
@@ -175,9 +196,16 @@ export function createEnhancedAudioStream(
     lowPass.connect(compressor);
     compressor.connect(destination);
 
+    let denoiser: AudioNode | null = null;
+    let closed = false;
     const samples = new Float32Array(new ArrayBuffer(analyser.fftSize * Float32Array.BYTES_PER_ELEMENT));
     let gateState = getVoiceGateState(profile.minFloor, profile.minFloor, profile);
     const gateTimer = window.setInterval(() => {
+      if (denoiser) {
+        // RNNoise already removes the noise between words; gating on top of it pumps.
+        gateGain.gain.setTargetAtTime(1, audioContext.currentTime, profile.gateOpenTimeConstant);
+        return;
+      }
       const rms = getTimeDomainRms(analyser, samples);
       gateState = getVoiceGateState(rms, gateState.noiseFloor, profile);
       gateGain.gain.setTargetAtTime(
@@ -194,6 +222,34 @@ export function createEnhancedAudioStream(
       return passthrough();
     }
 
+    const createDenoiser = options.createDenoiser ?? createAiNoiseRemovalNode;
+    const disposeDenoiser = options.disposeDenoiser
+      ?? ((node: AudioNode) => disposeAiNoiseRemovalNode(node as AudioWorkletNode));
+    const aiNoiseRemoval: Promise<AiNoiseRemovalStatus> = !wantsAiNoiseRemoval
+      ? Promise.resolve('off')
+      : createDenoiser(audioContext).then((node) => {
+        if (closed) {
+          disposeDenoiser(node);
+          return 'off' as const;
+        }
+        // Splice RNNoise in right after the mic, ahead of the filters and the
+        // meter; both changes land in the same render quantum.
+        source.disconnect();
+        source.connect(node);
+        node.connect(analyser);
+        node.connect(highPass);
+        denoiser = node;
+        return 'active' as const;
+      }, (error: unknown) => {
+        console.warn('AI noise removal is unavailable; using the browser noise suppressor:', error);
+        // The browser suppressor was switched off for RNNoise; ask for it back.
+        if (!closed && preferences.noiseSuppression && typeof sourceTrack.applyConstraints === 'function') {
+          const current = typeof sourceTrack.getConstraints === 'function' ? sourceTrack.getConstraints() : {};
+          void sourceTrack.applyConstraints({ ...current, noiseSuppression: { ideal: true } }).catch(() => {});
+        }
+        return closed ? 'off' as const : 'unavailable' as const;
+      });
+
     outputTrack.enabled = sourceTrack.enabled;
     const stream = new MediaStream();
     stream.addTrack(outputTrack);
@@ -204,9 +260,13 @@ export function createEnhancedAudioStream(
       sourceTrack,
       outputTrack,
       enhanced: true,
+      aiNoiseRemoval,
       cleanup: ({ stopSource = false } = {}) => {
+        closed = true;
         window.clearInterval(gateTimer);
         try { source.disconnect(); } catch { /* already disconnected */ }
+        if (denoiser) disposeDenoiser(denoiser);
+        denoiser = null;
         try { analyser.disconnect(); } catch { /* already disconnected */ }
         try { highPass.disconnect(); } catch { /* already disconnected */ }
         try { gateGain.disconnect(); } catch { /* already disconnected */ }
