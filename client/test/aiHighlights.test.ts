@@ -3,6 +3,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   hasEnoughCaptionsForAiHighlights,
   requestAiHighlights,
+  requestCloudAiHighlights,
 } from '../src/utils/aiHighlights.ts';
 import { mapAiHighlightSuggestions } from '../src/utils/clipSuggestions.ts';
 
@@ -92,7 +93,7 @@ describe('requestAiHighlights', () => {
       });
     };
 
-    const result = await requestAiHighlights({
+    const result = await requestCloudAiHighlights({
       captionSegments: [
         captionAt(10, 'How does pricing work for teams?'),
         captionAt(15, 'It starts free and scales with seats.'),
@@ -129,7 +130,7 @@ describe('requestAiHighlights', () => {
     globalThis.fetch = async () => jsonResponse({ error: 'AI highlight suggestions are not configured on this server.' }, 503);
 
     await assert.rejects(
-      () => requestAiHighlights({
+      () => requestCloudAiHighlights({
         captionSegments: [
           captionAt(0, 'first line here'),
           captionAt(2, 'second line here'),

@@ -48,8 +48,12 @@ import {
   ROOM_NOT_OPEN_ERROR_CODE,
   SCHEDULED_GUEST_ACCESS_MESSAGE,
   STAGE_CONTROL_ACTIONS,
+  CAPTION_SEGMENT_RATE_LIMIT_MAX,
+  CAPTION_SEGMENT_RATE_LIMIT_WINDOW_MS,
   canExchangeStudioMedia,
   getStageOwnerId,
+  sanitizeCaptionSegment,
+  sanitizeCaptionsState,
   isChatReactionType,
   isValidProgramReturnStreamId,
   isScheduledGuestAccessBlocked,
@@ -248,6 +252,8 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'heartbeat',
   'stage-content-updated',
   'stage-control',
+  'caption-segment',
+  'captions-state',
   'program-return-announce',
   'join-room',
   'offer',
@@ -358,6 +364,11 @@ export const STAGE_CONTROL_RATE_LIMIT_WINDOW_MS = 5_000;
 const stageControlRateLimiter = new WsRateLimiter<WebSocket>(
   { control: STAGE_CONTROL_RATE_LIMIT_MAX, relay: STAGE_CONTROL_RATE_LIMIT_MAX },
   STAGE_CONTROL_RATE_LIMIT_WINDOW_MS,
+);
+/** Guest live captions: finals plus throttled interim updates, tight enough that a stuck client cannot flood hosts. */
+const captionSegmentRateLimiter = new WsRateLimiter<WebSocket>(
+  { control: CAPTION_SEGMENT_RATE_LIMIT_MAX, relay: CAPTION_SEGMENT_RATE_LIMIT_MAX },
+  CAPTION_SEGMENT_RATE_LIMIT_WINDOW_MS,
 );
 
 /**
@@ -1326,6 +1337,12 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'stage-control':
       handleStageControl(ws, message.payload);
+      break;
+    case 'caption-segment':
+      handleCaptionSegment(ws, message.payload);
+      break;
+    case 'captions-state':
+      handleCaptionsState(ws, message.payload);
       break;
     case 'program-return-announce':
       handleProgramReturnAnnounce(ws, message.payload);
@@ -2337,6 +2354,68 @@ function handleStageControl(ws: WebSocket, payload: StageControlPayload) {
       from: mapping.participantId,
     },
   });
+}
+
+/**
+ * An on-stage participant's own live caption. Only people on stage may send
+ * (their speech is what the program carries); the server stamps who sent it
+ * and relays it to the hosts and co-hosts who are in the studio, never to
+ * other guests or the green room.
+ */
+function handleCaptionSegment(ws: WebSocket, payload: unknown) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+  const sender = roomState.participants.get(mapping.participantId)?.participant;
+  if (!sender) return;
+  if (sender.status !== 'on-stage') {
+    sendError(ws, 'Only people on stage can share captions', 'UNAUTHORIZED');
+    return;
+  }
+  const rate = captionSegmentRateLimiter.check(ws, 'caption-segment');
+  if (!rate.allowed) {
+    if (rate.notify) sendError(ws, 'Too many caption updates. Please slow down.', 'RATE_LIMITED');
+    return;
+  }
+  const segment = sanitizeCaptionSegment(payload);
+  if (!segment) {
+    sendError(ws, 'Invalid caption segment', 'INVALID_PAYLOAD');
+    return;
+  }
+  const message: SignalMessage = {
+    type: 'caption-segment',
+    payload: { ...segment, participantId: sender.id, speakerName: sender.name },
+  };
+  for (const [id, entry] of roomState.participants) {
+    if (id === mapping.participantId) continue;
+    if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') continue;
+    if (entry.ws.readyState !== WebSocket.OPEN) continue;
+    try {
+      send(entry.ws, message);
+    } catch (err) {
+      console.error(`Failed to relay a caption to ${id}:`, (err as Error).message);
+    }
+  }
+}
+
+/** A host or co-host turned live captions on or off; admitted participants may then opt in. */
+function handleCaptionsState(ws: WebSocket, payload: unknown) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+  const sender = roomState.participants.get(mapping.participantId)?.participant;
+  if (!sender || !isOperatorRole(sender.role) || sender.status === 'green-room') {
+    sendError(ws, 'Only hosts and co-hosts can turn captions on', 'UNAUTHORIZED');
+    return;
+  }
+  const state = sanitizeCaptionsState(payload);
+  if (!state) {
+    sendError(ws, 'Invalid captions state', 'INVALID_PAYLOAD');
+    return;
+  }
+  broadcastToRoom(mapping.roomId, { type: 'captions-state', payload: { ...state, from: sender.id } }, mapping.participantId);
 }
 
 /**
@@ -4618,6 +4697,7 @@ const DELIBERATE_CLOSE_CODES = new Set([1000, 1005]);
 function handleDisconnect(ws: WebSocket, code?: number) {
   wsRateLimiter.forget(ws);
   stageControlRateLimiter.forget(ws);
+  captionSegmentRateLimiter.forget(ws);
   pendingJoins.delete(ws);
 
   const mapping = wsToParticipant.get(ws);
@@ -4764,6 +4844,8 @@ function isVisibleInGreenRoom(message: SignalMessage, recipientId: string, roomS
       return message.payload.targetParticipantId === recipientId;
     case 'stage-content-updated':
     case 'stage-control':
+    case 'caption-segment':
+    case 'captions-state':
     case 'program-return-announce':
     case 'poll-updated':
     case 'qa-question-updated':

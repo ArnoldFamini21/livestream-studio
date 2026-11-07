@@ -1,6 +1,7 @@
 import { ApiRequestError, postJson } from './apiClient.ts';
 import { accountHeaders } from './accountAuth.ts';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions.ts';
+import { LOCAL_AI_REQUIREMENT_NOTE, loadCloudAiFallback, translateWithLocalAi, type LocalAiScope } from './localAi.ts';
 
 const TRANSLATION_TIMEOUT_MS = 60_000;
 const MAX_TRANSLATION_SEGMENTS = 1500;
@@ -30,6 +31,13 @@ export const CAPTION_TRANSLATION_LANGUAGES: CaptionTranslationTargetLanguage[] =
 export interface CaptionTranslationRequestInput {
   segments: LiveCaptionSegment[];
   targetLanguage: string;
+  /** BCP-47 language the captions were recognized in (e.g. 'en-US'). */
+  sourceLanguage?: string;
+  /** Use the server route when on-device translation is unavailable (defaults to the saved preference). */
+  cloudFallback?: boolean;
+  /** Test seams. */
+  localAi?: LocalAiScope;
+  requestCloud?: (input: CaptionTranslationRequestInput) => Promise<CaptionTranslationResult>;
 }
 
 export interface CaptionTranslationResult {
@@ -69,9 +77,46 @@ export function mergeTranslatedSegments(
   }));
 }
 
+/**
+ * Caption translation, free first: Chrome's on-device Translator (with the
+ * LanguageDetector when the source language is unknown), then the studio
+ * server when the owner opted in because they configured an OpenAI key.
+ */
 export async function requestCaptionTranslation(
   input: CaptionTranslationRequestInput
 ): Promise<CaptionTranslationResult> {
+  const requestSegments = validateTranslationInput(input);
+  let localProblem = '';
+  try {
+    const translated = await translateWithLocalAi(
+      requestSegments.map((segment) => segment.text),
+      input.targetLanguage,
+      { sourceLanguage: input.sourceLanguage },
+      input.localAi
+    );
+    if (translated) {
+      return {
+        segments: mergeTranslatedSegments(
+          input.segments,
+          translated.map((text, index) => ({ id: requestSegments[index].id, text }))
+        ),
+        targetLanguage: input.targetLanguage,
+        model: 'Chrome built-in Translator (on this device)',
+      };
+    }
+  } catch (err) {
+    localProblem = `On-device translation failed (${err instanceof Error ? err.message : 'unknown error'}). `;
+  }
+  if (input.cloudFallback ?? loadCloudAiFallback()) {
+    return (input.requestCloud || requestCloudCaptionTranslation)(input);
+  }
+  throw new ApiRequestError(
+    `${localProblem}This language pair is not available on this device. ${LOCAL_AI_REQUIREMENT_NOTE} `
+      + 'If the studio server has an OpenAI key, turn on the cloud AI fallback.'
+  );
+}
+
+function validateTranslationInput(input: CaptionTranslationRequestInput): TranslatedSegmentPayload[] {
   const requestSegments = buildTranslationRequestSegments(input.segments);
   if (requestSegments.length === 0) {
     throw new ApiRequestError('Record some captions before translating them.');
@@ -79,6 +124,14 @@ export async function requestCaptionTranslation(
   if (!input.targetLanguage) {
     throw new ApiRequestError('Choose a target language for the translation.');
   }
+  return requestSegments;
+}
+
+/** The studio server route (OpenAI). Used only when the owner opted into the cloud fallback. */
+export async function requestCloudCaptionTranslation(
+  input: CaptionTranslationRequestInput
+): Promise<CaptionTranslationResult> {
+  const requestSegments = validateTranslationInput(input);
 
   const data = await postJson<{ translations?: TranslatedSegmentPayload[]; targetLanguage?: unknown; model?: unknown }>(
     '/api/translate-captions',

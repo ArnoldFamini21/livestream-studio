@@ -61,6 +61,10 @@ import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalR
 import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
+import { useCaptionRelay } from '../hooks/useCaptionRelay.ts';
+import { mergeCaptionSegments, selectBroadcastCaption } from '../utils/captionMerge.ts';
+import { GuestCaptionShare } from './GuestCaptionShare.tsx';
+import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
@@ -1707,20 +1711,48 @@ export function StudioRoom() {
     screenStream,
     sessionHealth.encoding,
   ]);
+  const captionRelay = useCaptionRelay({
+    send,
+    addHandler,
+    connected,
+    localParticipantId: myParticipant?.id ?? null,
+    isOperator: captionsAllowed,
+    isOnStage: myParticipant?.status === 'on-stage',
+    captionsEnabled: captionsAllowed && captionsEnabled,
+    captionLanguage,
+    admittedParticipantKey: onStageParticipantIds.join(','),
+  });
   const {
     supported: captionsSupported,
     listening: captionsListening,
     error: captionsError,
     activeCaption,
-    segments: captionSegments,
-    clearCaptions,
+    segments: localCaptionSegments,
+    clearCaptions: clearLocalCaptions,
   } = useLiveCaptions({
-    enabled: captionsAllowed && captionsEnabled,
-    language: captionLanguage,
+    enabled: (captionsAllowed && captionsEnabled) || captionRelay.guestCaptionsActive,
+    language: captionsAllowed ? captionLanguage : captionRelay.guestCaptionLanguage,
     speakerName: myParticipant?.name || userName,
     maxSegments: 500,
+    onUpdate: captionRelay.onLocalCaptionUpdate,
   });
-  const broadcastCaption = captionsAllowed ? activeCaption : null;
+  // Guests' own captions (relayed from their browsers) join the host's, by speaker and time.
+  const captionSegments = useMemo(
+    () => mergeCaptionSegments(localCaptionSegments, captionRelay.remoteSegments),
+    [captionRelay.remoteSegments, localCaptionSegments]
+  );
+  const { clearRemoteCaptions } = captionRelay;
+  const clearCaptions = useCallback(() => {
+    clearLocalCaptions();
+    clearRemoteCaptions();
+  }, [clearLocalCaptions, clearRemoteCaptions]);
+  const broadcastCaption = captionsAllowed
+    ? selectBroadcastCaption(captionsEnabled ? activeCaption : null, captionRelay.remote, captionRelay.clock)
+    : null;
+  const clipBrand = useMemo(() => ({
+    fontFamily: brandFontState.fontFamily || DEFAULT_CANVAS_FONT_FAMILY,
+    accentColor: brandColor,
+  }), [brandColor, brandFontState.fontFamily]);
   const activeStreamScreen = useMemo(() => {
     if (!activeStreamScreenState) return null;
     return buildActiveStreamScreen(
@@ -2939,6 +2971,10 @@ export function StudioRoom() {
           break;
         case 'stage-control':
           stageControlHandlerRef.current(message.payload);
+          break;
+        // Live captions from on-stage guests are handled by useCaptionRelay.
+        case 'caption-segment':
+        case 'captions-state':
           break;
         case 'program-return-announce':
           if (message.payload.from) setRemoteProgramReturnStreamIdRef.current(message.payload.from, message.payload.streamId);
@@ -7044,6 +7080,16 @@ export function StudioRoom() {
         </div>
       </div>
 
+      {!captionsAllowed && myParticipant?.status === 'on-stage' && captionRelay.hostCaptionsState?.enabled && (
+        <GuestCaptionShare
+          sharing={captionRelay.shareOwnCaptions}
+          listening={captionsListening}
+          supported={captionsSupported}
+          error={captionsError}
+          onChange={captionRelay.setShareOwnCaptions}
+        />
+      )}
+
       {(guestNotification || (isHostOrCoHost && liveSessionSummary)) && (
         <div style={styles.studioNoticeWrap} role="status" aria-live="polite">
           {guestNotification && (
@@ -8018,6 +8064,7 @@ export function StudioRoom() {
               roomName={room?.name || 'Studio'}
               captionSegments={captionSegments}
               captionLanguage={captionLanguage}
+              clipBrand={clipBrand}
               onClose={() => setShowRecordingPanel(false)}
               destinationPanel={(
                 <RecordingDestinationPanel

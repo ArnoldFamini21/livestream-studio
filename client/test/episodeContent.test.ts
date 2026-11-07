@@ -5,6 +5,7 @@ import {
   buildTranscriptFromCaptions,
   formatEpisodeChapterTimecode,
   hasEnoughTranscriptForEpisodeContent,
+  requestCloudEpisodeContent,
   requestEpisodeContent,
 } from '../src/utils/episodeContent.ts';
 
@@ -107,7 +108,7 @@ describe('requestEpisodeContent', () => {
       });
     };
 
-    const result = await requestEpisodeContent({
+    const result = await requestCloudEpisodeContent({
       transcript: 'This is a long enough transcript to summarize for the episode content generator.',
       durationSeconds: 300,
     });
@@ -137,7 +138,7 @@ describe('requestEpisodeContent', () => {
   it('surfaces server errors', async () => {
     globalThis.fetch = async () => jsonResponse({ error: 'AI episode content is not configured on this server.' }, 503);
     await assert.rejects(
-      () => requestEpisodeContent({
+      () => requestCloudEpisodeContent({
         transcript: 'This is a long enough transcript to summarize for the episode content generator.',
       }),
       /not configured/i

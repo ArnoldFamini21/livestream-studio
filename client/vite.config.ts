@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  // Module workers: the in-browser Whisper worker (transformers.js) is split
+  // into chunks, which the default IIFE worker format cannot do.
+  worker: {
+    format: 'es',
+  },
   build: {
     // Never inline AudioWorklet modules as data: URLs. The production CSP
     // (public/.htaccess) only lets scripts and worklets load from 'self'.

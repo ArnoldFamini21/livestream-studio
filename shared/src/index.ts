@@ -407,6 +407,13 @@ export type SignalMessage =
   | { type: 'stage-content-updated'; payload: StageContentPayload }
   /** Co-host (or host) remote for the stage owner's deck: next/previous/goto/clear. Relayed to the stage owner only. */
   | { type: 'stage-control'; payload: StageControlPayload }
+  /**
+   * An on-stage participant's own live caption (browser speech recognition on
+   * their mic). Relayed by the server, rate-limited, to hosts and co-hosts only.
+   */
+  | { type: 'caption-segment'; payload: CaptionSegmentPayload }
+  /** Host/co-host: live captions are on or off, so on-stage guests can opt in to caption themselves. */
+  | { type: 'captions-state'; payload: CaptionsStatePayload }
   /** Stage owner to one admitted peer: which of its incoming streams is the program return feed. */
   | { type: 'program-return-announce'; payload: ProgramReturnAnnouncePayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
@@ -506,6 +513,71 @@ export interface StageContentPayload {
   layout?: LayoutMode;
   /** The host chose the "Me" view: shared content (including a screen share) is off stage. */
   contentHidden?: boolean;
+}
+
+/** Longest caption text one segment may carry. */
+export const MAX_CAPTION_SEGMENT_TEXT_LENGTH = 500;
+/** Longest stretch of speech one segment may claim. */
+export const MAX_CAPTION_SEGMENT_DURATION_MS = 30_000;
+/** Caption segments one participant may send per window (interim updates are throttled client-side). */
+export const CAPTION_SEGMENT_RATE_LIMIT_MAX = 40;
+export const CAPTION_SEGMENT_RATE_LIMIT_WINDOW_MS = 10_000;
+
+export interface CaptionSegmentPayload {
+  /** Set by the server to the sender's id; whatever a client claims is replaced. */
+  participantId: string;
+  /** Set by the server to the sender's display name. */
+  speakerName?: string;
+  /** Stable per utterance, so interim updates replace each other and the final replaces them. */
+  segmentId: string;
+  text: string;
+  /** Sender clock (ms since epoch). Receivers keep the duration and re-anchor to their own clock. */
+  startMs: number;
+  endMs: number;
+  final: boolean;
+}
+
+export interface CaptionsStatePayload {
+  enabled: boolean;
+  /** BCP-47 recognition language, e.g. 'en-US'. */
+  language: string;
+  /** Set by the server: which operator sent it. */
+  from?: string;
+}
+
+const CAPTION_SEGMENT_ID_PATTERN = /^[\w-]{1,64}$/;
+const CAPTION_LANGUAGE_PATTERN = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/;
+
+/**
+ * Validates a caption segment from a client. Returns the clean fields (text
+ * trimmed, whitespace collapsed and capped, times ordered and bounded) or
+ * null. participantId and speakerName are never taken from the client.
+ */
+export function sanitizeCaptionSegment(raw: unknown): Omit<CaptionSegmentPayload, 'participantId' | 'speakerName'> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.segmentId !== 'string' || !CAPTION_SEGMENT_ID_PATTERN.test(value.segmentId)) return null;
+  if (typeof value.text !== 'string') return null;
+  const text = value.text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_CAPTION_SEGMENT_TEXT_LENGTH);
+  if (!text) return null;
+  const startMs = Number(value.startMs);
+  const endMs = Number(value.endMs);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs <= 0 || endMs < startMs) return null;
+  return {
+    segmentId: value.segmentId,
+    text,
+    startMs: Math.round(startMs),
+    endMs: Math.round(Math.min(endMs, startMs + MAX_CAPTION_SEGMENT_DURATION_MS)),
+    final: value.final === true,
+  };
+}
+
+export function sanitizeCaptionsState(raw: unknown): Omit<CaptionsStatePayload, 'from'> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.enabled !== 'boolean') return null;
+  const language = typeof value.language === 'string' && CAPTION_LANGUAGE_PATTERN.test(value.language) ? value.language : 'en-US';
+  return { enabled: value.enabled, language };
 }
 
 export interface StageControlPayload {

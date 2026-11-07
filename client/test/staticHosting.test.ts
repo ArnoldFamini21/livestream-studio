@@ -18,6 +18,27 @@ describe('static hosting', () => {
     assert.match(htaccess, /^AddType text\/javascript .*\.mjs/m);
   });
 
+  it('serves WebAssembly as application/wasm for streaming compilation', () => {
+    const htaccess = readFileSync(new URL('../public/.htaccess', import.meta.url), 'utf8');
+    assert.match(htaccess, /^AddType application\/wasm \.wasm$/m);
+  });
+
+  it('keeps the in-browser AI runtimes same-origin, so the CSP needs no new host', () => {
+    const htaccess = readFileSync(new URL('../public/.htaccess', import.meta.url), 'utf8');
+    const csp = htaccess.match(/^\s*Header always set Content-Security-Policy "([^"]+)"/m)?.[1] || '';
+    const directive = (name: string) => csp.split(';').map((part) => part.trim().split(/\s+/)).find(([key]) => key === name)?.slice(1) || [];
+    // Whisper and face-model weights are fetched, not executed: connect-src https: covers them.
+    assert.ok(directive('connect-src').includes('https:'));
+    assert.ok(directive('worker-src').includes("'self'"), 'the Whisper worker is a same-origin module');
+    assert.ok(directive('script-src').includes("'wasm-unsafe-eval'"), 'onnxruntime and MediaPipe compile WebAssembly');
+    const worker = readFileSync(new URL('../src/workers/transcription.worker.ts', import.meta.url), 'utf8');
+    assert.match(worker, /wasmPaths = undefined/, 'onnxruntime uses its bundled glue and same-origin .wasm, not the CDN');
+    assert.match(worker, /useWasmCache = false/, 'no blob: module import, which script-src does not allow');
+    const vision = readFileSync(new URL('../src/utils/mediapipeVisionAssets.ts', import.meta.url), 'utf8');
+    assert.match(vision, /vision_wasm_internal\.js\?url/);
+    assert.match(vision, /vision_wasm_internal\.wasm\?url/);
+  });
+
   it('sends a Content-Security-Policy that allows only the script hosts the studio loads', () => {
     const htaccess = readFileSync(new URL('../public/.htaccess', import.meta.url), 'utf8');
     const match = htaccess.match(/^\s*Header always set Content-Security-Policy "([^"]+)"/m);
