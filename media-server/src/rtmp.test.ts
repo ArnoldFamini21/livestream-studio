@@ -186,6 +186,14 @@ describe('RTMP relay utilities', () => {
     assert.deepEqual(normalizeRelayEncoding(h264Encoding), h264Encoding);
   });
 
+  it('accepts true portrait programs at 1080x1920 and 720x1280 unchanged', () => {
+    for (const [width, height] of [[1080, 1920], [720, 1280]]) {
+      const video = { width, height, frameRate: 30, videoBitsPerSecond: 4_500_000 };
+      assert.deepEqual(normalizeVideoConfig(video), video);
+      assert.deepEqual(getRelayOutputVideoConfig(normalizeVideoConfig(video), 'copy'), video);
+    }
+  });
+
   it('bounds relay video configs to what the studio composes: 1080p30', () => {
     const normalized = normalizeVideoConfig({
       width: 3840,

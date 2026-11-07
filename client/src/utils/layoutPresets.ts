@@ -73,6 +73,7 @@ export const STUDIO_LAYOUT_LABELS: Record<LayoutMode, string> = {
   featured: 'Featured',
   pip: 'PiP',
   single: 'Solo',
+  custom: 'Custom',
 };
 
 export const STUDIO_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
@@ -82,6 +83,7 @@ export const STUDIO_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
   featured: 'Main tile with side stack',
   pip: 'Full tile with small overlay',
   single: 'Show one selected tile',
+  custom: 'Your own layout from the layout editor',
 };
 
 export const MEDIA_SHARE_LAYOUT_LABELS: Record<LayoutMode, string> = {
@@ -91,6 +93,7 @@ export const MEDIA_SHARE_LAYOUT_LABELS: Record<LayoutMode, string> = {
   featured: 'Stack',
   pip: 'Picture in picture',
   single: 'Content only',
+  custom: 'Custom layout',
 };
 
 export const MEDIA_SHARE_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
@@ -100,6 +103,7 @@ export const MEDIA_SHARE_LAYOUT_DESCRIPTIONS: Record<LayoutMode, string> = {
   featured: 'Shared media with up to 4 stacked floating participant videos',
   pip: 'Shared media with up to 4 floating participant videos',
   single: 'Full canvas for shared content, with cameras hidden',
+  custom: 'Shared media in the custom layout\'s content box',
 };
 
 export function getStudioLayoutLabel(layout: LayoutMode): string {

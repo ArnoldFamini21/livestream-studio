@@ -10,8 +10,10 @@ import { ffmpegProgressArgs } from './ffmpegProgress.js';
 export const MAX_RTMP_DESTINATIONS = 3;
 const MAX_RTMP_URL_LENGTH = 2048;
 const MAX_STREAM_KEY_LENGTH = 512;
-// The studio composes at 1920x1080, 30 fps; anything above that would only
-// be upscaled or duplicated frames at a higher bitrate.
+// The studio composes at 1920x1080 (or 1080x1920 for 9:16 portrait), 30 fps;
+// anything above that would only be upscaled or duplicated frames at a
+// higher bitrate. The caps bound each edge and the pixel count, so both
+// orientations pass unchanged.
 const MAX_RELAY_DIMENSION = 1920;
 const MAX_RELAY_PIXELS = 1920 * 1080;
 const MAX_RELAY_FRAME_RATE = 30;

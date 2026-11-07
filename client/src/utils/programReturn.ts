@@ -16,6 +16,13 @@ import { sendScreenOnConnection, stopScreenOnConnection } from './screenTranscei
 export const PROGRAM_RETURN_WIDTH = 640;
 export const PROGRAM_RETURN_HEIGHT = 360;
 export const PROGRAM_RETURN_FPS = 15;
+
+/** The return keeps the program's orientation: 640x360 for 16:9, 360x640 for 9:16. */
+export function getProgramReturnSize(sourceWidth: number, sourceHeight: number): { width: number; height: number } {
+  return sourceHeight > sourceWidth
+    ? { width: PROGRAM_RETURN_HEIGHT, height: PROGRAM_RETURN_WIDTH }
+    : { width: PROGRAM_RETURN_WIDTH, height: PROGRAM_RETURN_HEIGHT };
+}
 /** Video ceiling per receiving peer, in bits per second. */
 export const PROGRAM_RETURN_MAX_BITRATE = 500_000;
 

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import '../styles/scenes.css';
-import type { Scene, LayoutMode } from '@studio/shared';
+import type { CustomLayout, Scene, LayoutMode } from '@studio/shared';
 import {
   getBackgroundPreview,
   PRODUCTION_SCENE_PACK_TEMPLATE_IDS,
@@ -28,6 +28,8 @@ export type { ProductionSceneTemplate } from '../utils/productionSceneTemplates.
 
 interface SceneManagerProps {
   scenes: Scene[];
+  /** Saved custom layouts, so custom scenes preview their own slots. */
+  customLayouts?: CustomLayout[];
   activeSceneId: string | null;
   sceneTransitionPreset: SceneTransitionPresetId;
   sceneStingerClip: SceneStingerClip | null;
@@ -60,6 +62,13 @@ function getSceneLayoutLabel(
 }
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
+  custom: (
+    <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+      <rect x="1" y="2" width="16" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="3.5" y="4.5" width="6" height="5" rx="1" fill="currentColor" opacity="0.55" />
+      <circle cx="12.5" cy="11.5" r="2.4" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  ),
   grid: (
     <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
       <rect
@@ -225,6 +234,7 @@ const layoutIcons: Record<LayoutMode, React.ReactNode> = {
 
 export function SceneManager({
   scenes,
+  customLayouts = [],
   activeSceneId,
   sceneTransitionPreset,
   sceneStingerClip,
@@ -743,7 +753,7 @@ export function SceneManager({
                         background: getBackgroundPreview(scene.background),
                       }}
                     >
-                      <ScenePreviewThumbnail scene={scene} />
+                      <ScenePreviewThumbnail scene={scene} customLayouts={customLayouts} />
                     </span>
                     <span className="scene-row-copy">
                       <span className="scene-name" title={scene.name}>
@@ -837,8 +847,9 @@ export function SceneManager({
   );
 }
 
-function ScenePreviewThumbnail({ scene }: { scene: Scene }) {
+function ScenePreviewThumbnail({ scene, customLayouts }: { scene: Scene; customLayouts: CustomLayout[] }) {
   const tiles = getScenePreviewTiles(scene.layout, {
+    customLayout: scene.layout === 'custom' ? customLayouts.find((layout) => layout.id === scene.customLayoutId) || null : null,
     pipCorner: scene.pipCorner,
     mediaActive: Boolean(scene.activeMedia?.assetId),
   });

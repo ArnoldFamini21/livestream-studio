@@ -36,6 +36,8 @@ const brandKit: SavedBrandKit = {
   logoOpacity: 0.8,
   cameraShape: 'rounded',
   nameTagStyle: 'block',
+  customLayouts: [],
+  brandFont: null,
 };
 
 const recording: LocalRecordingSession = {

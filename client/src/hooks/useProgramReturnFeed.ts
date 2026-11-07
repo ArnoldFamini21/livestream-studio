@@ -5,6 +5,7 @@ import {
   PROGRAM_RETURN_FPS,
   PROGRAM_RETURN_HEIGHT,
   PROGRAM_RETURN_WIDTH,
+  getProgramReturnSize,
   type ProgramReturnSource,
 } from '../utils/programReturn.ts';
 
@@ -13,7 +14,7 @@ interface UseProgramReturnFeedOptions {
   enabled: boolean;
   /** Someone needs the program audio too (backstage guests). */
   audioWanted: boolean;
-  /** The broadcast compositor's 1920x1080 canvas. */
+  /** The broadcast compositor's canvas (1920x1080, or 1080x1920 in portrait). */
   compositeCanvasRef: MutableRefObject<HTMLCanvasElement | null>;
   /** A lease on the program audio mix for return receivers. */
   acquireAudio: () => ProgramAudioTrackLease | null;
@@ -59,7 +60,13 @@ export function useProgramReturnFeed({
     const ticker = createFrameTicker(PROGRAM_RETURN_FPS, () => {
       const source = compositeCanvasRef.current;
       if (!source || source.width === 0 || source.height === 0) return;
-      context.drawImage(source, 0, 0, PROGRAM_RETURN_WIDTH, PROGRAM_RETURN_HEIGHT);
+      // Portrait programs go back as 360x640 rather than squashed into 16:9.
+      const size = getProgramReturnSize(source.width, source.height);
+      if (canvas.width !== size.width || canvas.height !== size.height) {
+        canvas.width = size.width;
+        canvas.height = size.height;
+      }
+      context.drawImage(source, 0, 0, size.width, size.height);
     });
     setVideo(track);
     return () => {

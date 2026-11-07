@@ -314,6 +314,12 @@ import { EmptyStageInvite } from './EmptyStageInvite.tsx';
 import { useRecordingCountdownMirror } from '../hooks/useRecordingCountdownMirror.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 import { PanelErrorBoundary } from './ErrorBoundary.tsx';
+import { CustomLayoutEditor } from './CustomLayoutEditor.tsx';
+import { useStudioFormat } from '../hooks/useStudioFormat.ts';
+import { useBrandFont } from '../hooks/useBrandFont.ts';
+import { useWidgetTabCapture } from '../hooks/useWidgetTabCapture.ts';
+import { findCustomLayout, getCustomStagePlan, orderStageEntriesByIds } from '../utils/customLayouts.ts';
+import { getPortraitPresentationLayout, getPortraitStageLayout } from '../utils/portraitLayouts.ts';
 import { alertGuestArrival, requestArrivalNotificationPermission } from '../utils/guestArrivalAlert.ts';
 
 const STUDIO_STATE_VERSION = 1;
@@ -1112,7 +1118,12 @@ export function StudioRoom() {
     }))
   ));
   const savedDestinationsRef = useRef<string | null>(null);
-  const [broadcastOrientation, setBroadcastOrientation] = useState<BroadcastOrientation>('landscape');
+  // Output orientation, custom layouts and brand font, kept per studio (useStudioFormat).
+  const studioFormat = useStudioFormat(roomId);
+  const broadcastOrientation: BroadcastOrientation = studioFormat.orientation;
+  const setBroadcastOrientation = studioFormat.setOrientation;
+  const brandFontState = useBrandFont(studioFormat.brandFont);
+  const [customLayoutEditorOpen, setCustomLayoutEditorOpen] = useState(false);
   const [rtmpRelayOutputPreset, setRtmpRelayOutputPreset] = useState<RtmpRelayOutputPresetId>(DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID);
   const [isLive, setIsLive] = useState(false);
   const [streamScreenConfig, setStreamScreenConfig] = useState<StreamScreenConfig>(DEFAULT_STREAM_SCREEN_CONFIG);
@@ -1820,6 +1831,9 @@ export function StudioRoom() {
   } : null), [sceneTransition?.presetId, sceneTransition?.sceneName, sceneTransition?.startedAt, sceneTransition?.durationMs]);
 
   // Initialize Canvas Compositor for RTMP
+  const visibleWidgetIds = useMemo(() => widgets.filter((widget) => widget.visible).map((widget) => widget.id), [widgets]);
+  // Opt-in tab capture so web widgets go out live instead of as a placeholder.
+  const widgetTabCapture = useWidgetTabCapture(stageRef, visibleWidgetIds);
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     containerRef: stageRef,
     isActive: shouldRunCompositor({ live: isLive, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
@@ -1844,6 +1858,9 @@ export function StudioRoom() {
     logoOpacity,
     streamScreen: activeStreamScreen,
     sceneTransition: compositorSceneTransition,
+    orientation: broadcastOrientation,
+    brandFontFamily: brandFontState.fontFamily,
+    widgetCaptureSources: widgetTabCapture.sourcesRef,
   });
 
   // The program return (640x360, 15 fps, ~500 kbps) to backstage guests, and
@@ -5233,6 +5250,7 @@ export function StudioRoom() {
       logoSize,
       logoOpacity,
       pipCorner,
+      customLayoutId: effectiveLayout === 'custom' ? studioFormat.activeCustomLayoutId : null,
       focusedVideoItemId,
       stageItemOrder: normalizeStageItemOrder(stageItemOrder, availableStageItemIds),
       activeMedia: getSceneActiveMediaSnapshot(activeMedia, activeMediaSlideIndex),
@@ -5386,7 +5404,14 @@ export function StudioRoom() {
   const onApplyScene = (sceneId: string) => {
     const scene = scenes.find(s => s.id === sceneId);
     if (!scene) return;
-    applyLayout(scene.layout);
+    if (scene.layout === 'custom') {
+      // A scene whose custom layout was deleted opens in the grid.
+      const sceneLayout = findCustomLayout(studioFormat.customLayouts, scene.customLayoutId);
+      if (sceneLayout) studioFormat.setActiveCustomLayoutId(sceneLayout.id);
+      applyLayout(sceneLayout ? 'custom' : 'grid');
+    } else {
+      applyLayout(scene.layout);
+    }
     setStageBackground(scene.background);
     setBrandColor(scene.brandColor || '#a78bfa');
     setLogoUrl(scene.logoUrl || null);
@@ -6318,8 +6343,27 @@ export function StudioRoom() {
     };
   }, [getAutoGridLayout]);
 
+  // Custom layout: slots filled in stage order unless a slot is pinned to someone.
+  const activeCustomLayout = layout === 'custom'
+    ? findCustomLayout(studioFormat.customLayouts, studioFormat.activeCustomLayoutId)
+    : null;
+  const customLayoutStageItemIds = useMemo(() => (
+    (sharedContentAvailable ? sharedContentParticipantPresenceItems : stagePresenceItems).map((presence) => presence.item.id)
+  ), [sharedContentAvailable, sharedContentParticipantPresenceItems, stagePresenceItems]);
+  const customStagePlan = useMemo(() => (
+    activeCustomLayout ? getCustomStagePlan(activeCustomLayout, customLayoutStageItemIds) : null
+  ), [activeCustomLayout, customLayoutStageItemIds]);
+  // "Content + Me" puts shared content in the custom layout's content box, when it has one.
+  const customLayoutPresenting = Boolean(customStagePlan?.contentStyle && sharedContentIsActive && presentationLayout === 'grid');
+  const customLayoutOrdersTiles = Boolean(customStagePlan && (!sharedContentIsActive || customLayoutPresenting));
+
   const layoutResult = useMemo((): LayoutResult => {
     const count = renderedVideoItems.length;
+    if (layout === 'custom' && customStagePlan) {
+      return { containerStyle: customStagePlan.containerStyle, tileStyles: customStagePlan.tileStyles, mode: 'custom' };
+    }
+    // Portrait output: stacked 9:16 layouts on the 540x960 stage.
+    if (broadcastOrientation === 'portrait') return getPortraitStageLayout(layout, count, pipCorner);
     switch (layout) {
       case 'grid':
         return getAutoGridLayout(count);
@@ -6379,10 +6423,13 @@ export function StudioRoom() {
           mode: 'flex',
         };
       }
+      case 'custom':
+        // The chosen custom layout was deleted: fall back to the grid.
+        return getAutoGridLayout(count);
       default:
         return assertNever(layout);
     }
-  }, [layout, pipCorner, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout]);
+  }, [layout, pipCorner, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout, customStagePlan, broadcastOrientation]);
 
   const sharedContentKey = stagedMedia
     ? `media:${stagedMedia.assetId || stagedMedia.url}`
@@ -6390,17 +6437,32 @@ export function StudioRoom() {
       ? `screen:${sharedContentScreenShare.item.id}`
       : null;
   const sharedContentAspect = useSharedContentAspect(stageRef, sharedContentKey);
-  const sharedContentLayoutResult = useMemo(() => (
-    sharedContentIsActive
-      ? getPresentationLayout(
-          presentationLayout,
-          sharedContentParticipantPresenceItems.length,
-          pipCorner,
-          presentationCameraSize,
-          sharedContentAspect ?? DEFAULT_CONTENT_ASPECT
-        )
-      : null
-  ), [presentationLayout, pipCorner, presentationCameraSize, sharedContentAspect, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
+  const sharedContentLayoutResult = useMemo(() => {
+    if (!sharedContentIsActive) return null;
+    if (customLayoutPresenting && customStagePlan?.contentStyle) {
+      return {
+        containerStyle: customStagePlan.containerStyle,
+        mediaStyle: customStagePlan.contentStyle,
+        participantStyles: customStagePlan.tileStyles,
+        visibleParticipantCount: customStagePlan.itemOrder.length,
+        usesFloatingParticipant: false,
+      };
+    }
+    if (broadcastOrientation === 'portrait') {
+      return getPortraitPresentationLayout(
+        presentationLayout,
+        sharedContentParticipantPresenceItems.length,
+        sharedContentAspect ?? DEFAULT_CONTENT_ASPECT
+      );
+    }
+    return getPresentationLayout(
+      presentationLayout,
+      sharedContentParticipantPresenceItems.length,
+      pipCorner,
+      presentationCameraSize,
+      sharedContentAspect ?? DEFAULT_CONTENT_ASPECT
+    );
+  }, [presentationLayout, pipCorner, presentationCameraSize, sharedContentAspect, sharedContentIsActive, sharedContentParticipantPresenceItems.length, customLayoutPresenting, customStagePlan, broadcastOrientation]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
@@ -7119,7 +7181,11 @@ export function StudioRoom() {
               </div>
             </div>
           ) : (
-          <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }} footer={
+          <StageCanvas stageRef={stageRef} orientation={broadcastOrientation} style={{
+            ...styles.canvas,
+            ...stageBackgroundStyle,
+            ...(brandFontState.fontFamily ? { '--studio-brand-font': brandFontState.fontFamily } as React.CSSProperties : {}),
+          }} footer={
             // A co-host while the host presents: remote for the host's deck.
             isHostOrCoHost && !amStageOwner && remoteStageContent?.media ? (
               <StageRemoteControl
@@ -7207,9 +7273,15 @@ export function StudioRoom() {
 
                 {/* Render tiles based on layout engine */}
                 {(() => {
-                  const stageItemsForLayout = sharedContentAvailable
-                    ? sharedContentParticipantPresenceItems
-                    : stagePresenceItems;
+                  const stageItemsForLayout = customLayoutOrdersTiles && customStagePlan
+                    ? orderStageEntriesByIds(
+                        sharedContentAvailable ? sharedContentParticipantPresenceItems : stagePresenceItems,
+                        customStagePlan.itemOrder,
+                        (presence) => presence.item.id
+                      )
+                    : sharedContentAvailable
+                      ? sharedContentParticipantPresenceItems
+                      : stagePresenceItems;
                   const itemsToRender = selectVisibleStageItems(stageItemsForLayout, effectiveLayout, {
                     mediaVisibleParticipantCount: sharedContentLayoutResult?.visibleParticipantCount,
                   });
@@ -7505,6 +7577,8 @@ export function StudioRoom() {
                 presentingView={presentingView}
                 onPresentingViewChange={changePresentingView}
                 mediaParticipantCount={sharedContentAvailable ? sharedContentParticipantPresenceItems.length : undefined}
+                customLayoutName={findCustomLayout(studioFormat.customLayouts, studioFormat.activeCustomLayoutId)?.name ?? null}
+                onOpenCustomLayouts={() => setCustomLayoutEditorOpen(true)}
               />
               {!sharedContentAvailable && <><button
                 type="button"
@@ -7695,6 +7769,12 @@ export function StudioRoom() {
             onNameTagStyleChange={setNameTagStyle}
             brandKitCatalogRoomId={roomId || ''}
             brandKitCatalogHostToken={roomHostToken}
+            brandFont={studioFormat.brandFont}
+            brandFontState={brandFontState}
+            onBrandFontChange={studioFormat.setBrandFont}
+            customLayouts={studioFormat.customLayouts}
+            onApplyBrandKitFormat={studioFormat.applyBrandKitFormat}
+            onOpenCustomLayouts={() => setCustomLayoutEditorOpen(true)}
             mediaAssets={mediaAssets}
             activeMedia={activeMedia}
             activeMediaSlideIndex={activeMediaSlideIndex}
@@ -7734,6 +7814,7 @@ export function StudioRoom() {
             onUpdateWidget={onUpdateWidget}
             onToggleWidget={onToggleWidget}
             onRemoveWidget={onRemoveWidget}
+            widgetCapture={widgetTabCapture.controls}
             chatMessages={chatMessages}
             highlightedComment={highlightedComment}
             onHighlightComment={onHighlightComment}
@@ -8082,6 +8163,26 @@ export function StudioRoom() {
             )}
           </div>
         </div>
+      )}
+
+      {customLayoutEditorOpen && isHostOrCoHost && (
+        <PanelErrorBoundary label="Layout editor">
+          <CustomLayoutEditor
+            orientation={broadcastOrientation}
+            layouts={studioFormat.customLayouts}
+            activeLayoutId={studioFormat.activeCustomLayoutId}
+            stageParticipants={displayedStageVideoItems
+              .filter((item) => !item.isScreenShare)
+              .map((item) => ({ id: item.id, name: item.name }))}
+            onLayoutsChange={studioFormat.setCustomLayouts}
+            onUseLayout={(layoutId) => {
+              studioFormat.setActiveCustomLayoutId(layoutId);
+              if (sharedContentIsActive) setPresentationLayout('grid');
+              applyLayout('custom');
+            }}
+            onClose={() => setCustomLayoutEditorOpen(false)}
+          />
+        </PanelErrorBoundary>
       )}
 
       <PanelErrorBoundary label="End session" resetKey={endSessionStep}>

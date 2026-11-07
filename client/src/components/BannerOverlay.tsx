@@ -399,6 +399,8 @@ const overlayBase: React.CSSProperties = {
   left: 0,
   right: 0,
   zIndex: 9,
+  // The brand font (set on the stage by StudioRoom), as the program draws it.
+  fontFamily: 'var(--studio-brand-font, Inter, Arial, sans-serif)',
   overflow: 'hidden',
   boxShadow: '0 4px 24px rgba(0, 0, 0, 0.5)',
 };

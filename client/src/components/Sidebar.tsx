@@ -14,6 +14,10 @@ import { BackgroundPicker } from './BackgroundPicker.tsx';
 import { SceneManager, type ProductionSceneTemplate } from './SceneManager.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
 import { WidgetOverlayManager, type WidgetOverlayData } from './WidgetOverlay.tsx';
+import type { WidgetCaptureControls } from '../hooks/useWidgetTabCapture.ts';
+import type { BrandFont, CustomLayout } from '@studio/shared';
+import type { BrandFontState } from '../hooks/useBrandFont.ts';
+import { BrandFontPicker } from './BrandFontPicker.tsx';
 import {
   CommentHighlightManager,
   type HighlightedComment,
@@ -89,6 +93,7 @@ interface SidebarProps {
   onToggleWidget: (id: string) => void;
   onRemoveWidget: (id: string) => void;
   onUpdateWidget?: (id: string, updates: Partial<WidgetOverlayData>) => void;
+  widgetCapture?: WidgetCaptureControls;
   // Comment highlight
   chatMessages: ChatMessage[];
   highlightedComment: HighlightedComment | null;
@@ -120,6 +125,13 @@ interface SidebarProps {
   onNameTagStyleChange: (style: NameTagStyle) => void;
   brandKitCatalogRoomId?: string;
   brandKitCatalogHostToken?: string;
+  /** Brand font and custom layouts: saved with brand kits, applied with them. */
+  brandFont?: BrandFont | null;
+  brandFontState?: BrandFontState;
+  onBrandFontChange?: (font: BrandFont | null) => void;
+  customLayouts?: CustomLayout[];
+  onApplyBrandKitFormat?: (kit: { customLayouts?: CustomLayout[]; brandFont?: BrandFont | null }) => void;
+  onOpenCustomLayouts?: () => void;
   // Media props
   mediaAssets: StudioMediaAsset[];
   activeMedia: ActiveMedia | null;
@@ -328,6 +340,8 @@ export function Sidebar(props: SidebarProps) {
     if (kit.logoPlacement !== undefined) props.onLogoPlacementChange(kit.logoPlacement);
     props.onLogoPositionChange(normalizeLogoPosition(kit.logoPosition));
     if (kit.logoUrl !== undefined) props.onLogoUrlChange(kit.logoUrl);
+    // Saved kits carry a font (null = Inter) and layouts; the built-in presets carry neither.
+    if ('id' in kit) props.onApplyBrandKitFormat?.({ customLayouts: kit.customLayouts, brandFont: kit.brandFont ?? null });
     setBrandKitMessage(null);
   };
 
@@ -349,6 +363,8 @@ export function Sidebar(props: SidebarProps) {
         logoOpacity: props.logoOpacity,
         cameraShape: props.cameraShape,
         nameTagStyle: props.nameTagStyle,
+        customLayouts: props.customLayouts,
+        brandFont: props.brandFont ?? null,
       },
       savedBrandKits.map((kit) => kit.name)
     );
@@ -657,6 +673,23 @@ export function Sidebar(props: SidebarProps) {
                   </details>
                 </div>
               </details>
+              {props.onBrandFontChange && props.brandFontState && (
+                <details className="studio-brand-setting">
+                  <summary><span>Brand font</span></summary>
+                  <div className="studio-brand-group-content">
+                    <BrandFontPicker brandFont={props.brandFont ?? null} status={props.brandFontState} onChange={props.onBrandFontChange} />
+                  </div>
+                </details>
+              )}
+              {props.onOpenCustomLayouts && (
+                <details className="studio-brand-setting">
+                  <summary><span>Custom layouts</span><span className="studio-brand-summary-value">{props.customLayouts?.length ? `${props.customLayouts.length} saved` : ''}</span></summary>
+                  <div className="studio-brand-group-content">
+                    <p className="studio-brand-hint">Place cameras and content anywhere on the canvas. Layouts are saved with brand kits.</p>
+                    <button type="button" className="btn-secondary" onClick={props.onOpenCustomLayouts}>Open layout editor</button>
+                  </div>
+                </details>
+              )}
               <details className="studio-brand-setting">
                 <summary><span>Brand kits</span><span className="studio-brand-summary-value">{savedBrandKits.length > 0 ? `${savedBrandKits.length} saved` : ''}</span></summary>
                 <div className="studio-brand-group-content">
@@ -839,6 +872,7 @@ export function Sidebar(props: SidebarProps) {
               <div style={st.section}>
                 <SceneManager
                   scenes={props.scenes}
+                  customLayouts={props.customLayouts}
                   activeSceneId={props.activeSceneId}
                   sceneTransitionPreset={props.sceneTransitionPreset}
                   sceneStingerClip={props.sceneStingerClip}
@@ -980,7 +1014,7 @@ function OverlayPanel(props: SidebarProps) {
           closeEditor();
         }} />}
         {view === 'ticker' && <TickerManager key={editingId || 'new'} editorOnly initialValue={ticker} submitLabel={editingId ? 'Save changes' : 'Add overlay'} tickers={props.tickers} onToggle={props.onToggleTicker} onRemove={props.onRemoveTicker} onUpdate={props.onUpdateTicker} onAdd={value => { if (ticker) props.onUpdateTicker(ticker.id, value); else props.onAddTicker(value); closeEditor(); }} />}
-        {view === 'widget' && <WidgetOverlayManager key={editingId || 'new'} editorOnly initialValue={widget} submitLabel={editingId ? 'Save changes' : 'Add overlay'} widgets={props.widgets} onToggle={props.onToggleWidget} onRemove={props.onRemoveWidget} onAdd={value => { if (widget) props.onUpdateWidget?.(widget.id, value); else props.onAddWidget(value); closeEditor(); }} />}
+        {view === 'widget' && <WidgetOverlayManager key={editingId || 'new'} editorOnly initialValue={widget} submitLabel={editingId ? 'Save changes' : 'Add overlay'} widgets={props.widgets} capture={props.widgetCapture} onToggle={props.onToggleWidget} onRemove={props.onRemoveWidget} onAdd={value => { if (widget) props.onUpdateWidget?.(widget.id, value); else props.onAddWidget(value); closeEditor(); }} />}
         {view === 'speakers' && <div className="overlay-speakers"><label><span>Automatic speaker names</span><input type="checkbox" checked={props.autoSpeakerLowerThirds} onChange={event => props.onAutoSpeakerLowerThirdsChange(event.target.checked)} /></label><p>Show the active speaker’s name automatically.</p><div className="overlay-speaker-list">{Array.from(props.allParticipants.values()).filter(person => person.status === 'on-stage').map(person => <button key={person.id} type="button" onClick={() => { props.onAddLowerThird({ name: person.name, title: person.role === 'host' ? 'Host' : person.role === 'co-host' ? 'Co-host' : 'Guest', style: 'bold', durationSeconds: 10, animation: 'slide', animationDirection: 'left', visible: true, source: 'participant', participantId: person.id }); closeEditor(); }}><span>{person.name}</span><small>Show name</small></button>)}</div></div>}
         {view === 'packs' && <OverlayPacks hostName={props.chatSenderName} brandColor={props.brandColor} onAddLowerThird={props.onAddLowerThird} onAddBanner={props.onAddBanner} onAddTimer={props.onAddTimer} onAddTicker={props.onAddTicker} onDone={closeEditor} />}
         {view === 'comments' && <CommentHighlightManager chatMessages={props.chatMessages} activeComment={props.highlightedComment} onHighlightComment={props.onHighlightComment} onFlashComment={props.onFlashComment} onDismissComment={props.onDismissComment} />}

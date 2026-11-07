@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { createRelayVideoStream, getCoverCrop, type RelayVideoStreamDeps } from '../src/utils/relayVideoStream.ts';
+import { createRelayVideoStream, getContainFit, type RelayVideoStreamDeps } from '../src/utils/relayVideoStream.ts';
 
 interface FakeTrack {
   readyState: string;
@@ -75,12 +75,20 @@ describe('relay video stream', () => {
     assert.equal(tickers.length, 0);
   });
 
-  it('scales 720p and portrait on the worker frame ticker, from the compositor canvas', async () => {
+  it('sends a portrait program untouched at 1080x1920', async () => {
+    const { deps, tickers } = setup();
+    const source = fakeTrack({ width: 1080, height: 1920 });
+    const result = await createRelayVideoStream(fakeStream([source]), { width: 1080, height: 1920, frameRate: 30, videoBitsPerSecond: 4_500_000 }, deps);
+    assert.equal(result.stream.getVideoTracks()[0], source as unknown as MediaStreamTrack);
+    assert.equal(tickers.length, 0);
+  });
+
+  it('scales a portrait program to 720x1280 without cropping, on the worker frame ticker', async () => {
     const { deps, draws, tickers, outputTrack, captureRate } = setup();
-    const canvas = { width: 1920, height: 1080 };
+    const canvas = { width: 1080, height: 1920 };
     const result = await createRelayVideoStream(
       fakeStream([fakeTrack(canvas)]),
-      { width: 1080, height: 1920, frameRate: 30, videoBitsPerSecond: 4_500_000 },
+      { width: 720, height: 1280, frameRate: 30, videoBitsPerSecond: 2_500_000 },
       deps
     );
     assert.equal(tickers.length, 1);
@@ -92,17 +100,20 @@ describe('relay video stream', () => {
     assert.equal(draws.length, before + 2, 'each tick draws a frame, even with rAF unavailable');
     const [image, sx, sy, sw, sh, dx, dy, dw, dh] = draws.at(-1)!;
     assert.equal(image, canvas);
-    assert.deepEqual([sx, sy, sw, sh, dx, dy, dw, dh], [656.25, 0, 607.5, 1080, 0, 0, 1080, 1920]);
+    // The whole program, scaled: nothing is cut off.
+    assert.deepEqual([sx, sy, sw, sh, dx, dy, dw, dh], [0, 0, 1080, 1920, 0, 0, 720, 1280]);
 
     result.cleanup();
     assert.equal(tickers[0].stopped, true);
     assert.equal(outputTrack.stopped, true);
   });
 
-  it('centre-crops like object-fit: cover', () => {
-    assert.deepEqual(getCoverCrop(1920, 1080, 1280, 720), { sx: 0, sy: 0, sw: 1920, sh: 1080 });
-    assert.deepEqual(getCoverCrop(1920, 1080, 1080, 1920), { sx: 656.25, sy: 0, sw: 607.5, sh: 1080 });
-    assert.equal(getCoverCrop(0, 1080, 1280, 720), null);
+  it('fits like object-fit: contain and never crops', () => {
+    assert.deepEqual(getContainFit(1920, 1080, 1280, 720), { dx: 0, dy: 0, dw: 1280, dh: 720 });
+    assert.deepEqual(getContainFit(1080, 1920, 720, 1280), { dx: 0, dy: 0, dw: 720, dh: 1280 });
+    // A mismatched shape is letterboxed, keeping every overlay in frame.
+    assert.deepEqual(getContainFit(1920, 1080, 1080, 1920), { dx: 0, dy: 656.25, dw: 1080, dh: 607.5 });
+    assert.equal(getContainFit(0, 1080, 1280, 720), null);
   });
 
   it('rejects a stream without a live video track', async () => {

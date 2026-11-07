@@ -1,8 +1,11 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
-import { fitStageCanvas, STAGE_CANVAS_HEIGHT, STAGE_CANVAS_WIDTH } from '../utils/stageCanvas.ts';
+import type { BroadcastOrientation } from '@studio/shared';
+import { fitStageCanvas, getStageCanvasSize } from '../utils/stageCanvas.ts';
 
-export function StageCanvas({ stageRef, style, children, footer }: {
+export function StageCanvas({ stageRef, style, children, footer, orientation = 'landscape' }: {
   stageRef: RefObject<HTMLDivElement>;
+  /** Portrait output lays the stage out at 9:16 so DOM rects map onto 1080x1920. */
+  orientation?: BroadcastOrientation;
   style?: CSSProperties;
   children: ReactNode;
   footer?: ReactNode;
@@ -15,9 +18,9 @@ export function StageCanvas({ stageRef, style, children, footer }: {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const resize = (width: number, height: number) => {
-      const next = fitStageCanvas(width, Math.max(0, height - footerHeight));
+      const next = fitStageCanvas(width, Math.max(0, height - footerHeight), orientation);
       // Preserve the broadcast geometry while a viewport is temporarily hidden.
-      if (next.scale > 0) setFrame(current => current.scale === next.scale ? current : next);
+      if (next.scale > 0) setFrame(current => current.scale === next.scale && current.width === next.width ? current : next);
     };
     // Measure the untransformed layout box, never a previously scaled frame.
     resize(viewport.clientWidth, viewport.clientHeight);
@@ -26,7 +29,8 @@ export function StageCanvas({ stageRef, style, children, footer }: {
     });
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [footerHeight]);
+  }, [footerHeight, orientation]);
+  const stage = getStageCanvasSize(orientation);
 
   return <div ref={viewportRef} className="studio-canvasWrapper" style={{ position: 'relative', flex: '1 1 0px', width: '100%', minWidth: 0, minHeight: 0, overflow: 'hidden', contain: 'size layout' }}>
     {/* Position the fitted preview separately from the broadcast surface.
@@ -40,11 +44,11 @@ export function StageCanvas({ stageRef, style, children, footer }: {
       visibility: frame.scale > 0 ? 'visible' : 'hidden',
       contain: 'size layout',
     }}>
-      <div ref={stageRef} className="studio-canvas" role="region" aria-label="Broadcast canvas" style={{
+      <div ref={stageRef} className="studio-canvas" role="region" aria-label="Broadcast canvas" data-stage-orientation={orientation} style={{
         ...style,
         position: 'absolute', left: 0, top: 0,
-        width: STAGE_CANVAS_WIDTH, minWidth: STAGE_CANVAS_WIDTH, maxWidth: STAGE_CANVAS_WIDTH,
-        height: STAGE_CANVAS_HEIGHT, minHeight: STAGE_CANVAS_HEIGHT, maxHeight: STAGE_CANVAS_HEIGHT,
+        width: stage.width, minWidth: stage.width, maxWidth: stage.width,
+        height: stage.height, minHeight: stage.height, maxHeight: stage.height,
         boxSizing: 'border-box', border: 0, margin: 0, padding: 0,
         transform: `scale(${frame.scale})`, transformOrigin: 'top left',
         transition: 'none', animation: 'none',

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { WIDGET_CAPTURE_ATTRIBUTE, WIDGET_STUDIO_ONLY_LABEL } from '../utils/widgetTabCapture.ts';
+import type { WidgetCaptureControls } from '../hooks/useWidgetTabCapture.ts';
 
 export type WidgetOverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
 
@@ -21,6 +23,43 @@ interface WidgetOverlayManagerProps {
   onAdd: (widget: Omit<WidgetOverlayData, 'id' | 'visible'>) => void;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
+  /** Opt-in tab capture that puts the widgets' live picture into the broadcast. */
+  capture?: WidgetCaptureControls;
+}
+
+/**
+ * What viewers get for web widgets. A cross-origin page cannot be drawn into
+ * the program, so without tab capture viewers see a labelled placeholder.
+ */
+export function WidgetBroadcastNotice({ capture }: { capture?: WidgetCaptureControls }) {
+  if (!capture || !capture.support.supported) {
+    return <div style={styles.captureNotice} role="note">
+      <strong style={styles.captureNoticeTitle}>{WIDGET_STUDIO_ONLY_LABEL}</strong>
+      <span style={styles.captureNoticeText}>
+        {capture?.support.reason || 'Web pages cannot be drawn into the broadcast in this browser.'} The stage shows the live widget; the stream and recording show its name in a box.
+      </span>
+    </div>;
+  }
+  return <div style={styles.captureNotice} role="group" aria-label="Widget broadcast capture">
+    <strong style={styles.captureNoticeTitle}>
+      {capture.active ? 'Widgets are captured for the broadcast' : WIDGET_STUDIO_ONLY_LABEL}
+    </strong>
+    <span style={styles.captureNoticeText}>
+      {capture.active
+        ? 'Viewers see the live widgets. Keep this tab in front: a hidden tab freezes the captured picture.'
+        : 'Capture this tab to send the live widgets to viewers. When the browser asks, choose "This tab".'}
+    </span>
+    {capture.error && <span style={styles.captureNoticeError} role="alert">{capture.error}</span>}
+    <button
+      type="button"
+      className={capture.active ? 'btn-secondary' : 'btn-primary'}
+      style={styles.captureBtn}
+      disabled={capture.starting}
+      onClick={capture.active ? capture.stop : capture.start}
+    >
+      {capture.starting ? 'Waiting for the browser…' : capture.active ? 'Stop widget capture' : 'Capture widgets for broadcast'}
+    </button>
+  </div>;
 }
 
 const MAX_WIDGETS = 5;
@@ -99,7 +138,7 @@ export function getWidgetOverlayPositionStyle(widget: Pick<WidgetOverlayData, 'p
   }
 }
 
-export function WidgetOverlayManager({ initialValue, editorOnly = false, submitLabel, widgets, onAdd, onToggle, onRemove }: WidgetOverlayManagerProps) {
+export function WidgetOverlayManager({ initialValue, editorOnly = false, submitLabel, widgets, onAdd, onToggle, onRemove, capture }: WidgetOverlayManagerProps) {
   const [name, setName] = useState(initialValue?.name || '');
   const [url, setUrl] = useState(initialValue?.url || '');
   const [position, setPosition] = useState<WidgetOverlayPosition>(initialValue?.position || 'center');
@@ -132,6 +171,7 @@ export function WidgetOverlayManager({ initialValue, editorOnly = false, submitL
   return (
     <div className={editorOnly ? "overlay-editor-form" : undefined} style={styles.container}>
       <h4 className="overlay-editor-title" style={styles.sectionTitle}>Widget Overlays</h4>
+      <div style={styles.noticeWrap}><WidgetBroadcastNotice capture={capture} /></div>
 
       {widgets.length > 0 && (
         <div className={editorOnly ? "overlay-editor-existing" : undefined} style={styles.list}>
@@ -145,6 +185,9 @@ export function WidgetOverlayManager({ initialValue, editorOnly = false, submitL
                 <div style={styles.itemMeta}>
                   <span style={styles.itemTag}>{widget.position.replace('-', ' ')}</span>
                   <span style={styles.itemTag}>{getWidgetOverlayDisplayUrl(widget.url)}</span>
+                  <span style={styles.itemTag} title={capture?.capturedWidgetIds.includes(widget.id) ? 'Viewers see this widget live' : WIDGET_STUDIO_ONLY_LABEL}>
+                    {capture?.capturedWidgetIds.includes(widget.id) ? 'Live on air' : 'Studio only'}
+                  </span>
                 </div>
               </div>
               <div style={styles.itemActions}>
@@ -250,6 +293,8 @@ export function WidgetOverlayDisplay({ data }: { data: WidgetOverlayData }) {
   return (
     <div
       aria-label={`Widget overlay ${data.name}`}
+      // The element tab capture crops to (see useWidgetTabCapture).
+      {...{ [WIDGET_CAPTURE_ATTRIBUTE]: data.id }}
       style={{
         ...overlayBase,
         ...getWidgetOverlayPositionStyle(data),
@@ -287,6 +332,8 @@ function getPositionDotStyle(position: WidgetOverlayPosition): React.CSSProperti
 const overlayBase: React.CSSProperties = {
   position: 'absolute',
   zIndex: 7,
+  // The brand font (set on the stage by StudioRoom), as the program draws it.
+  fontFamily: 'var(--studio-brand-font, Inter, Arial, sans-serif)',
   borderRadius: 10,
   overflow: 'hidden',
   background: 'rgba(2, 6, 23, 0.76)',
@@ -326,4 +373,10 @@ const styles: Record<string, React.CSSProperties> = {
   widgetFrameTitle: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 800 },
   widgetFrameHost: { maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.7)' },
   widgetIframe: { width: '100%', height: '100%', border: 'none', background: 'transparent' },
+  noticeWrap: { padding: '0 12px', marginBottom: 10 },
+  captureNotice: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(251, 191, 36, 0.28)', background: 'rgba(251, 191, 36, 0.08)' },
+  captureNoticeTitle: { fontSize: 11, fontWeight: 800, color: '#fcd34d' },
+  captureNoticeText: { fontSize: 11, lineHeight: 1.4, color: 'var(--text-secondary)' },
+  captureNoticeError: { fontSize: 11, lineHeight: 1.4, color: '#fca5a5' },
+  captureBtn: { alignSelf: 'flex-start', fontSize: 11, padding: '6px 10px' },
 };

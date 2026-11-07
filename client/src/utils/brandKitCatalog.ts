@@ -3,6 +3,7 @@ import type {
   BrandKitCatalogListResponse,
   BrandKitCatalogUpsertRequest,
 } from '@studio/shared';
+import { normalizeBrandFont, normalizeCustomLayouts } from '@studio/shared';
 import type { SavedBrandKit } from './brandKits.ts';
 import { ApiRequestError, buildApiUrl, getJson, postJson } from './apiClient.ts';
 
@@ -35,6 +36,8 @@ export function buildBrandKitCatalogUpsertRequest(
     logoOpacity: brandKit.logoOpacity,
     cameraShape: brandKit.cameraShape,
     nameTagStyle: brandKit.nameTagStyle,
+    customLayouts: brandKit.customLayouts || [],
+    brandFont: brandKit.brandFont || null,
   };
 }
 
@@ -53,6 +56,8 @@ export function catalogEntryToSavedBrandKit(entry: BrandKitCatalogEntry): SavedB
     logoOpacity: entry.logoOpacity,
     cameraShape: entry.cameraShape,
     nameTagStyle: entry.nameTagStyle,
+    customLayouts: normalizeCustomLayouts(entry.customLayouts),
+    brandFont: normalizeBrandFont(entry.brandFont),
   };
 }
 

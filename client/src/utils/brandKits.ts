@@ -1,5 +1,8 @@
+import { normalizeBrandFont, normalizeCustomLayouts } from '@studio/shared';
 import type {
+  BrandFont,
   BrandKitCatalogEntry,
+  CustomLayout,
   BrandKitCatalogStudioTheme,
   CameraShape,
   LogoPlacement,
@@ -30,6 +33,10 @@ export interface BrandKitVisuals {
   logoOpacity: number;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
+  /** Custom stage layouts that travel with the kit. */
+  customLayouts?: CustomLayout[];
+  /** Typeface for banners, tickers, lower thirds and widget text. */
+  brandFont?: BrandFont | null;
 }
 
 export interface SavedBrandKit extends Omit<BrandKitCatalogEntry, 'roomId' | 'updatedAt'> {}
@@ -95,6 +102,8 @@ function sanitizeSavedBrandKit(value: unknown): SavedBrandKit | null {
     logoOpacity: normalizeLogoOpacity(value.logoOpacity),
     cameraShape: isAllowed(value.cameraShape, CAMERA_SHAPES) ? value.cameraShape : 'rectangle',
     nameTagStyle: isAllowed(value.nameTagStyle, NAME_TAG_STYLES) ? value.nameTagStyle : 'classic',
+    customLayouts: normalizeCustomLayouts(value.customLayouts),
+    brandFont: normalizeBrandFont(value.brandFont),
   };
 }
 
@@ -150,5 +159,7 @@ export function createSavedBrandKit(
     logoOpacity: normalizeLogoOpacity(visuals.logoOpacity),
     cameraShape: visuals.cameraShape,
     nameTagStyle: visuals.nameTagStyle,
+    customLayouts: normalizeCustomLayouts(visuals.customLayouts),
+    brandFont: normalizeBrandFont(visuals.brandFont),
   };
 }

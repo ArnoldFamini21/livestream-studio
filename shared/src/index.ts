@@ -928,7 +928,8 @@ export interface PollUpdatePayload {
 
 // ============ Layout Types ============
 
-export type LayoutMode = 'grid' | 'spotlight' | 'side-by-side' | 'pip' | 'single' | 'featured';
+/** "custom" draws the stage from a CustomLayout (Scene.customLayoutId or the studio's active one). */
+export type LayoutMode = 'grid' | 'spotlight' | 'side-by-side' | 'pip' | 'single' | 'featured' | 'custom';
 
 export interface LayoutConfig {
   mode: LayoutMode;
@@ -994,6 +995,8 @@ export interface BrandKitCatalogEntry {
   logoOpacity: number;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
+  customLayouts?: CustomLayout[];
+  brandFont?: BrandFont | null;
 }
 
 export interface BrandKitCatalogUpsertRequest {
@@ -1010,6 +1013,8 @@ export interface BrandKitCatalogUpsertRequest {
   logoOpacity?: number;
   cameraShape?: CameraShape;
   nameTagStyle?: NameTagStyle;
+  customLayouts?: CustomLayout[];
+  brandFont?: BrandFont | null;
 }
 
 export interface BrandKitCatalogListResponse {
@@ -1533,6 +1538,8 @@ export interface Scene {
   logoSize?: LogoSize;
   logoOpacity?: number;
   pipCorner?: 'TL' | 'TR' | 'BL' | 'BR';
+  /** With layout 'custom': the CustomLayout this scene shows. */
+  customLayoutId?: string | null;
   focusedVideoItemId?: string | null;
   stageItemOrder?: string[];
   activeMedia?: SceneActiveMedia | null;
@@ -1543,4 +1550,191 @@ export interface Scene {
 export interface SceneActiveMedia {
   assetId: string;
   slideIndex?: number;
+}
+
+// ============ Custom Layout Types ============
+
+export type CustomLayoutSlotShape = 'rect' | 'rounded' | 'circle';
+export type CustomLayoutSlotKind = 'camera' | 'content';
+
+/**
+ * One box of a custom layout. x, y, w and h are fractions (0..1) of the
+ * program canvas, so a layout fits any output size of its orientation.
+ */
+export interface CustomLayoutSlot {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Stacking order; higher slots draw above lower ones. */
+  z: number;
+  shape: CustomLayoutSlotShape;
+  kind: CustomLayoutSlotKind;
+  /** A camera slot pinned to one stage item; unpinned slots fill in stage order. */
+  participantId?: string | null;
+}
+
+export interface CustomLayout {
+  id: string;
+  name: string;
+  /** The canvas the layout was drawn on: 16:9 landscape or 9:16 portrait. */
+  orientation: BroadcastOrientation;
+  slots: CustomLayoutSlot[];
+}
+
+export const MAX_CUSTOM_LAYOUTS = 12;
+export const MAX_CUSTOM_LAYOUT_SLOTS = 9;
+export const MAX_CUSTOM_LAYOUT_NAME_LENGTH = 40;
+/** The smallest slot edge, as a fraction of the canvas. */
+export const MIN_CUSTOM_LAYOUT_SLOT_SIZE = 0.04;
+
+const CUSTOM_LAYOUT_SLOT_SHAPES: readonly CustomLayoutSlotShape[] = ['rect', 'rounded', 'circle'];
+const CUSTOM_LAYOUT_SLOT_KINDS: readonly CustomLayoutSlotKind[] = ['camera', 'content'];
+const CUSTOM_LAYOUT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function customLayoutRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function customLayoutFraction(value: unknown, fallback: number): number {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(1, Math.max(0, number));
+}
+
+function customLayoutText(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, maxLength);
+}
+
+/** A slot kept inside the canvas and at least the minimum size; null when unusable. */
+export function normalizeCustomLayoutSlot(value: unknown, index = 0): CustomLayoutSlot | null {
+  const raw = customLayoutRecord(value);
+  if (!raw) return null;
+  const id = typeof raw.id === 'string' && CUSTOM_LAYOUT_ID_PATTERN.test(raw.id) ? raw.id : `slot-${index + 1}`;
+  const w = Math.max(MIN_CUSTOM_LAYOUT_SLOT_SIZE, customLayoutFraction(raw.w, 0.5));
+  const h = Math.max(MIN_CUSTOM_LAYOUT_SLOT_SIZE, customLayoutFraction(raw.h, 0.5));
+  const x = Math.min(1 - w, customLayoutFraction(raw.x, 0));
+  const y = Math.min(1 - h, customLayoutFraction(raw.y, 0));
+  const zNumber = Number(raw.z);
+  const z = Number.isFinite(zNumber) ? Math.min(99, Math.max(0, Math.round(zNumber))) : index;
+  const shape = CUSTOM_LAYOUT_SLOT_SHAPES.includes(raw.shape as CustomLayoutSlotShape)
+    ? raw.shape as CustomLayoutSlotShape
+    : 'rect';
+  const kind = CUSTOM_LAYOUT_SLOT_KINDS.includes(raw.kind as CustomLayoutSlotKind)
+    ? raw.kind as CustomLayoutSlotKind
+    : 'camera';
+  const participantId = kind === 'camera' ? customLayoutText(raw.participantId, 128) : '';
+  const round = (n: number) => Math.round(n * 10_000) / 10_000;
+  return {
+    id,
+    x: round(x),
+    y: round(y),
+    w: round(w),
+    h: round(h),
+    z,
+    shape,
+    kind,
+    ...(participantId ? { participantId } : {}),
+  };
+}
+
+/** A layout with unique slot ids, at most one content slot and at most MAX_CUSTOM_LAYOUT_SLOTS slots. */
+export function normalizeCustomLayout(value: unknown): CustomLayout | null {
+  const raw = customLayoutRecord(value);
+  if (!raw) return null;
+  const id = typeof raw.id === 'string' && CUSTOM_LAYOUT_ID_PATTERN.test(raw.id) ? raw.id : '';
+  const name = customLayoutText(raw.name, MAX_CUSTOM_LAYOUT_NAME_LENGTH);
+  if (!id || !name) return null;
+  const orientation: BroadcastOrientation = raw.orientation === 'portrait' ? 'portrait' : 'landscape';
+  const slots: CustomLayoutSlot[] = [];
+  const ids = new Set<string>();
+  let hasContent = false;
+  const rawSlots = Array.isArray(raw.slots) ? raw.slots : [];
+  for (let index = 0; index < rawSlots.length && slots.length < MAX_CUSTOM_LAYOUT_SLOTS; index += 1) {
+    const slot = normalizeCustomLayoutSlot(rawSlots[index], index);
+    if (!slot) continue;
+    if (slot.kind === 'content') {
+      if (hasContent) continue;
+      hasContent = true;
+    }
+    let slotId = slot.id;
+    for (let suffix = 2; ids.has(slotId); suffix += 1) slotId = `${slot.id}-${suffix}`.slice(0, 64);
+    ids.add(slotId);
+    slots.push({ ...slot, id: slotId });
+  }
+  if (slots.length === 0) return null;
+  return { id, name, orientation, slots };
+}
+
+export function normalizeCustomLayouts(value: unknown): CustomLayout[] {
+  if (!Array.isArray(value)) return [];
+  const layouts: CustomLayout[] = [];
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (layouts.length >= MAX_CUSTOM_LAYOUTS) break;
+    const layout = normalizeCustomLayout(item);
+    if (!layout || ids.has(layout.id)) continue;
+    ids.add(layout.id);
+    layouts.push(layout);
+  }
+  return layouts;
+}
+
+// ============ Brand Font Types ============
+
+/** Open-licence faces bundled with the studio (same origin, no font CDN). */
+export type BrandFontPresetId =
+  | 'inter'
+  | 'montserrat'
+  | 'poppins'
+  | 'oswald'
+  | 'playfair-display'
+  | 'roboto-slab'
+  | 'bebas-neue';
+
+export const BRAND_FONT_PRESET_IDS: readonly BrandFontPresetId[] = [
+  'inter',
+  'montserrat',
+  'poppins',
+  'oswald',
+  'playfair-display',
+  'roboto-slab',
+  'bebas-neue',
+];
+
+/**
+ * The brand typeface for banners, tickers, lower thirds and widget text. An
+ * uploaded file stays in the browser that added it (IndexedDB, by fileId);
+ * elsewhere the studio falls back to Inter.
+ */
+export type BrandFont =
+  | { source: 'preset'; presetId: BrandFontPresetId }
+  | { source: 'upload'; family: string; fileId: string; fileName: string };
+
+export const MAX_BRAND_FONT_FAMILY_LENGTH = 48;
+
+/** Font family names are kept to letters, digits, spaces, dashes and underscores. */
+export function normalizeBrandFontFamilyName(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[^A-Za-z0-9 _-]/g, '').replace(/\s+/g, ' ').trim().slice(0, MAX_BRAND_FONT_FAMILY_LENGTH);
+}
+
+export function normalizeBrandFont(value: unknown): BrandFont | null {
+  const raw = customLayoutRecord(value);
+  if (!raw) return null;
+  if (raw.source === 'preset') {
+    return BRAND_FONT_PRESET_IDS.includes(raw.presetId as BrandFontPresetId)
+      ? { source: 'preset', presetId: raw.presetId as BrandFontPresetId }
+      : null;
+  }
+  if (raw.source === 'upload') {
+    const family = normalizeBrandFontFamilyName(raw.family);
+    const fileId = typeof raw.fileId === 'string' && CUSTOM_LAYOUT_ID_PATTERN.test(raw.fileId) ? raw.fileId : '';
+    const fileName = customLayoutText(raw.fileName, 120);
+    if (!family || !fileId) return null;
+    return { source: 'upload', family, fileId, fileName: fileName || family };
+  }
+  return null;
 }

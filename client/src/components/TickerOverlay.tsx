@@ -361,6 +361,8 @@ const overlayBar: React.CSSProperties = {
   left: 0,
   right: 0,
   zIndex: 8,
+  // The brand font (set on the stage by StudioRoom), as the program draws it.
+  fontFamily: 'var(--studio-brand-font, Inter, Arial, sans-serif)',
   height: 36,
   display: 'flex',
   alignItems: 'center',

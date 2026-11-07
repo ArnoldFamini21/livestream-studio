@@ -10,6 +10,7 @@ import type {
   NameTagStyle,
   StageBackground,
 } from '@studio/shared';
+import { normalizeBrandFont, normalizeCustomLayouts } from '@studio/shared';
 
 const { Pool } = pg;
 
@@ -168,6 +169,9 @@ export function normalizeBrandKitCatalogEntry(
     logoOpacity: normalizeLogoOpacity(value.logoOpacity),
     cameraShape: isAllowed(value.cameraShape, CAMERA_SHAPES) ? value.cameraShape : 'rectangle',
     nameTagStyle: isAllowed(value.nameTagStyle, NAME_TAG_STYLES) ? value.nameTagStyle : 'classic',
+    // Same rules as the studio: normalized slots inside the canvas, bounded counts.
+    customLayouts: normalizeCustomLayouts(value.customLayouts),
+    brandFont: normalizeBrandFont(value.brandFont),
   };
 }
 

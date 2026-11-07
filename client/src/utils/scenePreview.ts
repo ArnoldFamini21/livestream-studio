@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { LayoutMode, LogoPlacement, LogoPosition, Scene } from '@studio/shared';
+import type { CustomLayout, LayoutMode, LogoPlacement, LogoPosition, Scene } from '@studio/shared';
 import { getMediaShareLayoutPlan } from './mediaShareLayouts.ts';
 import { getCustomLogoPositionStyle, normalizeLogoPosition } from './logoPosition.ts';
 
@@ -25,8 +25,21 @@ export interface ScenePreviewOverlays {
 
 export function getScenePreviewTiles(
   layout: LayoutMode,
-  options: { pipCorner?: Scene['pipCorner']; mediaActive?: boolean; mediaParticipantCount?: number } = {}
+  options: { pipCorner?: Scene['pipCorner']; mediaActive?: boolean; mediaParticipantCount?: number; customLayout?: CustomLayout | null } = {}
 ): ScenePreviewTile[] {
+  if (layout === 'custom' && options.customLayout) {
+    // The scene's own slots, stacked as on the stage.
+    return [...options.customLayout.slots]
+      .sort((a, b) => a.z - b.z)
+      .map((slot, index) => ({
+        left: `${Math.round(slot.x * 1000) / 10}%`,
+        top: `${Math.round(slot.y * 1000) / 10}%`,
+        width: `${Math.round(slot.w * 1000) / 10}%`,
+        height: `${Math.round(slot.h * 1000) / 10}%`,
+        ...(slot.kind === 'content' ? { media: true, primary: true } : index === 0 ? { primary: true } : {}),
+        ...(index > 0 && slot.kind === 'camera' ? { floating: true } : {}),
+      }));
+  }
   if (options.mediaActive) return getSharedMediaPreviewTiles(layout, options);
 
   switch (layout) {
@@ -55,6 +68,7 @@ export function getScenePreviewTiles(
         { left: '73%', top: '11%', width: '20%', height: '28%' },
         { left: '73%', top: '47%', width: '20%', height: '28%' },
       ];
+    case 'custom':
     case 'grid':
       return [
         { left: '9%', top: '13%', width: '37%', height: '27%' },
@@ -150,6 +164,7 @@ function getPreviewParticipantCount(layout: LayoutMode, providedCount?: number):
     case 'grid':
     case 'spotlight':
     case 'featured':
+    case 'custom':
       return 3;
   }
 }

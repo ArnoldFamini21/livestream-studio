@@ -88,6 +88,7 @@ export function getMediaShareLayoutPlan(layout: LayoutMode, participantCount: nu
         usesFloatingParticipant: true,
       };
     case 'grid':
+    case 'custom':
       return {
         placement: 'side-rail',
         visibleParticipantCount: Math.min(count, MAX_SIDE_RAIL_PARTICIPANTS),
@@ -181,6 +182,8 @@ export function selectVisibleStageItems<T>(
     case 'grid':
     case 'spotlight':
     case 'featured':
+    // Custom layouts pass in exactly the items their slots show.
+    case 'custom':
       return stageItems;
   }
 }
