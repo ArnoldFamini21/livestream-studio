@@ -5,13 +5,27 @@ RewriteBase /
 AddType text/javascript .js .mjs
 
 <IfModule mod_headers.c>
-  # Security headers. A full Content-Security-Policy is left out on purpose:
-  # the studio talks to WebRTC relays, Render services, and Google APIs.
+  # Security headers.
+  #
+  # Content-Security-Policy: scripts only from this site plus the three
+  # third-party script hosts the studio loads on demand (Google sign-in and
+  # Drive/YouTube APIs, and the version-pinned MediaPipe virtual background on
+  # jsDelivr). 'wasm-unsafe-eval' lets MediaPipe compile its WebAssembly; no
+  # JavaScript eval is allowed. Network calls stay open to any https:/wss:
+  # host because the API, media server and recording object storage live on
+  # owner-configured domains (Render, Cloudflare R2, etc.). WebRTC/TURN traffic
+  # is not governed by CSP. Images, video and audio may come from blob:/data:
+  # (local media, recordings) or any https: host (media added by URL); widget
+  # overlays and PDF previews are framed from https:/blob:. Inline style
+  # attributes are used throughout the React UI, hence style-src 'unsafe-inline'.
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com https://apis.google.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://accounts.google.com https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' https: wss: blob: data:; worker-src 'self' blob: https://cdn.jsdelivr.net; child-src 'self' blob: https:; frame-src 'self' blob: data: https:; object-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self' https://accounts.google.com; frame-ancestors 'self'"
   Header always set Strict-Transport-Security "max-age=31536000"
   Header always set X-Content-Type-Options "nosniff"
   Header always set X-Frame-Options "SAMEORIGIN"
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
-  Header always set Permissions-Policy "geolocation=(), payment=(), usb=()"
+  Header always set Cross-Origin-Opener-Policy "same-origin-allow-popups"
+  # Camera, microphone and screen sharing only for this site (not for framed widgets).
+  Header always set Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=(), serial=(), hid=()"
 
   Header set Cache-Control "no-cache, no-store, must-revalidate"
   Header set Pragma "no-cache"
