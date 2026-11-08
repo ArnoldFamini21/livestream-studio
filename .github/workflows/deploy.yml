@@ -28,6 +28,9 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      # Tests use the system FFmpeg (installed below), not ffmpeg-static's GitHub download.
+      FFMPEG_BIN: /usr/bin/ffmpeg
 
     steps:
       - name: Checkout code
@@ -68,6 +71,10 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Install FFmpeg from Ubuntu packages
+        # ffmpeg-static downloads its binary from GitHub releases, which can be
+        # unavailable for hours. FFMPEG_BIN makes it use this system binary.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Install dependencies
         run: sh scripts/npm-ci-retry.sh
 
