@@ -137,7 +137,7 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
       {/* None / Default */}
       <div style={styles.group}>
         <span style={styles.groupLabel}>Default</span>
-        <div style={styles.thumbRow}>
+        <div style={styles.thumbGrid}>
           <button
             type="button"
             aria-label="Reset canvas background to default"
@@ -390,10 +390,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
-  },
-  thumbRow: {
-    display: 'flex',
-    gap: 6,
   },
   thumbGrid: {
     display: 'grid',

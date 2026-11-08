@@ -7334,7 +7334,7 @@ export function StudioRoom() {
           )}
           {/* Scale the complete broadcast composition; panels never reflow it. */}
           {useMobileStage ? (
-            <div className="studio-mobile-stage" role="region" aria-label="Stage">
+            <div className="studio-mobile-stage" role="region" aria-label="Stage" style={canvasBackground.type === 'none' || canvasBackground.type === 'video' ? undefined : { ...stageBackgroundStyle, padding: 8, borderRadius: 12 }}>
               {(stagedMedia || sharedContentScreenShare) && (
                 <div className="studio-mobile-content studio-active-media">
                   {stagedMedia ? stagedMediaContent : sharedContentScreenShare && (
