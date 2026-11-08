@@ -22,10 +22,13 @@
     "production:check": "node scripts/check-production.mjs",
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces && node --test scripts/*.test.mjs",
-    "lint": "npm run lint --workspaces"
+    "lint": "npm run lint --workspaces",
+    "test:e2e": "node --test e2e/studio.test.mjs",
+    "test:recording-soak": "node e2e/recording-soak.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
+    "playwright-core": "1.65.0",
     "typescript": "^5.4.5"
   },
   "overrides": {
