@@ -5,6 +5,9 @@ import { pathToFileURL } from 'node:url';
 const SIGNALING_PREFIXES = ['server/', 'shared/'];
 const MEDIA_PREFIXES = ['media-server/', 'shared/'];
 const GLOBAL_SERVICE_FILES = new Set(['package.json', 'render.yaml', '.npmrc']);
+// Render builds the media service from the root Docker context. A change to
+// either input can alter that image without touching media-server/ itself.
+const MEDIA_BUILD_FILES = new Set(['Dockerfile', '.dockerignore']);
 
 function normalizePath(value) {
   return String(value || '').trim().replace(/\\/g, '/').replace(/^\.\/+/, '');
@@ -34,7 +37,7 @@ export function classifyProductionChanges(files = []) {
     if (GLOBAL_SERVICE_FILES.has(file) || packageLockMatchesSignaling || SIGNALING_PREFIXES.some((prefix) => file.startsWith(prefix))) {
       signalingFiles.push(file);
     }
-    if (GLOBAL_SERVICE_FILES.has(file) || packageLockMatchesMedia || MEDIA_PREFIXES.some((prefix) => file.startsWith(prefix))) {
+    if (GLOBAL_SERVICE_FILES.has(file) || MEDIA_BUILD_FILES.has(file) || packageLockMatchesMedia || MEDIA_PREFIXES.some((prefix) => file.startsWith(prefix))) {
       mediaFiles.push(file);
     }
   }

@@ -110,3 +110,19 @@ test('treats the npm install config as a change to both services', () => {
   assert.equal(result.signalingChanged, true);
   assert.equal(result.mediaChanged, true);
 });
+
+for (const file of ['Dockerfile', '.dockerignore']) {
+  test(`deploys the media image when only root ${file} changes`, () => {
+    const result = classifyProductionChanges([`./${file}`]);
+    assert.equal(result.signalingChanged, false, 'Render signaling builds with npm, not Docker');
+    assert.equal(result.mediaChanged, true);
+    assert.deepEqual(result.mediaFiles, [file]);
+    assert.deepEqual(result.signalingFiles, []);
+  });
+}
+
+test('does not deploy media for unrelated nested Docker inputs or similarly named docs', () => {
+  const result = classifyProductionChanges(['client/Dockerfile', 'docs/.dockerignore', 'Dockerfile.md']);
+  assert.equal(result.signalingChanged, false);
+  assert.equal(result.mediaChanged, false);
+});
