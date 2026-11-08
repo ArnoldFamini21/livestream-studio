@@ -5,6 +5,11 @@ name: CI
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      recording_soak:
+        description: Run three-participant recording qualification (35-second preflight, then 20 minutes)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,3 +47,93 @@ jobs:
 
       - name: Build all workspaces
         run: npm run build
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright
+      E2E_ARTIFACT_DIR: ${{ github.workspace }}/output/e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies and Chromium
+        run: |
+          npm ci
+          npx playwright-core install --with-deps chromium
+      - name: Build local browser qualification target
+        run: |
+          npm run -w shared build
+          npm run -w server build
+          npm run -w client build
+        env:
+          VITE_API_URL: http://localhost:3001
+          VITE_WS_URL: ws://localhost:3001/ws
+          VITE_MEDIA_HTTP_URL: http://localhost:3001
+          VITE_MEDIA_WS_URL: ws://localhost:3001/rtmp
+          VITE_INVITE_BASE_URL: http://localhost:5199
+      - name: Qualify studio with host, guest and viewer browsers
+        run: npm run test:e2e
+      - name: Upload screenshots and qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-qualification
+          path: |
+            output/e2e/*.png
+            output/e2e/*.txt
+            output/e2e/*.json
+            output/e2e/*.log
+          retention-days: 7
+
+  recording-soak:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recording_soak }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright
+      VITE_API_URL: http://localhost:3001
+      VITE_WS_URL: ws://localhost:3001/ws
+      VITE_MEDIA_HTTP_URL: http://localhost:3001
+      VITE_MEDIA_WS_URL: ws://localhost:3001/rtmp
+      VITE_INVITE_BASE_URL: http://localhost:5199
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install browser and media inspection tools
+        run: |
+          npm ci
+          npx playwright-core install --with-deps chromium
+          sudo apt-get install -y ffmpeg
+      - name: Build local recording qualification target
+        run: |
+          npm run -w shared build
+          npm run -w server build
+          npm run -w client build
+      - name: Preflight recording, transfer, reconnect and analysis
+        run: npm run test:recording-soak
+        env:
+          SOAK_SECONDS: '35'
+          SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/preflight
+      - name: Qualify twenty-minute three-participant recording
+        run: npm run test:recording-soak
+        env:
+          SOAK_SECONDS: '1200'
+          SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/qualification
+      - name: Upload recording qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recording-soak-evidence
+          path: |
+            output/recording-soak/*/*.json
+            output/recording-soak/*/*.log
+            output/recording-soak/*/*.txt
+            output/recording-soak/*/*.png
+          retention-days: 7
