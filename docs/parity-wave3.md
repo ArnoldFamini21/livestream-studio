@@ -114,6 +114,23 @@ stop-requested/stopped timestamps plus a screenshot. Assertions are unchanged.
 PR #352 is merged, including the Linux finalization diagnostic. Recording
 integrity and error reporting remain separate drafts awaiting their own gates.
 
+### P0.2 checkpoint — PR #353 (read-ahead)
+
+The guest sender now reads its recording in bounded 256 KiB blocks instead of
+one disk read per ~16 KiB network frame, and discards that block on resume,
+completion and close. Review found that the sender kept reading the snapshot it
+had cached even after a finished track swapped to its final file (a folder
+writer removes the part files the snapshot points at), and retried an unreadable
+snapshot forever after any failed read. It now drops the cached snapshot and
+block when the source changes or a read fails; two regressions cover both and
+fail without the fix. Local gates: client **1,421**, server **265 + 2 skipped**,
+media server **291**, shared **26**, scripts **37**; lint and the root build
+pass. A local 35-second smoke (Mac, X9 Pro) completed all four guest transfers
+across the forced reconnect, byte-identical to the MediaRecorder sources, with no
+page, CSP or recording console errors. It still failed the 1-second packet-gap
+check on video streams, including the host's own non-transferred ISO, so those
+gaps come from capture, not transfer. Linux soak results are in the PR.
+
 1. **P0.2 — recording integrity:** validate `codex/wave3-recording-read-ahead`.
    The exclusive 35-second rehearsal stopped all seven recorders and resumed
    real peer channels, but timed out receiving every guest track. The sender
