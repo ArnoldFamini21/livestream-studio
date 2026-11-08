@@ -11,18 +11,43 @@ export interface FrameTicker {
   stop(): void;
 }
 
+/**
+ * Decides which timer ticks draw a frame.
+ *
+ * Two gaps are required: half an interval since the previous frame *started*
+ * (drops a backlog of queued ticks) and a quarter interval since it *ended*.
+ * The second one matters on slow machines: with only the first, a frame slower
+ * than half the interval let the next queued tick draw at once, frames ran back
+ * to back and the page's main thread never idled, so signaling, recording
+ * transfers and the UI starved. Frames up to ~3/4 of the interval still run at
+ * the full rate; slower frames drop the rate instead of freezing the page.
+ */
+export function createFrameGate(intervalMs: number, onFrame: () => void, now: () => number = () => performance.now()): () => boolean {
+  const minStartGapMs = intervalMs * 0.5;
+  const minIdleMs = intervalMs * 0.25;
+  let lastStartedAt = Number.NEGATIVE_INFINITY;
+  let lastEndedAt = Number.NEGATIVE_INFINITY;
+  return () => {
+    const startedAt = now();
+    if (startedAt - lastStartedAt < minStartGapMs || startedAt - lastEndedAt < minIdleMs) return false;
+    lastStartedAt = startedAt;
+    try {
+      onFrame();
+    } finally {
+      lastEndedAt = now();
+    }
+    return true;
+  };
+}
+
 export function createFrameTicker(fps: number, onFrame: () => void): FrameTicker {
   const intervalMs = Math.max(1, Math.round(1000 / fps));
   let stopped = false;
-  let lastFrameAt = 0;
+  const gate = createFrameGate(intervalMs, onFrame);
   const tick = () => {
     if (stopped) return;
-    // A slow frame queues worker messages; drop the backlog instead of
-    // drawing several frames back to back.
-    const now = performance.now();
-    if (now - lastFrameAt < intervalMs * 0.5) return;
-    lastFrameAt = now;
-    onFrame();
+    // A slow frame queues worker messages; the gate drops that backlog.
+    gate();
   };
 
   if (typeof Worker !== 'undefined') {
