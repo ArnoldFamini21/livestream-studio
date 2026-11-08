@@ -112,6 +112,9 @@ export function LivePollsPanel({
             <button type="button" style={styles.secondaryBtn} onClick={addOption} disabled={options.length >= 6}>Add Option</button>
             <button type="button" className="btn-primary" style={styles.createBtn} onClick={handleCreate} disabled={!canCreate}>Start Poll</button>
           </div>
+          <p style={styles.emptyText}>
+            Viewers vote on the watch page, or by typing 1, 2… in YouTube or Facebook chat (when that chat is connected). Guests can type !vote 1 in the studio chat. The highlighted open poll gets the votes.
+          </p>
         </div>
       )}
 

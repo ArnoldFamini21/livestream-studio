@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import type Hls from 'hls.js';
 import '../styles/studio-chrome.css';
 import { StudioIcon } from './StudioIcon.tsx';
+import { WatchPollCard } from './WatchPollCard.tsx';
 import { ApiRequestError, requestJson, resolveMediaHttpUrl } from '../utils/apiClient.ts';
 import { canonicalWatchPath, looksLikeReplacedWatchLink, pollWatchStatus, type WatchStatus } from '../utils/watchStatus.ts';
 import { HlsRecoveryPolicy } from '../utils/hlsRecovery.ts';
@@ -283,6 +284,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               {room?.hostName && <p className="watch-host">Hosted by {room.hostName}</p>}
               {schedule && !live && !ended && <p className="watch-schedule">{schedule}</p>}
             </section>
+            {room && !ended && <WatchPollCard watchId={roomId} />}
           </>
         )}
       </main>

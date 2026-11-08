@@ -176,6 +176,20 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
 .watch-tap { position: absolute; inset: 0; margin: auto; width: max-content; height: max-content; padding: 14px 28px; border-radius: 999px; border: 0; background: #6d5dfc; color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); }
 .watch-details h1 { margin: 0 0 4px; font-size: clamp(20px, 3vw, 28px); }
 .watch-host, .watch-schedule { margin: 0; color: rgba(244, 244, 248, 0.7); font-size: 14px; }
+.watch-poll { width: min(560px, 100%); padding: 18px 18px 14px; border-radius: 14px; background: #141827; border: 1px solid rgba(255, 255, 255, 0.08); box-sizing: border-box; }
+.watch-poll-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.watch-poll-count { font-size: 12px; color: rgba(244, 244, 248, 0.6); font-weight: 600; }
+.watch-poll-question { margin: 6px 0 12px; font-size: 18px; line-height: 1.3; }
+.watch-poll-options { display: flex; flex-direction: column; gap: 8px; }
+.watch-poll-option { position: relative; overflow: hidden; display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.12); background: #0b0d14; color: #f4f4f8; font-size: 15px; font-weight: 600; text-align: left; cursor: pointer; }
+.watch-poll-option:hover:not(:disabled) { border-color: rgba(184, 176, 255, 0.6); }
+.watch-poll-option:disabled { cursor: progress; }
+.watch-poll-option.is-chosen { border-color: #6d5dfc; }
+.watch-poll-bar { position: absolute; inset: 0 auto 0 0; background: rgba(109, 93, 252, 0.28); transition: width 0.3s ease; }
+.watch-poll-index { position: relative; flex: 0 0 auto; width: 24px; height: 24px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.08); font-size: 13px; }
+.watch-poll-text { position: relative; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.watch-poll-percent { position: relative; font-variant-numeric: tabular-nums; }
+.watch-poll-note { margin: 10px 0 0; font-size: 13px; color: rgba(244, 244, 248, 0.65); }
 .watch-card { width: min(520px, 100%); margin: 40px auto 0; padding: 28px; border-radius: 16px; background: #141827; border: 1px solid rgba(255, 255, 255, 0.08); }
 .watch-card h1 { margin: 4px 0 8px; font-size: 26px; }
 .watch-card p { color: rgba(244, 244, 248, 0.75); }

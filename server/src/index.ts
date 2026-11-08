@@ -159,6 +159,7 @@ const ACCOUNT_CREDENTIAL_LIMIT_MAX = 10; // 10 sign-in/password attempts per min
 // of the general 30/min: every guest loads every slide the host shows.
 const STAGE_IMAGE_LIMIT_MAX = 600; // slide pictures read and uploaded per minute per IP
 const ICE_CONFIG_LIMIT_MAX = 120; // connection setups per minute per IP
+const WATCH_POLL_LIMIT_MAX = 1200; // watch-page poll reads and votes per minute per IP (shared venue Wi-Fi)
 
 interface RateEntry {
   count: number;
@@ -214,6 +215,7 @@ const clientErrorLimiter = makeRateLimiter(CLIENT_ERROR_LIMIT_MAX);
 const accountCredentialLimiter = makeRateLimiter(ACCOUNT_CREDENTIAL_LIMIT_MAX);
 const stageImageLimiter = makeRateLimiter(STAGE_IMAGE_LIMIT_MAX);
 const iceConfigLimiter = makeRateLimiter(ICE_CONFIG_LIMIT_MAX);
+const watchPollLimiter = makeRateLimiter(WATCH_POLL_LIMIT_MAX);
 
 const STAGE_IMAGE_PATH = /^\/api\/rooms\/[^/]+\/stage-images(\/[^/]+)?$/;
 app.use((req, res, next) => {
@@ -223,6 +225,10 @@ app.use((req, res, next) => {
   }
   if (req.path === '/api/ice-config' || req.path === INTERNAL_TURN_PATH) {
     iceConfigLimiter.middleware(req, res, next);
+    return;
+  }
+  if (/^\/api\/watch\/[^/]+\/poll(-votes)?$/.test(req.path)) {
+    watchPollLimiter.middleware(req, res, next);
     return;
   }
   generalLimiter.middleware(req, res, next);
@@ -237,6 +243,7 @@ const rateLimitSweepTimer = setInterval(() => {
   accountCredentialLimiter.sweep();
   stageImageLimiter.sweep();
   iceConfigLimiter.sweep();
+  watchPollLimiter.sweep();
 }, 5 * 60_000);
 
 // REST API routes — room creation gets its own tighter cap.
@@ -262,6 +269,12 @@ app.use('/api/rooms', (req, res, next) => {
 
 // The public watch page, addressed by its private watch id. Registering shares the room budget.
 app.use('/api/watch', (req, res, next) => {
+  // Poll reads and votes are capped by the looser limiter above (a whole venue
+  // can share one address); everything else posted here shares the room budget.
+  if (/^\/[^/]+\/poll(-votes)?$/.test(req.path)) {
+    next();
+    return;
+  }
   if (req.method === 'POST') {
     roomCreateLimiter.middleware(req, res, next);
     return;
