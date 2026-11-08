@@ -1,3 +1,4 @@
+import { hasAudioWorkletSupport } from './audioWorkletSupport.ts';
 import { createWavHeader, encodePcmFrames, WAV_HEADER_BYTES, type WavFormat } from './wavStream.ts';
 
 /**
@@ -33,7 +34,7 @@ async function ensureWorklet(context: AudioContext): Promise<void> {
 
 export function isPcmWavRecordingSupported(): boolean {
   return typeof AudioContext !== 'undefined' && typeof AudioWorkletNode !== 'undefined'
-    && typeof (AudioContext.prototype as { audioWorklet?: unknown }).audioWorklet !== 'undefined';
+    && hasAudioWorkletSupport();
 }
 
 /** Ask for the same microphone with every voice-processing stage turned off. */
