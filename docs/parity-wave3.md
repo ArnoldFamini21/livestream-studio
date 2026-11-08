@@ -5,7 +5,7 @@
 Unchecked items are not qualified or shipped. Partial work is recorded below;
 unit coverage alone does not complete a browser acceptance criterion.
 
-- [x] **P0.1** Browser end-to-end qualification in Linux CI (merged in PR #352)
+- [x] **P0.1** Browser end-to-end qualification in Linux CI (PR #352 merged)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
 - [ ] **P0.3** Free production error grouping, release tags, no PII
 - [ ] **P1.4** Configurable multistream destinations, health and presets
@@ -95,36 +95,12 @@ not browser profiles or recording payloads.
 
 ## Resume here next session
 
-### Stop checkpoint — PR #353
-
-The owner requested stopping work to conserve usage. PR #353 remains a draft.
-At `d6942f43`, all local gates passed: client **1,416**, server **261** with
-**2 PostgreSQL integration skips**, media server **291**, shared **22** and
-script tests **35** (**2,025 passed, 2 skipped**); all workspace typechecks and
-the root production build passed. Linux run
-[42464124847](https://github.com/ArnoldFamini21/livestream-studio/actions/runs/42464124847)
-passed its normal browser and unit/build jobs, but the 35-second recording
-preflight failed before packet analysis: Playwright's Stop-button click timed
-out after the button was visible, enabled and scrolled into view. Both guest
-transfers were progressing (95–97% in the failure screenshot); the recorders
-were still running. No application, CSP or recording-console errors appeared.
-The 20-minute step did not run. This Linux failure rules out attributing every
-stall solely to the owner's ExFAT volume.
-
-A final **unverified harness-only diagnostic** changes the soak's Stop action
-to the existing production **Shift+R** shortcut after waiting for the Stop
-button. The short suite still tests button clicks. No media, checksum, packet,
-duration or drift assertions are relaxed. Next session: review that diagnostic,
-run Linux preflight, inspect every track's retained analysis, then run the
-20-minute check only if preflight passes. The read-ahead production change must
-remain unmerged until qualification succeeds; the local 1.200-second packet
-gap remains a real failed acceptance check.
-
-Linux evidence was downloaded on X9 Pro to
-`.x9/storage/wave3-recording-linux-42464124847/preflight/`; local gate logs are
-`.x9/storage/wave3-recording-{lint,tests,full-build}.log` in the parent workspace.
-No recording or browser processes remain owned by this work item.
-
+Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and
+browser intake regressions are saved. The browser suite now runs error intake
+and studio qualification serially, with separate diagnostic artifacts. The
+previous lint run and 26 targeted tests passed; an additional throwing-getter
+regression is awaiting the new gate run. Full current-head gates and browser
+verification must pass before this branch merges.
 
 **Linux finalization (resolved in PR #352):** five CI runs of the same code
 gave 3 passes and 2 failures waiting for "Start recording" after the 30-second
@@ -135,46 +111,15 @@ now records at the 720p preset, allows 120 s for finalization, writes
 `recording-finalize-timing.json` on success and, on a timeout, each recorder's
 stop-requested/stopped timestamps plus a screenshot. Assertions are unchanged.
 
-The owner requested a usage-limited wrap-up before the long soak. Browser and
-recording work remain drafts. Only an independently verified deploy-classifier
-change may merge during this wrap-up; it is isolated from the failing suite.
-
-P0.2 checkpoint (PR #353): bounded 256 KiB sender read-ahead now passes all
-12 transfer tests, including four regressions for bounded disk reads/byte
-identity, resume during a read, a growing replacement snapshot and cancellation.
-Client typecheck and the local shared/server/client build pass. The eight packet
-metric tests also pass. Full gates and Linux recording qualification are pending.
-
-The exclusive local rehearsal on November 8 used the actual 720p camera preset
-(1280×720 at 30 fps) for three separate Chrome profiles. The production program
-remained 1920×1080 at 30 fps. All seven program/ISO/audio tracks completed in the
-host's native OPFS folder. A guest transferred 1,574,793 binary bytes before its
-real recording channel and signaling socket were interrupted; the replacement
-channel sent binary media and every guest track then completed. The host audio
-and host ISO files matched their original MediaRecorder bytes by SHA-256.
-
-**This rehearsal failed integrity qualification:** the host ISO has a 1.200-second
-encoded packet gap (limit: one second). Only the first two files were exported
-before this failure stopped analysis; the complete take manifest is evidence of
-receipt, not a checksum pass for the remaining five. No uncaught application,
-CSP or recording-console errors occurred. The capture lasted about 84 seconds
-while reconnect and disk work proceeded. Evidence is in
-`output/recording-soak/2026-11-08T08-39-52.486Z/` in the recording worktree.
-Subsequent runner versions retain all seven files' analysis even if one fails;
-they still fail the overall check. Do not mark P0.2 complete or merge it until
-strict Linux preflight and 20-minute recording checks pass. Net A/V duration
-drift is reported separately from initial offset; it does not prove peak sync
-error or real-camera lip sync.
-
-
+PR #352 is merged, including the Linux finalization diagnostic. Recording
+integrity and error reporting remain separate drafts awaiting their own gates.
 
 1. **P0.2 — recording integrity:** validate `codex/wave3-recording-read-ahead`.
    The exclusive 35-second rehearsal stopped all seven recorders and resumed
    real peer channels, but timed out receiving every guest track. The sender
    performs serial disk reads for each approximately 16 KiB network frame;
-   the draft adds bounded 256 KiB reads plus four passing regressions. The local
-   smoke now collects all seven tracks but fails a 1.200-second packet gap. Run
-   all gates, then the manual CI `recording_soak`
+   the draft adds bounded 256 KiB reads plus three unrun regressions. Run those
+   tests, all gates, a quiet local smoke, then the manual CI `recording_soak`
    input (35-second preflight followed by 1,200 seconds). Require byte-identical
    received files, monotonic timestamps, no gap over one second and media-clock
    drift below 40 ms. Do not claim real-camera lip sync or ExFAT throughput
@@ -182,8 +127,8 @@ error or real-camera lip sync.
 2. **P0.3 — error reporting:** finish `codex/wave3-errors`. Privacy sanitization,
    release tags, bounded grouping and intake defenses are implemented; lint
    and 26 targeted tests passed. The interrupted full test run is not a pass.
-   Run full gates and `e2e/client-errors.test.mjs`; add that browser test to CI
-   with serial execution so fixtures do not collide on ports. Then review and
+   Run full gates and `e2e/client-errors.test.mjs`; that browser test is now in
+   CI with serial execution so fixtures do not collide on ports. Then review and
    merge its own PR and confirm deployed release tags.
 3. **P4.31 — deploy classifier:** isolated on
    `codex/wave3-deploy-classifier-ready` with ten passing classifier tests.

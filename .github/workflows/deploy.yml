@@ -28,6 +28,9 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      # Tests use the system FFmpeg (installed below), not ffmpeg-static's GitHub download.
+      FFMPEG_BIN: /usr/bin/ffmpeg
 
     steps:
       - name: Checkout code
@@ -68,8 +71,12 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Install FFmpeg from Ubuntu packages
+        # ffmpeg-static downloads its binary from GitHub releases, which can be
+        # unavailable for hours. FFMPEG_BIN makes it use this system binary.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Install dependencies
-        run: npm ci
+        run: sh scripts/npm-ci-retry.sh
 
       - name: Test deployment scripts
         run: node --test scripts/*.test.mjs
@@ -93,6 +100,7 @@ jobs:
       - name: Build client
         run: npm run -w client build
         env:
+          VITE_RELEASE: ${{ github.sha }}
           VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
           VITE_GOOGLE_APP_ID: ${{ vars.VITE_GOOGLE_APP_ID }}
           VITE_GOOGLE_PICKER_API_KEY: ${{ secrets.VITE_GOOGLE_PICKER_API_KEY }}
