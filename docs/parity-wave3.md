@@ -95,12 +95,14 @@ not browser profiles or recording payloads.
 
 ## Resume here next session
 
-**Wrap-up blocker:** local Chrome passed all ten tests, but Linux CI run
-`42457453744` still shows the host stuck in "Saving…" after a 30-second take,
-even with a 60-second finalization selector deadline. Do not merge PR #352 or
-weaken this assertion. Diagnose local-save/finalization on Linux, then rerun the
-entire browser suite. The unit/build CI job passed. The earlier outer timeout
-was corrected, but it did not resolve the actual Linux save failure.
+**Linux finalization (resolved in PR #352):** five CI runs of the same code
+gave 3 passes and 2 failures waiting for "Start recording" after the 30-second
+take. Passing runs already spent 30-40 s closing out the take (scenario 73-85 s)
+with no page errors, so the failures were the 60 s deadline on a shared runner
+encoding three browsers' video in software, not a stalled stop path. The suite
+now records at the 720p preset, allows 120 s for finalization, writes
+`recording-finalize-timing.json` on success and, on a timeout, each recorder's
+stop-requested/stopped timestamps plus a screenshot. Assertions are unchanged.
 
 The owner requested a usage-limited wrap-up before the long soak. Browser and
 recording work remain drafts. Only an independently verified deploy-classifier
