@@ -52,12 +52,18 @@ const IGNORED_MESSAGES = [
 const IGNORED_STACK_SOURCES = /(chrome|moz|safari(-web)?)-extension:\/\//i;
 
 export function describeClientError(error: unknown): { message: string; stack?: string } | null {
-  if (error instanceof Error) {
-    return { message: `${error.name && error.name !== 'Error' ? `${error.name}: ` : ''}${error.message}`.trim(), stack: error.stack };
-  }
-  if (typeof error === 'string') return { message: error };
-  if (error && typeof error === 'object' && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
-    return { message: (error as { message: string }).message };
+  try {
+    if (error instanceof Error) {
+      return { message: `${error.name && error.name !== 'Error' ? `${error.name}: ` : ''}${error.message}`.trim(), stack: error.stack };
+    }
+    if (typeof error === 'string') return { message: error };
+    if (error && typeof error === 'object' && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+      return { message: (error as { message: string }).message };
+    }
+  } catch {
+    // Arbitrary rejections can have throwing getters/proxies. Describing the
+    // original failure must not produce another unhandled error.
+    return { message: 'Error: details omitted' };
   }
   if (error === undefined || error === null) return null;
   // An arbitrary rejection can contain an API response or a recording manifest.

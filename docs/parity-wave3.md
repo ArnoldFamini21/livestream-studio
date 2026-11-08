@@ -5,7 +5,7 @@
 Unchecked items are not qualified or shipped. Partial work is recorded below;
 unit coverage alone does not complete a browser acceptance criterion.
 
-- [ ] **P0.1** Browser end-to-end qualification in Linux CI (Linux recording finalization is failing)
+- [x] **P0.1** Browser end-to-end qualification in Linux CI (PR #352 merged)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
 - [ ] **P0.3** Free production error grouping, release tags, no PII
 - [ ] **P1.4** Configurable multistream destinations, health and presets
@@ -96,8 +96,11 @@ not browser profiles or recording payloads.
 ## Resume here next session
 
 Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and
-browser intake regressions are saved. Lint and 26 targeted tests passed; full
-gates and browser verification must be completed before merging this branch.
+browser intake regressions are saved. The browser suite now runs error intake
+and studio qualification serially, with separate diagnostic artifacts. The
+previous lint run and 26 targeted tests passed; an additional throwing-getter
+regression is awaiting the new gate run. Full current-head gates and browser
+verification must pass before this branch merges.
 
 **Linux finalization (resolved in PR #352):** five CI runs of the same code
 gave 3 passes and 2 failures waiting for "Start recording" after the 30-second
@@ -124,8 +127,8 @@ integrity and error reporting remain separate drafts awaiting their own gates.
 2. **P0.3 — error reporting:** finish `codex/wave3-errors`. Privacy sanitization,
    release tags, bounded grouping and intake defenses are implemented; lint
    and 26 targeted tests passed. The interrupted full test run is not a pass.
-   Run full gates and `e2e/client-errors.test.mjs`; add that browser test to CI
-   with serial execution so fixtures do not collide on ports. Then review and
+   Run full gates and `e2e/client-errors.test.mjs`; that browser test is now in
+   CI with serial execution so fixtures do not collide on ports. Then review and
    merge its own PR and confirm deployed release tags.
 3. **P4.31 — deploy classifier:** isolated on
    `codex/wave3-deploy-classifier-ready` with ten passing classifier tests.

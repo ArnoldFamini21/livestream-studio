@@ -5,7 +5,9 @@ import test from 'node:test';
 import { startHarness, eventually } from './harness.mjs';
 
 test('production browser reports anonymous, release-tagged errors and server groups repeats', { timeout: 60_000 }, async () => {
-  const fixture = await startHarness();
+  const fixture = await startHarness({
+    artifactDir: path.join(process.env.E2E_ARTIFACT_DIR || path.resolve('output/e2e'), 'client-errors'),
+  });
   const payloads = [];
   try {
     const context = await fixture.browser('error-reporting');

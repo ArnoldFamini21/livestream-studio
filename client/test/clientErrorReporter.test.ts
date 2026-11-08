@@ -83,6 +83,18 @@ describe('client error reporter', () => {
     assert.doesNotThrow(() => reporter.report('error', 'boom'));
   });
 
+  it('contains errors while inspecting arbitrary promise rejections', () => {
+    const { reporter, sent } = setup();
+    const error = new Error('private');
+    Object.defineProperty(error, 'stack', { get() { throw new Error('private getter'); } });
+    assert.doesNotThrow(() => reporter.report('unhandledrejection', error));
+    const inaccessible = new Proxy({}, { getPrototypeOf() { throw new Error('private proxy'); } });
+    assert.doesNotThrow(() => reporter.report('unhandledrejection', inaccessible));
+    reporter.flush();
+    assert.deepEqual(sent.map(payload => payload.count), [1, 1]);
+    assert.ok(sent.every(payload => payload.message === 'Error: details omitted'));
+  });
+
   it('describes non-Error rejections', () => {
     assert.deepEqual(describeClientError('text'), { message: 'text' });
     assert.deepEqual(describeClientError({ message: 'obj' }), { message: 'obj' });
