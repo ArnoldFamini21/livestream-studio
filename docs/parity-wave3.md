@@ -93,6 +93,34 @@ Evidence is generated under `output/e2e` and `output/recording-soak` on X9 Pro;
 CI publishes only screenshots, accessibility snapshots, JSON evidence and logs,
 not browser profiles or recording payloads.
 
+## Canvas background (owner request, PR #357)
+
+The host sets a canvas colour or picture from the Background button beside the
+layout controls (host only; co-hosts and guests paint the host's). Colours,
+gradients and https URLs ride studio branding as before. Pictures are
+normalized in the browser to 1920 px / 400 KiB, uploaded to the existing
+authorized `/api/rooms/:id/stage-images` route with the stage upload token,
+and branding carries only `{ type: 'image', value: '', imageId }`
+(about 400 bytes, far below the unchanged 64 KiB WebSocket cap). The server
+relays an id only if the studio holds it and it is at most 512 KiB, never
+evicts the current background, and drops the id when restoring a snapshot
+after a restart; the host's browser keeps the picture and re-uploads it on
+every join. Guests and co-hosts fetch it with their stage read token (waiting
+guests cannot), so the DOM stage, the phone stage and the program compositor
+(stream, program recording, program return) all paint it. Drawing lives in
+`client/src/utils/compositorBackground.ts` with unit coverage.
+
+Evidence (2026-11-08, local, real Chrome, production CSP): host colour
+`#c0392b` appeared in a backstage guest's program return with no upload; a
+2.5 MB PNG uploaded as a 316,620-byte WebP (201), the program return showed it
+(edge pixels blue/yellow), the staged guest's canvas painted it, and both host
+and guest reloads kept it (the host re-uploaded once). Largest branding frame:
+408 bytes. Screenshots at 1440×900, 1000×625 and 390×844 were inspected; no
+page errors or CSP violations. Not verified: a real broadcast to an RTMP
+destination, a recorded file's pixels, and a server restart with a live host.
+Logos are still sent inline in branding, so a logo data URL over about 60 KiB
+can still exceed the WebSocket cap; that predates this change.
+
 ## Resume here next session
 
 Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and

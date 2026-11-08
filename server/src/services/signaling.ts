@@ -216,6 +216,11 @@ export interface StageImage {
 
 // A 720p JPEG is about 150 KB; these caps bound what one studio can hold.
 export const STAGE_IMAGE_MAX_BYTES = 1024 * 1024;
+/**
+ * A canvas background is uploaded like a stage picture but stays referenced by
+ * studio branding for the whole session; the host normalizes it to 400 KiB.
+ */
+export const STAGE_BACKGROUND_IMAGE_MAX_BYTES = 512 * 1024;
 const STAGE_IMAGE_LIMIT_PER_ROOM = 60;
 const STAGE_IMAGE_BYTES_PER_ROOM = 20 * 1024 * 1024;
 const STAGE_IMAGE_GLOBAL_DEFAULT_BYTES = 64 * 1024 * 1024;
@@ -494,6 +499,15 @@ function createWatchId(): string {
   return randomBytes(12).toString('base64url');
 }
 
+/**
+ * Stage pictures live in memory only, so after a restart an uploaded canvas
+ * background is gone: show the default canvas until the host, whose browser
+ * keeps the picture, rejoins and uploads it again.
+ */
+function withoutUnstoredBackgroundImage(branding: StudioBrandingPayload): StudioBrandingPayload {
+  return branding.stageBackground?.imageId ? { ...branding, stageBackground: { type: 'none', value: '' } } : branding;
+}
+
 function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
   const session = snapshot.sessionState;
   const nowMs = Date.now();
@@ -538,7 +552,7 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
     creatorIp: snapshot.creatorIp,
     ...(session?.createdByOwner ? { createdByOwner: true } : {}),
     hasBeenJoined: snapshot.hasBeenJoined,
-    ...(snapshot.studioBranding ? { studioBranding: snapshot.studioBranding } : {}),
+    ...(snapshot.studioBranding ? { studioBranding: withoutUnstoredBackgroundImage(snapshot.studioBranding) } : {}),
     ...(snapshot.passwordHash ? { passwordHash: snapshot.passwordHash } : {}),
     ...(snapshot.passwordSalt ? { passwordSalt: snapshot.passwordSalt } : {}),
   };
@@ -1150,7 +1164,7 @@ function normalizeBrandingUrl(value: unknown): string | null {
   return null;
 }
 
-function normalizeStageBackground(value: unknown): StageBackground {
+function normalizeStageBackground(value: unknown, roomState: RoomState): StageBackground {
   if (!isRecord(value) || !STAGE_BACKGROUND_TYPES.has(value.type as StageBackground['type'])) {
     return { type: 'none', value: '' };
   }
@@ -1158,6 +1172,14 @@ function normalizeStageBackground(value: unknown): StageBackground {
   const backgroundValue = typeof value.value === 'string'
     ? value.value.trim().slice(0, MAX_BRANDING_URL_LENGTH)
     : '';
+  if (type === 'image' && typeof value.imageId === 'string') {
+    // An uploaded picture is named, never inlined: only one this studio holds,
+    // within the background cap, is relayed.
+    const image = roomState.stageImages?.get(value.imageId);
+    return image && image.data.length <= STAGE_BACKGROUND_IMAGE_MAX_BYTES
+      ? { type: 'image', value: '', imageId: value.imageId }
+      : { type: 'none', value: '' };
+  }
   if (type === 'image') {
     const imageUrl = normalizeBrandingUrl(backgroundValue);
     return imageUrl ? { type: 'image', value: imageUrl } : { type: 'none', value: '' };
@@ -1166,12 +1188,12 @@ function normalizeStageBackground(value: unknown): StageBackground {
   return { type, value: backgroundValue };
 }
 
-function normalizeStudioBrandingPayload(payload: StudioBrandingPayload, updatedBy: string): StudioBrandingPayload {
+function normalizeStudioBrandingPayload(payload: StudioBrandingPayload, updatedBy: string, roomState: RoomState): StudioBrandingPayload {
   const waitingRoom: Record<string, unknown> = isRecord(payload.waitingRoom) ? payload.waitingRoom : {};
   return {
     brandColor: normalizeBrandingColor(payload.brandColor),
     logoUrl: normalizeBrandingUrl(payload.logoUrl),
-    stageBackground: normalizeStageBackground(payload.stageBackground),
+    stageBackground: normalizeStageBackground(payload.stageBackground, roomState),
     waitingRoom: {
       headline: normalizeBrandingText(waitingRoom.headline, DEFAULT_WAITING_ROOM_HEADLINE, 80),
       message: normalizeBrandingText(waitingRoom.message, DEFAULT_WAITING_ROOM_MESSAGE),
@@ -2260,7 +2282,7 @@ function handleStudioBrandingUpdate(ws: WebSocket, payload: StudioBrandingPayloa
     return;
   }
 
-  const branding = normalizeStudioBrandingPayload(payload, mapping.participantId);
+  const branding = normalizeStudioBrandingPayload(payload, mapping.participantId, roomState);
   roomState.studioBranding = branding;
   persistRoomSnapshot(mapping.roomId);
 
@@ -2575,8 +2597,10 @@ export function storeStageImage(input: {
   const images = roomState.stageImages ?? (roomState.stageImages = new Map());
   const imageId = randomBytes(16).toString('base64url');
   images.set(imageId, { data: input.data, contentType, createdAt: Date.now() });
-  // Evict the oldest pictures, never the one on stage or the one just added.
+  // Evict the oldest pictures, never the one on stage, the canvas background
+  // or the one just added.
   const onStage = roomState.stageContent?.media?.imageId;
+  const background = roomState.studioBranding?.stageBackground?.imageId;
   let totalBytes = 0;
   for (const image of images.values()) totalBytes += image.data.length;
   // All studios share one memory budget on the 512 MB instance.
@@ -2588,7 +2612,7 @@ export function storeStageImage(input: {
   const roomBudget = Math.min(STAGE_IMAGE_BYTES_PER_ROOM, Math.max(0, getStageImageGlobalMaxBytes() - otherRoomsBytes));
   for (const [id, image] of images) {
     if (images.size <= STAGE_IMAGE_LIMIT_PER_ROOM && totalBytes <= roomBudget) break;
-    if (id === onStage || id === imageId) continue;
+    if (id === onStage || id === background || id === imageId) continue;
     images.delete(id);
     totalBytes -= image.data.length;
   }

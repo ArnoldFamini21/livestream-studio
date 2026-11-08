@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { StageBackground } from '@studio/shared';
+import type { LibraryPhoto } from '../utils/photoLibrary.ts';
 import { usePhotoLibrary } from '../hooks/usePhotoLibrary.ts';
+import { normalizeBackgroundColor } from '../utils/stageBackground.ts';
+import { prepareCanvasBackground } from '../utils/canvasBackgroundImage.ts';
+import '../styles/canvas-background.css';
 
 interface BackgroundPickerProps {
   value: StageBackground;
@@ -42,6 +46,20 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
   const { photos, addPhoto, removePhoto, error, clearError } = usePhotoLibrary();
   const [videoUrl, setVideoUrl] = useState(value.type === 'video' && !value.value.startsWith('blob:') ? value.value : '');
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [colorDraft, setColorDraft] = useState(value.type === 'color' ? value.value : '#0f172a');
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const imageRequestRef = useRef(0);
+  const selectBackground = (background: StageBackground) => { imageRequestRef.current += 1; onChange(background); };
+  useEffect(() => () => { imageRequestRef.current += 1; }, []);
+  const color = normalizeBackgroundColor(colorDraft);
+  useEffect(() => { if (value.type === 'color') setColorDraft(value.value); }, [value]);
+  const changeColor = (draft: string, commitShort = false) => {
+    setColorDraft(draft);
+    const next = normalizeBackgroundColor(draft);
+    if (next && (draft.trim().length === 7 || commitShort)) selectBackground({ type: 'color', value: next });
+  };
 
   const isSelected = (type: StageBackground['type'], val: string) =>
     value.type === type && value.value === val;
@@ -56,8 +74,35 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    const photo = await addPhoto(file);
-    if (photo) onChange({ type: 'image', value: photo.dataUrl });
+    const request = ++imageRequestRef.current;
+    setImageBusy(true);
+    setImageError(null);
+    clearError();
+    try {
+      const photo = await addPhoto(await prepareCanvasBackground(file));
+      if (photo && imageRequestRef.current === request) { setSelectedImageId(photo.id); onChange({ type: 'image', value: photo.dataUrl }); }
+    } catch (cause) { setImageError(cause instanceof Error ? cause.message : 'Could not prepare this image.'); }
+    finally { setImageBusy(false); }
+  };
+
+  const selectPhoto = async (photo: LibraryPhoto) => {
+    const request = ++imageRequestRef.current;
+    setImageError(null);
+    setImageBusy(true);
+    try {
+      // Photos can also come from the webcam background library, whose originals
+      // have a larger limit. Normalize them before publishing studio branding.
+      const blob = await (await fetch(photo.dataUrl)).blob();
+      const file = await prepareCanvasBackground(new File([blob], photo.name, { type: blob.type }));
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error('Could not read this image.'));
+        reader.readAsDataURL(file);
+      });
+      if (imageRequestRef.current === request) { setSelectedImageId(photo.id); onChange({ type: 'image', value: dataUrl }); }
+    } catch (cause) { setImageError(cause instanceof Error ? cause.message : 'Could not prepare this image.'); }
+    finally { setImageBusy(false); }
   };
 
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -74,7 +119,7 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
     }
 
     setVideoError(null);
-    onChange({ type: 'video', value: URL.createObjectURL(file) });
+    selectBackground({ type: 'video', value: URL.createObjectURL(file) });
   };
 
   const applyVideoUrl = () => {
@@ -84,7 +129,7 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
       return;
     }
     setVideoError(null);
-    onChange({ type: 'video', value: nextUrl });
+    selectBackground({ type: 'video', value: nextUrl });
   };
 
   return (
@@ -92,20 +137,32 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
       {/* None / Default */}
       <div style={styles.group}>
         <span style={styles.groupLabel}>Default</span>
-        <div style={styles.thumbRow}>
+        <div style={styles.thumbGrid}>
           <button
+            type="button"
+            aria-label="Reset canvas background to default"
+            aria-pressed={value.type === 'none'}
             style={{
               ...styles.thumb,
               background: '#09090b',
               outline: value.type === 'none' ? '2px solid var(--accent)' : '2px solid transparent',
               outlineOffset: 2,
             }}
-            onClick={() => onChange({ type: 'none', value: '' })}
+            onClick={() => selectBackground({ type: 'none', value: '' })}
             title="Default (dark)"
           >
-            <span style={styles.thumbLabel}>None</span>
+            <span style={styles.thumbLabel}>Default</span>
           </button>
         </div>
+      </div>
+
+      <div style={styles.group}>
+        <span style={styles.groupLabel}>Custom color</span>
+        <div className="background-custom-color">
+          <input type="color" aria-label="Choose canvas background color" value={color || '#0f172a'} onChange={event => changeColor(event.currentTarget.value)} />
+          <input type="text" aria-label="Canvas background hex color" value={colorDraft} onChange={event => changeColor(event.currentTarget.value)} onBlur={() => changeColor(colorDraft, true)} onKeyDown={event => { if (event.key === 'Enter') changeColor(colorDraft, true); }} maxLength={7} placeholder="#0f172a" spellCheck={false} aria-invalid={!color} />
+        </div>
+        {!color && <span role="status" style={styles.uploadHint}>Enter a color such as #123456 or #fff.</span>}
       </div>
 
       {/* My Photos */}
@@ -117,6 +174,7 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
             style={styles.uploadBtnInline}
             onClick={() => fileInputRef.current?.click()}
             title="Upload a new background"
+            disabled={imageBusy}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
@@ -128,9 +186,13 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
           ref={fileInputRef}
           type="file"
           accept="image/*"
+          aria-label="Upload canvas background image"
+          disabled={imageBusy}
           style={{ display: 'none' }}
           onChange={handleImageUpload}
         />
+        {imageBusy && <span role="status" style={styles.uploadHint}>Preparing background…</span>}
+        {imageError && <span role="alert" style={styles.errorBox}>{imageError}</span>}
         {error && (
           <button type="button" style={styles.errorBox} onClick={clearError} title="Dismiss">
             {error}
@@ -140,6 +202,7 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
           <button
             type="button"
             style={styles.uploadArea}
+            disabled={imageBusy}
             onClick={() => fileInputRef.current?.click()}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -148,15 +211,16 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
               <polyline points="21 15 16 10 5 21" />
             </svg>
             <span style={styles.uploadText}>Upload Background Image</span>
-            <span style={styles.uploadHint}>JPG, PNG, WebP — up to 4 MB</span>
+            <span style={styles.uploadHint}>JPG, PNG, WebP — up to 20 MB</span>
           </button>
         ) : (
           <div style={styles.thumbGrid}>
             {photos.map((photo) => {
-              const selected = isSelected('image', photo.dataUrl);
+              const selected = value.type === 'image' && (isSelected('image', photo.dataUrl) || selectedImageId === photo.id);
               return (
                 <div key={photo.id} style={styles.photoCell}>
                   <button
+                    type="button"
                     style={{
                       ...styles.thumb,
                       backgroundImage: `url(${photo.dataUrl})`,
@@ -165,9 +229,11 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
                       outline: selected ? '2px solid var(--accent)' : '2px solid transparent',
                       outlineOffset: 2,
                     }}
-                    onClick={() => onChange({ type: 'image', value: photo.dataUrl })}
+                    onClick={() => { void selectPhoto(photo); }}
+                    disabled={imageBusy}
                     title={photo.name}
                     aria-label={`Use ${photo.name} as background`}
+                    aria-pressed={selected}
                   />
                   <button
                     type="button"
@@ -175,7 +241,7 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
                     onClick={(e) => {
                       e.stopPropagation();
                       void removePhoto(photo.id);
-                      if (selected) onChange({ type: 'none', value: '' });
+                      if (selected) selectBackground({ type: 'none', value: '' });
                     }}
                     title="Remove from library"
                     aria-label={`Remove ${photo.name}`}
@@ -190,6 +256,8 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
           </div>
         )}
       </div>
+
+      <span style={styles.uploadHint}>Large images are optimized for the canvas, up to 1920 px. Transparency is preserved.</span>
 
       {/* Video Backgrounds */}
       <div style={styles.group}>
@@ -242,7 +310,7 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
               outline: '2px solid var(--accent)',
               outlineOffset: 2,
             }}
-            onClick={() => onChange({ type: 'video', value: value.value })}
+            onClick={() => selectBackground({ type: 'video', value: value.value })}
             title="Current video background"
           >
             <video src={value.value} style={styles.videoPreviewMedia} autoPlay muted loop playsInline />
@@ -258,13 +326,16 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
           {SOLID_COLORS.map((color) => (
             <button
               key={color}
+              type="button"
+              aria-label={`Canvas background color ${color}`}
+              aria-pressed={isSelected('color', color)}
               style={{
                 ...styles.thumb,
                 background: color,
                 outline: isSelected('color', color) ? '2px solid var(--accent)' : '2px solid transparent',
                 outlineOffset: 2,
               }}
-              onClick={() => onChange({ type: 'color', value: color })}
+              onClick={() => selectBackground({ type: 'color', value: color })}
               title={color}
             />
           ))}
@@ -278,13 +349,16 @@ export function BackgroundPicker({ value, onChange }: BackgroundPickerProps) {
           {GRADIENT_PRESETS.map((preset) => (
             <button
               key={preset.label}
+              type="button"
+              aria-label={`${preset.label} canvas background`}
+              aria-pressed={isSelected('gradient', preset.value)}
               style={{
                 ...styles.thumb,
                 background: preset.value,
                 outline: isSelected('gradient', preset.value) ? '2px solid var(--accent)' : '2px solid transparent',
                 outlineOffset: 2,
               }}
-              onClick={() => onChange({ type: 'gradient', value: preset.value })}
+              onClick={() => selectBackground({ type: 'gradient', value: preset.value })}
               title={preset.label}
             />
           ))}
@@ -316,10 +390,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
-  },
-  thumbRow: {
-    display: 'flex',
-    gap: 6,
   },
   thumbGrid: {
     display: 'grid',

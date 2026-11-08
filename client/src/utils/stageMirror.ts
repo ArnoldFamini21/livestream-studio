@@ -110,15 +110,22 @@ async function downscaleToJpeg(source: string): Promise<Blob> {
   }
 }
 
-export async function uploadStageImage(
-  source: string,
-  auth: { roomId: string; participantId: string; token: string }
+export interface StageImageUploadAuth {
+  roomId: string;
+  participantId: string;
+  token: string;
+}
+
+/** POST one JPEG, PNG or WebP picture with the host's stage upload token; resolves to its id. */
+export async function postStageImage(
+  body: Blob,
+  auth: StageImageUploadAuth,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
-  const body = await downscaleToJpeg(source);
-  const response = await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(auth.roomId)}/stage-images`), {
+  const response = await fetchImpl(buildApiUrl(`/api/rooms/${encodeURIComponent(auth.roomId)}/stage-images`), {
     method: 'POST',
     headers: {
-      'Content-Type': 'image/jpeg',
+      'Content-Type': body.type || 'image/jpeg',
       'X-Participant-Id': auth.participantId,
       'X-Stage-Token': auth.token,
     },
@@ -128,4 +135,8 @@ export async function uploadStageImage(
   const result = await response.json() as { imageId?: unknown };
   if (typeof result.imageId !== 'string') throw new Error('Stage picture upload returned no id');
   return result.imageId;
+}
+
+export async function uploadStageImage(source: string, auth: StageImageUploadAuth): Promise<string> {
+  return postStageImage(await downscaleToJpeg(source), auth);
 }

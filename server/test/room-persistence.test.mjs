@@ -306,6 +306,27 @@ describe('signaling room snapshot restore', () => {
     }
   });
 
+  it('restores branding without an uploaded canvas picture the restarted server no longer holds', () => {
+    const branding = {
+      brandColor: '#123456',
+      logoUrl: null,
+      waitingRoom: { headline: 'Lobby', message: 'Soon', backgroundMode: 'studio', showLogo: true },
+    };
+    const uploaded = buildPersistentRoomSnapshot(baseSnapshot({ studioBranding: { ...branding, stageBackground: { type: 'image', value: '', imageId: 'gone-after-restart' } } }));
+    const colour = buildPersistentRoomSnapshot(baseSnapshot({ studioBranding: { ...branding, stageBackground: { type: 'color', value: '#ff0000' } } }));
+    try {
+      assert.equal(restoreRoomSnapshots([uploaded, colour]), 2);
+      const restored = getRooms().get(uploaded.room.id).studioBranding;
+      assert.deepEqual(restored.stageBackground, { type: 'none', value: '' });
+      assert.equal(restored.brandColor, '#123456');
+      assert.equal(restored.waitingRoom.headline, 'Lobby');
+      assert.deepEqual(getRooms().get(colour.room.id).studioBranding.stageBackground, { type: 'color', value: '#ff0000' });
+    } finally {
+      getRooms().delete(uploaded.room.id);
+      getRooms().delete(colour.room.id);
+    }
+  });
+
   it('persists create and registration updates when a snapshot store is configured', () => {
     const saved = [];
     configureRoomSnapshotStore({
