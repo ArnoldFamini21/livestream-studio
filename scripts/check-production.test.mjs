@@ -11,6 +11,7 @@ import {
   describeServiceHealthMetadataFailure,
   evaluateClientCacheHeaders,
   evaluateHostAccessCreateResponse,
+  evaluateGatedHostAccessResponse,
   normalizeProductionCheckScope,
   parseCurlHeaderText,
   shouldCheckRequiredMediaServer,
@@ -222,4 +223,13 @@ test('checks the new commit only for services actually deployed', () => {
   assert.equal(getExpectedServiceCommit('signaling-server', signalingOnly), 'def1234');
   assert.equal(getExpectedServiceCommit('media-server', { EXPECTED_COMMIT: 'abc1234' }), 'abc1234');
   assert.equal(getExpectedServiceCommit('signaling-server', { GITHUB_SHA: 'def1234' }), 'def1234');
+});
+
+test('owner-only studio creation counts as a passing host access contract', () => {
+  const body = JSON.stringify({ error: 'Creating a studio on this server needs the owner’s studio access key or owner account.', code: 'STUDIO_ACCESS_REQUIRED' });
+  assert.deepEqual(evaluateGatedHostAccessResponse(401, body), { ok: true, ownerOnly: true });
+  assert.equal(evaluateGatedHostAccessResponse(401, JSON.stringify({ code: 'SOMETHING_ELSE' })), null);
+  assert.equal(evaluateGatedHostAccessResponse(500, body), null);
+  assert.equal(evaluateGatedHostAccessResponse(401, 'not json'), null);
+  assert.equal(evaluateGatedHostAccessResponse(201, '{}'), null);
 });
