@@ -1,1 +1,0 @@
-import{d as e}from"./RecordingPanel-Bj9Wdsoa.js";export{e as openAudioWindowReader};
