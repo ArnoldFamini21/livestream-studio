@@ -95,6 +95,10 @@ not browser profiles or recording payloads.
 
 ## Resume here next session
 
+Draft P0.2 branch checkpoint: bounded sender read-ahead and three regression
+cases are saved but unverified. Do not merge this production change until its
+unit cases, full gates, local smoke and 20-minute Linux soak pass.
+
 The owner requested a usage-limited wrap-up before the long soak. Merge only
 the verified browser/tooling PR; the following changes are separate drafts.
 
