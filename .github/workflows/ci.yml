@@ -34,7 +34,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: sh scripts/npm-ci-retry.sh
 
       - name: Build shared workspace
         run: npm run -w shared build
@@ -62,7 +62,7 @@ jobs:
           cache: npm
       - name: Install dependencies and Chromium
         run: |
-          npm ci
+          sh scripts/npm-ci-retry.sh
           npx playwright-core install --with-deps chromium
       - name: Build local browser qualification target
         run: |
@@ -112,7 +112,7 @@ jobs:
           cache: npm
       - name: Install browser and media inspection tools
         run: |
-          npm ci
+          sh scripts/npm-ci-retry.sh
           npx playwright-core install --with-deps chromium
           sudo apt-get install -y ffmpeg
       - name: Build local recording qualification target
