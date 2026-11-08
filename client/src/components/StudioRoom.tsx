@@ -6,6 +6,8 @@ import { CONTENT_EXIT_DURATION_MS, measureStageTiles, playStageFlip, STAGE_FLIP_
 import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraSize } from '../utils/presentationLayout.ts';
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
+import { CanvasBackgroundControl } from './CanvasBackgroundControl.tsx';
+import { getPersistableStageBackground, getStageBackgroundStyle } from '../utils/stageBackground.ts';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { deleteStoredMediaAsset, isStorableUploadedMediaAsset, loadStoredMediaAssets, mergeRestoredMediaAssets, saveStoredMediaAsset } from '../utils/mediaAssetStore.ts';
 import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, getPresentingViewLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
@@ -631,34 +633,6 @@ function getLiveBackupNoticeText(backup: RtmpRelayBackupRecordingPayload | null)
 
 function isPersistableLogoUrl(url: string | null): url is string {
   return Boolean(url && !url.startsWith('blob:'));
-}
-
-function getPersistableStageBackground(background: StageBackground): StageBackground {
-  if ((background.type === 'image' || background.type === 'video') && background.value.startsWith('blob:')) {
-    return { type: 'none', value: '' };
-  }
-  return background;
-}
-
-function getStageBackgroundStyle(background: StageBackground): React.CSSProperties {
-  switch (background.type) {
-    case 'color':
-      return { background: background.value };
-    case 'gradient':
-      return { background: background.value };
-    case 'image':
-      return {
-        backgroundImage: `url(${background.value})`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
-      };
-    case 'video':
-      return {};
-    case 'none':
-    default:
-      return {};
-  }
 }
 
 function getWaitingRoomBackgroundStyle(
@@ -7726,6 +7700,7 @@ export function StudioRoom() {
                 customLayoutName={findCustomLayout(studioFormat.customLayouts, studioFormat.activeCustomLayoutId)?.name ?? null}
                 onOpenCustomLayouts={() => setCustomLayoutEditorOpen(true)}
               />
+              <CanvasBackgroundControl value={stageBackground} onChange={setStageBackground} />
               {!sharedContentAvailable && <><button
                 type="button"
                 onClick={() => setAutoDirectorEnabled((current) => !current)}
