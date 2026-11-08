@@ -401,12 +401,30 @@ async function checkProductionServices() {
   };
 }
 
+/**
+ * With owner-only studio creation (STUDIO_OWNER_EMAILS / STUDIO_CREATE_SECRET),
+ * an anonymous create must be refused with STUDIO_ACCESS_REQUIRED. That refusal
+ * is the expected contract; the create itself is only checked when the check
+ * has the owner's access key (PRODUCTION_STUDIO_ACCESS_KEY).
+ */
+export function evaluateGatedHostAccessResponse(status, text) {
+  if (status !== 401 && status !== 403) return null;
+  try {
+    const body = JSON.parse(text);
+    return body && body.code === 'STUDIO_ACCESS_REQUIRED' ? { ok: true, ownerOnly: true } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function checkHostAccessContract() {
+  const accessKey = (process.env.PRODUCTION_STUDIO_ACCESS_KEY || '').trim();
   const response = await fetch(`${apiUrl}/api/rooms`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Origin: clientUrl,
+      ...(accessKey ? { 'X-Studio-Access-Key': accessKey } : {}),
     },
     body: JSON.stringify({
       name: `Production host access check ${new Date().toISOString()}`,
@@ -414,6 +432,10 @@ async function checkHostAccessContract() {
     }),
   });
   const text = await response.text();
+  if (!accessKey) {
+    const gated = evaluateGatedHostAccessResponse(response.status, text);
+    if (gated) return gated;
+  }
   requireOk(response, 'Create studio host access contract', text);
 
   let room = null;
