@@ -4,11 +4,12 @@ import {
   createTransferReceiver,
   createTransferSender,
   HostTransferRegistry,
+  TRANSFER_READ_AHEAD_BYTES,
   type ReceivedTrackSink,
   type TransferChannel,
   type TransferSourceTrack,
 } from '../src/utils/recordingTransferSession.ts';
-import { parseControlMessage } from '../src/utils/recordingTransferProtocol.ts';
+import { decodeDataFrame, parseControlMessage } from '../src/utils/recordingTransferProtocol.ts';
 
 type Listener = (event?: { data: unknown }) => void;
 
@@ -329,4 +330,210 @@ describe('peer-to-peer recording transfer', () => {
     sender2.close();
     receiver2.close();
   });
+  it('reads bounded blocks instead of opening a disk-backed Blob for every network packet', async () => {
+    const { guest, host } = channelPair();
+    guest.maxMessageSize = 16 * 1024;
+    const payload = bytes(1024 * 1024 + 71, 17);
+    const readSizes: number[] = [];
+    class ObservedBlob extends Blob {
+      override slice(start?: number, end?: number, type?: string): Blob {
+        const slice = super.slice(start, end, type);
+        const read = slice.arrayBuffer.bind(slice);
+        slice.arrayBuffer = async () => { readSizes.push(slice.size); return read(); };
+        return slice;
+      }
+    }
+    const blob = new ObservedBlob([payload]);
+    const track: TransferSourceTrack = {
+      id: 'disk-blocks', sessionId: 'rec-blocks', label: 'ISO', kind: 'iso', mimeType: 'video/webm',
+      read: async () => blob, finished: { totalBytes: payload.length },
+    };
+    const sink = memorySink();
+    const registry = new HostTransferRegistry(sink.open);
+    const receiver = createTransferReceiver({ channel: host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    try {
+      await until(() => sender.progress().deliveredAll);
+      assert.deepEqual(sink.sinks[0].finished, payload, 'read-ahead preserves every original byte');
+      assert.ok(guest.sent.filter(message => typeof message !== 'string').length > 50);
+      assert.ok(readSizes.length <= 6, `used ${readSizes.length} disk reads for 1 MiB`);
+      assert.ok(readSizes.every(size => size <= TRANSFER_READ_AHEAD_BYTES), 'memory is bounded independently of take length');
+    } finally { sender.close(); receiver.close(); }
+  });
+
+  it('discards an in-flight read when a resume changes the requested offset', async () => {
+    const { guest, host } = channelPair();
+    const payload = bytes(6_000, 11);
+    let finishFirst!: () => void;
+    let reads = 0;
+    class DelayedBlob extends Blob {
+      override slice(start?: number, end?: number, type?: string): Blob {
+        const slice = super.slice(start, end, type);
+        const read = slice.arrayBuffer.bind(slice);
+        slice.arrayBuffer = async () => {
+          reads += 1;
+          if (reads === 1) await new Promise<void>(resolve => { finishFirst = resolve; });
+          return read();
+        };
+        return slice;
+      }
+    }
+    const blob = new DelayedBlob([payload]);
+    const track: TransferSourceTrack = {
+      id: 'read-race', sessionId: 'rec-race', label: 'mic', kind: 'audio', mimeType: 'audio/webm',
+      read: async () => blob, finished: { totalBytes: payload.length },
+    };
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    try {
+      await until(() => guest.sent.some(message => typeof message === 'string' && parseControlMessage(message)?.t === 'hello'));
+      host.send(JSON.stringify({ t: 'resume', id: track.id, offset: 0 }));
+      await until(() => reads === 1);
+      host.send(JSON.stringify({ t: 'resume', id: track.id, offset: 2_000 }));
+      await until(() => sender.progress().tracks[0].sent === 2_000);
+      finishFirst();
+      await until(() => sender.progress().tracks[0].sent === payload.length);
+      const frames = guest.sent.filter((message): message is ArrayBuffer => typeof message !== 'string').map(message => decodeDataFrame(message)!);
+      assert.equal(frames[0].offset, 2_000, 'no stale offset-zero data crosses the resumed attempt');
+      assert.ok(frames.every(frame => frame.epoch === 2));
+      const received = new Uint8Array(frames.reduce((sum, frame) => sum + frame.payload.length, 0));
+      let offset = 0;
+      for (const frame of frames) { received.set(frame.payload, offset); offset += frame.payload.length; }
+      assert.deepEqual(received, payload.slice(2_000));
+      assert.equal(reads, 2);
+    } finally { finishFirst?.(); sender.close(); }
+  });
+
+  it('uses the replacement source snapshot after the immutable prefix grows', async () => {
+    const { guest, host } = channelPair();
+    const payload = bytes(9_000, 23);
+    let track: TransferSourceTrack = {
+      id: 'replace-source', sessionId: 'rec-replace', label: 'ISO', kind: 'iso', mimeType: 'video/webm',
+      read: async () => new Blob([payload.slice(0, 3_000)]),
+    };
+    const sink = memorySink();
+    const registry = new HostTransferRegistry(sink.open);
+    const receiver = createTransferReceiver({ channel: host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    try {
+      await until(() => registry.tracks.get(track.id)?.received === 3_000);
+      track = { ...track, read: async () => new Blob([payload]), finished: { totalBytes: payload.length } };
+      sender.refresh();
+      await until(() => sender.progress().deliveredAll);
+      assert.deepEqual(sink.sinks[0].finished, payload);
+    } finally { sender.close(); receiver.close(); }
+  });
+
+  it('does not send or cache an in-flight read after the sender is closed', async () => {
+    const { guest, host } = channelPair();
+    const payload = bytes(6_000, 29);
+    let release!: () => void;
+    let reading = false;
+    class DelayedBlob extends Blob {
+      override slice(start?: number, end?: number, type?: string): Blob {
+        const slice = super.slice(start, end, type);
+        const read = slice.arrayBuffer.bind(slice);
+        slice.arrayBuffer = async () => {
+          reading = true;
+          await new Promise<void>(resolve => { release = resolve; });
+          return read();
+        };
+        return slice;
+      }
+    }
+    const track: TransferSourceTrack = {
+      id: 'close-read', sessionId: 'rec-close', label: 'ISO', kind: 'iso', mimeType: 'video/webm',
+      read: async () => new DelayedBlob([payload]), finished: { totalBytes: payload.length },
+    };
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    try {
+      await until(() => guest.sent.some(message => typeof message === 'string' && parseControlMessage(message)?.t === 'hello'));
+      host.send(JSON.stringify({ t: 'resume', id: track.id, offset: 0 }));
+      await until(() => reading);
+      sender.close();
+      release();
+      await wait(20);
+      assert.equal(guest.sent.filter(message => typeof message !== 'string').length, 0);
+      assert.equal(sender.progress().tracks[0].sent, 0);
+    } finally { release?.(); sender.close(); }
+  });
+
+  it('stops reading a superseded snapshot once the finished file replaces its source', async () => {
+    const { guest, host } = channelPair();
+    guest.maxMessageSize = 16 * 1024;
+    const payload = bytes(3 * TRANSFER_READ_AHEAD_BYTES + 101, 31);
+    let partsRemoved = false;
+    let staleReads = 0;
+    // Like a folder writer: snapshots reference part files that finishing removes.
+    class PartBackedBlob extends Blob {
+      override slice(start?: number, end?: number, type?: string): Blob {
+        const slice = super.slice(start, end, type);
+        const read = slice.arrayBuffer.bind(slice);
+        slice.arrayBuffer = async () => {
+          if (partsRemoved) { staleReads += 1; throw new DOMException('The file was removed', 'NotReadableError'); }
+          const result = await read();
+          // The recorder finishes right after the first block is read.
+          const finalBlob = new Blob([payload]);
+          track.read = async () => finalBlob;
+          track.finished = { totalBytes: payload.length };
+          partsRemoved = true;
+          return result;
+        };
+        return slice;
+      }
+    }
+    // Production mutates the same registered entry when a track finishes.
+    const track: TransferSourceTrack = {
+      id: 'finished-swap', sessionId: 'rec-swap', label: 'ISO', kind: 'iso', mimeType: 'video/webm',
+      read: async () => new PartBackedBlob([payload]),
+    };
+    const sink = memorySink();
+    const registry = new HostTransferRegistry(sink.open);
+    const receiver = createTransferReceiver({ channel: host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    try {
+      await until(() => sender.progress().deliveredAll);
+      assert.deepEqual(sink.sinks[0].finished, payload);
+      assert.equal(staleReads, 0, 'the removed snapshot is never read again');
+    } finally { sender.close(); receiver.close(); }
+  });
+
+  it('takes a fresh snapshot after a disk read fails instead of retrying the unreadable one', async () => {
+    const { guest, host } = channelPair();
+    guest.maxMessageSize = 16 * 1024;
+    const payload = bytes(2 * TRANSFER_READ_AHEAD_BYTES + 57, 37);
+    let failures = 0;
+    // The first snapshot the sender reads from becomes unreadable after its
+    // first block (as when a disk-backed File changes underneath it).
+    let unreadable: Blob | null = null;
+    class FlakyBlob extends Blob {
+      override slice(start?: number, end?: number, type?: string): Blob {
+        unreadable ??= this;
+        const slice = super.slice(start, end, type);
+        const read = slice.arrayBuffer.bind(slice);
+        const fails = unreadable === this && (start ?? 0) > 0;
+        slice.arrayBuffer = async () => {
+          if (fails) { failures += 1; throw new DOMException('Changed on disk', 'NotReadableError'); }
+          return read();
+        };
+        return slice;
+      }
+    }
+    const track: TransferSourceTrack = {
+      id: 'fresh-after-error', sessionId: 'rec-error', label: 'ISO', kind: 'iso', mimeType: 'video/webm',
+      read: async () => new FlakyBlob([payload]),
+      finished: { totalBytes: payload.length },
+    };
+    const sink = memorySink();
+    const registry = new HostTransferRegistry(sink.open);
+    const receiver = createTransferReceiver({ channel: host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      await until(() => sender.progress().deliveredAll);
+      assert.deepEqual(sink.sinks[0].finished, payload);
+      assert.equal(failures, 1, 'one failed read, then a fresh snapshot');
+    } finally { console.warn = warn; sender.close(); receiver.close(); }
+  });
+
 });

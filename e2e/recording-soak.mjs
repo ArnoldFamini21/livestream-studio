@@ -1,5 +1,5 @@
 /**
- * Real-browser, three-seat recording qualification. Run after npm run build:e2e:
+ * Real-browser, three-seat recording qualification. Run after the local target build documented in e2e/README.md:
  *   npm run test:recording-soak                  # 20 minutes, qualification
  *   SOAK_SECONDS=35 npm run test:recording-soak  # development smoke only
  *
@@ -19,7 +19,7 @@ const requestedSeconds = Number(process.env.SOAK_SECONDS || 1200);
 assert.ok(Number.isFinite(requestedSeconds) && requestedSeconds >= 15, "SOAK_SECONDS must be at least 15 seconds");
 const artifactDir = path.resolve(process.env.SOAK_ARTIFACT_DIR || path.join(repoRoot, "output/recording-soak", new Date().toISOString().replaceAll(":", "-")));
 const qualification = requestedSeconds >= 1200;
-const result = { qualification, requestedSeconds, startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
+const result = { qualification, requestedSeconds, cameraPreset: "720p", startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
 await mkdir(path.join(artifactDir, "received"), { recursive: true });
 const sourceCaptures = new Map();
 const pages = [];
@@ -28,12 +28,15 @@ let progressTimer;
 
 // Passive observers: preserve original recorder calls, timing and handlers.
 function installObserver({ folder }) {
+  // Exercise the real user-selectable preset, matching the short CI suite.
+  // The program remains the production 1920x1080 compositor output.
+  try { sessionStorage.setItem("preferredVideoQuality", "720p"); } catch { /* storage unavailable */ }
   const state = window.__soak = { recorders: [], channels: [], sockets: [], errors: [], transferSignals: [] };
   const nativeRecorder = window.MediaRecorder;
   window.MediaRecorder = class extends nativeRecorder {
     constructor(...args) {
       super(...args);
-      const row = { id: state.recorders.length, mimeType: this.mimeType, kinds: args[0].getTracks().map(track => track.kind), started: null, stopped: null, chunks: 0, bytes: 0, flushed: false };
+      const row = { id: state.recorders.length, mimeType: this.mimeType, kinds: args[0].getTracks().map(track => track.kind), settings: args[0].getTracks().map(track => { const { width, height, frameRate, sampleRate, channelCount } = track.getSettings(); return { kind: track.kind, width, height, frameRate, sampleRate, channelCount }; }), started: null, stopped: null, chunks: 0, bytes: 0, flushed: false };
       state.recorders.push(row);
       this.addEventListener("error", event => state.errors.push(`Recorder ${row.id}: ${event.error?.message || "error"}`));
       let writes = Promise.resolve();
@@ -70,8 +73,13 @@ function installObserver({ folder }) {
   };
   const nativePeer = window.RTCPeerConnection;
   function observeChannel(channel) {
-    const row = { channel, label: channel.label, opened: null, closed: null, messages: 0, receivedBytes: 0 };
+    const row = { channel, label: channel.label, opened: null, closed: null, messages: 0, receivedBytes: 0, sentMediaBytes: 0, sentMediaFrames: 0 };
     state.channels.push(row);
+    const nativeSend = channel.send.bind(channel);
+    channel.send = data => {
+      nativeSend(data);
+      if (typeof data !== "string") { row.sentMediaBytes += data.byteLength || data.size || 0; row.sentMediaFrames += 1; }
+    };
     channel.addEventListener("open", () => { row.opened = performance.now(); });
     channel.addEventListener("close", () => { row.closed = performance.now(); });
     channel.addEventListener("message", event => { row.messages += 1; row.receivedBytes += typeof event.data === "string" ? event.data.length : event.data.byteLength || event.data.size || 0; });
@@ -175,25 +183,34 @@ try {
   await host.getByRole("button", { name: "Close recordings", exact: true }).click();
   await host.getByRole("button", { name: "Start recording", exact: true }).click();
   await host.getByRole("button", { name: "Stop recording", exact: true }).waitFor();
-  await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.filter(row => row.started !== null && row.stopped === null).length >= 2)));
+  // Readiness waits poll on a timer, not requestAnimationFrame: a GPU-less CI
+  // host compositing the 1080p program can stop producing frames for long
+  // periods, which starved rAF-polled checks (and Playwright click actionability)
+  // while its recorders and JavaScript kept running. Assertions are unchanged.
+  await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.filter(row => row.started !== null && row.stopped === null).length >= 2, undefined, { timeout: 60_000, polling: 500 })));
   const captureStarted = Date.now();
   progressTimer = setInterval(() => console.log(JSON.stringify({ event: "recording-progress", elapsedSeconds: Math.round((Date.now() - captureStarted) / 1000), requestedSeconds })), 30_000);
   console.log(JSON.stringify({ event: "recording-started", qualification, requestedSeconds, artifactDir }));
 
   const reconnectGuest = pages[1];
-  await reconnectGuest.waitForFunction(seconds => window.__soak.recorders.some(row => row.started !== null && row.stopped === null && performance.now() - row.started >= seconds * 1000), Math.min(30, requestedSeconds / 3), { timeout: 60_000 });
+  await reconnectGuest.waitForFunction(seconds => window.__soak.recorders.some(row => row.started !== null && row.stopped === null && performance.now() - row.started >= seconds * 1000), Math.min(30, requestedSeconds / 3), { timeout: 60_000, polling: 500 });
+  await reconnectGuest.waitForFunction(() => window.__soak.channels.some(row => row.label === "rec-transfer" && row.channel.readyState === "open" && row.sentMediaBytes > 0), undefined, { timeout: 60_000, polling: 500 });
   result.reconnect = await reconnectGuest.evaluate(() => {
     const state = window.__soak;
     const transfers = state.channels.filter(row => row.channel.readyState === "open" && row.label === "rec-transfer");
     if (!transfers.length) throw new Error("No open real recording data channel to interrupt");
     const sockets = state.sockets.filter(socket => socket.readyState === WebSocket.OPEN);
+    if (!sockets.length) throw new Error("No open signaling socket to interrupt");
+    const sentMediaBytesBefore = transfers.reduce((sum, row) => sum + row.sentMediaBytes, 0);
+    if (!sentMediaBytesBefore) throw new Error("Reconnect must interrupt an active media transfer");
     const previousChannels = state.channels.length;
     for (const row of transfers) row.channel.close();
     for (const socket of sockets) socket.close(3001, "Synthetic soak reconnect");
-    return { atSeconds: performance.now() / 1000, interruptedChannels: transfers.length, interruptedSockets: sockets.length, previousChannels };
+    return { atSeconds: performance.now() / 1000, interruptedChannels: transfers.length, interruptedSockets: sockets.length, sentMediaBytesBefore, previousChannels };
   });
-  await reconnectGuest.waitForFunction(previous => window.__soak.channels.slice(previous).some(row => row.label === "rec-transfer" && row.channel.readyState === "open" && row.messages > 0), result.reconnect.previousChannels, { timeout: 60_000 });
+  await reconnectGuest.waitForFunction(previous => window.__soak.channels.slice(previous).some(row => row.label === "rec-transfer" && row.channel.readyState === "open" && row.messages > 0 && row.sentMediaBytes > 0), result.reconnect.previousChannels, { timeout: 60_000, polling: 500 });
   result.reconnect.reconnected = true;
+  result.reconnect.sentMediaBytesAfter = await reconnectGuest.evaluate(previous => window.__soak.channels.slice(previous).filter(row => row.label === "rec-transfer").reduce((sum, row) => sum + row.sentMediaBytes, 0), result.reconnect.previousChannels);
   console.log(JSON.stringify({ event: "guest-reconnected", reconnect: result.reconnect }));
   // This wait is the duration under test, not a sleep used to conceal readiness.
   await Promise.all(pages.map(page => page.waitForFunction(seconds => {
@@ -201,10 +218,14 @@ try {
     return active.length >= 2 && active.every(row => performance.now() - row.started >= seconds * 1000);
   }, requestedSeconds + 0.5, { timeout: (requestedSeconds + 120) * 1000, polling: 500 })));
   console.log(JSON.stringify({ event: "stopping-recording", elapsedSeconds: (Date.now() - captureStarted) / 1000 }));
-  await host.getByRole("button", { name: "Stop recording", exact: true }).click();
+  await host.getByRole("button", { name: "Stop recording", exact: true }).waitFor();
+  // Exercise the real production shortcut. Playwright's pointer scroll/stability
+  // round-trips can starve behind software encoders on a shared runner; the
+  // short browser suite separately covers the Stop button's click behavior.
+  await host.keyboard.press("Shift+R");
   clearInterval(progressTimer);
   console.log(JSON.stringify({ event: "waiting-for-source-checksums" }));
-  await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000 })));
+  await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000, polling: 500 })));
   console.log(JSON.stringify({ event: "waiting-for-host-files" }));
   const files = await eventually(async () => {
     const files = await folderFiles(host);
@@ -240,9 +261,15 @@ try {
     assert.ok(matching, `${track.label} is byte-identical to its original MediaRecorder chunks`);
     // Capture runs an extra half second to allow endpoint packet quantization;
     // every encoded stream still must cover the full requested duration.
-    const metrics = await probeRecording(file, { minimumSeconds: requestedSeconds });
-    if (track.kind === "iso" || track.origin === "program") assert.notEqual(metrics.avDriftMs, null, `${track.label} contains both A/V streams`);
-    result.tracks.push({ ...track, file, sha256: digest, source: { participant: matching.name, recorder: matching.id, bytes: matching.bytes }, metrics });
+    const evidence = { ...track, file, sha256: digest, source: { participant: matching.name, recorder: matching.id, bytes: matching.bytes } };
+    try {
+      evidence.metrics = await probeRecording(file, { minimumSeconds: requestedSeconds });
+      if (track.kind === "iso" || track.origin === "program") assert.notEqual(evidence.metrics.avDriftMs, null, `${track.label} contains both A/V streams`);
+    } catch (error) {
+      evidence.metricError = error.message;
+      result.errors.push(`${track.label}: ${error.message}`);
+    }
+    result.tracks.push(evidence);
   }
   for (const [width, height] of [[1000, 625], [1440, 900], [390, 844]]) {
     await host.setViewportSize({ width, height });
@@ -250,11 +277,13 @@ try {
   }
   assert.deepEqual(harness.pageErrors, [], "no browser application errors during soak");
   assert.deepEqual(harness.cspViolations, [], "no CSP violations during soak");
+  assert.equal(result.errors.length, 0, "Every track must pass packet integrity checks; see per-track evidence");
   result.passed = true;
   result.completedAt = new Date().toISOString();
   console.log(JSON.stringify({ event: "recording-soak-complete", qualification, tracks: result.tracks.length, artifactDir }));
 } catch (error) {
   result.errors.push(error.stack || String(error));
+  if (pages[0]) result.failureFolder = await folderFiles(pages[0]).catch(failure => ({ error: String(failure) }));
   result.failureDiagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
     recorders: window.__soak?.recorders,
     errors: window.__soak?.errors,

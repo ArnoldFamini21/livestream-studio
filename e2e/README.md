@@ -52,8 +52,9 @@ CI. CI always starts and verifies its own isolated server.
 requires `ffprobe` on PATH (or `FFPROBE_PATH`). `SOAK_SECONDS=35` is a development
 smoke run and reports `qualification: false`. The host picker returns a native
 OPFS directory, so capture, folder writing and peer transfer use the production
-paths. Passive copies of original chunks are compared byte-for-byte with host
-files. Analysis checks encoded timestamps, gaps up to one second and A/V duration
+paths. Passive hashes of original chunks are compared byte-for-byte with host
+files. The soak selects the real 720p camera preset and retains the production
+1080p program canvas; actual track dimensions and rates are included in evidence. Analysis checks encoded timestamps, gaps up to one second and net A/V duration
 drift below 40 ms; fixed initial offsets are reported separately. This does not
 prove lip-sync with real hardware. See `e2e/recording-soak.mjs` for output and
 parallel-build settings.
