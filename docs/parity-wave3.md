@@ -95,6 +95,10 @@ not browser profiles or recording payloads.
 
 ## Resume here next session
 
+Draft P4.31 branch checkpoint: root Dockerfile and .dockerignore changes now
+classify as media deployments. All ten classifier tests passed locally; finish
+the full branch CI gate before merging this separate change.
+
 The owner requested a usage-limited wrap-up before the long soak. Merge only
 the verified browser/tooling PR; the following changes are separate drafts.
 
