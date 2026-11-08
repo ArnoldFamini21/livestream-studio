@@ -90,7 +90,7 @@ describe('remembered stream destinations', () => {
     }));
     const restored = restoreStreamDestinations(many);
     assert.equal(restored.length, MAX_SAVED_DESTINATIONS);
-    assert.equal(restored.filter((item) => item.enabled).length, 3);
+    assert.equal(restored.filter((item) => item.enabled).length, 8);
   });
 
   it('round-trips through storage and tolerates corrupt or missing data', () => {

@@ -36,11 +36,37 @@ describe('stream destination utilities', () => {
   it('keeps StreamYard-style platform setup guides in a stable order', () => {
     assert.deepEqual(
       STREAM_PLATFORM_GUIDES.map((guide) => guide.platform),
-      ['youtube', 'facebook', 'twitch', 'linkedin', 'instagram', 'custom'],
+      ['youtube', 'facebook', 'twitch', 'kick', 'linkedin', 'x', 'tiktok', 'instagram', 'vimeo', 'custom'],
     );
     assert.equal(getStreamPlatformGuide('instagram').recommendedOrientation, 'portrait');
+    assert.equal(getStreamPlatformGuide('tiktok').recommendedOrientation, 'portrait');
     assert.equal(getStreamPlatformGuide('custom').rtmpUrlEditable, true);
     assert.equal(getStreamPlatformGuide('youtube').rtmpUrlEditable, false);
+    // Unknown platforms (an old saved entry) fall back to custom RTMP.
+    assert.equal(getStreamPlatformGuide('nope' as StreamDestination['platform']).platform, 'custom');
+  });
+
+  it('gives every preset a valid server URL or an editable per-event URL, plus help text', () => {
+    for (const guide of STREAM_PLATFORM_GUIDES) {
+      assert.ok(guide.rtmpUrlTemplate.trim(), `${guide.platform} template`);
+      assert.ok(guide.rtmpUrlHelp.trim(), `${guide.platform} URL help`);
+      assert.ok(guide.setupSteps.length >= 2, `${guide.platform} steps`);
+      if (guide.defaultRtmpUrl) {
+        assert.equal(isValidRtmpUrl(guide.defaultRtmpUrl), true, `${guide.platform} default`);
+      } else {
+        // No default means the platform issues one per event, so the host must be able to paste it.
+        assert.equal(guide.rtmpUrlEditable, true, `${guide.platform} must be editable`);
+      }
+      if (!guide.rtmpUrlEditable) assert.ok(guide.defaultRtmpUrl, `${guide.platform} fixed URL`);
+    }
+    // Per-event server URLs: nothing to prefill.
+    assert.equal(getDefaultRtmpUrl('linkedin'), '');
+    assert.equal(getDefaultRtmpUrl('tiktok'), '');
+    assert.match(getDefaultRtmpUrl('kick'), /^rtmps:\/\/.+live-video\.net:443\/app\/$/);
+    assert.match(getDefaultRtmpUrl('x'), /^rtmps:\/\/.+pscp\.tv:443\/x$/);
+    assert.match(getDefaultRtmpUrl('vimeo'), /^rtmps:\/\/rtmp-global\.cloud\.vimeo\.com:443\/live$/);
+    assert.ok(getStreamPlatformGuide('tiktok').requirement);
+    assert.ok(getStreamPlatformGuide('vimeo').requirement);
   });
 
   it('warns when the selected platform orientation does not match the output', () => {
@@ -48,7 +74,10 @@ describe('stream destination utilities', () => {
       getPlatformOrientationWarning('instagram', 'landscape') || '',
       /portrait-first/,
     );
+    assert.match(getPlatformOrientationWarning('tiktok', 'landscape') || '', /TikTok Live is portrait-first/);
+    assert.equal(getPlatformOrientationWarning('tiktok', 'portrait'), null);
     assert.equal(getPlatformOrientationWarning('instagram', 'portrait'), null);
+    assert.match(getPlatformOrientationWarning('kick', 'portrait') || '', /Kick is usually best in 16:9/);
     assert.match(
       getPlatformOrientationWarning('youtube', 'portrait') || '',
       /16:9 landscape/,
@@ -73,7 +102,8 @@ describe('stream destination utilities', () => {
     assert.equal(getStreamDestinationIssue(destination({ streamKey: '' })), 'Missing stream key');
   });
 
-  it('enforces the three enabled destination preflight limit', () => {
+  it('enforces the eight enabled destination preflight limit', () => {
+    assert.equal(MAX_ENABLED_DESTINATIONS, 8);
     const enabledDestinations = Array.from({ length: MAX_ENABLED_DESTINATIONS + 1 }, (_, index) => (
       destination({ id: `dest-${index + 1}`, name: `Destination ${index + 1}` })
     ));

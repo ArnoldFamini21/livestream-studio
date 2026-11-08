@@ -7,7 +7,15 @@ import type {
 } from '@studio/shared';
 import { ffmpegProgressArgs } from './ffmpegProgress.js';
 
-export const MAX_RTMP_DESTINATIONS = 3;
+/**
+ * Encode-once makes each extra destination a copy-only push (no encode), so
+ * the cap is about outgoing bandwidth and memory, not CPU.
+ * RTMP_MAX_DESTINATIONS can lower it, for example to stay inside a hosting
+ * bandwidth allowance.
+ */
+export const MAX_RTMP_DESTINATIONS = 8;
+/** RTMP_ENCODE_ONCE=false runs a full encode per destination: keep the old cap there. */
+export const MAX_PER_DESTINATION_ENCODES = 3;
 const MAX_RTMP_URL_LENGTH = 2048;
 const MAX_STREAM_KEY_LENGTH = 512;
 // The studio composes at 1920x1080 (or 1080x1920 for 9:16 portrait), 30 fps;
@@ -82,10 +90,27 @@ export function validateDestination(destination: RtmpRelayDestination): string |
   return validateRtmpUrl(destination.rtmpUrl) || validateStreamKey(destination.streamKey);
 }
 
-export function validateDestinations(destinations: RtmpRelayDestination[]): string | null {
+/**
+ * How many destinations one broadcast may send to: RTMP_MAX_DESTINATIONS
+ * (1 to 8, default 8), and never more than three when each destination
+ * gets its own encode.
+ */
+export function getMaxRtmpDestinations(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.RTMP_MAX_DESTINATIONS || '').trim();
+  const parsed = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  const configured = Number.isInteger(parsed) && parsed >= 1
+    ? Math.min(parsed, MAX_RTMP_DESTINATIONS)
+    : MAX_RTMP_DESTINATIONS;
+  return isEncodeOnceEnabled(env) ? configured : Math.min(configured, MAX_PER_DESTINATION_ENCODES);
+}
+
+export function validateDestinations(
+  destinations: RtmpRelayDestination[],
+  maxDestinations: number = getMaxRtmpDestinations()
+): string | null {
   if (!Array.isArray(destinations) || destinations.length === 0) return 'At least one destination is required';
-  if (destinations.length > MAX_RTMP_DESTINATIONS) {
-    return `A maximum of ${MAX_RTMP_DESTINATIONS} RTMP destinations is supported`;
+  if (destinations.length > maxDestinations) {
+    return `A maximum of ${maxDestinations} RTMP destination${maxDestinations === 1 ? '' : 's'} is supported by this media server`;
   }
 
   const ids = new Set<string>();

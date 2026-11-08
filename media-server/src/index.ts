@@ -86,6 +86,7 @@ import {
   createFfmpegSlateArgs,
   createFfmpegPushArgs,
   describeRelayVideoMode,
+  getMaxRtmpDestinations,
   getRelayEncoderOptions,
   getRelayVideoMode,
   hasRemainingRelayWork,
@@ -271,6 +272,7 @@ async function healthPayload() {
     capabilities: {
       liveRelay: {
         encodeOnce: isEncodeOnceEnabled(),
+        maxDestinations: getMaxRtmpDestinations(),
         backlogSeconds: RELAY_INPUT_BACKLOG_SECONDS,
         // H.264 from the browser is copied; anything else is re-encoded,
         // capped at this size (and slow on a free instance).

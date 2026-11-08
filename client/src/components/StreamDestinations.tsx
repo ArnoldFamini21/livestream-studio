@@ -32,6 +32,12 @@ import { RELAY_BACKLOG_WARNING_SECONDS, formatRelayBacklog } from '../utils/rtmp
 import { buildLivePreflightChecklist, type LivePreflightStatus } from '../utils/livePreflight.ts';
 import { isYouTubeConnectionConfigured, type YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
 import { YouTubeConnectForm } from './YouTubeConnectForm.tsx';
+import { DestinationHealthList } from './DestinationHealthList.tsx';
+import {
+  buildDestinationHealth,
+  describeServerUploadEstimate,
+  estimateServerUpload,
+} from '../utils/destinationHealth.ts';
 import {
   MAX_STREAM_SCREEN_COUNTDOWN_SECONDS,
   normalizeStreamScreenConfig,
@@ -247,6 +253,15 @@ export function StreamDestinations({
       now: relayStats.updatedAt || Date.now(),
     })
     : null;
+  const destinationHealth = relayStats && isLive
+    ? buildDestinationHealth({
+      destinations: enabledDestinations,
+      destinationStats: relayStats.destinationStats,
+      serverHealth: serverHealth?.destinations,
+      now: relayStats.updatedAt || Date.now(),
+    })
+    : null;
+  const serverUploadEstimate = estimateServerUpload(enabledCount, relayTargetKbps);
   const browserQuality = relayStats ? getRelayQuality(relayStats, relayTargetKbps, selectedOutputPreset.label) : null;
   // Upload problems come first; past the browser, the server's own report decides.
   const relayQuality = browserQuality && serverHealth?.headline && ['Stable', 'Low'].includes(browserQuality.label)
@@ -397,6 +412,7 @@ export function StreamDestinations({
                 />
               ))}
             </div>
+            {destinationHealth && <DestinationHealthList summary={destinationHealth} />}
             <div style={styles.healthGrid}>
               <div style={styles.healthMetric}>
                 <span style={styles.healthValue}>{formatBitrate(relayStats.bitrateKbps)}</span>
@@ -544,8 +560,10 @@ export function StreamDestinations({
                   type="button"
                   key={p.platform}
                   className="hover-scale"
+                  aria-pressed={platform === p.platform}
                   style={{
                     ...styles.platformBtn,
+                    ...(p.platform === 'custom' ? styles.platformBtnWide : {}),
                     borderColor: platform === p.platform ? p.color : 'var(--border)',
                     background: platform === p.platform ? p.color + '15' : 'var(--bg-tertiary)',
                     color: platform === p.platform ? p.color : 'var(--text-secondary)',
@@ -591,6 +609,9 @@ export function StreamDestinations({
                     </div>
                   ))}
                 </div>
+                {platformGuide.requirement && (
+                  <span style={styles.platformRequirement}>{platformGuide.requirement}</span>
+                )}
                 {platformOrientationWarning && (
                   <div style={styles.orientationWarning}>
                     <span style={styles.orientationWarningText}>{platformOrientationWarning}</span>
@@ -625,12 +646,13 @@ export function StreamDestinations({
                     ...styles.input,
                     ...(!platformGuide.rtmpUrlEditable ? { background: 'rgba(255,255,255,0.03)', color: 'var(--text-muted)' } : {}),
                   }}
-                  placeholder="rtmp://"
+                  placeholder={platformGuide.rtmpUrlTemplate}
                   value={rtmpUrl || getDefaultRtmpUrl(platform)}
                   onChange={(e) => { setRtmpUrl(e.target.value); setFormError(null); }}
                   readOnly={!platformGuide.rtmpUrlEditable}
+                  aria-label="RTMP server URL"
                 />
-                <span style={styles.inputHint}>{platformGuide.orientationDetail}</span>
+                <span style={styles.inputHint}>{platformGuide.rtmpUrlHelp} {platformGuide.orientationDetail}</span>
               </div>
 
               <div style={styles.inputGroup}>
@@ -707,6 +729,11 @@ export function StreamDestinations({
               <span style={styles.preflightCount}>{enabledCount}/{MAX_ENABLED_DESTINATIONS} enabled</span>
             </div>
             {preflightIssue && <div style={styles.preflightIssue}>{preflightIssue}</div>}
+            {enabledCount > 0 && (
+              <div style={styles.preflightUpload} data-testid="server-upload-estimate">
+                {describeServerUploadEstimate(serverUploadEstimate)}
+              </div>
+            )}
           </div>
         )}
 
@@ -1183,6 +1210,7 @@ const styles: Record<string, React.CSSProperties> = {
   preflightLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' },
   preflightCount: { fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' },
   preflightIssue: { fontSize: 11, color: '#fbbf24', lineHeight: 1.35 },
+  preflightUpload: { fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.35 },
   disclosure: { background: 'rgba(255,255,255,0.035)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' },
   disclosureSummary: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', listStyle: 'none' },
   disclosureTitle: { fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' },
@@ -1263,6 +1291,8 @@ const styles: Record<string, React.CSSProperties> = {
   formMode: { fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0 },
   platformGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 },
   platformBtn: { fontSize: 11, fontWeight: 500, padding: '6px 4px', borderRadius: 6, border: '1px solid', cursor: 'pointer', background: 'var(--bg-tertiary)', textAlign: 'center' as const },
+  platformBtnWide: { gridColumn: '1 / -1' },
+  platformRequirement: { fontSize: 10, lineHeight: 1.35, color: '#fcd34d' },
   platformGuide: { display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 10, borderLeft: '2px solid rgba(148, 163, 184, 0.24)' },
   platformGuideHeader: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   platformGuideDot: { width: 8, height: 8, borderRadius: 999, flexShrink: 0 },

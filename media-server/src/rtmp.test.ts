@@ -8,8 +8,11 @@ import {
   createFfmpegEncoderArgs,
   createFfmpegPushArgs,
   createFfmpegSlateArgs,
+  getMaxRtmpDestinations,
   getRelayEncoderOptions,
   getRelayOutputVideoConfig,
+  MAX_PER_DESTINATION_ENCODES,
+  MAX_RTMP_DESTINATIONS,
   getRelayVideoMode,
   hasRemainingRelayWork,
   normalizeRelayEncoding,
@@ -43,9 +46,31 @@ describe('RTMP relay utilities', () => {
   });
 
   it('validates destination count and shape', () => {
-    assert.equal(validateDestinations([destination]), null);
-    assert.match(validateDestinations([]) || '', /required/);
-    assert.match(validateDestinations([destination, { ...destination, id: 'dest-2' }, { ...destination, id: 'dest-3' }, { ...destination, id: 'dest-4' }]) || '', /maximum/i);
+    const many = (count: number) => Array.from({ length: count }, (_, index) => ({ ...destination, id: `dest-${index + 1}` }));
+    assert.equal(validateDestinations([destination], 8), null);
+    assert.match(validateDestinations([], 8) || '', /required/);
+    assert.equal(validateDestinations(many(8), 8), null);
+    assert.match(validateDestinations(many(9), 8) || '', /maximum of 8 RTMP destinations/i);
+    assert.match(validateDestinations(many(4), 3) || '', /maximum of 3/i);
+    assert.match(validateDestinations([destination, destination], 8) || '', /unique/);
+  });
+
+  it('allows eight destinations by default and lets the environment lower the cap', () => {
+    assert.equal(MAX_RTMP_DESTINATIONS, 8);
+    assert.equal(getMaxRtmpDestinations({}), 8);
+    assert.equal(getMaxRtmpDestinations({ RTMP_MAX_DESTINATIONS: '5' }), 5);
+    assert.equal(getMaxRtmpDestinations({ RTMP_MAX_DESTINATIONS: ' 1 ' }), 1);
+    // Never above the hard cap, and nonsense falls back to the default.
+    assert.equal(getMaxRtmpDestinations({ RTMP_MAX_DESTINATIONS: '20' }), 8);
+    for (const value of ['0', '-2', '2.5', 'eight', '']) {
+      assert.equal(getMaxRtmpDestinations({ RTMP_MAX_DESTINATIONS: value }), 8, value);
+    }
+  });
+
+  it('keeps the three-destination cap when every destination runs its own encode', () => {
+    assert.equal(getMaxRtmpDestinations({ RTMP_ENCODE_ONCE: 'false' }), MAX_PER_DESTINATION_ENCODES);
+    assert.equal(getMaxRtmpDestinations({ RTMP_ENCODE_ONCE: 'false', RTMP_MAX_DESTINATIONS: '8' }), 3);
+    assert.equal(getMaxRtmpDestinations({ RTMP_ENCODE_ONCE: 'false', RTMP_MAX_DESTINATIONS: '2' }), 2);
   });
 
   it('redacts stream keys from destination URLs', () => {

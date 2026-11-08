@@ -8,7 +8,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P0.1** Browser end-to-end qualification in Linux CI (PR #352 merged)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
 - [ ] **P0.3** Free production error grouping, release tags, no PII
-- [ ] **P1.4** Configurable multistream destinations, health and presets
+- [x] **P1.4** Configurable multistream destinations, health and presets (verified locally; see below)
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
 - [ ] **P1.6** Merged on-screen chat overlay, questions and export
 - [ ] **P1.7** Moderated viewer chat, reactions and Q&A
@@ -121,6 +121,48 @@ destination, a recorded file's pixels, and a server restart with a live host.
 Logos are still sent inline in branding, so a logo data URL over about 60 KiB
 can still exceed the WebSocket cap; that predates this change.
 
+## P1.4 — more stream destinations
+
+A broadcast can now send to up to **8** destinations (was 3). The client cap is
+`MAX_ENABLED_DESTINATIONS` in `client/src/utils/streamDestinations.ts` (the
+Go Live handler in StudioRoom no longer hard-codes 3). The media server cap is
+`RTMP_MAX_DESTINATIONS` (1 to 8, default 8, `getMaxRtmpDestinations` in
+`media-server/src/rtmp.ts`), reported as `capabilities.liveRelay.maxDestinations`
+on `/health`. With `RTMP_ENCODE_ONCE=false` (one encode per destination) the cap
+stays 3. Per-destination reconnect and backpressure are unchanged.
+
+Presets: YouTube, Facebook, Twitch, **Kick**, LinkedIn, **X**, **TikTok**,
+Instagram, **Vimeo** and Custom RTMP, each with a server URL template, help on
+where to find the URL, setup steps and any account/plan requirement. LinkedIn
+and TikTok issue a URL per event, so they have no prefilled URL; Kick, X,
+Instagram and Vimeo are prefilled but editable. TikTok is portrait-first.
+
+Stream Health lists each enabled destination (Connected / Connecting /
+Reconnecting / Failed, what the server sends it, and any server warning) and
+the total upload to destinations in Mbps and GB per hour
+(`client/src/utils/destinationHealth.ts`, `DestinationHealthList.tsx`). Before
+going live the panel estimates the server upload (destinations × preset
+bitrate) and points at Render's bandwidth usage.
+
+Evidence (2026-11-08, local, real Chrome, production CSP, real signaling and
+media servers, encode-once): **8 local RTMP listeners** (and an earlier 5-listener
+run) all reached Connected in about 5.3 s with
+`browser H.264 copied (1920x1080@30), audio to AAC`. Killing listener 3 mid-stream
+showed Reconnecting, then Connecting, then Connected again 11.7 s later (its
+listener was restarted after 5.1 s, the first retry hit the closed port). The
+other seven stayed Connected throughout and each received byte-identical files
+(6,055,434 bytes, 1,262 video packets, 43.75 s, largest video gap 74 ms, no
+backwards timestamps); listener 3 received 15.4 s, then 17.6 s after reconnecting.
+Per copy-only push: about 13 MB memory footprint; a 4.7 Mbps push used about 5%
+of an Apple-silicon core (mostly network I/O). Screenshots at 1440×900, 1000×625
+and 390×844 inspected; no page errors, CSP violations or horizontal overflow.
+
+Not verified: real platform ingests (preset URLs come from the platforms'
+public setup pages and should be checked with a private test), RTMPS to Kick,
+X, Vimeo or TikTok, and whether a Render free (0.1 CPU) instance keeps up with
+eight 4.7 Mbps pushes. Watch Server Speed and per-destination warnings, and
+lower `RTMP_MAX_DESTINATIONS` if it falls behind.
+
 ## Resume here next session
 
 Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and
@@ -199,8 +241,8 @@ unit test) in a separate PR, and rerun the soak. Evidence is on X9 Pro in
    Root Dockerfile/.dockerignore changes now trigger the media deployment;
    unrelated nested Docker filenames do not. Full CI is the merge gate. This
    branch contains no browser harness or unverified recording/error changes.
-4. Continue **P1.4** (configurable destinations/presets/health), then the
-   remaining unchecked items in order. None of P1–P3 was implemented here.
+4. P1.4 (destinations/presets/health) is in its own PR. Continue with the
+   remaining unchecked items in order, starting at P1.5.
 
 No new paid services or owner configuration changes are required by the shipped
 test tooling. A real-camera/network rehearsal is still an owner action after
