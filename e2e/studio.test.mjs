@@ -33,12 +33,16 @@ async function assertPlayingRemoteHost(page, artifactDir, checkpoint) {
   const label = 'Video feed: Test Host';
   const video = page.getByRole('group', { name: label, exact: true }).locator('video');
   await video.waitFor();
-  const after = await video.evaluate(element => element.currentTime);
+  await page.evaluate(() => { window.__e2eVideoProbe = new WeakMap(); });
   try {
-    await page.waitForFunction(({ label, after }) => {
+    await page.waitForFunction(label => {
       const group = [...document.querySelectorAll('[role="group"]')].find(element => element.getAttribute('aria-label') === label);
       const element = group?.querySelector('video');
-      if (!element || element.paused || element.readyState < 2 || element.currentTime < after + 0.05) return false;
+      if (!element) return false;
+      // Responsive layouts remount the video. Its clock restarts at zero, so
+      // measure advancement on this element rather than its removed predecessor.
+      if (!window.__e2eVideoProbe.has(element)) window.__e2eVideoProbe.set(element, element.currentTime);
+      if (element.paused || element.readyState < 2 || element.currentTime < window.__e2eVideoProbe.get(element) + 0.05) return false;
       const canvas = document.createElement('canvas');
       canvas.width = 32; canvas.height = 18;
       const context = canvas.getContext('2d', { willReadFrequently: true });
@@ -47,7 +51,7 @@ async function assertPlayingRemoteHost(page, artifactDir, checkpoint) {
       let colored = 0;
       for (let index = 0; index < data.length; index += 4) if (Math.max(data[index], data[index + 1], data[index + 2]) > 40) colored++;
       return colored > 32; // Fake camera is green; a stopped/black RTP track must fail.
-    }, { label, after });
+    }, label);
   } catch (error) {
     const diagnostics = await page.evaluate(async () => ({
       videos: [...document.querySelectorAll('video')].map(element => ({
