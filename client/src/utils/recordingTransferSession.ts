@@ -42,6 +42,8 @@ export const TRANSFER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
 export const TRANSFER_LOW_WATER_BYTES = 1024 * 1024;
 /** Unacknowledged bytes allowed in flight, so a slow host disk bounds memory. */
 export const TRANSFER_WINDOW_BYTES = 16 * 1024 * 1024;
+/** Bound disk reads independently of SCTP packets; small File slices are costly on slow disks. */
+export const TRANSFER_READ_AHEAD_BYTES = 256 * 1024;
 
 // ---------------------------------------------------------------------------
 // Guest side
@@ -81,6 +83,7 @@ interface SenderLane {
   track: TransferSourceTrack;
   state: LaneSendState;
   cached: Blob | null;
+  readAhead: { start: number; bytes: Uint8Array } | null;
   announcedAvailable: number;
   announcedAt: number;
   endSent: boolean;
@@ -153,7 +156,7 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
       const existing = lanes.get(track.id);
       if (existing) { existing.track = track; continue; }
       const lane: SenderLane = {
-        track, state: createLaneSendState(nextLane++), cached: null,
+        track, state: createLaneSendState(nextLane++), cached: null, readAhead: null,
         announcedAvailable: 0, announcedAt: 0, endSent: false, delivered: false, failed: false,
       };
       lanes.set(track.id, lane);
@@ -195,9 +198,19 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
             const range = nextSendRange(lane.state, lane.cached.size, maxPayload());
             if (range) {
               const epoch = lane.state.epoch;
-              const payload = await lane.cached.slice(range.start, range.end).arrayBuffer();
-              // A resume may have arrived while reading: drop this stale slice.
-              if (epoch !== lane.state.epoch || lane.state.sent !== range.start || closed || channel.readyState !== 'open') { progressed = true; continue; }
+              let block = lane.readAhead;
+              if (!block || range.start < block.start || range.end > block.start + block.bytes.byteLength) {
+                // One bounded File read supplies several network packets. Reading
+                // every 16 KiB packet separately serializes hundreds of filesystem
+                // operations even for a short take on an external drive.
+                const end = Math.min(lane.cached.size, range.start + Math.max(TRANSFER_READ_AHEAD_BYTES, maxPayload()));
+                const bytes = new Uint8Array(await lane.cached.slice(range.start, end).arrayBuffer());
+                // A resume may arrive during the read: never cache or send its stale result.
+                if (epoch !== lane.state.epoch || lane.state.sent !== range.start || closed || channel.readyState !== 'open') { progressed = true; continue; }
+                block = { start: range.start, bytes };
+                lane.readAhead = block;
+              }
+              const payload = block.bytes.subarray(range.start - block.start, range.end - block.start);
               channel.send(encodeDataFrame({ lane: lane.state.lane, epoch, seq: lane.state.seq++, offset: range.start, payload }));
               lane.state.sent = range.end;
               progressed = true;
@@ -235,6 +248,7 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
         lane.endSent = false;
         lane.failed = false;
         lane.cached = null;
+        lane.readAhead = null;
         void pump();
         return;
       case 'ack':
@@ -243,6 +257,7 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
         return;
       case 'done':
         if (!lane) return;
+        lane.readAhead = null;
         if (message.ok) {
           lane.delivered = true;
           try { options.onDelivered?.(lane.track.id, message.path); } catch { /* Observer errors stay local. */ }
@@ -274,6 +289,7 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
     progress,
     close() {
       closed = true;
+      for (const lane of lanes.values()) { lane.readAhead = null; lane.cached = null; }
       clearInterval(timer);
       channel.removeEventListener('message', onMessage);
       channel.removeEventListener('bufferedamountlow', onLow);
