@@ -1,3 +1,5 @@
+export * from './clientErrors.js';
+
 // ============ Room & Session Types ============
 
 export interface Room {

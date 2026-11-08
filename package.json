@@ -23,7 +23,7 @@
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces && node --test scripts/*.test.mjs",
     "lint": "npm run lint --workspaces",
-    "test:e2e": "node --test e2e/studio.test.mjs",
+    "test:e2e": "node --test --test-concurrency=1 e2e/*.test.mjs",
     "test:recording-soak": "node e2e/recording-soak.mjs"
   },
   "devDependencies": {

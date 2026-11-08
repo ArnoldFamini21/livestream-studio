@@ -8,7 +8,6 @@ import {
   getClientErrorCounts,
   parseClientErrorReport,
   recordClientError,
-  redactUrls,
   resetClientErrorCounts,
 } from '../dist/services/clientErrors.js';
 import { buildSignalingPrometheusMetrics } from '../dist/services/metrics.js';
@@ -74,29 +73,23 @@ describe('production readiness', () => {
 });
 
 describe('client error reports', () => {
-  it('strips query strings and fragments that can carry tokens', () => {
-    assert.equal(
-      redactUrls('at https://studio.example.test/join/abc?token=secret#frag (app.js:1)'),
-      'at https://studio.example.test/join/abc (app.js:1)'
-    );
-  });
-
   it('parses, truncates, and redacts a report', () => {
     const report = parseClientErrorReport({
       kind: 'stream',
       message: `Relay failed for https://media.test/ws?token=abc ${'x'.repeat(600)}`,
       stack: 'Error\n  at https://studio.test/assets/app.js?v=1:10:4',
       page: 'https://studio.test/studio/room?invite=secret',
-      release: 'abc123',
+      release: 'abc1234',
       count: 5000,
-    }, 'Mozilla/5.0');
+      userAgent: 'Mozilla/5.0',
+    });
     assert.equal(report.kind, 'stream');
     assert.equal(report.message.length <= 500, true);
     assert.doesNotMatch(report.message, /token=/);
-    assert.equal(report.stack, 'Error\n  at https://studio.test/assets/app.js');
-    assert.equal(report.page, 'https://studio.test/studio/room');
+    assert.equal(report.stack, undefined);
+    assert.equal(report.page, '/studio/:roomId');
     assert.equal(report.count, 1000);
-    assert.equal(report.userAgent, 'Mozilla/5.0');
+    assert.equal(report.userAgent, undefined);
   });
 
   it('rejects empty reports and defaults unknown kinds', () => {
@@ -107,10 +100,8 @@ describe('client error reports', () => {
 
   it('counts reports by kind in the Prometheus output', () => {
     resetClientErrorCounts();
-    const lines = [];
-    recordClientError(parseClientErrorReport({ kind: 'media', message: 'camera lost', count: 3 }), (line) => lines.push(line));
+    recordClientError(parseClientErrorReport({ kind: 'media', message: 'camera lost', count: 3 }));
     assert.equal(getClientErrorCounts().media, 3);
-    assert.equal(JSON.parse(lines[0]).event, 'client_error');
     assert.match(buildSignalingPrometheusMetrics(new Map()), /livestream_studio_client_errors_total\{kind="media"\} 3/);
     resetClientErrorCounts();
   });
