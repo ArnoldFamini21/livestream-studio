@@ -457,4 +457,83 @@ describe('peer-to-peer recording transfer', () => {
     } finally { release?.(); sender.close(); }
   });
 
+  it('stops reading a superseded snapshot once the finished file replaces its source', async () => {
+    const { guest, host } = channelPair();
+    guest.maxMessageSize = 16 * 1024;
+    const payload = bytes(3 * TRANSFER_READ_AHEAD_BYTES + 101, 31);
+    let partsRemoved = false;
+    let staleReads = 0;
+    // Like a folder writer: snapshots reference part files that finishing removes.
+    class PartBackedBlob extends Blob {
+      override slice(start?: number, end?: number, type?: string): Blob {
+        const slice = super.slice(start, end, type);
+        const read = slice.arrayBuffer.bind(slice);
+        slice.arrayBuffer = async () => {
+          if (partsRemoved) { staleReads += 1; throw new DOMException('The file was removed', 'NotReadableError'); }
+          const result = await read();
+          // The recorder finishes right after the first block is read.
+          const finalBlob = new Blob([payload]);
+          track.read = async () => finalBlob;
+          track.finished = { totalBytes: payload.length };
+          partsRemoved = true;
+          return result;
+        };
+        return slice;
+      }
+    }
+    // Production mutates the same registered entry when a track finishes.
+    const track: TransferSourceTrack = {
+      id: 'finished-swap', sessionId: 'rec-swap', label: 'ISO', kind: 'iso', mimeType: 'video/webm',
+      read: async () => new PartBackedBlob([payload]),
+    };
+    const sink = memorySink();
+    const registry = new HostTransferRegistry(sink.open);
+    const receiver = createTransferReceiver({ channel: host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    try {
+      await until(() => sender.progress().deliveredAll);
+      assert.deepEqual(sink.sinks[0].finished, payload);
+      assert.equal(staleReads, 0, 'the removed snapshot is never read again');
+    } finally { sender.close(); receiver.close(); }
+  });
+
+  it('takes a fresh snapshot after a disk read fails instead of retrying the unreadable one', async () => {
+    const { guest, host } = channelPair();
+    guest.maxMessageSize = 16 * 1024;
+    const payload = bytes(2 * TRANSFER_READ_AHEAD_BYTES + 57, 37);
+    let failures = 0;
+    // The first snapshot the sender reads from becomes unreadable after its
+    // first block (as when a disk-backed File changes underneath it).
+    let unreadable: Blob | null = null;
+    class FlakyBlob extends Blob {
+      override slice(start?: number, end?: number, type?: string): Blob {
+        unreadable ??= this;
+        const slice = super.slice(start, end, type);
+        const read = slice.arrayBuffer.bind(slice);
+        const fails = unreadable === this && (start ?? 0) > 0;
+        slice.arrayBuffer = async () => {
+          if (fails) { failures += 1; throw new DOMException('Changed on disk', 'NotReadableError'); }
+          return read();
+        };
+        return slice;
+      }
+    }
+    const track: TransferSourceTrack = {
+      id: 'fresh-after-error', sessionId: 'rec-error', label: 'ISO', kind: 'iso', mimeType: 'video/webm',
+      read: async () => new FlakyBlob([payload]),
+      finished: { totalBytes: payload.length },
+    };
+    const sink = memorySink();
+    const registry = new HostTransferRegistry(sink.open);
+    const receiver = createTransferReceiver({ channel: host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      await until(() => sender.progress().deliveredAll);
+      assert.deepEqual(sink.sinks[0].finished, payload);
+      assert.equal(failures, 1, 'one failed read, then a fresh snapshot');
+    } finally { console.warn = warn; sender.close(); receiver.close(); }
+  });
+
 });
