@@ -5,7 +5,7 @@
 Unchecked items are not qualified or shipped. Partial work is recorded below;
 unit coverage alone does not complete a browser acceptance criterion.
 
-- [x] **P0.1** Browser end-to-end qualification in Linux CI (merge requires the browser job to pass)
+- [ ] **P0.1** Browser end-to-end qualification in Linux CI (Linux recording finalization is failing)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
 - [ ] **P0.3** Free production error grouping, release tags, no PII
 - [ ] **P1.4** Configurable multistream destinations, health and presets
@@ -95,8 +95,16 @@ not browser profiles or recording payloads.
 
 ## Resume here next session
 
-The owner requested a usage-limited wrap-up before the long soak. Merge only
-the verified browser/tooling PR; the following changes are separate drafts.
+**Wrap-up blocker:** local Chrome passed all ten tests, but Linux CI run
+`42457453744` still shows the host stuck in "Saving…" after a 30-second take,
+even with a 60-second finalization selector deadline. Do not merge PR #352 or
+weaken this assertion. Diagnose local-save/finalization on Linux, then rerun the
+entire browser suite. The unit/build CI job passed. The earlier outer timeout
+was corrected, but it did not resolve the actual Linux save failure.
+
+The owner requested a usage-limited wrap-up before the long soak. Browser and
+recording work remain drafts. Only an independently verified deploy-classifier
+change may merge during this wrap-up; it is isolated from the failing suite.
 
 1. **P0.2 — recording integrity:** validate `codex/wave3-recording-read-ahead`.
    The exclusive 35-second rehearsal stopped all seven recorders and resumed
