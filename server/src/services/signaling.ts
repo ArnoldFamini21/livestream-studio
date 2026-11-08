@@ -3735,6 +3735,7 @@ async function pollYouTubeLiveChat(
       connection.seenMessageIds.add(externalMessage.id);
       const chatMessage = toExternalChatMessage(externalMessage);
       storeChatMessage(roomState, chatMessage);
+      applyExternalChatPollVote(roomId, roomState, chatMessage);
       sendChatToVisibleParticipants(roomId, roomState, chatMessage, 'chat-message');
       imported++;
     }
@@ -3799,6 +3800,7 @@ async function pollFacebookLiveComments(
       connection.seenMessageIds.add(externalMessage.id);
       const chatMessage = toExternalChatMessage(externalMessage);
       storeChatMessage(roomState, chatMessage);
+      applyExternalChatPollVote(roomId, roomState, chatMessage);
       sendChatToVisibleParticipants(roomId, roomState, chatMessage, 'chat-message');
       imported++;
     }
@@ -4186,6 +4188,94 @@ function applyPollVote(roomState: RoomState, participantId: string, poll: LivePo
 
   roomState.polls.set(updated.id, updated);
   return updated;
+}
+
+/** YouTube/Facebook chat: "1", "2"… or "!vote 1" counts as a vote for the poll on screen. */
+const EXTERNAL_POLL_VOTE = /^(?:(?:!|\/)?vote\s*)?#?([1-6])[.!)]?$/i;
+
+export function parseExternalChatPollVote(content: string): number | null {
+  const trimmed = content.trim();
+  const command = parsePollVoteCommand(trimmed);
+  if (command !== null) return command;
+  const match = trimmed.match(EXTERNAL_POLL_VOTE);
+  return match ? Number(match[1]) - 1 : null;
+}
+
+function applyExternalChatPollVote(roomId: string, roomState: RoomState, message: ChatMessage) {
+  const optionIndex = parseExternalChatPollVote(message.content);
+  if (optionIndex === null) return;
+  const poll = getActivePollForChatVote(roomState);
+  const option = poll?.options[optionIndex];
+  if (!poll || !option) return;
+  // One vote per chat account; voting again changes it.
+  const updated = applyPollVote(roomState, message.senderId, poll, option.id);
+  if (updated) broadcastPoll(roomId, updated);
+}
+
+// ============ Watch-page poll voting ============
+
+/** At most this many separate browsers may vote from one network per poll (a venue's Wi-Fi shares one address). */
+const WATCH_POLL_VOTERS_PER_NETWORK = 50;
+const WATCH_POLL_NETWORK_TRACKING_MAX = 200;
+const watchPollNetworkVoters = new Map<string, Map<string, Set<string>>>();
+
+export type WatchPoll = Pick<LivePoll, 'id' | 'question' | 'options' | 'status' | 'totalVotes'>;
+
+function toWatchPoll(poll: LivePoll): WatchPoll {
+  return { id: poll.id, question: poll.question, options: poll.options, status: poll.status, totalVotes: poll.totalVotes };
+}
+
+/** The poll viewers can vote on: the one on screen, as for chat votes. */
+export function getWatchPoll(roomId: string): WatchPoll | null {
+  const roomState = rooms.get(roomId);
+  if (!roomState) return null;
+  const poll = getActivePollForChatVote(roomState);
+  return poll ? toWatchPoll(poll) : null;
+}
+
+export class WatchPollVoteError extends Error {
+  constructor(message: string, readonly statusCode: number, readonly code: string) {
+    super(message);
+  }
+}
+
+const WATCH_VOTER_ID = /^[A-Za-z0-9_-]{16,64}$/;
+
+export function castWatchPollVote(
+  roomId: string,
+  input: { pollId?: unknown; optionId?: unknown; voterId?: unknown; networkKey: string }
+): WatchPoll {
+  const roomState = rooms.get(roomId);
+  if (!roomState) throw new WatchPollVoteError('This broadcast was not found or has ended', 404, 'ROOM_NOT_FOUND');
+  const { pollId, optionId, voterId } = input;
+  if (typeof pollId !== 'string' || typeof optionId !== 'string' || typeof voterId !== 'string' || !WATCH_VOTER_ID.test(voterId)) {
+    throw new WatchPollVoteError('Invalid vote', 400, 'VALIDATION_ERROR');
+  }
+  const poll = getActivePollForChatVote(roomState);
+  if (!poll || poll.id !== pollId) throw new WatchPollVoteError('This poll is closed', 409, 'POLL_NOT_OPEN');
+  if (!poll.options.some((option) => option.id === optionId)) throw new WatchPollVoteError('Invalid vote', 400, 'VALIDATION_ERROR');
+
+  const trackingKey = `${roomId}:${poll.id}`;
+  let networks = watchPollNetworkVoters.get(trackingKey);
+  if (!networks) {
+    if (watchPollNetworkVoters.size >= WATCH_POLL_NETWORK_TRACKING_MAX) {
+      const oldest = watchPollNetworkVoters.keys().next().value;
+      if (oldest !== undefined) watchPollNetworkVoters.delete(oldest);
+    }
+    networks = new Map();
+    watchPollNetworkVoters.set(trackingKey, networks);
+  }
+  const voters = networks.get(input.networkKey) || new Set<string>();
+  if (!voters.has(voterId) && voters.size >= WATCH_POLL_VOTERS_PER_NETWORK) {
+    throw new WatchPollVoteError('Too many votes from this network', 429, 'POLL_VOTE_LIMIT');
+  }
+  voters.add(voterId);
+  networks.set(input.networkKey, voters);
+
+  const updated = applyPollVote(roomState, `watch:${voterId}`, poll, optionId);
+  if (!updated) throw new WatchPollVoteError('This poll is closed', 409, 'POLL_NOT_OPEN');
+  broadcastPoll(roomId, updated);
+  return toWatchPoll(updated);
 }
 
 function handlePollVoteCommand(

@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { findWatchLinkRoom, registerRoomGuest, RoomRegistrationError } from '../services/signaling.js';
+import { createHash } from 'node:crypto';
+import { castWatchPollVote, findWatchLinkRoom, getWatchPoll, registerRoomGuest, RoomRegistrationError, WatchPollVoteError } from '../services/signaling.js';
 
 /**
  * The public watch page is addressed by a private watch id, not the room id:
@@ -48,5 +49,41 @@ watchRouter.post('/:watchId/registrants', (req, res) => {
       return;
     }
     res.status(500).json({ error: 'Failed to register' });
+  }
+});
+
+// Live polls for viewers: the poll on screen, and an anonymous vote per browser.
+watchRouter.get('/:watchId/poll', (req, res) => {
+  const room = findWatchLinkRoom(req.params.watchId)?.room;
+  res.setHeader('Cache-Control', 'no-store');
+  if (!room) {
+    res.status(404).json({ error: 'This broadcast was not found or has ended' });
+    return;
+  }
+  res.json({ poll: getWatchPoll(room.id) });
+});
+
+watchRouter.post('/:watchId/poll-votes', (req, res) => {
+  const room = findWatchLinkRoom(req.params.watchId)?.room;
+  if (!room) {
+    res.status(404).json({ error: 'This broadcast was not found or has ended', code: 'ROOM_NOT_FOUND' });
+    return;
+  }
+  // Only a hash of the address is kept, to cap votes per network.
+  const networkKey = createHash('sha256').update(req.ip || 'unknown').digest('base64url').slice(0, 22);
+  try {
+    const poll = castWatchPollVote(room.id, {
+      pollId: req.body?.pollId,
+      optionId: req.body?.optionId,
+      voterId: req.body?.voterId,
+      networkKey,
+    });
+    res.json({ poll });
+  } catch (err) {
+    if (err instanceof WatchPollVoteError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: 'Failed to record the vote' });
   }
 });
