@@ -183,14 +183,18 @@ try {
   await host.getByRole("button", { name: "Close recordings", exact: true }).click();
   await host.getByRole("button", { name: "Start recording", exact: true }).click();
   await host.getByRole("button", { name: "Stop recording", exact: true }).waitFor();
-  await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.filter(row => row.started !== null && row.stopped === null).length >= 2)));
+  // Readiness waits poll on a timer, not requestAnimationFrame: a GPU-less CI
+  // host compositing the 1080p program can stop producing frames for long
+  // periods, which starved rAF-polled checks (and Playwright click actionability)
+  // while its recorders and JavaScript kept running. Assertions are unchanged.
+  await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.filter(row => row.started !== null && row.stopped === null).length >= 2, undefined, { timeout: 60_000, polling: 500 })));
   const captureStarted = Date.now();
   progressTimer = setInterval(() => console.log(JSON.stringify({ event: "recording-progress", elapsedSeconds: Math.round((Date.now() - captureStarted) / 1000), requestedSeconds })), 30_000);
   console.log(JSON.stringify({ event: "recording-started", qualification, requestedSeconds, artifactDir }));
 
   const reconnectGuest = pages[1];
-  await reconnectGuest.waitForFunction(seconds => window.__soak.recorders.some(row => row.started !== null && row.stopped === null && performance.now() - row.started >= seconds * 1000), Math.min(30, requestedSeconds / 3), { timeout: 60_000 });
-  await reconnectGuest.waitForFunction(() => window.__soak.channels.some(row => row.label === "rec-transfer" && row.channel.readyState === "open" && row.sentMediaBytes > 0), undefined, { timeout: 60_000 });
+  await reconnectGuest.waitForFunction(seconds => window.__soak.recorders.some(row => row.started !== null && row.stopped === null && performance.now() - row.started >= seconds * 1000), Math.min(30, requestedSeconds / 3), { timeout: 60_000, polling: 500 });
+  await reconnectGuest.waitForFunction(() => window.__soak.channels.some(row => row.label === "rec-transfer" && row.channel.readyState === "open" && row.sentMediaBytes > 0), undefined, { timeout: 60_000, polling: 500 });
   result.reconnect = await reconnectGuest.evaluate(() => {
     const state = window.__soak;
     const transfers = state.channels.filter(row => row.channel.readyState === "open" && row.label === "rec-transfer");
@@ -204,7 +208,7 @@ try {
     for (const socket of sockets) socket.close(3001, "Synthetic soak reconnect");
     return { atSeconds: performance.now() / 1000, interruptedChannels: transfers.length, interruptedSockets: sockets.length, sentMediaBytesBefore, previousChannels };
   });
-  await reconnectGuest.waitForFunction(previous => window.__soak.channels.slice(previous).some(row => row.label === "rec-transfer" && row.channel.readyState === "open" && row.messages > 0 && row.sentMediaBytes > 0), result.reconnect.previousChannels, { timeout: 60_000 });
+  await reconnectGuest.waitForFunction(previous => window.__soak.channels.slice(previous).some(row => row.label === "rec-transfer" && row.channel.readyState === "open" && row.messages > 0 && row.sentMediaBytes > 0), result.reconnect.previousChannels, { timeout: 60_000, polling: 500 });
   result.reconnect.reconnected = true;
   result.reconnect.sentMediaBytesAfter = await reconnectGuest.evaluate(previous => window.__soak.channels.slice(previous).filter(row => row.label === "rec-transfer").reduce((sum, row) => sum + row.sentMediaBytes, 0), result.reconnect.previousChannels);
   console.log(JSON.stringify({ event: "guest-reconnected", reconnect: result.reconnect }));
@@ -221,7 +225,7 @@ try {
   await host.keyboard.press("Shift+R");
   clearInterval(progressTimer);
   console.log(JSON.stringify({ event: "waiting-for-source-checksums" }));
-  await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000 })));
+  await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000, polling: 500 })));
   console.log(JSON.stringify({ event: "waiting-for-host-files" }));
   const files = await eventually(async () => {
     const files = await folderFiles(host);
