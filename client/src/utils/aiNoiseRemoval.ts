@@ -1,3 +1,4 @@
+import { hasAudioWorkletSupport } from './audioWorkletSupport.ts';
 /**
  * "AI noise removal": RNNoise running in an AudioWorklet on this
  * participant's own processed microphone, before it is published and before
@@ -49,7 +50,7 @@ export function supportsWasmSimd(): boolean {
 export function isAiNoiseRemovalSupported(): boolean {
   return typeof AudioWorkletNode !== 'undefined'
     && typeof AudioContext !== 'undefined'
-    && typeof (AudioContext.prototype as { audioWorklet?: unknown }).audioWorklet !== 'undefined'
+    && hasAudioWorkletSupport()
     && typeof WebAssembly === 'object';
 }
 
