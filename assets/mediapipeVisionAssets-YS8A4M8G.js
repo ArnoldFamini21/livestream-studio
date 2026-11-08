@@ -1,0 +1,1 @@
+var e=`/assets/vision_wasm_internal-BUy_aZj0.js`,t=`/assets/vision_wasm_internal-bSUUykk-.wasm`,n=`https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite`;export{n as FACE_DETECTOR_MODEL_URL,t as visionWasmBinaryUrl,e as visionWasmLoaderUrl};

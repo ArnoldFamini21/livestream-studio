@@ -1,0 +1,1 @@
+var e=`/assets/rnnoise-lVVwgm0Y.wasm`,t=`/assets/rnnoise_simd-BsE3sPy6.wasm`;export{t as rnnoiseSimdWasmUrl,e as rnnoiseWasmUrl};
