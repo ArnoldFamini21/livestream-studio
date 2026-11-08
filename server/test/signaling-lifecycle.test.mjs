@@ -497,7 +497,8 @@ describe('restarts', () => {
       configureRoomSnapshotStore({
         init: async () => {},
         loadRoomSnapshots: async () => [],
-        saveRoomSnapshot: async (snapshot) => { saved = snapshot; },
+        // Other tests' studios can save while this store is set (their timers); keep only ours.
+        saveRoomSnapshot: async (snapshot) => { if (snapshot?.room?.id === room.id) saved = snapshot; },
         deleteRoomSnapshot: async () => {},
         close: async () => {},
       });
