@@ -19,6 +19,7 @@ import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia, getStageOwnerId } fro
 import { NO_PROGRAM_RETURN, getProgramReturnAudioParticipants, getProgramReturnDemand, getProgramReturnRoute, isStageOwner, pickProgramReturnStream, stageContentNeedsProgramVideo } from '../utils/programReturn.ts';
 import { useProgramReturnFeed } from '../hooks/useProgramReturnFeed.ts';
 import { useTalkback } from '../hooks/useTalkback.ts';
+import { useMediaQuery } from '../hooks/useMediaQuery.ts';
 import { applyTalkbackVolumes, applyTalkbackVolumesForIds, getTalkbackBadge } from '../utils/talkback.ts';
 import { useTalkbackRelay } from '../hooks/useTalkbackRelay.ts';
 import { buildStageControl, resolveStageControl } from '../utils/stageControl.ts';
@@ -1002,6 +1003,9 @@ export function StudioRoom() {
   // The host's countdown as guests see it (one message from the host, ticked locally).
   const { value: remoteRecordingCountdown, start: startRemoteRecordingCountdown, stop: stopRemoteRecordingCountdown } = useRecordingCountdownMirror();
   const isPortraitPhone = useIsPortraitPhone();
+  // On a wide screen, backstage and waiting guests sit in a dock to the right of
+  // the stage, so the stage canvas keeps the full height of its column.
+  const wideStudioLayout = useMediaQuery(BACKSTAGE_DOCK_MEDIA_QUERY, true);
   // Phones and tablets have no screen capture (iOS Safari, Android Chrome): offer no button that cannot work.
   const screenShareSupported = typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
   const recordingCountdownCancelRef = useRef<(() => void) | null>(null);
@@ -7030,6 +7034,9 @@ export function StudioRoom() {
   // Guests on a phone held upright get a stacked stage instead of a tiny 16:9 mirror.
   const useMobileStage = !isHostOrCoHost && isPortraitPhone;
 
+  const dockBackstage = isHostOrCoHost && wideStudioLayout
+    && (waitingParticipants.length > 0 || backstagePrivateItems.length > 0);
+
   return (
     <div className="studio-container" style={styles.container}>
       {/* Header */}
@@ -7683,14 +7690,15 @@ export function StudioRoom() {
           )}
 
 
+          {!dockBackstage && (<>
           {isHostOrCoHost && waitingParticipants.length > 0 && (
             <WaitingGuestsStrip
               guests={waitingParticipants}
+              docked={false}
               onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
               onMoveBackstage={(participantId) => onStageAction('move-to-backstage', participantId)}
             />
           )}
-
           {isHostOrCoHost && backstagePrivateItems.length > 0 && (
             <BackstagePrivateRoom
               items={backstagePrivateItems}
@@ -7698,9 +7706,11 @@ export function StudioRoom() {
               cameraShape={cameraShape}
               nameTagStyle={nameTagStyle}
               compact
+              docked={false}
               onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
             />
           )}
+          </>)}
 
           {/* Floating layout switcher (like StreamYard) — below canvas */}
           {isHostOrCoHost && (
@@ -7796,6 +7806,30 @@ export function StudioRoom() {
             </PanelErrorBoundary>
           )}
         </div>
+
+        {dockBackstage && (
+          <aside className="studio-backstage-dock" style={styles.backstageDock} aria-label="Backstage and waiting guests">
+          {isHostOrCoHost && waitingParticipants.length > 0 && (
+            <WaitingGuestsStrip
+              guests={waitingParticipants}
+              docked={true}
+              onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
+              onMoveBackstage={(participantId) => onStageAction('move-to-backstage', participantId)}
+            />
+          )}
+          {isHostOrCoHost && backstagePrivateItems.length > 0 && (
+            <BackstagePrivateRoom
+              items={backstagePrivateItems}
+              brandColor={brandColor}
+              cameraShape={cameraShape}
+              nameTagStyle={nameTagStyle}
+              compact
+              docked={true}
+              onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
+            />
+          )}
+          </aside>
+        )}
 
         {/* Stream Destinations Panel */}
         {showStreamDest && (
@@ -8348,19 +8382,25 @@ export function StudioRoom() {
   );
 }
 
-/** Hosts: guests waiting to be let in, right under the stage (as StreamYard does). */
+/** Wide enough for the backstage dock to the right of the stage (narrower screens keep it under the stage). */
+const BACKSTAGE_DOCK_MEDIA_QUERY = '(min-width: 901px)';
+
+/** Hosts: guests waiting to be let in, under the stage or in the right-hand dock. */
 function WaitingGuestsStrip({
   guests,
+  docked = false,
   onAddToStage,
   onMoveBackstage,
 }: {
   guests: Participant[];
+  /** In the right-hand dock: full width, one guest per row. */
+  docked?: boolean;
   onAddToStage: (participantId: string) => void;
   onMoveBackstage: (participantId: string) => void;
 }) {
   return (
-    <section style={{ ...styles.backstageRoom, ...styles.backstageRoomCompact }} aria-label="Guests waiting to join">
-      <div style={styles.backstageRoomHeader}>
+    <section style={{ ...styles.backstageRoom, ...styles.backstageRoomCompact, ...(docked ? styles.backstageRoomDocked : {}) }} aria-label="Guests waiting to join">
+      <div style={{ ...styles.backstageRoomHeader, ...(docked ? styles.backstageRoomHeaderDocked : {}) }}>
         <span style={styles.backstageRoomTitle}>
           <span style={styles.backstageRoomDot} />
           Waiting
@@ -8368,7 +8408,7 @@ function WaitingGuestsStrip({
         </span>
         <span style={styles.backstageRoomMeta}>Not on stream</span>
       </div>
-      <div style={styles.backstageRoomRow}>
+      <div style={{ ...styles.backstageRoomRow, ...(docked ? styles.backstageRoomRowDocked : {}) }}>
         {guests.map((guest) => (
           <div key={guest.id} style={styles.waitingGuestCard}>
             <span style={styles.waitingGuestAvatar} aria-hidden="true">{(guest.name.trim()[0] || '?').toUpperCase()}</span>
@@ -8402,9 +8442,12 @@ function BackstagePrivateRoom({
   cameraShape,
   nameTagStyle,
   compact = false,
+  docked = false,
   onAddToStage,
 }: {
   items: StageVideoItem[];
+  /** In the right-hand dock: full width, larger tiles stacked in a column. */
+  docked?: boolean;
   brandColor: string;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
@@ -8418,10 +8461,11 @@ function BackstagePrivateRoom({
       style={{
         ...styles.backstageRoom,
         ...(compact ? styles.backstageRoomCompact : styles.backstageRoomWide),
+        ...(docked ? styles.backstageRoomDocked : {}),
       }}
       aria-label="Backstage private room"
     >
-      <div style={styles.backstageRoomHeader}>
+      <div style={{ ...styles.backstageRoomHeader, ...(docked ? styles.backstageRoomHeaderDocked : {}) }}>
         <span style={styles.backstageRoomTitle}>
           <span style={styles.backstageRoomDot} />
           Backstage
@@ -8429,9 +8473,9 @@ function BackstagePrivateRoom({
         </span>
         <span style={styles.backstageRoomMeta}>Not on stream</span>
       </div>
-      <div style={{ ...styles.backstageRoomRow, ...(compact ? {} : styles.backstageRoomRowWrap) }}>
+      <div style={{ ...styles.backstageRoomRow, ...(compact ? {} : styles.backstageRoomRowWrap), ...(docked ? styles.backstageRoomRowDocked : {}) }}>
         {items.map((item) => (
-          <div key={item.id} style={{ ...styles.backstageRoomCard, ...(compact ? {} : styles.backstageRoomCardLarge) }}>
+          <div key={item.id} style={{ ...styles.backstageRoomCard, ...(compact ? {} : styles.backstageRoomCardLarge), ...(docked ? styles.backstageRoomCardDocked : {}) }}>
             <div
               style={{
                 ...styles.backstageRoomTile,
@@ -8896,6 +8940,34 @@ const styles: Record<string, React.CSSProperties> = {
   },
   backstageRoomCompact: {
     padding: '8px 10px 10px',
+  },
+  backstageDock: {
+    // Room for big backstage tiles without taking much width from the stage.
+    width: 'clamp(230px, 24vw, 340px)',
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    padding: '20px 14px 16px 0',
+    overflowY: 'auto',
+    background: 'var(--bg-primary)',
+  },
+  backstageRoomDocked: {
+    width: '100%',
+    alignSelf: 'stretch',
+    marginTop: 0,
+  },
+  backstageRoomHeaderDocked: {
+    flexWrap: 'wrap',
+    rowGap: 2,
+    columnGap: 10,
+  },
+  backstageRoomRowDocked: {
+    flexDirection: 'column',
+    overflowX: 'visible',
+  },
+  backstageRoomCardDocked: {
+    width: '100%',
   },
   backstageRoomWide: {
     width: 'min(660px, 100%)',
