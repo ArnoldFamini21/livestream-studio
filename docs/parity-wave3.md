@@ -60,3 +60,31 @@ green-room privacy and HMAC authorization remain unchanged.
 No new paid service or hosting-setting change is planned. Synthetic devices
 cannot establish real-camera quality, cross-continent connectivity, TURN-only
 networks, mobile browser support or a public broadcast's reliability.
+
+## Qualification evidence (in progress)
+
+- All four workspace typechecks and the root build pass. The build emits no
+  `.mjs` assets. The browser harness adds a development-only Apache-2.0
+  Playwright dependency; it changes no shipped client code or bundle size.
+- Local unit gates: client **1,412 passed**; server **261 passed, 2 skipped**
+  (PostgreSQL integration requires a database); media server **291 passed**;
+  shared **22 passed**; scripts **32 passed**. Total: **2,018 passed, 2 skipped**.
+- The short real-Chrome suite passed **9 scenarios plus its parent test** in
+  85.8 seconds with zero uncaught application errors or CSP violations.
+  Explicit Leave removed the guest in **869 ms**; tab close in **8,397 ms**.
+  Program, host ISO/audio and guest ISO/audio all committed non-empty OPFS
+  media in the 30-second take.
+- Screenshots were inspected at **1440×900**, **1000×625** and **390×844**.
+  The custom layout reserves its empty left content slot as designed. A black
+  host-video tile in the guest phone screenshot needs stronger playback
+  assertions and investigation before this item is marked qualified.
+- The long recording runner exercises real peer transfer with separate browser
+  profiles and a native OPFS directory standing in for the directory picker.
+  Short reconnect rehearsals are development checks only; the 20-minute result
+  is still pending. Concurrent builds/tests caused filesystem contention, so
+  timing qualification runs exclusively, without other builds or browsers.
+- Linux CI, the sustained soak and production deployment remain pending.
+
+Evidence is generated under `output/e2e` and `output/recording-soak` on X9 Pro;
+CI publishes only screenshots, accessibility snapshots, JSON evidence and logs,
+not browser profiles or recording payloads.
