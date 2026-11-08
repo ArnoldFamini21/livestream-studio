@@ -7,6 +7,12 @@ export interface PeerRecoveryOptions {
   onRecoveryExhausted?: () => void;
   /** An unanswered restart offer younger than this is left alone rather than rolled back. */
   minRollbackAgeMs?: number;
+  /** Runs before each createOffer/createAnswer (e.g. audio codec preferences). */
+  beforeCreateDescription?: () => void;
+  /** Rewrites a description this side created before it is applied and sent (e.g. Opus music parameters). */
+  transformLocalDescription?: (description: RTCSessionDescriptionInit) => RTCSessionDescriptionInit;
+  /** Rewrites the other side's description before it is applied. */
+  transformRemoteDescription?: (description: RTCSessionDescriptionInit) => RTCSessionDescriptionInit;
 }
 
 /**
@@ -51,6 +57,9 @@ export class PeerNegotiation {
   private readonly rebuildAfterAttempts: number;
   private readonly minRollbackAgeMs: number;
   private readonly onRecoveryExhausted?: () => void;
+  private readonly beforeCreateDescription: () => void;
+  private readonly transformLocal: (description: RTCSessionDescriptionInit) => RTCSessionDescriptionInit;
+  private readonly transformRemote: (description: RTCSessionDescriptionInit) => RTCSessionDescriptionInit;
 
   constructor(
     private readonly pc: RTCPeerConnection,
@@ -66,6 +75,9 @@ export class PeerNegotiation {
     this.rebuildAfterAttempts = options.rebuildAfterAttempts ?? 3;
     this.minRollbackAgeMs = options.minRollbackAgeMs ?? 3_000;
     this.onRecoveryExhausted = options.onRecoveryExhausted;
+    this.beforeCreateDescription = options.beforeCreateDescription ?? (() => {});
+    this.transformLocal = options.transformLocalDescription ?? ((description) => description);
+    this.transformRemote = options.transformRemoteDescription ?? ((description) => description);
     this.armConnectWatchdog();
     // The answering side's camera sits on its own transceiver (simulcast uses
     // addTransceiver, which an incoming offer cannot adopt), so it only starts
@@ -150,9 +162,10 @@ export class PeerNegotiation {
       if (this.pc.signalingState !== 'stable') return;
       this.makingOffer = true;
       try {
+        this.prepareDescription();
         const offer = await this.pc.createOffer(iceRestart ? { iceRestart: true } : undefined);
         if (!this.active()) return;
-        await this.pc.setLocalDescription(offer);
+        await this.pc.setLocalDescription(this.transformLocal(offer));
         this.lastLocalOfferAt = Date.now();
         if (this.active() && this.pc.localDescription) this.send(this.pc.localDescription);
       } finally {
@@ -173,12 +186,13 @@ export class PeerNegotiation {
       this.ignoreOffer = !this.polite && collision;
       if (this.ignoreOffer) return;
       // Modern WebRTC rolls back a pending local offer when applying this offer.
-      await this.pc.setRemoteDescription(sdp);
+      await this.pc.setRemoteDescription(this.transformRemote(sdp));
       if (!this.active()) return;
       await this.drainCandidates();
+      this.prepareDescription();
       const answer = await this.pc.createAnswer();
       if (!this.active()) return;
-      await this.pc.setLocalDescription(answer);
+      await this.pc.setLocalDescription(this.transformLocal(answer));
       if (this.active() && this.pc.localDescription) this.send(this.pc.localDescription);
       // Our own offer waited for this one; it goes out next.
       this.sendDeferredOffer();
@@ -189,7 +203,7 @@ export class PeerNegotiation {
     return this.enqueue(async () => {
       // A duplicate answer must not tear down a working guest connection.
       if (this.pc.signalingState !== 'have-local-offer') return;
-      await this.pc.setRemoteDescription(sdp);
+      await this.pc.setRemoteDescription(this.transformRemote(sdp));
       if (!this.active()) return;
       this.ignoreOffer = false;
       await this.drainCandidates();
@@ -207,6 +221,11 @@ export class PeerNegotiation {
       }
       await this.pc.addIceCandidate(candidate);
     });
+  }
+
+  private prepareDescription() {
+    // Codec preferences are a nicety: never let them block a negotiation.
+    try { this.beforeCreateDescription(); } catch { /* keep the browser defaults */ }
   }
 
   private async drainCandidates() {

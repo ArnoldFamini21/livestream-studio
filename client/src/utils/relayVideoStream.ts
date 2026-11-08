@@ -4,9 +4,11 @@ import { createFrameTicker, type FrameTicker } from './frameTicker.ts';
 /**
  * The relay's video track at the output size.
  *
- * The compositor draws a 1920x1080 program. For that size the compositor's
- * own track goes out as it is. Other sizes (720p, portrait) are drawn into a
- * second canvas on the worker-driven frame ticker, never on
+ * The compositor draws the program at the output orientation: 1920x1080 for
+ * 16:9 and 1080x1920 for 9:16, laid out for that shape (no centre crop of a
+ * landscape program). At 1080p the compositor's own track goes out as it is.
+ * 720p (1280x720 or 720x1280) is scaled into a second canvas on the
+ * worker-driven frame ticker, never on
  * requestAnimationFrame: rAF stops in a hidden tab and slows to about 1 fps
  * in a covered window, which froze the broadcast while the host looked at
  * slides. The compositor's canvas is copied directly when the track exposes
@@ -36,23 +38,18 @@ export interface RelayVideoStreamDeps {
   createStream: (tracks: MediaStreamTrack[]) => MediaStream;
 }
 
-/** Centre-crop `source` to fill the target, like CSS object-fit: cover. */
-export function getCoverCrop(sourceWidth: number, sourceHeight: number, width: number, height: number) {
+/**
+ * Where the whole program goes in the output, like CSS object-fit: contain.
+ * The program is drawn at the output's shape, so this is a plain scale; a
+ * mismatched shape is letterboxed, never cropped (cropping cut off lower
+ * thirds, banners and side tiles).
+ */
+export function getContainFit(sourceWidth: number, sourceHeight: number, width: number, height: number) {
   if (sourceWidth <= 0 || sourceHeight <= 0 || width <= 0 || height <= 0) return null;
-  const sourceRatio = sourceWidth / sourceHeight;
-  const targetRatio = width / height;
-  let sx = 0;
-  let sy = 0;
-  let sw = sourceWidth;
-  let sh = sourceHeight;
-  if (sourceRatio > targetRatio) {
-    sw = sourceHeight * targetRatio;
-    sx = (sourceWidth - sw) / 2;
-  } else {
-    sh = sourceWidth / targetRatio;
-    sy = (sourceHeight - sh) / 2;
-  }
-  return { sx, sy, sw, sh };
+  const scale = Math.min(width / sourceWidth, height / sourceHeight);
+  const dw = sourceWidth * scale;
+  const dh = sourceHeight * scale;
+  return { dx: (width - dw) / 2, dy: (height - dh) / 2, dw, dh };
 }
 
 function getSourceSize(source: DrawSource): { width: number; height: number } {
@@ -139,9 +136,9 @@ export async function createRelayVideoStream(
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (sourceVideo && sourceVideo.readyState < 2) return;
     const size = getSourceSize(source);
-    const crop = getCoverCrop(size.width, size.height, canvas.width, canvas.height);
-    if (!crop) return;
-    ctx.drawImage(source, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, canvas.width, canvas.height);
+    const fit = getContainFit(size.width, size.height, canvas.width, canvas.height);
+    if (!fit) return;
+    ctx.drawImage(source, 0, 0, size.width, size.height, fit.dx, fit.dy, fit.dw, fit.dh);
   };
   draw();
   const ticker = deps.createTicker(videoConfig.frameRate, draw);

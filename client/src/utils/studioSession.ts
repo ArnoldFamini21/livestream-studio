@@ -1,4 +1,5 @@
 import type { JoinRoomPayload, ParticipantRole } from '@studio/shared';
+import { STUDIO_CAPABILITIES } from '@studio/shared';
 
 /**
  * Keeping a studio seat through dropped connections and server restarts.
@@ -79,6 +80,8 @@ export function buildStudioJoinPayload(input: StudioJoinInput): JoinRoomPayload 
     roomId: input.roomId,
     name: input.name,
     role: input.role,
+    // What this client understands, so peers send it only what it can handle (program return, talkback).
+    capabilities: [...STUDIO_CAPABILITIES],
   };
   if (input.role === 'host' && input.hostToken) payload.hostToken = input.hostToken;
   if (input.role === 'host' && input.restoreTicket) payload.restoreTicket = input.restoreTicket;

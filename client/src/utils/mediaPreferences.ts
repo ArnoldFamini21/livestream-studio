@@ -2,6 +2,10 @@ export interface AudioProcessingPreferences {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   voiceIsolation: boolean;
+  /** RNNoise in an AudioWorklet on the published mic; replaces the browser noise suppressor. */
+  aiNoiseRemoval: boolean;
+  /** Original sound for singing and instruments: no echo/noise/gain processing, stereo, 128 kbps Opus. */
+  musicMode: boolean;
 }
 
 export type VideoQualityPresetId = '720p' | '1080p' | '4k';
@@ -30,12 +34,16 @@ export interface VideoQualityRecommendation {
 const PREFERRED_ECHO_CANCELLATION_KEY = 'preferredEchoCancellation';
 const PREFERRED_NOISE_SUPPRESSION_KEY = 'preferredNoiseSuppression';
 const PREFERRED_VOICE_ISOLATION_KEY = 'preferredVoiceIsolation';
+const PREFERRED_AI_NOISE_REMOVAL_KEY = 'preferredAiNoiseRemoval';
+const PREFERRED_MUSIC_MODE_KEY = 'preferredMusicMode';
 const PREFERRED_VIDEO_QUALITY_KEY = 'preferredVideoQuality';
 
 export const DEFAULT_AUDIO_PROCESSING_PREFERENCES: AudioProcessingPreferences = {
   echoCancellation: true,
   noiseSuppression: true,
   voiceIsolation: true,
+  aiNoiseRemoval: false,
+  musicMode: false,
 };
 
 export const DEFAULT_VIDEO_QUALITY_PRESET_ID: VideoQualityPresetId = '1080p';
@@ -134,6 +142,14 @@ export function readPreferredAudioProcessing(): AudioProcessingPreferences {
       PREFERRED_VOICE_ISOLATION_KEY,
       DEFAULT_AUDIO_PROCESSING_PREFERENCES.voiceIsolation
     ),
+    aiNoiseRemoval: readSessionBoolean(
+      PREFERRED_AI_NOISE_REMOVAL_KEY,
+      DEFAULT_AUDIO_PROCESSING_PREFERENCES.aiNoiseRemoval
+    ),
+    musicMode: readSessionBoolean(
+      PREFERRED_MUSIC_MODE_KEY,
+      DEFAULT_AUDIO_PROCESSING_PREFERENCES.musicMode
+    ),
   };
 }
 
@@ -146,6 +162,14 @@ export function writePreferredAudioProcessing(preferences: Partial<AudioProcessi
   writeSessionBoolean(PREFERRED_ECHO_CANCELLATION_KEY, normalized.echoCancellation);
   writeSessionBoolean(PREFERRED_NOISE_SUPPRESSION_KEY, normalized.noiseSuppression);
   writeSessionBoolean(PREFERRED_VOICE_ISOLATION_KEY, normalized.voiceIsolation);
+  // Callers that only know the three classic switches (older saved choices)
+  // leave AI noise removal and music mode as they were.
+  if (preferences.aiNoiseRemoval !== undefined) {
+    writeSessionBoolean(PREFERRED_AI_NOISE_REMOVAL_KEY, preferences.aiNoiseRemoval);
+  }
+  if (preferences.musicMode !== undefined) {
+    writeSessionBoolean(PREFERRED_MUSIC_MODE_KEY, preferences.musicMode);
+  }
 }
 
 export function normalizeVideoQualityPresetId(value: unknown): VideoQualityPresetId {

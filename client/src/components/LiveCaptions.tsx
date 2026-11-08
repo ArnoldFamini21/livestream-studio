@@ -4,6 +4,7 @@ import {
   CAPTION_TRANSLATION_LANGUAGES,
   requestCaptionTranslation,
 } from '../utils/captionTranslation.ts';
+import { LocalAiStatusNote } from './LocalAiStatusNote.tsx';
 
 interface LiveCaptionsPanelProps {
   enabled: boolean;
@@ -221,6 +222,7 @@ export function LiveCaptionsPanel({
       const result = await requestCaptionTranslation({
         segments: finalSegments,
         targetLanguage: translateLanguage,
+        sourceLanguage: language,
       });
       const languageLabel = CAPTION_TRANSLATION_LANGUAGES.find((option) => option.value === result.targetLanguage)?.label
         || result.targetLanguage;
@@ -325,6 +327,10 @@ export function LiveCaptionsPanel({
         </button>
       </div>
       {translateError && <div style={styles.translateError}>{translateError}</div>}
+      <LocalAiStatusNote
+        features={['translator', 'languageDetector']}
+        fallbackLabel="translation needs the studio server's OpenAI key"
+      />
 
       <div style={styles.transcriptList}>
         {segments.length === 0 ? (

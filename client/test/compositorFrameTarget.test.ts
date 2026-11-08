@@ -106,4 +106,6 @@ it('renders video during offline mixed and local recordings, not only live broad
   assert.equal(shouldRunCompositor({ live: false, mixRecording: false, localRecording: true }), true);
   assert.equal(shouldRunCompositor({ live: true, mixRecording: false, localRecording: false }), true);
   assert.equal(shouldRunCompositor({ live: false, mixRecording: false, localRecording: false }), false);
+  assert.equal(shouldRunCompositor({ live: false, mixRecording: false, localRecording: false, programReturn: true }), true);
+  assert.equal(shouldRunCompositor({ live: false, mixRecording: false, localRecording: false, programReturn: false }), false);
 });

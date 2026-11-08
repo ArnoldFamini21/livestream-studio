@@ -4,6 +4,7 @@ import type {
   SfuProducerMids,
   SfuTransportSide,
 } from './sfuClient.ts';
+import { transformDescriptionForMusicMode } from './audioTransport.ts';
 
 export interface SfuTransportOffer {
   side: SfuTransportSide;
@@ -22,6 +23,10 @@ export interface SfuPeerConnectionLike {
   addIceCandidate(candidate: RTCIceCandidateInit): Promise<void>;
   getTransceivers(): RTCRtpTransceiver[];
   close(): void;
+  /** Absent on very old browsers and simple fakes: readiness then falls back to answer time. */
+  connectionState?: RTCPeerConnectionState;
+  onconnectionstatechange?: ((event: Event) => void) | null;
+  getStats?(): Promise<RTCStatsReport>;
 }
 
 export type SfuPeerConnectionFactory = (configuration?: RTCConfiguration) => SfuPeerConnectionLike;
@@ -34,6 +39,13 @@ export interface SfuWebRtcTransportOptions {
   onRemoteStreamRemoved?: (producerId: string) => void;
   onTransportReady?: (side: SfuTransportSide) => void;
   onError?: (message: string) => void;
+  /**
+   * Music mode: the publish connection carries stereo Opus at up to 128 kbps,
+   * as on the mesh. The browser's encoder follows the SFU's offer, so the
+   * offer is rewritten before it is applied, and our answer says the same so
+   * the media server knows the stream is stereo.
+   */
+  musicMode?: boolean;
 }
 
 const MAX_PENDING_ICE = 50;
@@ -73,6 +85,7 @@ export class SfuWebRtcTransport {
   private readonly producerByMid = new Map<string, { producerId: string; kind: 'audio' | 'video' }>();
   private readonly tracksByProducer = new Map<string, Map<'audio' | 'video', MediaStreamTrack>>();
   private readonly streamByProducer = new Map<string, MediaStream>();
+  private readonly readyConnections = new WeakSet<SfuPeerConnectionLike>();
 
   constructor(
     private readonly send: (message: SfuClientOutbound) => void,
@@ -97,14 +110,19 @@ export class SfuWebRtcTransport {
     if (offer.side === 'subscribe') this.setProducerMids(offer.producerMids);
 
     try {
-      await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
+      // Only what we send changes with music mode; what we receive is untouched.
+      const musicMode = offer.side === 'publish' && Boolean(this.options.musicMode);
+      await pc.setRemoteDescription(transformDescriptionForMusicMode({ type: 'offer', sdp: offer.sdp }, musicMode));
       if (offer.side === 'publish') await this.attachPublishTrack(pc);
       await this.drainPendingIce(offer.side, pc);
       const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+      await pc.setLocalDescription(transformDescriptionForMusicMode(answer, musicMode));
       if (!pc.localDescription?.sdp) throw new Error('Unable to create an SFU transport answer.');
       this.send({ type: 'sfu-transport-answer', side: offer.side, sdp: pc.localDescription.sdp });
-      this.options.onTransportReady?.(offer.side);
+      // Ready means media can flow: wait for ICE + DTLS ('connected'), not
+      // for the answer. A renegotiation of a connection that is already up
+      // (or a browser without connectionState) is ready right away.
+      if (pc.connectionState === undefined || pc.connectionState === 'connected') this.markReady(offer.side, pc);
     } catch (error) {
       this.reportError(error instanceof Error ? error.message : 'Unable to negotiate the SFU transport.');
     }
@@ -124,6 +142,23 @@ export class SfuWebRtcTransport {
     }
   }
 
+  /** Inbound statistics of the subscribe connection (downlink estimate), when it exists. */
+  async getSubscribeStats(): Promise<RTCStatsReport | null> {
+    const pc = this.subscribePc;
+    if (!pc || typeof pc.getStats !== 'function') return null;
+    try {
+      return await pc.getStats();
+    } catch {
+      return null;
+    }
+  }
+
+  private markReady(side: SfuTransportSide, pc: SfuPeerConnectionLike): void {
+    if (this.readyConnections.has(pc)) return;
+    this.readyConnections.add(pc);
+    this.options.onTransportReady?.(side);
+  }
+
   removeProducer(producerId: string): void {
     this.streamByProducer.delete(producerId);
     this.tracksByProducer.delete(producerId);
@@ -134,6 +169,8 @@ export class SfuWebRtcTransport {
   }
 
   close(): void {
+    if (this.publishPc) this.publishPc.onconnectionstatechange = null;
+    if (this.subscribePc) this.subscribePc.onconnectionstatechange = null;
     this.publishPc?.close();
     this.subscribePc?.close();
     this.publishPc = null;
@@ -151,6 +188,16 @@ export class SfuWebRtcTransport {
     if (existing) return existing;
 
     const pc = (this.options.createPeerConnection ?? defaultPeerConnectionFactory)(this.options.iceConfiguration);
+    pc.onconnectionstatechange = () => {
+      if ((side === 'publish' ? this.publishPc : this.subscribePc) !== pc) return;
+      if (pc.connectionState === 'connected') {
+        if (pc.remoteDescription) this.markReady(side, pc);
+      } else if (pc.connectionState === 'failed') {
+        // ICE gave up (no route to the SFU, e.g. no TURN on the media server):
+        // the session falls back to the mesh instead of waiting forever.
+        this.reportError(`The SFU ${side} connection failed.`);
+      }
+    };
     pc.onicecandidate = (event) => {
       if (!event.candidate) return;
       const candidate = event.candidate.toJSON();

@@ -24,9 +24,19 @@ interface LayoutSwitcherProps {
   /** While presenting: which view is on stage, and how to change it. */
   presentingView?: PresentingView;
   onPresentingViewChange?: (view: PresentingView) => void;
+  /** The custom layout the Custom button shows; null opens the editor instead. */
+  customLayoutName?: string | null;
+  onOpenCustomLayouts?: () => void;
 }
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
+  custom: (
+    <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+      <rect x="1" y="2" width="16" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="3.5" y="4.5" width="6" height="5" rx="1" fill="currentColor" opacity="0.55" />
+      <circle cx="12.5" cy="11.5" r="2.4" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  ),
   grid: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -112,6 +122,8 @@ export function LayoutSwitcher({
   mediaParticipantCount,
   presentingView = 'content-me',
   onPresentingViewChange,
+  customLayoutName = null,
+  onOpenCustomLayouts,
 }: LayoutSwitcherProps) {
   const activeMediaParticipantCount = normalizeCount(mediaParticipantCount ?? Math.max(0, participantCount - 1));
 
@@ -187,7 +199,36 @@ export function LayoutSwitcher({
               </button>
             );
           })}
+          {onOpenCustomLayouts && (
+            <button
+              type="button"
+              className={`ls-btn ${currentLayout === 'custom' ? 'active' : ''}`}
+              role="radio"
+              aria-checked={currentLayout === 'custom'}
+              aria-label={customLayoutName ? `Custom layout - ${customLayoutName}` : 'Custom layout - open the layout editor'}
+              title={customLayoutName ? `Custom: ${customLayoutName}` : 'Custom layout: design your own'}
+              style={styles.btn}
+              onClick={() => (customLayoutName ? onLayoutChange('custom') : onOpenCustomLayouts())}
+            >
+              {layoutIcons.custom}
+            </button>
+          )}
         </div>
+        {onOpenCustomLayouts && (
+          <button
+            type="button"
+            className="ls-btn"
+            aria-label="Edit custom layouts"
+            title="Edit custom layouts"
+            style={styles.btn}
+            onClick={onOpenCustomLayouts}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+          </button>
+        )}
       </div>
       {STUDIO_LAYOUT_PRESET_ORDER.some((mode) => isStudioLayoutDisabled(mode, participantCount)) && (
         <p id="layout-switcher-hint" className="ls-hint">Multi-person layouts unlock when a guest joins the stage.</p>

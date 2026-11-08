@@ -5,10 +5,28 @@ export interface ClipRange {
 
 export type ClipAspectPreset = 'source' | 'vertical' | 'square';
 
+import { buildCropPath, sampleCropPath, type CropPath, type FaceSample, type SpeakerActivity } from './clipSmartCrop.ts';
+import { buildClipCaptionCues, drawClipCaption, type ClipCaptionCue, type ClipCaptionStyle } from './clipCaptions.ts';
+import { loadCanvasFonts } from './canvasFonts.ts';
+import type { TranscriptWord } from './transcriptCleanup.ts';
+
 export interface ClipCaptureSource {
   blob: Blob;
   hasVideo: boolean;
   aspect?: ClipAspectPreset;
+}
+
+export interface ClipRenderOptions {
+  /**
+   * Follow faces (MediaPipe FaceDetector, sampled every ~0.5 s and smoothed)
+   * instead of centre-cropping a vertical or square clip. `speakerTracks` are
+   * the participants' own audio tracks, in the program's left-to-right order,
+   * used to pick who to follow when several faces do not fit the crop.
+   */
+  smartCrop?: { speakerTracks?: Blob[] } | null;
+  /** Burn in word-synced captions from the transcript's word timings (recording timeline). */
+  captions?: { words: TranscriptWord[]; style: ClipCaptionStyle } | null;
+  signal?: AbortSignal;
 }
 
 export interface CapturedRecordingClip {
@@ -16,7 +34,12 @@ export interface CapturedRecordingClip {
   mimeType: string;
   durationSeconds: number;
   extension: string;
+  /** Things that fell back, e.g. smart framing unavailable so the crop stayed centred. */
+  warnings?: string[];
 }
+
+/** Share of the progress bar the smart-framing analysis takes before real-time capture. */
+export const SMART_CROP_ANALYSIS_SHARE = 0.35;
 
 export type ClipTrackKind = 'audio' | 'video' | 'screen' | 'program' | 'iso';
 
@@ -68,11 +91,17 @@ export function getClipCanvasSize(
   return { width: roundToEvenPixels(safeWidth), height: roundToEvenPixels(safeHeight) };
 }
 
+/**
+ * Source rectangle that fills the canvas. With `center` (fractions of the
+ * source frame, from smart framing) the crop follows it, clamped to the frame;
+ * otherwise it is centred.
+ */
 export function getClipDrawRect(
   videoWidth: number,
   videoHeight: number,
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
+  center?: { x: number; y: number } | null
 ): { sx: number; sy: number; sw: number; sh: number } {
   if (videoWidth <= 0 || videoHeight <= 0 || canvasWidth <= 0 || canvasHeight <= 0) {
     return { sx: 0, sy: 0, sw: Math.max(1, videoWidth), sh: Math.max(1, videoHeight) };
@@ -80,9 +109,11 @@ export function getClipDrawRect(
   const scale = Math.max(canvasWidth / videoWidth, canvasHeight / videoHeight);
   const sw = canvasWidth / scale;
   const sh = canvasHeight / scale;
+  const cx = center && Number.isFinite(center.x) ? center.x * videoWidth : videoWidth / 2;
+  const cy = center && Number.isFinite(center.y) ? center.y * videoHeight : videoHeight / 2;
   return {
-    sx: (videoWidth - sw) / 2,
-    sy: (videoHeight - sh) / 2,
+    sx: Math.min(Math.max(0, cx - sw / 2), Math.max(0, videoWidth - sw)),
+    sy: Math.min(Math.max(0, cy - sh / 2), Math.max(0, videoHeight - sh)),
     sw,
     sh,
   };
@@ -252,10 +283,54 @@ async function resolveClipSourceDuration(element: HTMLMediaElement): Promise<num
   return null;
 }
 
+/**
+ * Plans the smart-framing crop path for a clip: face samples (and per-track
+ * loudness for multi-person program tracks) turned into a smoothed path of
+ * crop centres. Falls back to speaker activity alone when face detection is
+ * unavailable, and to null (centre crop) when neither is.
+ */
+export async function planSmartCrop(
+  source: ClipCaptureSource,
+  range: ClipRange,
+  videoSize: { width: number; height: number },
+  options: NonNullable<ClipRenderOptions['smartCrop']>,
+  onProgress?: (fraction: number) => void,
+  signal?: AbortSignal
+): Promise<{ path: CropPath | null; warning?: string }> {
+  const aspect = source.aspect || 'source';
+  const canvasSize = getClipCanvasSize(videoSize.width, videoSize.height, aspect);
+  const rect = getClipDrawRect(videoSize.width, videoSize.height, canvasSize.width, canvasSize.height);
+  const cropWidth = rect.sw / Math.max(1, videoSize.width);
+  const cropHeight = rect.sh / Math.max(1, videoSize.height);
+  if (cropWidth >= 0.999 && cropHeight >= 0.999) return { path: null };
+  const analysis = await import('./clipFaceAnalysis.ts');
+  let faces: FaceSample[] | null = null;
+  let warning: string | undefined;
+  try {
+    faces = await analysis.sampleClipFaces(source.blob, range, (fraction) => onProgress?.(fraction * 0.85), signal);
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    warning = `Face tracking was unavailable (${err instanceof Error ? err.message : 'unknown error'}).`;
+  }
+  let activity: SpeakerActivity | null = null;
+  if (options.speakerTracks && options.speakerTracks.length > 1) {
+    activity = await analysis.measureSpeakerActivity(options.speakerTracks, range).catch(() => null);
+  }
+  onProgress?.(1);
+  const durationSeconds = getClipDurationSeconds(range);
+  if (!faces) {
+    if (!activity) return { path: null, warning: `${warning} The clip is centre-cropped.` };
+    faces = activity.samples.map((sample) => ({ seconds: sample.seconds, faces: [] }));
+    warning = `${warning} Framing follows the active speaker instead.`;
+  }
+  return { path: buildCropPath(faces, { cropWidth, cropHeight, durationSeconds, activity }), ...(warning ? { warning } : {}) };
+}
+
 export async function captureRecordingClip(
   source: ClipCaptureSource,
   range: ClipRange,
-  onProgress?: (fraction: number) => void
+  onProgress?: (fraction: number) => void,
+  renderOptions: ClipRenderOptions = {}
 ): Promise<CapturedRecordingClip> {
   if (typeof MediaRecorder === 'undefined') {
     throw new Error('Clip export is not supported in this browser');
@@ -292,6 +367,39 @@ export async function captureRecordingClip(
 
     const outputTracks: MediaStreamTrack[] = [];
     let stopDrawing: (() => void) | null = null;
+    const warnings: string[] = [];
+
+    // Smart framing analyses the clip before the real-time capture starts.
+    let cropPath: CropPath | null = null;
+    const aspectForCrop = source.aspect || 'source';
+    const useSmartCrop = source.hasVideo && aspectForCrop !== 'source' && Boolean(renderOptions.smartCrop);
+    const captureShare = useSmartCrop ? 1 - SMART_CROP_ANALYSIS_SHARE : 1;
+    const reportCapture = (fraction: number) => onProgress?.((1 - captureShare) + fraction * captureShare);
+    if (useSmartCrop && renderOptions.smartCrop) {
+      try {
+        const planned = await planSmartCrop(
+          source,
+          clipRange,
+          { width: video.videoWidth, height: video.videoHeight },
+          renderOptions.smartCrop,
+          (fraction) => onProgress?.(fraction * SMART_CROP_ANALYSIS_SHARE),
+          renderOptions.signal
+        );
+        cropPath = planned.path;
+        if (planned.warning) warnings.push(planned.warning);
+      } catch (err) {
+        if (renderOptions.signal?.aborted) throw err;
+        warnings.push(`Smart framing failed (${err instanceof Error ? err.message : 'unknown error'}); the clip is centre-cropped.`);
+      }
+    }
+
+    let captionCues: ClipCaptionCue[] = [];
+    const captionStyle = renderOptions.captions?.style;
+    if (source.hasVideo && renderOptions.captions?.words.length) {
+      captionCues = buildClipCaptionCues(renderOptions.captions.words, clipRange);
+      if (captionCues.length === 0) warnings.push('The transcript has no words in this clip range, so no captions were burned in.');
+      else if (captionStyle) await loadCanvasFonts([`800 48px ${captionStyle.fontFamily}`]);
+    }
 
     if (source.hasVideo) {
       const aspect = source.aspect || 'source';
@@ -319,13 +427,18 @@ export async function captureRecordingClip(
             canvas.height = size.height;
           }
         }
+        const clipSeconds = Math.max(0, video.currentTime - clipRange.startSeconds);
         const rect = getClipDrawRect(
           video.videoWidth || canvas.width,
           video.videoHeight || canvas.height,
           canvas.width,
-          canvas.height
+          canvas.height,
+          cropPath ? sampleCropPath(cropPath, clipSeconds) : null
         );
         context.drawImage(video, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, canvas.width, canvas.height);
+        if (captionCues.length > 0 && captionStyle) {
+          drawClipCaption(context, captionCues, clipSeconds, captionStyle, canvas.width, canvas.height);
+        }
         scheduleFrame();
       };
       const scheduleFrame = () => {
@@ -405,7 +518,7 @@ export async function captureRecordingClip(
         fail(new Error('Clip export timed out'));
       }, Math.ceil(clipDurationSeconds * 1500) + 20_000);
       const progressPoll = setInterval(() => {
-        onProgress?.(getClipCaptureProgress(video.currentTime, clipRange));
+        reportCapture(getClipCaptureProgress(video.currentTime, clipRange));
         if (video.currentTime >= clipRange.endSeconds - CLIP_END_TOLERANCE_SECONDS || video.ended) {
           stopCapture();
         }
@@ -469,6 +582,7 @@ export async function captureRecordingClip(
       mimeType,
       durationSeconds: clipDurationSeconds,
       extension: getClipFileExtension(mimeType, source.hasVideo),
+      ...(warnings.length ? { warnings } : {}),
     };
   } finally {
     video.pause();

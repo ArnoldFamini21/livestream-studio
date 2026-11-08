@@ -33,7 +33,34 @@ describe('brand kits', () => {
       name: 'Show Brand',
       createdAt: '2026-06-24T00:00:00.000Z',
       ...visuals,
+      customLayouts: [],
+      brandFont: null,
     });
+  });
+
+  it('carries custom layouts and the brand font through save and reload', () => {
+    const layout = {
+      id: 'layout-1',
+      name: 'Slides + 2',
+      orientation: 'portrait' as const,
+      slots: [
+        { id: 'content', x: 0.04, y: 0.03, w: 0.92, h: 0.46, z: 0, shape: 'rounded' as const, kind: 'content' as const },
+        { id: 'cam', x: 0.04, y: 0.52, w: 0.45, h: 0.45, z: 1, shape: 'circle' as const, kind: 'camera' as const, participantId: 'guest-1' },
+      ],
+    };
+    const font = { source: 'upload' as const, family: 'Channel Sans', fileId: 'font-abc', fileName: 'channel.woff2' };
+    const kit = createSavedBrandKit('Vertical', { ...visuals, customLayouts: [layout], brandFont: font }, [], 'kit-v', '2026-06-24T00:00:00.000Z');
+    assert.deepEqual(kit.customLayouts, [layout]);
+    assert.deepEqual(kit.brandFont, font);
+
+    const [reloaded] = parseSavedBrandKits(serializeSavedBrandKits([kit]));
+    assert.deepEqual(reloaded.customLayouts, [layout]);
+    assert.deepEqual(reloaded.brandFont, font);
+
+    // Kits saved before layouts existed load with none and the default face.
+    const legacy = parseSavedBrandKits(JSON.stringify([{ ...kit, customLayouts: undefined, brandFont: { source: 'preset', presetId: 'nope' } }]))[0];
+    assert.deepEqual(legacy.customLayouts, []);
+    assert.equal(legacy.brandFont, null);
   });
 
   it('deduplicates names while keeping them within the sidebar limit', () => {

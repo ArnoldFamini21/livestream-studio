@@ -8,7 +8,9 @@ services:
     # recreated for this to take effect.
     region: singapore
     # NODE_ENV=production still needs the locked TypeScript build dependencies.
-    buildCommand: npm ci --include=dev && npm run -w shared build && npm run -w server build
+    # Only the server and shared workspaces (plus the root TypeScript): the
+    # client's in-browser AI packages never ship to the free 512 MB instance.
+    buildCommand: npm ci --include=dev --workspace=server --workspace=shared --include-workspace-root && npm run -w shared build && npm run -w server build
     startCommand: npm run -w server start
     envVars:
       - key: NODE_ENV
@@ -121,3 +123,12 @@ services:
       # Keep at least this much disk free for HLS and the live backup.
       - key: RECORDING_UPLOAD_MIN_FREE_MB
         value: "1024"
+      # SFU relay: Render has no inbound UDP, so the werift SFU allocates its
+      # candidates on Cloudflare Realtime TURN (same free key as the server).
+      # Without it the SFU cannot connect on Render and stages stay on the mesh.
+      - key: CLOUDFLARE_TURN_KEY_ID
+        sync: false
+      - key: CLOUDFLARE_TURN_API_TOKEN
+        sync: false
+      - key: SFU_TURN_TRANSPORT
+        value: udp

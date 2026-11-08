@@ -1,0 +1,41 @@
+Arnold Famini Studio - third-party software in this web app
+==========================================================
+
+This page bundles the open-source packages below. Each keeps its own
+licence; the full licence texts ship with each package's source at the
+addresses given.
+
+MOZILLA PUBLIC LICENSE 2.0 (file-level copyleft)
+------------------------------------------------
+
+mediabunny 1.62.1
+  Licence: MPL-2.0 (https://www.mozilla.org/MPL/2.0/)
+  Source:  https://github.com/Vanilagy/mediabunny/tree/v1.62.1
+           (also https://www.npmjs.com/package/mediabunny/v/1.62.1)
+  Use:     in-browser cleaned render and media file reading/writing.
+  This app uses mediabunny unmodified. Its covered source code is
+  available, in the form it was received, at the addresses above.
+
+PERMISSIVE LICENCES
+-------------------
+
+@huggingface/transformers 4.3.2   Apache-2.0  https://github.com/huggingface/transformers.js
+onnxruntime-web (via transformers) MIT        https://github.com/microsoft/onnxruntime
+@mediapipe/selfie_segmentation    Apache-2.0  https://github.com/google-ai-edge/mediapipe
+@mediapipe/tasks-vision 1.2.2     Apache-2.0  https://github.com/google-ai-edge/mediapipe
+@sapphi-red/web-noise-suppressor  MIT         https://github.com/sapphi-red/web-noise-suppressor
+hls.js 1.7.3                      Apache-2.0  https://github.com/video-dev/hls.js
+html-to-image 1.11.13             MIT         https://github.com/bubkoo/html-to-image
+jszip 3.10.1                      MIT (dual MIT OR GPL-3.0-or-later; used under MIT)  https://github.com/Stuk/jszip
+pdfjs-dist 6.3.289                Apache-2.0  https://github.com/mozilla/pdf.js
+pptx-preview 1.0.7                ISC         https://www.npmjs.com/package/pptx-preview
+qrcode 1.5.4                      MIT         https://github.com/soldair/node-qrcode
+react / react-dom 18.3.1          MIT         https://github.com/facebook/react
+react-router-dom 7.18.4           MIT         https://github.com/remix-run/react-router
+
+FONTS
+-----
+
+@fontsource/bebas-neue, inter, montserrat, oswald, playfair-display, poppins
+                                  SIL Open Font License 1.1  https://github.com/fontsource/font-files
+@fontsource/roboto-slab           Apache-2.0                 https://github.com/fontsource/font-files

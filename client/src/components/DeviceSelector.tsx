@@ -6,6 +6,7 @@ import {
   type AudioProcessingPreferences,
   type VideoQualityPresetId,
 } from '../utils/mediaPreferences.ts';
+import { getAiNoiseRemovalStateLabel, type AiNoiseRemovalStatus } from '../utils/aiNoiseRemoval.ts';
 import { VirtualBackgroundPicker } from './VirtualBackgroundPicker.tsx';
 import { setMirrorSelfView, useMirrorSelfView } from '../utils/selfViewMirror.ts';
 import { useDialogFocus } from '../hooks/useDialogFocus.ts';
@@ -22,6 +23,8 @@ interface DeviceSelectorProps {
   onAudioOutputDeviceChange: (deviceId: string) => void;
   audioProcessing?: AudioProcessingPreferences;
   onAudioProcessingChange?: (next: AudioProcessingPreferences) => void;
+  /** Whether the RNNoise stage is running on the published mic. */
+  aiNoiseRemovalStatus?: AiNoiseRemovalStatus;
   /** The name shown on this participant's tile; editable when a handler is given. */
   displayName?: string;
   onDisplayNameChange?: (name: string) => void;
@@ -48,6 +51,7 @@ export function DeviceSelector({
   onAudioOutputDeviceChange,
   audioProcessing,
   onAudioProcessingChange,
+  aiNoiseRemovalStatus = 'off',
   displayName,
   onDisplayNameChange,
   videoQuality,
@@ -236,6 +240,7 @@ export function DeviceSelector({
                     type="checkbox"
                     checked={audioProcessing.echoCancellation}
                     onChange={(e) => updateAudioProcessing('echoCancellation', e.target.checked)}
+                    disabled={audioProcessing.musicMode}
                     aria-label="Toggle echo cancellation"
                     style={styles.processingCheckbox}
                   />
@@ -247,6 +252,7 @@ export function DeviceSelector({
                     type="checkbox"
                     checked={audioProcessing.noiseSuppression}
                     onChange={(e) => updateAudioProcessing('noiseSuppression', e.target.checked)}
+                    disabled={audioProcessing.musicMode}
                     aria-label="Toggle noise suppression"
                     style={styles.processingCheckbox}
                   />
@@ -258,7 +264,39 @@ export function DeviceSelector({
                     type="checkbox"
                     checked={audioProcessing.voiceIsolation}
                     onChange={(e) => updateAudioProcessing('voiceIsolation', e.target.checked)}
+                    disabled={audioProcessing.musicMode}
                     aria-label="Toggle studio voice cleanup"
+                    style={styles.processingCheckbox}
+                  />
+                </label>
+                <label style={styles.processingOption}>
+                  <span style={styles.processingLabelStack}>
+                    <span style={styles.processingLabel}>AI noise removal</span>
+                    <span style={styles.processingHint}>Removes keyboard, fan and street noise while you talk. Uses a little more CPU.</span>
+                  </span>
+                  <span style={styles.processingState}>
+                    {getAiNoiseRemovalStateLabel(audioProcessing, aiNoiseRemovalStatus)}
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={audioProcessing.aiNoiseRemoval}
+                    onChange={(e) => updateAudioProcessing('aiNoiseRemoval', e.target.checked)}
+                    disabled={audioProcessing.musicMode}
+                    aria-label="Toggle AI noise removal"
+                    style={styles.processingCheckbox}
+                  />
+                </label>
+                <label style={styles.processingOption}>
+                  <span style={styles.processingLabelStack}>
+                    <span style={styles.processingLabel}>Music mode</span>
+                    <span style={styles.processingHint}>Original stereo sound for singing or instruments. Wear headphones: echo cancellation is off.</span>
+                  </span>
+                  <span style={styles.processingState}>{audioProcessing.musicMode ? 'On' : 'Off'}</span>
+                  <input
+                    type="checkbox"
+                    checked={audioProcessing.musicMode}
+                    onChange={(e) => updateAudioProcessing('musicMode', e.target.checked)}
+                    aria-label="Toggle music mode"
                     style={styles.processingCheckbox}
                   />
                 </label>
@@ -497,6 +535,17 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     fontWeight: 600,
     color: 'var(--text-primary)',
+  },
+  processingLabelStack: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  },
+  processingHint: {
+    fontSize: 11,
+    lineHeight: 1.3,
+    color: 'var(--text-muted)',
   },
   processingState: {
     fontSize: 11,

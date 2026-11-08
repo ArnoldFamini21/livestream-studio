@@ -3,7 +3,7 @@ FROM node:24-slim AS deps
 WORKDIR /app
 ENV NODE_ENV=development
 
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 COPY client/package.json client/package.json
 COPY server/package.json server/package.json
 COPY media-server/package.json media-server/package.json
@@ -29,7 +29,7 @@ FROM node:24-slim AS server
 WORKDIR /app
 ENV NODE_ENV=production
 
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 COPY server/package.json server/package.json
 COPY shared/package.json shared/package.json
 RUN npm ci --omit=dev --workspace=server --workspace=shared --include-workspace-root=false
@@ -68,7 +68,7 @@ RUN apt-get update \
   && fc-cache -f \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 COPY media-server/package.json media-server/package.json
 COPY shared/package.json shared/package.json
 RUN npm ci --omit=dev --workspace=media-server --workspace=shared --include-workspace-root=false

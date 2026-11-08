@@ -7,6 +7,7 @@ import {
 } from './sfuClient.ts';
 import { SfuWebRtcTransport } from './sfuWebRtcTransport.ts';
 import { buildVideoSimulcastEncodingsForTrack } from './webrtcSimulcast.ts';
+import { readInboundTotals, SfuDownlinkEstimator } from './sfuDownlinkEstimate.ts';
 
 const SOCKET_OPEN = 1;
 const MAX_SFU_PRODUCERS = 64;
@@ -29,9 +30,13 @@ export interface SfuSocketSessionOptions {
   localVideoTrack: MediaStreamTrack | null;
   localAudioTrack?: MediaStreamTrack | null;
   downlinkKbps: number;
+  /** How often the downlink budget is re-estimated from inbound stats; 0 turns it off. */
+  downlinkStatsIntervalMs?: number;
   url?: string;
   createWebSocket?: (url: string) => SfuSocketLike;
   iceConfiguration?: RTCConfiguration;
+  /** Stereo, 128 kbps Opus on the publish connection (see SfuWebRtcTransportOptions.musicMode). */
+  musicMode?: boolean;
   onRemoteStream?: (producerId: string, stream: MediaStream) => void;
   onRemoteStreamRemoved?: (producerId: string) => void;
   onRemoteMediaReady?: () => void;
@@ -167,6 +172,8 @@ export class SfuSocketSession {
   private publishedMediaSignature: string | null = null;
   private remoteMediaReady = false;
   private ready = false;
+  private readonly downlinkEstimator: SfuDownlinkEstimator;
+  private downlinkTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly options: SfuSocketSessionOptions) {
     this.localVideoTrack = options.localVideoTrack?.kind === 'video' && options.localVideoTrack.readyState === 'live'
@@ -175,8 +182,10 @@ export class SfuSocketSession {
     this.localAudioTrack = options.localAudioTrack?.kind === 'audio' && options.localAudioTrack.readyState === 'live'
       ? options.localAudioTrack
       : null;
+    this.downlinkEstimator = new SfuDownlinkEstimator(options.downlinkKbps);
     this.transport = new SfuWebRtcTransport((message) => this.send(message), {
       iceConfiguration: options.iceConfiguration,
+      musicMode: options.musicMode,
       onRemoteStream: (producerId, stream) => {
         this.remoteStreams.set(producerId, stream);
         options.onRemoteStream?.(producerId, stream);
@@ -217,6 +226,7 @@ export class SfuSocketSession {
     socket.onerror = () => this.options.onError?.('The SFU media connection encountered a network error.');
     socket.onclose = () => {
       this.ready = false;
+      this.stopDownlinkMonitor();
       this.socket = null;
       this.transport.close();
       this.knownProducers.clear();
@@ -243,9 +253,32 @@ export class SfuSocketSession {
     this.session.reportDownlink(downlinkKbps);
   }
 
+  /** One downlink estimate from the subscribe connection's inbound stats (also the timer's tick). */
+  async sampleDownlink(nowMs = Date.now()): Promise<number | null> {
+    const report = await this.transport.getSubscribeStats();
+    if (!report || !this.ready) return null;
+    const kbps = this.downlinkEstimator.update(readInboundTotals(report, nowMs));
+    this.reportDownlink(kbps);
+    return kbps;
+  }
+
+  private startDownlinkMonitor(): void {
+    const intervalMs = this.options.downlinkStatsIntervalMs ?? 3_000;
+    if (this.downlinkTimer || intervalMs <= 0) return;
+    this.downlinkTimer = setInterval(() => { void this.sampleDownlink(); }, intervalMs);
+    // Node (tests) should not stay alive for this timer; browsers return a number.
+    (this.downlinkTimer as { unref?: () => void }).unref?.();
+  }
+
+  private stopDownlinkMonitor(): void {
+    if (this.downlinkTimer) clearInterval(this.downlinkTimer);
+    this.downlinkTimer = null;
+  }
+
   close(): void {
     if (this.ready) this.session.leave();
     this.ready = false;
+    this.stopDownlinkMonitor();
     this.transport.close();
     this.knownProducers.clear();
     this.expectedMediaByProducer.clear();
@@ -268,6 +301,7 @@ export class SfuSocketSession {
     if (message.type === 'sfu-ready') {
       this.ready = true;
       this.session.join(this.options.downlinkKbps);
+      this.startDownlinkMonitor();
       this.transport.setPublishTrack(this.localVideoTrack);
       this.transport.setPublishAudioTrack(this.localAudioTrack);
       this.syncPublishing();

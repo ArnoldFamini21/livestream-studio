@@ -306,6 +306,42 @@ export interface Participant {
   status: ParticipantStatus;
   /** Optional name-tag subtitle a host set, e.g. "Author, The Long Game". */
   title?: string;
+  /**
+   * Studio features this participant's client understands (sent in join-room,
+   * kept by the server). Absent for clients and servers older than the flag,
+   * so a feature that needs the other side's help is used only when present.
+   */
+  capabilities?: StudioCapability[];
+}
+
+/**
+ * Client features that change what peers send each other:
+ * - 'program-return': recognises the program-return stream (announced with
+ *   program-return-announce) instead of taking it for a screen share.
+ * - 'talkback': silences other operators' talkback-state in its program mix.
+ */
+export const STUDIO_CAPABILITIES = ['program-return', 'talkback'] as const;
+export type StudioCapability = typeof STUDIO_CAPABILITIES[number];
+
+const STUDIO_CAPABILITY_SET: ReadonlySet<string> = new Set(STUDIO_CAPABILITIES);
+
+/** The known, de-duplicated capabilities from a client's claim; anything unknown is dropped. */
+export function sanitizeStudioCapabilities(raw: unknown): StudioCapability[] {
+  if (!Array.isArray(raw)) return [];
+  const result: StudioCapability[] = [];
+  for (const value of raw.slice(0, 16)) {
+    if (typeof value !== 'string' || !STUDIO_CAPABILITY_SET.has(value)) continue;
+    const capability = value as StudioCapability;
+    if (!result.includes(capability)) result.push(capability);
+  }
+  return result;
+}
+
+export function hasStudioCapability(
+  participant: Pick<Participant, 'capabilities'> | null | undefined,
+  capability: StudioCapability
+): boolean {
+  return Boolean(participant?.capabilities?.includes(capability));
 }
 
 /** Longest participant name-tag title (subtitle) the server keeps. */
@@ -335,6 +371,41 @@ export function canExchangeStudioMedia(
 
   return false;
 }
+
+type StageOwnerCandidate = Pick<Participant, 'id' | 'role' | 'status'> & { joinedAt?: string };
+
+/**
+ * Whose stage guests mirror and whose compositor feeds the program return:
+ * the host while they are in the studio, otherwise the co-host who joined
+ * first. Only that client mirrors stage content, so a co-host joining or
+ * reconnecting never replaces what the host presents.
+ */
+export function getStageOwnerId(participants: Iterable<StageOwnerCandidate>): string | null {
+  let coHost: StageOwnerCandidate | null = null;
+  for (const participant of participants) {
+    if (participant.status === 'green-room') continue;
+    if (participant.role === 'host') return participant.id;
+    if (participant.role !== 'co-host') continue;
+    if (!coHost) {
+      coHost = participant;
+      continue;
+    }
+    const a = participant.joinedAt || '';
+    const b = coHost.joinedAt || '';
+    if (a < b || (a === b && participant.id < coHost.id)) coHost = participant;
+  }
+  return coHost?.id ?? null;
+}
+
+/** MediaStream ids are UUIDs (Firefox wraps them in braces). */
+export const PROGRAM_RETURN_STREAM_ID_PATTERN = /^[\w{}-]{1,80}$/;
+
+export function isValidProgramReturnStreamId(value: unknown): value is string {
+  return typeof value === 'string' && PROGRAM_RETURN_STREAM_ID_PATTERN.test(value);
+}
+
+export const STAGE_CONTROL_ACTIONS = ['next', 'previous', 'goto', 'clear'] as const;
+export type StageControlAction = typeof STAGE_CONTROL_ACTIONS[number];
 
 // ============ Signaling Types ============
 
@@ -370,6 +441,23 @@ export type SignalMessage =
   | { type: 'participant-notification'; payload: ParticipantNotificationPayload }
   | { type: 'studio-branding-updated'; payload: StudioBrandingPayload }
   | { type: 'stage-content-updated'; payload: StageContentPayload }
+  /** Co-host (or host) remote for the stage owner's deck: next/previous/goto/clear. Relayed to the stage owner only. */
+  | { type: 'stage-control'; payload: StageControlPayload }
+  /**
+   * An on-stage participant's own live caption (browser speech recognition on
+   * their mic). Relayed by the server, rate-limited, to hosts and co-hosts only.
+   */
+  | { type: 'caption-segment'; payload: CaptionSegmentPayload }
+  /** Host/co-host: live captions are on or off, so on-stage guests can opt in to caption themselves. */
+  | { type: 'captions-state'; payload: CaptionsStatePayload }
+  /** Stage owner to one admitted peer: which of its incoming streams is the program return feed. */
+  | { type: 'program-return-announce'; payload: ProgramReturnAnnouncePayload }
+  /**
+   * Host/co-host: their mic is off the program right now (talk backstage).
+   * Relayed to admitted operators, who silence that person in any program
+   * mix they build, and echoed back to the sender as confirmation.
+   */
+  | { type: 'talkback-state'; payload: TalkbackStatePayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
   /** Host/co-host only: the 3-2-1 before recording, so guests see it too. */
   | { type: 'recording-countdown'; payload: RecordingCountdownPayload }
@@ -426,6 +514,8 @@ export interface JoinRoomPayload {
    * browser has it. Marks a studio made before the owner gate as the owner's.
    */
   studioAccessKey?: string;
+  /** Features this client understands (see STUDIO_CAPABILITIES). */
+  capabilities?: StudioCapability[];
 }
 
 export interface RoomJoinedPayload {
@@ -455,6 +545,12 @@ export interface RoomJoinedPayload {
   features?: {
     chatTyping?: boolean;
   };
+  /**
+   * Admitted hosts and co-hosts only: the other operators talking backstage
+   * right now, so a newcomer (or a reconnect that missed talkback-state)
+   * keeps them off its program mix.
+   */
+  talkbackParticipantIds?: string[];
 }
 
 /**
@@ -467,6 +563,100 @@ export interface StageContentPayload {
   layout?: LayoutMode;
   /** The host chose the "Me" view: shared content (including a screen share) is off stage. */
   contentHidden?: boolean;
+}
+
+/** Longest caption text one segment may carry. */
+export const MAX_CAPTION_SEGMENT_TEXT_LENGTH = 500;
+/** Longest stretch of speech one segment may claim. */
+export const MAX_CAPTION_SEGMENT_DURATION_MS = 30_000;
+/** Caption segments one participant may send per window (interim updates are throttled client-side). */
+export const CAPTION_SEGMENT_RATE_LIMIT_MAX = 40;
+export const CAPTION_SEGMENT_RATE_LIMIT_WINDOW_MS = 10_000;
+
+export interface CaptionSegmentPayload {
+  /** Set by the server to the sender's id; whatever a client claims is replaced. */
+  participantId: string;
+  /** Set by the server to the sender's display name. */
+  speakerName?: string;
+  /** Stable per utterance, so interim updates replace each other and the final replaces them. */
+  segmentId: string;
+  text: string;
+  /** Sender clock (ms since epoch). Receivers keep the duration and re-anchor to their own clock. */
+  startMs: number;
+  endMs: number;
+  final: boolean;
+}
+
+export interface CaptionsStatePayload {
+  enabled: boolean;
+  /** BCP-47 recognition language, e.g. 'en-US'. */
+  language: string;
+  /** Set by the server: which operator sent it. */
+  from?: string;
+}
+
+const CAPTION_SEGMENT_ID_PATTERN = /^[\w-]{1,64}$/;
+const CAPTION_LANGUAGE_PATTERN = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/;
+
+/**
+ * Validates a caption segment from a client. Returns the clean fields (text
+ * trimmed, whitespace collapsed and capped, times ordered and bounded) or
+ * null. participantId and speakerName are never taken from the client.
+ */
+export function sanitizeCaptionSegment(raw: unknown): Omit<CaptionSegmentPayload, 'participantId' | 'speakerName'> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.segmentId !== 'string' || !CAPTION_SEGMENT_ID_PATTERN.test(value.segmentId)) return null;
+  if (typeof value.text !== 'string') return null;
+  const text = value.text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_CAPTION_SEGMENT_TEXT_LENGTH);
+  if (!text) return null;
+  const startMs = Number(value.startMs);
+  const endMs = Number(value.endMs);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs <= 0 || endMs < startMs) return null;
+  return {
+    segmentId: value.segmentId,
+    text,
+    startMs: Math.round(startMs),
+    endMs: Math.round(Math.min(endMs, startMs + MAX_CAPTION_SEGMENT_DURATION_MS)),
+    final: value.final === true,
+  };
+}
+
+export function sanitizeCaptionsState(raw: unknown): Omit<CaptionsStatePayload, 'from'> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.enabled !== 'boolean') return null;
+  const language = typeof value.language === 'string' && CAPTION_LANGUAGE_PATTERN.test(value.language) ? value.language : 'en-US';
+  return { enabled: value.enabled, language };
+}
+
+export interface TalkbackStatePayload {
+  active: boolean;
+  /** Set by the server: which operator is talking backstage. */
+  from?: string;
+}
+
+export interface StageControlPayload {
+  action: StageControlAction;
+  /** For 'goto': the zero-based slide to show. */
+  slideIndex?: number;
+  /** The StageContentMedia id the sender saw; a stale command for other media is ignored. */
+  mediaId?: string;
+  /** Set by the server: who sent it. */
+  from?: string;
+}
+
+/**
+ * The program return is a low-bitrate copy of the program (compositor video,
+ * and for backstage guests the program audio) on its own MediaStream. Peers
+ * are told its stream id before the track arrives so it is never taken for a
+ * camera or a screen share.
+ */
+export interface ProgramReturnAnnouncePayload {
+  to: string;
+  streamId: string | null;
+  /** Set by the server. */
+  from?: string;
 }
 
 export interface StageContentMedia {
@@ -866,7 +1056,8 @@ export interface PollUpdatePayload {
 
 // ============ Layout Types ============
 
-export type LayoutMode = 'grid' | 'spotlight' | 'side-by-side' | 'pip' | 'single' | 'featured';
+/** "custom" draws the stage from a CustomLayout (Scene.customLayoutId or the studio's active one). */
+export type LayoutMode = 'grid' | 'spotlight' | 'side-by-side' | 'pip' | 'single' | 'featured' | 'custom';
 
 export interface LayoutConfig {
   mode: LayoutMode;
@@ -932,6 +1123,8 @@ export interface BrandKitCatalogEntry {
   logoOpacity: number;
   cameraShape: CameraShape;
   nameTagStyle: NameTagStyle;
+  customLayouts?: CustomLayout[];
+  brandFont?: BrandFont | null;
 }
 
 export interface BrandKitCatalogUpsertRequest {
@@ -948,6 +1141,8 @@ export interface BrandKitCatalogUpsertRequest {
   logoOpacity?: number;
   cameraShape?: CameraShape;
   nameTagStyle?: NameTagStyle;
+  customLayouts?: CustomLayout[];
+  brandFont?: BrandFont | null;
 }
 
 export interface BrandKitCatalogListResponse {
@@ -1471,6 +1666,8 @@ export interface Scene {
   logoSize?: LogoSize;
   logoOpacity?: number;
   pipCorner?: 'TL' | 'TR' | 'BL' | 'BR';
+  /** With layout 'custom': the CustomLayout this scene shows. */
+  customLayoutId?: string | null;
   focusedVideoItemId?: string | null;
   stageItemOrder?: string[];
   activeMedia?: SceneActiveMedia | null;
@@ -1481,4 +1678,191 @@ export interface Scene {
 export interface SceneActiveMedia {
   assetId: string;
   slideIndex?: number;
+}
+
+// ============ Custom Layout Types ============
+
+export type CustomLayoutSlotShape = 'rect' | 'rounded' | 'circle';
+export type CustomLayoutSlotKind = 'camera' | 'content';
+
+/**
+ * One box of a custom layout. x, y, w and h are fractions (0..1) of the
+ * program canvas, so a layout fits any output size of its orientation.
+ */
+export interface CustomLayoutSlot {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Stacking order; higher slots draw above lower ones. */
+  z: number;
+  shape: CustomLayoutSlotShape;
+  kind: CustomLayoutSlotKind;
+  /** A camera slot pinned to one stage item; unpinned slots fill in stage order. */
+  participantId?: string | null;
+}
+
+export interface CustomLayout {
+  id: string;
+  name: string;
+  /** The canvas the layout was drawn on: 16:9 landscape or 9:16 portrait. */
+  orientation: BroadcastOrientation;
+  slots: CustomLayoutSlot[];
+}
+
+export const MAX_CUSTOM_LAYOUTS = 12;
+export const MAX_CUSTOM_LAYOUT_SLOTS = 9;
+export const MAX_CUSTOM_LAYOUT_NAME_LENGTH = 40;
+/** The smallest slot edge, as a fraction of the canvas. */
+export const MIN_CUSTOM_LAYOUT_SLOT_SIZE = 0.04;
+
+const CUSTOM_LAYOUT_SLOT_SHAPES: readonly CustomLayoutSlotShape[] = ['rect', 'rounded', 'circle'];
+const CUSTOM_LAYOUT_SLOT_KINDS: readonly CustomLayoutSlotKind[] = ['camera', 'content'];
+const CUSTOM_LAYOUT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function customLayoutRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function customLayoutFraction(value: unknown, fallback: number): number {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(1, Math.max(0, number));
+}
+
+function customLayoutText(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, maxLength);
+}
+
+/** A slot kept inside the canvas and at least the minimum size; null when unusable. */
+export function normalizeCustomLayoutSlot(value: unknown, index = 0): CustomLayoutSlot | null {
+  const raw = customLayoutRecord(value);
+  if (!raw) return null;
+  const id = typeof raw.id === 'string' && CUSTOM_LAYOUT_ID_PATTERN.test(raw.id) ? raw.id : `slot-${index + 1}`;
+  const w = Math.max(MIN_CUSTOM_LAYOUT_SLOT_SIZE, customLayoutFraction(raw.w, 0.5));
+  const h = Math.max(MIN_CUSTOM_LAYOUT_SLOT_SIZE, customLayoutFraction(raw.h, 0.5));
+  const x = Math.min(1 - w, customLayoutFraction(raw.x, 0));
+  const y = Math.min(1 - h, customLayoutFraction(raw.y, 0));
+  const zNumber = Number(raw.z);
+  const z = Number.isFinite(zNumber) ? Math.min(99, Math.max(0, Math.round(zNumber))) : index;
+  const shape = CUSTOM_LAYOUT_SLOT_SHAPES.includes(raw.shape as CustomLayoutSlotShape)
+    ? raw.shape as CustomLayoutSlotShape
+    : 'rect';
+  const kind = CUSTOM_LAYOUT_SLOT_KINDS.includes(raw.kind as CustomLayoutSlotKind)
+    ? raw.kind as CustomLayoutSlotKind
+    : 'camera';
+  const participantId = kind === 'camera' ? customLayoutText(raw.participantId, 128) : '';
+  const round = (n: number) => Math.round(n * 10_000) / 10_000;
+  return {
+    id,
+    x: round(x),
+    y: round(y),
+    w: round(w),
+    h: round(h),
+    z,
+    shape,
+    kind,
+    ...(participantId ? { participantId } : {}),
+  };
+}
+
+/** A layout with unique slot ids, at most one content slot and at most MAX_CUSTOM_LAYOUT_SLOTS slots. */
+export function normalizeCustomLayout(value: unknown): CustomLayout | null {
+  const raw = customLayoutRecord(value);
+  if (!raw) return null;
+  const id = typeof raw.id === 'string' && CUSTOM_LAYOUT_ID_PATTERN.test(raw.id) ? raw.id : '';
+  const name = customLayoutText(raw.name, MAX_CUSTOM_LAYOUT_NAME_LENGTH);
+  if (!id || !name) return null;
+  const orientation: BroadcastOrientation = raw.orientation === 'portrait' ? 'portrait' : 'landscape';
+  const slots: CustomLayoutSlot[] = [];
+  const ids = new Set<string>();
+  let hasContent = false;
+  const rawSlots = Array.isArray(raw.slots) ? raw.slots : [];
+  for (let index = 0; index < rawSlots.length && slots.length < MAX_CUSTOM_LAYOUT_SLOTS; index += 1) {
+    const slot = normalizeCustomLayoutSlot(rawSlots[index], index);
+    if (!slot) continue;
+    if (slot.kind === 'content') {
+      if (hasContent) continue;
+      hasContent = true;
+    }
+    let slotId = slot.id;
+    for (let suffix = 2; ids.has(slotId); suffix += 1) slotId = `${slot.id}-${suffix}`.slice(0, 64);
+    ids.add(slotId);
+    slots.push({ ...slot, id: slotId });
+  }
+  if (slots.length === 0) return null;
+  return { id, name, orientation, slots };
+}
+
+export function normalizeCustomLayouts(value: unknown): CustomLayout[] {
+  if (!Array.isArray(value)) return [];
+  const layouts: CustomLayout[] = [];
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (layouts.length >= MAX_CUSTOM_LAYOUTS) break;
+    const layout = normalizeCustomLayout(item);
+    if (!layout || ids.has(layout.id)) continue;
+    ids.add(layout.id);
+    layouts.push(layout);
+  }
+  return layouts;
+}
+
+// ============ Brand Font Types ============
+
+/** Open-licence faces bundled with the studio (same origin, no font CDN). */
+export type BrandFontPresetId =
+  | 'inter'
+  | 'montserrat'
+  | 'poppins'
+  | 'oswald'
+  | 'playfair-display'
+  | 'roboto-slab'
+  | 'bebas-neue';
+
+export const BRAND_FONT_PRESET_IDS: readonly BrandFontPresetId[] = [
+  'inter',
+  'montserrat',
+  'poppins',
+  'oswald',
+  'playfair-display',
+  'roboto-slab',
+  'bebas-neue',
+];
+
+/**
+ * The brand typeface for banners, tickers, lower thirds and widget text. An
+ * uploaded file stays in the browser that added it (IndexedDB, by fileId);
+ * elsewhere the studio falls back to Inter.
+ */
+export type BrandFont =
+  | { source: 'preset'; presetId: BrandFontPresetId }
+  | { source: 'upload'; family: string; fileId: string; fileName: string };
+
+export const MAX_BRAND_FONT_FAMILY_LENGTH = 48;
+
+/** Font family names are kept to letters, digits, spaces, dashes and underscores. */
+export function normalizeBrandFontFamilyName(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[^A-Za-z0-9 _-]/g, '').replace(/\s+/g, ' ').trim().slice(0, MAX_BRAND_FONT_FAMILY_LENGTH);
+}
+
+export function normalizeBrandFont(value: unknown): BrandFont | null {
+  const raw = customLayoutRecord(value);
+  if (!raw) return null;
+  if (raw.source === 'preset') {
+    return BRAND_FONT_PRESET_IDS.includes(raw.presetId as BrandFontPresetId)
+      ? { source: 'preset', presetId: raw.presetId as BrandFontPresetId }
+      : null;
+  }
+  if (raw.source === 'upload') {
+    const family = normalizeBrandFontFamilyName(raw.family);
+    const fileId = typeof raw.fileId === 'string' && CUSTOM_LAYOUT_ID_PATTERN.test(raw.fileId) ? raw.fileId : '';
+    const fileName = customLayoutText(raw.fileName, 120);
+    if (!family || !fileId) return null;
+    return { source: 'upload', family, fileId, fileName: fileName || family };
+  }
+  return null;
 }

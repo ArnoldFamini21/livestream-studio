@@ -21,6 +21,16 @@ const savedBrandKit: SavedBrandKit = {
   logoOpacity: 0.45,
   cameraShape: 'rounded',
   nameTagStyle: 'block',
+  customLayouts: [{
+    id: 'layout-1',
+    name: 'Podcast',
+    orientation: 'landscape',
+    slots: [
+      { id: 'slot-1', x: 0.02, y: 0.1, w: 0.475, h: 0.8, z: 0, shape: 'rounded', kind: 'camera', participantId: 'host' },
+      { id: 'slot-2', x: 0.505, y: 0.1, w: 0.475, h: 0.8, z: 1, shape: 'circle', kind: 'content' },
+    ],
+  }],
+  brandFont: { source: 'preset', presetId: 'montserrat' },
 };
 
 describe('brand kit catalog client helpers', () => {
@@ -39,6 +49,8 @@ describe('brand kit catalog client helpers', () => {
       logoOpacity: 0.45,
       cameraShape: 'rounded',
       nameTagStyle: 'block',
+      customLayouts: savedBrandKit.customLayouts,
+      brandFont: { source: 'preset', presetId: 'montserrat' },
     });
   });
 

@@ -7,14 +7,23 @@ import { DEFAULT_CONTENT_ASPECT, getPresentationLayout, type PresentationCameraS
 import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
+import { deleteStoredMediaAsset, isStorableUploadedMediaAsset, loadStoredMediaAssets, mergeRestoredMediaAssets, saveStoredMediaAsset } from '../utils/mediaAssetStore.ts';
 import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, getPresentingViewLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
 import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload } from '@studio/shared';
-import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia } from '@studio/shared';
+import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload, StageControlAction, StageControlPayload } from '@studio/shared';
+import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia, getStageOwnerId } from '@studio/shared';
+import { NO_PROGRAM_RETURN, getProgramReturnAudioParticipants, getProgramReturnDemand, getProgramReturnRoute, isStageOwner, pickProgramReturnStream, stageContentNeedsProgramVideo } from '../utils/programReturn.ts';
+import { useProgramReturnFeed } from '../hooks/useProgramReturnFeed.ts';
+import { useTalkback } from '../hooks/useTalkback.ts';
+import { applyTalkbackVolumes, applyTalkbackVolumesForIds, getTalkbackBadge } from '../utils/talkback.ts';
+import { useTalkbackRelay } from '../hooks/useTalkbackRelay.ts';
+import { buildStageControl, resolveStageControl } from '../utils/stageControl.ts';
+import { ProgramReturnMonitor, ProgramReturnVideo } from './ProgramReturnMonitor.tsx';
+import { StageRemoteControl } from './StageRemoteControl.tsx';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled discriminated union member: ${JSON.stringify(value)}`);
@@ -53,6 +62,10 @@ import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalR
 import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
 import { useCompositor } from '../hooks/useCompositor.ts';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
+import { useCaptionRelay } from '../hooks/useCaptionRelay.ts';
+import { mergeCaptionSegments, selectBroadcastCaption } from '../utils/captionMerge.ts';
+import { GuestCaptionShare } from './GuestCaptionShare.tsx';
+import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
@@ -306,6 +319,13 @@ import { StudioMediaBanner } from './StudioMediaBanner.tsx';
 import { EmptyStageInvite } from './EmptyStageInvite.tsx';
 import { useRecordingCountdownMirror } from '../hooks/useRecordingCountdownMirror.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
+import { PanelErrorBoundary } from './ErrorBoundary.tsx';
+import { CustomLayoutEditor } from './CustomLayoutEditor.tsx';
+import { useStudioFormat } from '../hooks/useStudioFormat.ts';
+import { useBrandFont } from '../hooks/useBrandFont.ts';
+import { useWidgetTabCapture } from '../hooks/useWidgetTabCapture.ts';
+import { findCustomLayout, getCustomStagePlan, orderStageEntriesByIds } from '../utils/customLayouts.ts';
+import { getPortraitPresentationLayout, getPortraitStageLayout } from '../utils/portraitLayouts.ts';
 import { alertGuestArrival, requestArrivalNotificationPermission } from '../utils/guestArrivalAlert.ts';
 
 const STUDIO_STATE_VERSION = 1;
@@ -411,6 +431,8 @@ interface PersistedStudioState {
   pipCorner: 'TL' | 'TR' | 'BL' | 'BR';
   stageItemOrder: string[];
   mediaAssets: StudioMediaAsset[];
+  /** Highest media id handed out, so ids of uploads kept in IndexedDB are never reused. */
+  mediaIdCounter?: number;
   scenes: Scene[];
   activeSceneId: string | null;
   sceneTransitionPreset?: SceneTransitionPresetId;
@@ -798,7 +820,7 @@ function PresentationDeckStage({
 function getPersistableScenes(scenes: Scene[], mediaAssets: StudioMediaAsset[] = []): Scene[] {
   const persistableMediaIds = new Set(
     mediaAssets
-      .filter((asset) => asset.source === 'url')
+      .filter((asset) => asset.source === 'url' || isStorableUploadedMediaAsset(asset))
       .map((asset) => asset.id)
   );
 
@@ -1104,7 +1126,12 @@ export function StudioRoom() {
     }))
   ));
   const savedDestinationsRef = useRef<string | null>(null);
-  const [broadcastOrientation, setBroadcastOrientation] = useState<BroadcastOrientation>('landscape');
+  // Output orientation, custom layouts and brand font, kept per studio (useStudioFormat).
+  const studioFormat = useStudioFormat(roomId);
+  const broadcastOrientation: BroadcastOrientation = studioFormat.orientation;
+  const setBroadcastOrientation = studioFormat.setOrientation;
+  const brandFontState = useBrandFont(studioFormat.brandFont);
+  const [customLayoutEditorOpen, setCustomLayoutEditorOpen] = useState(false);
   const [rtmpRelayOutputPreset, setRtmpRelayOutputPreset] = useState<RtmpRelayOutputPresetId>(DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID);
   const [isLive, setIsLive] = useState(false);
   const [streamScreenConfig, setStreamScreenConfig] = useState<StreamScreenConfig>(DEFAULT_STREAM_SCREEN_CONFIG);
@@ -1290,6 +1317,7 @@ export function StudioRoom() {
     selectedAudioDeviceId, selectedVideoDeviceId,
     selectedAudioOutputDeviceId,
     audioProcessing,
+    aiNoiseRemovalStatus,
     videoQuality,
     recommendedVideoQuality,
     updateAudioProcessing,
@@ -1344,6 +1372,10 @@ export function StudioRoom() {
   const {
     remoteStreams: meshRemoteStreams,
     remoteScreenStreams: meshRemoteScreenStreams,
+    remoteProgramReturnStreams,
+    setProgramReturnSource,
+    setProgramReturnRouting,
+    setRemoteProgramReturnStreamId,
     publishScreenTrack,
     setScreenShareOptimization,
     setRemoteScreenStreamId,
@@ -1364,6 +1396,7 @@ export function StudioRoom() {
     localStream: peerLocalStream,
     myParticipantId: myParticipant?.id || null,
     send,
+    musicMode: audioProcessing.musicMode,
   });
 
   // Backstage people are not on the SFU: while it carries our media to the
@@ -1418,6 +1451,32 @@ export function StudioRoom() {
     takeProgressiveUpload: takeProgramProgressiveUpload,
   } = useRecording(room?.name || 'Studio');
   const { screenStream, isScreenSharing, startScreenShare, stopScreenShare } = useScreenShare();
+  // Talk backstage (hold K, or latch it): the operator's mic leaves the program
+  // mix (live relay and program recording) while the mesh still carries it to guests.
+  const talkbackAllowed = isStudioOperator(myParticipant) && myParticipant?.status !== 'green-room';
+  const talkback = useTalkback(talkbackAllowed);
+  // Talkback is studio-wide: whoever runs the program mix silences every operator talking backstage.
+  const talkbackRelay = useTalkbackRelay({
+    send,
+    addHandler,
+    connected,
+    localParticipant: myParticipant,
+    enabled: talkbackAllowed,
+    localActive: talkback.active,
+    participants,
+  });
+  const talkbackBadge = getTalkbackBadge({
+    active: talkback.active,
+    confirmed: talkbackRelay.confirmed,
+    operatorsWithoutSupport: talkbackRelay.operatorsWithoutSupport,
+  });
+  const programMixVolumes = useMemo(
+    () => applyTalkbackVolumesForIds(
+      applyTalkbackVolumes(participantVolumes, myParticipant?.id, talkback.active),
+      talkbackRelay.remoteTalkbackIds
+    ),
+    [myParticipant?.id, participantVolumes, talkback.active, talkbackRelay.remoteTalkbackIds]
+  );
   // One live program audio graph for the relay and the program recording.
   const programAudioMix = useProgramAudioMix({
     bus: broadcastAudioBus,
@@ -1427,7 +1486,7 @@ export function StudioRoom() {
     remoteStreams,
     remoteScreenStreams: meshRemoteScreenStreams,
     screenStream,
-    participantVolumes,
+    participantVolumes: programMixVolumes,
     // Same rule as displayedStageVideoItems: a backstage host presenting is heard.
     localPresence: getLocalProgramPresence({
       status: myParticipant?.status,
@@ -1436,6 +1495,37 @@ export function StudioRoom() {
       hasActiveMedia: Boolean(activeMedia),
     }),
   });
+  // The program audio for backstage guests' program return: the on-stage
+  // guests and their screens. Our own mic, screen sound and the media bus are
+  // left out because the mesh already brings them to those guests directly;
+  // mixing them in again would double them. On-stage co-hosts are left out
+  // for the same reason: the mesh carries every operator to the backstage.
+  const programReturnAudioParticipants = useMemo(() => getProgramReturnAudioParticipants(participants), [participants]);
+  const programReturnAudioMix = useProgramAudioMix({
+    bus: broadcastAudioBus,
+    localParticipant: myParticipant,
+    localStream: null,
+    participants: programReturnAudioParticipants,
+    remoteStreams,
+    remoteScreenStreams: meshRemoteScreenStreams,
+    screenStream: null,
+    participantVolumes,
+    includeBus: false,
+  });
+  // Only the stage owner (the host, or the first co-host while no host is in)
+  // mirrors the stage and publishes the program return.
+  const amStageOwner = useMemo(() => isStageOwner(myParticipant, participants.values()), [myParticipant, participants]);
+  const stageOwnerId = useMemo(
+    () => getStageOwnerId([...participants.values(), ...(myParticipant ? [myParticipant] : [])]),
+    [myParticipant, participants]
+  );
+  // Set by the stage mirror: what is staged has no picture guests can see.
+  const [stageMirrorNeedsVideo, setStageMirrorNeedsVideo] = useState(false);
+  const programReturnDemand = useMemo(() => (
+    amStageOwner
+      ? getProgramReturnDemand(participants, myParticipant?.id, { stageNeedsVideo: stageMirrorNeedsVideo })
+      : NO_PROGRAM_RETURN
+  ), [amStageOwner, myParticipant?.id, participants, stageMirrorNeedsVideo]);
   const {
     isRecording: isLocalRecording,
     isPaused: isLocalRecordingPaused,
@@ -1643,20 +1733,60 @@ export function StudioRoom() {
     screenStream,
     sessionHealth.encoding,
   ]);
+  // Speech recognition hears the device, not the published track: never caption a muted mic or talkback.
+  const localCaptionsBlocked = !effectiveAudioEnabled || talkback.active;
+  const remoteTalkbackIds = talkbackRelay.remoteTalkbackIds;
+  const acceptRemoteCaption = useCallback((participantId: string) => {
+    const speaker = participants.get(participantId);
+    return Boolean(speaker?.audioEnabled) && !remoteTalkbackIds.includes(participantId);
+  }, [participants, remoteTalkbackIds]);
+  const captionRelay = useCaptionRelay({
+    send,
+    addHandler,
+    connected,
+    roomId: roomId ?? null,
+    localParticipantId: myParticipant?.id ?? null,
+    isOperator: captionsAllowed,
+    isOnStage: myParticipant?.status === 'on-stage',
+    isStageOwner: amStageOwner,
+    stageOwnerId,
+    captionsEnabled: captionsAllowed && captionsEnabled,
+    captionLanguage,
+    admittedParticipantKey: onStageParticipantIds.join(','),
+    localCaptionsBlocked,
+    acceptRemoteCaption,
+  });
   const {
     supported: captionsSupported,
     listening: captionsListening,
     error: captionsError,
     activeCaption,
-    segments: captionSegments,
-    clearCaptions,
+    segments: localCaptionSegments,
+    clearCaptions: clearLocalCaptions,
   } = useLiveCaptions({
-    enabled: captionsAllowed && captionsEnabled,
-    language: captionLanguage,
+    enabled: ((captionsAllowed && captionsEnabled) || captionRelay.guestCaptionsActive) && !localCaptionsBlocked,
+    language: captionsAllowed ? captionLanguage : captionRelay.guestCaptionLanguage,
     speakerName: myParticipant?.name || userName,
     maxSegments: 500,
+    onUpdate: captionRelay.onLocalCaptionUpdate,
   });
-  const broadcastCaption = captionsAllowed ? activeCaption : null;
+  // Guests' own captions (relayed from their browsers) join the host's, by speaker and time.
+  const captionSegments = useMemo(
+    () => mergeCaptionSegments(localCaptionSegments, captionRelay.remoteSegments),
+    [captionRelay.remoteSegments, localCaptionSegments]
+  );
+  const { clearRemoteCaptions } = captionRelay;
+  const clearCaptions = useCallback(() => {
+    clearLocalCaptions();
+    clearRemoteCaptions();
+  }, [clearLocalCaptions, clearRemoteCaptions]);
+  const broadcastCaption = captionsAllowed
+    ? selectBroadcastCaption(captionsEnabled && !localCaptionsBlocked ? activeCaption : null, captionRelay.remote, captionRelay.clock)
+    : null;
+  const clipBrand = useMemo(() => ({
+    fontFamily: brandFontState.fontFamily || DEFAULT_CANVAS_FONT_FAMILY,
+    accentColor: brandColor,
+  }), [brandColor, brandFontState.fontFamily]);
   const activeStreamScreen = useMemo(() => {
     if (!activeStreamScreenState) return null;
     return buildActiveStreamScreen(
@@ -1752,6 +1882,10 @@ export function StudioRoom() {
   const replaceTrackRef = useRef(replaceTrack);
   const publishScreenTrackRef = useRef(publishScreenTrack);
   const setRemoteScreenStreamIdRef = useRef(setRemoteScreenStreamId);
+  const setRemoteProgramReturnStreamIdRef = useRef(setRemoteProgramReturnStreamId);
+  setRemoteProgramReturnStreamIdRef.current = setRemoteProgramReturnStreamId;
+  // Applies a co-host's slide command to our deck (stage owner only; set below).
+  const stageControlHandlerRef = useRef<(payload: StageControlPayload) => void>(() => {});
   // True while our screen goes out as a second track (mesh); false when it
   // replaces the camera (SFU).
   const separateScreenTrackRef = useRef(false);
@@ -1766,9 +1900,12 @@ export function StudioRoom() {
   } : null), [sceneTransition?.presetId, sceneTransition?.sceneName, sceneTransition?.startedAt, sceneTransition?.durationMs]);
 
   // Initialize Canvas Compositor for RTMP
+  const visibleWidgetIds = useMemo(() => widgets.filter((widget) => widget.visible).map((widget) => widget.id), [widgets]);
+  // Opt-in tab capture so web widgets go out live instead of as a placeholder.
+  const widgetTabCapture = useWidgetTabCapture(stageRef, visibleWidgetIds);
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     containerRef: stageRef,
-    isActive: shouldRunCompositor({ live: isLive, mixRecording: isRecording, localRecording: isLocalRecording }),
+    isActive: shouldRunCompositor({ live: isLive, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
     banners,
     lowerThirds,
     timers,
@@ -1790,7 +1927,33 @@ export function StudioRoom() {
     logoOpacity,
     streamScreen: activeStreamScreen,
     sceneTransition: compositorSceneTransition,
+    orientation: broadcastOrientation,
+    brandFontFamily: brandFontState.fontFamily,
+    widgetCaptureSources: widgetTabCapture.sourcesRef,
   });
+
+  // The program return (640x360, 15 fps, ~500 kbps) to backstage guests, and
+  // to on-stage guests while a clip or document is on the program.
+  const programReturnSource = useProgramReturnFeed({
+    enabled: programReturnDemand.video,
+    audioWanted: programReturnDemand.audio,
+    compositeCanvasRef,
+    acquireAudio: programReturnAudioMix.acquire,
+  });
+  const programReturnRoutingRef = useRef({ participants, stageNeedsVideo: stageMirrorNeedsVideo });
+  programReturnRoutingRef.current = { participants, stageNeedsVideo: stageMirrorNeedsVideo };
+  useEffect(() => {
+    setProgramReturnRouting((participantId) => getProgramReturnRoute(
+      programReturnRoutingRef.current.participants.get(participantId),
+      { stageNeedsVideo: programReturnRoutingRef.current.stageNeedsVideo },
+    ));
+    void setProgramReturnSource(programReturnSource);
+  }, [participants, programReturnSource, setProgramReturnRouting, setProgramReturnSource, stageMirrorNeedsVideo]);
+  // Guests: the program return the stage owner sends us, if any.
+  const programReturnStream = useMemo(
+    () => pickProgramReturnStream(remoteProgramReturnStreams, stageOwnerId),
+    [remoteProgramReturnStreams, stageOwnerId]
+  );
 
   const handleLogoPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (!canUseOperatorControls || !stageRef.current) return;
@@ -2157,7 +2320,10 @@ export function StudioRoom() {
             timer: getMaxNumericSuffix(parsed.timers, 'timer'),
             ticker: getMaxNumericSuffix(parsed.tickers, 'ticker'),
             widget: getMaxNumericSuffix(parsed.widgets, 'widget'),
-            media: getMaxNumericSuffix(parsed.mediaAssets, 'media'),
+            media: Math.max(
+              getMaxNumericSuffix(parsed.mediaAssets, 'media'),
+              typeof parsed.mediaIdCounter === 'number' && Number.isFinite(parsed.mediaIdCounter) ? Math.floor(parsed.mediaIdCounter) : 0,
+            ),
           };
         }
       }
@@ -2169,7 +2335,27 @@ export function StudioRoom() {
       }, 0);
     }
 
+    // Uploaded decks, videos and images kept in IndexedDB come back with fresh
+    // object URLs and their rendered slides, so nothing has to be re-uploaded.
+    let restoreCancelled = false;
+    void loadStoredMediaAssets(roomId).then((restored) => {
+      if (restoreCancelled) {
+        for (const { asset } of restored) URL.revokeObjectURL(asset.url);
+        return;
+      }
+      if (restored.length === 0) return;
+      const assets = restored.map(({ asset }) => asset);
+      idCounters.current.media = Math.max(idCounters.current.media, getMaxNumericSuffix(assets, 'media'));
+      setMediaAssets((prev) => {
+        const merged = mergeRestoredMediaAssets(prev, assets);
+        const kept = new Set(merged.map((asset) => asset.url));
+        for (const asset of assets) if (!kept.has(asset.url)) URL.revokeObjectURL(asset.url);
+        return merged;
+      });
+    });
+
     return () => {
+      restoreCancelled = true;
       if (loadCompleteTimer) clearTimeout(loadCompleteTimer);
     };
   }, [applyLayout, handleSceneStingerClipChange, roomId]);
@@ -2198,6 +2384,7 @@ export function StudioRoom() {
         pipCorner,
         stageItemOrder,
         mediaAssets: getPersistableMediaAssets(mediaAssets),
+        mediaIdCounter: idCounters.current.media,
         scenes: getPersistableScenes(scenes, mediaAssets),
         activeSceneId: activeSceneId && scenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : null,
         sceneTransitionPreset,
@@ -2815,6 +3002,18 @@ export function StudioRoom() {
           break;
         case 'stage-content-updated':
           setRemoteStageContent(message.payload);
+          break;
+        case 'stage-control':
+          stageControlHandlerRef.current(message.payload);
+          break;
+        // Live captions from on-stage guests are handled by useCaptionRelay.
+        case 'caption-segment':
+        case 'captions-state':
+        // Talk backstage from other operators is handled by useTalkbackRelay.
+        case 'talkback-state':
+          break;
+        case 'program-return-announce':
+          if (message.payload.from) setRemoteProgramReturnStreamIdRef.current(message.payload.from, message.payload.streamId);
           break;
         case 'room-ending': {
           const endsAt = Date.parse(message.payload.endsAt);
@@ -4122,6 +4321,8 @@ export function StudioRoom() {
         localAudioTrack,
         downlinkKbps: 6_000,
         iceConfiguration,
+        // The SFU answer is negotiated once per session, so a music mode change rebuilds it (deps below).
+        musicMode: audioProcessing.musicMode,
         onReady: () => {
           if (!cancelled && sfuSessionRef.current === session) setSfuTransportStatus('ready');
         },
@@ -4193,7 +4394,7 @@ export function StudioRoom() {
       void setAudioForwardingEnabled(true);
       void setVideoForwardingEnabled(true);
     };
-  }, [requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, sfuSessionParticipantId]);
+  }, [audioProcessing.musicMode, requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, sfuSessionParticipantId]);
 
   useEffect(() => {
     if (
@@ -4933,6 +5134,15 @@ export function StudioRoom() {
       setMediaAssets((prev) => [...uploads.map((upload) => upload.asset), ...prev]);
     }
 
+    // Prepared uploads are kept in this browser so a reload brings them back.
+    const keepPreparedUpload = (asset: StudioMediaAsset, file: File, patch: Partial<StudioMediaAsset>) => {
+      if (!roomId) return;
+      void saveStoredMediaAsset(roomId, { ...asset, ...patch }, file).then((result) => {
+        if (!result.saved && result.reason === 'too-large') addToast(result.message, 'info');
+        else if (!result.saved && result.reason === 'error') console.warn('Could not keep upload in this browser:', result.message);
+      });
+    };
+
     const updateAsset = (id: string, patch: Partial<StudioMediaAsset>) => {
       setMediaAssets((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
       // A deck shown before all its pages were ready keeps gaining pages on stage.
@@ -4948,6 +5158,7 @@ export function StudioRoom() {
         try {
           await probeMediaAsset(asset.url, type as 'image' | 'video');
           updateAsset(asset.id, { processingStatus: 'ready', processingMessage: undefined });
+          keepPreparedUpload(asset, file, { processingStatus: 'ready', processingMessage: undefined });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'This media file could not be opened.';
           failures.push({ name: file.name, message });
@@ -4982,6 +5193,9 @@ export function StudioRoom() {
             requireServerRenderedPowerPoint: powerPointRenderStrategy?.requireServerRenderedPowerPoint,
             allowBrowserPowerPointRenderFallback: powerPointRenderStrategy?.allowBrowserPowerPointRenderFallback,
             skipServerRender: skipUnavailableServerRender,
+            // A sleeping free media server reports 'checking' while it wakes:
+            // draw the .pptx here meanwhile instead of waiting on it.
+            browserRenderInParallel: mediaServerHealth.status === 'checking',
             getAuthToken: isHostOrCoHost ? getPresentationRenderToken : undefined,
             onServerRenderFailure: (failure) => { serverRenderFailure = failure; },
             onProgress: ({ preview: partial, renderedCount, totalCount }) => {
@@ -4999,6 +5213,7 @@ export function StudioRoom() {
           updateAsset(asset.id, preview
             ? { preview, processingStatus: 'ready', processingMessage: undefined }
             : { processingStatus: 'error', processingMessage: message });
+          if (preview) keepPreparedUpload(asset, file, { preview, processingStatus: 'ready', processingMessage: undefined });
         } catch (err) {
           console.error('Failed to render presentation media:', err);
           const message = getDeckRenderFailureMessage(type);
@@ -5074,11 +5289,25 @@ export function StudioRoom() {
     });
     setActiveMedia((current) => current?.assetId === assetId ? null : current);
     if (removedActiveMedia) setActiveMediaSlideIndex(0);
+    if (roomId) void deleteStoredMediaAsset(roomId, assetId);
   };
 
   const onStopMedia = () => {
     setActiveMedia(null);
     setActiveMediaSlideIndex(0);
+  };
+
+  // A co-host drives our deck: we own the stage, so our compositor shows the
+  // slide they picked and the mirror tells guests.
+  stageControlHandlerRef.current = (payload: StageControlPayload) => {
+    if (!amStageOwner) return;
+    const outcome = resolveStageControl(payload, { media: stagedMedia, slideIndex: activeMediaSlideIndex });
+    if (outcome.kind === 'slide') setActiveMediaSlideIndex(outcome.slideIndex);
+    else if (outcome.kind === 'clear') onStopMedia();
+  };
+  // Co-hosts: drive the stage owner's deck instead of staging a copy of our own.
+  const onRemoteStageControl = (action: StageControlAction, slideIndex?: number) => {
+    send({ type: 'stage-control', payload: buildStageControl(action, remoteStageContent, slideIndex) });
   };
 
   // Helper to convert blob URL to data URL
@@ -5137,6 +5366,7 @@ export function StudioRoom() {
       logoSize,
       logoOpacity,
       pipCorner,
+      customLayoutId: effectiveLayout === 'custom' ? studioFormat.activeCustomLayoutId : null,
       focusedVideoItemId,
       stageItemOrder: normalizeStageItemOrder(stageItemOrder, availableStageItemIds),
       activeMedia: getSceneActiveMediaSnapshot(activeMedia, activeMediaSlideIndex),
@@ -5290,7 +5520,14 @@ export function StudioRoom() {
   const onApplyScene = (sceneId: string) => {
     const scene = scenes.find(s => s.id === sceneId);
     if (!scene) return;
-    applyLayout(scene.layout);
+    if (scene.layout === 'custom') {
+      // A scene whose custom layout was deleted opens in the grid.
+      const sceneLayout = findCustomLayout(studioFormat.customLayouts, scene.customLayoutId);
+      if (sceneLayout) studioFormat.setActiveCustomLayoutId(sceneLayout.id);
+      applyLayout(sceneLayout ? 'custom' : 'grid');
+    } else {
+      applyLayout(scene.layout);
+    }
     setStageBackground(scene.background);
     setBrandColor(scene.brandColor || '#a78bfa');
     setLogoUrl(scene.logoUrl || null);
@@ -5924,6 +6161,7 @@ export function StudioRoom() {
         return true;
       }
       case 'toggle-auto-director': setAutoDirectorEnabled((current) => !current); return true;
+      case 'toggle-talkback': talkback.toggle(); return true;
       case 'stop-presenting':
         if (!activeMedia) return false;
         onStopMedia();
@@ -5964,13 +6202,16 @@ export function StudioRoom() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [closeToolPanels, roleShortcuts]);
 
-  // Hosts and co-hosts: tell guests what is on stage. Each slide or image is
-  // uploaded once as a small JPEG; the signaling message only names it. In the
-  // "Me" view nothing is staged, so guests see the cameras too.
+  // The stage owner (the host, or the first co-host while no host is in) tells
+  // guests what is on stage. Each slide or image is uploaded once as a small
+  // JPEG; the signaling message only names it. In the "Me" view nothing is
+  // staged, so guests see the cameras too. Other co-hosts never mirror: their
+  // empty stage on join used to replace the host's slides for every guest.
   const stageMirrorParticipantId = myParticipant?.id;
   const stageMirrorAdmitted = myParticipant?.status !== 'green-room';
   useEffect(() => {
-    if (!isHostOrCoHost || !roomId || !stageMirrorParticipantId || !stageMirrorAdmitted) return;
+    if (!amStageOwner) setStageMirrorNeedsVideo(false);
+    if (!amStageOwner || !roomId || !stageMirrorParticipantId || !stageMirrorAdmitted) return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       let content: StageContentPayload;
@@ -5997,6 +6238,8 @@ export function StudioRoom() {
       }
       // In the "Me" view a screen share stays live but off stage; tell guests.
       if (contentHidden && sharedContentAvailable) content = { ...content, contentHidden: true };
+      // A clip or a document has no picture for guests: the program return shows it.
+      setStageMirrorNeedsVideo(stageContentNeedsProgramVideo(content));
       const signature = JSON.stringify(content);
       if (signature === lastStageContentSignatureRef.current) return;
       lastStageContentSignatureRef.current = signature;
@@ -6006,7 +6249,7 @@ export function StudioRoom() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [contentHidden, sharedContentAvailable, stagedMedia, activeMediaSlideIndex, isHostOrCoHost, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
+  }, [amStageOwner, contentHidden, sharedContentAvailable, stagedMedia, activeMediaSlideIndex, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
 
   // Guests: show what the host has on stage. The next picture is loaded before
   // it replaces the current one, so slides change without a blank frame.
@@ -6216,8 +6459,27 @@ export function StudioRoom() {
     };
   }, [getAutoGridLayout]);
 
+  // Custom layout: slots filled in stage order unless a slot is pinned to someone.
+  const activeCustomLayout = layout === 'custom'
+    ? findCustomLayout(studioFormat.customLayouts, studioFormat.activeCustomLayoutId)
+    : null;
+  const customLayoutStageItemIds = useMemo(() => (
+    (sharedContentAvailable ? sharedContentParticipantPresenceItems : stagePresenceItems).map((presence) => presence.item.id)
+  ), [sharedContentAvailable, sharedContentParticipantPresenceItems, stagePresenceItems]);
+  const customStagePlan = useMemo(() => (
+    activeCustomLayout ? getCustomStagePlan(activeCustomLayout, customLayoutStageItemIds) : null
+  ), [activeCustomLayout, customLayoutStageItemIds]);
+  // "Content + Me" puts shared content in the custom layout's content box, when it has one.
+  const customLayoutPresenting = Boolean(customStagePlan?.contentStyle && sharedContentIsActive && presentationLayout === 'grid');
+  const customLayoutOrdersTiles = Boolean(customStagePlan && (!sharedContentIsActive || customLayoutPresenting));
+
   const layoutResult = useMemo((): LayoutResult => {
     const count = renderedVideoItems.length;
+    if (layout === 'custom' && customStagePlan) {
+      return { containerStyle: customStagePlan.containerStyle, tileStyles: customStagePlan.tileStyles, mode: 'custom' };
+    }
+    // Portrait output: stacked 9:16 layouts on the 540x960 stage.
+    if (broadcastOrientation === 'portrait') return getPortraitStageLayout(layout, count, pipCorner);
     switch (layout) {
       case 'grid':
         return getAutoGridLayout(count);
@@ -6277,10 +6539,13 @@ export function StudioRoom() {
           mode: 'flex',
         };
       }
+      case 'custom':
+        // The chosen custom layout was deleted: fall back to the grid.
+        return getAutoGridLayout(count);
       default:
         return assertNever(layout);
     }
-  }, [layout, pipCorner, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout]);
+  }, [layout, pipCorner, renderedVideoItems.length, getAutoGridLayout, getSpotlightLayout, getFeaturedLayout, customStagePlan, broadcastOrientation]);
 
   const sharedContentKey = stagedMedia
     ? `media:${stagedMedia.assetId || stagedMedia.url}`
@@ -6288,17 +6553,32 @@ export function StudioRoom() {
       ? `screen:${sharedContentScreenShare.item.id}`
       : null;
   const sharedContentAspect = useSharedContentAspect(stageRef, sharedContentKey);
-  const sharedContentLayoutResult = useMemo(() => (
-    sharedContentIsActive
-      ? getPresentationLayout(
-          presentationLayout,
-          sharedContentParticipantPresenceItems.length,
-          pipCorner,
-          presentationCameraSize,
-          sharedContentAspect ?? DEFAULT_CONTENT_ASPECT
-        )
-      : null
-  ), [presentationLayout, pipCorner, presentationCameraSize, sharedContentAspect, sharedContentIsActive, sharedContentParticipantPresenceItems.length]);
+  const sharedContentLayoutResult = useMemo(() => {
+    if (!sharedContentIsActive) return null;
+    if (customLayoutPresenting && customStagePlan?.contentStyle) {
+      return {
+        containerStyle: customStagePlan.containerStyle,
+        mediaStyle: customStagePlan.contentStyle,
+        participantStyles: customStagePlan.tileStyles,
+        visibleParticipantCount: customStagePlan.itemOrder.length,
+        usesFloatingParticipant: false,
+      };
+    }
+    if (broadcastOrientation === 'portrait') {
+      return getPortraitPresentationLayout(
+        presentationLayout,
+        sharedContentParticipantPresenceItems.length,
+        sharedContentAspect ?? DEFAULT_CONTENT_ASPECT
+      );
+    }
+    return getPresentationLayout(
+      presentationLayout,
+      sharedContentParticipantPresenceItems.length,
+      pipCorner,
+      presentationCameraSize,
+      sharedContentAspect ?? DEFAULT_CONTENT_ASPECT
+    );
+  }, [presentationLayout, pipCorner, presentationCameraSize, sharedContentAspect, sharedContentIsActive, sharedContentParticipantPresenceItems.length, customLayoutPresenting, customStagePlan, broadcastOrientation]);
 
   // These must be called before any conditional returns to satisfy Rules of Hooks
   const visibleBanners = useMemo(() => banners.filter(b => b.visible), [banners]);
@@ -6310,6 +6590,12 @@ export function StudioRoom() {
   const displayedLowerThirdRef = useRef<LowerThirdData | null>(null);
   const highlightedQA = useMemo(() => qaQuestions.find(q => q.highlighted) || null, [qaQuestions]);
   const highlightedPoll = useMemo(() => polls.find((poll) => poll.highlighted) || null, [polls]);
+  // The stage overlay boundary tries again once what it shows changes.
+  const stageOverlayResetKey = [
+    displayedLowerThird?.id, highlightedComment?.id, highlightedQA?.id, highlightedPoll?.id,
+    ...visibleBanners.map((b) => b.id), ...visibleTimers.map((t) => t.id),
+    ...visibleTickers.map((t) => t.id), ...visibleWidgets.map((w) => w.id),
+  ].join('|');
   const showCompositorDebug = import.meta.env.DEV && isLive;
   const recordingStatus = getStudioRecordingStatus({
     mixRecording: isRecording,
@@ -6570,6 +6856,17 @@ export function StudioRoom() {
               </div>
             </div>
 
+            {offStageGuestStatus === 'backstage' && (
+              <PanelErrorBoundary label="Live program">
+                <ProgramReturnMonitor
+                  stream={programReturnStream}
+                  live={isLive}
+                  audioOutputDeviceId={selectedAudioOutputDeviceId || undefined}
+                  brandColor={waitingBrandColor}
+                />
+              </PanelErrorBoundary>
+            )}
+
             {offStageGuestStatus === 'backstage' && backstagePrivateItems.length > 1 && (
               <BackstagePrivateRoom
                 items={backstagePrivateItems}
@@ -6584,6 +6881,7 @@ export function StudioRoom() {
         {/* A waiting guest can reach the host (and read the public chat) before
             being brought on stage, so nobody sits in the green room in silence. */}
         {offStageGuestStatus === 'green-room' && showGuestChat && (
+          <PanelErrorBoundary label="Chat">
           <ChatPanel
             messages={chatMessages.filter((msg) => !msg.isBackstage)}
             onSend={(content, recipientId) => onSendChat(content, false, recipientId)}
@@ -6607,6 +6905,7 @@ export function StudioRoom() {
             emptyText="No messages yet"
             emptyHint="Let the host know you're ready, or ask a question while you wait."
           />
+          </PanelErrorBoundary>
         )}
         </div>
         <ControlBar
@@ -6626,6 +6925,7 @@ export function StudioRoom() {
         />
 
         {offStageGuestStatus === 'backstage' && showGuestChat && (
+          <PanelErrorBoundary label="Backstage chat">
           <ChatPanel
             messages={chatMessages.filter((msg) => msg.isBackstage)}
             onSend={(content) => onSendChat(content, true)}
@@ -6639,19 +6939,23 @@ export function StudioRoom() {
             emptyText="No backstage notes yet"
             emptyHint="Coordinate with the host and backstage guests."
           />
+          </PanelErrorBoundary>
         )}
 
 
         {showHealthPanel && (
+          <PanelErrorBoundary label="Session health">
           <SessionHealthPanel audience={isHostOrCoHost ? 'operator' : 'guest'}
             summary={sessionHealth}
             meshCapacity={meshCapacity}
             sfuMediaStatus={sfuTransportStatus}
             onClose={() => setShowHealthPanel(false)}
           />
+          </PanelErrorBoundary>
         )}
 
         {showDeviceSettings && (
+          <PanelErrorBoundary label="Device settings">
           <DeviceSelector
             audioDevices={audioDevices}
             videoDevices={videoDevices}
@@ -6663,6 +6967,7 @@ export function StudioRoom() {
             onVideoDeviceChange={onVideoDeviceChange}
             onAudioOutputDeviceChange={onAudioOutputDeviceChange}
             audioProcessing={audioProcessing}
+            aiNoiseRemovalStatus={aiNoiseRemovalStatus}
             onAudioProcessingChange={onAudioProcessingChange}
             displayName={userName}
             onDisplayNameChange={onDisplayNameChange}
@@ -6675,6 +6980,7 @@ export function StudioRoom() {
             virtualBackgroundReady={vbReady}
             virtualBackgroundError={vbError}
           />
+          </PanelErrorBoundary>
         )}
       </div>
     );
@@ -6708,6 +7014,15 @@ export function StudioRoom() {
                       <object data={`${stagedMedia.url}#view=FitH`} type="application/pdf" style={styles.mediaContent}>
                         <iframe src={`${stagedMedia.url}#view=FitH`} style={styles.mediaContent} title={stagedMedia.name} />
                       </object>
+                    ) : !isHostOrCoHost && programReturnStream ? (
+                      // Guests: a clip or document the host plays has no picture to
+                      // mirror, so show the program return (what the audience sees).
+                      <ProgramReturnVideo
+                        stream={programReturnStream}
+                        muted
+                        label={`${stagedMedia.name} on the program`}
+                        style={styles.mediaContent}
+                      />
                     ) : (
                       <MediaDocumentCard media={stagedMedia} />
                     )
@@ -6744,6 +7059,18 @@ export function StudioRoom() {
               <span style={styles.waitingDot} />
               {waitingCount} waiting
             </button>
+          )}
+          {talkbackBadge && (
+            <span
+              role="status"
+              style={styles.talkbackBadge}
+              data-testid="talkback-badge"
+              data-confirmed={talkbackBadge.confirmed ? 'true' : 'false'}
+              title={talkbackBadge.confirmed ? undefined : 'Another operator may be streaming or recording with an older studio page, or the studio server has not confirmed talkback yet.'}
+            >
+              <span style={styles.talkbackDot} />
+              {talkbackBadge.text}
+            </span>
           )}
           {recordingStatus.active && (
             <span style={styles.recBadge}>
@@ -6796,6 +7123,18 @@ export function StudioRoom() {
 
         </div>
       </div>
+
+      {!captionsAllowed && myParticipant?.status === 'on-stage' && captionRelay.hostCaptionsState?.enabled && (
+        <PanelErrorBoundary label="Caption sharing" placement="inline">
+          <GuestCaptionShare
+            sharing={captionRelay.shareOwnCaptions}
+            listening={captionsListening}
+            supported={captionsSupported}
+            error={captionsError}
+            onChange={captionRelay.setShareOwnCaptions}
+          />
+        </PanelErrorBoundary>
+      )}
 
       {(guestNotification || (isHostOrCoHost && liveSessionSummary)) && (
         <div style={styles.studioNoticeWrap} role="status" aria-live="polite">
@@ -6976,7 +7315,22 @@ export function StudioRoom() {
               </div>
             </div>
           ) : (
-          <StageCanvas stageRef={stageRef} style={{ ...styles.canvas, ...stageBackgroundStyle }} footer={
+          <StageCanvas stageRef={stageRef} orientation={broadcastOrientation} style={{
+            ...styles.canvas,
+            ...stageBackgroundStyle,
+            ...(brandFontState.fontFamily ? { '--studio-brand-font': brandFontState.fontFamily } as React.CSSProperties : {}),
+          }} footer={
+            // A co-host while the host presents: remote for the host's deck.
+            isHostOrCoHost && !amStageOwner && remoteStageContent?.media ? (
+              <PanelErrorBoundary label="Stage remote" placement="inline">
+                <StageRemoteControl
+                  content={remoteStageContent}
+                  hostName={(stageOwnerId && participants.get(stageOwnerId)?.name) || 'The host'}
+                  hasLocalMedia={Boolean(activeMedia)}
+                  onControl={onRemoteStageControl}
+                />
+              </PanelErrorBoundary>
+            ) :
             isHostOrCoHost && sharedContentAvailable && <PresentationToolbar
               media={activeMedia}
               slideIndex={activeMediaSlideIndex}
@@ -7055,9 +7409,15 @@ export function StudioRoom() {
 
                 {/* Render tiles based on layout engine */}
                 {(() => {
-                  const stageItemsForLayout = sharedContentAvailable
-                    ? sharedContentParticipantPresenceItems
-                    : stagePresenceItems;
+                  const stageItemsForLayout = customLayoutOrdersTiles && customStagePlan
+                    ? orderStageEntriesByIds(
+                        sharedContentAvailable ? sharedContentParticipantPresenceItems : stagePresenceItems,
+                        customStagePlan.itemOrder,
+                        (presence) => presence.item.id
+                      )
+                    : sharedContentAvailable
+                      ? sharedContentParticipantPresenceItems
+                      : stagePresenceItems;
                   const itemsToRender = selectVisibleStageItems(stageItemsForLayout, effectiveLayout, {
                     mediaVisibleParticipantCount: sharedContentLayoutResult?.visibleParticipantCount,
                   });
@@ -7189,6 +7549,7 @@ export function StudioRoom() {
                   });
                 })()}
 
+                <PanelErrorBoundary label="Stage overlays" placement="overlay" resetKey={stageOverlayResetKey}>
                 {/* Lower Third Overlay */}
                 {displayedLowerThird && <LowerThirdOverlay key={displayedLowerThird.id} data={displayedLowerThird} />}
 
@@ -7230,6 +7591,7 @@ export function StudioRoom() {
                   brandColor={brandColor}
                   bottomOffset={captionBottomOffset}
                 />
+                </PanelErrorBoundary>
               </div>
 
               {/* Logo watermark */}
@@ -7351,6 +7713,8 @@ export function StudioRoom() {
                 presentingView={presentingView}
                 onPresentingViewChange={changePresentingView}
                 mediaParticipantCount={sharedContentAvailable ? sharedContentParticipantPresenceItems.length : undefined}
+                customLayoutName={findCustomLayout(studioFormat.customLayouts, studioFormat.activeCustomLayoutId)?.name ?? null}
+                onOpenCustomLayouts={() => setCustomLayoutEditorOpen(true)}
               />
               {!sharedContentAvailable && <><button
                 type="button"
@@ -7425,14 +7789,17 @@ export function StudioRoom() {
 
           {/* Teleprompter overlay */}
           {showTeleprompter && (
+            <PanelErrorBoundary label="Teleprompter">
             <Suspense fallback={<LazyPanelFallback />}>
               <Teleprompter onClose={() => setShowTeleprompter(false)} />
             </Suspense>
+            </PanelErrorBoundary>
           )}
         </div>
 
         {/* Stream Destinations Panel */}
         {showStreamDest && (
+          <PanelErrorBoundary label="Stream destinations">
           <Suspense fallback={<LazyPanelFallback />}>
             <StreamDestinationsPanel
               destinations={destinations}
@@ -7462,10 +7829,12 @@ export function StudioRoom() {
               onYouTubeBroadcastCreated={onYouTubeBroadcastCreated}
             />
           </Suspense>
+          </PanelErrorBoundary>
         )}
 
         {/* Guest Chat Panel */}
         {!isHostOrCoHost && showGuestChat && (
+          <PanelErrorBoundary label="Chat">
           <ChatPanel
             messages={chatMessages.filter((msg) => !msg.isBackstage)}
             onSend={(content, recipientId) => onSendChat(content, false, recipientId)}
@@ -7485,10 +7854,12 @@ export function StudioRoom() {
                 role: participant.role,
               }))}
           />
+          </PanelErrorBoundary>
         )}
 
         {/* Sidebar (right) - host/co-host only */}
         {isHostOrCoHost && showSidebar && (
+          <PanelErrorBoundary label="Sidebar" resetKey={sidebarActiveTab}>
           <Sidebar
             activeTab={sidebarActiveTab}
             tabBadges={{ chat: unreadChatCount }}
@@ -7534,6 +7905,12 @@ export function StudioRoom() {
             onNameTagStyleChange={setNameTagStyle}
             brandKitCatalogRoomId={roomId || ''}
             brandKitCatalogHostToken={roomHostToken}
+            brandFont={studioFormat.brandFont}
+            brandFontState={brandFontState}
+            onBrandFontChange={studioFormat.setBrandFont}
+            customLayouts={studioFormat.customLayouts}
+            onApplyBrandKitFormat={studioFormat.applyBrandKitFormat}
+            onOpenCustomLayouts={() => setCustomLayoutEditorOpen(true)}
             mediaAssets={mediaAssets}
             activeMedia={activeMedia}
             activeMediaSlideIndex={activeMediaSlideIndex}
@@ -7573,6 +7950,7 @@ export function StudioRoom() {
             onUpdateWidget={onUpdateWidget}
             onToggleWidget={onToggleWidget}
             onRemoveWidget={onRemoveWidget}
+            widgetCapture={widgetTabCapture.controls}
             chatMessages={chatMessages}
             highlightedComment={highlightedComment}
             onHighlightComment={onHighlightComment}
@@ -7614,10 +7992,12 @@ export function StudioRoom() {
             audioDuckingEnabled={audioDuckingEnabled}
             onAudioDuckingEnabledChange={setAudioDuckingEnabled}
           />
+          </PanelErrorBoundary>
         )}
 
         {/* Webinar Q&A Panel (host) */}
         {isHostOrCoHost && showWebinarQA && (
+          <PanelErrorBoundary label="Q&A">
           <WebinarQAPanel
             questions={qaQuestions}
             onApprove={onApproveQuestion}
@@ -7627,6 +8007,7 @@ export function StudioRoom() {
             onUnhighlight={onUnhighlightQuestion}
             onClose={() => setShowWebinarQA(false)}
           />
+          </PanelErrorBoundary>
         )}
 
         {/* Webinar Q&A Audience (guest) */}
@@ -7640,6 +8021,7 @@ export function StudioRoom() {
         )}
 
         {showPolls && (
+          <PanelErrorBoundary label="Polls">
           <LivePollsPanel
             polls={polls}
             canManagePolls={canManagePolls}
@@ -7652,9 +8034,11 @@ export function StudioRoom() {
             onUnhighlightPoll={onUnhighlightPoll}
             onClose={() => setShowPolls(false)}
           />
+          </PanelErrorBoundary>
         )}
 
         {isHostOrCoHost && showCaptionsPanel && (
+          <PanelErrorBoundary label="Captions">
           <LiveCaptionsPanel
             enabled={captionsEnabled}
             listening={captionsListening}
@@ -7668,9 +8052,11 @@ export function StudioRoom() {
             onClear={clearCaptions}
             onClose={() => setShowCaptionsPanel(false)}
           />
+          </PanelErrorBoundary>
         )}
 
         {isHostOrCoHost && showInvitePanel && (
+          <PanelErrorBoundary label="Invite">
           <Suspense fallback={<LazyPanelFallback />}>
             <InvitePanel
               roomName={room?.name || 'Studio'}
@@ -7689,12 +8075,14 @@ export function StudioRoom() {
               onClose={() => setShowInvitePanel(false)}
             />
           </Suspense>
+          </PanelErrorBoundary>
         )}
 
         <RecordingTransferBadge transfers={recordingWorkflow.transfers} guestLine={recordingWorkflow.guestLine} />
 
         {/* Recording Panel */}
         {canControlRecording && showRecordingPanel && (
+          <PanelErrorBoundary label="Recording">
           <Suspense fallback={<LazyPanelFallback />}>
             <RecordingPanel
               isRecording={isLocalRecording}
@@ -7724,6 +8112,7 @@ export function StudioRoom() {
               roomName={room?.name || 'Studio'}
               captionSegments={captionSegments}
               captionLanguage={captionLanguage}
+              clipBrand={clipBrand}
               onClose={() => setShowRecordingPanel(false)}
               destinationPanel={(
                 <RecordingDestinationPanel
@@ -7743,6 +8132,7 @@ export function StudioRoom() {
               )}
             />
           </Suspense>
+          </PanelErrorBoundary>
         )}
       </main>
 
@@ -7786,10 +8176,13 @@ export function StudioRoom() {
         participantCount={allParticipantsMap.size}
         isLive={isLive}
         captionsActive={captionsEnabled}
+        talkbackActive={talkback.active}
+        onToggleTalkback={isHostOrCoHost ? talkback.toggle : undefined}
       />
 
       {/* Producer Panel (full-screen overlay) */}
       {isHostOrCoHost && showProducerPanel && (
+        <PanelErrorBoundary label="Producer">
         <Suspense fallback={<LazyPanelFallback />}>
           <ProducerPanel
             participants={allParticipantsMap}
@@ -7810,40 +8203,48 @@ export function StudioRoom() {
             onClose={() => setShowProducerPanel(false)}
           />
         </Suspense>
+        </PanelErrorBoundary>
       )}
 
       {/* Sound Board Modal */}
       {showSoundBoard && (
+        <PanelErrorBoundary label="Sound board">
         <Suspense fallback={<LazyPanelFallback />}>
           <SoundBoard
             onClose={() => setShowSoundBoard(false)}
             player={soundBoardPlayer}
           />
         </Suspense>
+        </PanelErrorBoundary>
       )}
 
       {/* Background Music dock (playback lives in StudioRoom) */}
       {showBackgroundMusic && (
+        <PanelErrorBoundary label="Background music">
         <Suspense fallback={<LazyPanelFallback />}>
           <BackgroundMusic
             onClose={() => setShowBackgroundMusic(false)}
             player={backgroundMusicPlayer}
           />
         </Suspense>
+        </PanelErrorBoundary>
       )}
 
       {/* Session Health Panel */}
       {showHealthPanel && (
+        <PanelErrorBoundary label="Session health">
         <SessionHealthPanel audience={isHostOrCoHost ? 'operator' : 'guest'}
           summary={sessionHealth}
           meshCapacity={meshCapacity}
           sfuMediaStatus={sfuTransportStatus}
           onClose={() => setShowHealthPanel(false)}
         />
+        </PanelErrorBoundary>
       )}
 
       {/* Device Settings Modal */}
       {showDeviceSettings && (
+        <PanelErrorBoundary label="Device settings">
         <DeviceSelector
           audioDevices={audioDevices}
           videoDevices={videoDevices}
@@ -7855,6 +8256,7 @@ export function StudioRoom() {
           onVideoDeviceChange={onVideoDeviceChange}
           onAudioOutputDeviceChange={onAudioOutputDeviceChange}
           audioProcessing={audioProcessing}
+          aiNoiseRemovalStatus={aiNoiseRemovalStatus}
           onAudioProcessingChange={onAudioProcessingChange}
           displayName={userName}
           onDisplayNameChange={onDisplayNameChange}
@@ -7867,6 +8269,7 @@ export function StudioRoom() {
           virtualBackgroundReady={vbReady}
           virtualBackgroundError={vbError}
         />
+        </PanelErrorBoundary>
       )}
 
       {/* Room Ending Countdown Overlay */}
@@ -7899,6 +8302,27 @@ export function StudioRoom() {
         </div>
       )}
 
+      {customLayoutEditorOpen && isHostOrCoHost && (
+        <PanelErrorBoundary label="Layout editor">
+          <CustomLayoutEditor
+            orientation={broadcastOrientation}
+            layouts={studioFormat.customLayouts}
+            activeLayoutId={studioFormat.activeCustomLayoutId}
+            stageParticipants={displayedStageVideoItems
+              .filter((item) => !item.isScreenShare)
+              .map((item) => ({ id: item.id, name: item.name }))}
+            onLayoutsChange={studioFormat.setCustomLayouts}
+            onUseLayout={(layoutId) => {
+              studioFormat.setActiveCustomLayoutId(layoutId);
+              if (sharedContentIsActive) setPresentationLayout('grid');
+              applyLayout('custom');
+            }}
+            onClose={() => setCustomLayoutEditorOpen(false)}
+          />
+        </PanelErrorBoundary>
+      )}
+
+      <PanelErrorBoundary label="End session" resetKey={endSessionStep}>
       <ConfirmDialog
         open={endSessionStep === 'confirm'}
         title={endSessionPrompt.title}
@@ -7908,6 +8332,8 @@ export function StudioRoom() {
         onConfirm={() => { void confirmEndSession(); }}
         onCancel={cancelEndSession}
       />
+      </PanelErrorBoundary>
+      <PanelErrorBoundary label="End session" resetKey={endSessionStep}>
       <ConfirmDialog
         open={endSessionStep === 'uploads'}
         title="Finishing guest recordings"
@@ -7917,6 +8343,7 @@ export function StudioRoom() {
         onConfirm={finishEndSession}
         onCancel={cancelEndSession}
       />
+      </PanelErrorBoundary>
     </div>
   );
 }
@@ -8120,6 +8547,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   waitingDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--warning, #f59e0b)', animation: 'pulse 2s infinite' },
   waitingBadgeButton: { border: '1px solid var(--warning-border, rgba(245, 158, 11, 0.35))', cursor: 'pointer', lineHeight: 'inherit' },
+  talkbackBadge: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
+    // Dark text on amber: the host must not miss that they are off air.
+    background: 'var(--warning, #f59e0b)', color: '#1f1300',
+    whiteSpace: 'nowrap' as const,
+  },
+  talkbackDot: {
+    width: 8, height: 8, borderRadius: '50%', background: '#1f1300',
+  },
   recBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 20,

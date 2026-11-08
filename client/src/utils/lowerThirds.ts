@@ -31,7 +31,8 @@ export const LOWER_THIRD_FONT_PRESETS: Array<{ id: LowerThirdFont; label: string
   {
     id: 'inter',
     label: 'Sans',
-    cssFamily: 'Inter, Arial, sans-serif',
+    // Follows the brand font on the stage (the stage sets --studio-brand-font).
+    cssFamily: 'var(--studio-brand-font, Inter, Arial, sans-serif)',
     canvasFamily: 'Inter, Arial, sans-serif',
   },
   {
@@ -132,9 +133,11 @@ export function getLowerThirdFontCssFamily(value: unknown): string {
     || LOWER_THIRD_FONT_PRESETS[0].cssFamily;
 }
 
-export function buildLowerThirdCanvasFont(weight: number, sizePx: number, value: unknown): string {
+/** The default Sans face draws with the brand font when one is set. */
+export function buildLowerThirdCanvasFont(weight: number, sizePx: number, value: unknown, brandFontFamily?: string | null): string {
   const font = normalizeLowerThirdFont(value);
-  const family = LOWER_THIRD_FONT_PRESETS.find((preset) => preset.id === font)?.canvasFamily
+  const family = (font === 'inter' && brandFontFamily)
+    || LOWER_THIRD_FONT_PRESETS.find((preset) => preset.id === font)?.canvasFamily
     || LOWER_THIRD_FONT_PRESETS[0].canvasFamily;
   return `${weight} ${sizePx}px ${family}`;
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { drawParticipantCards } from '../utils/compositorParticipantCards.ts';
-import { CHAT_REACTION_EMOJIS, type ActiveMedia, type LivePoll, type LogoPlacement, type LogoPosition, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
+import { CHAT_REACTION_EMOJIS, type ActiveMedia, type BroadcastOrientation, type LivePoll, type LogoPlacement, type LogoPosition, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
 import type { BannerData } from '../components/BannerOverlay.tsx';
 import { getCommentSourceLabel, type HighlightedComment } from '../components/CommentHighlight.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
@@ -43,6 +43,9 @@ import {
   observeCompositorLayout,
 } from '../utils/compositorLayoutCache.ts';
 import { loadCanvasFonts } from '../utils/canvasFonts.ts';
+import { getContextCanvasSize, getProgramCanvasSize } from '../utils/compositorCanvasSize.ts';
+import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
+import { drawWidgetCaptureFrame, WIDGET_CAPTURE_ATTRIBUTE, type WidgetCaptureSources } from '../utils/widgetTabCapture.ts';
 
 /** The program's frame rate: the canvas stream and the draw timer. */
 const COMPOSITOR_FPS = 30;
@@ -72,6 +75,12 @@ interface CompositorProps {
   streamScreen?: ActiveStreamScreen | null;
   /** The scene transition the stage is showing, drawn into the program too. */
   sceneTransition?: CompositorSceneTransition | null;
+  /** 16:9 draws 1920x1080, 9:16 draws 1080x1920; the stage must be laid out to match. */
+  orientation?: BroadcastOrientation;
+  /** CSS font stack for banners, tickers, lower thirds and widget text (already loaded). */
+  brandFontFamily?: string | null;
+  /** Tab-captured widget frames by widget id; widgets without one draw a placeholder. */
+  widgetCaptureSources?: React.MutableRefObject<WidgetCaptureSources>;
 }
 
 /** A stage video's place on the canvas, cached until the layout changes. */
@@ -299,9 +308,14 @@ function getWidgetHost(url: string): string {
   }
 }
 
-function getWidgetCanvasRect(widget: WidgetOverlayData): { x: number; y: number; width: number; height: number } {
-  const width = Math.round(1920 * Math.min(0.95, Math.max(0.2, widget.widthPercent / 100)));
-  const height = Math.round(1080 * Math.min(0.85, Math.max(0.12, widget.heightPercent / 100)));
+export function getWidgetCanvasRect(
+  widget: Pick<WidgetOverlayData, 'widthPercent' | 'heightPercent' | 'position'>,
+  canvas: { width: number; height: number } = { width: 1920, height: 1080 }
+): { x: number; y: number; width: number; height: number } {
+  const W = canvas.width;
+  const H = canvas.height;
+  const width = Math.round(W * Math.min(0.95, Math.max(0.2, widget.widthPercent / 100)));
+  const height = Math.round(H * Math.min(0.85, Math.max(0.12, widget.heightPercent / 100)));
   const marginX = 48;
   const marginY = 48;
 
@@ -309,21 +323,33 @@ function getWidgetCanvasRect(widget: WidgetOverlayData): { x: number; y: number;
     case 'top-left':
       return { x: marginX, y: marginY, width, height };
     case 'top-right':
-      return { x: 1920 - marginX - width, y: marginY, width, height };
+      return { x: W - marginX - width, y: marginY, width, height };
     case 'bottom-left':
-      return { x: marginX, y: 1080 - marginY - height - 52, width, height };
+      return { x: marginX, y: H - marginY - height - 52, width, height };
     case 'bottom-right':
-      return { x: 1920 - marginX - width, y: 1080 - marginY - height - 52, width, height };
+      return { x: W - marginX - width, y: H - marginY - height - 52, width, height };
     case 'center':
     default:
-      return { x: (1920 - width) / 2, y: (1080 - height) / 2, width, height };
+      return { x: (W - width) / 2, y: (H - height) / 2, width, height };
   }
 }
 
-function drawBroadcastWidgetOverlay(ctx: CanvasRenderingContext2D, widget: WidgetOverlayData, brandColor: string) {
-  const rect = getWidgetCanvasRect(widget);
+function drawBroadcastWidgetOverlay(
+  ctx: CanvasRenderingContext2D,
+  widget: WidgetOverlayData,
+  brandColor: string,
+  fontFamily: string = DEFAULT_CANVAS_FONT_FAMILY,
+  capture: HTMLVideoElement | null = null,
+  stageRect: { x: number; y: number; width: number; height: number } | null = null
+) {
+  const rect = stageRect || getWidgetCanvasRect(widget, getContextCanvasSize(ctx));
   ctx.save();
   ctx.globalAlpha = Math.min(1, Math.max(0.2, widget.opacity));
+  // A tab-captured widget goes out as it looks in the studio.
+  if (capture && drawWidgetCaptureFrame(ctx, capture, rect, 20)) {
+    ctx.restore();
+    return;
+  }
   ctx.fillStyle = 'rgba(2, 6, 23, 0.72)';
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.26)';
   ctx.lineWidth = 3;
@@ -336,11 +362,11 @@ function drawBroadcastWidgetOverlay(ctx: CanvasRenderingContext2D, widget: Widge
   ctx.fillRect(rect.x, rect.y, rect.width, 8);
 
   ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
-  ctx.font = '700 30px Inter, sans-serif';
+  ctx.font = `700 30px ${fontFamily}`;
   ctx.fillText(truncateCanvasText(ctx, widget.name || 'Widget', rect.width - 64), rect.x + 32, rect.y + 58);
 
   ctx.fillStyle = 'rgba(255, 255, 255, 0.68)';
-  ctx.font = '600 20px Inter, sans-serif';
+  ctx.font = `600 20px ${fontFamily}`;
   ctx.fillText(truncateCanvasText(ctx, getWidgetHost(widget.url), rect.width - 64), rect.x + 32, rect.y + 92);
 
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
@@ -362,8 +388,7 @@ function drawStageBackground(
   backgroundImage: HTMLImageElement | null,
   backgroundVideo: HTMLVideoElement | null = null
 ) {
-  const width = 1920;
-  const height = 1080;
+  const { width, height } = getContextCanvasSize(ctx);
 
   ctx.fillStyle = '#0f172a';
   ctx.fillRect(0, 0, width, height);
@@ -693,8 +718,9 @@ function drawBroadcastTimer(
     options.hasBanner ? 184 : 0,
     options.hasLowerThird && timer.position === 'bottom-left' ? 126 : 0
   );
-  const x = timer.position.endsWith('right') ? 1920 - margin - width : margin;
-  const y = timer.position.startsWith('bottom') ? 1080 - margin - bottomReserve - height : margin;
+  const canvas = getContextCanvasSize(ctx);
+  const x = timer.position.endsWith('right') ? canvas.width - margin - width : margin;
+  const y = timer.position.startsWith('bottom') ? canvas.height - margin - bottomReserve - height : margin;
 
   if (timer.style === 'bold') {
     ctx.shadowColor = urgentColor ? `${urgentColor}66` : 'rgba(99, 102, 241, 0.4)';
@@ -751,26 +777,28 @@ function drawLowerThird(
   lowerThird: LowerThirdData,
   brandColor: string,
   options: { hasBanner: boolean; hasTicker: boolean },
-  motion: CanvasMotion = STILL_MOTION
+  motion: CanvasMotion = STILL_MOTION,
+  brandFontFamily: string | null = null
 ) {
+  const canvas = getContextCanvasSize(ctx);
   const paddingX = 34;
   const nameHeight = lowerThird.style === 'minimal' ? 58 : 64;
   const titleHeight = lowerThird.title ? 42 : 0;
   const height = nameHeight + titleHeight;
   const bottom = options.hasBanner ? 208 : options.hasTicker ? 104 : 74;
-  const x = 80;
-  const y = 1080 - bottom - height;
-  const maxWidth = 720;
-  const minWidth = 360;
+  const x = Math.min(80, Math.round(canvas.width * 0.06));
+  const y = canvas.height - bottom - height;
+  const maxWidth = Math.min(720, canvas.width - x * 2);
+  const minWidth = Math.min(360, maxWidth);
   const normalizedAccentColor = normalizeLowerThirdAccentColor(lowerThird.accentColor);
   const accentColor = normalizedAccentColor || brandColor;
 
   ctx.save();
   ctx.font = lowerThird.style === 'bold'
-    ? buildLowerThirdCanvasFont(700, 34, lowerThird.fontFamily)
-    : buildLowerThirdCanvasFont(700, 32, lowerThird.fontFamily);
+    ? buildLowerThirdCanvasFont(700, 34, lowerThird.fontFamily, brandFontFamily)
+    : buildLowerThirdCanvasFont(700, 32, lowerThird.fontFamily, brandFontFamily);
   const nameWidth = ctx.measureText(lowerThird.name).width;
-  ctx.font = buildLowerThirdCanvasFont(500, 24, lowerThird.fontFamily);
+  ctx.font = buildLowerThirdCanvasFont(500, 24, lowerThird.fontFamily, brandFontFamily);
   const titleWidth = lowerThird.title ? ctx.measureText(lowerThird.title).width : 0;
   const width = Math.min(maxWidth, Math.max(minWidth, Math.ceil(Math.max(nameWidth, titleWidth) + paddingX * 2)));
   // Enter/exit motion chosen for this lower third, as in the preview.
@@ -813,14 +841,14 @@ function drawLowerThird(
   ctx.shadowColor = 'transparent';
   ctx.fillStyle = 'white';
   ctx.font = lowerThird.style === 'bold'
-    ? buildLowerThirdCanvasFont(700, 34, lowerThird.fontFamily)
-    : buildLowerThirdCanvasFont(700, 32, lowerThird.fontFamily);
+    ? buildLowerThirdCanvasFont(700, 34, lowerThird.fontFamily, brandFontFamily)
+    : buildLowerThirdCanvasFont(700, 32, lowerThird.fontFamily, brandFontFamily);
   ctx.textBaseline = 'middle';
   ctx.fillText(truncateCanvasText(ctx, lowerThird.name, width - paddingX * 2), x + paddingX, y + nameHeight / 2);
 
   if (lowerThird.title) {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.84)';
-    ctx.font = buildLowerThirdCanvasFont(500, 24, lowerThird.fontFamily);
+    ctx.font = buildLowerThirdCanvasFont(500, 24, lowerThird.fontFamily, brandFontFamily);
     ctx.fillText(
       truncateCanvasText(ctx, lowerThird.title, width - paddingX * 2),
       x + paddingX,
@@ -839,8 +867,9 @@ function drawLiveCaption(
   const text = caption.text.trim();
   if (!text) return;
 
-  const maxWidth = 1260;
-  const minWidth = 560;
+  const canvas = getContextCanvasSize(ctx);
+  const maxWidth = Math.min(1260, canvas.width - 80);
+  const minWidth = Math.min(560, maxWidth);
   const paddingX = 34;
   const paddingY = 24;
   const speakerHeight = caption.speakerName ? 28 : 0;
@@ -866,8 +895,8 @@ function drawLiveCaption(
   const speakerWidth = caption.speakerName ? ctx.measureText(caption.speakerName).width + 88 : 0;
   const width = Math.min(maxWidth, Math.max(minWidth, Math.ceil(Math.max(widestLine, speakerWidth) + paddingX * 2)));
   const height = paddingY * 2 + speakerHeight + lines.length * lineHeight + Math.max(0, lines.length - 1) * lineGap;
-  const x = (1920 - width) / 2;
-  const y = 1080 - reservedBottom - height;
+  const x = (canvas.width - width) / 2;
+  const y = canvas.height - reservedBottom - height;
 
   ctx.shadowColor = 'rgba(0, 0, 0, 0.34)';
   ctx.shadowBlur = 28;
@@ -905,10 +934,11 @@ function drawLiveCaption(
 
 function drawBroadcastComment(ctx: CanvasRenderingContext2D, comment: HighlightedComment, bottom: number) {
   const isFlash = comment.displayMode === 'flash';
-  const width = 760;
+  const canvas = getContextCanvasSize(ctx);
+  const width = Math.min(760, canvas.width - 80);
   const padding = 26;
   const avatarSize = 56;
-  const x = (1920 - width) / 2;
+  const x = (canvas.width - width) / 2;
   const textX = x + padding + avatarSize + 20;
   const maxTextWidth = width - padding * 2 - avatarSize - 20;
   const sourceLabel = getCommentSourceLabel(comment.sourcePlatform);
@@ -920,7 +950,7 @@ function drawBroadcastComment(ctx: CanvasRenderingContext2D, comment: Highlighte
   ctx.font = '500 28px Inter, Arial, sans-serif';
   const contentLines = wrapCanvasText(ctx, comment.content, maxTextWidth, 2);
   const height = Math.max(126, padding * 2 + 42 + contentLines.length * 34);
-  const y = 1080 - bottom - height;
+  const y = canvas.height - bottom - height;
 
   ctx.shadowColor = 'rgba(0, 0, 0, 0.36)';
   ctx.shadowBlur = 34;
@@ -983,9 +1013,10 @@ function drawBroadcastQA(
   brandColor: string,
   bottom: number
 ): number {
-  const width = 720;
-  const padding = 28;
+  const canvas = getContextCanvasSize(ctx);
   const x = 56;
+  const width = Math.min(720, canvas.width - x * 2);
+  const padding = 28;
   const maxTextWidth = width - padding * 2 - 42;
 
   ctx.save();
@@ -995,7 +1026,7 @@ function drawBroadcastQA(
     ? wrapCanvasText(ctx, question.answer, maxTextWidth, 2)
     : [];
   const height = padding * 2 + questionLines.length * 36 + 30 + (answerLines.length > 0 ? 24 + answerLines.length * 34 : 0);
-  const y = 1080 - bottom - height;
+  const y = canvas.height - bottom - height;
 
   ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
   ctx.shadowBlur = 28;
@@ -1054,9 +1085,10 @@ function drawBroadcastPoll(
   brandColor: string,
   bottom: number
 ): number {
-  const width = 680;
-  const padding = 26;
+  const canvas = getContextCanvasSize(ctx);
   const x = 56;
+  const width = Math.min(680, canvas.width - x * 2);
+  const padding = 26;
   const maxTextWidth = width - padding * 2;
 
   ctx.save();
@@ -1065,7 +1097,7 @@ function drawBroadcastPoll(
   const visibleOptions = poll.options.slice(0, 6);
   const optionHeight = 44;
   const height = padding * 2 + 24 + 18 + questionLines.length * 36 + 16 + visibleOptions.length * optionHeight + Math.max(0, visibleOptions.length - 1) * 10;
-  const y = 1080 - bottom - height;
+  const y = canvas.height - bottom - height;
 
   ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
   ctx.shadowBlur = 30;
@@ -1130,6 +1162,7 @@ function drawBroadcastReactions(
 ) {
   if (reactions.length === 0) return;
 
+  const canvas = getContextCanvasSize(ctx);
   ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -1139,8 +1172,8 @@ function drawBroadcastReactions(
 
     const progress = elapsed / REACTION_OVERLAY_DURATION_MS;
     const eased = 1 - Math.pow(1 - progress, 3);
-    const x = (item.lane / 100) * 1920 + Math.sin(progress * Math.PI * 2) * 28;
-    const y = 1000 - eased * 420;
+    const x = (item.lane / 100) * canvas.width + Math.sin(progress * Math.PI * 2) * 28;
+    const y = canvas.height - 80 - eased * 420;
     const opacity = progress < 0.14
       ? progress / 0.14
       : Math.max(0, 1 - Math.max(0, progress - 0.72) / 0.28);
@@ -1173,13 +1206,14 @@ function drawStreamScreen(
   logoImage: HTMLImageElement | null,
   now: number
 ) {
-  const width = 1920;
-  const height = 1080;
+  const { width, height } = getContextCanvasSize(ctx);
   const brandColor = screen.brandColor || '#a78bfa';
+  // Authored for 1080p landscape; portrait keeps the sizes and moves the block down to its middle.
+  const offsetY = Math.max(0, (height - 1080) / 2);
 
   ctx.save();
 
-  const vignette = ctx.createRadialGradient(960, 460, 220, 960, 540, 980);
+  const vignette = ctx.createRadialGradient(width / 2, height / 2 - 80, 220, width / 2, height / 2, Math.max(width, height) * 0.51);
   vignette.addColorStop(0, 'rgba(255, 255, 255, 0.02)');
   vignette.addColorStop(0.58, 'rgba(2, 6, 23, 0.14)');
   vignette.addColorStop(1, 'rgba(2, 6, 23, 0.58)');
@@ -1189,9 +1223,9 @@ function drawStreamScreen(
   ctx.fillStyle = 'rgba(2, 6, 23, 0.24)';
   ctx.fillRect(0, 0, width, height);
 
-  const contentWidth = 1320;
+  const contentWidth = Math.min(1320, width - 120);
   const centerX = width / 2;
-  let cursorY = 256;
+  let cursorY = 256 + offsetY;
 
   if (screen.logoUrl && logoImage?.complete && logoImage.naturalWidth > 0) {
     const maxLogoWidth = 340;
@@ -1241,13 +1275,13 @@ function drawStreamScreen(
   ctx.shadowColor = 'transparent';
   ctx.font = '600 38px Inter, Arial, sans-serif';
   ctx.fillStyle = 'rgba(255, 255, 255, 0.82)';
-  const messageLines = wrapCanvasText(ctx, screen.message, 980, 2);
+  const messageLines = wrapCanvasText(ctx, screen.message, Math.min(980, width - 120), 2);
   messageLines.forEach((line, index) => {
     ctx.fillText(line, centerX, cursorY + index * 52);
   });
 
   const accentWidth = 420;
-  const accentY = 884;
+  const accentY = 884 + offsetY;
   const accent = ctx.createLinearGradient(centerX - accentWidth / 2, accentY, centerX + accentWidth / 2, accentY);
   accent.addColorStop(0, 'rgba(255, 255, 255, 0)');
   accent.addColorStop(0.5, brandColor);
@@ -1282,6 +1316,9 @@ export function useCompositor({
   logoOpacity = DEFAULT_LOGO_OPACITY,
   streamScreen,
   sceneTransition = null,
+  orientation = 'landscape',
+  brandFontFamily = null,
+  widgetCaptureSources,
 }: CompositorProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const compositeStreamRef = useRef<MediaStream | null>(null);
@@ -1353,25 +1390,35 @@ export function useCompositor({
     };
   }, [activePresentationSlideImageUrl]);
 
+  const programSize = getProgramCanvasSize(orientation);
   useEffect(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1920;
-    canvas.height = 1080;
-    canvasRef.current = canvas;
-    frameTargetRef.current = createCompositorFrameTarget(canvas, { width: 1920, height: 1080 });
-    
-    // Capture the canvas video stream at 30 fps
-    try {
-      compositeStreamRef.current = canvas.captureStream(COMPOSITOR_FPS);
-    } catch (err) {
-      console.warn('captureStream not supported in this environment');
+    // One canvas and one captured stream for the studio's lifetime: the relay,
+    // recordings and the program return keep their track when the orientation
+    // changes, and the track's frames simply take the new size.
+    let canvas = canvasRef.current;
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.width = programSize.width;
+      canvas.height = programSize.height;
+      canvasRef.current = canvas;
+      // Capture the canvas video stream at 30 fps
+      try {
+        compositeStreamRef.current = canvas.captureStream(COMPOSITOR_FPS);
+      } catch (err) {
+        console.warn('captureStream not supported in this environment');
+      }
+    } else if (canvas.width !== programSize.width || canvas.height !== programSize.height) {
+      canvas.width = programSize.width;
+      canvas.height = programSize.height;
     }
+    frameTargetRef.current = createCompositorFrameTarget(canvas, programSize);
+    layoutCacheRef.current.invalidate(performance.now());
 
     return () => {
       frameTargetRef.current?.dispose();
       frameTargetRef.current = null;
     };
-  }, []);
+  }, [programSize]);
 
   const drawLoop = useCallback(() => {
     if (!canvasRef.current || !containerRef.current) return;
@@ -1394,12 +1441,12 @@ export function useCompositor({
     const scales = getCompositorCoordinateScales(containerBounds, {
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
-    });
+    }, { width: canvasRef.current.width, height: canvasRef.current.height });
     if (!scales) {
       target?.commit();
       return;
     }
-    
+
     const { displayScaleX: scaleX, displayScaleY: scaleY, logicalScaleX, logicalScaleY } = scales;
 
     const container = containerRef.current;
@@ -1493,6 +1540,8 @@ export function useCompositor({
         size: logoSize,
         scaleX: logicalScaleX,
         scaleY: logicalScaleY,
+        outputWidth: canvasRef.current.width,
+        outputHeight: canvasRef.current.height,
       });
       if (rect) {
         ctx.save();
@@ -1520,24 +1569,44 @@ export function useCompositor({
       drawLowerThird(ctx, item.data, brandColor, {
         hasBanner: hasBottomBanner,
         hasTicker: activeTickers.length > 0,
-      }, getLowerThirdCanvasMotion(item.data, item.phase, now - item.since, overlayScale));
+      }, getLowerThirdCanvasMotion(item.data, item.phase, now - item.since, overlayScale), brandFontFamily);
       ctx.restore();
     });
 
     // 4. Banners: top or bottom as placed, scrolling when set as a ticker.
     bannerPresenceRef.current.update(activeBanners.map((banner) => ({ id: banner.id, data: banner })), now)
       .forEach((item) => {
-        if (item.phase === 'entering') drawBannerOverlay(ctx, item.data, now - item.since, overlayScale);
+        if (item.phase === 'entering') drawBannerOverlay(ctx, item.data, now - item.since, overlayScale, brandFontFamily || undefined);
       });
 
     // 5. Tickers scroll at the preview's speed in their own colors.
     tickerPresenceRef.current.update(activeTickers.map((ticker) => ({ id: ticker.id, data: ticker })), now)
       .forEach((item) => {
-        if (item.phase === 'entering') drawTickerOverlay(ctx, item.data, now - item.since, overlayScale);
+        if (item.phase === 'entering') drawTickerOverlay(ctx, item.data, now - item.since, overlayScale, brandFontFamily || undefined);
       });
 
     widgets.filter((widget) => widget.visible).forEach((widget) => {
-      drawBroadcastWidgetOverlay(ctx, widget, brandColor);
+      const capture = widgetCaptureSources?.current.get(widget.id) ?? null;
+      // A captured widget is drawn exactly where the stage shows it.
+      const element = capture
+        ? container.querySelector(`[${WIDGET_CAPTURE_ATTRIBUTE}="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(widget.id) : widget.id}"]`)
+        : null;
+      const bounds = element?.getBoundingClientRect();
+      drawBroadcastWidgetOverlay(
+        ctx,
+        widget,
+        brandColor,
+        brandFontFamily || DEFAULT_CANVAS_FONT_FAMILY,
+        capture,
+        bounds && bounds.width > 0 && bounds.height > 0
+          ? {
+              x: (bounds.left - containerBounds.left) * scaleX,
+              y: (bounds.top - containerBounds.top) * scaleY,
+              width: bounds.width * scaleX,
+              height: bounds.height * scaleY,
+            }
+          : null
+      );
     });
 
     timers.filter((timer) => timer.visible).forEach((timer) => {
@@ -1575,11 +1644,11 @@ export function useCompositor({
       drawSceneTransitionOverlay(ctx, sceneTransition, now, brandColor, overlayScale, () => {
         const stinger = container.querySelector(`${SCENE_TRANSITION_SELECTOR} video`) as HTMLVideoElement | null;
         if (!stinger || !canDrawMediaVideo(stinger, window.location.href)) return false;
-        return drawVideoElementFrame(ctx, stinger, 0, 0, 1920, 1080, 'cover');
+        return drawVideoElementFrame(ctx, stinger, 0, 0, ctx.canvas.width, ctx.canvas.height, 'cover');
       });
     }
     target?.commit();
-  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition, brandFontFamily, widgetCaptureSources]);
 
   // Frames come from a worker timer at the output rate, not requestAnimationFrame,
   // so the stream and recording keep moving when the studio tab is hidden or covered.

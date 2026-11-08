@@ -13,6 +13,8 @@ import {
   type TranscriptWord,
 } from '../utils/transcriptCleanup.ts';
 import { encodePcm16Wav } from '../utils/wavEncoder.ts';
+import { buildCleanupEditListFiles, type EditListMarker } from '../utils/editListExport.ts';
+import { CleanedVideoRender, type CleanedRenderTrack } from './CleanedVideoRender.tsx';
 
 const PAUSE_THRESHOLDS = [0.7, 1, 1.5, 2, 3];
 /** Decoding more than this in the browser risks running out of memory; the server export has no such limit. */
@@ -26,7 +28,9 @@ export interface TranscriptCleanupServerExport {
 /**
  * Descript-style cleanup: the transcript shows which filler words, stutters,
  * and long pauses will be cut. Click any word to cut or keep it, preview the
- * result, then save cleaned audio here or export cleaned video on the server.
+ * result, then save cleaned audio, render the cleaned video to MP4 in this
+ * browser, take an edit list (FCPXML/EDL/SRT) into a free editor, or, as an
+ * opt-in, export on the media server.
  */
 export function TranscriptCleanup({
   words,
@@ -36,6 +40,10 @@ export function TranscriptCleanup({
   onDownload,
   serverExport,
   serverExportUnavailableReason,
+  tracks,
+  sourceTrackIndex = -1,
+  studioName,
+  markers,
 }: {
   words: TranscriptWord[];
   durationSeconds: number;
@@ -44,6 +52,12 @@ export function TranscriptCleanup({
   onDownload: (blob: Blob, fileName: string) => void;
   serverExport?: TranscriptCleanupServerExport | null;
   serverExportUnavailableReason?: string;
+  /** Every recorded track of the take, for the edit list and the browser render. */
+  tracks?: CleanedRenderTrack[];
+  /** Which of `tracks` was transcribed (the kept ranges are in its time). */
+  sourceTrackIndex?: number;
+  studioName?: string;
+  markers?: EditListMarker[];
 }) {
   const [removeFillers, setRemoveFillers] = useState(true);
   const [removeRepeats, setRemoveRepeats] = useState(true);
@@ -154,6 +168,31 @@ export function TranscriptCleanup({
   };
 
   const nothingToCut = plan.cuts.length === 0;
+  const editTracks = useMemo<CleanedRenderTrack[]>(() => {
+    if (tracks && tracks.length > 0 && sourceTrackIndex >= 0 && sourceTrackIndex < tracks.length) return tracks;
+    return source ? [{ label: source.label, fileName: `${safeName(source.label)}.${source.blob.type.includes('wav') ? 'wav' : 'webm'}`, type: source.blob.type, blob: source.blob }] : [];
+  }, [source, sourceTrackIndex, tracks]);
+  const editSourceIndex = editTracks === tracks ? sourceTrackIndex : 0;
+
+  const downloadEditList = async () => {
+    setError('');
+    try {
+      const files = buildCleanupEditListFiles({
+        baseName,
+        tracks: editTracks,
+        sourceIndex: editSourceIndex,
+        keepRanges: plan.keepRanges,
+        words: plan.words,
+        markers,
+      });
+      const { default: JSZip } = await import('jszip');
+      const zip = new JSZip();
+      for (const file of files) zip.file(file.name, file.text);
+      onDownload(await zip.generateAsync({ type: 'blob', mimeType: 'application/zip' }), `${safeName(baseName)}_cleanup_edit_list.zip`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not build the edit list.');
+    }
+  };
   const readyArtifacts = job?.artifacts.filter((artifact) => artifact.status === 'ready' && artifact.format !== 'json') || [];
 
   return <section className="transcript-cleanup" aria-label="Transcript cleanup">
@@ -257,15 +296,43 @@ export function TranscriptCleanup({
       </button>
       <button
         type="button"
-        className="transcript-cleanup__button is-primary"
-        disabled={!serverExport || nothingToCut || exporting || plan.tooManyCuts}
-        title={serverExport ? 'Export the cleaned final MP4, per-person videos, and audio stems on the media server' : serverExportUnavailableReason}
-        onClick={() => void exportCleanedVideo()}
+        className="transcript-cleanup__button"
+        disabled={nothingToCut || plan.tooManyCuts || editTracks.length === 0}
+        title="FCPXML for DaVinci Resolve or Final Cut Pro, a CMX3600 EDL per track and re-timed SRT captions"
+        onClick={() => void downloadEditList()}
       >
-        {exporting ? 'Exporting cleaned video…' : 'Export cleaned video'}
+        Edit list (FCPXML · EDL · SRT)
       </button>
     </div>
-    {!serverExport && serverExportUnavailableReason && <p className="transcript-cleanup__hint">{serverExportUnavailableReason}</p>}
+
+    {editTracks.length > 0 && <CleanedVideoRender
+      tracks={editTracks}
+      sourceIndex={editSourceIndex}
+      keepRanges={plan.keepRanges}
+      baseName={baseName}
+      studioName={studioName || baseName}
+      disabled={nothingToCut || plan.tooManyCuts}
+      onDownload={onDownload}
+    />}
+
+    <details className="transcript-cleanup__server">
+      <summary>Media server export (optional)</summary>
+      <p className="transcript-cleanup__hint">
+        Re-encodes on the media server. The free server has a fraction of one CPU, so a long recording can take hours there; the browser render above is usually much faster.
+      </p>
+      <div className="transcript-cleanup__actions">
+        <button
+          type="button"
+          className="transcript-cleanup__button"
+          disabled={!serverExport || nothingToCut || exporting || plan.tooManyCuts}
+          title={serverExport ? 'Export the cleaned final MP4, per-person videos, and audio stems on the media server' : serverExportUnavailableReason}
+          onClick={() => void exportCleanedVideo()}
+        >
+          {exporting ? 'Exporting on the media server…' : 'Export on media server'}
+        </button>
+      </div>
+      {!serverExport && serverExportUnavailableReason && <p className="transcript-cleanup__hint">{serverExportUnavailableReason}</p>}
+    </details>
 
     {readyArtifacts.length > 0 && <ul className="transcript-cleanup__artifacts">
       {readyArtifacts.map((artifact) => <li key={artifact.id}>

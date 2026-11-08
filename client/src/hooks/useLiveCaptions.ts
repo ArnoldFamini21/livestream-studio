@@ -7,6 +7,19 @@ export interface LiveCaptionSegment {
   interim: boolean;
   timestamp: string;
   confidence?: number;
+  /** Who said it, for captions relayed from another participant. */
+  participantId?: string;
+  /** When the utterance began (ISO); timestamp is when it was recognized. */
+  startedAt?: string;
+}
+
+/** One recognition update for the current utterance, for relaying to the host. */
+export interface LiveCaptionUpdate {
+  segmentId: string;
+  text: string;
+  startMs: number;
+  endMs: number;
+  final: boolean;
 }
 
 interface UseLiveCaptionsOptions {
@@ -14,6 +27,8 @@ interface UseLiveCaptionsOptions {
   language: string;
   speakerName: string;
   maxSegments?: number;
+  /** Called for every interim and final result of the current utterance. */
+  onUpdate?: (update: LiveCaptionUpdate) => void;
 }
 
 interface BrowserSpeechRecognitionAlternative {
@@ -82,6 +97,7 @@ export function useLiveCaptions({
   language,
   speakerName,
   maxSegments = 12,
+  onUpdate,
 }: UseLiveCaptionsOptions) {
   const [segments, setSegments] = useState<LiveCaptionSegment[]>([]);
   const [interimSegment, setInterimSegment] = useState<LiveCaptionSegment | null>(null);
@@ -95,6 +111,9 @@ export function useLiveCaptions({
   const speakerNameRef = useRef(speakerName);
   const languageRef = useRef(language);
   const maxSegmentsRef = useRef(maxSegments);
+  const onUpdateRef = useRef(onUpdate);
+  const utteranceRef = useRef<{ id: string; startMs: number } | null>(null);
+  useEffect(() => { onUpdateRef.current = onUpdate; }, [onUpdate]);
 
   useEffect(() => { enabledRef.current = enabled; }, [enabled]);
   useEffect(() => { speakerNameRef.current = speakerName; }, [speakerName]);
@@ -129,6 +148,7 @@ export function useLiveCaptions({
         }
       }
     }
+    utteranceRef.current = null;
     setListening(false);
     setInterimSegment(null);
   }, [clearRestartTimer]);
@@ -172,24 +192,36 @@ export function useLiveCaptions({
         }
       }
 
+      // Speech recognition reports no timings; the utterance starts with its first result.
+      if ((finalTexts.length > 0 || interimText) && !utteranceRef.current) {
+        utteranceRef.current = { id: createCaptionId('caption'), startMs: Date.now() - 400 };
+      }
+      const utterance = utteranceRef.current;
+
       if (finalTexts.length > 0) {
         const text = normalizeCaptionText(finalTexts.join(' '));
         const confidence = confidenceValues.length > 0
           ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length
           : undefined;
         const segment: LiveCaptionSegment = {
-          id: createCaptionId('caption'),
+          id: utterance?.id || createCaptionId('caption'),
           speakerName: speakerNameRef.current,
           text,
           interim: false,
           timestamp: new Date().toISOString(),
+          ...(utterance ? { startedAt: new Date(utterance.startMs).toISOString() } : {}),
           ...(confidence !== undefined ? { confidence } : {}),
         };
+        if (utterance) onUpdateRef.current?.({ segmentId: utterance.id, text, startMs: utterance.startMs, endMs: Date.now(), final: true });
+        utteranceRef.current = null;
         setSegments((current) => [...current, segment].slice(-maxSegmentsRef.current));
         setInterimSegment(null);
       }
 
       if (interimText) {
+        if (!utteranceRef.current) utteranceRef.current = { id: createCaptionId('caption'), startMs: Date.now() - 400 };
+        const current = utteranceRef.current;
+        onUpdateRef.current?.({ segmentId: current.id, text: interimText, startMs: current.startMs, endMs: Date.now(), final: false });
         setInterimSegment({
           id: 'caption-interim',
           speakerName: speakerNameRef.current,

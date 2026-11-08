@@ -57,7 +57,7 @@ describe('recording transcription client helpers', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    const result = await requestRecordingTranscription(file, 'en-US', fetchImpl as typeof fetch);
+    const result = await requestRecordingTranscription(file, { engine: 'cloud', language: 'en-US', fetchImpl: fetchImpl as typeof fetch });
 
     assert.equal(capturedUrl, '/api/transcriptions');
     assert.equal(capturedInit?.method, 'POST');
@@ -86,7 +86,7 @@ describe('recording transcription client helpers', () => {
     }), { status: 503, headers: { 'Content-Type': 'application/json' } });
 
     await assert.rejects(
-      requestRecordingTranscription(file, 'en-US', fetchImpl as typeof fetch),
+      requestRecordingTranscription(file, { engine: 'cloud', language: 'en-US', fetchImpl: fetchImpl as typeof fetch }),
       /not configured/
     );
   });

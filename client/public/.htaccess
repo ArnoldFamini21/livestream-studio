@@ -3,6 +3,9 @@ RewriteBase /
 
 # Module scripts must be served as JavaScript; browsers refuse text/plain.
 AddType text/javascript .js .mjs
+# WebAssembly (RNNoise, in-browser Whisper's onnxruntime, MediaPipe face
+# detection) compiles while it downloads only when served as application/wasm.
+AddType application/wasm .wasm
 
 <IfModule mod_headers.c>
   # Security headers.

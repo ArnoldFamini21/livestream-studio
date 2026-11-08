@@ -54,6 +54,8 @@ describe('audio processing preferences', () => {
       echoCancellation: false,
       noiseSuppression: true,
       voiceIsolation: false,
+      aiNoiseRemoval: false,
+      musicMode: false,
     });
   });
 
@@ -64,7 +66,27 @@ describe('audio processing preferences', () => {
       echoCancellation: false,
       noiseSuppression: false,
       voiceIsolation: true,
+      aiNoiseRemoval: false,
+      musicMode: false,
     });
+  });
+
+  it('round trips AI noise removal and music mode, and keeps them when a caller omits them', () => {
+    writePreferredAudioProcessing({ ...DEFAULT_AUDIO_PROCESSING_PREFERENCES, aiNoiseRemoval: true, musicMode: true });
+    assert.equal(readPreferredAudioProcessing().aiNoiseRemoval, true);
+    assert.equal(readPreferredAudioProcessing().musicMode, true);
+
+    writePreferredAudioProcessing({ echoCancellation: false, noiseSuppression: true, voiceIsolation: true });
+    assert.deepEqual(readPreferredAudioProcessing(), {
+      echoCancellation: false,
+      noiseSuppression: true,
+      voiceIsolation: true,
+      aiNoiseRemoval: true,
+      musicMode: true,
+    });
+
+    writePreferredAudioProcessing({ ...readPreferredAudioProcessing(), musicMode: false });
+    assert.equal(readPreferredAudioProcessing().musicMode, false);
   });
 
   it('falls back to defaults when session storage values are not booleans', () => {

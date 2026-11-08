@@ -116,6 +116,41 @@ describe('brand kit catalog normalization', () => {
     assert.equal(normalized.nameTagStyle, 'block');
   });
 
+  it('keeps sanitized custom layouts and the brand font', () => {
+    const normalized = normalizeBrandKitCatalogEntry(ROOM_ID, brandKitEntry({
+      customLayouts: [
+        {
+          id: 'layout-1',
+          name: '  Podcast\x00 frame ',
+          orientation: 'portrait',
+          slots: [
+            { id: 'a', x: 0.9, y: -1, w: 0.5, h: 2, z: 3, shape: 'circle', kind: 'camera', participantId: 'p1' },
+            { id: 'a', x: 0, y: 0, w: 0.01, h: 0.3, z: 1, shape: 'hexagon', kind: 'content', participantId: 'ignored' },
+            { id: 'c', x: 0, y: 0, w: 0.5, h: 0.5, kind: 'content' },
+          ],
+        },
+        { id: 'bad id!', name: 'Nope', slots: [{ x: 0, y: 0, w: 1, h: 1 }] },
+        { id: 'empty', name: 'Empty', slots: [] },
+        'not a layout',
+      ],
+      brandFont: { source: 'upload', family: 'My <Brand> Font', fileId: 'font-1', fileName: 'brand.woff2' },
+    }));
+
+    assert.equal(normalized.customLayouts.length, 1);
+    const [layout] = normalized.customLayouts;
+    assert.equal(layout.name, 'Podcast frame');
+    assert.equal(layout.orientation, 'portrait');
+    // Slots stay inside the canvas; ids stay unique; only one content slot.
+    assert.deepEqual(layout.slots[0], { id: 'a', x: 0.5, y: 0, w: 0.5, h: 1, z: 3, shape: 'circle', kind: 'camera', participantId: 'p1' });
+    assert.deepEqual(layout.slots[1], { id: 'a-2', x: 0, y: 0, w: 0.04, h: 0.3, z: 1, shape: 'rect', kind: 'content' });
+    assert.equal(layout.slots.length, 2);
+    assert.deepEqual(normalized.brandFont, { source: 'upload', family: 'My Brand Font', fileId: 'font-1', fileName: 'brand.woff2' });
+
+    const preset = normalizeBrandKitCatalogEntry(ROOM_ID, brandKitEntry({ brandFont: { source: 'preset', presetId: 'comic-sans' } }));
+    assert.equal(preset.brandFont, null);
+    assert.deepEqual(preset.customLayouts, []);
+  });
+
   it('drops transient or unsafe asset URLs', () => {
     const normalized = normalizeBrandKitCatalogEntry(ROOM_ID, brandKitEntry({
       logoUrl: 'javascript:alert(1)',

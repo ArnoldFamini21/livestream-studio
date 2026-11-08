@@ -174,3 +174,52 @@ describe('scene transitions in the program', () => {
     assert.equal(finished.calls.length, 0);
   });
 });
+
+describe('portrait program overlays', () => {
+  /** A recording context whose canvas is the 1080x1920 portrait program. */
+  function portraitContext() {
+    const recorded = recordingContext();
+    (recorded.ctx as unknown as Record<string, unknown>).canvas = { width: 1080, height: 1920 };
+    return recorded;
+  }
+
+  it('lays the ticker across the 1080 px width at the bottom of the 1920 px canvas', () => {
+    const { ctx, calls } = portraitContext();
+    drawTickerOverlay(ctx, {
+      id: 't', text: 'Hello', speed: 'normal', backgroundColor: '#112233', textColor: '#ffcc00', visible: true, separator: '•',
+    }, 0, SCALE);
+    const bar = calls.find((call) => call.op === 'fillRect');
+    assert.deepEqual(bar?.args, [0, 1920 - 72, 1080, 72]);
+  });
+
+  it('places a bottom banner above the portrait bottom edge and keeps text inside 1080 px', () => {
+    const { ctx, calls } = portraitContext();
+    drawBannerOverlay(ctx, {
+      id: 'b', text: 'x'.repeat(400), style: 'info', isTicker: false, position: 'bottom', visible: true,
+    }, 0, SCALE);
+    const bar = calls.find((call) => call.op === 'fillRect');
+    assert.equal(bar?.args[1], getBannerTop('bottom', SCALE, 1920));
+    assert.equal(bar?.args[2], 1080);
+    const text = String(calls.find((call) => call.op === 'fillText')?.args[0]);
+    assert.ok(text.length * 10 <= 1080 - 32);
+  });
+
+  it('draws banners and tickers in the brand font when one is given', () => {
+    const { ctx, calls } = recordingContext();
+    drawTickerOverlay(ctx, {
+      id: 't', text: 'Hi', speed: 'normal', backgroundColor: '#000', textColor: '#fff', visible: true, separator: '•',
+    }, 0, SCALE, '"Montserrat", Inter, Arial, sans-serif');
+    assert.equal(calls.find((call) => call.op === 'fillText')?.font, '600 28px "Montserrat", Inter, Arial, sans-serif');
+    const banner = recordingContext();
+    drawBannerOverlay(banner.ctx, {
+      id: 'b', text: 'News', style: 'breaking', isTicker: false, position: 'top', visible: true,
+    }, 0, SCALE, '"Oswald", Inter, Arial, sans-serif');
+    assert.ok(banner.calls.filter((call) => call.op === 'fillText').every((call) => String(call.font).includes('"Oswald"')));
+  });
+
+  it('covers the whole portrait canvas during a scene transition', () => {
+    const { ctx, calls } = portraitContext();
+    drawSceneTransitionOverlay(ctx, { sceneId: 's', sceneName: 'Intro', presetId: 'fade', durationMs: 520, startedAt: 0 }, 10, '#3b82f6', SCALE);
+    assert.deepEqual(calls.find((call) => call.op === 'fillRect')?.args, [0, 0, 1080, 1920]);
+  });
+});

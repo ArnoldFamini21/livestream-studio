@@ -30,6 +30,13 @@ interface ProducerPanelProps {
 // ============ Layout icon data ============
 
 const layoutIcons: Record<LayoutMode, React.ReactNode> = {
+  custom: (
+    <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+      <rect x="1" y="2" width="16" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="3.5" y="4.5" width="6" height="5" rx="1" fill="currentColor" opacity="0.55" />
+      <circle cx="12.5" cy="11.5" r="2.4" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  ),
   grid: (
       <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
         <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />

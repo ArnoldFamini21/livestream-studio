@@ -1987,7 +1987,7 @@ export function HomePage() {
                 </div>
               )}
 {recentBrandKits.length === 0 && <div className="workspace-empty"><span className="empty-icon"><StudioIcon name="brand" /></span><h2>Make it unmistakably yours</h2><p>Open Brand inside a studio to save your logo, colors,<br />and background as a reusable brand kit.</p><button className="workspace-secondary" onClick={() => setWorkspaceView('studios')}>Go to studios <span>→</span></button></div>}</section>}
-          <footer className="workspace-footer"><span>Good conversations start here.</span><div><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link></div></footer>
+          <footer className="workspace-footer"><span>Good conversations start here.</span><div><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link><a href="/THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Open-source licences</a></div></footer>
         </main>
       </div>
       {showCreate && !scheduledRoom && <WorkspaceDialog title="Create a studio" onClose={() => { if (!loading && !schedulingLoading) setShowCreate(false); }}>          <div className="ws-card" style={styles.card}>

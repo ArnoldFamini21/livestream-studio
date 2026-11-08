@@ -19,12 +19,13 @@ import {
 } from '../hooks/useRecordingLibrary';
 import type { RecordingReadinessStatus, RecordingReadinessSummary } from '../utils/recordingReadiness';
 import {
-  requestRecordingTranscription,
   selectRecordingTranscriptionCandidate,
   type RecordingTranscriptionResult,
 } from '../utils/recordingTranscription.ts';
 import { encodePcm16Wav } from '../utils/wavEncoder.ts';
 import { TranscriptCleanup, type TranscriptCleanupServerExport } from './TranscriptCleanup.tsx';
+import { TranscriptionEngineControls } from './TranscriptionEngineControls.tsx';
+import { useTranscriptionJob } from '../hooks/useTranscriptionJob.ts';
 
 export { encodePcm16Wav };
 import type { RecordingUploadSummary } from '../utils/recordingUpload.ts';
@@ -45,6 +46,10 @@ import {
 } from '../utils/recordingClips.ts';
 import { buildClipSuggestions, type ClipSuggestion, type ClipSuggestionCaptionSegment } from '../utils/clipSuggestions.ts';
 import { hasEnoughCaptionsForAiHighlights, requestAiHighlights } from '../utils/aiHighlights.ts';
+import { buildTimedSegmentsFromWords } from '../utils/autoChapters.ts';
+import { alignTranscriptWords, getClipTranscriptAlignment } from '../utils/clipTranscriptAlignment.ts';
+import { LocalAiStatusNote } from './LocalAiStatusNote.tsx';
+import { ClipSmartOptions } from './ClipSmartOptions.tsx';
 import {
   buildEpisodeContentText,
   buildTranscriptFromCaptions,
@@ -84,6 +89,8 @@ interface RecordingPanelProps {
   onClose: () => void;
   /** Recording folder (direct-to-SSD) settings and guest transfer progress. */
   destinationPanel?: React.ReactNode;
+  /** Brand font stack and colour for captions burned into clips. */
+  clipBrand?: { fontFamily: string; accentColor: string };
 }
 
 export interface RecordingMarker {
@@ -2454,6 +2461,7 @@ export function RecordingPanel({
   captionLanguage,
   onClose,
   destinationPanel,
+  clipBrand,
 }: RecordingPanelProps) {
   const [recordedFiles, setRecordedFiles] = useState<RecordedFile[]>([]);
   const [lastRecordingDurationSeconds, setLastRecordingDurationSeconds] = useState<number | null>(null);
@@ -2474,6 +2482,9 @@ export function RecordingPanel({
   const [clipStartSeconds, setClipStartSeconds] = useState<number | null>(null);
   const [clipEndSeconds, setClipEndSeconds] = useState<number | null>(null);
   const [clipAspect, setClipAspect] = useState<ClipAspectPreset>('source');
+  const [clipSmartFraming, setClipSmartFraming] = useState(true);
+  const [clipBurnCaptions, setClipBurnCaptions] = useState(false);
+  const [clipExportNotice, setClipExportNotice] = useState<string | null>(null);
   const [isExportingClip, setIsExportingClip] = useState(false);
   const [clipExportProgress, setClipExportProgress] = useState(0);
   const [clipExportError, setClipExportError] = useState<string | null>(null);
@@ -2534,6 +2545,7 @@ export function RecordingPanel({
   const [generatedTranscript, setGeneratedTranscript] = useState<RecordingTranscriptionResult | null>(null);
   const [isGeneratingTranscript, setIsGeneratingTranscript] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const transcriptionJob = useTranscriptionJob();
   const [episodeContent, setEpisodeContent] = useState<EpisodeContentResult | null>(null);
   const [isGeneratingEpisodeContent, setIsGeneratingEpisodeContent] = useState(false);
   const [episodeContentError, setEpisodeContentError] = useState<string | null>(null);
@@ -3014,14 +3026,14 @@ export function RecordingPanel({
     setIsGeneratingTranscript(true);
     setTranscriptionError(null);
     try {
-      const transcript = await requestRecordingTranscription(transcriptionCandidate, captionLanguage);
-      setGeneratedTranscript(transcript);
+      const transcript = await transcriptionJob.run(transcriptionCandidate, captionLanguage);
+      if (transcript) setGeneratedTranscript(transcript);
     } catch (err) {
       setTranscriptionError(err instanceof Error ? err.message : 'Transcript generation failed.');
     } finally {
       setIsGeneratingTranscript(false);
     }
-  }, [captionLanguage, transcriptionCandidate]);
+  }, [captionLanguage, transcriptionCandidate, transcriptionJob.run]);
 
   // Transcript cleanup exports through the same media-server job as clips,
   // using the upload of the recording that was just made.
@@ -3079,6 +3091,8 @@ export function RecordingPanel({
       const result = await requestEpisodeContent({
         transcript: episodeContentTranscript,
         durationSeconds: lastRecordingDurationSeconds,
+        ...(generatedTranscript?.words?.length ? { timedSegments: buildTimedSegmentsFromWords(generatedTranscript.words) } : {}),
+        markers: sortedRecordingMarkers,
       });
       setEpisodeContent(result);
     } catch (err) {
@@ -3086,7 +3100,7 @@ export function RecordingPanel({
     } finally {
       setIsGeneratingEpisodeContent(false);
     }
-  }, [canGenerateEpisodeContent, episodeContentTranscript, isGeneratingEpisodeContent, lastRecordingDurationSeconds]);
+  }, [canGenerateEpisodeContent, episodeContentTranscript, generatedTranscript, isGeneratingEpisodeContent, lastRecordingDurationSeconds, sortedRecordingMarkers]);
 
   const handleCopyEpisodeContent = useCallback(async () => {
     if (!episodeContent) return;
@@ -3279,6 +3293,7 @@ export function RecordingPanel({
     setServerClipError(null);
     setServerClipDownloadingId(null);
     setIsRefreshingServerClip(false);
+    setClipExportNotice(null);
     setAiSuggestions([]);
     setIsRequestingAiHighlights(false);
     setAiHighlightError(null);
@@ -3339,9 +3354,34 @@ export function RecordingPanel({
 
   const clipSuggestions = aiSuggestions.length > 0 ? aiSuggestions : heuristicClipSuggestions;
 
+  // The in-browser transcript belongs to the session just recorded; its word timings are on the
+  // transcribed track's timeline, so they are moved onto the previewed file's timeline first.
+  const clipTranscriptAlignment = useMemo(() => (
+    clipSuggestionContext.isActiveSession && generatedTranscript?.words?.length && preview
+      ? getClipTranscriptAlignment(recordedFiles, generatedTranscript.sourceFileName, preview.file)
+      : null
+  ), [clipSuggestionContext.isActiveSession, generatedTranscript, preview, recordedFiles]);
+  const clipAlignedWords = useMemo(() => (
+    clipTranscriptAlignment?.usable && generatedTranscript?.words?.length
+      ? alignTranscriptWords(generatedTranscript.words, clipTranscriptAlignment.shiftSeconds)
+      : null
+  ), [clipTranscriptAlignment, generatedTranscript]);
+  const previewTranscriptSegments = useMemo(() => (
+    clipAlignedWords?.length ? buildTimedSegmentsFromWords(clipAlignedWords) : []
+  ), [clipAlignedWords]);
+  const clipCaptionWords = clipAlignedWords?.length ? clipAlignedWords : null;
+  // Each participant's own mic track, in recording order (the host first), for active-speaker framing of program clips.
+  const clipSpeakerTracks = useMemo(() => (
+    clipSuggestionContext.isActiveSession
+      ? recordedFiles
+          .filter((file) => file.kind === 'audio' && !/screen audio|lossless/i.test(file.label))
+          .map((file) => file.blob)
+      : []
+  ), [clipSuggestionContext.isActiveSession, recordedFiles]);
+
   const canRequestAiHighlights = useMemo(
-    () => hasEnoughCaptionsForAiHighlights(clipSuggestionContext.captionSegments),
-    [clipSuggestionContext.captionSegments]
+    () => previewTranscriptSegments.length >= 3 || hasEnoughCaptionsForAiHighlights(clipSuggestionContext.captionSegments),
+    [clipSuggestionContext.captionSegments, previewTranscriptSegments.length]
   );
 
   const handleRequestAiHighlights = useCallback(async () => {
@@ -3354,12 +3394,14 @@ export function RecordingPanel({
       const result = await requestAiHighlights({
         captionSegments: clipSuggestionContext.captionSegments,
         durationSeconds: clipSuggestionContext.durationSeconds,
+        timedSegments: previewTranscriptSegments,
       });
       if (previewUrlRef.current !== captureUrl) return;
       if (result.suggestions.length === 0) {
         setAiHighlightNotice('The model did not find standout highlights in this recording.');
       } else {
         setAiSuggestions(result.suggestions);
+        if (result.notice) setAiHighlightNotice(result.notice);
       }
     } catch (err) {
       if (previewUrlRef.current !== captureUrl) return;
@@ -3368,7 +3410,7 @@ export function RecordingPanel({
     } finally {
       if (previewUrlRef.current === captureUrl) setIsRequestingAiHighlights(false);
     }
-  }, [clipSuggestionContext, isRequestingAiHighlights, preview?.url]);
+  }, [clipSuggestionContext, isRequestingAiHighlights, preview?.url, previewTranscriptSegments]);
 
   const handleApplyClipSuggestion = useCallback((suggestion: ClipSuggestion) => {
     setClipStartSeconds(suggestion.startSeconds);
@@ -3421,6 +3463,7 @@ export function RecordingPanel({
     setClipExportError(null);
     setClipResult(null);
     setClipSaveMessage(null);
+    setClipExportNotice(null);
     try {
       const aspect = hasVideo ? clipAspect : 'source';
       const captured = await captureRecordingClip(
@@ -3428,9 +3471,24 @@ export function RecordingPanel({
         range,
         (fraction) => {
           if (previewUrlRef.current === captureUrl) setClipExportProgress(fraction);
+        },
+        {
+          smartCrop: hasVideo && aspect !== 'source' && clipSmartFraming
+            ? { speakerTracks: preview.file.kind === 'program' ? clipSpeakerTracks : [] }
+            : null,
+          captions: hasVideo && clipBurnCaptions && clipCaptionWords
+            ? {
+                words: clipCaptionWords,
+                style: {
+                  fontFamily: clipBrand?.fontFamily || 'Inter, Arial, sans-serif',
+                  accentColor: clipBrand?.accentColor || '#facc15',
+                },
+              }
+            : null,
         }
       );
       if (previewUrlRef.current !== captureUrl) return;
+      if (captured.warnings?.length) setClipExportNotice(captured.warnings.join(' '));
       setClipResult({
         blob: captured.blob,
         fileName: buildClipFileName(preview.sourceName, preview.file.label, range, captured.extension, aspect),
@@ -3445,7 +3503,7 @@ export function RecordingPanel({
     } finally {
       if (previewUrlRef.current === captureUrl) setIsExportingClip(false);
     }
-  }, [clipAspect, clipEndSeconds, clipStartSeconds, isExportingClip, preview]);
+  }, [clipAspect, clipBrand, clipBurnCaptions, clipCaptionWords, clipEndSeconds, clipSmartFraming, clipSpeakerTracks, clipStartSeconds, isExportingClip, preview]);
 
   const handleDownloadClip = useCallback(() => {
     if (!clipResult) return;
@@ -4348,6 +4406,13 @@ export function RecordingPanel({
                 </select>
                 <span style={styles.driveRetentionDescription}>{driveRetentionPolicy.description}</span>
               </div>
+              <TranscriptionEngineControls
+                settings={transcriptionJob.settings}
+                onChange={transcriptionJob.setSettings}
+                progress={transcriptionJob.progress}
+                busy={isGeneratingTranscript}
+                onCancel={transcriptionJob.cancel}
+              />
               <button
                 className="hover-lift"
                 style={{
@@ -4386,6 +4451,10 @@ export function RecordingPanel({
                   onDownload={downloadBlob}
                   serverExport={cleanupServerExport}
                   serverExportUnavailableReason={cleanupServerExportUnavailableReason}
+                  tracks={recordedFiles}
+                  sourceTrackIndex={recordedFiles.findIndex((file) => file === transcriptionCandidate)}
+                  studioName={roomName}
+                  markers={sortedRecordingMarkers}
                 />
               ) : generatedTranscript ? (
                 <div style={styles.transcriptPreview}>Regenerate the transcript to clean up filler words and pauses; this transcript has no word timings.</div>
@@ -4407,6 +4476,13 @@ export function RecordingPanel({
                       ? 'Regenerate Show Notes'
                       : 'AI Show Notes'}
                 </button>
+              )}
+              {canGenerateEpisodeContent && (
+                <LocalAiStatusNote
+                  features={['summarizer', 'languageModel']}
+                  fallbackLabel="show notes and chapters come from the free topic heuristics"
+                  notice={episodeContent?.notice}
+                />
               )}
               {episodeContentError && <div style={styles.errorBadge}>{episodeContentError}</div>}
               {episodeContent && (
@@ -4642,12 +4718,26 @@ export function RecordingPanel({
                       disabled={isExportingClip}
                       title={option.id === 'source'
                         ? 'Keep the original aspect ratio'
-                        : `Center-crop the clip to ${option.label}`}
+                        : `Crop the clip to ${option.label}`}
                     >
                       {option.label}
                     </button>
                   ))}
                 </div>
+              )}
+              {!preview.type.startsWith('audio/') && (
+                <ClipSmartOptions
+                  aspect={clipAspect}
+                  smartFraming={clipSmartFraming}
+                  onSmartFramingChange={setClipSmartFraming}
+                  burnCaptions={clipBurnCaptions}
+                  onBurnCaptionsChange={setClipBurnCaptions}
+                  captionsAvailable={Boolean(clipCaptionWords)}
+                  captionsNote={clipTranscriptAlignment?.note ?? null}
+                  speakerTracksAvailable={preview.file.kind === 'program' && clipSpeakerTracks.length > 1}
+                  disabled={isExportingClip}
+                  notice={clipExportNotice}
+                />
               )}
               {(clipSuggestions.length > 0 || canRequestAiHighlights) && (
                 <div style={styles.clipSuggestions}>

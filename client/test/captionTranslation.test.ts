@@ -4,6 +4,7 @@ import {
   buildTranslationRequestSegments,
   mergeTranslatedSegments,
   requestCaptionTranslation,
+  requestCloudCaptionTranslation,
 } from '../src/utils/captionTranslation.ts';
 
 const originalFetch = globalThis.fetch;
@@ -77,7 +78,7 @@ describe('requestCaptionTranslation', () => {
       });
     };
 
-    const result = await requestCaptionTranslation({
+    const result = await requestCloudCaptionTranslation({
       segments: [segment('a', 'Hello'), segment('b', 'World')],
       targetLanguage: 'es',
     });
@@ -106,7 +107,7 @@ describe('requestCaptionTranslation', () => {
   it('surfaces server errors', async () => {
     globalThis.fetch = async () => jsonResponse({ error: 'AI caption translation is not configured on this server.' }, 503);
     await assert.rejects(
-      () => requestCaptionTranslation({ segments: [segment('a', 'Hello')], targetLanguage: 'es' }),
+      () => requestCloudCaptionTranslation({ segments: [segment('a', 'Hello')], targetLanguage: 'es' }),
       /not configured/i
     );
   });

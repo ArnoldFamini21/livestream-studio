@@ -58,7 +58,7 @@ export interface ScenePackImportResult extends ScenePackOverlays {
   skippedScenes: number;
 }
 
-const LAYOUTS = ['grid', 'spotlight', 'side-by-side', 'pip', 'single', 'featured'] as const;
+const LAYOUTS = ['grid', 'spotlight', 'side-by-side', 'pip', 'single', 'featured', 'custom'] as const;
 const BACKGROUND_TYPES = ['color', 'image', 'video', 'gradient', 'none'] as const;
 const CAMERA_SHAPES = ['rectangle', 'rounded', 'square', 'circle'] as const;
 const NAME_TAG_STYLES = ['classic', 'minimal', 'block'] as const;
@@ -153,6 +153,8 @@ function sanitizeScene(input: unknown): Scene | null {
   if (isAllowed(input.logoSize, LOGO_SIZES)) scene.logoSize = input.logoSize as LogoSize;
   scene.logoOpacity = normalizeLogoOpacity(input.logoOpacity);
   if (isAllowed(input.pipCorner, PIP_CORNERS)) scene.pipCorner = input.pipCorner;
+  // A custom scene names its layout; a studio without that layout opens it in the grid.
+  if (scene.layout === 'custom') scene.customLayoutId = readString(input.customLayoutId, 64) || null;
   scene.focusedVideoItemId = typeof input.focusedVideoItemId === 'string'
     ? readString(input.focusedVideoItemId, 128) || null
     : null;

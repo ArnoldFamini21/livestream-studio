@@ -1,3 +1,4 @@
+import { getContextCanvasSize } from './compositorCanvasSize.ts';
 import type { BannerData } from '../components/BannerOverlay.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
@@ -17,9 +18,11 @@ import type { SceneTransitionPresetId } from './sceneTransitions.ts';
  * host lays out is what viewers get.
  */
 
+/** The landscape program size; overlays lay out from the canvas they draw into. */
 export const OUTPUT_WIDTH = 1920;
 export const OUTPUT_HEIGHT = 1080;
-const OVERLAY_FONT_FAMILY = 'Inter, Arial, sans-serif';
+/** The default overlay face; a brand font replaces it when one is set. */
+export const OVERLAY_FONT_FAMILY = 'Inter, Arial, sans-serif';
 
 /** CSS px to output px. */
 export interface OverlayScale {
@@ -67,18 +70,20 @@ export function drawTickerOverlay(
   ctx: CanvasRenderingContext2D,
   ticker: TickerData,
   elapsedMs: number,
-  scale: OverlayScale
+  scale: OverlayScale,
+  fontFamily: string = OVERLAY_FONT_FAMILY
 ) {
+  const { width: outW, height: outH } = getContextCanvasSize(ctx);
   const height = TICKER_BAR_HEIGHT_CSS * scale.y;
-  const y = OUTPUT_HEIGHT - height;
+  const y = outH - height;
   ctx.save();
   ctx.fillStyle = ticker.backgroundColor;
-  ctx.fillRect(0, y, OUTPUT_WIDTH, height);
+  ctx.fillRect(0, y, outW, height);
 
   ctx.beginPath();
-  ctx.rect(0, y, OUTPUT_WIDTH, height);
+  ctx.rect(0, y, outW, height);
   ctx.clip();
-  ctx.font = `600 ${14 * scale.y}px ${OVERLAY_FONT_FAMILY}`;
+  ctx.font = `600 ${14 * scale.y}px ${fontFamily}`;
   setLetterSpacing(ctx, `${0.02 * 14 * scale.x}px`);
   ctx.fillStyle = ticker.textColor;
   ctx.textBaseline = 'middle';
@@ -88,7 +93,7 @@ export function drawTickerOverlay(
   if (segmentWidth > 0) {
     let x = -getTickerScrollOffset(elapsedMs, ticker.speed, segmentWidth);
     // Seamless: the segment repeats across the whole bar.
-    while (x < OUTPUT_WIDTH) {
+    while (x < outW) {
       if (x + segmentWidth > 0) ctx.fillText(segment, x, y + height / 2);
       x += segmentWidth;
     }
@@ -101,11 +106,11 @@ export function drawTickerOverlay(
   left.addColorStop(1, 'rgba(0, 0, 0, 0)');
   ctx.fillStyle = left;
   ctx.fillRect(0, y, fade, height);
-  const right = ctx.createLinearGradient(OUTPUT_WIDTH - fade, 0, OUTPUT_WIDTH, 0);
+  const right = ctx.createLinearGradient(outW - fade, 0, outW, 0);
   right.addColorStop(0, 'rgba(0, 0, 0, 0)');
   right.addColorStop(1, ticker.backgroundColor);
   ctx.fillStyle = right;
-  ctx.fillRect(OUTPUT_WIDTH - fade, y, fade, height);
+  ctx.fillRect(outW - fade, y, fade, height);
   ctx.restore();
 }
 
@@ -138,9 +143,9 @@ export function getBannerLabel(banner: Pick<BannerData, 'style'>): string | null
 }
 
 /** Top edge of the banner bar, in output px. */
-export function getBannerTop(position: BannerData['position'], scale: OverlayScale): number {
+export function getBannerTop(position: BannerData['position'], scale: OverlayScale, outH: number = OUTPUT_HEIGHT): number {
   if (position === 'top') return 0;
-  return OUTPUT_HEIGHT - (BANNER_BOTTOM_OFFSET_CSS + BANNER_BAR_HEIGHT_CSS) * scale.y;
+  return outH - (BANNER_BOTTOM_OFFSET_CSS + BANNER_BAR_HEIGHT_CSS) * scale.y;
 }
 
 /**
@@ -174,20 +179,22 @@ export function drawBannerOverlay(
   ctx: CanvasRenderingContext2D,
   banner: BannerData,
   elapsedMs: number,
-  scale: OverlayScale
+  scale: OverlayScale,
+  fontFamily: string = OVERLAY_FONT_FAMILY
 ) {
+  const { width: outW, height: outH } = getContextCanvasSize(ctx);
   const height = BANNER_BAR_HEIGHT_CSS * scale.y;
-  const y = getBannerTop(banner.position, scale);
+  const y = getBannerTop(banner.position, scale, outH);
   const label = getBannerLabel(banner);
   ctx.save();
   ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
   ctx.shadowBlur = 24 * scale.y;
   ctx.shadowOffsetY = 4 * scale.y;
   ctx.fillStyle = getBannerColor(banner);
-  ctx.fillRect(0, y, OUTPUT_WIDTH, height);
+  ctx.fillRect(0, y, outW, height);
   ctx.shadowColor = 'transparent';
   ctx.beginPath();
-  ctx.rect(0, y, OUTPUT_WIDTH, height);
+  ctx.rect(0, y, outW, height);
   ctx.clip();
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
@@ -196,7 +203,7 @@ export function drawBannerOverlay(
   if (banner.isTicker) {
     let trackStart = 0;
     if (label) {
-      ctx.font = `800 ${12 * scale.y}px ${OVERLAY_FONT_FAMILY}`;
+      ctx.font = `800 ${12 * scale.y}px ${fontFamily}`;
       setLetterSpacing(ctx, `${0.08 * 12 * scale.x}px`);
       const labelWidth = ctx.measureText(label).width + 28 * scale.x;
       ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
@@ -207,12 +214,12 @@ export function drawBannerOverlay(
       trackStart = labelWidth;
     }
     ctx.beginPath();
-    ctx.rect(trackStart, y, OUTPUT_WIDTH - trackStart, height);
+    ctx.rect(trackStart, y, outW - trackStart, height);
     ctx.clip();
-    ctx.font = `600 ${14 * scale.y}px ${OVERLAY_FONT_FAMILY}`;
+    ctx.font = `600 ${14 * scale.y}px ${fontFamily}`;
     const padding = 12 * scale.x;
     const textWidth = ctx.measureText(banner.text).width + padding * 2;
-    const x = trackStart + getBannerTickerX(elapsedMs, OUTPUT_WIDTH, textWidth, scale);
+    const x = trackStart + getBannerTickerX(elapsedMs, outW, textWidth, scale);
     ctx.fillStyle = '#ffffff';
     ctx.fillText(banner.text, x + padding, centerY);
     ctx.restore();
@@ -221,7 +228,7 @@ export function drawBannerOverlay(
 
   let x = 16 * scale.x;
   if (label) {
-    ctx.font = `800 ${11 * scale.y}px ${OVERLAY_FONT_FAMILY}`;
+    ctx.font = `800 ${11 * scale.y}px ${fontFamily}`;
     setLetterSpacing(ctx, `${0.08 * 11 * scale.x}px`);
     const pillWidth = ctx.measureText(label).width + 20 * scale.x;
     const pillHeight = (11 * 1.25 + 6) * scale.y;
@@ -234,9 +241,9 @@ export function drawBannerOverlay(
     setLetterSpacing(ctx, '0px');
     x += pillWidth + 10 * scale.x;
   }
-  ctx.font = `600 ${14 * scale.y}px ${OVERLAY_FONT_FAMILY}`;
+  ctx.font = `600 ${14 * scale.y}px ${fontFamily}`;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(truncateText(ctx, banner.text, OUTPUT_WIDTH - x - 16 * scale.x), x, centerY);
+  ctx.fillText(truncateText(ctx, banner.text, outW - x - 16 * scale.x), x, centerY);
   ctx.restore();
 }
 
@@ -397,8 +404,9 @@ function fillSceneTransitionBackground(
   presetId: SceneTransitionPresetId,
   brandColor: string
 ) {
+  const { width: outW, height: outH } = getContextCanvasSize(ctx);
   if (presetId === 'wipe' || presetId === 'slide') {
-    const gradient = ctx.createLinearGradient(0, 0, OUTPUT_WIDTH, 0);
+    const gradient = ctx.createLinearGradient(0, 0, outW, 0);
     gradient.addColorStop(0, presetId === 'wipe' ? 'rgba(2, 6, 23, 0.92)' : 'rgba(15, 23, 42, 0.94)');
     gradient.addColorStop(1, withAlpha(brandColor, presetId === 'wipe' ? '66' : '55'));
     ctx.fillStyle = gradient;
@@ -409,18 +417,19 @@ function fillSceneTransitionBackground(
   } else {
     ctx.fillStyle = 'rgba(2, 6, 23, 0.38)';
   }
-  ctx.fillRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+  ctx.fillRect(0, 0, outW, outH);
 }
 
 function drawSceneLabel(ctx: CanvasRenderingContext2D, sceneName: string, scale: OverlayScale) {
+  const { width: outW, height: outH } = getContextCanvasSize(ctx);
   ctx.font = `700 ${14 * scale.y}px ${OVERLAY_FONT_FAMILY}`;
   const paddingX = 16 * scale.x;
-  const maxWidth = Math.min(OUTPUT_WIDTH * 0.7, 520 * scale.x);
+  const maxWidth = Math.min(outW * 0.7, 520 * scale.x);
   const text = truncateText(ctx, sceneName, maxWidth - paddingX * 2);
   const width = Math.min(maxWidth, ctx.measureText(text).width + paddingX * 2);
   const height = (14 * 1.2 + 20) * scale.y;
-  const x = (OUTPUT_WIDTH - width) / 2;
-  const y = (OUTPUT_HEIGHT - height) / 2;
+  const x = (outW - width) / 2;
+  const y = (outH - height) / 2;
   ctx.save();
   ctx.shadowColor = 'rgba(0, 0, 0, 0.28)';
   ctx.shadowBlur = 48 * scale.y;
@@ -436,7 +445,7 @@ function drawSceneLabel(ctx: CanvasRenderingContext2D, sceneName: string, scale:
   ctx.fillStyle = '#f8fafc';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, OUTPUT_WIDTH / 2, y + height / 2);
+  ctx.fillText(text, outW / 2, y + height / 2);
   ctx.restore();
 }
 
@@ -453,20 +462,21 @@ export function drawSceneTransitionOverlay(
   scale: OverlayScale,
   drawStinger?: () => boolean
 ): boolean {
+  const { width: outW, height: outH } = getContextCanvasSize(ctx);
   const state = getSceneTransitionCanvasState(transition.presetId, now - transition.startedAt, transition.durationMs);
   if (state.done || state.alpha <= 0.001 || state.clipLeft >= 0.999 || state.translateX >= 1.05) return false;
   ctx.save();
   ctx.globalAlpha *= state.alpha;
   if (state.clipLeft > 0) {
     ctx.beginPath();
-    ctx.rect(OUTPUT_WIDTH * state.clipLeft, 0, OUTPUT_WIDTH * (1 - state.clipLeft), OUTPUT_HEIGHT);
+    ctx.rect(outW * state.clipLeft, 0, outW * (1 - state.clipLeft), outH);
     ctx.clip();
   }
-  if (state.translateX > 0) ctx.translate(OUTPUT_WIDTH * state.translateX, 0);
+  if (state.translateX > 0) ctx.translate(outW * state.translateX, 0);
   if (state.scale !== 1) {
-    ctx.translate(OUTPUT_WIDTH / 2, OUTPUT_HEIGHT / 2);
+    ctx.translate(outW / 2, outH / 2);
     ctx.scale(state.scale, state.scale);
-    ctx.translate(-OUTPUT_WIDTH / 2, -OUTPUT_HEIGHT / 2);
+    ctx.translate(-outW / 2, -outH / 2);
   }
   fillSceneTransitionBackground(ctx, transition.presetId, brandColor);
   const stingerDrawn = transition.presetId === 'stinger' && drawStinger ? drawStinger() : false;

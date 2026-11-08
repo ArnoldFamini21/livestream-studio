@@ -282,4 +282,23 @@ describe('scene packs', () => {
     assert.equal(parsed.overlays.widgets[0].position, 'top-right');
     assert.equal(buildScenePackFilename('Arnold Live Show!', new Date('2026-06-24T12:00:00.000Z')), 'scene-pack-arnold-live-show-2026-06-24.json');
   });
+
+  it('keeps a custom scene layout reference and drops it from other layouts', () => {
+    const pack = buildScenePack({
+      scenes: [
+        makeScene({ id: 'scene-custom', layout: 'custom', customLayoutId: 'layout-abc' }),
+        makeScene({ id: 'scene-grid', layout: 'grid', customLayoutId: 'layout-abc' }),
+      ],
+      lowerThirds,
+      banners,
+      timers,
+      tickers,
+      widgets,
+    });
+    const parsed = parseScenePackJson(JSON.stringify(pack));
+    assert.equal(parsed.scenes[0].layout, 'custom');
+    assert.equal(parsed.scenes[0].customLayoutId, 'layout-abc');
+    assert.equal(parsed.scenes[1].layout, 'grid');
+    assert.equal(parsed.scenes[1].customLayoutId, undefined);
+  });
 });

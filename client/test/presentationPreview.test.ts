@@ -6,7 +6,9 @@ import {
   ALLOW_BROWSER_POWERPOINT_VISUAL_FALLBACK,
   applyRenderedSlideImages,
   buildPresentationPreview,
+  buildProgressivePresentationPreview,
   buildServerRenderedPresentationPreview,
+  PPTX_SERVER_RENDER_TIMEOUT_WITH_BROWSER_FALLBACK_MS,
   canBrowserRenderPowerPointFile,
   extractPptxFullSlideImageTarget,
   extractPptxSlideImageTargets,
@@ -843,5 +845,102 @@ describe('PowerPoint preview extraction', () => {
     assert.equal(preview?.slides[0].title, 'Rendered');
     assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,rendered');
     assert.equal(preview?.slides[0].rendered, true);
+  });
+  describe('cold media server fallbacks', () => {
+    async function textPptx(name = 'cold.pptx'): Promise<File> {
+      const zip = new JSZip();
+      zip.file('ppt/slides/slide1.xml', '<a:t>COLD START</a:t>');
+      const bytes = await zip.generateAsync({ type: 'uint8array' });
+      return new File([bytes], name, { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
+    }
+
+    it('uses the browser renderer at once after /presentation-pdf fails, without a second upload', async () => {
+      const calls: string[] = [];
+      const failures: string[] = [];
+      const preview = await buildProgressivePresentationPreview(await textPptx(), {
+        requireRenderedSlides: true,
+        allowBrowserPowerPointRenderFallback: true,
+        mediaHttpUrl: 'https://media.example.test',
+        fetchImpl: async (url) => {
+          calls.push(String(url));
+          return new Response(JSON.stringify({ error: 'renderer busy', code: 'PRESENTATION_RENDERER_UNAVAILABLE' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        },
+        onServerRenderFailure: (failure) => failures.push(failure.code || ''),
+        pptxSlideImageRenderer: async () => ['data:image/png;base64,browser'],
+      });
+
+      assert.deepEqual(calls, ['https://media.example.test/presentation-pdf']);
+      assert.deepEqual(failures, ['PRESENTATION_RENDERER_UNAVAILABLE']);
+      assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,browser');
+    });
+
+    it('caps the .pptx server wait when the browser can render the deck', async () => {
+      assert.ok(PPTX_SERVER_RENDER_TIMEOUT_WITH_BROWSER_FALLBACK_MS <= 45_000);
+      const realSetTimeout = globalThis.setTimeout;
+      const delays: number[] = [];
+      globalThis.setTimeout = ((handler: () => void, delay?: number) => {
+        delays.push(Number(delay));
+        return realSetTimeout(handler, 0);
+      }) as typeof setTimeout;
+      try {
+        const preview = await buildProgressivePresentationPreview(await textPptx(), {
+          requireRenderedSlides: true,
+          allowBrowserPowerPointRenderFallback: true,
+          mediaHttpUrl: 'https://media.example.test',
+          fetchImpl: (_url, init) => new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+          }),
+          pptxSlideImageRenderer: async () => ['data:image/png;base64,after-timeout'],
+        });
+        assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,after-timeout');
+      } finally {
+        globalThis.setTimeout = realSetTimeout;
+      }
+      assert.ok(delays.includes(PPTX_SERVER_RENDER_TIMEOUT_WITH_BROWSER_FALLBACK_MS));
+      assert.ok(!delays.includes(120_000));
+    });
+
+    it('shows the browser render while a cold server converts, then keeps it when the server fails', async () => {
+      const progress: string[] = [];
+      let answerServer: (response: Response) => void = () => {};
+      const serverAnswer = new Promise<Response>((resolve) => { answerServer = resolve; });
+      const preview = await buildProgressivePresentationPreview(await textPptx(), {
+        requireRenderedSlides: true,
+        allowBrowserPowerPointRenderFallback: true,
+        browserRenderInParallel: true,
+        mediaHttpUrl: 'https://media.example.test',
+        fetchImpl: () => serverAnswer,
+        pptxSlideImageRenderer: async () => {
+          // The cold server only answers after the browser slides are ready.
+          setTimeout(() => answerServer(new Response('waking', { status: 502 })), 5);
+          return ['data:image/png;base64,parallel'];
+        },
+        onProgress: ({ preview: partial }) => progress.push(partial.slides[0].imageUrl || ''),
+      });
+
+      assert.deepEqual(progress, ['data:image/png;base64,parallel']);
+      assert.equal(preview?.slides[0].imageUrl, 'data:image/png;base64,parallel');
+    });
+
+    it('keeps legacy .ppt decks from being uploaded twice after a server failure', async () => {
+      const calls: string[] = [];
+      const preview = await buildProgressivePresentationPreview(
+        new File([new Uint8Array([1, 2, 3])], 'legacy.ppt', { type: 'application/vnd.ms-powerpoint' }),
+        {
+          requireRenderedSlides: true,
+          requireServerRenderedPowerPoint: true,
+          mediaHttpUrl: 'https://media.example.test',
+          fetchImpl: async (url) => {
+            calls.push(String(url));
+            return new Response('boom', { status: 500 });
+          },
+        },
+      );
+      assert.equal(preview, undefined);
+      assert.deepEqual(calls, ['https://media.example.test/presentation-pdf']);
+    });
   });
 });

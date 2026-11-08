@@ -224,6 +224,8 @@ export function JoinRoom() {
   // Start camera preview on mount
   useEffect(() => {
     startMedia(undefined, undefined, {
+      // AI noise removal and music mode are chosen in the studio; keep them.
+      ...readPreferredAudioProcessing(),
       echoCancellation,
       noiseSuppression,
       voiceIsolation,
@@ -473,7 +475,7 @@ export function JoinRoom() {
     rememberDisplayName(guestName);
     sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
     sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
-    writePreferredAudioProcessing({ echoCancellation, noiseSuppression, voiceIsolation });
+    writePreferredAudioProcessing({ ...readPreferredAudioProcessing(), echoCancellation, noiseSuppression, voiceIsolation });
     writePreferredVideoQuality(videoQuality);
     if (roomId && needsRoomPassword) {
       sessionStorage.setItem(`roomPassword:${roomId}`, roomPassword);
@@ -519,7 +521,7 @@ export function JoinRoom() {
 
   const onAudioDeviceChange = async (deviceId: string) => {
     try {
-      await switchAudioDevice(deviceId, { echoCancellation, noiseSuppression, voiceIsolation });
+      await switchAudioDevice(deviceId, { ...readPreferredAudioProcessing(), echoCancellation, noiseSuppression, voiceIsolation });
     } catch (err) {
       // Device switch failed
     }

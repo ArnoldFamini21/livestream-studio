@@ -29,11 +29,22 @@ import {
 import { sendScreenOnConnection, stopScreenOnConnection } from '../utils/screenTransceiver.ts';
 import { replacePeerMediaTrack } from '../utils/peerMediaSender.ts';
 import {
+  applyAudioCodecPreferences,
+  applyAudioSenderPriority,
+  transformDescriptionForMusicMode,
+} from '../utils/audioTransport.ts';
+import {
   decideIncomingAnswer,
   decideIncomingCandidate,
   decideIncomingOffer,
   type LocalConnectionView,
 } from '../utils/peerConnectionIdentity.ts';
+import {
+  NO_PROGRAM_RETURN,
+  ProgramReturnPeerSender,
+  type ProgramReturnRoute,
+  type ProgramReturnSource,
+} from '../utils/programReturn.ts';
 
 function viewOf(peer: PeerState): LocalConnectionView {
   return {
@@ -61,6 +72,10 @@ interface PeerState {
   /** The other side's connection id, once known. */
   remotePcId: string | null;
   everConnected: boolean;
+  /** Sends our program return (if we are the stage owner) to this peer. */
+  programReturn: ProgramReturnPeerSender;
+  /** The program return this peer sends us (we are a guest). */
+  programReturnStream: MediaStream | null;
 }
 
 interface PendingCandidate {
@@ -72,6 +87,8 @@ interface UseWebRTCProps {
   localStream: MediaStream | null;
   myParticipantId: string | null;
   send: (message: SignalMessage) => void;
+  /** Music mode: stereo 128 kbps Opus without RED; otherwise voice (RED first). */
+  musicMode?: boolean;
 }
 
 /** Same as the signaling server's PC_ID_PATTERN. */
@@ -95,7 +112,7 @@ function liveAudioTracks(stream: MediaStream | null): MediaStreamTrack[] {
   return stream ? stream.getAudioTracks().filter((track) => track.readyState === 'live') : [];
 }
 
-export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps) {
+export function useWebRTC({ localStream, myParticipantId, send, musicMode = false }: UseWebRTCProps) {
   const peersRef = useRef<Map<string, PeerState>>(new Map());
   const iceConfigRef = useRef<RTCConfiguration>(getSharedIceConfigLoader().latest.config || DEFAULT_ICE_CONFIG);
   const iceReadyRef = useRef<Promise<void>>(Promise.resolve());
@@ -108,6 +125,12 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   // Screen stream ids announced by peers (media-state-changed), so an incoming
   // track can be told apart from the camera even before the camera arrives.
   const remoteScreenStreamIdsRef = useRef<Map<string, string>>(new Map());
+  // Program return feeds we receive, and the stream ids their senders announced.
+  const [remoteProgramReturnStreams, setRemoteProgramReturnStreams] = useState<Map<string, MediaStream>>(new Map());
+  const remoteProgramReturnStreamIdsRef = useRef<Map<string, string>>(new Map());
+  // The program return we send (stage owner only) and who gets which part of it.
+  const programReturnSourceRef = useRef<ProgramReturnSource | null>(null);
+  const programReturnRouteRef = useRef<(participantId: string) => ProgramReturnRoute>(() => NO_PROGRAM_RETURN);
   const publishedScreenRef = useRef<{ track: MediaStreamTrack; stream: MediaStream; audioTrack: MediaStreamTrack | null } | null>(null);
   const screenOptimizationRef = useRef<ScreenShareOptimization>('text');
   const rebuildCountsRef = useRef<Map<string, number>>(new Map());
@@ -145,6 +168,15 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
   const sendRef = useRef(send);
   useEffect(() => { sendRef.current = send; }, [send]);
 
+  const musicModeRef = useRef(musicMode);
+  useEffect(() => {
+    if (musicModeRef.current === musicMode) return;
+    musicModeRef.current = musicMode;
+    // Opus parameters and the codec order are negotiated: offer again on every
+    // mesh connection so the new mode takes effect without rebuilding it.
+    for (const peer of peersRef.current.values()) void peer.negotiation.offer().catch(() => {});
+  }, [musicMode]);
+
   const localStreamRef = useRef(localStream);
   const publishedTracksRef = useRef<Map<'audio' | 'video', MediaStreamTrack>>(new Map());
   // Mesh forwarding: paused while the SFU carries our media to the stage,
@@ -177,9 +209,13 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     const streams = new Map<string, MediaStream>();
     const screens = new Map<string, MediaStream>();
     const screenAudio = new Map<string, MediaStreamTrack[]>();
+    const programReturns = new Map<string, MediaStream>();
     for (const [id, peer] of peersRef.current) {
       if (peer.stream) {
         streams.set(id, peer.stream);
+      }
+      if (peer.programReturnStream && peer.programReturnStream.getVideoTracks().some((track) => track.readyState === 'live')) {
+        programReturns.set(id, peer.programReturnStream);
       }
       if (peer.screenStream) {
         screens.set(id, peer.screenStream);
@@ -190,7 +226,33 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     setRemoteStreams(new Map(streams));
     setRemoteScreenStreams(screens);
     setRemoteScreenAudioTracks(screenAudio);
+    setRemoteProgramReturnStreams((current) => {
+      if (current.size === programReturns.size && Array.from(programReturns).every(([id, stream]) => current.get(id) === stream)) {
+        return current;
+      }
+      return programReturns;
+    });
   }, []);
+
+  /** Keep a peer's program return apart from its camera and screen; follow its tracks coming and going. */
+  const adoptProgramReturnStream = useCallback((peer: PeerState, stream: MediaStream, track?: MediaStreamTrack) => {
+    if (peer.programReturnStream !== stream) {
+      peer.programReturnStream = stream;
+      // A paused transceiver removes the track from the stream; a resumed one adds it back.
+      const refresh = () => {
+        if (peer.programReturnStream === stream) updateRemoteStreams();
+      };
+      stream.addEventListener('removetrack', refresh);
+      stream.addEventListener('addtrack', refresh);
+    }
+    if (track) {
+      if (!stream.getTracks().includes(track)) stream.addTrack(track);
+      track.addEventListener('ended', () => {
+        if (peer.programReturnStream === stream) updateRemoteStreams();
+      });
+    }
+    updateRemoteStreams();
+  }, [updateRemoteStreams]);
 
   const publishPeerBandwidthHealth = useCallback(() => {
     const updatedAtMs = Date.now();
@@ -241,8 +303,12 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
   const applyPeerBandwidthMode = useCallback(async (peer: PeerState, mode: BandwidthAdaptationMode) => {
     const screenSender = peer.screenTransceiver?.sender;
+    const programReturnSender = peer.programReturn.videoTransceiver?.sender;
     const cap = getVideoCap();
-    const videoSenders = peer.connection.getSenders().filter((sender) => sender.track?.kind === 'video' && sender !== screenSender);
+    // The camera only: the screen and the program return keep their own ceilings.
+    const videoSenders = peer.connection.getSenders().filter((sender) => (
+      sender.track?.kind === 'video' && sender !== screenSender && sender !== programReturnSender
+    ));
     await Promise.all(videoSenders.map(async (sender) => {
       try {
         await applyBandwidthModeToVideoSender(sender, mode, cap);
@@ -295,6 +361,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       const existing = peersRef.current.get(remoteParticipantId);
       if (existing) {
         existing.negotiation.dispose();
+        existing.programReturn.dispose();
         // Bug fix #3: Null out event handlers before closing existing connection
         existing.connection.ontrack = null;
         existing.connection.onicecandidate = null;
@@ -323,6 +390,12 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         pcId,
         remotePcId: options.remotePcId ?? null,
         everConnected: Boolean(options.wasConnected),
+        programReturnStream: null,
+        programReturn: new ProgramReturnPeerSender(pc, (streamId) => {
+          const from = myParticipantIdRef.current;
+          if (!from) return;
+          sendRef.current({ type: 'program-return-announce', payload: { to: remoteParticipantId, streamId } });
+        }),
         negotiation: new PeerNegotiation(
           pc,
           (myParticipantIdRef.current || '') < remoteParticipantId,
@@ -338,6 +411,9 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
           {
             // ICE restarts did not bring it back: start over with a new connection.
             onRecoveryExhausted: () => rebuildPeerRef.current(remoteParticipantId, peerState),
+            beforeCreateDescription: () => { applyAudioCodecPreferences(pc, musicModeRef.current); },
+            transformLocalDescription: (description) => transformDescriptionForMusicMode(description, musicModeRef.current),
+            transformRemoteDescription: (description) => transformDescriptionForMusicMode(description, musicModeRef.current),
           },
         ),
       };
@@ -375,6 +451,11 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       pc.ontrack = (event) => {
         const [remoteStream] = event.streams;
         if (peersRef.current.get(remoteParticipantId) !== peerState) return;
+        // The program return is never a camera or a screen: its sender named it first.
+        if (remoteStream && remoteStream.id === remoteProgramReturnStreamIdsRef.current.get(remoteParticipantId)) {
+          adoptProgramReturnStream(peerState, remoteStream, event.track);
+          return;
+        }
         // The screen (and its audio) arrives in its own MediaStream: the id the
         // peer announced, or a second stream beside the camera one.
         const announcedScreenId = remoteScreenStreamIdsRef.current.get(remoteParticipantId);
@@ -429,6 +510,10 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
           const mode = bandwidthStatesRef.current.get(remoteParticipantId)?.mode || 'full';
           void applyPeerBandwidthMode(peerState, mode);
           void applyScreenSendLimits(peerState);
+          // Speech goes first when the link is congested.
+          void applyAudioSenderPriority(peerState.senders.get('audio'));
+          void applyAudioSenderPriority(peerState.screenAudioTransceiver?.sender);
+          void peerState.programReturn.refreshLimits();
         } else if (peerState.everConnected && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
           setPeerReconnecting(remoteParticipantId, true);
         } else if (pc.connectionState === 'closed') {
@@ -436,6 +521,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
         }
         if (pc.connectionState === 'closed') {
           peerState.negotiation.dispose();
+          peerState.programReturn.dispose();
           peersRef.current.delete(remoteParticipantId);
           pendingCandidatesRef.current.delete(remoteParticipantId);
           removePeerBandwidthState(remoteParticipantId);
@@ -445,12 +531,16 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
 
       peersRef.current.set(remoteParticipantId, peerState);
       drainPendingCandidates(peerState);
+      // A program return already running goes to this peer too, if it should.
+      if (programReturnSourceRef.current) {
+        void peerState.programReturn.sync(programReturnSourceRef.current, programReturnRouteRef.current(remoteParticipantId));
+      }
       if (peerState.everConnected) setPeerReconnecting(remoteParticipantId, true);
       // One more (or one fewer) copy of our camera on the uplink.
       applyMeshSendLimits();
       return peerState;
     },
-    [applyMeshSendLimits, applyPeerBandwidthMode, applyScreenSendLimits, drainPendingCandidates, removePeerBandwidthState, setPeerReconnecting, shouldForward, updateRemoteStreams]
+    [applyMeshSendLimits, applyPeerBandwidthMode, applyScreenSendLimits, adoptProgramReturnStream, drainPendingCandidates, removePeerBandwidthState, setPeerReconnecting, shouldForward, updateRemoteStreams]
   );
 
   /** Replace a peer connection that ICE restarts could not revive; the other side follows (new pcId). */
@@ -551,6 +641,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
       const peer = peersRef.current.get(participantId);
       if (peer) {
         peer.negotiation.dispose();
+        peer.programReturn.dispose();
         // Null out handlers before closing
         peer.connection.ontrack = null;
         peer.connection.onicecandidate = null;
@@ -639,6 +730,50 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     screenOptimizationRef.current = mode;
     for (const peer of peersRef.current.values()) void applyScreenSendLimits(peer);
   }, [applyScreenSendLimits]);
+
+  /** Re-send (or stop) the program return on every peer to match the source and routing. */
+  const refreshProgramReturn = useCallback(async () => {
+    const source = programReturnSourceRef.current;
+    await Promise.all(Array.from(peersRef.current.values()).map((peer) => (
+      peer.programReturn.sync(source, source ? programReturnRouteRef.current(peer.participantId) : NO_PROGRAM_RETURN)
+    )));
+  }, []);
+
+  /** The program return we publish (stage owner only); null stops it on every peer. */
+  const setProgramReturnSource = useCallback((source: ProgramReturnSource | null) => {
+    programReturnSourceRef.current = source;
+    return refreshProgramReturn();
+  }, [refreshProgramReturn]);
+
+  /** Who gets which part of the program return; call refreshProgramReturn when it changes. */
+  const setProgramReturnRouting = useCallback((route: ((participantId: string) => ProgramReturnRoute) | null) => {
+    programReturnRouteRef.current = route || (() => NO_PROGRAM_RETURN);
+  }, []);
+
+  /** A peer named the stream that carries its program return (it may already have arrived). */
+  const setRemoteProgramReturnStreamId = useCallback((participantId: string, streamId: string | null) => {
+    if (streamId) remoteProgramReturnStreamIdsRef.current.set(participantId, streamId);
+    else remoteProgramReturnStreamIdsRef.current.delete(participantId);
+    const peer = peersRef.current.get(participantId);
+    if (!peer) return;
+    if (!streamId) {
+      if (peer.programReturnStream) {
+        peer.programReturnStream = null;
+        updateRemoteStreams();
+      }
+      return;
+    }
+    // Arrived before the announcement and was taken for a screen or a camera: move it.
+    if (peer.screenStream?.id === streamId) {
+      const stream = peer.screenStream;
+      peer.screenStream = null;
+      adoptProgramReturnStream(peer, stream);
+    } else if (peer.stream?.id === streamId) {
+      const stream = peer.stream;
+      peer.stream = null;
+      adoptProgramReturnStream(peer, stream);
+    }
+  }, [adoptProgramReturnStream, updateRemoteStreams]);
 
   /** Remember (or forget) which of a peer's streams is its screen. */
   const setRemoteScreenStreamId = useCallback((participantId: string, streamId: string | null) => {
@@ -802,6 +937,7 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     // The sampling effect owns its timer; a room rejoin only resets peers.
     for (const [, peer] of peersRef.current) {
       peer.negotiation.dispose();
+      peer.programReturn.dispose();
       // Bug fix #3: Null out event handlers before closing
       peer.connection.ontrack = null;
       peer.connection.onicecandidate = null;
@@ -811,10 +947,12 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     peersRef.current.clear();
     pendingCandidatesRef.current.clear();
     remoteScreenStreamIdsRef.current.clear();
+    remoteProgramReturnStreamIdsRef.current.clear();
     clearPeerBandwidthStates();
     setRemoteStreams(new Map());
     setRemoteScreenStreams(new Map());
     setRemoteScreenAudioTracks(new Map());
+    setRemoteProgramReturnStreams(new Map());
   }, [clearPeerBandwidthStates]);
 
   // A new participant ID (a fresh join, not a resumed seat) means the old
@@ -831,6 +969,12 @@ export function useWebRTC({ localStream, myParticipantId, send }: UseWebRTCProps
     remoteScreenStreams,
     /** Per participant: the audio tracks of their screen share (also in remoteScreenStreams' stream). */
     remoteScreenAudioTracks,
+    /** Program return feeds we receive, by sender (normally only the stage owner). */
+    remoteProgramReturnStreams,
+    setProgramReturnSource,
+    setProgramReturnRouting,
+    refreshProgramReturn,
+    setRemoteProgramReturnStreamId,
     publishScreenTrack,
     setScreenShareOptimization,
     setRemoteScreenStreamId,

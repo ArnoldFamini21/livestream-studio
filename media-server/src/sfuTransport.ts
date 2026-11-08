@@ -6,6 +6,7 @@ import {
   useSdesRTPStreamId,
   type RTCIceCandidate,
 } from 'werift';
+import type { SfuIceConfig, SfuIceConfigProvider } from './sfuIceServers.js';
 
 /**
  * WebRTC media transport for the studio SFU.
@@ -29,7 +30,21 @@ export interface SfuIceCandidatePayload {
 }
 
 export type SfuTransportSide = 'publish' | 'subscribe';
-export type SfuPeerConnectionFactory = (withRidExtension: boolean) => RTCPeerConnection;
+export type SfuPeerConnectionFactory = (withRidExtension: boolean, iceConfig: SfuIceConfig | null) => RTCPeerConnection;
+
+export interface SfuTransportOptions {
+  /** TURN for the SFU's own candidates (see sfuIceServers.ts); none when omitted. */
+  resolveIceConfig?: SfuIceConfigProvider;
+  /** Shortest gap between two keyframe requests for one publisher layer. */
+  keyframeRequestIntervalMs?: number;
+}
+
+/** Enough to ask the publisher's browser for a fresh keyframe (werift RTCRtpReceiver). */
+interface KeyframeReceiver {
+  sendRtcpPLI(mediaSsrc: number): Promise<void>;
+}
+
+const DEFAULT_KEYFRAME_REQUEST_INTERVAL_MS = 500;
 
 export interface SfuTransportEvents {
   onIceCandidate?: (
@@ -76,6 +91,13 @@ interface PublisherState {
   rids: string[];
   packetCounts: Map<string, number>;
   audioPacketCount: number;
+  videoReceiver: KeyframeReceiver | null;
+  /** rid -> media SSRC, learnt from each layer's packets. */
+  ridSsrcs: Map<string, number>;
+  /** Layers a keyframe was asked for before their SSRC was known. */
+  pendingKeyframes: Set<string>;
+  lastKeyframeRequestAt: Map<string, number>;
+  keyframeRequests: number;
 }
 
 interface SubscriberMediaForward {
@@ -105,11 +127,71 @@ export class SfuMediaTransport {
   private readonly publishers = new Map<string, PublisherState>();
   private readonly subscribers = new Map<string, SubscriberState>();
   private readonly publishAttempts = new Map<string, symbol>();
+  /**
+   * One token per subscriber lifecycle. closeParticipant drops it, so a
+   * subscribe offer still waiting for TURN credentials when its participant
+   * leaves does not then build (and leak) a peer connection for them.
+   */
+  private readonly subscribeLifecycles = new Map<string, symbol>();
+
+  private readonly resolveIceConfig?: SfuIceConfigProvider;
+  private readonly keyframeRequestIntervalMs: number;
 
   constructor(
     private readonly events: SfuTransportEvents = {},
     private readonly createPeerConnection?: SfuPeerConnectionFactory,
-  ) {}
+    options: SfuTransportOptions = {},
+  ) {
+    this.resolveIceConfig = options.resolveIceConfig;
+    this.keyframeRequestIntervalMs = options.keyframeRequestIntervalMs ?? DEFAULT_KEYFRAME_REQUEST_INTERVAL_MS;
+  }
+
+  /** The ICE config for a new peer connection; a TURN outage must not stop the SFU trying. */
+  private async iceConfig(): Promise<SfuIceConfig | null> {
+    if (!this.resolveIceConfig) return null;
+    try {
+      return await this.resolveIceConfig();
+    } catch {
+      return null;
+    }
+  }
+
+  /** How many keyframe requests were sent to a publisher (for tests/metrics). */
+  getPublisherKeyframeRequestCount(participantId: string): number {
+    return this.publishers.get(participantId)?.keyframeRequests ?? 0;
+  }
+
+  /**
+   * Ask a publisher for a keyframe on one simulcast layer, so a subscriber
+   * that just joined or switched layer gets a picture now instead of after
+   * the next periodic keyframe (Chrome's VP8 sends none on its own).
+   */
+  requestKeyframe(producerId: string, rid: string): boolean {
+    const state = this.publishers.get(producerId);
+    if (!state?.videoReceiver) return false;
+    const ssrc = state.ridSsrcs.get(rid);
+    if (ssrc === undefined) {
+      // The layer has not sent a packet yet; ask as soon as it does.
+      state.pendingKeyframes.add(rid);
+      return false;
+    }
+    const now = Date.now();
+    const last = state.lastKeyframeRequestAt.get(rid);
+    if (last !== undefined && now - last < this.keyframeRequestIntervalMs) return false;
+    state.lastKeyframeRequestAt.set(rid, now);
+    state.keyframeRequests += 1;
+    void state.videoReceiver.sendRtcpPLI(ssrc).catch(() => undefined);
+    return true;
+  }
+
+  /** Keyframes for every layer a subscriber currently receives (it just connected). */
+  private requestKeyframesFor(consumerId: string): void {
+    const state = this.subscribers.get(consumerId);
+    if (!state) return;
+    for (const [producerId, forward] of state.forwards) {
+      if (forward.video?.rid) this.requestKeyframe(producerId, forward.video.rid);
+    }
+  }
 
   getPublisherCount(): number {
     return this.publishers.size;
@@ -130,10 +212,12 @@ export class SfuMediaTransport {
     return this.publishers.get(participantId)?.audioPacketCount ?? 0;
   }
 
-  private newPeerConnection(withRidExtension: boolean): RTCPeerConnection {
-    if (this.createPeerConnection) return this.createPeerConnection(withRidExtension);
+  private newPeerConnection(withRidExtension: boolean, iceConfig: SfuIceConfig | null): RTCPeerConnection {
+    if (this.createPeerConnection) return this.createPeerConnection(withRidExtension, iceConfig);
     return new RTCPeerConnection({
       codecs: { audio: AUDIO_CODECS, video: VIDEO_CODECS },
+      // A relay candidate on TURN: the only one a browser can reach on Render.
+      ...(iceConfig ? { iceServers: iceConfig.iceServers, iceTransportPolicy: iceConfig.iceTransportPolicy } : {}),
       // One transport from the start. With werift's default "max-compat", each
       // m-line gets its own ICE transport; once the answer bundles them, the
       // extra one is orphaned and pc.close() never releases its UDP socket.
@@ -172,15 +256,22 @@ export class SfuMediaTransport {
     this.publishAttempts.set(participantId, attempt);
     const previous = this.publishers.get(participantId);
     this.publishers.delete(participantId);
+    const iceConfig = this.resolveIceConfig ? this.iceConfig() : null;
     if (previous) await previous.pc.close().catch(() => undefined);
+    const ice = iceConfig ? await iceConfig : null;
     if (this.publishAttempts.get(participantId) !== attempt) throw new Error('Publish transport was superseded');
 
-    const pc = this.newPeerConnection(true);
+    const pc = this.newPeerConnection(true, ice);
     const state: PublisherState = {
       pc,
       rids: cleanRids,
       packetCounts: new Map(),
       audioPacketCount: 0,
+      videoReceiver: null,
+      ridSsrcs: new Map(),
+      pendingKeyframes: new Set(),
+      lastKeyframeRequestAt: new Map(),
+      keyframeRequests: 0,
     };
     this.publishers.set(participantId, state);
     this.emitIce(participantId, 'publish', pc);
@@ -190,11 +281,13 @@ export class SfuMediaTransport {
         direction: 'recvonly',
         simulcast: cleanRids.map((rid) => ({ rid, direction: 'recv' as const })),
       });
+      state.videoReceiver = (transceiver as { receiver?: KeyframeReceiver }).receiver ?? null;
 
       transceiver.onTrack.subscribe((track: MediaStreamTrack) => {
         if (this.publishers.get(participantId) !== state) return;
         const rid = track.rid;
         if (!rid) return;
+        if (typeof track.ssrc === 'number') state.ridSsrcs.set(rid, track.ssrc);
         track.onReceiveRtp.subscribe((rtp: RtpPacket) => {
           if (this.publishers.get(participantId) !== state) return;
           this.injectPublisherRtp(participantId, rid, rtp);
@@ -251,12 +344,28 @@ export class SfuMediaTransport {
     consumerId: string,
     producers: SfuProducerMedia[]
   ): Promise<{ description: SfuSessionDescription; producerMids: Record<string, SfuProducerMids> }> {
+    let lifecycle = this.subscribeLifecycles.get(consumerId);
+    if (!lifecycle) {
+      lifecycle = Symbol(consumerId);
+      this.subscribeLifecycles.set(consumerId, lifecycle);
+    }
+    const ice = this.resolveIceConfig && !this.subscribers.has(consumerId) ? await this.iceConfig() : null;
+    // The participant left (or the room closed) while TURN credentials were minted.
+    if (this.subscribeLifecycles.get(consumerId) !== lifecycle) throw new Error('Subscribe transport was superseded');
     let state = this.subscribers.get(consumerId);
     if (!state) {
-      const pc = this.newPeerConnection(false);
-      state = { pc, forwards: new Map() };
-      this.subscribers.set(consumerId, state);
+      const pc = this.newPeerConnection(false, ice);
+      const created: SubscriberState = { pc, forwards: new Map() };
+      state = created;
+      this.subscribers.set(consumerId, created);
       this.emitIce(consumerId, 'subscribe', pc);
+      // Packets forwarded before DTLS is up are dropped, the first keyframe
+      // with them: ask again once the subscriber can actually receive.
+      pc.connectionStateChange?.subscribe((connectionState) => {
+        if (connectionState === 'connected' && this.subscribers.get(consumerId) === created) {
+          this.requestKeyframesFor(consumerId);
+        }
+      });
     }
 
     for (const producer of producers) {
@@ -268,7 +377,17 @@ export class SfuMediaTransport {
       if (producer.hasVideo && !forward.video) {
         const track = new MediaStreamTrack({ kind: 'video' });
         const transceiver = state.pc.addTransceiver(track, { direction: 'sendonly' });
-        forward.video = { track, mid: transceiver.mid ?? null, rid: null };
+        const videoForward: SubscriberVideoForward = { track, mid: transceiver.mid ?? null, rid: null };
+        forward.video = videoForward;
+        // The subscriber lost a picture (packet loss, decoder reset): pass its
+        // PLI on to the publisher of the layer it is watching.
+        const subscriber = state;
+        const producerId = producer.producerId;
+        transceiver.sender?.onPictureLossIndication?.subscribe(() => {
+          if (this.subscribers.get(consumerId) !== subscriber) return;
+          if (subscriber.forwards.get(producerId)?.video !== videoForward || !videoForward.rid) return;
+          this.requestKeyframe(producerId, videoForward.rid);
+        });
       } else if (!producer.hasVideo) {
         forward.video = undefined;
       }
@@ -330,6 +449,9 @@ export class SfuMediaTransport {
     const state = this.publishers.get(participantId);
     if (!state) return;
     state.packetCounts.set(rid, (state.packetCounts.get(rid) || 0) + 1);
+    const ssrc = rtp.header?.ssrc;
+    if (typeof ssrc === 'number' && state.ridSsrcs.get(rid) !== ssrc) state.ridSsrcs.set(rid, ssrc);
+    if (state.pendingKeyframes.delete(rid)) this.requestKeyframe(participantId, rid);
     this.forwardPacket(participantId, rid, rtp);
   }
 
@@ -353,7 +475,11 @@ export class SfuMediaTransport {
   setForwardedLayer(consumerId: string, producerId: string, rid: string | null): void {
     const forward = this.subscribers.get(consumerId)?.forwards.get(producerId)?.video;
     if (!forward) return;
+    const changed = forward.rid !== rid;
     forward.rid = rid;
+    // A new layer (or a first one) starts at a keyframe, or the subscriber
+    // shows a frozen or broken picture until the next one.
+    if (changed && rid) this.requestKeyframe(producerId, rid);
   }
 
   private forwardPacket(producerId: string, rid: string, rtp: RtpPacket): void {
@@ -389,6 +515,7 @@ export class SfuMediaTransport {
     const publisher = this.publishers.get(participantId);
     const subscriber = this.subscribers.get(participantId);
     this.publishAttempts.delete(participantId);
+    this.subscribeLifecycles.delete(participantId);
     this.publishers.delete(participantId);
     this.subscribers.delete(participantId);
     this.removeProducer(participantId);
@@ -399,7 +526,12 @@ export class SfuMediaTransport {
   }
 
   async closeAll(): Promise<void> {
-    const ids = new Set([...this.publishers.keys(), ...this.subscribers.keys(), ...this.publishAttempts.keys()]);
+    const ids = new Set([
+      ...this.publishers.keys(),
+      ...this.subscribers.keys(),
+      ...this.publishAttempts.keys(),
+      ...this.subscribeLifecycles.keys(),
+    ]);
     await Promise.all([...ids].map((id) => this.closeParticipant(id)));
   }
 }
