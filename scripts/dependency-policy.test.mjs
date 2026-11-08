@@ -89,7 +89,8 @@ test('installs skip the unused onnxruntime-node CUDA download everywhere', () =>
   const npmrc = readFileSync(join(root, '.npmrc'), 'utf8');
   assert.match(npmrc, /^onnxruntime-node-install=skip$/m);
   const dockerfile = readFileSync(join(root, 'Dockerfile'), 'utf8');
-  const installs = dockerfile.match(/^RUN npm ci.*$/gm) || [];
+  // Install stages run npm ci, possibly inside a retry loop.
+  const installs = dockerfile.match(/^RUN .*\bnpm ci\b.*$/gm) || [];
   const copies = dockerfile.match(/^COPY package\.json package-lock\.json \.npmrc \.\/$/gm) || [];
   assert.ok(installs.length > 0);
   assert.equal(copies.length, installs.length, 'every Docker install stage has the .npmrc');
@@ -99,4 +100,22 @@ test('the Render signaling build installs only the server and shared workspaces'
   const render = readFileSync(join(root, 'render.yaml'), 'utf8');
   const build = render.match(/^\s*buildCommand:\s*(.+)$/m)?.[1] || '';
   assert.match(build, /npm ci --include=dev --workspace=server --workspace=shared --include-workspace-root/);
+});
+
+test('installs retry transient download failures in CI and deploy', () => {
+  for (const workflow of ['ci.yml', 'deploy.yml']) {
+    const text = readFileSync(join(root, '.github', 'workflows', workflow), 'utf8');
+    assert.doesNotMatch(text, /^\s*(run:\s*)?npm ci\b/m, `${workflow} installs through scripts/npm-ci-retry.sh`);
+    assert.match(text, /sh scripts\/npm-ci-retry\.sh/);
+  }
+});
+
+test('CI installs FFmpeg from Ubuntu packages instead of GitHub releases', () => {
+  const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const jobs = ci.split(/^  (?=[a-z-]+:\n)/m).filter((block) => /npm-ci-retry/.test(block));
+  assert.ok(jobs.length >= 3);
+  for (const job of jobs) {
+    assert.match(job, /FFMPEG_BIN: \/usr\/bin\/ffmpeg/, 'job points ffmpeg-static at the system binary');
+    assert.ok(job.indexOf('apt-get install') < job.indexOf('npm-ci-retry'), 'FFmpeg is installed before npm ci');
+  }
 });
