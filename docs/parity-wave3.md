@@ -129,7 +129,26 @@ pass. A local 35-second smoke (Mac, X9 Pro) completed all four guest transfers
 across the forced reconnect, byte-identical to the MediaRecorder sources, with no
 page, CSP or recording console errors. It still failed the 1-second packet-gap
 check on video streams, including the host's own non-transferred ISO, so those
-gaps come from capture, not transfer. Linux soak results are in the PR.
+gaps come from capture, not transfer.
+
+**Linux soak still fails before transfer starts.** Runs 42488938177 and
+42489839081 (the second after timer-polled readiness waits) both failed the
+35-second preflight the same way: the host page fell minutes behind. Its ISO
+started 10 s after its audio and the program 24 s after it; over about 330 s
+it emitted 19 ISO and 7 program chunks while each guest emitted 335. It never
+answered a guest transfer offer, its signaling socket missed heartbeats, and
+the server ended the room after 120 s. Guests were healthy. No page, CSP or
+recording console errors. The 20-minute step never ran, and no guest byte
+reached the host, so these runs do not test read-ahead.
+
+Likely cause (not yet verified): `client/src/utils/frameTicker.ts` sets
+`lastFrameAt` before calling `onFrame`. Once a compositor frame takes more than
+half the 33 ms interval (likely for 1080p software raster on a GPU-less 4-vCPU
+runner), every queued worker tick passes the backlog check. Frames are then drawn
+back to back and the host main thread never idles. Next: measure the frame time
+on Linux, then drop ticks that arrive during or just after a slow frame (with a
+unit test) in a separate PR, and rerun the soak. Evidence is on X9 Pro in
+`.x9/storage/qa-local/soak-353/`.
 
 1. **P0.2 — recording integrity:** validate `codex/wave3-recording-read-ahead`.
    The exclusive 35-second rehearsal stopped all seven recorders and resumed
