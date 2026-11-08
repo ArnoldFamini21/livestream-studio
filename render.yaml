@@ -124,8 +124,11 @@ services:
       - key: RECORDING_UPLOAD_MIN_FREE_MB
         value: "1024"
       # SFU relay: Render has no inbound UDP, so the werift SFU allocates its
-      # candidates on Cloudflare Realtime TURN (same free key as the server).
-      # Without it the SFU cannot connect on Render and stages stay on the mesh.
+      # candidates on Cloudflare Realtime TURN. By default it asks the signaling
+      # server for credentials (signed with LIVE_STREAM_TOKEN_SECRET), so these
+      # two are optional; set them only to give the media server its own key.
+      - key: SIGNALING_SERVER_URL
+        value: https://livestream-studio-server.onrender.com
       - key: CLOUDFLARE_TURN_KEY_ID
         sync: false
       - key: CLOUDFLARE_TURN_API_TOKEN

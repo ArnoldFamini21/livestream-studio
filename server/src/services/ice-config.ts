@@ -344,10 +344,11 @@ export function resetCloudflareTurnCache(): void {
 async function fetchCloudflareIceServers(
   turnEnv: CloudflareTurnEnv,
   fetchImpl: typeof fetch,
-  now: number
+  now: number,
+  { fresh = false }: { fresh?: boolean } = {}
 ): Promise<StudioIceServer[]> {
   const cacheKey = `${turnEnv.keyId}:${turnEnv.apiToken.slice(-6)}`;
-  if (cloudflareCache && cloudflareCache.key === cacheKey && now < cloudflareCache.refreshAt) {
+  if (!fresh && cloudflareCache && cloudflareCache.key === cacheKey && now < cloudflareCache.refreshAt) {
     return cloudflareCache.servers;
   }
   const controller = new AbortController();
@@ -368,7 +369,7 @@ async function fetchCloudflareIceServers(
       throw new Error('Cloudflare TURN returned no relay servers');
     }
     // Everyone in a session can share credentials; refresh well before they expire.
-    cloudflareCache = { key: cacheKey, servers, refreshAt: now + (CLOUDFLARE_TURN_TTL_SECONDS * 1000) / 2 };
+    if (!fresh) cloudflareCache = { key: cacheKey, servers, refreshAt: now + (CLOUDFLARE_TURN_TTL_SECONDS * 1000) / 2 };
     return servers;
   } finally {
     clearTimeout(timer);
@@ -414,4 +415,20 @@ export async function resolveIceConfigWithStatus(
     options.onError?.(error);
     return fallback;
   }
+}
+
+/**
+ * Freshly minted Cloudflare TURN servers for the media server's SFU (see
+ * services/internalTurn.ts). Never served from the browser cache, so the
+ * media server always gets the full lifetime. Null when Cloudflare TURN is
+ * not configured here.
+ */
+export async function mintCloudflareTurnForSfu(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { fetchImpl?: typeof fetch; now?: number } = {}
+): Promise<{ iceServers: StudioIceServer[]; ttlSeconds: number } | null> {
+  const turnEnv = readCloudflareTurnEnv(env);
+  if (!turnEnv) return null;
+  const iceServers = await fetchCloudflareIceServers(turnEnv, options.fetchImpl || fetch, options.now ?? Date.now(), { fresh: true });
+  return { iceServers, ttlSeconds: CLOUDFLARE_TURN_TTL_SECONDS };
 }

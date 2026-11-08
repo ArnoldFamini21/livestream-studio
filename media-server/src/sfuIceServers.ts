@@ -7,12 +7,21 @@
  * Realtime TURN (free tier) gives the SFU a public candidate; the browser's
  * own candidates (or its relay) then meet it there. Credentials are minted
  * the same way the signaling server mints them for browsers
- * (server/src/services/ice-config.ts), from CLOUDFLARE_TURN_KEY_ID and
- * CLOUDFLARE_TURN_API_TOKEN set on the media server too.
+ * (server/src/services/ice-config.ts).
  *
- * Without those variables the SFU keeps its previous behaviour (no ICE
- * servers), and clients fall back to the mesh when it cannot connect.
+ * Two sources, in order:
+ * 1. CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN set on the media
+ *    server: it asks Cloudflare directly.
+ * 2. Otherwise it asks the signaling server (SIGNALING_SERVER_URL, by default
+ *    the production Render URL), which holds the Cloudflare key, signing the
+ *    request with the LIVE_STREAM_TOKEN_SECRET both services already share
+ *    (see server/src/services/internalTurn.ts). No extra secret to copy.
+ *
+ * If neither works the SFU keeps its previous behaviour (no ICE servers),
+ * and clients fall back to the mesh when it cannot connect.
  */
+
+import { createHmac } from 'node:crypto';
 
 export interface SfuIceServer {
   urls: string;
@@ -35,6 +44,10 @@ export interface SfuTurnEnv {
 
 export const SFU_TURN_TTL_SECONDS = 86_400;
 const FETCH_TIMEOUT_MS = 5_000;
+/** The signaling server may itself be waiting on Cloudflare. */
+const SIGNALING_FETCH_TIMEOUT_MS = 10_000;
+export const DEFAULT_SIGNALING_SERVER_URL = 'https://livestream-studio-server.onrender.com';
+export const INTERNAL_TURN_PATH = '/internal/sfu-turn-credentials';
 /** After a failed mint, wait this long before asking Cloudflare again. */
 const RETRY_AFTER_FAILURE_MS = 30_000;
 
@@ -48,9 +61,49 @@ export function readSfuTurnEnv(env: NodeJS.ProcessEnv = process.env): SfuTurnEnv
   const keyId = cleanString(env.CLOUDFLARE_TURN_KEY_ID, 128);
   const apiToken = cleanString(env.CLOUDFLARE_TURN_API_TOKEN, 512);
   if (!keyId || !apiToken) return null;
+  return { keyId, apiToken, transport: readTransport(env) };
+}
+
+function readTransport(env: NodeJS.ProcessEnv): SfuTurnTransport {
   const requested = cleanString(env.SFU_TURN_TRANSPORT, 8)?.toLowerCase();
-  const transport: SfuTurnTransport = requested === 'tcp' || requested === 'tls' ? requested : 'udp';
-  return { keyId, apiToken, transport };
+  return requested === 'tcp' || requested === 'tls' ? requested : 'udp';
+}
+
+export interface SfuSignalingTurnSource {
+  endpoint: string;
+  secret: string;
+  transport: SfuTurnTransport;
+}
+
+/**
+ * Where to ask for TURN when the media server has no Cloudflare key of its
+ * own. Needs the shared LIVE_STREAM_TOKEN_SECRET (32+ characters; a fixed
+ * dev secret outside production, matching auth.ts and the server).
+ */
+export function readSfuSignalingTurnSource(env: NodeJS.ProcessEnv = process.env): SfuSignalingTurnSource | null {
+  const production = env.NODE_ENV === 'production';
+  const configuredSecret = env.LIVE_STREAM_TOKEN_SECRET;
+  const secret = configuredSecret && configuredSecret.length >= 32
+    ? configuredSecret
+    : production ? null : 'development-live-stream-token-secret';
+  if (!secret) return null;
+  const rawUrl = cleanString(env.SIGNALING_SERVER_URL, 512) ?? (production ? DEFAULT_SIGNALING_SERVER_URL : undefined);
+  if (!rawUrl || rawUrl.toLowerCase() === 'off') return null;
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  // The answer carries relay credentials: HTTPS only, except to a local dev server.
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) return null;
+  return { endpoint: `${url.origin}${INTERNAL_TURN_PATH}`, secret, transport: readTransport(env) };
+}
+
+export function signInternalTurnRequest(secret: string, timestampSeconds: number): string {
+  const signature = createHmac('sha256', secret).update(`studio-sfu-turn:v1:${timestampSeconds}`).digest('base64url');
+  return `${timestampSeconds}.${signature}`;
 }
 
 function urlTransport(url: string): SfuTurnTransport | 'stun' | null {
@@ -130,36 +183,62 @@ export function createSfuIceConfigProvider(options: SfuIceConfigProviderOptions 
   let inFlight: Promise<SfuIceConfig | null> | null = null;
   let warnedUnset = false;
 
-  const mint = async (turnEnv: SfuTurnEnv): Promise<SfuIceConfig> => {
+  const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs: number): Promise<Response> => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(
-        `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(turnEnv.keyId)}/credentials/generate-ice-servers`,
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${turnEnv.apiToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ttl: SFU_TURN_TTL_SECONDS }),
-          signal: controller.signal,
-        }
-      );
-      if (!response.ok) throw new Error(`Cloudflare TURN returned ${response.status}`);
-      const iceServers = parseCloudflareSfuIceServers(await response.json(), turnEnv.transport);
-      if (!hasTurnServer(iceServers)) throw new Error('Cloudflare TURN returned no relay servers');
-      // Relay only: the container's host candidates are unreachable anyway,
-      // and checking them first only delays the pair that works.
-      return { iceServers, iceTransportPolicy: 'relay' };
+      return await fetchImpl(url, { ...init, signal: controller.signal });
     } finally {
       clearTimeout(timer);
     }
   };
 
+  const toConfig = (body: unknown, transport: SfuTurnTransport, from: string): SfuIceConfig => {
+    const iceServers = parseCloudflareSfuIceServers(body, transport);
+    if (!hasTurnServer(iceServers)) throw new Error(`${from} returned no relay servers`);
+    // Relay only: the container's host candidates are unreachable anyway,
+    // and checking them first only delays the pair that works.
+    return { iceServers, iceTransportPolicy: 'relay' };
+  };
+
+  const mintFromCloudflare = async (turnEnv: SfuTurnEnv): Promise<{ config: SfuIceConfig; ttlSeconds: number }> => {
+    const response = await fetchWithTimeout(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(turnEnv.keyId)}/credentials/generate-ice-servers`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${turnEnv.apiToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttl: SFU_TURN_TTL_SECONDS }),
+      },
+      FETCH_TIMEOUT_MS
+    );
+    if (!response.ok) throw new Error(`Cloudflare TURN returned ${response.status}`);
+    return { config: toConfig(await response.json(), turnEnv.transport, 'Cloudflare TURN'), ttlSeconds: SFU_TURN_TTL_SECONDS };
+  };
+
+  const mintFromSignaling = async (source: SfuSignalingTurnSource): Promise<{ config: SfuIceConfig; ttlSeconds: number }> => {
+    const response = await fetchWithTimeout(
+      source.endpoint,
+      {
+        method: 'POST',
+        headers: { 'X-Studio-Internal-Signature': signInternalTurnRequest(source.secret, Math.floor(now() / 1000)) },
+        redirect: 'error',
+      },
+      SIGNALING_FETCH_TIMEOUT_MS
+    );
+    if (!response.ok) throw new Error(`the signaling server returned ${response.status}`);
+    const body = (await response.json()) as { ttlSeconds?: unknown };
+    const ttl = typeof body?.ttlSeconds === 'number' && Number.isFinite(body.ttlSeconds) ? body.ttlSeconds : SFU_TURN_TTL_SECONDS;
+    const ttlSeconds = Math.min(SFU_TURN_TTL_SECONDS, Math.max(600, Math.floor(ttl)));
+    return { config: toConfig(body, source.transport, 'the signaling server'), ttlSeconds };
+  };
+
   return async () => {
     const turnEnv = readSfuTurnEnv(env);
-    if (!turnEnv) {
+    const signalingSource = turnEnv ? null : readSfuSignalingTurnSource(env);
+    if (!turnEnv && !signalingSource) {
       if (!warnedUnset) {
         warnedUnset = true;
-        log('[sfu] CLOUDFLARE_TURN_KEY_ID/CLOUDFLARE_TURN_API_TOKEN are not set: the SFU offers host candidates only, and on Render clients stay on the mesh.');
+        log('[sfu] No TURN source: set CLOUDFLARE_TURN_KEY_ID/CLOUDFLARE_TURN_API_TOKEN, or LIVE_STREAM_TOKEN_SECRET (and SIGNALING_SERVER_URL outside production). The SFU offers host candidates only, and on Render clients stay on the mesh.');
       }
       return null;
     }
@@ -167,19 +246,20 @@ export function createSfuIceConfigProvider(options: SfuIceConfigProviderOptions 
     if (cached && time < cached.refreshAt) return cached.config;
     if (time < retryAt) return cached && time < cached.expiresAt ? cached.config : null;
     if (!inFlight) {
-      inFlight = mint(turnEnv)
-        .then((config) => {
+      const minting = turnEnv ? mintFromCloudflare(turnEnv) : mintFromSignaling(signalingSource!);
+      inFlight = minting
+        .then(({ config, ttlSeconds }) => {
           const minted = now();
           cached = {
             config,
-            refreshAt: minted + (SFU_TURN_TTL_SECONDS * 1000) / 2,
-            expiresAt: minted + SFU_TURN_TTL_SECONDS * 1000 - 60_000,
+            refreshAt: minted + (ttlSeconds * 1000) / 2,
+            expiresAt: minted + ttlSeconds * 1000 - 60_000,
           };
           return config;
         })
         .catch((error: unknown) => {
           retryAt = now() + RETRY_AFTER_FAILURE_MS;
-          log(`[sfu] Could not mint TURN credentials: ${error instanceof Error ? error.message : String(error)}`);
+          log(`[sfu] Could not get TURN credentials from ${turnEnv ? 'Cloudflare' : 'the signaling server'}: ${error instanceof Error ? error.message : String(error)}`);
           return cached && now() < cached.expiresAt ? cached.config : null;
         })
         .finally(() => { inFlight = null; });
