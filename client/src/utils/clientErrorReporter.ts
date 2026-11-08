@@ -7,8 +7,15 @@
  */
 
 import { resolveApiBaseUrl } from './apiClient.ts';
+import {
+  sanitizeClientErrorMessage,
+  sanitizeClientErrorPage,
+  sanitizeClientErrorRelease,
+  sanitizeClientErrorStack,
+  type ClientErrorKind,
+} from '@studio/shared';
 
-export type ClientErrorKind = 'error' | 'unhandledrejection' | 'react' | 'media' | 'stream' | 'recording';
+export type { ClientErrorKind } from '@studio/shared';
 
 export interface ClientErrorPayload {
   kind: ClientErrorKind;
@@ -45,19 +52,22 @@ const IGNORED_MESSAGES = [
 const IGNORED_STACK_SOURCES = /(chrome|moz|safari(-web)?)-extension:\/\//i;
 
 export function describeClientError(error: unknown): { message: string; stack?: string } | null {
-  if (error instanceof Error) {
-    return { message: `${error.name && error.name !== 'Error' ? `${error.name}: ` : ''}${error.message}`.trim(), stack: error.stack };
-  }
-  if (typeof error === 'string') return { message: error };
-  if (error && typeof error === 'object' && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
-    return { message: (error as { message: string }).message };
+  try {
+    if (error instanceof Error) {
+      return { message: `${error.name && error.name !== 'Error' ? `${error.name}: ` : ''}${error.message}`.trim(), stack: error.stack };
+    }
+    if (typeof error === 'string') return { message: error };
+    if (error && typeof error === 'object' && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+      return { message: (error as { message: string }).message };
+    }
+  } catch {
+    // Arbitrary rejections can have throwing getters/proxies. Describing the
+    // original failure must not produce another unhandled error.
+    return { message: 'Error: details omitted' };
   }
   if (error === undefined || error === null) return null;
-  try {
-    return { message: JSON.stringify(error).slice(0, 500) };
-  } catch {
-    return { message: String(error) };
-  }
+  // An arbitrary rejection can contain an API response or a recording manifest.
+  return { message: 'Error: details omitted' };
 }
 
 export function isIgnoredClientError(message: string, stack?: string): boolean {
@@ -96,20 +106,23 @@ export function createClientErrorReporter(options: ClientErrorReporterOptions): 
     report(kind, error) {
       const described = describeClientError(error);
       if (!described || isIgnoredClientError(described.message, described.stack)) return false;
+      const message = sanitizeClientErrorMessage(described.message);
+      if (!message) return false;
+      const stack = sanitizeClientErrorStack(described.stack);
       const at = now();
-      const key = `${kind}:${described.message}`;
+      const key = JSON.stringify([kind, message, stack]);
       const existing = recent.get(key);
       if (existing && at - existing.sentAt < dedupeWindowMs) {
-        existing.pending += 1;
+        existing.pending = Math.min(1000, existing.pending + 1);
         return false;
       }
       if (existing) flushEntry(key, at);
       const payload: ClientErrorPayload = {
         kind,
-        message: described.message,
-        ...(described.stack ? { stack: described.stack } : {}),
-        ...(options.getPage?.() ? { page: options.getPage?.() } : {}),
-        ...(options.release ? { release: options.release } : {}),
+        message,
+        ...(stack ? { stack } : {}),
+        page: sanitizeClientErrorPage(options.getPage?.()),
+        release: sanitizeClientErrorRelease(options.release),
         count: 1,
       };
       const delivered = send(payload);
@@ -164,6 +177,11 @@ export function installClientErrorReporting(): ClientErrorReporter | null {
     reporter.report('unhandledrejection', event.reason);
   });
   window.addEventListener('pagehide', () => reporter.flush());
+  // pagehide is not guaranteed on phones. Also flush during long sessions.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') reporter.flush();
+  });
+  window.setInterval(() => reporter.flush(), 60_000);
   installed = reporter;
   return reporter;
 }

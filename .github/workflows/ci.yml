@@ -22,6 +22,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      FFMPEG_BIN: /usr/bin/ffmpeg
 
     steps:
       - name: Checkout code
@@ -33,8 +35,12 @@ jobs:
           node-version: '24'
           cache: npm
 
+      - name: Install FFmpeg from Ubuntu packages
+        # ffmpeg-static downloads its binary from GitHub releases, which can be
+        # unavailable for hours. FFMPEG_BIN makes it use this system binary.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Install dependencies
-        run: npm ci
+        run: sh scripts/npm-ci-retry.sh
 
       - name: Build shared workspace
         run: npm run -w shared build
@@ -54,15 +60,20 @@ jobs:
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright
       E2E_ARTIFACT_DIR: ${{ github.workspace }}/output/e2e
+      FFMPEG_BIN: /usr/bin/ffmpeg
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
+      - name: Install FFmpeg from Ubuntu packages
+        # ffmpeg-static downloads its binary from GitHub releases, which can be
+        # unavailable for hours. FFMPEG_BIN makes it use this system binary.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Install dependencies and Chromium
         run: |
-          npm ci
+          sh scripts/npm-ci-retry.sh
           npx playwright-core install --with-deps chromium
       - name: Build local browser qualification target
         run: |
@@ -75,7 +86,7 @@ jobs:
           VITE_MEDIA_HTTP_URL: http://localhost:3001
           VITE_MEDIA_WS_URL: ws://localhost:3001/rtmp
           VITE_INVITE_BASE_URL: http://localhost:5199
-      - name: Qualify studio with host, guest and viewer browsers
+      - name: Qualify studio and anonymous error intake in serial browser suites
         run: npm run test:e2e
       - name: Upload screenshots and qualification evidence
         if: always()
@@ -87,6 +98,10 @@ jobs:
             output/e2e/*.txt
             output/e2e/*.json
             output/e2e/*.log
+            output/e2e/client-errors/*.png
+            output/e2e/client-errors/*.txt
+            output/e2e/client-errors/*.json
+            output/e2e/client-errors/*.log
           retention-days: 7
 
   recording-soak:
@@ -94,6 +109,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      FFMPEG_BIN: /usr/bin/ffmpeg
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright
       VITE_API_URL: http://localhost:3001
       VITE_WS_URL: ws://localhost:3001/ws
@@ -108,9 +124,9 @@ jobs:
           cache: npm
       - name: Install browser and media inspection tools
         run: |
-          npm ci
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          sh scripts/npm-ci-retry.sh
           npx playwright-core install --with-deps chromium
-          sudo apt-get install -y ffmpeg
       - name: Build local recording qualification target
         run: |
           npm run -w shared build

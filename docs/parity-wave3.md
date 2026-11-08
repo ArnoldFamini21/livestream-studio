@@ -2,14 +2,12 @@
 
 ## Backlog checklist
 
-- [ ] **Owner request, 2026-11-08:** accessible canvas background color and custom-image controls while presenting
-
 Unchecked items are not qualified or shipped. Partial work is recorded below;
 unit coverage alone does not complete a browser acceptance criterion.
 
-- [ ] **P0.1** Browser end-to-end qualification in Linux CI (Linux recording finalization is failing)
+- [x] **P0.1** Browser end-to-end qualification in Linux CI (PR #352 merged)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
-- [x] **P0.3** Free production error grouping, release tags, no PII (PR #354 merged)
+- [ ] **P0.3** Free production error grouping, release tags, no PII
 - [ ] **P1.4** Configurable multistream destinations, health and presets
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
 - [ ] **P1.6** Merged on-screen chat overlay, questions and export
@@ -40,16 +38,6 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P4.31** Root Dockerfile/.dockerignore trigger media deployment
 
 ## Qualification plan — 2026-11-08
-
-### Canvas background request
-
-The existing stage background already feeds the preview and compositor, but
-its picker is buried in Brand settings and solid colors are limited to presets.
-Add a Background control beside stage layout controls, including during slide
-presentations. Reuse the existing image upload/storage pipeline, add arbitrary
-hex/color selection, and preserve gradients, video and reset options. Verify
-preview and program pixels, persistence after reload, and desktop/phone layouts
-under the real CSP. No new dependency, origin or paid service is planned.
 
 Baseline: `f00242de` (PR #351). Production deployment of that baseline succeeded.
 
@@ -105,62 +93,52 @@ Evidence is generated under `output/e2e` and `output/recording-soak` on X9 Pro;
 CI publishes only screenshots, accessibility snapshots, JSON evidence and logs,
 not browser profiles or recording payloads.
 
-## Resume here next session — owner-requested stop, 2026-11-08
+## Resume here next session
 
-All implementation stopped at the owner's request to conserve usage. These
-notes supersede the earlier qualification snapshot above. No P1–P3 backlog
-item was implemented in this session.
+Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and
+browser intake regressions are saved. The browser suite now runs error intake
+and studio qualification serially, with separate diagnostic artifacts. The
+previous lint run and 26 targeted tests passed; an additional throwing-getter
+regression is awaiting the new gate run. Full current-head gates and browser
+verification must pass before this branch merges.
 
-Shipped: PR #352 browser qualification and PR #356 deployment classification
-were already merged. PR #354 anonymous error grouping, release tags and intake
-defenses merged as `e3a4f59829319b85116c2b1242c822ce40470064`. Its exact-head
-Linux CI (42464109239) passed all workspace lint/build checks, 2,032 unit/script
-tests (two database tests skipped), and 11 real Chromium browser tests. Local
-X9 browser verification of that PR was deferred; Linux browser verification
-passed. Approximate total bundle increase: 2.91 kB raw / 0.53 kB gzip. Deployment
-verification is tracked in the merge's GitHub Actions run and final handoff.
+**Linux finalization (resolved in PR #352):** five CI runs of the same code
+gave 3 passes and 2 failures waiting for "Start recording" after the 30-second
+take. Passing runs already spent 30-40 s closing out the take (scenario 73-85 s)
+with no page errors, so the failures were the 60 s deadline on a shared runner
+encoding three browsers' video in software, not a stalled stop path. The suite
+now records at the 720p preset, allows 120 s for finalization, writes
+`recording-finalize-timing.json` on success and, on a timeout, each recorder's
+stop-requested/stopped timestamps plus a screenshot. Assertions are unchanged.
 
-1. **Owner request — canvas background, draft PR #357:** the Background button
-   beside layout controls, accessible dialog, custom hex/color selection,
-   image upload/reset and saved-stage helpers are committed as an unverified
-   checkpoint. Image normalization caps dimensions at 1920px and binary size
-   at 400 KiB while retaining transparency. Dependency installation completed;
-   no lint, unit, build or browser checks ran. The new focused tests are unrun.
-   **Blocking:** the server WebSocket maxPayload is 64 KiB, whereas normalized
-   image data URLs can approach 546 KiB. Uploading a larger image can disconnect
-   the host. Do not merge until transport is fixed and verified. Consider a
-   bounded larger frame only for authenticated, admitted host/cohost branding
-   updates; retain 64 KiB for other messages and all authorization/rate checks.
-   Existing authenticated stage-image HTTP URLs cannot directly serve CSS
-   images without an appropriate authorized loader and eviction handling.
-   Then run full gates and real local-browser color/image, persistence,
-   preview/compositor and responsive checks. Use the existing X9 FFMPEG_BIN
-   when installing/building media dependencies. This draft has no server fix.
-2. **P0.2 — recording integrity, draft PR #353:** head `e7d3bda1` preserves
-   bounded 256 KiB sender read-ahead, four regression tests, stricter seven-file
-   reconnect/transfer and packet analysis, plus an untested Shift+R stop
-   diagnostic. Previous checkpoint `d6942f43` passed all local lint/build gates
-   and 2,025 tests (two database tests skipped). A quiet local smoke delivered
-   all seven files after reconnect, but failed on a 1.200-second host ISO packet
-   gap. Linux manual run 42464124847 passed normal unit/browser jobs but failed
-   its 35-second soak preflight while clicking Stop. The 20-minute soak never
-   ran. Next: validate the keyboard-stop diagnostic, rerun quiet preflight,
-   investigate any remaining gaps, then qualify at least 1,200 seconds. Keep
-   byte-identical transfer, monotonic timestamps and <=1 second packet gaps.
-   The <40 ms drift check compares endpoint media durations; it does not
-   establish peak transient drift or real-camera lip sync. Local evidence:
-   `output/recording-soak/2026-11-08T08-39-52.486Z/result.json`.
-3. Continue **P1.4** (configurable destinations/presets/health), then unchecked
-   backlog items in order after these qualifications.
+PR #352 is merged, including the Linux finalization diagnostic. Recording
+integrity and error reporting remain separate drafts awaiting their own gates.
 
-Recording finalization is not proven to be solely software-encoding delay.
-The no-folder participant path can retry an unavailable upload endpoint with
-31 seconds of backoff; an unbounded network fetch also deserves investigation.
-The existing 720p preset, 120-second short-suite finalization deadline and
-recorder diagnostics do not relax the long-soak media-integrity assertions.
+1. **P0.2 — recording integrity:** validate `codex/wave3-recording-read-ahead`.
+   The exclusive 35-second rehearsal stopped all seven recorders and resumed
+   real peer channels, but timed out receiving every guest track. The sender
+   performs serial disk reads for each approximately 16 KiB network frame;
+   the draft adds bounded 256 KiB reads plus three unrun regressions. Run those
+   tests, all gates, a quiet local smoke, then the manual CI `recording_soak`
+   input (35-second preflight followed by 1,200 seconds). Require byte-identical
+   received files, monotonic timestamps, no gap over one second and media-clock
+   drift below 40 ms. Do not claim real-camera lip sync or ExFAT throughput
+   from a Linux result. Evidence: `output/recording-soak/2026-11-08T06-54-02.627Z/`.
+2. **P0.3 — error reporting:** finish `codex/wave3-errors`. Privacy sanitization,
+   release tags, bounded grouping and intake defenses are implemented; lint
+   and 26 targeted tests passed. The interrupted full test run is not a pass.
+   Run full gates and `e2e/client-errors.test.mjs`; that browser test is now in
+   CI with serial execution so fixtures do not collide on ports. Then review and
+   merge its own PR and confirm deployed release tags.
+3. **P4.31 — deploy classifier:** isolated on
+   `codex/wave3-deploy-classifier-ready` with ten passing classifier tests.
+   Root Dockerfile/.dockerignore changes now trigger the media deployment;
+   unrelated nested Docker filenames do not. Full CI is the merge gate. This
+   branch contains no browser harness or unverified recording/error changes.
+4. Continue **P1.4** (configurable destinations/presets/health), then the
+   remaining unchecked items in order. None of P1–P3 was implemented here.
 
-All owned local test/build/browser processes were stopped. All work, evidence,
-dependencies and caches remain on X9 Pro. Run only one heavy build/browser
-qualification at a time. No new paid services or owner configuration changes
-were introduced. A real-camera/network rehearsal remains an owner action after
-synthetic recording qualification.
+No new paid services or owner configuration changes are required by the shipped
+test tooling. A real-camera/network rehearsal is still an owner action after
+synthetic recording qualification. All local work, evidence and caches remain
+on X9 Pro. Do not run multiple browser rehearsals or builds concurrently there.

@@ -29,7 +29,7 @@ import { getInternalTurnSecret, INTERNAL_TURN_PATH, INTERNAL_TURN_SIGNATURE_HEAD
 import { warnIfStudioCreationOpen } from './services/studioAccess.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { buildProductionReadiness, getStrictStartupFailure } from './services/productionReadiness.js';
-import { parseClientErrorReport, recordClientError } from './services/clientErrors.js';
+import { flushClientErrors, parseClientErrorReport, recordClientError } from './services/clientErrors.js';
 import { createAccountAuthStoreFromEnv } from './services/accountAuth.js';
 import { createRoomSnapshotStoreFromEnv } from './services/roomPersistence.js';
 import { createRecordingCatalogStoreFromEnv } from './services/recordingCatalog.js';
@@ -100,7 +100,13 @@ app.use(
 );
 // Browsers never compress request bodies; refusing gzip/deflate bodies closes the
 // decompression-bomb path in body-parser (GHSA-27r3-jxmh-p828).
-app.use(express.json({ limit: '256kb', inflate: false }));
+const parseJsonBody = express.json({ limit: '256kb', inflate: false });
+app.use((req, res, next) => {
+  // Diagnostic JSON is parsed privately below. Besides enforcing its smaller
+  // size budget, this avoids body-parser logging a malformed payload excerpt.
+  if (/^\/api\/client-errors\/?$/i.test(req.path)) next();
+  else parseJsonBody(req, res, next);
+});
 
 // Security headers (CSP, X-Frame-Options, etc.).
 // Note: the SPA is served from a separate static host (Hostinger), so this CSP
@@ -212,6 +218,8 @@ const generalLimiter = makeRateLimiter(RATE_LIMIT_MAX);
 const roomCreateLimiter = makeRateLimiter(ROOM_CREATE_LIMIT_MAX);
 const transcriptionLimiter = makeRateLimiter(TRANSCRIPTION_LIMIT_MAX);
 const clientErrorLimiter = makeRateLimiter(CLIENT_ERROR_LIMIT_MAX);
+const clientErrorFlushTimer = setInterval(flushClientErrors, 60_000);
+clientErrorFlushTimer.unref();
 const accountCredentialLimiter = makeRateLimiter(ACCOUNT_CREDENTIAL_LIMIT_MAX);
 const stageImageLimiter = makeRateLimiter(STAGE_IMAGE_LIMIT_MAX);
 const iceConfigLimiter = makeRateLimiter(ICE_CONFIG_LIMIT_MAX);
@@ -314,10 +322,19 @@ app.get('/api/health', (_req, res) => {
 
 // Browser error reports. navigator.sendBeacon posts text/plain to avoid a CORS
 // preflight, so the body is parsed here rather than by express.json().
+const parseClientErrorText = express.text({ type: ['text/plain', 'application/json'], limit: '16kb', inflate: false });
 app.post(
   '/api/client-errors',
   clientErrorLimiter.middleware,
-  express.text({ type: ['text/plain', 'application/json'], limit: '16kb', inflate: false }),
+  (req, res, next) => parseClientErrorText(req, res, (error?: { status?: number }) => {
+    if (error) {
+      // Parser errors can include untrusted charset/header text. Do not send
+      // them to Express's default response or error logger.
+      res.status(error.status === 413 || error.status === 415 ? error.status : 400).json({ error: 'Invalid error report.' });
+      return;
+    }
+    next();
+  }),
   (req, res) => {
     let body: unknown = req.body;
     if (typeof body === 'string') {
@@ -327,7 +344,7 @@ app.post(
         body = null;
       }
     }
-    const report = parseClientErrorReport(body, req.get('user-agent'));
+    const report = parseClientErrorReport(body);
     if (!report) {
       res.status(400).json({ error: 'Invalid error report.' });
       return;
@@ -620,6 +637,8 @@ function gracefulShutdown(signal: string) {
   console.log(`\nReceived ${signal}. Shutting down gracefully...`);
 
   clearInterval(rateLimitSweepTimer);
+  clearInterval(clientErrorFlushTimer);
+  flushClientErrors();
 
   // Close all WebSocket connections
   wss.clients.forEach((ws) => {

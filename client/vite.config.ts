@@ -1,8 +1,19 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { execFileSync } from 'node:child_process';
+import { sanitizeClientErrorRelease } from '../shared/src/clientErrors.ts';
+
+function buildRelease(): string {
+  const configured = sanitizeClientErrorRelease(process.env.VITE_RELEASE) ?? sanitizeClientErrorRelease(process.env.GITHUB_SHA);
+  if (configured) return configured;
+  try {
+    return sanitizeClientErrorRelease(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) ?? '';
+  } catch { return ''; }
+}
 
 export default defineConfig({
   plugins: [react()],
+  define: { 'import.meta.env.VITE_RELEASE': JSON.stringify(buildRelease()) },
   // Module workers: the in-browser Whisper worker (transformers.js) is split
   // into chunks, which the default IIFE worker format cannot do.
   worker: {
