@@ -5,7 +5,7 @@
 Unchecked items are not qualified or shipped. Partial work is recorded below;
 unit coverage alone does not complete a browser acceptance criterion.
 
-- [x] **P0.1** Browser end-to-end qualification in Linux CI (merge requires the browser job to pass)
+- [ ] **P0.1** Browser end-to-end qualification in Linux CI (Linux recording finalization is failing)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
 - [ ] **P0.3** Free production error grouping, release tags, no PII
 - [ ] **P1.4** Configurable multistream destinations, health and presets
@@ -35,7 +35,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [ ] **P4.28** Incremental StudioRoom/signaling extraction alongside feature changes
 - [ ] **P4.29** Stable pinned transcription dependencies
 - [ ] **P4.30** Account verification, Google sign-in, deletion and email env declarations
-- [ ] **P4.31** Root Dockerfile/.dockerignore trigger media deployment
+- [x] **P4.31** Root Dockerfile/.dockerignore trigger media deployment
 
 ## Qualification plan — 2026-11-08
 
@@ -99,8 +99,17 @@ Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and
 browser intake regressions are saved. Lint and 26 targeted tests passed; full
 gates and browser verification must be completed before merging this branch.
 
-The owner requested a usage-limited wrap-up before the long soak. Merge only
-the verified browser/tooling PR; the following changes are separate drafts.
+**Linux finalization (resolved in PR #352):** five CI runs of the same code
+gave 3 passes and 2 failures waiting for "Start recording" after the 30-second
+take. Passing runs already spent 30-40 s closing out the take (scenario 73-85 s)
+with no page errors, so the failures were the 60 s deadline on a shared runner
+encoding three browsers' video in software, not a stalled stop path. The suite
+now records at the 720p preset, allows 120 s for finalization, writes
+`recording-finalize-timing.json` on success and, on a timeout, each recorder's
+stop-requested/stopped timestamps plus a screenshot. Assertions are unchanged.
+
+PR #352 is merged, including the Linux finalization diagnostic. Recording
+integrity and error reporting remain separate drafts awaiting their own gates.
 
 1. **P0.2 — recording integrity:** validate `codex/wave3-recording-read-ahead`.
    The exclusive 35-second rehearsal stopped all seven recorders and resumed
@@ -118,9 +127,11 @@ the verified browser/tooling PR; the following changes are separate drafts.
    Run full gates and `e2e/client-errors.test.mjs`; add that browser test to CI
    with serial execution so fixtures do not collide on ports. Then review and
    merge its own PR and confirm deployed release tags.
-3. **P4.31 — deploy classifier:** `codex/wave3-deploy-classifier` contains the
-   root Dockerfile/.dockerignore fix and ten passing classifier tests. Update
-   from main and complete full CI before merging its separate PR.
+3. **P4.31 — deploy classifier:** isolated on
+   `codex/wave3-deploy-classifier-ready` with ten passing classifier tests.
+   Root Dockerfile/.dockerignore changes now trigger the media deployment;
+   unrelated nested Docker filenames do not. Full CI is the merge gate. This
+   branch contains no browser harness or unverified recording/error changes.
 4. Continue **P1.4** (configurable destinations/presets/health), then the
    remaining unchecked items in order. None of P1–P3 was implemented here.
 
