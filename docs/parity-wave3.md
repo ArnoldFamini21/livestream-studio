@@ -5,7 +5,7 @@
 Unchecked items are not qualified or shipped. Partial work is recorded below;
 unit coverage alone does not complete a browser acceptance criterion.
 
-- [ ] **P0.1** Browser end-to-end qualification in Linux CI (Linux recording finalization is failing)
+- [x] **P0.1** Browser end-to-end qualification in Linux CI (merged in PR #352)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
 - [ ] **P0.3** Free production error grouping, release tags, no PII
 - [ ] **P1.4** Configurable multistream destinations, health and presets
@@ -108,9 +108,32 @@ The owner requested a usage-limited wrap-up before the long soak. Browser and
 recording work remain drafts. Only an independently verified deploy-classifier
 change may merge during this wrap-up; it is isolated from the failing suite.
 
-Draft P0.2 branch checkpoint: bounded sender read-ahead and three regression
-cases are saved but unverified. Do not merge this production change until its
-unit cases, full gates, local smoke and 20-minute Linux soak pass.
+P0.2 checkpoint (PR #353): bounded 256 KiB sender read-ahead now passes all
+12 transfer tests, including four regressions for bounded disk reads/byte
+identity, resume during a read, a growing replacement snapshot and cancellation.
+Client typecheck and the local shared/server/client build pass. The eight packet
+metric tests also pass. Full gates and Linux recording qualification are pending.
+
+The exclusive local rehearsal on November 8 used the actual 720p camera preset
+(1280×720 at 30 fps) for three separate Chrome profiles. The production program
+remained 1920×1080 at 30 fps. All seven program/ISO/audio tracks completed in the
+host's native OPFS folder. A guest transferred 1,574,793 binary bytes before its
+real recording channel and signaling socket were interrupted; the replacement
+channel sent binary media and every guest track then completed. The host audio
+and host ISO files matched their original MediaRecorder bytes by SHA-256.
+
+**This rehearsal failed integrity qualification:** the host ISO has a 1.200-second
+encoded packet gap (limit: one second). Only the first two files were exported
+before this failure stopped analysis; the complete take manifest is evidence of
+receipt, not a checksum pass for the remaining five. No uncaught application,
+CSP or recording-console errors occurred. The capture lasted about 84 seconds
+while reconnect and disk work proceeded. Evidence is in
+`output/recording-soak/2026-11-08T08-39-52.486Z/` in the recording worktree.
+Subsequent runner versions retain all seven files' analysis even if one fails;
+they still fail the overall check. Do not mark P0.2 complete or merge it until
+strict Linux preflight and 20-minute recording checks pass. Net A/V duration
+drift is reported separately from initial offset; it does not prove peak sync
+error or real-camera lip sync.
 
 
 
@@ -118,8 +141,9 @@ unit cases, full gates, local smoke and 20-minute Linux soak pass.
    The exclusive 35-second rehearsal stopped all seven recorders and resumed
    real peer channels, but timed out receiving every guest track. The sender
    performs serial disk reads for each approximately 16 KiB network frame;
-   the draft adds bounded 256 KiB reads plus three unrun regressions. Run those
-   tests, all gates, a quiet local smoke, then the manual CI `recording_soak`
+   the draft adds bounded 256 KiB reads plus four passing regressions. The local
+   smoke now collects all seven tracks but fails a 1.200-second packet gap. Run
+   all gates, then the manual CI `recording_soak`
    input (35-second preflight followed by 1,200 seconds). Require byte-identical
    received files, monotonic timestamps, no gap over one second and media-clock
    drift below 40 ms. Do not claim real-camera lip sync or ExFAT throughput

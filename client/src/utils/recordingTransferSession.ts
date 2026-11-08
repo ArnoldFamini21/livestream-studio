@@ -114,7 +114,7 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
   channel.bufferedAmountLowThreshold = TRANSFER_LOW_WATER_BYTES;
 
   const sendControl = (message: TransferControlMessage) => {
-    if (channel.readyState === 'open') channel.send(serializeControlMessage(message));
+    if (!closed && channel.readyState === 'open') channel.send(serializeControlMessage(message));
   };
 
   const announcement = async (lane: SenderLane): Promise<TransferTrackAnnouncement> => {
@@ -194,7 +194,13 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
             if (channel.bufferedAmount >= TRANSFER_HIGH_WATER_BYTES) return;
             if (lane.delivered || lane.failed || !lane.state.started) continue;
             if (lane.state.sent - lane.state.acked >= TRANSFER_WINDOW_BYTES) continue;
-            if (!lane.cached || lane.state.sent >= lane.cached.size) lane.cached = await lane.track.read();
+            if (!lane.cached || lane.state.sent >= lane.cached.size) {
+              const epoch = lane.state.epoch;
+              const snapshot = await lane.track.read();
+              if (closed || channel.readyState !== 'open') return;
+              if (epoch !== lane.state.epoch || lane.delivered || lane.failed) { progressed = true; continue; }
+              lane.cached = snapshot;
+            }
             const range = nextSendRange(lane.state, lane.cached.size, maxPayload());
             if (range) {
               const epoch = lane.state.epoch;
@@ -206,7 +212,7 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
                 const end = Math.min(lane.cached.size, range.start + Math.max(TRANSFER_READ_AHEAD_BYTES, maxPayload()));
                 const bytes = new Uint8Array(await lane.cached.slice(range.start, end).arrayBuffer());
                 // A resume may arrive during the read: never cache or send its stale result.
-                if (epoch !== lane.state.epoch || lane.state.sent !== range.start || closed || channel.readyState !== 'open') { progressed = true; continue; }
+                if (epoch !== lane.state.epoch || lane.state.sent !== range.start || lane.delivered || lane.failed || closed || channel.readyState !== 'open') { progressed = true; continue; }
                 block = { start: range.start, bytes };
                 lane.readAhead = block;
               }
@@ -258,6 +264,7 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
       case 'done':
         if (!lane) return;
         lane.readAhead = null;
+        lane.cached = null;
         if (message.ok) {
           lane.delivered = true;
           try { options.onDelivered?.(lane.track.id, message.path); } catch { /* Observer errors stay local. */ }

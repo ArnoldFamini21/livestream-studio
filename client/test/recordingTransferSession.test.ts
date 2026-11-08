@@ -423,4 +423,38 @@ describe('peer-to-peer recording transfer', () => {
     } finally { sender.close(); receiver.close(); }
   });
 
+  it('does not send or cache an in-flight read after the sender is closed', async () => {
+    const { guest, host } = channelPair();
+    const payload = bytes(6_000, 29);
+    let release!: () => void;
+    let reading = false;
+    class DelayedBlob extends Blob {
+      override slice(start?: number, end?: number, type?: string): Blob {
+        const slice = super.slice(start, end, type);
+        const read = slice.arrayBuffer.bind(slice);
+        slice.arrayBuffer = async () => {
+          reading = true;
+          await new Promise<void>(resolve => { release = resolve; });
+          return read();
+        };
+        return slice;
+      }
+    }
+    const track: TransferSourceTrack = {
+      id: 'close-read', sessionId: 'rec-close', label: 'ISO', kind: 'iso', mimeType: 'video/webm',
+      read: async () => new DelayedBlob([payload]), finished: { totalBytes: payload.length },
+    };
+    const sender = createTransferSender({ channel: guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    try {
+      await until(() => guest.sent.some(message => typeof message === 'string' && parseControlMessage(message)?.t === 'hello'));
+      host.send(JSON.stringify({ t: 'resume', id: track.id, offset: 0 }));
+      await until(() => reading);
+      sender.close();
+      release();
+      await wait(20);
+      assert.equal(guest.sent.filter(message => typeof message !== 'string').length, 0);
+      assert.equal(sender.progress().tracks[0].sent, 0);
+    } finally { release?.(); sender.close(); }
+  });
+
 });
