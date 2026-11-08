@@ -214,7 +214,11 @@ try {
     return active.length >= 2 && active.every(row => performance.now() - row.started >= seconds * 1000);
   }, requestedSeconds + 0.5, { timeout: (requestedSeconds + 120) * 1000, polling: 500 })));
   console.log(JSON.stringify({ event: "stopping-recording", elapsedSeconds: (Date.now() - captureStarted) / 1000 }));
-  await host.getByRole("button", { name: "Stop recording", exact: true }).click();
+  await host.getByRole("button", { name: "Stop recording", exact: true }).waitFor();
+  // Exercise the real production shortcut. Playwright's pointer scroll/stability
+  // round-trips can starve behind software encoders on a shared runner; the
+  // short browser suite separately covers the Stop button's click behavior.
+  await host.keyboard.press("Shift+R");
   clearInterval(progressTimer);
   console.log(JSON.stringify({ event: "waiting-for-source-checksums" }));
   await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000 })));

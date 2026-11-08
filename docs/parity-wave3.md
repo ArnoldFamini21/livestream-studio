@@ -95,6 +95,37 @@ not browser profiles or recording payloads.
 
 ## Resume here next session
 
+### Stop checkpoint — PR #353
+
+The owner requested stopping work to conserve usage. PR #353 remains a draft.
+At `d6942f43`, all local gates passed: client **1,416**, server **261** with
+**2 PostgreSQL integration skips**, media server **291**, shared **22** and
+script tests **35** (**2,025 passed, 2 skipped**); all workspace typechecks and
+the root production build passed. Linux run
+[42464124847](https://github.com/ArnoldFamini21/livestream-studio/actions/runs/42464124847)
+passed its normal browser and unit/build jobs, but the 35-second recording
+preflight failed before packet analysis: Playwright's Stop-button click timed
+out after the button was visible, enabled and scrolled into view. Both guest
+transfers were progressing (95–97% in the failure screenshot); the recorders
+were still running. No application, CSP or recording-console errors appeared.
+The 20-minute step did not run. This Linux failure rules out attributing every
+stall solely to the owner's ExFAT volume.
+
+A final **unverified harness-only diagnostic** changes the soak's Stop action
+to the existing production **Shift+R** shortcut after waiting for the Stop
+button. The short suite still tests button clicks. No media, checksum, packet,
+duration or drift assertions are relaxed. Next session: review that diagnostic,
+run Linux preflight, inspect every track's retained analysis, then run the
+20-minute check only if preflight passes. The read-ahead production change must
+remain unmerged until qualification succeeds; the local 1.200-second packet
+gap remains a real failed acceptance check.
+
+Linux evidence was downloaded on X9 Pro to
+`.x9/storage/wave3-recording-linux-42464124847/preflight/`; local gate logs are
+`.x9/storage/wave3-recording-{lint,tests,full-build}.log` in the parent workspace.
+No recording or browser processes remain owned by this work item.
+
+
 **Linux finalization (resolved in PR #352):** five CI runs of the same code
 gave 3 passes and 2 failures waiting for "Start recording" after the 30-second
 take. Passing runs already spent 30-40 s closing out the take (scenario 73-85 s)
