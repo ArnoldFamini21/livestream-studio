@@ -6,17 +6,23 @@ import { startHarness, createStudio, joinStudio, admitGuest, stageGuest, screens
 
 // Observers retain only metadata. Recording and peer media still use real browser APIs.
 function observeMedia() {
+  // CI runners encode every browser's video in software on a few cores. The
+  // 720p preset keeps three browsers' recorders near real time; quality presets
+  // are covered by unit tests, this suite qualifies the recording workflow.
+  try { sessionStorage.setItem('preferredVideoQuality', '720p'); } catch { /* storage unavailable */ }
   window.__e2eMedia = { recorders: [], remoteTracks: [] };
   window.__e2ePeers = [];
   const NativeRecorder = window.MediaRecorder;
   window.MediaRecorder = class extends NativeRecorder {
     constructor(...args) {
       super(...args);
-      const record = { kinds: args[0].getTracks().map(track => track.kind), bytes: 0, chunks: 0, startedAt: null, stopped: false };
+      const record = { kinds: args[0].getTracks().map(track => track.kind), mimeType: this.mimeType, bytes: 0, chunks: 0, startedAt: null, stopRequestedAt: null, stoppedAt: null, stopped: false };
       window.__e2eMedia.recorders.push(record);
       this.addEventListener('start', () => { record.startedAt = performance.now(); });
       this.addEventListener('dataavailable', event => { record.bytes += event.data.size; record.chunks += Number(event.data.size > 0); });
-      this.addEventListener('stop', () => { record.stopped = true; });
+      this.addEventListener('stop', () => { record.stopped = true; record.stoppedAt = performance.now(); });
+      const nativeStop = this.stop.bind(this);
+      this.stop = () => { if (record.stopRequestedAt === null) record.stopRequestedAt = performance.now(); return nativeStop(); };
     }
   };
   const NativePeer = window.RTCPeerConnection;
@@ -91,7 +97,7 @@ async function recoveryFiles(page) {
   });
 }
 
-test('built studio in real Chromium under the production CSP', { timeout: 240_000 }, async t => {
+test('built studio in real Chromium under the production CSP', { timeout: 420_000 }, async t => {
   const fixture = await startHarness();
   const pages = new Map();
   const scenario = async (name, optionsOrRun, run) => {
@@ -194,7 +200,7 @@ test('built studio in real Chromium under the production CSP', { timeout: 240_00
 
     // Budget capture + OPFS commit + finalization independently. A 75s outer
     // deadline could cancel a healthy save before its selector wait expired.
-    await scenario('thirty-second recording persists non-empty program and participant tracks in OPFS', { timeout: 120_000 }, async () => {
+    await scenario('thirty-second recording persists non-empty program and participant tracks in OPFS', { timeout: 210_000 }, async () => {
       // Exclude any earlier capability probes from recording evidence.
       await host.evaluate(() => { window.__e2eMedia.recorders = []; });
       await guest.evaluate(() => { window.__e2eMedia.recorders = []; });
@@ -212,7 +218,22 @@ test('built studio in real Chromium under the production CSP', { timeout: 240_00
         }, { timeout: 15_000, message: `${person} did not commit every recording track to OPFS` });
       }
       await host.getByRole('button', { name: 'Stop recording', exact: true }).click();
-      await host.getByRole('button', { name: 'Start recording', exact: true }).waitFor({ timeout: 60_000 });
+      const stopClickedAt = Date.now();
+      try {
+        // Passing CI runs already take 30-40 s to close out a 30 s take on a
+        // shared runner; a real stall shows up as a missing stop/finalize below.
+        await host.getByRole('button', { name: 'Start recording', exact: true }).waitFor({ timeout: 120_000 });
+      } catch (error) {
+        const state = {
+          waitedMs: Date.now() - stopClickedAt,
+          host: await host.evaluate(() => window.__e2eMedia.recorders.map(record => ({ ...record, now: performance.now() }))),
+          guest: await guest.evaluate(() => window.__e2eMedia.recorders.map(record => ({ ...record, now: performance.now() }))),
+        };
+        await writeFile(path.join(fixture.artifactDir, 'recording-finalize-timeout.json'), JSON.stringify(state, null, 2));
+        await screenshot(host, fixture.artifactDir, 'recording-finalize-timeout');
+        throw error;
+      }
+      await writeFile(path.join(fixture.artifactDir, 'recording-finalize-timing.json'), JSON.stringify({ finalizeMs: Date.now() - stopClickedAt }, null, 2));
       for (const page of [host, guest]) await page.waitForFunction(() => window.__e2eMedia.recorders.filter(record => record.startedAt !== null).every(record => record.stopped));
       const recordings = { host: await host.evaluate(() => window.__e2eMedia.recorders), guest: await guest.evaluate(() => window.__e2eMedia.recorders) };
       await writeFile(path.join(fixture.artifactDir, 'recording-evidence.json'), JSON.stringify({ files, recordings }, null, 2));
