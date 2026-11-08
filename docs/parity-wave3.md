@@ -95,6 +95,10 @@ not browser profiles or recording payloads.
 
 ## Resume here next session
 
+Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and
+browser intake regressions are saved. Lint and 26 targeted tests passed; full
+gates and browser verification must be completed before merging this branch.
+
 The owner requested a usage-limited wrap-up before the long soak. Merge only
 the verified browser/tooling PR; the following changes are separate drafts.
 
