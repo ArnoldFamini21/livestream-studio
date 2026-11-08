@@ -389,6 +389,14 @@ const talkbackStateRateLimiter = new WsRateLimiter<WebSocket>(
  * connections are not torn down and nobody's tile flickers away.
  */
 const RESUME_GRACE_MS = parseBoundedDurationMs(process.env.SIGNALING_RESUME_GRACE_MS, 30_000, 0, 120_000);
+/**
+ * A browser closes its socket with 1001 ("going away") when the tab is closed
+ * or the page is reloaded. A reload is back within a few seconds; a closed tab
+ * never is, so the seat is held only briefly and the guest leaves the stage
+ * soon after they close the tab, instead of showing "Reconnecting" for 30 s.
+ */
+const GOING_AWAY_GRACE_MS = parseBoundedDurationMs(process.env.SIGNALING_GOING_AWAY_GRACE_MS, 8_000, 0, 120_000);
+const GOING_AWAY_CLOSE_CODE = 1001;
 /** Waiting guests have their own small cap; they do not take stage seats. */
 export const MAX_GREEN_ROOM_PARTICIPANTS = 5;
 const BANNED_IP_TTL_MS = 12 * 60 * 60 * 1000;
@@ -4877,6 +4885,13 @@ function handleCancelEndRoom(ws: WebSocket) {
  */
 const DELIBERATE_CLOSE_CODES = new Set([1000, 1005]);
 
+/** How long a closed connection keeps its seat: briefly for a closed tab or reload, longer for a dropped network. */
+export function getResumeGraceMs(code?: number): number {
+  if (code !== undefined && DELIBERATE_CLOSE_CODES.has(code)) return 0;
+  if (code === GOING_AWAY_CLOSE_CODE) return Math.min(GOING_AWAY_GRACE_MS, RESUME_GRACE_MS);
+  return RESUME_GRACE_MS;
+}
+
 function handleDisconnect(ws: WebSocket, code?: number) {
   wsRateLimiter.forget(ws);
   stageControlRateLimiter.forget(ws);
@@ -4895,7 +4910,8 @@ function handleDisconnect(ws: WebSocket, code?: number) {
   if (!entry || entry.ws !== ws) return;
 
   const deliberate = code !== undefined && DELIBERATE_CLOSE_CODES.has(code);
-  if (!deliberate && RESUME_GRACE_MS > 0 && !endingTimers.has(roomId)) {
+  const graceMs = getResumeGraceMs(code);
+  if (!deliberate && graceMs > 0 && !endingTimers.has(roomId)) {
     // Hold the seat: others keep the tile and their peer connection, which
     // may well still be carrying media. Nothing is announced unless the
     // participant does not come back in time.
@@ -4906,9 +4922,9 @@ function handleDisconnect(ws: WebSocket, code?: number) {
       if (rooms.get(roomId) !== roomState) return;
       if (roomState.participants.get(participantId) !== entry || entry.disconnectedAt === undefined) return;
       finalizeDeparture(roomId, roomState, participantId, 'Disconnected from signaling');
-    }, RESUME_GRACE_MS);
+    }, graceMs);
     entry.resumeTimer.unref?.();
-    console.log(`${entry.participant.name} lost their connection to room ${roomId}; holding their seat for ${Math.round(RESUME_GRACE_MS / 1000)}s`);
+    console.log(`${entry.participant.name} lost their connection to room ${roomId}; holding their seat for ${Math.round(graceMs / 1000)}s`);
     return;
   }
 
