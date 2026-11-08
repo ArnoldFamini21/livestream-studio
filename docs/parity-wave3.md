@@ -2,6 +2,8 @@
 
 ## Backlog checklist
 
+- [ ] **Owner request, 2026-11-08:** accessible canvas background color and custom-image controls while presenting
+
 Unchecked items are not qualified or shipped. Partial work is recorded below;
 unit coverage alone does not complete a browser acceptance criterion.
 
@@ -38,6 +40,16 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P4.31** Root Dockerfile/.dockerignore trigger media deployment
 
 ## Qualification plan — 2026-11-08
+
+### Canvas background request
+
+The existing stage background already feeds the preview and compositor, but
+its picker is buried in Brand settings and solid colors are limited to presets.
+Add a Background control beside stage layout controls, including during slide
+presentations. Reuse the existing image upload/storage pipeline, add arbitrary
+hex/color selection, and preserve gradients, video and reset options. Verify
+preview and program pixels, persistence after reload, and desktop/phone layouts
+under the real CSP. No new dependency, origin or paid service is planned.
 
 Baseline: `f00242de` (PR #351). Production deployment of that baseline succeeded.
 
