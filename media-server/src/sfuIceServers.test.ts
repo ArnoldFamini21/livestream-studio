@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createHmac } from 'node:crypto';
 import {
   createSfuIceConfigProvider,
+  DEFAULT_SIGNALING_SERVER_URL,
   parseCloudflareSfuIceServers,
+  readSfuSignalingTurnSource,
   readSfuTurnEnv,
+  signInternalTurnRequest,
 } from './sfuIceServers.js';
 
 const CLOUDFLARE_BODY = {
@@ -129,4 +133,90 @@ describe('SFU TURN configuration', () => {
     });
     assert.equal(await provider(), null);
   });
+
+  const SECRET = 'x'.repeat(40);
+  const PROD = { NODE_ENV: 'production', LIVE_STREAM_TOKEN_SECRET: SECRET } as NodeJS.ProcessEnv;
+
+  it('falls back to the signaling server, signed with the shared secret', () => {
+    assert.deepEqual(readSfuSignalingTurnSource(PROD), {
+      endpoint: `${DEFAULT_SIGNALING_SERVER_URL}/internal/sfu-turn-credentials`,
+      secret: SECRET,
+      transport: 'udp',
+    });
+    assert.equal(readSfuSignalingTurnSource({ NODE_ENV: 'production' }), null, 'no shared secret in production');
+    assert.equal(readSfuSignalingTurnSource({ NODE_ENV: 'production', LIVE_STREAM_TOKEN_SECRET: 'short' }), null);
+    assert.equal(readSfuSignalingTurnSource({ ...PROD, SIGNALING_SERVER_URL: 'off' }), null);
+    assert.equal(readSfuSignalingTurnSource({ ...PROD, SIGNALING_SERVER_URL: 'http://example.com' }), null, 'credentials never over plain HTTP');
+    assert.equal(readSfuSignalingTurnSource({ ...PROD, SIGNALING_SERVER_URL: 'not a url' }), null);
+    assert.equal(
+      readSfuSignalingTurnSource({ ...PROD, SIGNALING_SERVER_URL: 'https://api.example.com/some/path' })?.endpoint,
+      'https://api.example.com/internal/sfu-turn-credentials'
+    );
+    assert.equal(readSfuSignalingTurnSource({}), null, 'dev needs SIGNALING_SERVER_URL');
+    assert.equal(readSfuSignalingTurnSource({ SIGNALING_SERVER_URL: 'http://localhost:3001' })?.secret, 'development-live-stream-token-secret');
+  });
+
+  it('signs "studio-sfu-turn:v1:<seconds>" with HMAC-SHA256, matching the server', () => {
+    const expected = createHmac('sha256', SECRET).update('studio-sfu-turn:v1:1700000000').digest('base64url');
+    assert.equal(signInternalTurnRequest(SECRET, 1700000000), `1700000000.${expected}`);
+  });
+
+  it('gets relay credentials from the signaling server when it has no Cloudflare key', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    let time = 1_700_000_000_000;
+    const provider = createSfuIceConfigProvider({
+      env: PROD,
+      now: () => time,
+      log: () => {},
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return okResponse({ ...CLOUDFLARE_BODY, ttlSeconds: 86_400 });
+      }) as unknown as typeof fetch,
+    });
+    const config = await provider();
+    assert.equal(config?.iceTransportPolicy, 'relay');
+    assert.equal(config?.iceServers[0].urls, 'turn:turn.cloudflare.com:3478?transport=udp');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, `${DEFAULT_SIGNALING_SERVER_URL}/internal/sfu-turn-credentials`);
+    const headers = calls[0].init.headers as Record<string, string>;
+    assert.equal(headers['X-Studio-Internal-Signature'], signInternalTurnRequest(SECRET, 1_700_000_000));
+    assert.equal(JSON.stringify(calls[0].init).includes('Bearer'), false, 'no Cloudflare token involved');
+    await provider();
+    assert.equal(calls.length, 1, 'cached');
+    time += 12 * 3600_000 + 1;
+    await provider();
+    assert.equal(calls.length, 2, 'refreshed at half the lifetime');
+  });
+
+  it('prefers its own Cloudflare key over the signaling server', async () => {
+    const urls: string[] = [];
+    const provider = createSfuIceConfigProvider({
+      env: { ...PROD, ...ENV },
+      log: () => {},
+      fetchImpl: (async (url: string) => { urls.push(url); return okResponse(CLOUDFLARE_BODY); }) as unknown as typeof fetch,
+    });
+    await provider();
+    assert.equal(urls.length, 1);
+    assert.match(urls[0], /^https:\/\/rtc\.live\.cloudflare\.com\//);
+  });
+
+  it('returns null and backs off when the signaling server refuses', async () => {
+    let fetched = 0;
+    const logs: string[] = [];
+    let time = 0;
+    const provider = createSfuIceConfigProvider({
+      env: PROD,
+      now: () => time,
+      log: (message) => logs.push(message),
+      fetchImpl: (async () => { fetched += 1; return { ok: false, status: 401, json: async () => ({}) } as unknown as Response; }) as unknown as typeof fetch,
+    });
+    assert.equal(await provider(), null);
+    assert.equal(await provider(), null);
+    assert.equal(fetched, 1, 'no retry inside the back-off window');
+    assert.match(logs[0], /signaling server returned 401/);
+    time += 31_000;
+    await provider();
+    assert.equal(fetched, 2);
+  });
 });
+

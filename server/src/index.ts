@@ -24,7 +24,8 @@ import { highlightRouter } from './routes/highlights.js';
 import { episodeContentRouter } from './routes/episodeContent.js';
 import { captionTranslationRouter } from './routes/captionTranslation.js';
 import { createAiRouteAccessMiddleware } from './services/aiAccess.js';
-import { buildIceConfigStatusFromEnv, buildStunOnlyIceConfigWithStatus, resolveIceConfigWithStatus } from './services/ice-config.js';
+import { buildIceConfigStatusFromEnv, buildStunOnlyIceConfigWithStatus, mintCloudflareTurnForSfu, resolveIceConfigWithStatus } from './services/ice-config.js';
+import { getInternalTurnSecret, INTERNAL_TURN_PATH, INTERNAL_TURN_SIGNATURE_HEADER, verifyInternalTurnSignature } from './services/internalTurn.js';
 import { warnIfStudioCreationOpen } from './services/studioAccess.js';
 import { buildSignalingPrometheusMetrics } from './services/metrics.js';
 import { buildProductionReadiness, getStrictStartupFailure } from './services/productionReadiness.js';
@@ -220,7 +221,7 @@ app.use((req, res, next) => {
     stageImageLimiter.middleware(req, res, next);
     return;
   }
-  if (req.path === '/api/ice-config') {
+  if (req.path === '/api/ice-config' || req.path === INTERNAL_TURN_PATH) {
     iceConfigLimiter.middleware(req, res, next);
     return;
   }
@@ -382,6 +383,30 @@ app.get('/api/ice-config', async (req, res) => {
   res.json(await resolveIceConfigWithStatus(process.env, {
     onError: (error) => console.warn('Cloudflare TURN unavailable; using the fallback relay:', error instanceof Error ? error.message : error),
   }));
+});
+
+// Cloudflare TURN credentials for the media server's SFU, so the Cloudflare
+// key only has to live on this service. Signed with the shared
+// LIVE_STREAM_TOKEN_SECRET (services/internalTurn.ts); never used by browsers.
+app.post(INTERNAL_TURN_PATH, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const raw = req.headers[INTERNAL_TURN_SIGNATURE_HEADER];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  if (!verifyInternalTurnSignature(header, getInternalTurnSecret(process.env))) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  try {
+    const minted = await mintCloudflareTurnForSfu(process.env);
+    if (!minted) {
+      res.status(404).json({ error: 'Cloudflare TURN is not configured on the signaling server' });
+      return;
+    }
+    res.json(minted);
+  } catch (error) {
+    console.warn('Could not mint SFU TURN credentials:', error instanceof Error ? error.message : error);
+    res.status(502).json({ error: 'Cloudflare TURN unavailable' });
+  }
 });
 
 // Error-handling middleware (must be last in the middleware chain)
