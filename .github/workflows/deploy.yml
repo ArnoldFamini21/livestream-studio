@@ -93,6 +93,7 @@ jobs:
       - name: Build client
         run: npm run -w client build
         env:
+          VITE_RELEASE: ${{ github.sha }}
           VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
           VITE_GOOGLE_APP_ID: ${{ vars.VITE_GOOGLE_APP_ID }}
           VITE_GOOGLE_PICKER_API_KEY: ${{ secrets.VITE_GOOGLE_PICKER_API_KEY }}

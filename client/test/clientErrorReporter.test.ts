@@ -12,7 +12,7 @@ function setup(overrides: { maxReports?: number } = {}) {
   const sent: ClientErrorPayload[] = [];
   const reporter = createClientErrorReporter({
     send: (payload) => sent.push(payload),
-    release: 'abc123',
+    release: 'abc1234',
     getPage: () => '/studio/room-1',
     now: () => time,
     dedupeWindowMs: 1000,
@@ -27,11 +27,11 @@ describe('client error reporter', () => {
     assert.equal(reporter.report('stream', new TypeError('relay closed')), true);
     assert.equal(sent.length, 1);
     assert.equal(sent[0].kind, 'stream');
-    assert.equal(sent[0].message, 'TypeError: relay closed');
-    assert.equal(sent[0].page, '/studio/room-1');
-    assert.equal(sent[0].release, 'abc123');
+    assert.equal(sent[0].message, 'TypeError: details omitted');
+    assert.equal(sent[0].page, '/studio/:roomId');
+    assert.equal(sent[0].release, 'abc1234');
     assert.equal(sent[0].count, 1);
-    assert.ok(sent[0].stack);
+    assert.equal(sent[0].stack, undefined, 'local file paths are not transmitted');
   });
 
   it('folds repeats into one counted report', () => {
@@ -61,9 +61,9 @@ describe('client error reporter', () => {
 
   it('stops at the per-page budget', () => {
     const { reporter, sent } = setup({ maxReports: 2 });
-    reporter.report('error', 'a');
-    reporter.report('error', 'b');
-    assert.equal(reporter.report('error', 'c'), false);
+    reporter.report('error', 'Failed to fetch');
+    reporter.report('error', 'NotAllowedError');
+    assert.equal(reporter.report('error', 'QuotaExceededError'), false);
     assert.equal(sent.length, 2);
   });
 
@@ -86,7 +86,33 @@ describe('client error reporter', () => {
   it('describes non-Error rejections', () => {
     assert.deepEqual(describeClientError('text'), { message: 'text' });
     assert.deepEqual(describeClientError({ message: 'obj' }), { message: 'obj' });
-    assert.deepEqual(describeClientError({ code: 7 }), { message: '{"code":7}' });
+    assert.deepEqual(describeClientError({ code: 7 }), { message: 'Error: details omitted' });
     assert.equal(describeClientError(null), null);
+  });
+
+  it('groups by sanitized message and stack, keeping distinct source locations separate', () => {
+    const { reporter, sent } = setup();
+    const error = new TypeError('Cannot read properties of undefined (reading "John Smith")');
+    error.stack = 'TypeError: John Smith\n at privateName (https://studio.test/assets/StudioRoom-ABCdef12.js:10:20)';
+    reporter.report('error', error);
+    reporter.report('error', error);
+    error.stack = 'TypeError: Jane Jones\n at otherName (https://studio.test/assets/StudioRoom-ABCdef12.js:11:20)';
+    reporter.report('error', error);
+    reporter.flush();
+    assert.deepEqual(sent.map((report) => report.count), [1, 1, 1]);
+    assert.equal(sent[0].stack, 'asset:ABCdef12:10:20');
+    assert.equal(sent[1].stack, 'asset:ABCdef12:11:20');
+    assert.doesNotMatch(JSON.stringify(sent), /John|Jane|Smith|Jones|studio\.test|privateName|otherName/);
+  });
+
+  it('removes private data before calling the transport', () => {
+    const sent: ClientErrorPayload[] = [];
+    const reporter = createClientErrorReporter({ send: (report) => sent.push(report), getPage: () => '/watch/private-room?email=alice@example.com', release: 'alice@example.com' });
+    reporter.report('recording', 'Recording for Alice Smith +63 917 123 4567 /Users/Alice/private.mp4 failed. token=private-secret');
+    reporter.report('error', { email: 'alice@example.com', token: 'private-secret' });
+    assert.equal(sent[0].message, 'Error: details omitted');
+    assert.equal(sent[0].page, '/watch/:roomId');
+    assert.equal(sent[0].release, undefined);
+    assert.doesNotMatch(JSON.stringify(sent), /Alice|alice|private|917|Users|mp4/);
   });
 });
