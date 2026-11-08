@@ -5,7 +5,7 @@
 Unchecked items are not qualified or shipped. Partial work is recorded below;
 unit coverage alone does not complete a browser acceptance criterion.
 
-- [ ] **P0.1** Browser end-to-end qualification in Linux CI
+- [x] **P0.1** Browser end-to-end qualification in Linux CI (merge requires the browser job to pass)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
 - [ ] **P0.3** Free production error grouping, release tags, no PII
 - [ ] **P1.4** Configurable multistream destinations, health and presets
@@ -75,16 +75,52 @@ networks, mobile browser support or a public broadcast's reliability.
   Program, host ISO/audio and guest ISO/audio all committed non-empty OPFS
   media in the 30-second take.
 - Screenshots were inspected at **1440×900**, **1000×625** and **390×844**.
-  The custom layout reserves its empty left content slot as designed. A black
-  host-video tile in the guest phone screenshot needs stronger playback
-  assertions and investigation before this item is marked qualified.
+  The custom layout reserves its empty left content slot as designed. The
+  initial guest phone screenshot preceded the remote video's first painted
+  frame after a responsive remount. Follow-up diagnostics show both cameras
+  playing. Playback assertions now track each video element's own clock and
+  require advancing, nonblack frames after admission, talkback, recording and
+  phone resize. No production video-lifecycle change was needed.
 - The long recording runner exercises real peer transfer with separate browser
   profiles and a native OPFS directory standing in for the directory picker.
   Short reconnect rehearsals are development checks only; the 20-minute result
   is still pending. Concurrent builds/tests caused filesystem contention, so
   timing qualification runs exclusively, without other builds or browsers.
-- Linux CI, the sustained soak and production deployment remain pending.
+- Linux CI is a required merge gate. The sustained soak remains incomplete;
+  short runs and successful reconnect alone do not qualify recording integrity.
 
 Evidence is generated under `output/e2e` and `output/recording-soak` on X9 Pro;
 CI publishes only screenshots, accessibility snapshots, JSON evidence and logs,
 not browser profiles or recording payloads.
+
+## Resume here next session
+
+The owner requested a usage-limited wrap-up before the long soak. Merge only
+the verified browser/tooling PR; the following changes are separate drafts.
+
+1. **P0.2 — recording integrity:** validate `codex/wave3-recording-read-ahead`.
+   The exclusive 35-second rehearsal stopped all seven recorders and resumed
+   real peer channels, but timed out receiving every guest track. The sender
+   performs serial disk reads for each approximately 16 KiB network frame;
+   the draft adds bounded 256 KiB reads plus three unrun regressions. Run those
+   tests, all gates, a quiet local smoke, then the manual CI `recording_soak`
+   input (35-second preflight followed by 1,200 seconds). Require byte-identical
+   received files, monotonic timestamps, no gap over one second and media-clock
+   drift below 40 ms. Do not claim real-camera lip sync or ExFAT throughput
+   from a Linux result. Evidence: `output/recording-soak/2026-11-08T06-54-02.627Z/`.
+2. **P0.3 — error reporting:** finish `codex/wave3-errors`. Privacy sanitization,
+   release tags, bounded grouping and intake defenses are implemented; lint
+   and 26 targeted tests passed. The interrupted full test run is not a pass.
+   Run full gates and `e2e/client-errors.test.mjs`; add that browser test to CI
+   with serial execution so fixtures do not collide on ports. Then review and
+   merge its own PR and confirm deployed release tags.
+3. **P4.31 — deploy classifier:** `codex/wave3-deploy-classifier` contains the
+   root Dockerfile/.dockerignore fix and ten passing classifier tests. Update
+   from main and complete full CI before merging its separate PR.
+4. Continue **P1.4** (configurable destinations/presets/health), then the
+   remaining unchecked items in order. None of P1–P3 was implemented here.
+
+No new paid services or owner configuration changes are required by the shipped
+test tooling. A real-camera/network rehearsal is still an owner action after
+synthetic recording qualification. All local work, evidence and caches remain
+on X9 Pro. Do not run multiple browser rehearsals or builds concurrently there.
