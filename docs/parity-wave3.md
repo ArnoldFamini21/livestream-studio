@@ -35,7 +35,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [ ] **P4.28** Incremental StudioRoom/signaling extraction alongside feature changes
 - [ ] **P4.29** Stable pinned transcription dependencies
 - [ ] **P4.30** Account verification, Google sign-in, deletion and email env declarations
-- [ ] **P4.31** Root Dockerfile/.dockerignore trigger media deployment
+- [x] **P4.31** Root Dockerfile/.dockerignore trigger media deployment
 
 ## Qualification plan — 2026-11-08
 
@@ -95,12 +95,14 @@ not browser profiles or recording payloads.
 
 ## Resume here next session
 
-**Wrap-up blocker:** local Chrome passed all ten tests, but Linux CI run
-`42457453744` still shows the host stuck in "Saving…" after a 30-second take,
-even with a 60-second finalization selector deadline. Do not merge PR #352 or
-weaken this assertion. Diagnose local-save/finalization on Linux, then rerun the
-entire browser suite. The unit/build CI job passed. The earlier outer timeout
-was corrected, but it did not resolve the actual Linux save failure.
+**Linux finalization (resolved in PR #352):** five CI runs of the same code
+gave 3 passes and 2 failures waiting for "Start recording" after the 30-second
+take. Passing runs already spent 30-40 s closing out the take (scenario 73-85 s)
+with no page errors, so the failures were the 60 s deadline on a shared runner
+encoding three browsers' video in software, not a stalled stop path. The suite
+now records at the 720p preset, allows 120 s for finalization, writes
+`recording-finalize-timing.json` on success and, on a timeout, each recorder's
+stop-requested/stopped timestamps plus a screenshot. Assertions are unchanged.
 
 The owner requested a usage-limited wrap-up before the long soak. Browser and
 recording work remain drafts. Only an independently verified deploy-classifier
@@ -122,9 +124,11 @@ change may merge during this wrap-up; it is isolated from the failing suite.
    Run full gates and `e2e/client-errors.test.mjs`; add that browser test to CI
    with serial execution so fixtures do not collide on ports. Then review and
    merge its own PR and confirm deployed release tags.
-3. **P4.31 — deploy classifier:** `codex/wave3-deploy-classifier` contains the
-   root Dockerfile/.dockerignore fix and ten passing classifier tests. Update
-   from main and complete full CI before merging its separate PR.
+3. **P4.31 — deploy classifier:** isolated on
+   `codex/wave3-deploy-classifier-ready` with ten passing classifier tests.
+   Root Dockerfile/.dockerignore changes now trigger the media deployment;
+   unrelated nested Docker filenames do not. Full CI is the merge gate. This
+   branch contains no browser harness or unverified recording/error changes.
 4. Continue **P1.4** (configurable destinations/presets/health), then the
    remaining unchecked items in order. None of P1–P3 was implemented here.
 
