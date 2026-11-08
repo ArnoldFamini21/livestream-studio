@@ -667,10 +667,13 @@ export function Sidebar(props: SidebarProps) {
                       <option value="block">Block</option>
                     </select>
                   </div>
-                  <details className="studio-brand-more">
-                    <summary>Background</summary>
-                    <BackgroundPicker value={props.stageBackground} onChange={props.onStageBackgroundChange} />
-                  </details>
+                </div>
+              </details>
+              <details className="studio-brand-setting">
+                <summary><span>Canvas background</span></summary>
+                <div className="studio-brand-group-content">
+                  <p className="studio-brand-hint">Behind your slides and cameras, in the preview, stream and program recording.</p>
+                  <BackgroundPicker value={props.stageBackground} onChange={props.onStageBackgroundChange} />
                 </div>
               </details>
               {props.onBrandFontChange && props.brandFontState && (

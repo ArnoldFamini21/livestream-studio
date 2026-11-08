@@ -9,6 +9,7 @@ import {
   readStageImage,
   setSfuMembershipNotifier,
   setupSignalingServer,
+  STAGE_BACKGROUND_IMAGE_MAX_BYTES,
   storeStageImage,
 } from '../dist/services/signaling.js';
 
@@ -2595,6 +2596,90 @@ describe('studio branding sync', () => {
       const error = await errorMessage;
       assert.match(error.payload.message, /Only hosts and co-hosts/);
       assert.equal(getRooms().get(room.id)?.studioBranding, undefined);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('canvas background sync', () => {
+  it('relays an uploaded canvas picture by id, readable only with a stage token, and protects it from eviction', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Canvas background test', 'Arnold', {
+      creatorIp: `canvas-background-${Date.now()}`,
+    });
+    getRooms().get(room.id).room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostSession = await hostJoined;
+      const hostId = hostSession.payload.participant.id;
+      const token = hostSession.payload.stageUploadToken;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest' });
+      const guestSession = await guestJoined;
+
+      const branding = (stageBackground) => ({
+        type: 'studio-branding-updated',
+        payload: {
+          brandColor: '#a78bfa',
+          logoUrl: null,
+          stageBackground,
+          waitingRoom: { headline: 'Lobby', message: 'Soon', backgroundMode: 'studio', showLogo: true },
+        },
+      });
+
+      // Colour only: no upload, relayed as sent.
+      const colour = waitForMessage(guest, 'studio-branding-updated', (message) => message.payload.stageBackground.type === 'color');
+      sendSignal(host, branding({ type: 'color', value: '#123456' }));
+      assert.deepEqual((await colour).payload.stageBackground, { type: 'color', value: '#123456' });
+
+      // A ~400 KiB picture goes over HTTP; the signaling message only names it.
+      const picture = Buffer.alloc(400 * 1024, 7);
+      const stored = storeStageImage({ roomId: room.id, participantId: hostId, token, contentType: 'image/webp', data: picture });
+      assert.equal(stored.ok, true);
+      const imageUpdate = waitForMessage(guest, 'studio-branding-updated', (message) => message.payload.stageBackground.type === 'image');
+      const message = branding({ type: 'image', value: 'data:image/webp;base64,ignored', imageId: stored.imageId });
+      assert.ok(JSON.stringify(message).length < 64 * 1024);
+      sendSignal(host, message);
+      const update = await imageUpdate;
+      assert.deepEqual(update.payload.stageBackground, { type: 'image', value: '', imageId: stored.imageId });
+      assert.equal(host.readyState, WebSocket.OPEN, 'the host stays connected');
+      assert.equal(readStageImage(room.id, stored.imageId, '').status, 403);
+      assert.deepEqual(readStageImage(room.id, stored.imageId, guestSession.payload.stageReadToken).image.data, picture);
+
+      // Late joiners and reloads receive the id in room-joined.
+      const lateGuest = await connectClient(harness.url);
+      const lateJoined = waitForMessage(lateGuest, 'room-joined');
+      joinRoom(lateGuest, { roomId: room.id, name: 'Late Guest', role: 'guest' });
+      assert.deepEqual((await lateJoined).payload.studioBranding.stageBackground, { type: 'image', value: '', imageId: stored.imageId });
+
+      // Filling the studio with slides never evicts the canvas background.
+      for (let index = 0; index < 70; index += 1) {
+        assert.equal(storeStageImage({ roomId: room.id, participantId: hostId, token, contentType: 'image/jpeg', data: Buffer.alloc(1024, index) }).ok, true);
+      }
+      assert.ok(getStageImage(room.id, stored.imageId), 'background survives eviction');
+
+      // Ids the studio does not hold, or pictures over the background cap, are dropped.
+      const unknown = waitForMessage(guest, 'studio-branding-updated', (message) => message.payload.stageBackground.type === 'none');
+      sendSignal(host, branding({ type: 'image', value: '', imageId: 'never-uploaded' }));
+      assert.deepEqual((await unknown).payload.stageBackground, { type: 'none', value: '' });
+      const oversized = storeStageImage({ roomId: room.id, participantId: hostId, token, contentType: 'image/png', data: Buffer.alloc(STAGE_BACKGROUND_IMAGE_MAX_BYTES + 1, 1) });
+      assert.equal(oversized.ok, true, 'still a valid stage picture');
+      const tooLarge = waitForMessage(guest, 'studio-branding-updated', (message) => message.payload.brandColor === '#00ff00');
+      const oversizedBranding = branding({ type: 'image', value: '', imageId: oversized.imageId });
+      oversizedBranding.payload.brandColor = '#0f0';
+      sendSignal(host, oversizedBranding);
+      assert.deepEqual((await tooLarge).payload.stageBackground, { type: 'none', value: '' });
+
+      // Guests still cannot set the studio background.
+      const refused = waitForMessage(guest, 'error', (error) => error.payload.code === 'UNAUTHORIZED');
+      sendSignal(guest, branding({ type: 'image', value: '', imageId: stored.imageId }));
+      await refused;
     } finally {
       await harness.close();
     }
