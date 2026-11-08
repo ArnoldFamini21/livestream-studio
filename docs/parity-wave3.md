@@ -8,7 +8,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P0.1** Browser end-to-end qualification in Linux CI (PR #352 merged)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
 - [ ] **P0.3** Free production error grouping, release tags, no PII
-- [x] **P1.4** Configurable multistream destinations, health and presets (verified locally; see below)
+- [x] **P1.4** Configurable multistream destinations, health and presets (PR #360, verified locally; see below)
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
 - [ ] **P1.6** Merged on-screen chat overlay, questions and export
 - [ ] **P1.7** Moderated viewer chat, reactions and Q&A
@@ -121,7 +121,7 @@ destination, a recorded file's pixels, and a server restart with a live host.
 Logos are still sent inline in branding, so a logo data URL over about 60 KiB
 can still exceed the WebSocket cap; that predates this change.
 
-## P1.4 — more stream destinations
+## P1.4 — more stream destinations (PR #360)
 
 A broadcast can now send to up to **8** destinations (was 3). The client cap is
 `MAX_ENABLED_DESTINATIONS` in `client/src/utils/streamDestinations.ts` (the
@@ -241,7 +241,7 @@ unit test) in a separate PR, and rerun the soak. Evidence is on X9 Pro in
    Root Dockerfile/.dockerignore changes now trigger the media deployment;
    unrelated nested Docker filenames do not. Full CI is the merge gate. This
    branch contains no browser harness or unverified recording/error changes.
-4. P1.4 (destinations/presets/health) is in its own PR. Continue with the
+4. P1.4 (destinations/presets/health) is PR #360. Continue with the
    remaining unchecked items in order, starting at P1.5.
 
 No new paid services or owner configuration changes are required by the shipped
