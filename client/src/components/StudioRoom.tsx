@@ -8,6 +8,7 @@ import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { CanvasBackgroundControl } from './CanvasBackgroundControl.tsx';
 import { getPersistableStageBackground, getStageBackgroundStyle } from '../utils/stageBackground.ts';
+import { getCanvasBackgroundUploadKey, getSharedBackgroundImageUrl, needsCanvasBackgroundUpload, resolveSharedStageBackground, toSharedStageBackground, uploadCanvasBackground } from '../utils/canvasBackgroundSync.ts';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { deleteStoredMediaAsset, isStorableUploadedMediaAsset, loadStoredMediaAssets, mergeRestoredMediaAssets, saveStoredMediaAsset } from '../utils/mediaAssetStore.ts';
 import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, getPresentingViewLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
@@ -1183,9 +1184,49 @@ export function StudioRoom() {
   const [remoteStageContent, setRemoteStageContent] = useState<StageContentPayload | null>(null);
   const stageUploadTokenRef = useRef<string | null>(null);
   const stageImageIdsRef = useRef(new Map<string, string>());
+  // The host's custom canvas picture, uploaded like a stage picture: the
+  // branding message names it by id (null while the upload is in flight).
+  const canvasBackgroundImageIdsRef = useRef(new Map<string, string>());
+  const [sharedStageBackground, setSharedStageBackground] = useState<StageBackground | null>({ type: 'none', value: '' });
+  const [canvasBackgroundShareFailed, setCanvasBackgroundShareFailed] = useState(false);
+  // Everyone else paints the host's background; an uploaded picture is loaded
+  // with this participant's stage read token into an object URL.
+  const remoteStageBackground = remoteStudioBranding?.stageBackground ?? null;
+  const remoteBackgroundImageUrl = roomId ? getSharedBackgroundImageUrl(remoteStageBackground, roomId) : null;
+  const [loadedRemoteBackgroundUrl, setLoadedRemoteBackgroundUrl] = useState<string | null>(null);
+  const remoteBackgroundObjectUrlRef = useRef<string | null>(null);
   const lastStageContentSignatureRef = useRef(EMPTY_STAGE_CONTENT_SIGNATURE);
   // Bumped on every join so the stage is re-sent to a server that restarted.
   const [stageMirrorEpoch, setStageMirrorEpoch] = useState(0);
+  useEffect(() => {
+    if (!remoteBackgroundImageUrl) return;
+    let cancelled = false;
+    // Keep painting the previous picture until the next one has loaded. Every
+    // join (stageMirrorEpoch) brings a fresh read token, so load again then.
+    void loadStageImageObjectUrl(remoteBackgroundImageUrl, stageReadTokenRef.current).then((objectUrl) => {
+      if (cancelled) {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      const previous = remoteBackgroundObjectUrlRef.current;
+      remoteBackgroundObjectUrlRef.current = objectUrl;
+      setLoadedRemoteBackgroundUrl(objectUrl);
+      if (previous && previous !== objectUrl) URL.revokeObjectURL(previous);
+    });
+    return () => { cancelled = true; };
+  }, [remoteBackgroundImageUrl, stageMirrorEpoch]);
+  useEffect(() => () => {
+    if (remoteBackgroundObjectUrlRef.current) URL.revokeObjectURL(remoteBackgroundObjectUrlRef.current);
+  }, []);
+  const remoteCanvasBackground = useMemo(
+    () => resolveSharedStageBackground(remoteStageBackground, loadedRemoteBackgroundUrl),
+    [loadedRemoteBackgroundUrl, remoteStageBackground]
+  );
+  // Only the host sets the canvas background (and sends studio branding). Guests
+  // and co-hosts paint the host's, so a co-host running the program while the
+  // host is away still broadcasts it.
+  const isStudioHost = myParticipant?.role === 'host';
+  const canvasBackground = !isStudioHost && remoteStudioBranding ? remoteCanvasBackground : stageBackground;
   const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>('top-right');
   const [logoPosition, setLogoPosition] = useState<LogoPosition | null>(null);
   const [logoSize, setLogoSize] = useState<LogoSize>('medium');
@@ -1770,10 +1811,10 @@ export function StudioRoom() {
     return buildActiveStreamScreen(
       activeStreamScreenState.kind,
       streamScreenConfig,
-      { brandColor, logoUrl, stageBackground },
+      { brandColor, logoUrl, stageBackground: canvasBackground },
       activeStreamScreenState.activatedAtMs
     );
-  }, [activeStreamScreenState, brandColor, logoUrl, stageBackground, streamScreenConfig]);
+  }, [activeStreamScreenState, brandColor, canvasBackground, logoUrl, streamScreenConfig]);
   const activeStreamScreenBackgroundStyle = useMemo(() => (
     activeStreamScreen ? getStageBackgroundStyle(activeStreamScreen.background) : {}
   ), [activeStreamScreen]);
@@ -1896,7 +1937,7 @@ export function StudioRoom() {
     highlightedPoll: polls.find((poll) => poll.highlighted) || null,
     floatingReactions,
     caption: broadcastCaption,
-    stageBackground,
+    stageBackground: canvasBackground,
     brandColor,
     logoUrl,
     logoPlacement,
@@ -2054,15 +2095,18 @@ export function StudioRoom() {
     if (relayBackupRecording) setLiveBackupRecording(relayBackupRecording);
   }, [relayBackupRecording]);
 
-  const localStudioBrandingPayload = useMemo(() => buildStudioBrandingPayload({
+  // A custom picture is sent as its uploaded id, never inline: hold branding
+  // back while that upload is in flight (sharedStageBackground is null).
+  const localStudioBrandingPayload = useMemo(() => sharedStageBackground && buildStudioBrandingPayload({
     brandColor,
     logoUrl,
-    stageBackground,
+    stageBackground: sharedStageBackground,
     waitingRoom: waitingRoomBranding,
     updatedBy: myParticipant?.id,
-  }), [brandColor, logoUrl, myParticipant?.id, stageBackground, waitingRoomBranding]);
+  }), [brandColor, logoUrl, myParticipant?.id, sharedStageBackground, waitingRoomBranding]);
 
   useEffect(() => {
+    if (!localStudioBrandingPayload) return;
     if (!connected || !joined || !canUseOperatorControls || myParticipant?.role !== 'host') return;
     const timeout = window.setTimeout(() => {
       send({
@@ -2808,6 +2852,7 @@ export function StudioRoom() {
           stageUploadTokenRef.current = message.payload.stageUploadToken || null;
           // Uploaded pictures do not survive a server restart; upload afresh after every join.
           stageImageIdsRef.current.clear();
+          canvasBackgroundImageIdsRef.current.clear();
           lastStageContentSignatureRef.current = message.payload.stageContent
             ? JSON.stringify(message.payload.stageContent)
             : EMPTY_STAGE_CONTENT_SIGNATURE;
@@ -6229,6 +6274,44 @@ export function StudioRoom() {
     };
   }, [amStageOwner, contentHidden, sharedContentAvailable, stagedMedia, activeMediaSlideIndex, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
 
+  // The host shares a custom canvas picture the way slides are shared: upload
+  // it once per join with the stage upload token and name it in branding.
+  useEffect(() => {
+    setCanvasBackgroundShareFailed(false);
+    if (!needsCanvasBackgroundUpload(stageBackground)) {
+      setSharedStageBackground(toSharedStageBackground(stageBackground));
+      return;
+    }
+    const token = stageUploadTokenRef.current;
+    if (!isStudioHost || !roomId || !stageMirrorParticipantId || !stageMirrorAdmitted || !token) {
+      setSharedStageBackground(toSharedStageBackground(stageBackground));
+      return;
+    }
+    const key = getCanvasBackgroundUploadKey(stageBackground);
+    const uploaded = canvasBackgroundImageIdsRef.current.get(key);
+    if (uploaded) {
+      setSharedStageBackground(toSharedStageBackground(stageBackground, uploaded));
+      return;
+    }
+    setSharedStageBackground(null);
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void uploadCanvasBackground(stageBackground, { roomId, participantId: stageMirrorParticipantId, token }).then((imageId) => {
+        canvasBackgroundImageIdsRef.current.set(key, imageId);
+        if (!cancelled) setSharedStageBackground(toSharedStageBackground(stageBackground, imageId));
+      }, (error: unknown) => {
+        if (cancelled) return;
+        console.warn('Guests will see the default canvas; the background picture did not upload:', error);
+        setCanvasBackgroundShareFailed(true);
+        setSharedStageBackground(toSharedStageBackground(stageBackground));
+      });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isStudioHost, roomId, stageBackground, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
+
   // Guests: show what the host has on stage. The next picture is loaded before
   // it replaces the current one, so slides change without a blank frame.
   useEffect(() => {
@@ -6330,8 +6413,8 @@ export function StudioRoom() {
 
   // Stage background style - memoized
   const stageBackgroundStyle = useMemo((): React.CSSProperties => {
-    return getStageBackgroundStyle(stageBackground);
-  }, [stageBackground]);
+    return getStageBackgroundStyle(canvasBackground);
+  }, [canvasBackground]);
 
   // ====== Layout Engine ======
   // Each layout helper returns { containerStyle, tileStyles[], mode }.
@@ -6745,7 +6828,7 @@ export function StudioRoom() {
   const effectiveStudioBranding = remoteStudioBranding;
   const effectiveWaitingRoomBranding = normalizeWaitingRoomBranding(effectiveStudioBranding?.waitingRoom || waitingRoomBranding);
   const waitingBrandColor = effectiveStudioBranding?.brandColor || brandColor;
-  const waitingStageBackground = effectiveStudioBranding?.stageBackground || stageBackground;
+  const waitingStageBackground = canvasBackground;
   const waitingLogoUrl = effectiveWaitingRoomBranding.showLogo ? (effectiveStudioBranding?.logoUrl ?? logoUrl) : null;
   const waitingRoomBackgroundStyle = getWaitingRoomBackgroundStyle(
     effectiveWaitingRoomBranding.backgroundMode,
@@ -7324,11 +7407,11 @@ export function StudioRoom() {
               onStop={activeMedia ? onStopMedia : onToggleScreenShare}
             />
           }>
-              {stageBackground.type === 'video' && stageBackground.value && (
+              {canvasBackground.type === 'video' && canvasBackground.value && (
                 <video
-                  key={stageBackground.value}
+                  key={canvasBackground.value}
                   className="studio-stage-background-video"
-                  src={stageBackground.value}
+                  src={canvasBackground.value}
                   style={styles.stageBackgroundVideo}
                   autoPlay
                   muted
@@ -7700,7 +7783,11 @@ export function StudioRoom() {
                 customLayoutName={findCustomLayout(studioFormat.customLayouts, studioFormat.activeCustomLayoutId)?.name ?? null}
                 onOpenCustomLayouts={() => setCustomLayoutEditorOpen(true)}
               />
-              <CanvasBackgroundControl value={stageBackground} onChange={setStageBackground} />
+              {isStudioHost && <CanvasBackgroundControl
+                value={stageBackground}
+                onChange={setStageBackground}
+                shareStatus={sharedStageBackground === null ? 'sharing' : canvasBackgroundShareFailed ? 'failed' : 'shared'}
+              />}
               {!sharedContentAvailable && <><button
                 type="button"
                 onClick={() => setAutoDirectorEnabled((current) => !current)}

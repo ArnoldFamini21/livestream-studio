@@ -1091,6 +1091,13 @@ export interface OverlayContent {
 export interface StageBackground {
   type: 'color' | 'image' | 'video' | 'gradient' | 'none';
   value: string;
+  /**
+   * Studio branding only: an image background the host uploaded to
+   * `/api/rooms/:id/stage-images`. `value` is then empty, so the picture never
+   * rides the size-capped signaling socket; admitted participants load it with
+   * their stage read token.
+   */
+  imageId?: string;
 }
 
 // ============ Advanced Participant Visual Types ============

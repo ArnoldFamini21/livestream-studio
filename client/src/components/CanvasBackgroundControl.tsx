@@ -4,9 +4,19 @@ import { BackgroundPicker } from './BackgroundPicker.tsx';
 import { getStageBackgroundStyle } from '../utils/stageBackground.ts';
 import '../styles/canvas-background.css';
 
-export function CanvasBackgroundControl({ value, onChange }: {
+/** Whether everyone in the studio has the host's current background yet. */
+export type CanvasBackgroundShareStatus = 'shared' | 'sharing' | 'failed';
+
+const SHARE_STATUS_TEXT: Record<CanvasBackgroundShareStatus, string> = {
+  shared: 'Saved for this studio and shown to everyone on stage.',
+  sharing: 'Sharing with your guests…',
+  failed: 'Guests could not receive this picture. Try another image.',
+};
+
+export function CanvasBackgroundControl({ value, onChange, shareStatus = 'shared' }: {
   value: StageBackground;
   onChange: (background: StageBackground) => void;
+  shareStatus?: CanvasBackgroundShareStatus;
 }) {
   const [open, setOpen] = useState(false);
   return <>
@@ -14,13 +24,14 @@ export function CanvasBackgroundControl({ value, onChange }: {
       <span className="canvas-background-swatch" style={getStageBackgroundStyle(value)} aria-hidden="true" />
       <span>Background</span>
     </button>
-    {open && <CanvasBackgroundDialog value={value} onChange={onChange} onClose={() => setOpen(false)} />}
+    {open && <CanvasBackgroundDialog value={value} onChange={onChange} shareStatus={shareStatus} onClose={() => setOpen(false)} />}
   </>;
 }
 
-function CanvasBackgroundDialog({ value, onChange, onClose }: {
+function CanvasBackgroundDialog({ value, onChange, shareStatus, onClose }: {
   value: StageBackground;
   onChange: (background: StageBackground) => void;
+  shareStatus: CanvasBackgroundShareStatus;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -41,6 +52,6 @@ function CanvasBackgroundDialog({ value, onChange, onClose }: {
       <button type="button" aria-label="Close canvas background" onClick={() => dialogRef.current?.close()}>×</button>
     </header>
     <div className="canvas-background-content"><BackgroundPicker value={value} onChange={onChange} /></div>
-    <footer><span>Saved for this studio in this browser.</span><button type="button" onClick={() => dialogRef.current?.close()}>Done</button></footer>
+    <footer><span role="status" data-share-status={shareStatus}>{SHARE_STATUS_TEXT[shareStatus]}</span><button type="button" onClick={() => dialogRef.current?.close()}>Done</button></footer>
   </dialog>;
 }
