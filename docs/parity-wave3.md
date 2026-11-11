@@ -186,12 +186,20 @@ shown-on-screen), pause, and hide one comment (message actions).
   to operators and advertises `features.chatOverlay`. The client uses the new messages
   only when that flag is present; otherwise the overlay works locally. The host's
   browser also keeps the settings (`studio-chat-overlay:<room>`), so a reload, or a
-  server that restarted, brings them back (the host republishes when the server holds
-  nothing). Server state is in memory only.
+  server that restarted, brings them back, except Pause (its comment ids belong to an
+  earlier session). Once per join, when the server sent no state, only the host
+  publishes its browser copy; everyone else shows the defaults
+  (`decideChatOverlayOnJoin`). Anyone who becomes an admitted host or co-host after
+  joining is sent the room state. Each change carries a `seq` that the server returns
+  as `ack` to the sender only, and the sender keeps unanswered changes applied on top
+  of the server state for up to 3 seconds (`reconcileChatOverlay`). Server state is in
+  memory only.
 - **Privacy.** Backstage chat, direct messages and anything sent by someone still in
   the green room never reach the overlay (`selectOverlayComments`). Comment text is
-  reduced to plain single-line text: controls, bidi and zero-width characters removed,
-  200 characters, at most 8 rows and 3 lines per comment, 40 comments buffered.
+  reduced to plain single-line text: controls, bidi and zero-width characters removed (a joiner between two visible
+  characters stays, so emoji sequences and Persian or Indic words survive), at most 4
+  combining marks in a row, 200 characters cut between whole characters (never inside
+  an emoji), at most 8 rows and 3 lines per comment, 40 comments buffered.
 - **Questions.** `isQuestion` (`questionDetection.ts`): trailing `?`, English question
   words, Tagalog/Taglish words, and `ba` within the first four words, with guards for
   exclamations and statements. Marked in the chat list and in the overlay.
