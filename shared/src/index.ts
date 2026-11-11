@@ -1264,9 +1264,22 @@ export interface ActiveMedia {
 
 // ============ Stream Destination Types ============
 
+/** Platforms with a setup preset; anything else is a custom RTMP destination. */
+export type StreamDestinationPlatform =
+  | 'youtube'
+  | 'facebook'
+  | 'twitch'
+  | 'kick'
+  | 'linkedin'
+  | 'x'
+  | 'tiktok'
+  | 'instagram'
+  | 'vimeo'
+  | 'custom';
+
 export interface StreamDestination {
   id: string;
-  platform: 'youtube' | 'facebook' | 'twitch' | 'linkedin' | 'instagram' | 'custom';
+  platform: StreamDestinationPlatform;
   name: string;
   rtmpUrl: string;
   streamKey: string;

@@ -187,7 +187,7 @@ import {
   type ProductionSceneTemplate,
   type ProductionSceneTemplateConfig,
 } from '../utils/productionSceneTemplates.ts';
-import { getStreamDestinationIssue } from '../utils/streamDestinations.ts';
+import { getStreamDestinationIssue, MAX_ENABLED_DESTINATIONS } from '../utils/streamDestinations.ts';
 import {
   CHAT_TYPING_TTL_MS,
   getChatTypingNames,
@@ -5010,7 +5010,7 @@ export function StudioRoom() {
     const enabledDestinations = destinations.filter((d) => d.enabled);
     if (
       enabledDestinations.length === 0 ||
-      enabledDestinations.length > 3 ||
+      enabledDestinations.length > MAX_ENABLED_DESTINATIONS ||
       enabledDestinations.some((d) => getStreamDestinationIssue(d))
     ) {
       setDestinations((prev) => prev.map((d) => (

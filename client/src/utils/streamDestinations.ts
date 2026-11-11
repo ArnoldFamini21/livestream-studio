@@ -1,15 +1,27 @@
 import type { BroadcastOrientation, StreamDestination } from '@studio/shared';
 
-export const MAX_ENABLED_DESTINATIONS = 3;
+/**
+ * The media server encodes once and pushes copies to each destination, so
+ * extra destinations cost bandwidth, not CPU. The media server can lower its
+ * own cap (RTMP_MAX_DESTINATIONS) and then refuses a larger start.
+ */
+export const MAX_ENABLED_DESTINATIONS = 8;
 
 export interface StreamPlatformGuide {
   platform: StreamDestination['platform'];
   label: string;
   color: string;
+  /** Prefilled server URL; empty when the platform hands out a URL per event. */
   defaultRtmpUrl: string;
+  /** Shape of the server URL, shown as the placeholder when there is no default. */
+  rtmpUrlTemplate: string;
   dashUrl?: string;
   dashboardLabel: string;
   rtmpUrlEditable: boolean;
+  /** Where to find the server URL, shown under the URL field. */
+  rtmpUrlHelp: string;
+  /** Account or plan requirement the platform puts on streaming software, if any. */
+  requirement?: string;
   recommendedOrientation: BroadcastOrientation | null;
   orientationDetail: string;
   streamKeyLabel: string;
@@ -24,9 +36,11 @@ export const STREAM_PLATFORM_GUIDES: readonly StreamPlatformGuide[] = [
     label: 'YouTube',
     color: '#FF0000',
     defaultRtmpUrl: 'rtmp://a.rtmp.youtube.com/live2',
+    rtmpUrlTemplate: 'rtmp://a.rtmp.youtube.com/live2',
     dashUrl: 'https://studio.youtube.com/channel/UC/livestreaming',
     dashboardLabel: 'YouTube Studio',
     rtmpUrlEditable: false,
+    rtmpUrlHelp: 'YouTube uses the same server for every stream.',
     recommendedOrientation: 'landscape',
     orientationDetail: 'Use landscape for standard YouTube lives; portrait only for Shorts-style events.',
     streamKeyLabel: 'Stream key',
@@ -43,9 +57,11 @@ export const STREAM_PLATFORM_GUIDES: readonly StreamPlatformGuide[] = [
     label: 'Facebook',
     color: '#1877F2',
     defaultRtmpUrl: 'rtmps://live-api-s.facebook.com:443/rtmp/',
+    rtmpUrlTemplate: 'rtmps://live-api-s.facebook.com:443/rtmp/',
     dashUrl: 'https://www.facebook.com/live/producer',
     dashboardLabel: 'Live Producer',
     rtmpUrlEditable: false,
+    rtmpUrlHelp: 'Facebook uses the same secure server for every stream.',
     recommendedOrientation: 'landscape',
     orientationDetail: 'Use landscape for pages, groups, and scheduled Facebook Live events.',
     streamKeyLabel: 'Stream key',
@@ -62,9 +78,11 @@ export const STREAM_PLATFORM_GUIDES: readonly StreamPlatformGuide[] = [
     label: 'Twitch',
     color: '#9146FF',
     defaultRtmpUrl: 'rtmp://live.twitch.tv/app/',
+    rtmpUrlTemplate: 'rtmp://live.twitch.tv/app/',
     dashUrl: 'https://dashboard.twitch.tv/broadcast',
     dashboardLabel: 'Creator Dashboard',
     rtmpUrlEditable: false,
+    rtmpUrlHelp: 'Twitch routes this server to the nearest ingest.',
     recommendedOrientation: 'landscape',
     orientationDetail: 'Twitch expects a 16:9 gaming or talk-show style output.',
     streamKeyLabel: 'Primary stream key',
@@ -77,50 +95,145 @@ export const STREAM_PLATFORM_GUIDES: readonly StreamPlatformGuide[] = [
     keyHelp: 'Reset the key in Twitch if it was exposed in another tool.',
   },
   {
+    platform: 'kick',
+    label: 'Kick',
+    color: '#53FC18',
+    defaultRtmpUrl: 'rtmps://fa723fc1b171.global-contribute.live-video.net:443/app/',
+    rtmpUrlTemplate: 'rtmps://<ingest>.global-contribute.live-video.net:443/app/',
+    dashUrl: 'https://kick.com/dashboard/settings/stream',
+    dashboardLabel: 'Kick dashboard',
+    rtmpUrlEditable: true,
+    rtmpUrlHelp: 'Prefilled with Kick\'s usual server. If your dashboard shows a different Stream URL, paste that one.',
+    recommendedOrientation: 'landscape',
+    orientationDetail: 'Kick plays 16:9 output.',
+    streamKeyLabel: 'Stream key',
+    streamKeyPlaceholder: 'Paste your Kick stream key',
+    setupSteps: [
+      'Open the Kick dashboard and go to Settings, Stream URL & Key.',
+      'Compare the Stream URL with the one below, then copy the stream key.',
+      'Start here first; Kick shows the stream once it receives video.',
+    ],
+    keyHelp: 'Reset the key in Kick if it was shared or shown on screen.',
+  },
+  {
     platform: 'linkedin',
     label: 'LinkedIn',
     color: '#0A66C2',
-    defaultRtmpUrl: 'rtmps://rtmp-api.linkedin.com:443/rtmp/',
+    defaultRtmpUrl: '',
+    rtmpUrlTemplate: 'rtmps://… (Stream URL from your LinkedIn event)',
     dashUrl: 'https://www.linkedin.com/video/golive/now/',
     dashboardLabel: 'LinkedIn Live',
-    rtmpUrlEditable: false,
+    rtmpUrlEditable: true,
+    rtmpUrlHelp: 'LinkedIn gives each event its own Stream URL. Paste it exactly as shown.',
+    requirement: 'LinkedIn Live needs a member or page with access to streaming tools.',
     recommendedOrientation: 'landscape',
     orientationDetail: 'LinkedIn Live events are optimized for polished 16:9 webinar output.',
     streamKeyLabel: 'Stream key',
     streamKeyPlaceholder: 'Paste your LinkedIn stream key',
     setupSteps: [
       'Create or open your LinkedIn Live event.',
-      'Select third-party streaming software.',
-      'Copy the stream key shortly before going live.',
+      'Choose a streaming tool (custom stream) as the source.',
+      'Copy the Stream URL and stream key shortly before going live.',
     ],
-    keyHelp: 'LinkedIn keys can be event-specific, so re-check before each scheduled stream.',
+    keyHelp: 'LinkedIn keys are event-specific, so re-check both fields before each scheduled stream.',
+  },
+  {
+    platform: 'x',
+    label: 'X',
+    color: '#A1A1AA',
+    defaultRtmpUrl: 'rtmps://va.pscp.tv:443/x',
+    rtmpUrlTemplate: 'rtmps://<region>.pscp.tv:443/x',
+    dashUrl: 'https://studio.x.com/producer',
+    dashboardLabel: 'Media Studio Producer',
+    rtmpUrlEditable: true,
+    rtmpUrlHelp: 'Prefilled with the US East server. Use the regional RTMPS URL Media Studio shows for your source.',
+    requirement: 'Streaming software on X needs an account with Media Studio Producer access.',
+    recommendedOrientation: 'landscape',
+    orientationDetail: 'X plays 16:9 broadcasts in the timeline.',
+    streamKeyLabel: 'Stream key',
+    streamKeyPlaceholder: 'Paste your X stream key',
+    setupSteps: [
+      'Open Media Studio Producer and create a source (RTMP).',
+      'Copy its RTMPS URL and stream key.',
+      'Create a broadcast with that source, start here, then go live in Producer.',
+    ],
+    keyHelp: 'A source keeps its key; delete the source in Producer if the key leaks.',
+  },
+  {
+    platform: 'tiktok',
+    label: 'TikTok',
+    color: '#25F4EE',
+    defaultRtmpUrl: '',
+    rtmpUrlTemplate: 'rtmp://push-rtmp-….tiktokcdn.com/game/',
+    dashUrl: 'https://livecenter.tiktok.com/producer',
+    dashboardLabel: 'LIVE Producer',
+    rtmpUrlEditable: true,
+    rtmpUrlHelp: 'TikTok shows a new Server URL for each LIVE. Paste it with the key.',
+    requirement: 'TikTok only gives a server URL and key to accounts with LIVE access.',
+    recommendedOrientation: 'portrait',
+    orientationDetail: 'TikTok LIVE is portrait-first; switch the output to 9:16 before going live.',
+    streamKeyLabel: 'Stream key',
+    streamKeyPlaceholder: 'Paste your TikTok stream key',
+    setupSteps: [
+      'Open TikTok LIVE Producer on desktop and set up a LIVE.',
+      'Copy the Server URL and Stream key it generates.',
+      'Use portrait output, start here, then press Go LIVE in TikTok.',
+    ],
+    keyHelp: 'TikTok keys expire after the LIVE. Paste a fresh URL and key every time.',
   },
   {
     platform: 'instagram',
     label: 'Instagram',
     color: '#E4405F',
     defaultRtmpUrl: 'rtmps://live-upload.instagram.com:443/rtmp/',
+    rtmpUrlTemplate: 'rtmps://live-upload.instagram.com:443/rtmp/',
     dashUrl: 'https://www.instagram.com/live/producer/',
     dashboardLabel: 'Live Producer',
-    rtmpUrlEditable: false,
+    rtmpUrlEditable: true,
+    rtmpUrlHelp: 'If Live Producer shows a different Server URL, paste that one.',
+    requirement: 'Live Producer (streaming software) is not available on every Instagram account.',
     recommendedOrientation: 'portrait',
     orientationDetail: 'Instagram Live is portrait-first; switch the output to 9:16 before going live.',
     streamKeyLabel: 'Stream key',
     streamKeyPlaceholder: 'Paste your Instagram stream key',
     setupSteps: [
       'Open Instagram Live Producer on desktop.',
-      'Copy the stream key from the live setup screen.',
+      'Copy the server URL and stream key from the live setup screen.',
       'Use portrait output so the live does not appear letterboxed.',
     ],
     keyHelp: 'Instagram stream keys are short lived. Paste the latest key right before starting.',
+  },
+  {
+    platform: 'vimeo',
+    label: 'Vimeo',
+    color: '#1AB7EA',
+    defaultRtmpUrl: 'rtmps://rtmp-global.cloud.vimeo.com:443/live',
+    rtmpUrlTemplate: 'rtmps://rtmp-global.cloud.vimeo.com:443/live',
+    dashUrl: 'https://vimeo.com/events',
+    dashboardLabel: 'Vimeo events',
+    rtmpUrlEditable: true,
+    rtmpUrlHelp: 'Prefilled with Vimeo\'s global RTMPS server. Use the URL your event shows if it differs.',
+    requirement: 'Streaming to Vimeo needs a Vimeo plan that includes live events.',
+    recommendedOrientation: 'landscape',
+    orientationDetail: 'Vimeo events play 16:9 output.',
+    streamKeyLabel: 'Stream key',
+    streamKeyPlaceholder: 'Paste your Vimeo stream key',
+    setupSteps: [
+      'Open your Vimeo event and choose streaming software (RTMP).',
+      'Copy the RTMP URL and stream key.',
+      'Start here, check the preview in Vimeo, then go live there.',
+    ],
+    keyHelp: 'Each Vimeo event has its own key.',
   },
   {
     platform: 'custom',
     label: 'Custom RTMP',
     color: '#71717a',
     defaultRtmpUrl: '',
+    rtmpUrlTemplate: 'rtmp:// or rtmps://',
     dashboardLabel: 'Destination dashboard',
     rtmpUrlEditable: true,
+    rtmpUrlHelp: 'Any public RTMP or RTMPS ingest: Restream, Owncast, a church website player, and so on.',
     recommendedOrientation: null,
     orientationDetail: 'Match the orientation expected by your RTMP destination.',
     streamKeyLabel: 'Stream key',
@@ -164,8 +277,8 @@ export function getPlatformOrientationWarning(
 ): string | null {
   const guide = getStreamPlatformGuide(platform);
   if (!guide.recommendedOrientation || guide.recommendedOrientation === orientation) return null;
-  if (guide.platform === 'instagram') {
-    return 'Instagram Live is portrait-first. Switch output to 9:16 before going live.';
+  if (guide.recommendedOrientation === 'portrait') {
+    return `${guide.label} Live is portrait-first. Switch output to 9:16 before going live.`;
   }
   return `${guide.label} is usually best in 16:9 landscape. Keep portrait only for vertical events.`;
 }
