@@ -10,7 +10,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [ ] **P0.3** Free production error grouping, release tags, no PII
 - [x] **P1.4** Configurable multistream destinations, health and presets (PR #360, verified locally; see below)
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
-- [x] **P1.6** Merged on-screen chat overlay, questions and export (PR #PRNUM, verified locally; see below)
+- [x] **P1.6** Merged on-screen chat overlay, questions and export (PR #361, verified locally; see below)
 - [ ] **P1.7** Moderated viewer chat, reactions and Q&A
 - [ ] **P1.8** Signed watch-page registration and HLS authorization
 - [ ] **P1.9** Audience call-ins through the green room
@@ -163,7 +163,7 @@ X, Vimeo or TikTok, and whether a Render free (0.1 CPU) instance keeps up with
 eight 4.7 Mbps pushes. Watch Server Speed and per-destination warnings, and
 lower `RTMP_MAX_DESTINATIONS` if it falls behind.
 
-## P1.6 — on-screen chat overlay, questions, shown comments, export (PR #PRNUM)
+## P1.6 — on-screen chat overlay, questions, shown comments, export (PR #361)
 
 "Chat on screen" (chat panel, hosts and co-hosts) puts the latest public
 comments on the program: the studio's public chat and imported YouTube/Facebook
