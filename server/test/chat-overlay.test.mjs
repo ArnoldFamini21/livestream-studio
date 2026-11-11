@@ -194,4 +194,119 @@ describe('chat-overlay-update', () => {
       await harness.close();
     }
   });
+
+  it('answers the sender with its change number and nobody else', async () => {
+    const harness = await createHarness();
+    try {
+      const { host, coHost } = await studioWithCoHost(harness, 'chat-overlay-ack');
+      const atHost = waitFor(host.ws, 'chat-overlay-updated');
+      const atCoHost = waitFor(coHost.ws, 'chat-overlay-updated');
+      sendMessage(host.ws, 'chat-overlay-update', { patch: { hide: ['m1'] }, seq: 7 });
+      const [sender, other] = await Promise.all([atHost, atCoHost]);
+      assert.equal(sender.payload.ack, 7);
+      assert.deepEqual(sender.payload.hiddenIds, ['m1']);
+      assert.equal('ack' in other.payload, false, 'other operators get no ack');
+      assert.deepEqual(other.payload.hiddenIds, ['m1']);
+      // seq 0 is a valid number.
+      const zero = waitFor(host.ws, 'chat-overlay-updated');
+      sendMessage(host.ws, 'chat-overlay-update', { patch: { hide: ['m2'] }, seq: 0 });
+      assert.equal((await zero).payload.ack, 0);
+      assert.equal('ack' in getRooms().get(host.joined.payload.room.id).chatOverlay, false, 'the stored state never holds an ack');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('ignores a bad change number without an error and still applies the patch', async () => {
+    const harness = await createHarness();
+    try {
+      const { host } = await studioWithCoHost(harness, 'chat-overlay-badseq');
+      let errors = 0;
+      const countErrors = (data) => { if (JSON.parse(data.toString()).type === 'error') errors += 1; };
+      host.ws.on('message', countErrors);
+      let index = 0;
+      for (const seq of [-1, 1.5, '3', null, 2 ** 53, {}]) {
+        index += 1;
+        const answered = waitFor(host.ws, 'chat-overlay-updated', (m) => m.payload.hiddenIds.includes(`b${index}`));
+        sendMessage(host.ws, 'chat-overlay-update', { patch: { hide: [`b${index}`] }, seq });
+        const reply = await answered;
+        assert.equal('ack' in reply.payload, false, `seq ${String(seq)} gets no ack`);
+      }
+      host.ws.off('message', countErrors);
+      assert.equal(errors, 0);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('a participant who becomes an operator after joining', () => {
+  async function studioWithState(harness, label, greenRoom = false) {
+    const { room, hostToken, state } = makeRoom(label);
+    state.room.settings.greenRoomEnabled = greenRoom;
+    const host = await join(harness.url, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+    const set = waitFor(host.ws, 'chat-overlay-updated');
+    sendMessage(host.ws, 'chat-overlay-update', { patch: { enabled: true, size: 'l', mode: 'approved' } });
+    await set;
+    return { room, state, host };
+  }
+
+  it('receives the room state when made co-host, and a plain guest never does', async () => {
+    const harness = await createHarness();
+    try {
+      const { host } = await studioWithState(harness, 'chat-overlay-promote');
+      const guest = await join(harness.url, { roomId: host.joined.payload.room.id, name: 'Maria', role: 'guest', joinSessionId: 'chat-overlay-promote-guest' });
+      const bystander = await join(harness.url, { roomId: host.joined.payload.room.id, name: 'Lee', role: 'guest', joinSessionId: 'chat-overlay-promote-lee' });
+      const gets = waitFor(guest.ws, 'chat-overlay-updated');
+      const bystanderNothing = expectNone(bystander.ws, 'chat-overlay-updated');
+      sendMessage(host.ws, 'stage-action', { action: 'promote-co-host', targetParticipantId: guest.id, performedBy: 'x' });
+      const received = await gets;
+      await bystanderNothing;
+      assert.equal(received.payload.enabled, true);
+      assert.equal(received.payload.size, 'l');
+      assert.equal(received.payload.mode, 'approved');
+      assert.equal('ack' in received.payload, false);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('gets nothing when the room has no state yet', async () => {
+    const harness = await createHarness();
+    try {
+      const { room, hostToken } = makeRoom('chat-overlay-nostate');
+      const host = await join(harness.url, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const guest = await join(harness.url, { roomId: room.id, name: 'Maria', role: 'guest', joinSessionId: 'chat-overlay-nostate-guest' });
+      const nothing = expectNone(guest.ws, 'chat-overlay-updated');
+      sendMessage(host.ws, 'stage-action', { action: 'promote-co-host', targetParticipantId: guest.id, performedBy: 'x' });
+      await nothing;
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('a co-host waiting in the green room gets the state only once admitted; a guest never', async () => {
+    const harness = await createHarness();
+    try {
+      const { room, host } = await studioWithState(harness, 'chat-overlay-greenroom', true);
+      const waiting = await join(harness.url, { roomId: room.id, name: 'Producer', role: 'guest', joinSessionId: 'chat-overlay-gr-producer' });
+      const plain = await join(harness.url, { roomId: room.id, name: 'Maria', role: 'guest', joinSessionId: 'chat-overlay-gr-maria' });
+      assert.equal(waiting.joined.payload.participant.status, 'green-room');
+      assert.equal(plain.joined.payload.participant.status, 'green-room');
+      // Made co-host while still waiting: nothing yet.
+      const stillQuiet = expectNone(waiting.ws, 'chat-overlay-updated');
+      sendMessage(host.ws, 'stage-action', { action: 'promote-co-host', targetParticipantId: waiting.id, performedBy: 'x' });
+      await stillQuiet;
+      // Admitted: the state arrives.
+      const gets = waitFor(waiting.ws, 'chat-overlay-updated');
+      const plainNothing = expectNone(plain.ws, 'chat-overlay-updated', () => true, 500);
+      sendMessage(host.ws, 'stage-action', { action: 'move-to-stage', targetParticipantId: waiting.id, performedBy: 'x' });
+      assert.equal((await gets).payload.size, 'l');
+      // A plain guest admitted from the green room is not an operator: never.
+      sendMessage(host.ws, 'stage-action', { action: 'move-to-stage', targetParticipantId: plain.id, performedBy: 'x' });
+      await plainNothing;
+    } finally {
+      await harness.close();
+    }
+  });
 });

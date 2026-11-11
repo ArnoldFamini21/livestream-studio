@@ -2,13 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyChatOverlayPatch,
   chatOverlayStateToPatch,
+  chatOverlayStatesEqual,
+  decideChatOverlayOnJoin,
   defaultChatOverlayState,
-  shouldPublishLocalChatOverlay,
+  expireChatOverlayPending,
+  loadSavedChatOverlayState,
+  normalizeChatOverlaySeq,
   normalizeChatOverlayState,
+  reconcileChatOverlay,
+  CHAT_OVERLAY_PENDING_TTL_MS,
   type ChatMessage,
   type ChatOverlayPatch,
   type ChatOverlayState,
   type Participant,
+  type PendingChatOverlayPatch,
   type SignalMessage,
 } from '@studio/shared';
 import { idsToFreeze, selectOverlayComments, type ChatOverlayComment } from '../utils/chatOverlayComments.ts';
@@ -18,9 +25,10 @@ interface UseChatOverlayOptions {
   roomId: string | undefined;
   send: (message: SignalMessage) => void;
   addHandler: (handler: (message: SignalMessage) => void) => () => void;
-  connected: boolean;
   /** Admitted host or co-host: the only people who may change the overlay. */
   canControl: boolean;
+  /** This participant is the host (not a co-host): only the host may publish its browser copy to a server that holds none. */
+  isHost: boolean;
   chatMessages: ChatMessage[];
   participants: Map<string, Participant>;
 }
@@ -55,25 +63,30 @@ function commentsSignature(comments: ChatOverlayComment[]): string {
  * old server for a few minutes during a deploy: then everything keeps working
  * locally), and are kept in this browser so a reload brings them back.
  */
-export function useChatOverlay({ roomId, send, addHandler, connected, canControl, chatMessages, participants }: UseChatOverlayOptions): ChatOverlayControls {
+export function useChatOverlay({ roomId, send, addHandler, canControl, isHost, chatMessages, participants }: UseChatOverlayOptions): ChatOverlayControls {
   const [state, setState] = useState<ChatOverlayState>(defaultChatOverlayState);
   const [serverSupported, setServerSupported] = useState(false);
-  const [joinTick, setJoinTick] = useState(0);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const isHostRef = useRef(isHost);
+  isHostRef.current = isHost;
   const serverSupportedRef = useRef(false);
-  const serverHasStateRef = useRef(false);
   const visibleIdsRef = useRef<string[]>([]);
   const commentsRef = useRef<ChatOverlayComment[]>(EMPTY_COMMENTS);
   const restoredRef = useRef(false);
+  // Changes sent and not yet answered stay applied on top of whatever the server says.
+  const pendingRef = useRef<PendingChatOverlayPatch[]>([]);
+  const lastServerRef = useRef<ChatOverlayState | null>(null);
+  const seqRef = useRef(0);
+  const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Bring back this browser's copy (a reload, or a server that restarted).
+  // Bring back this browser's copy (a reload). Pause is never restored: its comment ids are from an earlier session.
   useEffect(() => {
     restoredRef.current = false;
     if (!roomId) return;
     try {
       const raw = localStorage.getItem(storageKey(roomId));
-      if (raw) setState(normalizeChatOverlayState(JSON.parse(raw)));
+      if (raw) setState(loadSavedChatOverlayState(JSON.parse(raw)));
     } catch {
       // Storage can be blocked; the overlay then simply starts off.
     }
@@ -90,35 +103,85 @@ export function useChatOverlay({ roomId, send, addHandler, connected, canControl
     }
   }, [roomId, state]);
 
+  // The same object comes back when nothing changed, so nothing re-renders.
+  const showState = useCallback((next: ChatOverlayState) => {
+    setState((current) => (chatOverlayStatesEqual(current, next) ? current : next));
+  }, []);
+
+  const clearExpiryTimer = useCallback(() => {
+    if (expiryTimerRef.current !== null) clearTimeout(expiryTimerRef.current);
+    expiryTimerRef.current = null;
+  }, []);
+
+  // A change nobody answered is given up after a few seconds: show the server's state again.
+  const armExpiryTimer = useCallback(() => {
+    clearExpiryTimer();
+    const oldest = pendingRef.current[0];
+    if (!oldest) return;
+    const delay = Math.max(0, oldest.sentAt + CHAT_OVERLAY_PENDING_TTL_MS - Date.now());
+    expiryTimerRef.current = setTimeout(() => {
+      expiryTimerRef.current = null;
+      const now = Date.now();
+      if (lastServerRef.current) {
+        const result = reconcileChatOverlay({ server: lastServerRef.current, pending: pendingRef.current, now });
+        pendingRef.current = result.pending;
+        showState(result.state);
+      } else {
+        pendingRef.current = expireChatOverlayPending(pendingRef.current, now);
+      }
+      armExpiryTimer();
+    }, delay);
+  }, [clearExpiryTimer, showState]);
+
+  useEffect(() => clearExpiryTimer, [clearExpiryTimer]);
+
+  const sendPatch = useCallback((patch: ChatOverlayPatch) => {
+    seqRef.current += 1;
+    pendingRef.current = [...pendingRef.current, { seq: seqRef.current, patch, sentAt: Date.now() }];
+    armExpiryTimer();
+    send({ type: 'chat-overlay-update', payload: { patch, seq: seqRef.current } });
+  }, [armExpiryTimer, send]);
+
   useEffect(() => addHandler((message) => {
     if (message.type === 'room-joined') {
       const supported = message.payload.features?.chatOverlay === true;
       serverSupportedRef.current = supported;
       setServerSupported(supported);
-      serverHasStateRef.current = Boolean(message.payload.chatOverlay);
-      if (message.payload.chatOverlay) setState(normalizeChatOverlayState(message.payload.chatOverlay));
-      setJoinTick((tick) => tick + 1);
+      pendingRef.current = [];
+      clearExpiryTimer();
+      const server = message.payload.chatOverlay ? normalizeChatOverlayState(message.payload.chatOverlay) : null;
+      lastServerRef.current = server;
+      // The role in this very message is the truth: the isHost option catches up only after the next render.
+      const host = message.payload.participant ? message.payload.participant.role === 'host' : isHostRef.current;
+      const decision = decideChatOverlayOnJoin({ isHost: host, serverSupported: supported, serverHasState: server !== null, local: stateRef.current });
+      if (server) {
+        showState(server);
+      } else if (decision === 'reset') {
+        showState(defaultChatOverlayState());
+      } else if (decision === 'publish') {
+        // The one moment the whole state is sent: the server holds nothing (first join, or it restarted).
+        sendPatch(chatOverlayStateToPatch(stateRef.current));
+      }
     } else if (message.type === 'chat-overlay-updated') {
-      serverHasStateRef.current = true;
-      setState(normalizeChatOverlayState(message.payload));
+      const server = normalizeChatOverlayState(message.payload);
+      lastServerRef.current = server;
+      const result = reconcileChatOverlay({
+        server,
+        ack: normalizeChatOverlaySeq((message.payload as { ack?: unknown }).ack),
+        pending: pendingRef.current,
+        now: Date.now(),
+      });
+      pendingRef.current = result.pending;
+      armExpiryTimer();
+      showState(result.state);
     }
-  }), [addHandler]);
-
-  // The server knows nothing yet (first join, or it restarted): publish what this host has.
-  useEffect(() => {
-    if (!shouldPublishLocalChatOverlay({ canControl, connected, serverSupported: serverSupportedRef.current, serverHasState: serverHasStateRef.current, state: stateRef.current })) return;
-    serverHasStateRef.current = true;
-    send({ type: 'chat-overlay-update', payload: { patch: chatOverlayStateToPatch(stateRef.current) } });
-  }, [canControl, connected, joinTick, send]);
+  }), [addHandler, armExpiryTimer, clearExpiryTimer, sendPatch, showState]);
 
   const update = useCallback((patch: ChatOverlayPatch) => {
     if (!canControl) return;
     setState((current) => applyChatOverlayPatch(current, patch));
-    if (serverSupportedRef.current) {
-      serverHasStateRef.current = true;
-      send({ type: 'chat-overlay-update', payload: { patch } });
-    }
-  }, [canControl, send]);
+    if (serverSupportedRef.current) sendPatch(patch);
+  }, [canControl, sendPatch]);
 
   const setPaused = useCallback((paused: boolean) => {
     update(paused ? { paused: true, pausedIds: idsToFreeze(visibleIdsRef.current, commentsRef.current) } : { paused: false });

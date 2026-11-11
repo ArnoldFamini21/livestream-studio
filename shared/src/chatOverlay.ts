@@ -170,23 +170,94 @@ export function chatOverlayStateToPatch(state: ChatOverlayState): ChatOverlayPat
   };
 }
 
+/** What a client does with its browser copy of the settings right after `room-joined`. */
+export type ChatOverlayJoinDecision = 'publish' | 'reset' | 'keep';
+
 /**
- * Should this client send its own copy of the settings to the server? Only an
- * admitted operator, on a server that advertises the feature, when the server
- * holds nothing yet (first join, a restart or a deploy) and there is
- * something other than the defaults to publish.
+ * Decided once per join, right after `room-joined`:
+ * - `keep`: the server sent its state (it wins), or it does not know the
+ *   feature (everything stays local), or this host has nothing but defaults.
+ * - `publish`: the server holds nothing and this is the HOST with a browser
+ *   copy worth keeping: send it once.
+ * - `reset`: the server holds nothing and this is anyone else: show the
+ *   defaults and ignore the browser copy (it may be from an earlier session).
  */
-export function shouldPublishLocalChatOverlay(input: {
-  canControl: boolean;
-  connected: boolean;
+export function decideChatOverlayOnJoin(input: {
+  isHost: boolean;
   serverSupported: boolean;
   serverHasState: boolean;
-  state: ChatOverlayState;
-}): boolean {
-  return input.canControl && input.connected && input.serverSupported && !input.serverHasState && !isDefaultChatOverlayState(input.state);
+  local: ChatOverlayState;
+}): ChatOverlayJoinDecision {
+  if (!input.serverSupported || input.serverHasState) return 'keep';
+  if (!input.isHost) return 'reset';
+  return isDefaultChatOverlayState(input.local) ? 'keep' : 'publish';
 }
 
-/** Payload of `chat-overlay-update`. */
+/** A browser copy never brings back a pause: its comment ids belong to an earlier session. */
+export function loadSavedChatOverlayState(raw: unknown): ChatOverlayState {
+  return { ...normalizeChatOverlayState(raw), paused: false, pausedIds: [] };
+}
+
+/** A client-chosen change number: a non-negative safe integer, anything else is no number. */
+export function normalizeChatOverlaySeq(raw: unknown): number | undefined {
+  return typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0 ? raw : undefined;
+}
+
+/** Value equality of two states (the parts that matter on screen), so an unchanged state keeps its object. */
+export function chatOverlayStatesEqual(a: ChatOverlayState, b: ChatOverlayState): boolean {
+  if (a === b) return true;
+  const same = (x: string[], y: string[]) => x.length === y.length && x.every((id, index) => id === y[index]);
+  return a.enabled === b.enabled && a.size === b.size && a.layout === b.layout && a.side === b.side
+    && a.mode === b.mode && a.paused === b.paused && same(a.pausedIds, b.pausedIds)
+    && same(a.hiddenIds, b.hiddenIds) && same(a.shownIds, b.shownIds);
+}
+
+/** A change sent to the server that the server has not answered yet. */
+export interface PendingChatOverlayPatch {
+  seq: number;
+  patch: ChatOverlayPatch;
+  /** Milliseconds (Date.now()) when it was sent. */
+  sentAt: number;
+}
+
+/** A change nobody answered within this time is given up (lost or rejected). */
+export const CHAT_OVERLAY_PENDING_TTL_MS = 3000;
+
+/** Drops the changes that have waited the full time without an answer. */
+export function expireChatOverlayPending(
+  pending: PendingChatOverlayPatch[],
+  now: number,
+  ttlMs: number = CHAT_OVERLAY_PENDING_TTL_MS,
+): PendingChatOverlayPatch[] {
+  const kept = pending.filter((entry) => now - entry.sentAt < ttlMs);
+  return kept.length === pending.length ? pending : kept;
+}
+
+/**
+ * What to show when the server's state arrives: the server state with this
+ * browser's not yet answered changes laid on top, in the order they were made,
+ * so an echo of an earlier change never undoes a later one. Changes the server
+ * answered (`seq <= ack`) or that waited too long are dropped.
+ */
+export function reconcileChatOverlay(input: {
+  server: ChatOverlayState;
+  ack?: number;
+  pending: PendingChatOverlayPatch[];
+  now: number;
+  ttlMs?: number;
+}): { state: ChatOverlayState; pending: PendingChatOverlayPatch[] } {
+  const ack = normalizeChatOverlaySeq(input.ack);
+  const answered = ack === undefined ? input.pending : input.pending.filter((entry) => entry.seq > ack);
+  const pending = expireChatOverlayPending(answered, input.now, input.ttlMs);
+  const state = pending.reduce((current, entry) => applyChatOverlayPatch(current, entry.patch), input.server);
+  return { state, pending };
+}
+
+/** Payload of `chat-overlay-update`. `seq` (optional) is echoed back to the sender as `ack`. */
 export interface ChatOverlayUpdatePayload {
   patch: ChatOverlayPatch;
+  seq?: number;
 }
+
+/** Payload of `chat-overlay-updated`: the full state; `ack` only in the copy sent to the sender of the change. */
+export type ChatOverlayUpdatedPayload = ChatOverlayState & { ack?: number };

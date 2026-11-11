@@ -1,6 +1,6 @@
 export * from './clientErrors.js';
 export * from './chatOverlay.js';
-import type { ChatOverlayState, ChatOverlayUpdatePayload } from './chatOverlay.js';
+import type { ChatOverlayState, ChatOverlayUpdatePayload, ChatOverlayUpdatedPayload } from './chatOverlay.js';
 
 // ============ Room & Session Types ============
 
@@ -446,8 +446,8 @@ export type SignalMessage =
   | { type: 'studio-branding-updated'; payload: StudioBrandingPayload }
   /** Host/co-host: change the on-screen chat overlay (a patch). Needs `features.chatOverlay`. */
   | { type: 'chat-overlay-update'; payload: ChatOverlayUpdatePayload }
-  /** Server to admitted hosts and co-hosts only: the full on-screen chat overlay state. */
-  | { type: 'chat-overlay-updated'; payload: ChatOverlayState }
+  /** Server to admitted hosts and co-hosts only: the full on-screen chat overlay state (`ack` only for the sender of a change that carried a `seq`). */
+  | { type: 'chat-overlay-updated'; payload: ChatOverlayUpdatedPayload }
   | { type: 'stage-content-updated'; payload: StageContentPayload }
   /** Co-host (or host) remote for the stage owner's deck: next/previous/goto/clear. Relayed to the stage owner only. */
   | { type: 'stage-control'; payload: StageControlPayload }

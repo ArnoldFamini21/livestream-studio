@@ -63,6 +63,7 @@ import {
   applyChatOverlayPatch,
   defaultChatOverlayState,
   normalizeChatOverlayPatch,
+  normalizeChatOverlaySeq,
   normalizeChatOverlayState,
   type ChatOverlayState,
 } from '@studio/shared';
@@ -2278,7 +2279,10 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     payload: authoritativePayload,
   });
 
-  if (resyncTarget) sendRoomJoined(target.ws, mapping.roomId, roomState, target);
+  if (resyncTarget) {
+    sendRoomJoined(target.ws, mapping.roomId, roomState, target);
+    sendChatOverlayStateToNewOperator(roomState, target);
+  }
   persistRoomSnapshot(mapping.roomId);
 
   console.log(`Stage action: ${payload.action} on ${target.participant.name} by ${performer.participant.name}`);
@@ -2341,15 +2345,34 @@ function handleChatOverlayUpdate(ws: WebSocket, payload: unknown) {
   }
   const next = applyChatOverlayPatch(roomState.chatOverlay ?? defaultChatOverlayState(), patch);
   roomState.chatOverlay = normalizeChatOverlayState({ ...next, updatedAt: new Date().toISOString() });
+  // A valid change number comes back to the sender only, so its screen can tell which of its changes the server has applied.
+  const seq = normalizeChatOverlaySeq(payload && typeof payload === 'object' ? (payload as { seq?: unknown }).seq : undefined);
   const message: SignalMessage = { type: 'chat-overlay-updated', payload: roomState.chatOverlay };
+  const ackMessage: SignalMessage = seq === undefined ? message : { type: 'chat-overlay-updated', payload: { ...roomState.chatOverlay, ack: seq } };
   for (const [id, entry] of roomState.participants) {
     if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') continue;
     if (entry.ws.readyState !== WebSocket.OPEN) continue;
     try {
-      send(entry.ws, message);
+      send(entry.ws, entry.ws === ws ? ackMessage : message);
     } catch (err) {
       console.error(`Failed to relay chat overlay to ${id}:`, (err as Error).message);
     }
+  }
+}
+
+/**
+ * A participant who became an admitted host or co-host after joining (made
+ * co-host, admitted from the green room, standing in for the host) never got
+ * the room's on-screen chat state: send it. Guests and the green room never do.
+ */
+function sendChatOverlayStateToNewOperator(roomState: RoomState, entry: ParticipantEntry) {
+  if (!roomState.chatOverlay) return;
+  if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') return;
+  if (entry.ws.readyState !== WebSocket.OPEN) return;
+  try {
+    send(entry.ws, { type: 'chat-overlay-updated', payload: roomState.chatOverlay });
+  } catch (err) {
+    console.error(`Failed to send chat overlay to ${entry.participant.id}:`, (err as Error).message);
   }
 }
 
@@ -5073,6 +5096,7 @@ function finalizeDeparture(roomId: string, roomState: RoomState, participantId: 
         roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== newHostId);
 
         console.log(`Host handoff: ${newHost.participant.name} is now host of room ${roomId}`);
+        sendChatOverlayStateToNewOperator(roomState, newHost);
 
         broadcastToRoom(roomId, {
           type: 'participant-updated',

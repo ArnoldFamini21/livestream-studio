@@ -1930,8 +1930,8 @@ export function StudioRoom() {
     roomId,
     send,
     addHandler,
-    connected,
     canControl: canUseOperatorControls,
+    isHost: isStudioHost,
     chatMessages,
     participants,
   });
