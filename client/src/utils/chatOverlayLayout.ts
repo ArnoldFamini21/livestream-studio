@@ -1,3 +1,4 @@
+import { splitGraphemes } from './graphemes.ts';
 import type { ChatOverlayLayout as ChatOverlayShape, ChatOverlaySide, ChatOverlaySize } from '@studio/shared';
 import type { ChatOverlayComment, ChatOverlaySource } from './chatOverlayComments.ts';
 
@@ -124,7 +125,7 @@ function remember<T>(map: Map<string, T>, key: string, value: T): T {
 /** Longest prefix of `text` (plus an ellipsis when cut) that fits `maxWidth`. */
 function fitText(text: string, font: string, maxWidth: number, measure: TextMeasure): string {
   if (measure(font, text) <= maxWidth) return text;
-  const points = Array.from(text);
+  const points = splitGraphemes(text);
   let low = 0;
   let high = points.length;
   while (low < high) {
@@ -152,9 +153,9 @@ export function wrapOverlayText(text: string, font: string, maxWidth: number, ma
     if (current && !push(current)) break;
     current = '';
     if (measure(font, word) <= maxWidth) { current = word; continue; }
-    // A word wider than a line: break it by characters.
+    // A word wider than a line: break it between whole characters (flags and emoji stay in one piece).
     let chunk = '';
-    for (const char of Array.from(word)) {
+    for (const char of splitGraphemes(word)) {
       if (measure(font, chunk + char) <= maxWidth || !chunk) { chunk += char; continue; }
       if (!push(chunk)) break outer;
       chunk = char;

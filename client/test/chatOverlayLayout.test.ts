@@ -183,3 +183,41 @@ describe('layout cache and canvas drawing', () => {
     assert.equal(calls.at(-1), 'restore');
   });
 });
+
+describe('wrapping and cutting emoji', () => {
+  const ZWJ = String.fromCodePoint(0x200d);
+  const FLAG = '\u{1F1F5}\u{1F1ED}';
+  const PRAYING = '\u{1F64F}\u{1F3FD}';
+  const FAMILY = ['\u{1F468}', '\u{1F469}', '\u{1F467}'].join(ZWJ);
+  const font = '16px Inter';
+
+  it('wraps ten flags in a narrow line only between flags', () => {
+    const flags = FLAG.repeat(10);
+    // Each flag is two code points (16 px here); 28 px fits one flag and a bit more.
+    const lines = wrapOverlayText(flags, font, 28, 20, measure);
+    assert.equal(lines.length, 10);
+    for (const line of lines) assert.match(line, /^\p{RI}\p{RI}$/u);
+    assert.equal(lines.join(''), flags);
+    const wider = wrapOverlayText(flags, font, 40, 20, measure);
+    for (const line of wider) assert.match(line, /^(?:\p{RI}\p{RI})+$/u);
+    assert.equal(wider.join(''), flags);
+  });
+
+  it('never separates an emoji from its skin tone', () => {
+    const lines = wrapOverlayText(PRAYING.repeat(10), font, 28, 20, measure);
+    for (const line of lines) assert.match(line, new RegExp(`^(?:${PRAYING})+$`, 'u'));
+    assert.equal(lines.join(''), PRAYING.repeat(10));
+  });
+
+  it('never splits a family emoji', () => {
+    const lines = wrapOverlayText(FAMILY.repeat(6), font, 100, 20, measure);
+    for (const line of lines) assert.match(line, new RegExp(`^(?:${FAMILY})+$`, 'u'));
+    assert.equal(lines.join(''), FAMILY.repeat(6));
+  });
+
+  it('truncation never ends in half an emoji', () => {
+    const lines = wrapOverlayText(FLAG.repeat(10), font, 52, 1, measure);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /^(?:\p{RI}\p{RI})+\u2026$/u);
+  });
+});

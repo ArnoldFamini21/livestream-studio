@@ -1,3 +1,4 @@
+import { splitGraphemes } from './graphemes.ts';
 import type { ChatMessage, ChatOverlayState } from '@studio/shared';
 import { isQuestion } from './questionDetection.ts';
 
@@ -27,18 +28,50 @@ export interface ChatOverlayComment {
 }
 
 // C0 and C1 controls, DEL, line / paragraph separators, zero-width characters, and every
-// bidirectional embedding, override, isolate and mark character.
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
+// bidirectional embedding, override, isolate and mark character. U+200C and U+200D (the joiners)
+// are handled separately: emoji sequences and Persian or Indic words need them.
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b\u200e\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
+
+/** The most combining marks kept in a row: enough for Vietnamese, Thai and Indic text, too few to smear over other rows. */
+export const CHAT_OVERLAY_MAX_COMBINING_MARKS = 4;
+const JOINERS = /[\u200c\u200d]+/g;
+const MARK_RUN = new RegExp(`\\p{M}{${CHAT_OVERLAY_MAX_COMBINING_MARKS + 1},}`, 'gu');
+
+/**
+ * Zero width (non-)joiners stay only between two visible characters, one per
+ * run: they glue emoji sequences and shape Persian or Indic words, but next to
+ * a space, or at either end, they are invisible clutter.
+ */
+function keepUsefulJoiners(text: string): string {
+  return text.replace(JOINERS, (run, offset: number) => {
+    const before = text[offset - 1];
+    const after = text[offset + run.length];
+    return before && after && !/\s/u.test(before) && !/\s/u.test(after) ? run[0] : '';
+  });
+}
 
 /** Plain, single-line, bounded text. Never returns control or bidi characters. */
 export function sanitizeOverlayText(value: unknown, maxLength = CHAT_OVERLAY_MAX_TEXT): string {
   if (typeof value !== 'string') return '';
-  // Cap the work on huge input before touching it.
-  const bounded = value.length > maxLength * 8 ? value.slice(0, maxLength * 8) : value;
-  const flat = bounded.replace(/[\r\n\t\u2028\u2029]+/g, ' ').replace(UNSAFE_CHARS, '').replace(/\s+/g, ' ').trim();
-  const points = Array.from(flat);
-  if (points.length <= maxLength) return flat;
-  return `${points.slice(0, Math.max(0, maxLength - 1)).join('').trimEnd()}\u2026`;
+  // Cap the work on huge input before touching it (never leaving half a surrogate pair).
+  let bounded = value.length > maxLength * 8 ? value.slice(0, maxLength * 8) : value;
+  if (/[\ud800-\udbff]$/.test(bounded)) bounded = bounded.slice(0, -1);
+  const flat = keepUsefulJoiners(bounded.replace(/[\r\n\t\u2028\u2029]+/g, ' ').replace(UNSAFE_CHARS, ''))
+    .replace(/\s+/g, ' ')
+    .replace(MARK_RUN, (run) => Array.from(run).slice(0, CHAT_OVERLAY_MAX_COMBINING_MARKS).join(''))
+    .trim();
+  const length = Array.from(flat).length;
+  if (length <= maxLength) return flat;
+  // The limit counts code points, but the cut falls between whole characters (never inside an emoji).
+  let kept = '';
+  let count = 0;
+  for (const grapheme of splitGraphemes(flat)) {
+    const size = Array.from(grapheme).length;
+    if (count + size > maxLength - 1) break;
+    kept += grapheme;
+    count += size;
+  }
+  return `${kept.trimEnd()}\u2026`;
 }
 
 /** Public room or platform comment: never backstage, never a private / direct message. */

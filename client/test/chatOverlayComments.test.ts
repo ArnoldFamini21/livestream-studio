@@ -163,3 +163,93 @@ describe('idsToFreeze', () => {
     assert.deepEqual(idsToFreeze(['a', 'b', 'c'], [{ id: 'c' }, { id: 'a' }]), ['a', 'c']);
   });
 });
+
+const cp = (...codes: number[]) => String.fromCodePoint(...codes);
+const ZWJ = cp(0x200d);
+const ZWNJ = cp(0x200c);
+const FAMILY = ['\u{1F468}', '\u{1F469}', '\u{1F467}'].join(ZWJ);
+const HEART_ON_FIRE = ['\u2764\uFE0F', '\u{1F525}'].join(ZWJ);
+const FLAG = '\u{1F1F5}\u{1F1ED}';
+const PRAYING = '\u{1F64F}\u{1F3FD}';
+
+describe('joiner characters', () => {
+  it('keeps a family emoji and a heart on fire intact', () => {
+    assert.equal(sanitizeOverlayText(`hi ${FAMILY}`), `hi ${FAMILY}`);
+    assert.equal(sanitizeOverlayText(HEART_ON_FIRE), HEART_ON_FIRE);
+  });
+
+  it('removes a joiner next to a space, at the start and at the end', () => {
+    assert.equal(sanitizeOverlayText(`a${ZWJ} b`), 'a b');
+    assert.equal(sanitizeOverlayText(`a ${ZWNJ}b`), 'a b');
+    assert.equal(sanitizeOverlayText(`a ${ZWJ} b`), 'a b');
+    assert.equal(sanitizeOverlayText(`${ZWJ}ab`), 'ab');
+    assert.equal(sanitizeOverlayText(`ab${ZWNJ}`), 'ab');
+  });
+
+  it('collapses a run of joiners to one', () => {
+    assert.equal(sanitizeOverlayText(`a${ZWJ}${ZWNJ}${ZWJ}${ZWJ}b`), `a${ZWJ}b`);
+  });
+
+  it('keeps the non-joiner inside a Persian word', () => {
+    const word = ['\u0645\u06CC', '\u062E\u0648\u0627\u0647\u0645'].join(ZWNJ);
+    assert.equal(sanitizeOverlayText(`${word} \u062F\u0648\u0633\u062A`), `${word} \u062F\u0648\u0633\u062A`);
+  });
+
+  it('drops a text that holds only joiners', () => {
+    assert.equal(sanitizeOverlayText(`${ZWJ}${ZWNJ}${ZWJ}`), '');
+    assert.equal(sanitizeOverlayText(` ${ZWJ} `), '');
+    assert.deepEqual(select([message({ content: `${ZWNJ}${ZWJ}` })]), []);
+  });
+
+  it('still removes every other invisible or directional character', () => {
+    const removed = [
+      0x0000, 0x0007, 0x001f, 0x007f, 0x0085, 0x009f, 0x00ad, 0x061c, 0x180e,
+      0x200b, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+      0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x2065, 0x2066, 0x2067, 0x2068, 0x2069, 0x206a, 0x206b, 0x206c, 0x206d, 0x206e, 0x206f,
+      0xfeff, 0xfff9, 0xfffa, 0xfffb,
+    ];
+    for (const code of removed) {
+      assert.equal(sanitizeOverlayText(`a${cp(code)}b`), 'ab', `U+${code.toString(16)} must stay removed`);
+    }
+  });
+});
+
+describe('stacked combining marks', () => {
+  it('keeps at most four marks in a row', () => {
+    const marks = (count: number) => Array.from({ length: count }, (_, index) => cp(0x0300 + (index % 20))).join('');
+    const text = sanitizeOverlayText(`Z${marks(40)}!`);
+    assert.equal(text, `Z${marks(4)}!`);
+    assert.equal(sanitizeOverlayText(`Z${marks(4)}`), `Z${marks(4)}`);
+  });
+
+  it('leaves Vietnamese, Thai and emoji with a variation selector alone', () => {
+    const vietnamese = 'Vi\u1EC7t Nam, ti\u1EBFng Vi\u1EC7t'.normalize('NFD');
+    assert.equal(sanitizeOverlayText(vietnamese), vietnamese);
+    const thai = '\u0E2A\u0E27\u0E31\u0E2A\u0E14\u0E35\u0E04\u0E23\u0E31\u0E1A \u0E19\u0E49\u0E33';
+    assert.equal(sanitizeOverlayText(thai), thai);
+    assert.equal(sanitizeOverlayText('\u2764\uFE0F'), '\u2764\uFE0F');
+  });
+});
+
+describe('cutting at whole characters', () => {
+  it('never cuts a run of flags in half, and keeps the 200 code point limit', () => {
+    const text = sanitizeOverlayText(FLAG.repeat(300));
+    assert.ok(Array.from(text).length <= CHAT_OVERLAY_MAX_TEXT);
+    assert.ok(text.endsWith('\u2026'));
+    assert.match(text.slice(0, -1), /^(?:\p{RI}\p{RI})+$/u);
+  });
+
+  it('never separates an emoji from its skin tone', () => {
+    const text = sanitizeOverlayText(PRAYING.repeat(150));
+    assert.ok(Array.from(text).length <= CHAT_OVERLAY_MAX_TEXT);
+    assert.match(text.slice(0, -1), new RegExp(`^(?:${PRAYING})+$`, 'u'));
+  });
+
+  it('never ends inside a family emoji', () => {
+    const text = sanitizeOverlayText(`${'x'.repeat(197)}${FAMILY}`);
+    assert.equal(text, `${'x'.repeat(197)}\u2026`);
+    assert.equal(text.includes(ZWJ), false);
+    const many = sanitizeOverlayText(FAMILY.repeat(60));
+    assert.match(many.slice(0, -1), new RegExp(`^(?:${FAMILY})+$`, 'u'));
+  });
+});
