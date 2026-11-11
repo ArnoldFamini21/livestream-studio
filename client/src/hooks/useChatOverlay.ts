@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyChatOverlayPatch,
+  chatOverlayStateToPatch,
   defaultChatOverlayState,
+  shouldPublishLocalChatOverlay,
   normalizeChatOverlayState,
   type ChatMessage,
   type ChatOverlayPatch,
@@ -42,24 +44,6 @@ export interface ChatOverlayControls {
 const EMPTY_COMMENTS: ChatOverlayComment[] = [];
 const storageKey = (roomId: string) => `studio-chat-overlay:${roomId}`;
 
-function isDefaultState(state: ChatOverlayState): boolean {
-  return JSON.stringify({ ...state, updatedAt: undefined }) === JSON.stringify(defaultChatOverlayState());
-}
-
-function stateToPatch(state: ChatOverlayState): ChatOverlayPatch {
-  return {
-    enabled: state.enabled,
-    size: state.size,
-    layout: state.layout,
-    side: state.side,
-    mode: state.mode,
-    paused: state.paused,
-    ...(state.paused ? { pausedIds: state.pausedIds } : {}),
-    ...(state.hiddenIds.length ? { hide: state.hiddenIds } : {}),
-    ...(state.shownIds.length ? { show: state.shownIds } : {}),
-  };
-}
-
 function commentsSignature(comments: ChatOverlayComment[]): string {
   return comments.map((comment) => `${comment.id}\u0001${comment.author}\u0001${comment.text}\u0001${comment.question ? 1 : 0}`).join('\u0002');
 }
@@ -95,16 +79,14 @@ export function useChatOverlay({ roomId, send, addHandler, connected, canControl
     restoredRef.current = true;
   }, [roomId]);
 
+  // Settings change rarely (a click), so write at once: a reload right after a change keeps it.
   useEffect(() => {
     if (!roomId || !restoredRef.current) return;
-    const timer = window.setTimeout(() => {
-      try {
-        localStorage.setItem(storageKey(roomId), JSON.stringify(state));
-      } catch {
-        // Storage can be full or blocked; the overlay still works.
-      }
-    }, 250);
-    return () => window.clearTimeout(timer);
+    try {
+      localStorage.setItem(storageKey(roomId), JSON.stringify(state));
+    } catch {
+      // Storage can be full or blocked; the overlay still works.
+    }
   }, [roomId, state]);
 
   useEffect(() => addHandler((message) => {
@@ -123,10 +105,9 @@ export function useChatOverlay({ roomId, send, addHandler, connected, canControl
 
   // The server knows nothing yet (first join, or it restarted): publish what this host has.
   useEffect(() => {
-    if (!canControl || !connected || !serverSupportedRef.current || serverHasStateRef.current) return;
-    if (isDefaultState(stateRef.current)) return;
+    if (!shouldPublishLocalChatOverlay({ canControl, connected, serverSupported: serverSupportedRef.current, serverHasState: serverHasStateRef.current, state: stateRef.current })) return;
     serverHasStateRef.current = true;
-    send({ type: 'chat-overlay-update', payload: { patch: stateToPatch(stateRef.current) } });
+    send({ type: 'chat-overlay-update', payload: { patch: chatOverlayStateToPatch(stateRef.current) } });
   }, [canControl, connected, joinTick, send]);
 
   const update = useCallback((patch: ChatOverlayPatch) => {

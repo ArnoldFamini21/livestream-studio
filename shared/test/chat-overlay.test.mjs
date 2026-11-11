@@ -3,6 +3,9 @@ import { describe, it } from 'node:test';
 import {
   CHAT_OVERLAY_MAX_IDS,
   applyChatOverlayPatch,
+  chatOverlayStateToPatch,
+  isDefaultChatOverlayState,
+  shouldPublishLocalChatOverlay,
   defaultChatOverlayState,
   normalizeChatOverlayPatch,
   normalizeChatOverlayState,
@@ -63,5 +66,26 @@ describe('chat overlay patch', () => {
     assert.deepEqual([state.paused, state.pausedIds], [true, ['a', 'b']]);
     state = applyChatOverlayPatch(state, { paused: false });
     assert.deepEqual([state.paused, state.pausedIds], [false, []]);
+  });
+});
+
+describe('republishing the browser copy', () => {
+  const custom = applyChatOverlayPatch(defaultChatOverlayState(), { enabled: true, size: 'l', side: 'right', hide: ['h1'], show: ['s1'], paused: true, pausedIds: ['p1'] });
+  const ready = { canControl: true, connected: true, serverSupported: true, serverHasState: false, state: custom };
+
+  it('rebuilds the same state on a server that lost it', () => {
+    const rebuilt = applyChatOverlayPatch(defaultChatOverlayState(), chatOverlayStateToPatch(custom));
+    assert.deepEqual(rebuilt, custom);
+    assert.equal(isDefaultChatOverlayState(defaultChatOverlayState()), true);
+    assert.equal(isDefaultChatOverlayState(custom), false);
+  });
+
+  it('publishes only for an operator, on a server that advertises the feature and holds nothing', () => {
+    assert.equal(shouldPublishLocalChatOverlay(ready), true);
+    assert.equal(shouldPublishLocalChatOverlay({ ...ready, canControl: false }), false, 'guests never publish');
+    assert.equal(shouldPublishLocalChatOverlay({ ...ready, serverSupported: false }), false, 'old server: stay local');
+    assert.equal(shouldPublishLocalChatOverlay({ ...ready, serverHasState: true }), false, 'the server copy wins');
+    assert.equal(shouldPublishLocalChatOverlay({ ...ready, connected: false }), false);
+    assert.equal(shouldPublishLocalChatOverlay({ ...ready, state: defaultChatOverlayState() }), false, 'nothing to publish');
   });
 });

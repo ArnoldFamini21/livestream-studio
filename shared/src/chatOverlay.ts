@@ -148,7 +148,45 @@ export function applyChatOverlayPatch(state: ChatOverlayState, patch: ChatOverla
   return next;
 }
 
-/** Features the server advertises in `room-joined`; also used for the update payload type. */
+export function isDefaultChatOverlayState(state: ChatOverlayState): boolean {
+  const base = defaultChatOverlayState();
+  return state.enabled === base.enabled && state.size === base.size && state.layout === base.layout
+    && state.side === base.side && state.mode === base.mode && !state.paused
+    && state.hiddenIds.length === 0 && state.shownIds.length === 0;
+}
+
+/** The patch that rebuilds `state` from a default state (a host republishing its browser copy to a server that lost it). */
+export function chatOverlayStateToPatch(state: ChatOverlayState): ChatOverlayPatch {
+  return {
+    enabled: state.enabled,
+    size: state.size,
+    layout: state.layout,
+    side: state.side,
+    mode: state.mode,
+    paused: state.paused,
+    ...(state.paused ? { pausedIds: state.pausedIds } : {}),
+    ...(state.hiddenIds.length ? { hide: state.hiddenIds } : {}),
+    ...(state.shownIds.length ? { show: state.shownIds } : {}),
+  };
+}
+
+/**
+ * Should this client send its own copy of the settings to the server? Only an
+ * admitted operator, on a server that advertises the feature, when the server
+ * holds nothing yet (first join, a restart or a deploy) and there is
+ * something other than the defaults to publish.
+ */
+export function shouldPublishLocalChatOverlay(input: {
+  canControl: boolean;
+  connected: boolean;
+  serverSupported: boolean;
+  serverHasState: boolean;
+  state: ChatOverlayState;
+}): boolean {
+  return input.canControl && input.connected && input.serverSupported && !input.serverHasState && !isDefaultChatOverlayState(input.state);
+}
+
+/** Payload of `chat-overlay-update`. */
 export interface ChatOverlayUpdatePayload {
   patch: ChatOverlayPatch;
 }
