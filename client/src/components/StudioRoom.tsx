@@ -135,6 +135,9 @@ import {
   shouldIgnoreShortcutTarget,
 } from '../utils/keyboardShortcuts.ts';
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
+import { ChatOverlayPreview } from './ChatOverlayPreview.tsx';
+import { useChatOverlay } from '../hooks/useChatOverlay.ts';
+import { OVERLAY_FONT_FAMILY } from '../utils/compositorOverlays.ts';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
 import { WidgetOverlayDisplay, type WidgetOverlayData } from './WidgetOverlay.tsx';
 import { WebinarQAPanel, WebinarQAOverlay, WebinarQAAudience } from './WebinarQA.tsx';
@@ -1922,6 +1925,21 @@ export function StudioRoom() {
   const visibleWidgetIds = useMemo(() => widgets.filter((widget) => widget.visible).map((widget) => widget.id), [widgets]);
   // Opt-in tab capture so web widgets go out live instead of as a placeholder.
   const widgetTabCapture = useWidgetTabCapture(stageRef, visibleWidgetIds);
+  // On-screen chat: one state for the stage preview, the compositor and the chat panel's controls.
+  const chatOverlay = useChatOverlay({
+    roomId,
+    send,
+    addHandler,
+    connected,
+    canControl: canUseOperatorControls,
+    chatMessages,
+    participants,
+  });
+  const chatOverlayFontFamily = brandFontState.fontFamily || OVERLAY_FONT_FAMILY;
+  const compositorChatOverlay = useMemo(
+    () => (chatOverlay.comments.length > 0 ? { comments: chatOverlay.comments, settings: chatOverlay.layoutSettings } : null),
+    [chatOverlay.comments, chatOverlay.layoutSettings],
+  );
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     containerRef: stageRef,
     isActive: shouldRunCompositor({ live: isLive, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
@@ -1948,6 +1966,7 @@ export function StudioRoom() {
     sceneTransition: compositorSceneTransition,
     orientation: broadcastOrientation,
     brandFontFamily: brandFontState.fontFamily,
+    chatOverlay: compositorChatOverlay,
     widgetCaptureSources: widgetTabCapture.sourcesRef,
   });
 
@@ -3313,6 +3332,9 @@ export function StudioRoom() {
         case 'heartbeat':
         case 'heartbeat-ack':
         case 'join-room':
+        // The on-screen chat is handled by useChatOverlay.
+        case 'chat-overlay-update':
+        case 'chat-overlay-updated':
         case 'stage-action':
         case 'chat-star-update':
         case 'chat-pin-update':
@@ -5716,6 +5738,8 @@ export function StudioRoom() {
 
   // Comment highlighting
   const onHighlightComment = (comment: HighlightedComment) => {
+    // Putting a comment on screen with the highlight counts as "shown" (list label, approved mode, export).
+    if (comment.sourceMessageId) chatOverlay.update({ show: [comment.sourceMessageId] });
     setHighlightedComment({
       ...comment,
       displayMode: 'featured',
@@ -7614,6 +7638,22 @@ export function StudioRoom() {
                 })()}
 
                 <PanelErrorBoundary label="Stage overlays" placement="overlay" resetKey={stageOverlayResetKey}>
+                {/* On-screen chat: the same layout the compositor draws */}
+                {chatOverlay.comments.length > 0 && (
+                  <ChatOverlayPreview
+                    comments={chatOverlay.comments}
+                    settings={chatOverlay.layoutSettings}
+                    orientation={broadcastOrientation}
+                    insetFlags={{
+                      banner: visibleBanners.some((banner) => banner.position !== 'top'),
+                      ticker: visibleTickers.length > 0,
+                      lowerThird: Boolean(displayedLowerThird),
+                    }}
+                    fontFamily={chatOverlayFontFamily}
+                    onVisibleIdsChange={chatOverlay.reportVisibleIds}
+                  />
+                )}
+
                 {/* Lower Third Overlay */}
                 {displayedLowerThird && <LowerThirdOverlay key={displayedLowerThird.id} data={displayedLowerThird} />}
 
@@ -8052,6 +8092,7 @@ export function StudioRoom() {
             onHighlightComment={onHighlightComment}
             onFlashComment={onFlashComment}
             onDismissComment={onDismissComment}
+            chatOverlay={canUseOperatorControls ? { state: chatOverlay.state, onUpdate: chatOverlay.update, onSetPaused: chatOverlay.setPaused, serverSupported: chatOverlay.serverSupported } : undefined}
             chatPanelMessages={chatMessages}
             onSendChat={onSendChat}
             onReactChat={onReactChat}

@@ -73,3 +73,27 @@ export function drawChatOverlay(ctx: DrawContext, layout: ChatOverlayLayoutResul
   }
   ctx.restore();
 }
+
+let sharedMeasure: TextMeasure | null = null;
+let scratchContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined;
+
+function getScratchContext() {
+  if (scratchContext !== undefined) return scratchContext;
+  try {
+    scratchContext = typeof document !== 'undefined'
+      ? document.createElement('canvas').getContext('2d')
+      : typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(1, 1).getContext('2d') : null;
+  } catch {
+    scratchContext = null;
+  }
+  return scratchContext;
+}
+
+/**
+ * One measurer, on its own scratch canvas, shared by the stage preview and the
+ * compositor, so both wrap every comment at exactly the same places.
+ */
+export function getSharedChatOverlayMeasure(): TextMeasure {
+  sharedMeasure ??= createCanvasTextMeasure(getScratchContext);
+  return sharedMeasure;
+}

@@ -1,4 +1,5 @@
 import type { ChatTranscriptScope } from '../utils/chatTranscript.ts';
+import type { ChatOverlayPanelProps } from './ChatOverlayControls.tsx';
 import { formatUnreadBadge } from '../utils/chatUnread.ts';
 import { PeoplePanel } from './PeoplePanel.tsx';
 import { useExitTransition } from '../hooks/useExitTransition.ts';
@@ -100,6 +101,8 @@ interface SidebarProps {
   onHighlightComment: (comment: HighlightedComment) => void;
   onFlashComment: (comment: HighlightedComment) => void;
   onDismissComment: () => void;
+  /** On-screen chat controls (hosts and co-hosts). */
+  chatOverlay?: ChatOverlayPanelProps;
   // Brand props
   studioTheme: StudioThemeId;
   onStudioThemeChange: (theme: StudioThemeId) => void;
@@ -466,6 +469,7 @@ export function Sidebar(props: SidebarProps) {
               typingNames={props.chatTypingNames}
               onTypingChange={props.onChatTypingChange}
               onOpenPopoutChat={props.onOpenPopoutChat}
+              chatOverlay={props.chatOverlay}
               participants={props.allParticipants}
               myParticipantId={props.myParticipantId}
             />
