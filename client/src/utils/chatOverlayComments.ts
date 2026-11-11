@@ -35,7 +35,28 @@ const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b\u200e\
 /** The most combining marks kept in a row: enough for Vietnamese, Thai and Indic text, too few to smear over other rows. */
 export const CHAT_OVERLAY_MAX_COMBINING_MARKS = 4;
 const JOINERS = /[\u200c\u200d]+/g;
-const MARK_RUN = new RegExp(`\\p{M}{${CHAT_OVERLAY_MAX_COMBINING_MARKS + 1},}`, 'gu');
+// A run of marks counts joiners as part of it: a joiner between marks must not start a new run.
+const MARK_RUN = new RegExp(`[\\p{M}\\u200c\\u200d]{${CHAT_OVERLAY_MAX_COMBINING_MARKS + 1},}`, 'gu');
+const IS_MARK = /^\p{M}$/u;
+
+/** Keeps the first few marks of a run; a joiner survives only while marks are under the limit or straight after a kept mark. */
+function capMarkRun(run: string): string {
+  let marks = 0;
+  let kept = '';
+  let lastWasMark = false;
+  for (const char of run) {
+    if (IS_MARK.test(char)) {
+      if (marks >= CHAT_OVERLAY_MAX_COMBINING_MARKS) continue;
+      marks += 1;
+      kept += char;
+      lastWasMark = true;
+    } else if (lastWasMark || marks < CHAT_OVERLAY_MAX_COMBINING_MARKS) {
+      kept += char;
+      lastWasMark = false;
+    }
+  }
+  return kept;
+}
 
 /**
  * Zero width (non-)joiners stay only between two visible characters, one per
@@ -58,7 +79,7 @@ export function sanitizeOverlayText(value: unknown, maxLength = CHAT_OVERLAY_MAX
   if (/[\ud800-\udbff]$/.test(bounded)) bounded = bounded.slice(0, -1);
   const flat = keepUsefulJoiners(bounded.replace(/[\r\n\t\u2028\u2029]+/g, ' ').replace(UNSAFE_CHARS, ''))
     .replace(/\s+/g, ' ')
-    .replace(MARK_RUN, (run) => Array.from(run).slice(0, CHAT_OVERLAY_MAX_COMBINING_MARKS).join(''))
+    .replace(MARK_RUN, capMarkRun)
     .trim();
   const length = Array.from(flat).length;
   if (length <= maxLength) return flat;

@@ -222,6 +222,15 @@ describe('stacked combining marks', () => {
     assert.equal(sanitizeOverlayText(`Z${marks(4)}`), `Z${marks(4)}`);
   });
 
+  it('does not let joiners between the marks hide a long stack', () => {
+    const smear = `a${`${cp(0x0301).repeat(4)}‍`.repeat(30)}b`;
+    const text = sanitizeOverlayText(smear);
+    assert.equal((text.match(/\p{M}/gu) ?? []).length, 4);
+    assert.equal(text, `a${cp(0x0301).repeat(4)}‍b`);
+    // Marks with joiners in between are still plain text under the limit.
+    assert.equal(sanitizeOverlayText(`a${cp(0x0301)}‍${cp(0x0302)}b`), `a${cp(0x0301)}‍${cp(0x0302)}b`);
+  });
+
   it('leaves Vietnamese, Thai and emoji with a variation selector alone', () => {
     const vietnamese = 'Vi\u1EC7t Nam, ti\u1EBFng Vi\u1EC7t'.normalize('NFD');
     assert.equal(sanitizeOverlayText(vietnamese), vietnamese);
