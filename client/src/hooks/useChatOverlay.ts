@@ -11,7 +11,7 @@ import {
   type Participant,
   type SignalMessage,
 } from '@studio/shared';
-import { selectOverlayComments, type ChatOverlayComment } from '../utils/chatOverlayComments.ts';
+import { idsToFreeze, selectOverlayComments, type ChatOverlayComment } from '../utils/chatOverlayComments.ts';
 import type { ChatOverlayLayoutSettings } from '../utils/chatOverlayLayout.ts';
 
 interface UseChatOverlayOptions {
@@ -64,6 +64,7 @@ export function useChatOverlay({ roomId, send, addHandler, connected, canControl
   const serverSupportedRef = useRef(false);
   const serverHasStateRef = useRef(false);
   const visibleIdsRef = useRef<string[]>([]);
+  const commentsRef = useRef<ChatOverlayComment[]>(EMPTY_COMMENTS);
   const restoredRef = useRef(false);
 
   // Bring back this browser's copy (a reload, or a server that restarted).
@@ -120,7 +121,7 @@ export function useChatOverlay({ roomId, send, addHandler, connected, canControl
   }, [canControl, send]);
 
   const setPaused = useCallback((paused: boolean) => {
-    update(paused ? { paused: true, pausedIds: visibleIdsRef.current } : { paused: false });
+    update(paused ? { paused: true, pausedIds: idsToFreeze(visibleIdsRef.current, commentsRef.current) } : { paused: false });
   }, [update]);
 
   const reportVisibleIds = useCallback((ids: string[]) => { visibleIdsRef.current = ids; }, []);
@@ -140,6 +141,7 @@ export function useChatOverlay({ roomId, send, addHandler, connected, canControl
   const signature = commentsSignature(selected);
   if (stableRef.current.signature !== signature) stableRef.current = { signature, comments: selected.length ? selected : EMPTY_COMMENTS };
   const comments = stableRef.current.comments;
+  commentsRef.current = comments;
 
   const layoutSettings = useMemo<ChatOverlayLayoutSettings>(
     () => ({ size: state.size, layout: state.layout, side: state.side }),

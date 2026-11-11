@@ -100,3 +100,16 @@ export function selectOverlayComments({ messages, settings, greenRoomIds, limit 
   }
   return out;
 }
+
+/**
+ * The ids Pause may freeze: what the preview last reported, limited to the
+ * comments the overlay really offers now. The preview is not mounted while the
+ * overlay shows nothing, so its last report can be stale (for example after
+ * the host switched to approved mode); without this, Pause would bring old
+ * comments back on air.
+ */
+export function idsToFreeze(visibleIds: readonly string[], comments: readonly Pick<ChatOverlayComment, 'id'>[]): string[] {
+  if (comments.length === 0) return [];
+  const current = new Set(comments.map((comment) => comment.id));
+  return visibleIds.filter((id) => current.has(id));
+}

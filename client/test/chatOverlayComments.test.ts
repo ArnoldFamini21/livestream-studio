@@ -4,6 +4,7 @@ import type { ChatMessage } from '@studio/shared';
 import {
   CHAT_OVERLAY_BUFFER_MAX,
   CHAT_OVERLAY_MAX_TEXT,
+  idsToFreeze,
   sanitizeOverlayText,
   selectOverlayComments,
 } from '../src/utils/chatOverlayComments.ts';
@@ -151,5 +152,14 @@ describe('overlay modes and host controls', () => {
     const [q, s] = select([message({ content: 'What time is the sermon?' }), message({ content: 'Amen' })]);
     assert.equal(q.question, true);
     assert.equal(s.question, false);
+  });
+});
+
+describe('idsToFreeze', () => {
+  it('freezes nothing when the overlay offers no comments (stale preview report)', () => {
+    assert.deepEqual(idsToFreeze(['a', 'b'], []), []);
+  });
+  it('keeps only ids that are still offered, in the reported order', () => {
+    assert.deepEqual(idsToFreeze(['a', 'b', 'c'], [{ id: 'c' }, { id: 'a' }]), ['a', 'c']);
   });
 });
