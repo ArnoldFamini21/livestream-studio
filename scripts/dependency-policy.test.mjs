@@ -110,12 +110,35 @@ test('installs retry transient download failures in CI and deploy', () => {
   }
 });
 
-test('CI installs FFmpeg from Ubuntu packages instead of GitHub releases', () => {
-  const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
-  const jobs = ci.split(/^  (?=[a-z-]+:\n)/m).filter((block) => /npm-ci-retry/.test(block));
-  assert.ok(jobs.length >= 3);
-  for (const job of jobs) {
-    assert.match(job, /FFMPEG_BIN: \/usr\/bin\/ffmpeg/, 'job points ffmpeg-static at the system binary');
-    assert.ok(job.indexOf('apt-get install') < job.indexOf('npm-ci-retry'), 'FFmpeg is installed before npm ci');
+test('CI and deploy install FFmpeg through the bounded two-source script', () => {
+  let jobCount = 0;
+  for (const workflow of ['ci.yml', 'deploy.yml']) {
+    const text = readFileSync(join(root, '.github', 'workflows', workflow), 'utf8');
+    const jobs = text.split(/^  (?=[a-z-]+:\n)/m).filter((block) => /npm-ci-retry/.test(block));
+    for (const job of jobs) {
+      jobCount += 1;
+      const install = job.indexOf('sh scripts/ci-install-ffmpeg.sh');
+      assert.ok(install >= 0, `${workflow}: FFmpeg comes from scripts/ci-install-ffmpeg.sh`);
+      assert.ok(install < job.indexOf('npm-ci-retry'), `${workflow}: FFmpeg is installed before npm ci`);
+
+      // The script exports FFMPEG_BIN only when the system binary works. A fixed value
+      // would make ffmpeg-static skip its GitHub download even after the Ubuntu install
+      // failed, which leaves the job with no FFmpeg from either source.
+      assert.doesNotMatch(job, /^\s*FFMPEG_BIN:/m, `${workflow}: FFMPEG_BIN is not hard-coded`);
+
+      // An export reaches only later steps, so npm ci cannot share the script's step.
+      const nextStep = job.indexOf('\n      - ', install);
+      const restOfStep = job.slice(install, nextStep === -1 ? undefined : nextStep);
+      assert.doesNotMatch(restOfStep, /npm-ci-retry/, `${workflow}: npm ci runs in a later step`);
+
+      // Nothing may wait on a download without a limit: an unreachable Ubuntu mirror
+      // once held `apt-get install` until the whole job was cancelled.
+      const step = job.slice(job.lastIndexOf('- name:', install), install);
+      assert.match(step, /timeout-minutes: \d+/, `${workflow}: the FFmpeg step has a time limit`);
+      assert.match(job, /^    timeout-minutes: \d+$/m, `${workflow}: the job has a time limit`);
+      assert.doesNotMatch(job, /apt-get (update|install)/, `${workflow}: no unbounded apt-get`);
+      assert.doesNotMatch(job, /playwright-core install/, `${workflow}: Chromium comes from scripts/ci-install-chromium.sh`);
+    }
   }
+  assert.ok(jobCount >= 4);
 });
