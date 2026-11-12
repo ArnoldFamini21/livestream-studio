@@ -200,6 +200,34 @@ test('built studio in real Chromium under the production CSP', { timeout: 420_00
 
     // Budget capture + OPFS commit + finalization independently. A 75s outer
     // deadline could cancel a healthy save before its selector wait expired.
+    await scenario('on-screen chat shows a public guest message and never a backstage one', async () => {
+      await host.getByRole('button', { name: 'Chat', exact: true }).click();
+      const chat = host.locator('.studio-chat');
+      await chat.getByRole('button', { name: 'Chat on screen: Off' }).click();
+      await guest.getByRole('button', { name: /^Open chat/ }).click();
+      const guestInput = guest.locator('input.chat-input');
+      await guestInput.fill('Is the chat overlay live?');
+      await guestInput.press('Enter');
+      const overlayText = text => host.locator('[data-chat-overlay] text', { hasText: text });
+      await overlayText('Is the chat overlay live?').waitFor();
+      await overlayText('Question').waitFor();
+      await chat.getByLabel('Chat channel').selectOption('backstage');
+      const hostInput = host.locator('input.chat-input');
+      await hostInput.fill('Backstage only note');
+      await hostInput.press('Enter');
+      await chat.getByText('Backstage only note').waitFor();
+      await chat.getByLabel('Chat channel').selectOption('public');
+      await hostInput.fill('Public follow-up');
+      await hostInput.press('Enter');
+      await overlayText('Public follow-up').waitFor();
+      assert.equal(await overlayText('Backstage only note').count(), 0, 'backstage chat never reaches the overlay');
+      await screenshot(host, fixture.artifactDir, 'chat-overlay');
+      await chat.getByRole('button', { name: 'Chat on screen: On' }).click();
+      await host.locator('[data-chat-overlay]').waitFor({ state: 'detached' });
+      await host.getByRole('button', { name: 'Close sidebar panel', exact: true }).click();
+      await guest.getByRole('button', { name: 'Close chat', exact: true }).click();
+    });
+
     await scenario('thirty-second recording persists non-empty program and participant tracks in OPFS', { timeout: 210_000 }, async () => {
       // Exclude any earlier capability probes from recording evidence.
       await host.evaluate(() => { window.__e2eMedia.recorders = []; });

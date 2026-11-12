@@ -3,7 +3,8 @@ import type { ChatMessage, ChatReactionType, Participant, ExternalChatPlatform, 
 import { ChatMessageItem } from './ChatMessageItem.tsx';
 import { StudioIcon } from './StudioIcon.tsx';
 import { FLASH_COMMENT_DURATION_MS, createHighlightedCommentFromChatMessage, isHighlightedCommentSource, type HighlightedComment } from './CommentHighlight.tsx';
-import { buildChatTranscriptCsv, buildChatTranscriptFilename, type ChatTranscriptScope } from '../utils/chatTranscript.ts';
+import { buildChatTranscriptCsv, buildChatTranscriptFilename, buildChatTranscriptTxt, type ChatTranscriptFormat, type ChatTranscriptScope } from '../utils/chatTranscript.ts';
+import { ChatOverlayControls, type ChatOverlayPanelProps } from './ChatOverlayControls.tsx';
 import { formatChatTypingNames } from '../utils/chatTyping.ts';
 import { getExternalChatPlatformMetrics } from '../utils/externalChatMetrics.ts';
 import { MAX_CHAT_MESSAGE_LENGTH, getChatDraftKey, getStudioChatMessages, prepareStudioChatMessage } from '../utils/chatWorkspace.ts';
@@ -29,6 +30,7 @@ export function StudioChat({
   typingNames,
   onTypingChange,
   onOpenPopoutChat,
+  chatOverlay,
   participants,
   myParticipantId,
   initialRecipientId = '',
@@ -58,6 +60,8 @@ export function StudioChat({
   };
   onTypingChange?: (typing: boolean, isBackstage?: boolean, recipientId?: string) => void;
   onOpenPopoutChat?: () => void;
+  /** Host and co-host only: the on-screen chat controls and the markers they need in the list. */
+  chatOverlay?: ChatOverlayPanelProps;
   participants: Map<string, Participant>;
   myParticipantId: string;
   initialRecipientId?: string;
@@ -93,6 +97,8 @@ export function StudioChat({
   const directRecipients = Array.from(participants.values()).filter(person => person.id !== myParticipantId).sort((a, b) => a.name.localeCompare(b.name));
   const selectedRecipient = directRecipients.find(person => person.id === directRecipientId);
   const preparedMessage = prepareStudioChatMessage(input, mode, directRecipientId, directRecipients.map(person => person.id));
+  const shownIds = useMemo(() => new Set(chatOverlay?.state.shownIds ?? []), [chatOverlay?.state.shownIds]);
+  const hiddenIds = useMemo(() => new Set(chatOverlay?.state.hiddenIds ?? []), [chatOverlay?.state.hiddenIds]);
   const visibleMessages = useMemo(() => getStudioChatMessages(messages, mode, myParticipantId, directRecipientId), [messages, mode, myParticipantId, directRecipientId]);
   const pinnedMessage = getStudioChatMessages(messages, 'public', myParticipantId).filter(message => message.pinned).sort((a, b) => Date.parse(b.pinnedAt || b.timestamp) - Date.parse(a.pinnedAt || a.timestamp))[0];
   const errorCount = Object.values(externalChatStatuses).filter(status => status?.status === 'error').length;
@@ -145,11 +151,13 @@ export function StudioChat({
   };
   const closeMenu = () => { if (menuRef.current) { menuRef.current.open = false; menuRef.current.querySelector('summary')?.focus(); } };
   const openConnections = () => { closeMenu(); stopTyping(); setView('connections'); requestAnimationFrame(() => backRef.current?.focus()); };
-  const handleExport = () => {
+  const handleExport = (format: ChatTranscriptFormat) => {
     closeMenu();
     if (!visibleMessages.length) return;
-    const url = URL.createObjectURL(new Blob([buildChatTranscriptCsv(visibleMessages, mode)], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a'); link.href = url; link.download = buildChatTranscriptFilename(mode); link.click();
+    const options = { shownIds: chatOverlay?.state.shownIds };
+    const content = format === 'txt' ? buildChatTranscriptTxt(visibleMessages, mode, options) : buildChatTranscriptCsv(visibleMessages, mode, options);
+    const url = URL.createObjectURL(new Blob([content], { type: format === 'txt' ? 'text/plain;charset=utf-8' : 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = buildChatTranscriptFilename(mode, new Date(), format); link.click();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   };
   const handleFeature = (message: ChatMessage) => {
@@ -180,9 +188,11 @@ export function StudioChat({
           <summary aria-label="Chat options"><StudioIcon name="more" /></summary>
           <div><button type="button" onClick={openConnections}>Connections{errorCount ? ` · ${errorCount} needs attention` : ''}</button>
             {onOpenPopoutChat && <button type="button" onClick={() => { closeMenu(); onOpenPopoutChat(); }}>Open pop-out chat</button>}
-            <button type="button" onClick={handleExport} disabled={!visibleMessages.length}>Export conversation</button></div>
+            <button type="button" data-export="csv" onClick={() => handleExport('csv')} disabled={!visibleMessages.length}>Export {channelLabels[mode].toLowerCase()} (CSV)</button>
+            <button type="button" data-export="txt" onClick={() => handleExport('txt')} disabled={!visibleMessages.length}>Export {channelLabels[mode].toLowerCase()} (TXT)</button></div>
         </details>
       </div>
+      {chatOverlay && <ChatOverlayControls {...chatOverlay} />}
       {errorCount > 0 && <button type="button" className="chat-connection-notice" onClick={openConnections}>A chat connection needs attention <span>→</span></button>}
       {latestPendingDirect && <button type="button" className="chat-connection-notice chat-direct-notice" onClick={openPendingDirect}>New private message from {latestPendingDirect.senderName}{pendingDirect.length > 1 ? ` (+${pendingDirect.length - 1})` : ''} <span>→</span></button>}
       {mode === 'direct' && <div className="chat-recipient-row"><select className="chat-channel-select" aria-label="Private message recipient" value={directRecipientId} onChange={event => handleRecipientChange(event.target.value)}>
@@ -201,6 +211,8 @@ export function StudioChat({
           {mode === 'social' && canManageExternalChat && <button type="button" className="chat-text-button" onClick={openConnections}>Connect platforms</button>}
         </div>}
         {visibleMessages.map(message => <ChatMessageItem key={message.id} message={message} isMine={message.senderId === myParticipantId} onReact={onReact} onToggleStar={onToggleStar} onTogglePin={onTogglePin} onFeature={handleFeature} onFlash={handleFlash}
+          hostMarkers={Boolean(chatOverlay)} shown={shownIds.has(message.id)} overlayHidden={hiddenIds.has(message.id)}
+          onToggleOverlayHidden={chatOverlay ? (id, hidden) => chatOverlay.onUpdate(hidden ? { hide: [id] } : { unhide: [id] }) : undefined}
           featured={isHighlightedCommentSource(highlightedComment, message.id) && highlightedComment?.displayMode !== 'flash'} />)}
       </div>
       {hasNewMessages && <button type="button" className="chat-new-messages" onClick={() => { containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight, behavior: 'smooth' }); nearBottom.current = true; setHasNewMessages(false); }}>New messages ↓</button>}

@@ -58,6 +58,14 @@ import {
   isChatReactionType,
   isValidProgramReturnStreamId,
   isScheduledGuestAccessBlocked,
+  CHAT_OVERLAY_RATE_LIMIT_MAX,
+  CHAT_OVERLAY_RATE_LIMIT_WINDOW_MS,
+  applyChatOverlayPatch,
+  defaultChatOverlayState,
+  normalizeChatOverlayPatch,
+  normalizeChatOverlaySeq,
+  normalizeChatOverlayState,
+  type ChatOverlayState,
 } from '@studio/shared';
 import {
   fetchYouTubeLiveChatMessages,
@@ -149,6 +157,8 @@ interface RoomState {
   registrants: Map<string, RoomRegistrant>;
   externalChatConnections: Map<ExternalChatPlatform, ExternalChatConnectionState>;
   studioBranding?: StudioBrandingPayload;
+  /** On-screen chat overlay settings; kept in memory for the life of the room (not stored). */
+  chatOverlay?: ChatOverlayState;
   stageContent?: StageContentPayload;
   /** Who set stageContent, so a co-host cannot clear what the host presents. */
   stageContentSetBy?: { participantId: string; role: Participant['role'] };
@@ -283,6 +293,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'poll-update',
   'stage-action',
   'studio-branding-updated',
+  'chat-overlay-update',
   'recording-state-changed',
   'recording-countdown',
   'update-participant-profile',
@@ -382,6 +393,11 @@ const captionSegmentRateLimiter = new WsRateLimiter<WebSocket>(
 /** Talk backstage on/off: a held key toggles twice per press, so allow a busy producer, not a flood. */
 export const TALKBACK_STATE_RATE_LIMIT_MAX = 30;
 export const TALKBACK_STATE_RATE_LIMIT_WINDOW_MS = 10_000;
+/** Chat overlay changes: sliders and hide clicks from a busy producer, never a flood. */
+const chatOverlayRateLimiter = new WsRateLimiter<WebSocket>(
+  { control: CHAT_OVERLAY_RATE_LIMIT_MAX, relay: CHAT_OVERLAY_RATE_LIMIT_MAX },
+  CHAT_OVERLAY_RATE_LIMIT_WINDOW_MS,
+);
 const talkbackStateRateLimiter = new WsRateLimiter<WebSocket>(
   { control: TALKBACK_STATE_RATE_LIMIT_MAX, relay: TALKBACK_STATE_RATE_LIMIT_MAX },
   TALKBACK_STATE_RATE_LIMIT_WINDOW_MS,
@@ -1373,6 +1389,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'studio-branding-updated':
       handleStudioBrandingUpdate(ws, message.payload);
       break;
+    case 'chat-overlay-update':
+      handleChatOverlayUpdate(ws, message.payload);
+      break;
     case 'stage-content-updated':
       handleStageContentUpdate(ws, message.payload);
       break;
@@ -1701,6 +1720,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
         : undefined,
       liveStreamState,
       studioBranding: roomState.studioBranding,
+      ...(operator && admitted && roomState.chatOverlay ? { chatOverlay: roomState.chatOverlay } : {}),
       stageContent: admitted ? roomState.stageContent : undefined,
       stageUploadToken: entry.stageUploadToken,
       ...(admitted && entry.stageReadToken ? { stageReadToken: entry.stageReadToken } : {}),
@@ -1711,6 +1731,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
       ...(talkbackParticipantIds.length > 0 ? { talkbackParticipantIds } : {}),
       features: {
         chatTyping: true,
+        chatOverlay: true,
       },
     },
   });
@@ -2258,7 +2279,10 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     payload: authoritativePayload,
   });
 
-  if (resyncTarget) sendRoomJoined(target.ws, mapping.roomId, roomState, target);
+  if (resyncTarget) {
+    sendRoomJoined(target.ws, mapping.roomId, roomState, target);
+    sendChatOverlayStateToNewOperator(roomState, target);
+  }
   persistRoomSnapshot(mapping.roomId);
 
   console.log(`Stage action: ${payload.action} on ${target.participant.name} by ${performer.participant.name}`);
@@ -2290,6 +2314,66 @@ function handleStudioBrandingUpdate(ws: WebSocket, payload: StudioBrandingPayloa
     type: 'studio-branding-updated',
     payload: branding,
   });
+}
+
+/**
+ * A host or co-host changes the on-screen chat overlay. The server applies the
+ * validated patch to the room's state and sends the full state to admitted
+ * operators only (guests and the green room never receive it).
+ */
+function handleChatOverlayUpdate(ws: WebSocket, payload: unknown) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+  const sender = roomState.participants.get(mapping.participantId)?.participant;
+  if (!sender) return;
+  if (!isOperatorRole(sender.role) || sender.status === 'green-room') {
+    sendError(ws, 'Only hosts and co-hosts can change the on-screen chat', 'UNAUTHORIZED');
+    return;
+  }
+  const rate = chatOverlayRateLimiter.check(ws, 'chat-overlay-update');
+  if (!rate.allowed) {
+    if (rate.notify) sendError(ws, 'Too many on-screen chat changes. Please slow down.', 'RATE_LIMITED');
+    return;
+  }
+  const raw = payload && typeof payload === 'object' ? (payload as { patch?: unknown }).patch : undefined;
+  const patch = normalizeChatOverlayPatch(raw);
+  if (!patch) {
+    sendError(ws, 'Invalid on-screen chat update', 'INVALID_PAYLOAD');
+    return;
+  }
+  const next = applyChatOverlayPatch(roomState.chatOverlay ?? defaultChatOverlayState(), patch);
+  roomState.chatOverlay = normalizeChatOverlayState({ ...next, updatedAt: new Date().toISOString() });
+  // A valid change number comes back to the sender only, so its screen can tell which of its changes the server has applied.
+  const seq = normalizeChatOverlaySeq(payload && typeof payload === 'object' ? (payload as { seq?: unknown }).seq : undefined);
+  const message: SignalMessage = { type: 'chat-overlay-updated', payload: roomState.chatOverlay };
+  const ackMessage: SignalMessage = seq === undefined ? message : { type: 'chat-overlay-updated', payload: { ...roomState.chatOverlay, ack: seq } };
+  for (const [id, entry] of roomState.participants) {
+    if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') continue;
+    if (entry.ws.readyState !== WebSocket.OPEN) continue;
+    try {
+      send(entry.ws, entry.ws === ws ? ackMessage : message);
+    } catch (err) {
+      console.error(`Failed to relay chat overlay to ${id}:`, (err as Error).message);
+    }
+  }
+}
+
+/**
+ * A participant who became an admitted host or co-host after joining (made
+ * co-host, admitted from the green room, standing in for the host) never got
+ * the room's on-screen chat state: send it. Guests and the green room never do.
+ */
+function sendChatOverlayStateToNewOperator(roomState: RoomState, entry: ParticipantEntry) {
+  if (!roomState.chatOverlay) return;
+  if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') return;
+  if (entry.ws.readyState !== WebSocket.OPEN) return;
+  try {
+    send(entry.ws, { type: 'chat-overlay-updated', payload: roomState.chatOverlay });
+  } catch (err) {
+    console.error(`Failed to send chat overlay to ${entry.participant.id}:`, (err as Error).message);
+  }
 }
 
 function normalizeStageContent(payload: unknown, roomState: RoomState): StageContentPayload | null {
@@ -5012,6 +5096,7 @@ function finalizeDeparture(roomId: string, roomState: RoomState, participantId: 
         roomState.room.coHostIds = roomState.room.coHostIds.filter((id) => id !== newHostId);
 
         console.log(`Host handoff: ${newHost.participant.name} is now host of room ${roomId}`);
+        sendChatOverlayStateToNewOperator(roomState, newHost);
 
         broadcastToRoom(roomId, {
           type: 'participant-updated',

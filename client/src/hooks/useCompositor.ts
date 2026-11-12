@@ -35,8 +35,16 @@ import {
   STILL_MOTION,
   type CanvasMotion,
   type CompositorSceneTransition,
+  OVERLAY_FONT_FAMILY,
   type OverlayScale,
 } from '../utils/compositorOverlays.ts';
+import type { ChatOverlayComment } from '../utils/chatOverlayComments.ts';
+import {
+  createChatOverlayLayoutCache,
+  getChatOverlayInsetCss,
+  type ChatOverlayLayoutSettings,
+} from '../utils/chatOverlayLayout.ts';
+import { drawChatOverlay, getChatOverlayFontRevision, getSharedChatOverlayMeasure } from '../utils/chatOverlayCanvas.ts';
 import {
   CompositorLayoutCache,
   hasLayoutAnimation,
@@ -80,6 +88,8 @@ interface CompositorProps {
   orientation?: BroadcastOrientation;
   /** CSS font stack for banners, tickers, lower thirds and widget text (already loaded). */
   brandFontFamily?: string | null;
+  /** The on-screen chat: comments already filtered for privacy, plus its layout settings. Not drawn when null. */
+  chatOverlay?: { comments: ChatOverlayComment[]; settings: ChatOverlayLayoutSettings } | null;
   /** Tab-captured widget frames by widget id; widgets without one draw a placeholder. */
   widgetCaptureSources?: React.MutableRefObject<WidgetCaptureSources>;
 }
@@ -1161,6 +1171,7 @@ export function useCompositor({
   sceneTransition = null,
   orientation = 'landscape',
   brandFontFamily = null,
+  chatOverlay = null,
   widgetCaptureSources,
 }: CompositorProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1174,6 +1185,8 @@ export function useCompositor({
   const bannerPresenceRef = useRef(new OverlayPresenceTracker<BannerData>(0));
   const tickerPresenceRef = useRef(new OverlayPresenceTracker<TickerData>(0));
   const layoutCacheRef = useRef(new CompositorLayoutCache<CompositorStagePlan>());
+  // Chat overlay layout: redone only when comments, settings, size or fonts change, never per frame.
+  const chatOverlayLayoutRef = useRef(createChatOverlayLayoutCache());
   const activePresentationSlideImageUrl = getPresentationSlideImageUrl(activeMedia, activeMediaSlideIndex);
 
   useEffect(() => {
@@ -1401,6 +1414,21 @@ export function useCompositor({
     // Overlays use the preview's CSS sizes, scaled from the stage to the output.
     const overlayScale: OverlayScale = { x: logicalScaleX, y: logicalScaleY };
 
+    // On-screen chat: laid out once per change by the same function the preview uses.
+    if (chatOverlay && chatOverlay.comments.length > 0) {
+      const chatCanvas = getContextCanvasSize(ctx);
+      const chatFontFamily = brandFontFamily || OVERLAY_FONT_FAMILY;
+      const chatLayout = chatOverlayLayoutRef.current.get({
+        comments: chatOverlay.comments,
+        settings: chatOverlay.settings,
+        canvas: chatCanvas,
+        bottomInset: getChatOverlayInsetCss({ banner: hasBottomBanner, ticker: activeTickers.length > 0, lowerThird: Boolean(activeLowerThird) }) * logicalScaleY,
+        fontFamily: chatFontFamily,
+        measure: getSharedChatOverlayMeasure(),
+      }, String(getChatOverlayFontRevision()));
+      drawChatOverlay(ctx, chatLayout, chatFontFamily);
+    }
+
     // Lower thirds slide, fade or bounce in and out as chosen; a hidden one
     // keeps drawing through its exit.
     const lowerThirdPresence = lowerThirdPresenceRef.current.update(
@@ -1491,7 +1519,7 @@ export function useCompositor({
       });
     }
     target?.commit();
-  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition, brandFontFamily, widgetCaptureSources]);
+  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition, brandFontFamily, chatOverlay, widgetCaptureSources]);
 
   // Frames come from a worker timer at the output rate, not requestAnimationFrame,
   // so the stream and recording keep moving when the studio tab is hidden or covered.

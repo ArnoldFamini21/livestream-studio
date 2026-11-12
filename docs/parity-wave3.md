@@ -10,7 +10,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [ ] **P0.3** Free production error grouping, release tags, no PII
 - [x] **P1.4** Configurable multistream destinations, health and presets (PR #360, verified locally; see below)
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
-- [ ] **P1.6** Merged on-screen chat overlay, questions and export
+- [x] **P1.6** Merged on-screen chat overlay, questions and export (PR #361, verified locally; see below)
 - [ ] **P1.7** Moderated viewer chat, reactions and Q&A
 - [ ] **P1.8** Signed watch-page registration and HLS authorization
 - [ ] **P1.9** Audience call-ins through the green room
@@ -162,6 +162,57 @@ public setup pages and should be checked with a private test), RTMPS to Kick,
 X, Vimeo or TikTok, and whether a Render free (0.1 CPU) instance keeps up with
 eight 4.7 Mbps pushes. Watch Server Speed and per-destination warnings, and
 lower `RTMP_MAX_DESTINATIONS` if it falls behind.
+
+## P1.6 — on-screen chat overlay, questions, shown comments, export (PR #361)
+
+"Chat on screen" (chat panel, hosts and co-hosts) puts the latest public
+comments on the program: the studio's public chat and imported YouTube/Facebook
+comments (`source` is `studio | youtube | facebook`, so watch-page chat can be
+added as another value). Settings: on/off, size S/M/L, layout regular/tall/wide,
+side left/right (bottom-anchored), mode `all` (default) or `approved` (starred or
+shown-on-screen), pause, and hide one comment (message actions).
+
+- **One layout, two renderers.** `layoutChatOverlay` (`client/src/utils/chatOverlayLayout.ts`)
+  turns comments + settings + canvas size into rectangles and text lines in output
+  pixels (1920x1080 and 1080x1920 scale from the 1080 short side). The stage preview
+  (`ChatOverlayPreview`, an SVG with the canvas as viewBox) and the compositor
+  (`drawChatOverlay` in `useCompositor`) only replay those primitives. Text is measured
+  and wrapped only when comments, settings, canvas, bottom inset or fonts change
+  (`createChatOverlayLayoutCache`); the 30 fps loop draws a cached layout.
+- **Settings sync.** `chat-overlay-update` (a patch) is validated by the server
+  (`normalizeChatOverlayPatch`), limited to admitted hosts/co-hosts, rate-limited
+  (`CHAT_OVERLAY_RATE_LIMIT_MAX` per 10 s) and answered with the full
+  `chat-overlay-updated` to admitted operators only. `room-joined` carries the state
+  to operators and advertises `features.chatOverlay`. The client uses the new messages
+  only when that flag is present; otherwise the overlay works locally. The host's
+  browser also keeps the settings (`studio-chat-overlay:<room>`), so a reload, or a
+  server that restarted, brings them back, except Pause (its comment ids belong to an
+  earlier session). Once per join, when the server sent no state, only the host
+  publishes its browser copy; everyone else shows the defaults
+  (`decideChatOverlayOnJoin`). Anyone who becomes an admitted host or co-host after
+  joining is sent the room state. Each change carries a `seq` that the server returns
+  as `ack` to the sender only, and the sender keeps unanswered changes applied on top
+  of the server state for up to 3 seconds (`reconcileChatOverlay`). Server state is in
+  memory only.
+- **Privacy.** Backstage chat, direct messages and anything sent by someone still in
+  the green room never reach the overlay (`selectOverlayComments`). Comment text is
+  reduced to plain single-line text: controls, bidi and zero-width characters removed (a joiner between two visible
+  characters stays, so emoji sequences and Persian or Indic words survive), at most 4
+  combining marks in a row, 200 characters cut between whole characters (never inside
+  an emoji), at most 8 rows and 3 lines per comment, 40 comments buffered.
+- **Questions.** `isQuestion` (`questionDetection.ts`): trailing `?`, English question
+  words, Tagalog/Taglish words, and `ba` within the first four words, with guards for
+  exclamations and statements. Marked in the chat list and in the overlay.
+- **Shown.** A comment put on screen with "Show on stage" is dimmed in the list with a
+  "Shown" label, counts for approved mode, and fills the export column.
+- **Export.** The existing chat transcript export (`chatTranscript.ts`) now writes
+  CSV and TXT from the chat options menu. CSV columns: Time (ISO 8601), Source,
+  Author, Message, Question, Shown on screen, then the earlier producer columns.
+  Cells starting with `=`, `+`, `-`, `@` (or tab/CR) get a leading single quote.
+
+Verification and what is left are in the PR description. Not covered by a
+browser check: real YouTube/Facebook comments, a real RTMP/HLS viewer of the
+output, and a co-host's browser (the server relay is covered by server tests).
 
 ## Resume here next session
 

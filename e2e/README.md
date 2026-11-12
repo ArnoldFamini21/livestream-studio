@@ -30,7 +30,7 @@ browser job. The browser dependency is development-only and adds no client
 bundle bytes.
 
 The suite checks admission and green-room media privacy, a playing backstage
-program return, stage transition, watch-page voting, saved custom layouts,
+program return, the on-screen chat overlay (a public message appears, a backstage one does not), stage transition, watch-page voting, saved custom layouts,
 portrait canvas dimensions, the server-confirmed talkback badge, a 30-second
 recording with non-empty OPFS tracks, responsive screenshots, and explicit/tab
 close departure timing. Assertions wait for application state and browser events;
