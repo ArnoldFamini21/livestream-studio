@@ -66,6 +66,10 @@ import {
   normalizeChatOverlaySeq,
   normalizeChatOverlayState,
   type ChatOverlayState,
+  type StageImageKind,
+  LOGO_IMAGE_MAX_BYTES,
+  MAX_INLINE_BRANDING_DATA_URL_LENGTH,
+  BRANDING_INLINE_IMAGE_TOO_LARGE_CODE,
 } from '@studio/shared';
 import {
   fetchYouTubeLiveChatMessages,
@@ -114,6 +118,8 @@ interface ParticipantEntry {
   stageUploadToken?: string;
   /** Reads stage pictures; issued once the participant is admitted. */
   stageReadToken?: string;
+  /** Reads the studio logo and nothing else; every participant has one, the green room included. */
+  brandingReadToken?: string;
   /** Network address of the current connection (bans, password lockouts). */
   ip: string;
   /** Secret that lets this seat be resumed after a dropped connection. */
@@ -222,6 +228,8 @@ export interface StageImage {
   data: Buffer;
   contentType: string;
   createdAt: number;
+  /** `logo` pictures are readable by the whole studio (green room included); everything else only by admitted participants. */
+  kind?: StageImageKind;
 }
 
 // A 720p JPEG is about 150 KB; these caps bound what one studio can hold.
@@ -520,8 +528,10 @@ function createWatchId(): string {
  * background is gone: show the default canvas until the host, whose browser
  * keeps the picture, rejoins and uploads it again.
  */
+/** Uploaded pictures live in memory only; after a restart the host uploads them again. */
 function withoutUnstoredBackgroundImage(branding: StudioBrandingPayload): StudioBrandingPayload {
-  return branding.stageBackground?.imageId ? { ...branding, stageBackground: { type: 'none', value: '' } } : branding;
+  const { logoImageId: _logoImageId, ...rest } = branding;
+  return branding.stageBackground?.imageId ? { ...rest, stageBackground: { type: 'none', value: '' } } : rest;
 }
 
 function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
@@ -1171,11 +1181,19 @@ function normalizeBrandingColor(value: unknown): string {
   return DEFAULT_BRANDING_COLOR;
 }
 
+const INLINE_IMAGE_DATA_URL = /^data:image\/(?:png|jpe?g|webp|gif);base64,/i;
+
+/** Inline picture data above the cap: it is never stored or relayed (see MAX_INLINE_BRANDING_DATA_URL_LENGTH). */
+function isOversizedInlineImage(value: unknown): boolean {
+  return typeof value === 'string' && value.length > MAX_INLINE_BRANDING_DATA_URL_LENGTH && INLINE_IMAGE_DATA_URL.test(value.trim());
+}
+
 function normalizeBrandingUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const url = value.trim();
   if (!url || url.length > MAX_BRANDING_URL_LENGTH || url.startsWith('blob:')) return null;
-  if (/^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(url)) return url;
+  // Only tiny inline pictures (logos saved by an older version) are kept; a larger one is uploaded and named by id.
+  if (INLINE_IMAGE_DATA_URL.test(url)) return url.length <= MAX_INLINE_BRANDING_DATA_URL_LENGTH ? url : null;
   if (/^https?:\/\//i.test(url)) return url;
   return null;
 }
@@ -1204,11 +1222,26 @@ function normalizeStageBackground(value: unknown, roomState: RoomState): StageBa
   return { type, value: backgroundValue };
 }
 
+/** The logo as branding keeps it: a picture this studio holds (by id), an https address, or a tiny inline picture. */
+function normalizeBrandingLogo(
+  payload: StudioBrandingPayload,
+  roomState: RoomState,
+): { logoUrl: string | null; logoImageId?: string } {
+  if (typeof payload.logoImageId === 'string') {
+    const image = roomState.stageImages?.get(payload.logoImageId);
+    if (image && image.kind === 'logo' && image.data.length <= LOGO_IMAGE_MAX_BYTES) {
+      return { logoUrl: null, logoImageId: payload.logoImageId };
+    }
+    return { logoUrl: null };
+  }
+  return { logoUrl: normalizeBrandingUrl(payload.logoUrl) };
+}
+
 function normalizeStudioBrandingPayload(payload: StudioBrandingPayload, updatedBy: string, roomState: RoomState): StudioBrandingPayload {
   const waitingRoom: Record<string, unknown> = isRecord(payload.waitingRoom) ? payload.waitingRoom : {};
   return {
     brandColor: normalizeBrandingColor(payload.brandColor),
-    logoUrl: normalizeBrandingUrl(payload.logoUrl),
+    ...normalizeBrandingLogo(payload, roomState),
     stageBackground: normalizeStageBackground(payload.stageBackground, roomState),
     waitingRoom: {
       headline: normalizeBrandingText(waitingRoom.headline, DEFAULT_WAITING_ROOM_HEADLINE, 80),
@@ -1724,6 +1757,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
       stageContent: admitted ? roomState.stageContent : undefined,
       stageUploadToken: entry.stageUploadToken,
       ...(admitted && entry.stageReadToken ? { stageReadToken: entry.stageReadToken } : {}),
+      ...(entry.brandingReadToken ? { brandingReadToken: entry.brandingReadToken } : {}),
       resumeToken: entry.resumeToken,
       ...(resumed ? { resumed: true } : {}),
       ...(operator && admitted ? { watchId: roomState.watchId } : {}),
@@ -2040,6 +2074,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     joinSessionId,
     stageUploadToken: isOperatorRole(effectiveRole) ? newSecret() : undefined,
     stageReadToken: status !== 'green-room' ? newSecret() : undefined,
+    brandingReadToken: newSecret(),
     ip,
     resumeToken: newSecret(),
   };
@@ -2307,6 +2342,21 @@ function handleStudioBrandingUpdate(ws: WebSocket, payload: StudioBrandingPayloa
   }
 
   const branding = normalizeStudioBrandingPayload(payload, mapping.participantId, roomState);
+  const oversizedInline = isOversizedInlineImage(payload.logoUrl)
+    || (payload.stageBackground?.type === 'image' && isOversizedInlineImage(payload.stageBackground.value));
+  if (oversizedInline) {
+    // Never stored or relayed. The rest of the branding still applies, and a logo that
+    // was already shared stays on air instead of vanishing because of a bad message.
+    if (isOversizedInlineImage(payload.logoUrl) && roomState.studioBranding) {
+      branding.logoUrl = roomState.studioBranding.logoUrl;
+      if (roomState.studioBranding.logoImageId) branding.logoImageId = roomState.studioBranding.logoImageId;
+    }
+    sendError(
+      ws,
+      'That picture is too large to send inline. Upload it so it can be shared by id.',
+      BRANDING_INLINE_IMAGE_TOO_LARGE_CODE,
+    );
+  }
   roomState.studioBranding = branding;
   persistRoomSnapshot(mapping.roomId);
 
@@ -2664,6 +2714,8 @@ export function storeStageImage(input: {
   token: string;
   contentType: string;
   data: Buffer;
+  /** `logo` pictures are readable by the whole studio and capped at LOGO_IMAGE_MAX_BYTES. Default `stage`. */
+  kind?: StageImageKind;
 }): StoreStageImageResult {
   const roomState = rooms.get(input.roomId);
   if (!roomState) return { ok: false, status: 404, error: 'Studio not found' };
@@ -2675,12 +2727,19 @@ export function storeStageImage(input: {
   if (!matches) return { ok: false, status: 403, error: 'Not allowed to update the stage' };
   const contentType = input.contentType.split(';')[0].trim().toLowerCase();
   if (!STAGE_IMAGE_CONTENT_TYPES.has(contentType)) return { ok: false, status: 415, error: 'Stage images must be JPEG, PNG, or WebP' };
-  if (input.data.length === 0 || input.data.length > STAGE_IMAGE_MAX_BYTES) {
-    return { ok: false, status: 413, error: 'Stage image is too large' };
+  const kind: StageImageKind = input.kind === 'logo' ? 'logo' : 'stage';
+  const maxBytes = kind === 'logo' ? LOGO_IMAGE_MAX_BYTES : STAGE_IMAGE_MAX_BYTES;
+  if (input.data.length === 0 || input.data.length > maxBytes) {
+    return { ok: false, status: 413, error: kind === 'logo' ? 'Logo is too large' : 'Stage image is too large' };
   }
   const images = roomState.stageImages ?? (roomState.stageImages = new Map());
   const imageId = randomBytes(16).toString('base64url');
-  images.set(imageId, { data: input.data, contentType, createdAt: Date.now() });
+  const currentLogo = roomState.studioBranding?.logoImageId;
+  if (kind === 'logo') {
+    // Only the logo in use and the new one are kept; older ones are no longer named by anything.
+    for (const [id, image] of images) if (image.kind === 'logo' && id !== currentLogo) images.delete(id);
+  }
+  images.set(imageId, { data: input.data, contentType, createdAt: Date.now(), kind });
   // Evict the oldest pictures, never the one on stage, the canvas background
   // or the one just added.
   const onStage = roomState.stageContent?.media?.imageId;
@@ -2696,7 +2755,7 @@ export function storeStageImage(input: {
   const roomBudget = Math.min(STAGE_IMAGE_BYTES_PER_ROOM, Math.max(0, getStageImageGlobalMaxBytes() - otherRoomsBytes));
   for (const [id, image] of images) {
     if (images.size <= STAGE_IMAGE_LIMIT_PER_ROOM && totalBytes <= roomBudget) break;
-    if (id === onStage || id === background || id === imageId) continue;
+    if (id === onStage || id === background || id === currentLogo || id === imageId) continue;
     images.delete(id);
     totalBytes -= image.data.length;
   }
@@ -2727,13 +2786,17 @@ export type ReadStageImageResult =
 export function readStageImage(roomId: string, imageId: string, token: string): ReadStageImageResult {
   const roomState = rooms.get(roomId);
   if (!roomState) return { ok: false, status: 404 };
-  const authorized = Boolean(token) && Array.from(roomState.participants.values()).some((entry) => (
+  const entries = Array.from(roomState.participants.values());
+  const authorized = Boolean(token) && entries.some((entry) => (
     entry.participant.status !== 'green-room'
     && (tokenMatches(entry.stageReadToken, token) || tokenMatches(entry.stageUploadToken, token))
   ));
-  if (!authorized) return { ok: false, status: 403 };
   const image = roomState.stageImages?.get(imageId);
-  return image ? { ok: true, image } : { ok: false, status: 404 };
+  if (authorized) return image ? { ok: true, image } : { ok: false, status: 404 };
+  // The logo is part of the studio's look, shown in the green room too. Its token opens logos only.
+  const logoAuthorized = Boolean(token) && entries.some((entry) => tokenMatches(entry.brandingReadToken, token));
+  if (logoAuthorized && image?.kind === 'logo') return { ok: true, image };
+  return { ok: false, status: 403 };
 }
 
 /** Public facts about the studio behind a watch-page id, for the watch page. Never the participant list. */

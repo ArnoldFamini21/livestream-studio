@@ -8,7 +8,10 @@ import { useSharedContentAspect } from '../hooks/useSharedContentAspect.ts';
 import { PresentationToolbar } from './PresentationToolbar.tsx';
 import { CanvasBackgroundControl } from './CanvasBackgroundControl.tsx';
 import { getPersistableStageBackground, getStageBackgroundStyle } from '../utils/stageBackground.ts';
-import { getCanvasBackgroundUploadKey, getSharedBackgroundImageUrl, needsCanvasBackgroundUpload, resolveSharedStageBackground, toSharedStageBackground, uploadCanvasBackground } from '../utils/canvasBackgroundSync.ts';
+import { getSharedBackgroundImageUrl, resolveSharedStageBackground } from '../utils/canvasBackgroundSync.ts';
+import { getSharedLogoImageUrl, resolveSharedLogo } from '../utils/logoSync.ts';
+import { useLoadedSharedImage } from '../hooks/useLoadedSharedImage.ts';
+import { useStudioBrandingShare } from '../hooks/useStudioBrandingShare.ts';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { deleteStoredMediaAsset, isStorableUploadedMediaAsset, loadStoredMediaAssets, mergeRestoredMediaAssets, saveStoredMediaAsset } from '../utils/mediaAssetStore.ts';
 import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, getPresentingViewLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
@@ -1187,40 +1190,23 @@ export function StudioRoom() {
   const [remoteStageContent, setRemoteStageContent] = useState<StageContentPayload | null>(null);
   const stageUploadTokenRef = useRef<string | null>(null);
   const stageImageIdsRef = useRef(new Map<string, string>());
-  // The host's custom canvas picture, uploaded like a stage picture: the
-  // branding message names it by id (null while the upload is in flight).
-  const canvasBackgroundImageIdsRef = useRef(new Map<string, string>());
-  const [sharedStageBackground, setSharedStageBackground] = useState<StageBackground | null>({ type: 'none', value: '' });
-  const [canvasBackgroundShareFailed, setCanvasBackgroundShareFailed] = useState(false);
-  // Everyone else paints the host's background; an uploaded picture is loaded
-  // with this participant's stage read token into an object URL.
+  // Everyone else paints the host's background and logo. Uploaded pictures are
+  // named by id in the branding and loaded into object URLs with this
+  // participant's read token (the logo's token also works in the green room).
+  // The previous picture stays until the next has loaded.
   const remoteStageBackground = remoteStudioBranding?.stageBackground ?? null;
   const remoteBackgroundImageUrl = roomId ? getSharedBackgroundImageUrl(remoteStageBackground, roomId) : null;
-  const [loadedRemoteBackgroundUrl, setLoadedRemoteBackgroundUrl] = useState<string | null>(null);
-  const remoteBackgroundObjectUrlRef = useRef<string | null>(null);
+  const brandingReadTokenRef = useRef<string | null>(null);
   const lastStageContentSignatureRef = useRef(EMPTY_STAGE_CONTENT_SIGNATURE);
   // Bumped on every join so the stage is re-sent to a server that restarted.
   const [stageMirrorEpoch, setStageMirrorEpoch] = useState(0);
-  useEffect(() => {
-    if (!remoteBackgroundImageUrl) return;
-    let cancelled = false;
-    // Keep painting the previous picture until the next one has loaded. Every
-    // join (stageMirrorEpoch) brings a fresh read token, so load again then.
-    void loadStageImageObjectUrl(remoteBackgroundImageUrl, stageReadTokenRef.current).then((objectUrl) => {
-      if (cancelled) {
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        return;
-      }
-      const previous = remoteBackgroundObjectUrlRef.current;
-      remoteBackgroundObjectUrlRef.current = objectUrl;
-      setLoadedRemoteBackgroundUrl(objectUrl);
-      if (previous && previous !== objectUrl) URL.revokeObjectURL(previous);
-    });
-    return () => { cancelled = true; };
-  }, [remoteBackgroundImageUrl, stageMirrorEpoch]);
-  useEffect(() => () => {
-    if (remoteBackgroundObjectUrlRef.current) URL.revokeObjectURL(remoteBackgroundObjectUrlRef.current);
-  }, []);
+  const loadedRemoteBackgroundUrl = useLoadedSharedImage(remoteBackgroundImageUrl, stageReadTokenRef, stageMirrorEpoch);
+  const remoteLogoImageUrl = roomId ? getSharedLogoImageUrl(remoteStudioBranding, roomId) : null;
+  const loadedRemoteLogoUrl = useLoadedSharedImage(remoteLogoImageUrl, brandingReadTokenRef, stageMirrorEpoch);
+  const remoteLogoUrl = useMemo(
+    () => resolveSharedLogo(remoteStudioBranding, loadedRemoteLogoUrl),
+    [loadedRemoteLogoUrl, remoteStudioBranding]
+  );
   const remoteCanvasBackground = useMemo(
     () => resolveSharedStageBackground(remoteStageBackground, loadedRemoteBackgroundUrl),
     [loadedRemoteBackgroundUrl, remoteStageBackground]
@@ -1230,6 +1216,8 @@ export function StudioRoom() {
   // host is away still broadcasts it.
   const isStudioHost = myParticipant?.role === 'host';
   const canvasBackground = !isStudioHost && remoteStudioBranding ? remoteCanvasBackground : stageBackground;
+  // The logo on the program follows the host's, the same way.
+  const programLogoUrl = !isStudioHost && remoteStudioBranding ? remoteLogoUrl : logoUrl;
   const [logoPlacement, setLogoPlacement] = useState<LogoPlacement>('top-right');
   const [logoPosition, setLogoPosition] = useState<LogoPosition | null>(null);
   const [logoSize, setLogoSize] = useState<LogoSize>('medium');
@@ -1814,10 +1802,10 @@ export function StudioRoom() {
     return buildActiveStreamScreen(
       activeStreamScreenState.kind,
       streamScreenConfig,
-      { brandColor, logoUrl, stageBackground: canvasBackground },
+      { brandColor, logoUrl: programLogoUrl, stageBackground: canvasBackground },
       activeStreamScreenState.activatedAtMs
     );
-  }, [activeStreamScreenState, brandColor, canvasBackground, logoUrl, streamScreenConfig]);
+  }, [activeStreamScreenState, brandColor, canvasBackground, programLogoUrl, streamScreenConfig]);
   const activeStreamScreenBackgroundStyle = useMemo(() => (
     activeStreamScreen ? getStageBackgroundStyle(activeStreamScreen.background) : {}
   ), [activeStreamScreen]);
@@ -1957,7 +1945,7 @@ export function StudioRoom() {
     caption: broadcastCaption,
     stageBackground: canvasBackground,
     brandColor,
-    logoUrl,
+    logoUrl: programLogoUrl,
     logoPlacement,
     logoPosition,
     logoSize,
@@ -2114,28 +2102,24 @@ export function StudioRoom() {
     if (relayBackupRecording) setLiveBackupRecording(relayBackupRecording);
   }, [relayBackupRecording]);
 
-  // A custom picture is sent as its uploaded id, never inline: hold branding
-  // back while that upload is in flight (sharedStageBackground is null).
-  const localStudioBrandingPayload = useMemo(() => sharedStageBackground && buildStudioBrandingPayload({
+  // The host shares branding; the logo and a custom background picture are
+  // uploaded once and named by id, never sent inline (see useStudioBrandingShare).
+  const brandingShare = useStudioBrandingShare({
+    isHost: isStudioHost,
+    roomId,
+    participantId: myParticipant?.id,
+    admitted: myParticipant?.status !== 'green-room',
+    getUploadToken: () => stageUploadTokenRef.current,
+    epoch: stageMirrorEpoch,
     brandColor,
     logoUrl,
-    stageBackground: sharedStageBackground,
+    stageBackground,
     waitingRoom: waitingRoomBranding,
-    updatedBy: myParticipant?.id,
-  }), [brandColor, logoUrl, myParticipant?.id, sharedStageBackground, waitingRoomBranding]);
-
-  useEffect(() => {
-    if (!localStudioBrandingPayload) return;
-    if (!connected || !joined || !canUseOperatorControls || myParticipant?.role !== 'host') return;
-    const timeout = window.setTimeout(() => {
-      send({
-        type: 'studio-branding-updated',
-        payload: localStudioBrandingPayload,
-      });
-    }, 350);
-
-    return () => window.clearTimeout(timeout);
-  }, [canUseOperatorControls, connected, joined, localStudioBrandingPayload, myParticipant?.role, send]);
+    connected,
+    joined,
+    canSend: canUseOperatorControls,
+    send,
+  });
 
   const handleParticipantVolumeChange = useCallback((participantId: string, volume: number) => {
     const clamped = Math.min(1, Math.max(0, Number.isFinite(volume) ? volume : 1));
@@ -2860,6 +2844,7 @@ export function StudioRoom() {
           setStudioServerLost(false);
           setWatchId(message.payload.watchId || null);
           stageReadTokenRef.current = message.payload.stageReadToken || null;
+          brandingReadTokenRef.current = message.payload.brandingReadToken || null;
           setJoined(true);
           setChatMessages(existingChatMessages);
           setChatTypingIndicators([]);
@@ -2871,7 +2856,6 @@ export function StudioRoom() {
           stageUploadTokenRef.current = message.payload.stageUploadToken || null;
           // Uploaded pictures do not survive a server restart; upload afresh after every join.
           stageImageIdsRef.current.clear();
-          canvasBackgroundImageIdsRef.current.clear();
           lastStageContentSignatureRef.current = message.payload.stageContent
             ? JSON.stringify(message.payload.stageContent)
             : EMPTY_STAGE_CONTENT_SIGNATURE;
@@ -6298,44 +6282,6 @@ export function StudioRoom() {
     };
   }, [amStageOwner, contentHidden, sharedContentAvailable, stagedMedia, activeMediaSlideIndex, presentationLayout, roomId, send, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
 
-  // The host shares a custom canvas picture the way slides are shared: upload
-  // it once per join with the stage upload token and name it in branding.
-  useEffect(() => {
-    setCanvasBackgroundShareFailed(false);
-    if (!needsCanvasBackgroundUpload(stageBackground)) {
-      setSharedStageBackground(toSharedStageBackground(stageBackground));
-      return;
-    }
-    const token = stageUploadTokenRef.current;
-    if (!isStudioHost || !roomId || !stageMirrorParticipantId || !stageMirrorAdmitted || !token) {
-      setSharedStageBackground(toSharedStageBackground(stageBackground));
-      return;
-    }
-    const key = getCanvasBackgroundUploadKey(stageBackground);
-    const uploaded = canvasBackgroundImageIdsRef.current.get(key);
-    if (uploaded) {
-      setSharedStageBackground(toSharedStageBackground(stageBackground, uploaded));
-      return;
-    }
-    setSharedStageBackground(null);
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void uploadCanvasBackground(stageBackground, { roomId, participantId: stageMirrorParticipantId, token }).then((imageId) => {
-        canvasBackgroundImageIdsRef.current.set(key, imageId);
-        if (!cancelled) setSharedStageBackground(toSharedStageBackground(stageBackground, imageId));
-      }, (error: unknown) => {
-        if (cancelled) return;
-        console.warn('Guests will see the default canvas; the background picture did not upload:', error);
-        setCanvasBackgroundShareFailed(true);
-        setSharedStageBackground(toSharedStageBackground(stageBackground));
-      });
-    }, 120);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [isStudioHost, roomId, stageBackground, stageMirrorAdmitted, stageMirrorEpoch, stageMirrorParticipantId]);
-
   // Guests: show what the host has on stage. The next picture is loaded before
   // it replaces the current one, so slides change without a blank frame.
   useEffect(() => {
@@ -6853,7 +6799,7 @@ export function StudioRoom() {
   const effectiveWaitingRoomBranding = normalizeWaitingRoomBranding(effectiveStudioBranding?.waitingRoom || waitingRoomBranding);
   const waitingBrandColor = effectiveStudioBranding?.brandColor || brandColor;
   const waitingStageBackground = canvasBackground;
-  const waitingLogoUrl = effectiveWaitingRoomBranding.showLogo ? (effectiveStudioBranding?.logoUrl ?? logoUrl) : null;
+  const waitingLogoUrl = effectiveWaitingRoomBranding.showLogo ? (effectiveStudioBranding ? remoteLogoUrl : logoUrl) : null;
   const waitingRoomBackgroundStyle = getWaitingRoomBackgroundStyle(
     effectiveWaitingRoomBranding.backgroundMode,
     waitingStageBackground,
@@ -7699,7 +7645,7 @@ export function StudioRoom() {
               </div>
 
               {/* Logo watermark */}
-              {logoUrl && (
+              {programLogoUrl && (
                 <div
                   onPointerDown={handleLogoPointerDown}
                   style={{
@@ -7709,7 +7655,7 @@ export function StudioRoom() {
                     ...(canUseOperatorControls ? styles.logoWatermarkDraggable : {}),
                   }}
                 >
-                  <img src={logoUrl} alt="Logo" style={{ ...styles.logoWatermarkImg, ...getLogoSizeStyle(logoSize) }} />
+                  <img src={programLogoUrl} alt="Logo" style={{ ...styles.logoWatermarkImg, ...getLogoSizeStyle(logoSize) }} />
                 </div>
               )}
 
@@ -7826,7 +7772,8 @@ export function StudioRoom() {
               {isStudioHost && <CanvasBackgroundControl
                 value={stageBackground}
                 onChange={setStageBackground}
-                shareStatus={sharedStageBackground === null ? 'sharing' : canvasBackgroundShareFailed ? 'failed' : 'shared'}
+                shareStatus={brandingShare.background.state === 'sharing' ? 'sharing' : brandingShare.background.state === 'failed' ? 'failed' : 'shared'}
+                onRetryShare={brandingShare.background.retry}
               />}
               {!sharedContentAvailable && <><button
                 type="button"
@@ -8024,6 +7971,8 @@ export function StudioRoom() {
             brandColor={brandColor}
             onBrandColorChange={setBrandColor}
             logoUrl={logoUrl}
+            logoShareStatus={brandingShare.logo.state}
+            onRetryLogoShare={brandingShare.logo.retry}
             onLogoUrlChange={setLogoUrl}
             waitingRoomBranding={waitingRoomBranding}
             onWaitingRoomBrandingChange={(next) => setWaitingRoomBranding(normalizeWaitingRoomBranding(next))}

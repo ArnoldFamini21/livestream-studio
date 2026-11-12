@@ -4,7 +4,10 @@
  * server and the signaling message only names it.
  */
 import type { ActiveMedia, LayoutMode, StageContentPayload } from '@studio/shared';
+import type { StageImageKind } from '@studio/shared';
+import { STAGE_IMAGE_KIND_HEADER } from '@studio/shared';
 import { buildApiUrl } from './apiClient.ts';
+import { PermanentUploadError } from './pictureUpload.ts';
 import { clampPresentationSlideIndex, getPresentationSlides } from './presentationDeckControls.ts';
 
 /** Guests see the stage in a panel, so a 720p picture is sharp enough and quick to load. */
@@ -121,6 +124,7 @@ export async function postStageImage(
   body: Blob,
   auth: StageImageUploadAuth,
   fetchImpl: typeof fetch = fetch,
+  options: { kind?: StageImageKind; signal?: AbortSignal } = {},
 ): Promise<string> {
   const response = await fetchImpl(buildApiUrl(`/api/rooms/${encodeURIComponent(auth.roomId)}/stage-images`), {
     method: 'POST',
@@ -128,10 +132,19 @@ export async function postStageImage(
       'Content-Type': body.type || 'image/jpeg',
       'X-Participant-Id': auth.participantId,
       'X-Stage-Token': auth.token,
+      ...(options.kind === 'logo' ? { [STAGE_IMAGE_KIND_HEADER]: 'logo' } : {}),
     },
     body,
+    signal: options.signal,
   });
-  if (!response.ok) throw new Error(`Stage picture upload failed (${response.status})`);
+  if (!response.ok) {
+    const message = `Stage picture upload failed (${response.status})`;
+    // Too large, wrong type or not allowed: repeating the same upload cannot help.
+    if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+      throw new PermanentUploadError(message, response.status);
+    }
+    throw new Error(message);
+  }
   const result = await response.json() as { imageId?: unknown };
   if (typeof result.imageId !== 'string') throw new Error('Stage picture upload returned no id');
   return result.imageId;

@@ -45,6 +45,8 @@ import {
   type StudioThemeId,
 } from '../utils/studioThemes.ts';
 import { normalizeLogoOpacity } from '../utils/logoWatermark.ts';
+import { blobToDataUrl, prepareLogoImage } from '../utils/logoImage.ts';
+import type { PictureShareState } from '../hooks/useSharedPictureUpload.ts';
 import { getLogoPositionFromPlacement, normalizeLogoPosition } from '../utils/logoPosition.ts';
 import {
   MAX_WAITING_ROOM_HEADLINE_LENGTH,
@@ -111,6 +113,9 @@ interface SidebarProps {
   brandColor: string;
   onBrandColorChange: (color: string) => void;
   logoUrl: string | null;
+  /** Whether everyone in the studio has this logo yet (it is uploaded once and shared by id). */
+  logoShareStatus?: PictureShareState;
+  onRetryLogoShare?: () => void;
   onLogoUrlChange: (url: string | null) => void;
   waitingRoomBranding: WaitingRoomBranding;
   onWaitingRoomBrandingChange: (config: WaitingRoomBranding) => void;
@@ -402,19 +407,22 @@ export function Sidebar(props: SidebarProps) {
     }
   };
 
+  const [logoMessage, setLogoMessage] = useState<string | null>(null);
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (props.logoUrl?.startsWith('blob:')) URL.revokeObjectURL(props.logoUrl);
-      if (file.size <= 2_000_000) {
-        const reader = new FileReader();
-        reader.onloadend = () => props.onLogoUrlChange(reader.result as string);
-        reader.readAsDataURL(file);
-      } else {
-        props.onLogoUrlChange(URL.createObjectURL(file));
-      }
-    }
     e.target.value = '';
+    if (!file) return;
+    setLogoMessage(null);
+    // Scaled down in the browser (to 1024 px, transparency kept) so it can be
+    // shared with everyone; a logo that cannot be prepared is refused out loud.
+    void prepareLogoImage(file).then(blobToDataUrl).then((dataUrl) => {
+      if (props.logoUrl?.startsWith('blob:')) URL.revokeObjectURL(props.logoUrl);
+      props.onLogoUrlChange(dataUrl);
+    }, (error: unknown) => {
+      setLogoMessage(error instanceof Error && error.name === 'LogoPrepareError'
+        ? error.message
+        : 'This logo could not be prepared. Choose another picture.');
+    });
   };
 
   return (
@@ -535,6 +543,14 @@ export function Sidebar(props: SidebarProps) {
                     </svg>
                     Upload logo
                   </button>
+                )}
+                {logoMessage && <p role="alert" data-testid="logo-error" style={st.logoNotice}>{logoMessage}</p>}
+                {props.logoUrl && props.logoShareStatus === 'sharing' && <p role="status" data-testid="logo-share-status" data-share-status="sharing" style={st.logoNoticeMuted}>Sharing your logo with guests…</p>}
+                {props.logoUrl && props.logoShareStatus === 'failed' && (
+                  <p role="status" data-testid="logo-share-status" data-share-status="failed" style={st.logoNotice}>
+                    Could not share this logo, so guests do not see it yet.{' '}
+                    {props.onRetryLogoShare && <button type="button" className="studio-brand-replace" onClick={props.onRetryLogoShare}>Retry</button>}
+                  </p>
                 )}
 
                 {props.logoUrl && (
@@ -1137,6 +1153,8 @@ const st: Record<string, React.CSSProperties> = {
   savedBrandKitName: { minWidth: 0, fontSize: 11, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   savedBrandKitMeta: { minWidth: 0, fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'capitalize' },
   savedBrandKitDelete: { display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, minWidth: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 },
+  logoNotice: { margin: '6px 0 0', fontSize: 12, lineHeight: 1.4, color: 'var(--danger, #f87171)' },
+  logoNoticeMuted: { margin: '6px 0 0', fontSize: 12, lineHeight: 1.4, color: 'var(--text-muted)' },
   uploadBtn: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, fontSize: 12, fontWeight: 500, background: 'none', color: 'var(--text-muted)', border: '1px dashed var(--border-strong)', borderRadius: 10, cursor: 'pointer', transition: 'all var(--transition-fast)' },
   logoPreview: { position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', padding: '8px 40px 8px 10px', gap: 12, height: 60, borderRadius: 8, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', overflow: 'hidden' },
   logoImg: { maxHeight: 42, maxWidth: '50%', objectFit: 'contain' },

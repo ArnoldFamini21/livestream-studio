@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import { WebSocketServer } from 'ws';
-import { buildServiceHealthPayload } from '@studio/shared';
+import { buildServiceHealthPayload, SIGNALING_MAX_PAYLOAD_BYTES, STAGE_IMAGE_KIND_HEADER } from '@studio/shared';
 import {
   configureRoomSnapshotStore,
   isRoomMemberCredential,
@@ -370,6 +370,7 @@ app.post(
       token: header('x-stage-token'),
       contentType: header('content-type'),
       data: Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
+      kind: header(STAGE_IMAGE_KIND_HEADER) === 'logo' ? 'logo' : 'stage',
     });
     if (!result.ok) {
       res.status(result.status).json({ error: result.error });
@@ -457,7 +458,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({
   server,
   path: '/ws',
-  maxPayload: 64 * 1024,
+  maxPayload: SIGNALING_MAX_PAYLOAD_BYTES,
   verifyClient: (info, done) => {
     const headerOrigin = info.req.headers.origin;
     const origin = info.origin || (Array.isArray(headerOrigin) ? headerOrigin[0] : headerOrigin);

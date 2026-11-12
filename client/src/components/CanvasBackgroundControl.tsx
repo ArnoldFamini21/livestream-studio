@@ -10,13 +10,14 @@ export type CanvasBackgroundShareStatus = 'shared' | 'sharing' | 'failed';
 const SHARE_STATUS_TEXT: Record<CanvasBackgroundShareStatus, string> = {
   shared: 'Saved for this studio and shown to everyone on stage.',
   sharing: 'Sharing with your guests…',
-  failed: 'Guests could not receive this picture. Try another image.',
+  failed: 'Could not share this picture, so guests see the default background. Retry, or try another image.',
 };
 
-export function CanvasBackgroundControl({ value, onChange, shareStatus = 'shared' }: {
+export function CanvasBackgroundControl({ value, onChange, shareStatus = 'shared', onRetryShare }: {
   value: StageBackground;
   onChange: (background: StageBackground) => void;
   shareStatus?: CanvasBackgroundShareStatus;
+  onRetryShare?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return <>
@@ -24,14 +25,15 @@ export function CanvasBackgroundControl({ value, onChange, shareStatus = 'shared
       <span className="canvas-background-swatch" style={getStageBackgroundStyle(value)} aria-hidden="true" />
       <span>Background</span>
     </button>
-    {open && <CanvasBackgroundDialog value={value} onChange={onChange} shareStatus={shareStatus} onClose={() => setOpen(false)} />}
+    {open && <CanvasBackgroundDialog value={value} onChange={onChange} shareStatus={shareStatus} onRetryShare={onRetryShare} onClose={() => setOpen(false)} />}
   </>;
 }
 
-function CanvasBackgroundDialog({ value, onChange, shareStatus, onClose }: {
+function CanvasBackgroundDialog({ value, onChange, shareStatus, onRetryShare, onClose }: {
   value: StageBackground;
   onChange: (background: StageBackground) => void;
   shareStatus: CanvasBackgroundShareStatus;
+  onRetryShare?: () => void;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -52,6 +54,6 @@ function CanvasBackgroundDialog({ value, onChange, shareStatus, onClose }: {
       <button type="button" aria-label="Close canvas background" onClick={() => dialogRef.current?.close()}>×</button>
     </header>
     <div className="canvas-background-content"><BackgroundPicker value={value} onChange={onChange} /></div>
-    <footer><span role="status" data-share-status={shareStatus}>{SHARE_STATUS_TEXT[shareStatus]}</span><button type="button" onClick={() => dialogRef.current?.close()}>Done</button></footer>
+    <footer><span role="status" data-share-status={shareStatus}>{SHARE_STATUS_TEXT[shareStatus]}</span>{shareStatus === 'failed' && onRetryShare && <button type="button" onClick={onRetryShare}>Retry</button>}<button type="button" onClick={() => dialogRef.current?.close()}>Done</button></footer>
   </dialog>;
 }

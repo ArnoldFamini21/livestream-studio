@@ -1190,8 +1190,11 @@ export function useCompositor({
   const activePresentationSlideImageUrl = getPresentationSlideImageUrl(activeMedia, activeMediaSlideIndex);
 
   useEffect(() => {
-    logoImageRef.current = null;
-    if (!logoUrl) return;
+    // The logo on air stays until its replacement has loaded (no blank frames in the stream).
+    if (!logoUrl) {
+      logoImageRef.current = null;
+      return;
+    }
 
     let cancelled = false;
     const img = new Image();
@@ -1209,8 +1212,11 @@ export function useCompositor({
   }, [logoUrl]);
 
   useEffect(() => {
-    backgroundImageRef.current = null;
-    if (stageBackground?.type !== 'image' || !stageBackground.value) return;
+    // Likewise the background picture: keep painting it until the next one has loaded.
+    if (stageBackground?.type !== 'image' || !stageBackground.value) {
+      backgroundImageRef.current = null;
+      return;
+    }
 
     let cancelled = false;
     const img = new Image();
