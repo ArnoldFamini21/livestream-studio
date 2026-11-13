@@ -470,6 +470,69 @@ accepts the connection and says nothing); Safari and Firefox; a media server
 restart during the hold. `e2e/studio.test.mjs` is unchanged: the scenario needs
 a media server, which the CI browser job does not start.
 
+## Fix — a returning studio continues its held broadcast when destination ids changed
+
+**Problem.** When the studio's connection drops during a real broadcast, the media
+server holds the destinations on a slate for 3 minutes and a returning studio that
+presses Go Live continues the same broadcast when `isSameRelaySetup` says the setup
+is the same. That comparison included the client's destination id. Ids are local to
+one page visit (`dest-N` for a destination added in this visit, `saved-N` by position
+after a reload), so a host who added, removed or re-ordered a destination in the visit
+they went live in, then crashed or reloaded, was not continued: Go Live replaced the
+held broadcast (public stream stopped, new one started). A host who does not remember
+stream keys hit the same mismatch after pasting the key again.
+
+**What it does now.**
+- `media-server/src/relayRekey.ts` defines what a destination IS: its RTMP URL plus
+  stream key. Two lists are the same when their sorted multisets of those pairs are
+  equal (exact comparison, no trimming, order and ids and names ignored).
+  `isSameRelaySetup` uses it; the output settings it compared before are unchanged.
+- On a resume, `rekeySessionDestinations` pairs the held session's destinations with
+  the returning studio's and moves every id-keyed record to the new ids in one place:
+  relays (and the destination each carries), confirmed destinations, stop timers,
+  restart timers, reconnect counts, and the stored destination list. Timers keep running.
+  `resumeSession` also now stores the new list in `session.destinations` (it used to
+  keep the old one, which the encoder-restart messages read).
+- The relay handlers in `spawnRelay` (stats, error, exit, restart timer, backpressure)
+  used to capture the destination object from when they were created. They now read
+  `relay.destination`, which the helper updates, and a pending restart timer starts the
+  replacement relay from the current destination and the current payload. After a resume
+  nothing reports an id the returning studio does not know: status, stats, health,
+  errors, restarts, the final stop summary.
+- A list that really differs (one more, one fewer, another key or URL) still replaces
+  the held broadcast, and a private test during a hold is still refused (PR #367 guard).
+
+**Duplicates.** `validateDestinations` only requires unique ids; it accepts two
+destinations with the same URL and key under different ids. The comparison counts
+them (a list with the pair twice is not the list with it once) and the pairing is one
+to one: equal ids first, then list order. Two destinations sending to one place is
+not something a host would do on purpose, so the order rule is only there to keep the
+mapping unambiguous.
+
+**Client.** No change. The destination rows take the ids from the status messages, and
+the media server now sends the returning ids. A remembered destination that comes back
+without its stream key is refused by Go Live ("Missing stream key",
+`getStreamDestinationIssue`, covered by `client/test/streamDestinations.test.ts`);
+pasting the same key again continues the held broadcast. Stream keys are not stored or
+logged anywhere new.
+
+**Verification.**
+- Unit tests: `relayRekey.test.ts` (set key ignores ids, names and order; different key,
+  URL, more, fewer, duplicates, a separator inside a key; pairing; the re-key helper
+  including swapped ids and an old id copied before the resume), `relayResume.test.ts`.
+- Media-server session tests (`testStreamSession.test.ts`, real media server, local RTMP
+  listener): the held broadcast continues with a different id, no second connection, every
+  status after the resume and the stop summary carry the new id; another key replaces the
+  held broadcast; the existing replace test passes. The continue test failed before the fix.
+- Real browser (`output/resume-ids-check/check.mjs`, 1440x900): remember-keys on and off,
+  destination added in the visit that went live, reload, hold, Go Live: one connection at
+  the listener, LIVE, row connecting then live; with keys off Go Live refuses with
+  "Missing stream key" until the key is pasted again.
+
+**Not verified.** A real YouTube or Facebook destination (the listener is a local dummy
+that never answers); a long hold close to 3 minutes; `e2e/studio.test.mjs` was not
+changed (it has no media server in CI).
+
 ## Resume here next session
 
 Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and
