@@ -24,6 +24,8 @@ export interface MediaServerHealth {
   presentationRenderer?: MediaServerCapabilityHealth;
   /** Absent on older media servers, which do not report it. */
   recordingStorage?: MediaServerCapabilityHealth;
+  /** Absent on older media servers: the private test stream is offered only when this is ready. */
+  testStream?: MediaServerCapabilityHealth;
 }
 
 export type MediaServerParityFeatureStatus = 'ready' | 'checking' | 'degraded' | 'blocked';
@@ -278,6 +280,7 @@ export function normalizeMediaServerHealthPayload(
   const environment = readString(value.environment);
   const reportedPresentationRenderer = getCapability(value, 'presentationRenderer');
   const recordingStorage = getCapability(value, 'recordingStorage');
+  const testStream = getCapability(value, 'testStream');
 
   if (value.status !== 'ok') {
     return failure('Media server health did not report ready status.', input);
@@ -307,6 +310,7 @@ export function normalizeMediaServerHealthPayload(
     ...(environment ? { environment } : {}),
     ...(presentationRenderer ? { presentationRenderer } : {}),
     ...(recordingStorage ? { recordingStorage } : {}),
+    ...(testStream ? { testStream } : {}),
   };
 }
 
@@ -385,4 +389,27 @@ export async function checkMediaServerHealth(
   } finally {
     globalThis.clearTimeout(timeoutId);
   }
+}
+
+/**
+ * Whether the media server can run a private test. During a deploy the new
+ * studio can meet the old media server, which does not advertise it.
+ */
+export function getTestStreamSupport(health: MediaServerHealth | null | undefined): { supported: boolean; reason: string } {
+  if (!health || health.status === 'checking') {
+    return { supported: false, reason: 'Checking the media server. The test will be available in a moment.' };
+  }
+  if (health.status === 'unavailable') {
+    return { supported: false, reason: `The media server is not reachable, so a test cannot run. ${health.message}`.trim() };
+  }
+  if (!health.testStream) {
+    return {
+      supported: false,
+      reason: 'The media server is on an older version without the test stream. It is probably being updated: try again in a few minutes.',
+    };
+  }
+  if (!health.testStream.ready) {
+    return { supported: false, reason: health.testStream.message || 'The media server cannot run a test right now.' };
+  }
+  return { supported: true, reason: '' };
 }

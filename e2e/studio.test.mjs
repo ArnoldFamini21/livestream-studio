@@ -341,6 +341,19 @@ await scenario('a 150 KB logo is shared by id: the guest sees it and the host ne
       await writeFile(path.join(fixture.artifactDir, 'departure-evidence.json'), JSON.stringify({ explicitLeaveMs, tabCloseMs: Date.now() - started }, null, 2));
     });
 
+    // Without a media server that advertises the test (here the API stands in), the host is told so plainly.
+    await scenario('the private test is offered only when the media server advertises it', async () => {
+      await host.getByRole('button', { name: /Go live: open stream destinations/ }).click();
+      const start = host.getByTestId('test-stream-start');
+      await start.waitFor();
+      await eventually(async () => (await host.getByTestId('test-stream-unavailable').count()) === 1, { message: 'the reason the test is unavailable is shown' });
+      assert.equal(await start.isDisabled(), true, 'the test cannot start without a media server that offers it');
+      assert.match(await host.getByTestId('test-stream-unavailable').innerText(), /media server/i);
+      assert.equal(await host.getByTestId('test-stream-header-badge').count(), 0, 'no TEST badge while nothing runs');
+      await screenshot(host, fixture.artifactDir, 'host-test-stream-unavailable');
+      await host.getByRole('button', { name: 'Close destinations panel' }).click();
+    });
+
     assert.deepEqual(fixture.pageErrors, [], 'No uncaught application errors');
     assert.deepEqual(fixture.cspViolations, [], 'No CSP violations');
   } finally {

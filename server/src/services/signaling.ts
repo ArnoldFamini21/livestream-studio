@@ -22,6 +22,7 @@ import type {
   RecordingStatePayload,
   RecordingUploadProgressPayload,
   LiveStreamStatePayload,
+  TestStreamStatePayload,
   LiveStreamTokenClaims,
   PresentationRenderTokenClaims,
   RecordingUploadTokenClaims,
@@ -179,6 +180,9 @@ interface RoomState {
   recordingPaused?: boolean;
   liveStreamStartedAt?: string;
   liveStreamStartedBy?: string;
+  // A private test stream: in memory only, never public and never persisted.
+  testStreamStartedAt?: string;
+  testStreamStartedBy?: string;
   // Server-issued secret returned to the room creator and required on host join-room.
   hostToken: string;
   // Optional guest password verifier. The raw password is never stored.
@@ -311,6 +315,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'recording-transfer-signal',
   'sfu-token-request',
   'live-stream-state-changed',
+  'test-stream-state-changed',
   'live-stream-token-request',
   'external-chat-connect',
   'external-chat-disconnect',
@@ -768,7 +773,19 @@ function updateRoomActivityStatus(roomState: RoomState) {
   }
 }
 
+function clearTestStreamState(roomId: string, roomState: RoomState, performedBy: string): boolean {
+  if (!roomState.testStreamStartedAt) return false;
+  roomState.testStreamStartedAt = undefined;
+  roomState.testStreamStartedBy = undefined;
+  broadcastToRoom(roomId, {
+    type: 'test-stream-state-changed',
+    payload: { active: false, performedBy },
+  });
+  return true;
+}
+
 function clearLiveStreamStateForParticipant(roomId: string, roomState: RoomState, participantId: string): boolean {
+  if (roomState.testStreamStartedBy === participantId) clearTestStreamState(roomId, roomState, participantId);
   if (roomState.liveStreamStartedBy !== participantId) return false;
 
   roomState.liveStreamStartedAt = undefined;
@@ -1464,6 +1481,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'live-stream-state-changed':
       handleLiveStreamStateChange(ws, message.payload);
       break;
+    case 'test-stream-state-changed':
+      handleTestStreamStateChange(ws, message.payload);
+      break;
     case 'live-stream-token-request':
       handleLiveStreamTokenRequest(ws, message.payload);
       break;
@@ -1730,6 +1750,13 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
         performedBy: roomState.liveStreamStartedBy || roomState.room.hostId,
       }
     : undefined;
+  const testStreamState: TestStreamStatePayload | undefined = roomState.testStreamStartedAt && !roomState.liveStreamStartedAt
+    ? {
+        active: true,
+        startedAt: roomState.testStreamStartedAt,
+        performedBy: roomState.testStreamStartedBy || roomState.room.hostId,
+      }
+    : undefined;
   const restoreTicket = participant.role === 'host' ? issueRestoreTicket(roomState) : undefined;
   const talkbackParticipantIds = operator && admitted ? getTalkbackParticipantIds(roomState, participant.id) : [];
 
@@ -1752,6 +1779,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
           }
         : undefined,
       liveStreamState,
+      ...(testStreamState ? { testStreamState } : {}),
       studioBranding: roomState.studioBranding,
       ...(operator && admitted && roomState.chatOverlay ? { chatOverlay: roomState.chatOverlay } : {}),
       stageContent: admitted ? roomState.stageContent : undefined,
@@ -3225,6 +3253,8 @@ function handleLiveStreamStateChange(ws: WebSocket, payload: LiveStreamStatePayl
   };
 
   if (payload.live) {
+    // Going live ends any test for everyone: the room is never both.
+    clearTestStreamState(mapping.roomId, roomState, mapping.participantId);
     roomState.liveStreamStartedAt = startedAt;
     roomState.liveStreamStartedBy = mapping.participantId;
   } else {
@@ -3237,6 +3267,50 @@ function handleLiveStreamStateChange(ws: WebSocket, payload: LiveStreamStatePayl
   broadcastToRoom(mapping.roomId, {
     type: 'live-stream-state-changed',
     payload: authoritativePayload,
+  });
+}
+
+/**
+ * A private test stream is shown to the room as "TEST - not public". It never
+ * touches the live state, the room status or the saved room, and it cannot
+ * start while the room is live.
+ */
+function handleTestStreamStateChange(ws: WebSocket, payload: TestStreamStatePayload) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+
+  const roomState = rooms.get(mapping.roomId);
+  if (!roomState) return;
+
+  const performer = roomState.participants.get(mapping.participantId);
+  if (!performer) return;
+  if (performer.participant.role !== 'host' && performer.participant.role !== 'co-host') {
+    sendError(ws, 'Only hosts and co-hosts can run a test stream', 'UNAUTHORIZED');
+    return;
+  }
+  if (performer.participant.status === 'green-room') {
+    sendError(ws, 'Wait until you are admitted before running a test stream', 'PARTICIPANT_NOT_ADMITTED');
+    return;
+  }
+  if (typeof payload?.active !== 'boolean') {
+    sendError(ws, 'Invalid test stream state', 'VALIDATION_ERROR');
+    return;
+  }
+
+  if (!payload.active) {
+    clearTestStreamState(mapping.roomId, roomState, mapping.participantId);
+    return;
+  }
+  if (roomState.liveStreamStartedAt) {
+    sendError(ws, 'The studio is live. A test cannot run at the same time.', 'VALIDATION_ERROR');
+    return;
+  }
+  const startedAt = roomState.testStreamStartedAt || new Date().toISOString();
+  roomState.testStreamStartedAt = startedAt;
+  roomState.testStreamStartedBy = mapping.participantId;
+  broadcastToRoom(mapping.roomId, {
+    type: 'test-stream-state-changed',
+    payload: { active: true, startedAt, performedBy: mapping.participantId },
   });
 }
 

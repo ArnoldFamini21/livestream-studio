@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { getProgramReturnLabel } from '../utils/programReturn.ts';
+import { TEST_BANNER_LABEL } from '../utils/testStreamMachine.ts';
 
 type SinkIdElement = HTMLMediaElement & { setSinkId?: (sinkId: string) => Promise<void> };
 
@@ -50,6 +51,8 @@ export function ProgramReturnVideo({ stream, muted, audioOutputDeviceId, style, 
 interface ProgramReturnMonitorProps {
   stream: MediaStream | null;
   live: boolean;
+  /** A private test is running: show "TEST - not public", never Live. */
+  test?: boolean;
   audioOutputDeviceId?: string;
   brandColor?: string;
 }
@@ -59,9 +62,9 @@ interface ProgramReturnMonitorProps {
  * with the sound turned on, hears), so they can time their entrance. Shown
  * before the show goes live too, labelled Preview.
  */
-export function ProgramReturnMonitor({ stream, live, audioOutputDeviceId, brandColor = '#a78bfa' }: ProgramReturnMonitorProps) {
+export function ProgramReturnMonitor({ stream, live, test = false, audioOutputDeviceId, brandColor = '#a78bfa' }: ProgramReturnMonitorProps) {
   const [soundOn, setSoundOn] = useState(false);
-  const label = getProgramReturnLabel(live);
+  const label = test && !live ? TEST_BANNER_LABEL : getProgramReturnLabel(live);
 
   return (
     <section style={styles.monitor} aria-label="Live program" data-testid="program-return-monitor">

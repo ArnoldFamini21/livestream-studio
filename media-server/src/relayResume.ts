@@ -27,6 +27,8 @@ function destinationKey(payload: RtmpRelayStartPayload): string {
  * produce a stream the destinations can take without a restart.
  */
 export function isSameRelaySetup(running: RtmpRelayStartPayload, incoming: RtmpRelayStartPayload): boolean {
+  // A test is never continued as a broadcast, nor a broadcast as a test.
+  if (Boolean(running.test) !== Boolean(incoming.test)) return false;
   if (destinationKey(running) !== destinationKey(incoming)) return false;
   const videoA = normalizeVideoConfig(running.video);
   const videoB = normalizeVideoConfig(incoming.video);
