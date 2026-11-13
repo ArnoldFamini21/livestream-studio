@@ -75,6 +75,7 @@ import { GuestCaptionShare } from './GuestCaptionShare.tsx';
 import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useTestStream } from '../hooks/useTestStream.ts';
+import { shouldReannounceTest } from '../utils/testStreamReannounce.ts';
 import { getTestStreamSupport } from '../utils/mediaServerHealth.ts';
 import { TEST_BANNER_LABEL } from '../utils/testStreamMachine.ts';
 import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
@@ -1132,6 +1133,10 @@ export function StudioRoom() {
   const [remoteTestStream, setRemoteTestStream] = useState<{ active: boolean; startedAt?: string } | null>(null);
   const [showTestOutput, setShowTestOutput] = useState(false);
   const testRelayStoppedRef = useRef<((message: string) => boolean) | null>(null);
+  /** The test this browser runs, if any; announced again after the signaling connection returns. */
+  const runningTestRef = useRef<{ startedAt: string | null } | null>(null);
+  /** Why the last Go Live attempt failed, for the "Go live now" message. */
+  const goLiveFailureReasonRef = useRef<string | null>(null);
   const [streamScreenConfig, setStreamScreenConfig] = useState<StreamScreenConfig>(DEFAULT_STREAM_SCREEN_CONFIG);
   const [activeStreamScreenState, setActiveStreamScreenState] = useState<ActiveStreamScreenState | null>(null);
   const [liveSessionSummary, setLiveSessionSummary] = useState<LiveSessionSummary | null>(null);
@@ -2862,6 +2867,20 @@ export function StudioRoom() {
             sendRef.current({
               type: 'live-stream-state-changed',
               payload: { live: true, startedAt: liveStartedAt ?? undefined, performedBy: participant.id },
+            });
+          }
+          // A private test still running here: the server forgot it when we disconnected.
+          const runningTest = runningTestRef.current;
+          if (runningTest && shouldReannounceTest({
+            testRunningHere: true,
+            relayActive: relayActiveRef.current,
+            isHost: participant.role === 'host',
+            roomLive: live,
+            serverKnowsTest: Boolean(testStreamState?.active),
+          })) {
+            sendRef.current({
+              type: 'test-stream-state-changed',
+              payload: { active: true, startedAt: runningTest.startedAt ?? undefined, performedBy: participant.id },
             });
           }
           if (reassertOwnRecording && recordingSessionId) {
@@ -5054,12 +5073,16 @@ export function StudioRoom() {
       liveStatusTimerRef.current = null;
     }
 
+    goLiveFailureReasonRef.current = null;
     const enabledDestinations = destinations.filter((d) => d.enabled);
     if (
       enabledDestinations.length === 0 ||
       enabledDestinations.length > MAX_ENABLED_DESTINATIONS ||
       enabledDestinations.some((d) => getStreamDestinationIssue(d))
     ) {
+      goLiveFailureReasonRef.current = enabledDestinations.length === 0
+        ? 'No destination is switched on.'
+        : enabledDestinations.map((d) => getStreamDestinationIssue(d)).find(Boolean) || 'Check destination settings before going live.';
       setDestinations((prev) => prev.map((d) => (
         d.enabled
           ? { ...d, status: 'error', statusMessage: getStreamDestinationIssue(d) || 'Check destination settings before going live.' }
@@ -5078,6 +5101,7 @@ export function StudioRoom() {
       const readiness = await operation.run(checkRelayReadiness);
       operation.assertActive();
       if (readiness.status !== 'ready') {
+        goLiveFailureReasonRef.current = readiness.message;
         setDestinations((prev) => prev.map((d) => (
           d.enabled
             ? { ...d, status: 'error', statusMessage: readiness.message }
@@ -5121,6 +5145,7 @@ export function StudioRoom() {
       setLiveStartedAt(null);
       setActiveStreamScreenState(null);
       const message = err instanceof Error ? err.message : 'Failed to start live stream.';
+      goLiveFailureReasonRef.current = message;
       setDestinations((prev) => prev.map((d) => (
         d.enabled
           ? { ...d, status: 'error', statusMessage: message }
@@ -5156,11 +5181,13 @@ export function StudioRoom() {
     }),
     goLive: startGoLive,
     getGoLiveIssue: () => getEnabledDestinationPreflightIssue(destinations),
+    getGoLiveFailureReason: () => goLiveFailureReasonRef.current,
     isLive,
     isGoLiveStarting: () => liveStartOperationRef.current.active,
     onRelayInUseChange: setTestStreamOnAir,
   });
   testRelayStoppedRef.current = testStream.handleRelayLost;
+  runningTestRef.current = testStream.state.phase === 'testing' ? { startedAt: testStream.state.startedAt } : null;
   // The output player belongs to one running test.
   useEffect(() => {
     if (testStream.state.phase !== 'testing') setShowTestOutput(false);
@@ -5172,6 +5199,7 @@ export function StudioRoom() {
       return;
     }
     if (testStream.getNormalGoLiveBlocker()) return;
+    testStream.dismiss();
     await startGoLive();
   };
   const onStopLive = () => {

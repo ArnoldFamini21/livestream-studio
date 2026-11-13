@@ -60,3 +60,30 @@ export function getCapacityRefusal(options: { incomingIsTest: boolean; runningIs
   }
   return { code: 'RELAY_CAPACITY_REACHED', message: 'This media server is already running another broadcast. Try again when it ends.' };
 }
+
+export const BROADCAST_HELD_CODE = 'TEST_BLOCKED_BY_HELD_BROADCAST';
+
+/**
+ * A test must never touch a broadcast that is waiting for its studio to come
+ * back: it would otherwise take the "same studio restarting with new settings"
+ * path and end the public broadcast. Decided before any state of the new
+ * session exists. Only a test is refused; a normal start keeps its rules.
+ */
+export function getHeldBroadcastRefusal(options: {
+  incomingIsTest: boolean;
+  roomHasHeldBroadcast: boolean;
+}): { code: string; message: string } | null {
+  if (!options.incomingIsTest || !options.roomHasHeldBroadcast) return null;
+  return {
+    code: BROADCAST_HELD_CODE,
+    message: 'Your broadcast is still on the air, waiting for you. Press Go Live to continue it. A test can run after the broadcast ends.',
+  };
+}
+
+/** A real broadcast of this room whose studio connection dropped and that is still on its slate. */
+export function isHeldRealBroadcast(
+  candidate: { clientGone: boolean; started: boolean; stopping: boolean; test: boolean; claims?: { roomId: string } | null },
+  roomId: string
+): boolean {
+  return candidate.clientGone && candidate.started && !candidate.stopping && !candidate.test && candidate.claims?.roomId === roomId;
+}

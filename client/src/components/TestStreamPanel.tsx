@@ -52,7 +52,7 @@ export function TestStreamPanel({ controls, onWatchOutput, enabledDestinationCou
         {notice && state.phase !== 'live' && notice !== startBlocker && (
           <p style={styles.error} role="alert" data-testid="test-stream-notice">{notice}</p>
         )}
-        {state.phase === 'error' && (
+        {(state.phase === 'error' || (state.phase === 'idle' && state.message)) && (
           <button type="button" className="btn-secondary" style={styles.smallButton} onClick={controls.dismiss}>Dismiss</button>
         )}
       </section>

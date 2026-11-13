@@ -108,6 +108,8 @@ import {
   createTestWatchId,
   getCapacityRefusal,
   getTestStartIssue,
+  getHeldBroadcastRefusal,
+  isHeldRealBroadcast,
   isTestStreamSupported,
   mayStartDestination,
 } from './testStream.js';
@@ -1382,6 +1384,16 @@ async function handleStart(
   const ffmpegPath = getFfmpegPath();
   if (!ffmpegPath) {
     sendError(ws, 'FFMPEG_UNAVAILABLE', 'FFmpeg binary is unavailable');
+    return;
+  }
+
+  // A test never ends, replaces or resumes the broadcast this room has on hold.
+  const heldRefusal = getHeldBroadcastRefusal({
+    incomingIsTest: isTest,
+    roomHasHeldBroadcast: Array.from(sessions.values()).some((other) => other !== session && isHeldRealBroadcast(other, claims.roomId)),
+  });
+  if (heldRefusal) {
+    sendError(ws, heldRefusal.code, heldRefusal.message);
     return;
   }
 

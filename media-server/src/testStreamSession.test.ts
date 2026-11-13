@@ -191,3 +191,165 @@ describe('private test session on the media server', { skip: !ffmpegAvailable },
     assert.deepEqual(left, [], 'the private playlist and segments are removed');
   });
 });
+
+/** A WebM like the studio's MediaRecorder output: VP8 and Opus, a keyframe every second. */
+async function makeWebm(seconds: number): Promise<Buffer> {
+  const child = spawn(ffmpegPath, [
+    '-v', 'error',
+    '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=15',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
+    '-t', String(seconds),
+    '-c:v', 'libvpx', '-deadline', 'realtime', '-cpu-used', '8', '-g', '15', '-b:v', '300k',
+    '-c:a', 'libopus', '-b:a', '64k',
+    '-f', 'webm', 'pipe:1',
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const parts: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => parts.push(chunk));
+  child.stderr.on('data', () => {});
+  await new Promise<void>((resolve) => child.once('close', () => resolve()));
+  return Buffer.concat(parts);
+}
+
+/** A destination that accepts connections and says nothing, and counts them. */
+function startListener(): Promise<{ port: number; opened: () => number; open: () => number; stop: () => void }> {
+  let opened = 0;
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((socket) => {
+    opened += 1;
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
+    port: (server.address() as net.AddressInfo).port,
+    opened: () => opened,
+    open: () => sockets.size,
+    stop: () => { for (const socket of sockets) socket.destroy(); server.close(); },
+  })));
+}
+
+describe('a test start while the same room has a held broadcast', { skip: !ffmpegAvailable, timeout: 180_000 }, () => {
+  let server: ChildProcessWithoutNullStreams;
+  let port = 0;
+  let hlsDir = '';
+  let output = '';
+  let webm: Buffer = Buffer.alloc(0);
+  let listener: Awaited<ReturnType<typeof startListener>>;
+  let real: Record<string, unknown>;
+
+  before(async () => {
+    webm = await makeWebm(8);
+    assert.ok(webm.length > 10_000);
+    listener = await startListener();
+    real = { destinations: [{ ...destination, rtmpUrl: `rtmp://127.0.0.1:${listener.port}/live` }] };
+    port = await freePort();
+    hlsDir = await mkdtemp(path.join(os.tmpdir(), 'held-guard-hls-'));
+    server = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
+      cwd: path.resolve(import.meta.dirname, '..'),
+      env: {
+        ...process.env,
+        PORT: String(port),
+        LIVE_STREAM_TOKEN_SECRET: SECRET,
+        HLS_OUTPUT_DIR: hlsDir,
+        RTMP_ENCODE_ONCE: 'true',
+        RTMP_ALLOW_PRIVATE_HOSTS: 'true',
+        NODE_ENV: 'test',
+        CLIENT_URLS: '',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as ChildProcessWithoutNullStreams;
+    server.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
+    server.stderr.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
+    const deadline = Date.now() + 30_000;
+    while (!output.includes('Media server running') && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(output.includes('Media server running'), output);
+  });
+
+  after(async () => {
+    server?.kill('SIGTERM');
+    listener?.stop();
+    await rm(hlsDir, { recursive: true, force: true });
+  });
+
+  /** Streams the sample to a real broadcast until its destination is confirmed live. */
+  async function goLiveAndWaitForDestination(extra: Record<string, unknown>): Promise<Relay> {
+    const relay = await Relay.open(port);
+    relay.start(extra);
+    await relay.next('session-started');
+    let sent = 0;
+    const feeder = setInterval(() => {
+      if (relay.ws.readyState !== WebSocket.OPEN || sent >= webm.length) return;
+      relay.ws.send(webm.subarray(sent, sent + 12_000));
+      sent += 12_000;
+    }, 40);
+    try {
+      for (const deadline = Date.now() + 40_000; Date.now() < deadline;) {
+        const status = relay.messages.find((message) => message.type === 'destination-status' && message.payload.status === 'live');
+        if (status) return relay;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error(`The destination never went live: ${JSON.stringify(relay.messages)}\n${output.slice(-1500)}`);
+    } finally {
+      clearInterval(feeder);
+    }
+  }
+
+  async function closeAndWaitForHold(relay: Relay) {
+    const before = output.length;
+    relay.ws.close();
+    for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
+      if (output.slice(before).includes('holding for')) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`The broadcast was not held: ${output.slice(before)}`);
+  }
+
+  it('refuses the test, keeps the broadcast on its slate, and a following Go Live resumes it on the same connection', async () => {
+    const studio = await goLiveAndWaitForDestination(real);
+    assert.equal(listener.opened(), 1);
+    await closeAndWaitForHold(studio);
+    assert.equal(listener.open(), 1, 'the destination connection stays open during the hold');
+
+    const entriesBefore = (await readdir(hlsDir)).filter((name) => !name.startsWith('._')).sort();
+    const test = await Relay.open(port);
+    test.start({ test: true });
+    const refusal = await test.next('error');
+    assert.equal(refusal.payload.code, 'TEST_BLOCKED_BY_HELD_BROADCAST');
+    assert.match(refusal.payload.message, /still on the air, waiting for you/);
+    assert.equal(test.messages.filter((message) => message.type === 'session-started').length, 0);
+    test.ws.close();
+
+    // Nothing of the refused test exists, and the broadcast was not stopped.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.deepEqual((await readdir(hlsDir)).filter((name) => !name.startsWith('._')).sort(), entriesBefore, 'no private output folder');
+    assert.doesNotMatch(output, /Live encoder starting for 0 destination/);
+    assert.equal(listener.open(), 1, 'the destination connection is still open');
+    assert.equal(listener.opened(), 1);
+
+    // Go Live with the same setup continues the same broadcast: no second connection.
+    const returned = await Relay.open(port);
+    returned.start(real);
+    const resumed = await returned.next('session-started');
+    assert.deepEqual(resumed.payload.destinationIds, ['d1']);
+    assert.match(output, /Studio reconnected to its live broadcast in room room-1/);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    assert.equal(listener.opened(), 1, 'the destination keeps its one connection');
+    assert.equal(listener.open(), 1);
+    await returned.stop();
+  });
+
+  it('still lets a normal Go Live with new settings replace its own held broadcast', async () => {
+    const studio = await goLiveAndWaitForDestination(real);
+    await closeAndWaitForHold(studio);
+    const other = await Relay.open(port);
+    other.start({ ...real, video: { ...video, width: 1280, height: 720, videoBitsPerSecond: 2_000_000 } });
+    const started = await other.next('session-started');
+    assert.deepEqual(started.payload.destinationIds, ['d1']);
+    // The new start was not refused for capacity, so the held broadcast ended; it was not resumed.
+    assert.doesNotMatch(output.slice(output.lastIndexOf('holding for')), /reconnected to its live broadcast/);
+    assert.match(output.slice(output.lastIndexOf('holding for')), /Live encoder starting for 1 destination\(s\): .* to 1280x720/);
+    await other.stop();
+  });
+});

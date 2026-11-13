@@ -833,7 +833,8 @@ export function useRtmpRelay({
                 onDestinationStatus(message.payload.destinationId, 'error', message.payload.message);
               }
               if (!started) {
-                fail(new Error(message.payload.message));
+                // The code lets a caller tell a deliberate refusal from a fault.
+                fail(Object.assign(new Error(message.payload.message), { code: message.payload.code }));
               }
             }
           };

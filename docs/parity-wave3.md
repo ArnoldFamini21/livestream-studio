@@ -20,7 +20,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [ ] **P1.13** Private mentions, shared notes and teleprompter collaboration
 - [ ] **P1.14** Phone/desktop secondary camera seats and ISO recording
 - [ ] **P1.15** Camera controls, smoothing and same-origin MediaPipe assets
-- [ ] **P1.16** Screen-share mix volume and music transport controls (volume and transport done; see the P1.16 section for the one open point: the host's own monitor of their own shared tab)
+- [x] **P1.16** Screen-share mix volume and music transport controls (accepted limit: the slider sets the level for viewers and the recording; the host's own speakers play the host's own shared tab straight from the browser)
 - [x] **P1.17** Private test stream before public broadcast
 - [ ] **P1.18** Scheduled prerecorded premieres within free-tier limits
 - [ ] **P1.19** Viewer captions and CC control
@@ -356,11 +356,10 @@ sound...") instead of a dead slider. The value is kept per room in
   screen-replaces-camera) has its sound mixed into their voice at the source and
   cannot be turned down separately; it shows no slider. The browser keeps playing
   a shared tab's own sound on the host's computer: that part is not ours to
-  change, only the monitor of a guest's separate screen tile is. This is the one
-  open point of the item: the slider does not turn down the host's own shared tab
-  on the host's own speakers. Doing that needs the capture to suppress local
-  playback and the studio to play the share itself, which changes what the host
-  hears on every share and was not tried on air-critical audio in this change.
+  change, only the monitor of a guest's separate screen tile is. Accepted limit
+  (decided by the project lead): the slider sets how loud the share is for
+  viewers and in the recording; the host's own speakers play the host's own
+  shared tab straight from the browser, at the tab's own volume.
 
 **Music transport.** The background music panel shows the track name, elapsed
 time, total length and time remaining, and a scrub bar that seeks while playing
@@ -389,6 +388,87 @@ canvas plus oscillator), a co-host browser running the program (covered by the
 stage-owner unit tests), a live-stream music source (covered by unit tests of
 the unknown-length view), a screen reader. No e2e scenario was added: the share
 needs a faked `getDisplayMedia`, which the shared e2e harness does not provide.
+
+## Fix — a test stream never ends a held broadcast
+
+**The risk.** When the studio's connection to the media server drops during a
+real broadcast, the media server holds the destinations on the "we will be
+right back" slate for 3 minutes, and a returning studio that presses Go Live
+with the same setup continues the same broadcast. After a full reload the
+studio does not show LIVE, so "Go Live" and "Test stream (private)" are both
+offered. A test start used to run the "same studio restarting with new settings
+replaces its own held broadcast" loop, and a test is never the same setup as a
+broadcast, so pressing the test button during the hold ended the public
+broadcast on YouTube and Facebook.
+
+**What it does now.**
+
+- Media server: a test start is refused, before any state of the new session
+  exists, while the same room has a held real broadcast. The error code is
+  `TEST_BLOCKED_BY_HELD_BROADCAST` and the message reads "Your broadcast is
+  still on the air, waiting for you. Press Go Live to continue it. A test can
+  run after the broadcast ends." The decision is the pure
+  `getHeldBroadcastRefusal` and `isHeldRealBroadcast` in
+  `media-server/src/testStream.ts`. The held broadcast keeps its slate, the
+  3-minute limit still applies, a following Go Live with the same setup resumes
+  it on the same destination connections, and a normal Go Live with new
+  settings still replaces it. A held broadcast of a different room keeps the
+  existing capacity refusal.
+- Test panel: the refusal shows in the panel in the server's words and the
+  panel returns to idle (the test button is usable, a Dismiss button clears the
+  message). Nothing is announced to the room for a refused start, so guests see
+  no "TEST - not public".
+- Follow-up A: after the host's signaling connection drops and returns during a
+  test, the host announces the test again (as a real broadcast already does), so
+  guests and co-hosts get "TEST - not public" back within a few seconds. The
+  decision is `shouldReannounceTest` (`client/src/utils/testStreamReannounce.ts`):
+  only the host that runs the test in this browser, only while its media
+  connection is up, never while the room is live, and not if the server already
+  lists a test.
+- Follow-up B: when "Go live now" ends the test and the broadcast then fails to
+  start, the host sees "The test has ended, but the broadcast did not start.
+  Reason: ... Fix it, then press Go Live." once. The live on/off flips of the
+  broadcast's own start used to reset the test state before the failure arrived;
+  the reducer now accepts the failure in either order. The message clears on the
+  next action (test start, Go Live, dismiss).
+
+**Neighbouring cases (read, not changed).** A real Go Live while a test from
+the same room runs is refused for capacity ("A test stream is still running"),
+because only sessions whose studio is gone count as held. A test start while a
+real broadcast of the same room is running (for example from a co-host) is
+refused for capacity ("A live broadcast is running"), because a running
+broadcast is not held. "Go live now" from the test panel stops the test relay
+and runs the normal Go Live path with its own checks; a test never carries a
+destination and cannot publish. None of these can end a real broadcast or
+publish a test.
+
+**Found while checking (not changed).** Destination ids are part of the
+"same setup" test. A destination added in this visit is `dest-N`; after a page
+reload it comes back as `saved-N` (and without its stream key, which is never
+stored). So a host who added the destination and reloaded in the same session
+gets a new broadcast, not a resume, when pressing Go Live during the hold.
+Destinations that were already remembered keep `saved-N` and resume. Worth a
+separate fix (make the setup comparison ignore client ids).
+
+**How it was verified.** `media-server/src/testStreamSession.test.ts` runs the
+real media server against a local listener: a real broadcast reaches
+"destination live", the studio socket closes, a test start from a new socket is
+refused, the held broadcast is untouched (no private output folder, listener
+connection still open), and a Go Live afterwards resumes it with no second
+connection; the test fails without the guard (checked by disabling it). A second
+case keeps the replace-on-new-settings behavior. Machine tests cover the
+refusal and the Go-live-now failure in both orders; the re-announce decision has
+its own test. Real browser check (`output/p118-hold-check/check.mjs`, local media
+server on 3012, counting listener): live, away 12 s, return, test refused with
+the message, listener connection still open and one connection in total, Go Live
+continues on the same connection, then in a fresh studio a forced signaling
+close brings "TEST - not public" back on the guest after about 2 s.
+
+**Not verified.** The Go-live-now failure message in a real browser (machine
+tests only); a real YouTube or Facebook destination (the listener is a dummy that
+accepts the connection and says nothing); Safari and Firefox; a media server
+restart during the hold. `e2e/studio.test.mjs` is unchanged: the scenario needs
+a media server, which the CI browser job does not start.
 
 ## Resume here next session
 
