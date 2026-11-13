@@ -61,6 +61,8 @@ export interface UseProgramAudioMixOptions {
   remoteScreenStreams: Map<string, MediaStream>;
   screenStream: MediaStream | null;
   participantVolumes: Record<string, number>;
+  /** Shared-screen sound level, 0..1 (default 1). */
+  screenVolume?: number;
   /** Which local tiles the compositor puts on the program (getLocalProgramPresence). */
   localPresence?: LocalProgramPresence;
   /** Mix the media bus in (default). Fixed for the life of the hook. */
@@ -94,6 +96,7 @@ export function useProgramAudioMix(options: UseProgramAudioMixOptions): ProgramA
     remoteScreenStreams: options.remoteScreenStreams,
     localScreenStream: options.screenStream,
     participantVolumes: options.participantVolumes,
+    ...(options.screenVolume !== undefined ? { screenVolume: options.screenVolume } : {}),
     ...(options.localPresence ? { localPresence: options.localPresence } : {}),
   };
   const busRef = useRef(options.bus);
@@ -125,6 +128,7 @@ export function useProgramAudioMix(options: UseProgramAudioMixOptions): ProgramA
     options.remoteScreenStreams,
     options.screenStream,
     options.participantVolumes,
+    options.screenVolume,
     options.localPresence?.camera,
     options.localPresence?.screen,
     trackVersion,

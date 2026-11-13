@@ -111,3 +111,66 @@ describe('background music player', () => {
     assert.equal(calls, 2);
   });
 });
+
+describe('background music transport', () => {
+  function loaded() {
+    const ctx = setup();
+    ctx.player.addFiles([file('Song.mp3')]);
+    ctx.player.togglePlayPause();
+    const element = ctx.audios[ctx.audios.length - 1];
+    element.duration = 200;
+    element.emit('loadedmetadata');
+    return { ...ctx, element };
+  }
+
+  it('seeks the playing element and shows the new time at once', () => {
+    const { player, element } = loaded();
+    assert.equal(player.getSnapshot().duration, 200);
+    player.seek(100);
+    assert.equal(element.currentTime, 100);
+    assert.equal(player.getSnapshot().currentTime, 100);
+  });
+
+  it('seeks while paused and keeps it paused', () => {
+    const { player, element } = loaded();
+    player.pauseTrack();
+    element.paused = true;
+    player.seek(40);
+    assert.equal(element.currentTime, 40);
+    assert.equal(player.getSnapshot().isPlaying, false);
+    assert.equal(element.paused, true);
+  });
+
+  it('clamps seeks to the track and ignores them with nothing loaded', () => {
+    const { player, element } = loaded();
+    player.seek(999);
+    assert.equal(element.currentTime, 200);
+    player.seek(-5);
+    assert.equal(element.currentTime, 0);
+    const fresh = setup();
+    assert.doesNotThrow(() => fresh.player.seek(10));
+    assert.equal(fresh.player.getSnapshot().currentTime, 0);
+  });
+
+  it('publishes elapsed time at most about four times a second', () => {
+    const { player, element } = loaded();
+    let notifications = 0;
+    player.subscribe(() => { notifications += 1; });
+    for (let t = 0; t <= 2; t += 0.05) {
+      element.currentTime = t;
+      element.emit('timeupdate');
+    }
+    assert.ok(notifications <= 9, `expected few updates, got ${notifications}`);
+    assert.ok(player.getSnapshot().currentTime >= 1.5);
+  });
+
+  it('keeps the duration unknown for live streams and not-yet-loaded tracks', () => {
+    const { player, element } = loaded();
+    element.duration = Infinity;
+    element.emit('durationchange');
+    assert.equal(player.getSnapshot().duration, 0);
+    element.duration = NaN;
+    element.emit('loadedmetadata');
+    assert.equal(player.getSnapshot().duration, 0);
+  });
+});

@@ -150,6 +150,8 @@ export interface ProgramAudioMembershipState<TTrack extends AudioTrackLike = Aud
   /** The local screen share (tab or system audio). */
   localScreenStream?: AudioStreamLike<TTrack> | null;
   participantVolumes: Record<string, number>;
+  /** Linear gain for shared-screen sound (local and remote), 0..1. Default 1. */
+  screenVolume?: number;
   /**
    * Whether the local camera and screen tiles are on the program (see
    * getLocalProgramPresence). Without it, the local mic follows on-stage
@@ -225,10 +227,12 @@ export function buildProgramAudioInputs<TTrack extends AudioTrackLike>(
     push(`participant:${id}`, state.remoteStreams.get(id), state.participantVolumes[id] ?? 1);
   }
 
+  // One screen-share volume, applied here and nowhere else on the mix path.
+  const screenGain = clampProgramGain(state.screenVolume);
   for (const id of onStageIds) {
-    push(`screen:${id}`, state.remoteScreenStreams?.get(id), 1);
+    push(`screen:${id}`, state.remoteScreenStreams?.get(id), screenGain);
   }
 
-  if (presence.screen) push('screen:local', state.localScreenStream, 1);
+  if (presence.screen) push('screen:local', state.localScreenStream, screenGain);
   return inputs;
 }

@@ -2,6 +2,7 @@ import type { ChatTranscriptScope } from '../utils/chatTranscript.ts';
 import type { ChatOverlayPanelProps } from './ChatOverlayControls.tsx';
 import { formatUnreadBadge } from '../utils/chatUnread.ts';
 import { PeoplePanel } from './PeoplePanel.tsx';
+import type { ScreenShareVolumeProps } from './ScreenShareVolume.tsx';
 import { useExitTransition } from '../hooks/useExitTransition.ts';
 import { StudioChat } from './StudioChat.tsx';
 import '../styles/overlay-panel.css';
@@ -203,6 +204,7 @@ interface SidebarProps {
   onParticipantVolumeChange: (participantId: string, volume: number) => void;
   audioDuckingEnabled: boolean;
   onAudioDuckingEnabledChange: (enabled: boolean) => void;
+  screenShareVolume?: ScreenShareVolumeProps;
   recordingUploads?: Record<string, RecordingUploadProgressPayload>;
   onRecordingUploadControl?: (participantId: string, action: 'pause' | 'resume') => void;
   onEditNameTag?: (participantId: string, profile: { name: string; title: string }) => void;
@@ -447,6 +449,7 @@ export function Sidebar(props: SidebarProps) {
               onParticipantVolumeChange={props.onParticipantVolumeChange}
               audioDuckingEnabled={props.audioDuckingEnabled}
               onAudioDuckingEnabledChange={props.onAudioDuckingEnabledChange}
+              screenShareVolume={props.screenShareVolume}
               recordingUploads={props.recordingUploads}
               onRecordingUploadControl={props.onRecordingUploadControl}
               onEditNameTag={props.onEditNameTag}

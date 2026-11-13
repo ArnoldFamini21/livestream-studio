@@ -88,6 +88,8 @@ import {
   type ProgramAudioTrackLease,
 } from '../audio/useProgramAudioMix.ts';
 import { getLocalProgramPresence } from '../audio/programAudioMixer.ts';
+import { collectScreenSharesOnProgram, gainToPercent, getScreenVolumeView } from '../audio/mixControls.ts';
+import { useScreenShareVolume } from '../audio/useScreenShareVolume.ts';
 import { useBackgroundMusicPlayer } from '../audio/useBackgroundMusicPlayer.ts';
 import { useSoundBoardPlayer } from '../audio/useSoundBoardPlayer.ts';
 import { useSessionHealth } from '../hooks/useSessionHealth.ts';
@@ -1247,6 +1249,7 @@ export function StudioRoom() {
   const [stageDropTargetId, setStageDropTargetId] = useState<string | null>(null);
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [audioDuckingEnabled, setAudioDuckingEnabled] = useState(false);
+  const [savedScreenVolume, setScreenVolumePercent] = useScreenShareVolume(roomId);
   const [stageAudioLevels, setStageAudioLevels] = useState<Record<string, number>>({});
   const [recordingMarkers, setRecordingMarkers] = useState<RecordingMarker[]>([]);
 
@@ -1503,6 +1506,16 @@ export function StudioRoom() {
     ),
     [myParticipant?.id, participantVolumes, talkback.active, talkbackRelay.remoteTalkbackIds]
   );
+  // Same rule as displayedStageVideoItems: a backstage host presenting is heard.
+  const localProgramPresence = getLocalProgramPresence({
+    status: myParticipant?.status,
+    isOperator: isStudioOperator(myParticipant),
+    isScreenSharing,
+    hasActiveMedia: Boolean(activeMedia),
+  });
+  // Only the browser that runs the program mixes it, so only its setting counts.
+  const amStageOwner = useMemo(() => isStageOwner(myParticipant, participants.values()), [myParticipant, participants]);
+  const screenVolume = amStageOwner ? savedScreenVolume : 1;
   // One live program audio graph for the relay and the program recording.
   const programAudioMix = useProgramAudioMix({
     bus: broadcastAudioBus,
@@ -1513,13 +1526,8 @@ export function StudioRoom() {
     remoteScreenStreams: meshRemoteScreenStreams,
     screenStream,
     participantVolumes: programMixVolumes,
-    // Same rule as displayedStageVideoItems: a backstage host presenting is heard.
-    localPresence: getLocalProgramPresence({
-      status: myParticipant?.status,
-      isOperator: isStudioOperator(myParticipant),
-      isScreenSharing,
-      hasActiveMedia: Boolean(activeMedia),
-    }),
+    screenVolume,
+    localPresence: localProgramPresence,
   });
   // The program audio for backstage guests' program return: the on-stage
   // guests and their screens. Our own mic, screen sound and the media bus are
@@ -1536,15 +1544,32 @@ export function StudioRoom() {
     remoteScreenStreams: meshRemoteScreenStreams,
     screenStream: null,
     participantVolumes,
+    screenVolume,
     includeBus: false,
   });
   // Only the stage owner (the host, or the first co-host while no host is in)
   // mirrors the stage and publishes the program return.
-  const amStageOwner = useMemo(() => isStageOwner(myParticipant, participants.values()), [myParticipant, participants]);
   const stageOwnerId = useMemo(
     () => getStageOwnerId([...participants.values(), ...(myParticipant ? [myParticipant] : [])]),
     [myParticipant, participants]
   );
+  // The screen-share volume slider (People panel): shown while a share is on the program.
+  const screenShareVolumeProps = useMemo(() => ({
+    view: getScreenVolumeView({
+      isOperator: isStudioOperator(myParticipant),
+      runsProgram: amStageOwner,
+      shares: collectScreenSharesOnProgram({
+        localScreenOnProgram: localProgramPresence.screen,
+        localScreenStream: screenStream,
+        myParticipantId: myParticipant?.id,
+        participants,
+        remoteScreenStreams: meshRemoteScreenStreams,
+      }),
+    }),
+    percent: gainToPercent(screenVolume),
+    onChange: setScreenVolumePercent,
+    programRunnerName: (stageOwnerId && participants.get(stageOwnerId)?.name) || undefined,
+  }), [amStageOwner, localProgramPresence.screen, meshRemoteScreenStreams, myParticipant, participants, screenStream, screenVolume, setScreenVolumePercent, stageOwnerId]);
   // Set by the stage mirror: what is staged has no picture guests can see.
   const [stageMirrorNeedsVideo, setStageMirrorNeedsVideo] = useState(false);
   const programReturnDemand = useMemo(() => (
@@ -5923,11 +5948,11 @@ export function StudioRoom() {
         const screenReplacesCamera = Boolean(p.screenSharing) && !separateScreen;
         items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.audioEnabled, audibleWhileMuted: !screenReplacesCamera, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
         // A shared tab's sound plays with the screen tile.
-        if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: separateScreen.getAudioTracks().length > 0, videoEnabled: true, volume: participantVolumes[id] ?? 1, isScreenShare: true });
+        if (separateScreen) items.push({ id: `${id}-screen`, name: `${p.name}'s screen`, stream: separateScreen, isLocal: false, audioEnabled: separateScreen.getAudioTracks().length > 0, videoEnabled: true, volume: screenVolume, isScreenShare: true });
       }
     }
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, meshRemoteScreenStreams, isScreenSharing, screenStream, participantVolumes, peerBandwidthHealth, reconnectingPeerIds]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, meshRemoteScreenStreams, isScreenSharing, screenStream, participantVolumes, screenVolume, peerBandwidthHealth, reconnectingPeerIds]);
 
   const localPresenterCameraItem = useMemo((): StageVideoItem | null => {
     if (!myParticipant || !isStudioOperator(myParticipant) || myParticipant.status === 'green-room') return null;
@@ -8193,6 +8218,7 @@ export function StudioRoom() {
             onParticipantVolumeChange={handleParticipantVolumeChange}
             audioDuckingEnabled={audioDuckingEnabled}
             onAudioDuckingEnabledChange={setAudioDuckingEnabled}
+            screenShareVolume={isHostOrCoHost ? screenShareVolumeProps : undefined}
           />
           </PanelErrorBoundary>
         )}

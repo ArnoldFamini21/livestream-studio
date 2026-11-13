@@ -1,0 +1,79 @@
+/* Screen-share volume (People panel) and the music scrub bar. */
+.mix-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.mix-screen-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.mix-screen-title output {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.mix-screen p {
+  margin: 0;
+  line-height: 1.4;
+}
+.mix-screen small {
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+/* The global range style draws a 4px track; padding gives a 32px touch target around it. */
+input[type="range"].mix-slider {
+  display: block;
+  box-sizing: content-box;
+  width: 100%;
+  min-width: 0;
+  height: 4px;
+  margin: 0;
+  padding: 14px 0;
+  background-clip: content-box;
+  accent-color: var(--accent-solid, var(--accent));
+  cursor: pointer;
+  touch-action: pan-y;
+}
+input[type="range"].mix-slider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+  border-radius: 4px;
+}
+@media (pointer: coarse) {
+  input[type="range"].mix-slider::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+  }
+}
+input[type="range"].mix-slider:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.music-times {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.music-times .music-remaining {
+  grid-column: 3;
+  text-align: right;
+}
+.music-times .music-elapsed-only {
+  grid-column: 1 / -1;
+}

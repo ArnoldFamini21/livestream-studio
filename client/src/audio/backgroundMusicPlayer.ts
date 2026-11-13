@@ -1,5 +1,6 @@
 import type { BroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 import { StateStore } from './stateStore.ts';
+import { clampSeekTime, hasKnownDuration } from './mixControls.ts';
 
 type MusicBus = Pick<BroadcastAudioBus, 'getContext' | 'connectNode'>;
 
@@ -21,7 +22,9 @@ export interface BackgroundMusicState {
   loop: boolean;
   fadeEnabled: boolean;
   fadeDuration: number;
+  /** Seconds played. Published at most about four times a second. */
   currentTime: number;
+  /** Track length in seconds; 0 while unknown (still loading, or a live stream). */
   duration: number;
 }
 
@@ -32,6 +35,9 @@ export interface BackgroundMusicPlayerDeps {
   revokeObjectURL?: (url: string) => void;
   createId?: () => string;
 }
+
+/** Smallest elapsed-time change worth publishing: keeps the time display to a few updates a second. */
+const MIN_TIME_STEP_SECONDS = 0.25;
 
 const INITIAL_STATE: BackgroundMusicState = {
   tracks: [],
@@ -85,6 +91,23 @@ export class BackgroundMusicPlayer extends StateStore<BackgroundMusicState> {
   setMonitorEnabled(monitorEnabled: boolean): void {
     this.setState({ monitorEnabled });
     this.reconnectRouting();
+  }
+
+  /**
+   * Jump to a time in the current track, playing or paused. This moves the
+   * same element that feeds the program mix, so what viewers hear follows.
+   */
+  seek(seconds: number): void {
+    const audio = this.audio;
+    if (!audio || !this.state.currentTrackId) return;
+    const length = hasKnownDuration(audio.duration) ? audio.duration : this.state.duration;
+    const time = clampSeekTime(seconds, length);
+    try {
+      audio.currentTime = time;
+    } catch {
+      return;
+    }
+    this.setState({ currentTime: time });
   }
 
   setLoop(loop: boolean): void {
@@ -219,8 +242,20 @@ export class BackgroundMusicPlayer extends StateStore<BackgroundMusicState> {
     const audio = this.deps.createAudio?.() ?? new Audio();
     audio.preload = 'metadata';
     audio.loop = this.state.loop;
-    audio.addEventListener('timeupdate', () => this.setState({ currentTime: audio.currentTime }));
-    audio.addEventListener('loadedmetadata', () => this.setState({ duration: audio.duration }));
+    audio.addEventListener('timeupdate', () => {
+      const time = audio.currentTime;
+      if (Math.abs(time - this.state.currentTime) < MIN_TIME_STEP_SECONDS) return;
+      this.setState({ currentTime: time });
+    });
+    const publishDuration = () => {
+      const known = hasKnownDuration(audio.duration);
+      if (known) this.setState({ duration: audio.duration });
+      else if (this.audio === audio && !this.state.tracks.some((t) => t.id === this.state.currentTrackId && t.duration > 0)) {
+        this.setState({ duration: 0 });
+      }
+    };
+    audio.addEventListener('loadedmetadata', publishDuration);
+    audio.addEventListener('durationchange', publishDuration);
     audio.addEventListener('ended', () => {
       if (!audio.loop) this.setState({ isPlaying: false, currentTime: 0 });
     });
