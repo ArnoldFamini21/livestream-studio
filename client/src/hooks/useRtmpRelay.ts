@@ -22,6 +22,8 @@ import {
   RELAY_OFFLINE_WAIT_MAX_MS,
 } from '../utils/rtmpRelayReconnect.ts';
 import { estimateDroppedFrames } from '../utils/rtmpRelayDrops.ts';
+import { AudioPeakWindow } from '../utils/audioPeakWindow.ts';
+import { startAudioPeakProbe, type AudioPeakProbe } from '../utils/audioPeakProbe.ts';
 import { getRelayLatencyMs } from '../utils/rtmpRelayLatency.ts';
 import {
   getRtmpRelayVideoConfig,
@@ -64,6 +66,8 @@ interface StartRelayOptions {
   destinations: RtmpRelayDestination[];
   orientation: BroadcastOrientation;
   outputPreset: RtmpRelayOutputPresetId;
+  /** A private test: no destination, output only at a private address. */
+  test?: boolean;
 }
 
 interface MixerResources {
@@ -93,6 +97,12 @@ export interface RtmpRelayStats {
   serverEncoder: RtmpRelayEncoderStats | null;
   /** What each destination's uploader actually sends, by destination id. */
   destinationStats: Record<string, RtmpRelayDestinationStats>;
+  /** What the browser uploads (size, frame rate, bitrate target); null before the session starts. */
+  uploadVideo: { width: number; height: number; frameRate: number; videoBitsPerSecond: number } | null;
+  /** Test only: the private output id the media server published. */
+  testOutputWatchId: string | null;
+  /** Test only: loudest level (dBFS) of the program mix in the last seconds. */
+  audioPeakDb: number | null;
 }
 
 export interface RtmpRelayReadiness {
@@ -130,6 +140,9 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
   serverVideoMode: null,
   serverEncoder: null,
   destinationStats: {},
+  uploadVideo: null,
+  testOutputWatchId: null,
+  audioPeakDb: null,
 };
 
 const BITRATE_WINDOW_MS = 5_000;
@@ -246,6 +259,8 @@ export function useRtmpRelay({
   const pendingHeartbeatsRef = useRef<Map<number, number>>(new Map());
   const bitrateSamplesRef = useRef<BitrateSample[]>([]);
   const sentBytesRef = useRef(0);
+  const audioProbeRef = useRef<AudioPeakProbe | null>(null);
+  const audioPeakRef = useRef(new AudioPeakWindow());
   const readinessCheckIdRef = useRef(0);
   const [stats, setStats] = useState<RtmpRelayStats>(INITIAL_RELAY_STATS);
   const [readiness, setReadiness] = useState<RtmpRelayReadiness>(INITIAL_RELAY_READINESS);
@@ -361,6 +376,8 @@ export function useRtmpRelay({
 
   const stopActiveRelayTransport = useCallback((sendStop: boolean) => {
     clearHeartbeatTimer();
+    audioProbeRef.current?.stop();
+    audioProbeRef.current = null;
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
       try {
@@ -463,11 +480,14 @@ export function useRtmpRelay({
   }, []);
 
   const startRelay = useCallback(
-    async ({ token, refreshToken, destinations, orientation, outputPreset }: StartRelayOptions): Promise<void> => {
+    async ({ token, refreshToken, destinations, orientation, outputPreset, test = false }: StartRelayOptions): Promise<void> => {
       if (relayOperationRef.current.active || wsRef.current || reconnectTimerRef.current) {
         throw new Error('A live relay session is already active.');
       }
-      if (destinations.length === 0) {
+      if (test && destinations.length > 0) {
+        throw new Error('A test stream never sends to a destination.');
+      }
+      if (!test && destinations.length === 0) {
         throw new Error('At least one stream destination is required.');
       }
 
@@ -498,6 +518,7 @@ export function useRtmpRelay({
       intentionalStopRef.current = false;
       reconnectAttemptsRef.current = 0;
       setBackupRecording(null);
+      audioPeakRef.current.reset();
       resetStats('connecting');
 
       let currentToken = token;
@@ -712,6 +733,7 @@ export function useRtmpRelay({
                 video: videoConfig,
                 audio: RELAY_AUDIO,
                 encoding: recorderFormat.encoding,
+                ...(test ? { test: true } : {}),
               },
             }));
           };
@@ -731,7 +753,18 @@ export function useRtmpRelay({
               relayConnectedAtRef.current = Date.now();
               setRelayStatus('live');
               const serverVideoMode = message.payload.videoMode ?? null;
-              setStats((current) => ({ ...current, serverVideoMode, updatedAt: Date.now() }));
+              const testOutputWatchId = message.payload.test?.watchId ?? null;
+              setStats((current) => ({
+                ...current,
+                serverVideoMode,
+                uploadVideo: { ...videoConfig },
+                testOutputWatchId,
+                updatedAt: Date.now(),
+              }));
+              if (test && mixer.programAudio) {
+                audioProbeRef.current?.stop();
+                audioProbeRef.current = startAudioPeakProbe(mixer.programAudio.track, (db) => audioPeakRef.current.push(db));
+              }
               startHeartbeatTimer(ws);
               startRecorder();
               resolve();
@@ -848,8 +881,9 @@ export function useRtmpRelay({
   useEffect(() => {
     if (stats.status === 'idle') return;
     const timer = window.setInterval(() => {
+      const audioPeakDb = audioPeakRef.current.peak();
       setStats((current) => (
-        current.status === 'idle' ? current : { ...current, updatedAt: Date.now() }
+        current.status === 'idle' ? current : { ...current, updatedAt: Date.now(), audioPeakDb }
       ));
     }, 1_000);
     return () => window.clearInterval(timer);
