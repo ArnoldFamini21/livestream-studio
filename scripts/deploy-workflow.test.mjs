@@ -69,8 +69,8 @@ test('the classify step uses full history and the catch-up command, and keeps it
   const classify = find('Classify changed paths');
   assert.ok(classify.start < find(HOLD).start);
   assert.match(classify.text, /node scripts\/classify-service-lag\.mjs --files-from changed-files\.txt --github-output "\$GITHUB_OUTPUT" --head "\$after"/);
-  // The emergency run must not restart a service nobody asked for.
-  assert.match(classify.text, /SKIP_SERVICE_CATCH_UP: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.deploy_while_live \}\}/);
+  // Every manual run (not only an emergency one) must not restart a service nobody ticked.
+  assert.match(classify.text, /SKIP_SERVICE_CATCH_UP: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}/);
   assert.match(classify.text, /--skip-lag/);
   assert.doesNotMatch(classify.text, /--depth=/);
   // Later steps still read the same output names.

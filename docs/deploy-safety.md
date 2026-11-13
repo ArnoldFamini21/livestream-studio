@@ -31,7 +31,7 @@ If you do nothing, the next merge to `main` deploys everything that is waiting.
 
 ## Nothing is left behind
 
-A held or failed deploy used to leave a service on its old version, because the next merge only looked at its own files. Now each run also asks both Render services which commit they run (their `/health` page shows it) and redeploys a service when files that belong to it changed since that commit. A service whose files did not change is never restarted. If a service's commit cannot be read, that service is judged by the files of the current merge only, as before.
+A held or failed deploy used to leave a service on its old version, because the next merge only looked at its own files. Now each run also asks both Render services which commit they run (their `/health` page shows it) and redeploys a service when files that belong to it changed since that commit. A service whose files did not change is never restarted. If a service's commit cannot be read, that service is judged by the files of the current merge only, as before. A manual run (Run workflow) never does this catch-up: it deploys only what you tick.
 
 ## Emergency: deploy during a broadcast
 

@@ -53,8 +53,9 @@ jobs:
         id: changed-paths
         shell: bash
         env:
-          # An emergency run deploys only what it was asked to, nothing extra.
-          SKIP_SERVICE_CATCH_UP: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_while_live }}
+          # A manual run deploys only the services it was asked to (the deploy_*
+          # inputs), nothing extra: the catch-up is for pushes and their re-runs.
+          SKIP_SERVICE_CATCH_UP: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           event_name="${{ github.event_name }}"
           before="${{ github.event.before }}"
