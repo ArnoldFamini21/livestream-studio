@@ -2734,11 +2734,9 @@ export function storeStageImage(input: {
   }
   const images = roomState.stageImages ?? (roomState.stageImages = new Map());
   const imageId = randomBytes(16).toString('base64url');
+  // Superseded logos stay (the host's browser remembers their ids and may name one again, for
+  // example when a saved scene is applied); the room budget below evicts the oldest first.
   const currentLogo = roomState.studioBranding?.logoImageId;
-  if (kind === 'logo') {
-    // Only the logo in use and the new one are kept; older ones are no longer named by anything.
-    for (const [id, image] of images) if (image.kind === 'logo' && id !== currentLogo) images.delete(id);
-  }
   images.set(imageId, { data: input.data, contentType, createdAt: Date.now(), kind });
   // Evict the oldest pictures, never the one on stage, the canvas background
   // or the one just added.

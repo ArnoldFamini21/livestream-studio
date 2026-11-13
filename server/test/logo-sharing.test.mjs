@@ -128,6 +128,26 @@ describe('studio logo sharing', () => {
     }
   });
 
+  it('keeps earlier logos readable so a host can name one again (scene or brand kit switch)', async () => {
+    const s = await setup('logo-again');
+    try {
+      const ids = [];
+      for (const size of [1024, 2048, 3072]) {
+        const stored = storeStageImage({ roomId: s.room.id, participantId: s.hostId, token: s.uploadToken, contentType: 'image/png', data: png(size), kind: 'logo' });
+        assert.equal(stored.ok, true);
+        ids.push(stored.imageId);
+        const got = waitFor(s.guest, 'studio-branding-updated', (m) => m.payload.logoImageId === stored.imageId);
+        s.host.send(JSON.stringify(branding({ logoImageId: stored.imageId })));
+        await got;
+      }
+      const again = waitFor(s.guest, 'studio-branding-updated', (m) => m.payload.brandColor === '#123456');
+      s.host.send(JSON.stringify(branding({ brandColor: '#123456', logoImageId: ids[0] })));
+      assert.equal((await again).payload.logoImageId, ids[0]);
+    } finally {
+      await s.harness.close();
+    }
+  });
+
   it('drops a logo id that is not a logo, and refuses logos above the logo cap', async () => {
     const s = await setup('logo-ids');
     try {
