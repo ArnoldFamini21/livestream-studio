@@ -6,6 +6,7 @@ import { describeRecordingUploadProgress } from '../utils/recordingUploadProgres
 import { AudioLevelMeter } from './AudioLevelMeter.tsx';
 import { StudioIcon } from './StudioIcon.tsx';
 import { NameTagEditor } from './NameTagEditor.tsx';
+import { ScreenShareVolume, type ScreenShareVolumeProps } from './ScreenShareVolume.tsx';
 import '../styles/people-panel.css';
 
 export interface PeoplePanelProps {
@@ -25,6 +26,8 @@ export interface PeoplePanelProps {
   onParticipantVolumeChange: (participantId: string, volume: number) => void;
   audioDuckingEnabled: boolean;
   onAudioDuckingEnabledChange: (enabled: boolean) => void;
+  /** Hosts and co-hosts: the shared screen's volume in the program mix. */
+  screenShareVolume?: ScreenShareVolumeProps;
   onMessageParticipant: (participantId: string) => void;
   /** Latest background recording upload report per participant (hosts only). */
   recordingUploads?: Record<string, RecordingUploadProgressPayload>;
@@ -81,6 +84,7 @@ export function PeoplePanel(props: PeoplePanelProps) {
           </label>
         </div>
       )}
+      {host && props.screenShareVolume && <ScreenShareVolume {...props.screenShareVolume} />}
       {groups.map((group) => {
         const members = [...props.participants.values()].filter(
           (person) => person.status === group.id

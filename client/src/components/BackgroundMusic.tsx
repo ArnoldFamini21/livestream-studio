@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { BackgroundMusicPlayer } from '../audio/backgroundMusicPlayer.ts';
 import { useBackgroundMusicState } from '../audio/useBackgroundMusicPlayer.ts';
 import { shouldIgnoreShortcutTarget } from '../utils/keyboardShortcuts.ts';
+import { formatClock, hasKnownDuration } from '../audio/mixControls.ts';
+import { MusicTransportBar } from './MusicTransportBar.tsx';
 
 interface BackgroundMusicProps {
   onClose: () => void;
@@ -47,12 +49,7 @@ export function BackgroundMusic({ onClose, player }: BackgroundMusicProps) {
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [player]);
 
-  const formatTime = (seconds: number) => {
-    if (!isFinite(seconds) || isNaN(seconds)) return '0:00';
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
+  const formatTime = (seconds: number) => (hasKnownDuration(seconds) ? formatClock(seconds) : '--:--');
 
   const currentTrack = tracks.find((t) => t.id === currentTrackId);
 
@@ -110,21 +107,12 @@ export function BackgroundMusic({ onClose, player }: BackgroundMusicProps) {
               </span>
             </div>
             <div style={styles.nowPlayingName}>{currentTrack.name}</div>
-            <div style={styles.timeRow}>
-              <span style={styles.timeText}>{formatTime(currentTime)}</span>
-              <div style={styles.progressBar}>
-                <div
-                  style={{
-                    ...styles.progressFill,
-                    width:
-                      duration > 0
-                        ? `${(currentTime / duration) * 100}%`
-                        : '0%',
-                  }}
-                />
-              </div>
-              <span style={styles.timeText}>{formatTime(duration)}</span>
-            </div>
+            <MusicTransportBar
+              trackName={currentTrack.name}
+              currentTime={currentTime}
+              duration={duration}
+              onSeek={(seconds) => player.seek(seconds)}
+            />
           </div>
         )}
 
@@ -579,32 +567,6 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
   },
-  timeRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-  },
-  timeText: {
-    fontSize: 10,
-    fontWeight: 500,
-    color: 'var(--text-muted)',
-    minWidth: 30,
-    fontVariantNumeric: 'tabular-nums',
-  },
-  progressBar: {
-    flex: 1,
-    height: 3,
-    borderRadius: 2,
-    background: 'var(--bg-tertiary)',
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 2,
-    background: 'var(--accent)',
-    transition: 'width 0.3s linear',
-  },
-
   // Transport
   transport: {
     display: 'flex',

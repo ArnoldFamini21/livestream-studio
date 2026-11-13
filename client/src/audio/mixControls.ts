@@ -145,3 +145,28 @@ export function streamHasLiveAudio(
 ): boolean {
   return Boolean(stream?.getAudioTracks().some((track) => track.readyState === 'live'));
 }
+
+/**
+ * The screen shares currently on the program: the host's own (when its tile is
+ * on air) and those of on-stage people whose share arrives as its own stream.
+ * A share that arrives inside the person's camera stream (SFU) is not listed:
+ * its sound cannot be separated from their voice.
+ */
+export function collectScreenSharesOnProgram(input: {
+  localScreenOnProgram: boolean;
+  localScreenStream: { getAudioTracks(): Array<{ readyState: string }> } | null | undefined;
+  myParticipantId: string | undefined;
+  participants: Iterable<[string, { status: string }]>;
+  remoteScreenStreams: ReadonlyMap<string, { getAudioTracks(): Array<{ readyState: string }> }>;
+}): ScreenShareOnProgram[] {
+  const shares: ScreenShareOnProgram[] = [];
+  if (input.localScreenOnProgram) {
+    shares.push({ onProgram: true, hasAudio: streamHasLiveAudio(input.localScreenStream) });
+  }
+  for (const [id, participant] of input.participants) {
+    if (id === input.myParticipantId || participant.status !== 'on-stage') continue;
+    const stream = input.remoteScreenStreams.get(id);
+    if (stream) shares.push({ onProgram: true, hasAudio: streamHasLiveAudio(stream) });
+  }
+  return shares;
+}

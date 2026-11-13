@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   clampPercent,
+  collectScreenSharesOnProgram,
   clampSeekTime,
   formatClock,
   gainToPercent,
@@ -167,5 +168,52 @@ describe('streamHasLiveAudio', () => {
     assert.equal(streamHasLiveAudio({ getAudioTracks: () => [] }), false);
     assert.equal(streamHasLiveAudio({ getAudioTracks: () => [{ readyState: 'ended' }] }), false);
     assert.equal(streamHasLiveAudio({ getAudioTracks: () => [{ readyState: 'live' }] }), true);
+  });
+});
+
+describe('collectScreenSharesOnProgram', () => {
+  const withAudio = { getAudioTracks: () => [{ readyState: 'live' }] };
+  const noAudio = { getAudioTracks: () => [] };
+
+  it('lists the local share when its tile is on the program', () => {
+    assert.deepEqual(
+      collectScreenSharesOnProgram({
+        localScreenOnProgram: true,
+        localScreenStream: withAudio,
+        myParticipantId: 'me',
+        participants: [],
+        remoteScreenStreams: new Map(),
+      }),
+      [{ onProgram: true, hasAudio: true }]
+    );
+    assert.deepEqual(
+      collectScreenSharesOnProgram({
+        localScreenOnProgram: false,
+        localScreenStream: withAudio,
+        myParticipantId: 'me',
+        participants: [],
+        remoteScreenStreams: new Map(),
+      }),
+      []
+    );
+  });
+
+  it('lists on-stage remote shares only, with or without sound', () => {
+    const shares = collectScreenSharesOnProgram({
+      localScreenOnProgram: false,
+      localScreenStream: null,
+      myParticipantId: 'me',
+      participants: [
+        ['a', { status: 'on-stage' }],
+        ['b', { status: 'backstage' }],
+        ['c', { status: 'on-stage' }],
+        ['me', { status: 'on-stage' }],
+      ],
+      remoteScreenStreams: new Map([['a', withAudio], ['b', withAudio], ['c', noAudio], ['me', withAudio]]),
+    });
+    assert.deepEqual(shares, [
+      { onProgram: true, hasAudio: true },
+      { onProgram: true, hasAudio: false },
+    ]);
   });
 });
