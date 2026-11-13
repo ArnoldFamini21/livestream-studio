@@ -104,7 +104,8 @@ import { FlvSinkFeed } from './flvStream.js';
 import { FfmpegProgressParser, FfmpegRateMeter, type FfmpegProgress } from './ffmpegProgress.js';
 import { FlvProgram, type FlvProgramSource } from './flvSplice.js';
 import { rekeySessionDestinations } from './relayRekey.js';
-import { isSameRelaySetup, shouldShowSlate, STUDIO_RECONNECT_HOLD_MS } from './relayResume.js';
+import { getStudioReconnectHoldMs, isSameRelaySetup, shouldShowSlate } from './relayResume.js';
+import { buildHeldBroadcastAnswer } from './heldBroadcast.js';
 import {
   createTestWatchId,
   getCapacityRefusal,
@@ -240,6 +241,8 @@ interface RelaySession {
 
 const allowedOrigins = buildAllowedOrigins(process.env.CLIENT_URL, process.env.CLIENT_URLS);
 const sessions = new Map<WebSocket, RelaySession>();
+/** How long a broadcast waits on the slate for its studio: 3 minutes unless a shorter local check says otherwise. */
+const STUDIO_RECONNECT_HOLD_MS = getStudioReconnectHoldMs(process.env);
 const liveBackups = new Map<string, LiveBackupRecording>();
 /** Rooms with a live HLS program, by room id. */
 const liveWatchRooms = new Map<string, { dir: string; startedAt: string; viewers: HlsViewerCounter }>();
@@ -297,6 +300,11 @@ async function healthPayload() {
       testStream: {
         ready: isTestStreamSupported(isEncodeOnceEnabled()),
         message: 'A private test stream can run before going live.',
+      },
+      // GET /rtmp/held: does the studio's room have a broadcast waiting on the slate?
+      heldBroadcast: {
+        ready: true,
+        message: 'The studio can ask whether its broadcast is still on the air after a reload.',
       },
       presentationRenderer: {
         ready: presentationRenderer.ready,
@@ -1838,6 +1846,54 @@ async function handleLiveBackupRequest(req: IncomingMessage, res: ServerResponse
   }
 }
 
+/**
+ * GET /rtmp/held?roomId=ROOM: whether the studio's own room has a broadcast
+ * waiting on the slate, authorised exactly like /rtmp/backups/latest. Read-only
+ * and secret-free: only destination display names and connection state.
+ */
+async function handleHeldBroadcastRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  if (url.pathname !== '/rtmp/held') return false;
+
+  if (!applyCorsHeaders(req, res)) {
+    writeJson(res, 403, { error: 'Forbidden: origin not allowed' });
+    return true;
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  try {
+    if (req.method !== 'GET') {
+      writeJson(res, 405, { error: 'Held broadcast route not found' });
+      return true;
+    }
+    const roomId = url.searchParams.get('roomId')?.trim() || '';
+    if (!roomId) {
+      throw new RecordingUploadError(400, 'INVALID_ROOM_ID', 'roomId is required');
+    }
+    authenticateLiveBackupRequest(req, roomId);
+    res.setHeader('Cache-Control', 'no-store');
+    writeJson(res, 200, buildHeldBroadcastAnswer({
+      roomId,
+      sessions: sessions.values(),
+      nowMs: Date.now(),
+      holdMs: STUDIO_RECONNECT_HOLD_MS,
+    }));
+    return true;
+  } catch (err) {
+    if (err instanceof RecordingUploadError) {
+      writeJson(res, err.statusCode, { error: err.message, code: err.code });
+      return true;
+    }
+    console.error('Held broadcast request failed:', err instanceof Error ? err.message : 'unknown error');
+    writeJson(res, 500, { error: 'Held broadcast request failed', code: 'HELD_BROADCAST_REQUEST_FAILED' });
+    return true;
+  }
+}
+
 async function handleRecordingUploadRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   if (!url.pathname.startsWith('/recordings/')) return false;
 
@@ -2200,6 +2256,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
 
   if (await handleSfuMembershipRequest(req, res, url)) return;
   if (await handleLiveBackupRequest(req, res, url)) return;
+  if (await handleHeldBroadcastRequest(req, res, url)) return;
   if (await handleWatchRequest(req, res, url)) return;
   if (await handleRecordingUploadRequest(req, res, url)) return;
   if (await handlePresentationPreviewRequest(req, res, url)) return;
