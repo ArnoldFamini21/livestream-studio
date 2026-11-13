@@ -118,8 +118,75 @@ and guest reloads kept it (the host re-uploaded once). Largest branding frame:
 408 bytes. Screenshots at 1440×900, 1000×625 and 390×844 were inspected; no
 page errors or CSP violations. Not verified: a real broadcast to an RTMP
 destination, a recorded file's pixels, and a server restart with a live host.
-Logos are still sent inline in branding, so a logo data URL over about 60 KiB
-can still exceed the WebSocket cap; that predates this change.
+Logos were still sent inline at this point; see the logo section below.
+
+## Logo sharing through the image store (fix for the 47 KB logo disconnect)
+
+Bug: the host's logo travelled inline in the `studio-branding-updated` message,
+but the signaling socket closes any message over 64 KiB (code 1009). A logo of
+roughly 47 KB to 450 KB disconnected the host, who reconnected, resent it and
+was cut off again, even after a reload; a bigger one was silently never shared.
+
+What it does now:
+
+- The logo is scaled in the browser to at most 1024 px on its long edge
+  (transparency kept; a small file that already fits is uploaded as it is),
+  then uploaded once as a stage image of kind `logo` (header
+  `x-stage-image-kind`, cap 768 KiB). Branding carries only `logoImageId`.
+  A file the browser cannot decode, or one that cannot be made small enough,
+  is refused with a visible message in the Brand panel.
+- Access: every participant, the green room included, gets a
+  `brandingReadToken` that opens logo images only. Slides, stage pictures and
+  backgrounds still need the stage read token, so the green room gains nothing
+  else. Co-hosts, stage guests, the waiting room (show-logo on), the backstage
+  Live program monitor and a co-host's compositor all load the logo by id.
+- Saved state (localStorage, scenes, brand kits and their cloud copy) still
+  holds data-URL logos. When one is restored or applied it is uploaded once per
+  join (same picture, no second upload) and shared by id. An https logo URL is
+  sent as before. Non-host participants paint the logo with default
+  placement/size/opacity (placement is not part of branding).
+- Defence in depth: `useSignaling.send()` measures the encoded message in bytes
+  and refuses anything above `SIGNALING_SAFE_MESSAGE_BYTES` (56 KiB, in
+  `shared`, below the 64 KiB server cap `SIGNALING_MAX_PAYLOAD_BYTES`), reports
+  once per message type through client error reporting and does not send it.
+  The server accepts inline branding pictures only up to
+  `MAX_INLINE_BRANDING_DATA_URL_LENGTH` (16,000 characters, for tiny old
+  logos); a longer one is never stored or relayed and gets an error message
+  (`BRANDING_IMAGE_TOO_LARGE`), with the rest of the branding applied.
+- Upload robustness (logo and background pictures): 15 s limit per attempt, up
+  to 3 attempts with a 1 s then 2 s pause, a visible "Could not share this
+  logo ... Retry" state, and after the attempts fail the branding goes out
+  without the picture, so colour and waiting-room text are never held back
+  for good.
+- No flash on air: the compositor keeps the previous logo and background until
+  the new picture has loaded. Logos are loaded through the same CORS-safe path
+  as backgrounds (object URL from an authorized fetch), so the canvas is never
+  tainted.
+
+Code: `client/src/utils/{logoImage,logoSync,pictureUpload,signalingSendGuard}.ts`,
+`client/src/hooks/{useStudioBrandingShare,useSharedPictureUpload,useLoadedSharedImage}.ts`;
+server: `signaling.ts` (`kind: 'logo'`, `brandingReadToken`, inline cap).
+
+Verification (local, real Chromium, production CSP, e2e harness):
+
+- Before (origin/main build): a 146,749-byte PNG logo made the host socket
+  open and close 19 times in 20 s and "Reconnecting to studio server" stayed
+  visible.
+- After: the same logo and a 1.5 MB (2400x1600) one: the host socket never
+  closed; a stage guest, a green-room guest (waiting room, show-logo on), a
+  backstage guest's Live program monitor and a co-host all showed the logo (the
+  big one scaled to 1024x683); after a host reload the logo was back with no
+  disconnect; removing it removed it for everyone. No page errors or CSP
+  violations. Screenshots were inspected.
+- Tests: client 1,535, server 279 (2 skipped), media-server 293, shared 48,
+  scripts 45, e2e 13, all passing; new unit tests (payload builder, send guard,
+  scale decision, upload helper with fake fetch and timers) and server tests
+  (id accepted and relayed, inline cap error with the socket still open, who
+  can and cannot read a logo).
+
+Not verified: a real RTMP broadcast or recorded file containing the logo,
+a server restart while a host is live (the logo is re-uploaded on the next join
+by design), SVG/GIF logos in browsers other than Chromium, and a real phone.
 
 ## P1.4 — more stream destinations (PR #360)
 
