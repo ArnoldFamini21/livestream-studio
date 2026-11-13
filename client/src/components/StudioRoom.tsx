@@ -74,6 +74,9 @@ import { mergeCaptionSegments, selectBroadcastCaption } from '../utils/captionMe
 import { GuestCaptionShare } from './GuestCaptionShare.tsx';
 import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
+import { useTestStream } from '../hooks/useTestStream.ts';
+import { getTestStreamSupport } from '../utils/mediaServerHealth.ts';
+import { TEST_BANNER_LABEL } from '../utils/testStreamMachine.ts';
 import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 import {
@@ -193,7 +196,7 @@ import {
   type ProductionSceneTemplate,
   type ProductionSceneTemplateConfig,
 } from '../utils/productionSceneTemplates.ts';
-import { getStreamDestinationIssue, MAX_ENABLED_DESTINATIONS } from '../utils/streamDestinations.ts';
+import { getEnabledDestinationPreflightIssue, getStreamDestinationIssue, MAX_ENABLED_DESTINATIONS } from '../utils/streamDestinations.ts';
 import {
   CHAT_TYPING_TTL_MS,
   getChatTypingNames,
@@ -349,6 +352,8 @@ const STINGER_TRANSITION_DURATION_MS = 1200;
 const GUEST_JOIN_SESSION_STORAGE_KEY = 'livestream-studio:guest-join-session-id';
 const HOST_ACCESS_MISSING_MESSAGE = 'Host access is missing or expired. Reopen this studio from the saved host entry on the home screen.';
 
+const TestStreamPanel = lazy(() => import('./TestStreamPanel.tsx').then((module) => ({ default: module.TestStreamPanel })));
+const TestOutputPlayer = lazy(() => import('./TestOutputPlayer.tsx').then((module) => ({ default: module.TestOutputPlayer })));
 const StreamDestinationsPanel = lazy(() => import('./StreamDestinations.tsx').then((module) => ({ default: module.StreamDestinations })));
 const InvitePanel = lazy(() => import('./InvitePanel.tsx').then((module) => ({ default: module.InvitePanel })));
 const SoundBoard = lazy(() => import('./SoundBoard.tsx').then((module) => ({ default: module.SoundBoard })));
@@ -1119,6 +1124,12 @@ export function StudioRoom() {
   const [customLayoutEditorOpen, setCustomLayoutEditorOpen] = useState(false);
   const [rtmpRelayOutputPreset, setRtmpRelayOutputPreset] = useState<RtmpRelayOutputPresetId>(DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID);
   const [isLive, setIsLive] = useState(false);
+  // A private test is on the media server: it needs the compositor but is never "live".
+  const [testStreamOnAir, setTestStreamOnAir] = useState(false);
+  // What the host told the room about a test (co-hosts and guests only learn it from here).
+  const [remoteTestStream, setRemoteTestStream] = useState<{ active: boolean; startedAt?: string } | null>(null);
+  const [showTestOutput, setShowTestOutput] = useState(false);
+  const testRelayStoppedRef = useRef<((message: string) => boolean) | null>(null);
   const [streamScreenConfig, setStreamScreenConfig] = useState<StreamScreenConfig>(DEFAULT_STREAM_SCREEN_CONFIG);
   const [activeStreamScreenState, setActiveStreamScreenState] = useState<ActiveStreamScreenState | null>(null);
   const [liveSessionSummary, setLiveSessionSummary] = useState<LiveSessionSummary | null>(null);
@@ -1617,7 +1628,7 @@ export function StudioRoom() {
     isOperator: isHostOrCoHost,
     participants,
     cloudAvailable: mediaServerHealth.status !== 'unavailable' && mediaServerHealth.recordingStorage?.ready === true,
-    keepAwake: isRecording || isLive || isLocalRecording || isParticipantLocalRecording || myParticipant?.status === 'on-stage',
+    keepAwake: isRecording || isLive || testStreamOnAir || isLocalRecording || isParticipantLocalRecording || myParticipant?.status === 'on-stage',
     getLocalTracks: getParticipantTransferTracks,
     localTracksVersion: participantTransferVersion,
     onLocalTrackDelivered: markParticipantTransferDelivered,
@@ -1930,7 +1941,7 @@ export function StudioRoom() {
   );
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     containerRef: stageRef,
-    isActive: shouldRunCompositor({ live: isLive, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
+    isActive: shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
     banners,
     lowerThirds,
     timers,
@@ -2077,7 +2088,7 @@ export function StudioRoom() {
     acquireProgramAudio: programAudioMix.acquire,
     readinessEnabled: canUseOperatorControls,
     onDestinationStatus: handleRelayDestinationStatus,
-    onRelayStopped: handleRelayStopped,
+    onRelayStopped: (message) => { if (!testRelayStoppedRef.current?.(message)) handleRelayStopped(message); },
   });
   // Auto ducking dips music and clips (not people) while anyone on stage talks.
   useMusicDucking({
@@ -2783,7 +2794,7 @@ export function StudioRoom() {
     (message: SignalMessage) => {
       switch (message.type) {
         case 'room-joined': {
-          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState, studioBranding, features } = message.payload;
+          const { room: roomData, participant, participants: existing, chatMessages: existingChatMessages = [], qaQuestions: existingQuestions = [], polls: existingPolls = [], recordingState, liveStreamState, testStreamState, studioBranding, features } = message.payload;
           // Our own broadcast keeps running through a dropped studio connection,
           // but the server forgot it when we disconnected: keep it, and say so again below.
           const resumingOwnBroadcast = isLiveRef.current && relayActiveRef.current;
@@ -2806,6 +2817,7 @@ export function StudioRoom() {
             : reassertOwnRecording || keepGuestTake ? ongoingTake.sessionId : null;
           isLiveRef.current = live;
           liveStartedAtRef.current = liveStartedAt;
+          setRemoteTestStream(testStreamState?.active && !live ? { active: true, startedAt: testStreamState.startedAt } : null);
           sessionRecordingStartedAtRef.current = recordingStartedAt;
           setRoom(resumingOwnBroadcast ? { ...roomData, status: 'live' } : roomData);
           setIsLive(live);
@@ -3097,6 +3109,9 @@ export function StudioRoom() {
           }
           break;
         }
+        case 'test-stream-state-changed':
+          setRemoteTestStream(message.payload.active ? { active: true, startedAt: message.payload.startedAt } : null);
+          break;
         case 'live-stream-token-issued': {
           const pending = liveTokenRequestsRef.current.get(message.payload.requestId);
           if (pending) {
@@ -5006,8 +5021,9 @@ export function StudioRoom() {
   };
   useEffect(() => () => liveStartOperationRef.current.cancel(), []);
 
-  const onGoLive = async () => {
-    if (liveStartOperationRef.current.active || isLiveRef.current) return;
+  /** The real Go Live. True when the relay for the broadcast started. */
+  const startGoLive = async (): Promise<boolean> => {
+    if (liveStartOperationRef.current.active || isLiveRef.current) return false;
     if (liveStatusTimerRef.current) {
       clearTimeout(liveStatusTimerRef.current);
       liveStatusTimerRef.current = null;
@@ -5024,11 +5040,11 @@ export function StudioRoom() {
           ? { ...d, status: 'error', statusMessage: getStreamDestinationIssue(d) || 'Check destination settings before going live.' }
           : { ...d, status: 'idle', statusMessage: undefined }
       )));
-      return;
+      return false;
     }
 
     const operation = liveStartOperationRef.current.begin();
-    if (!operation) return;
+    if (!operation) return false;
     try {
       // The relay check can take up to a minute while a sleeping media server wakes; show that it is working.
       setDestinations((prev) => prev.map((d) => (
@@ -5042,7 +5058,7 @@ export function StudioRoom() {
             ? { ...d, status: 'error', statusMessage: readiness.message }
             : { ...d, status: 'idle', statusMessage: undefined }
         )));
-        return;
+        return false;
       }
 
       setIsLive(true);
@@ -5071,8 +5087,9 @@ export function StudioRoom() {
           type: 'live-stream-state-changed',
           payload: { live: true, performedBy: myParticipantRef.current?.id || '' },
         }));
+      return true;
     } catch (err) {
-      if (!operation.active || isRelayOperationCancelled(err)) return;
+      if (!operation.active || isRelayOperationCancelled(err)) return false;
       console.error('Failed to start live stream:', err);
       stopRelay();
       setIsLive(false);
@@ -5084,9 +5101,53 @@ export function StudioRoom() {
           ? { ...d, status: 'error', statusMessage: message }
           : { ...d, status: 'idle', statusMessage: undefined }
       )));
+      return false;
     } finally {
       liveStartOperationRef.current.finish(operation);
     }
+  };
+
+  // The private test before going live: same relay, no destination, nothing public.
+  const testStreamSupport = getTestStreamSupport(mediaServerHealth);
+  const testStream = useTestStream({
+    isHost: isStudioHost,
+    supported: testStreamSupport.supported,
+    unsupportedReason: testStreamSupport.reason,
+    relayStats,
+    checkRelayReadiness,
+    requestToken: requestLiveStreamToken,
+    startTestRelay: (token, refreshToken) => startRelay({
+      token,
+      refreshToken,
+      orientation: broadcastOrientation,
+      outputPreset: rtmpRelayOutputPreset,
+      destinations: [],
+      test: true,
+    }),
+    stopRelay,
+    announce: (active) => send({
+      type: 'test-stream-state-changed',
+      payload: { active, performedBy: myParticipantRef.current?.id || '' },
+    }),
+    goLive: startGoLive,
+    getGoLiveIssue: () => getEnabledDestinationPreflightIssue(destinations),
+    isLive,
+    isGoLiveStarting: () => liveStartOperationRef.current.active,
+    onRelayInUseChange: setTestStreamOnAir,
+  });
+  testRelayStoppedRef.current = testStream.handleRelayLost;
+  // The output player belongs to one running test.
+  useEffect(() => {
+    if (testStream.state.phase !== 'testing') setShowTestOutput(false);
+  }, [testStream.state.phase]);
+  const onGoLive = async () => {
+    // While a test runs, "Go live" is the switch that ends the test first.
+    if (testStream.state.phase === 'testing') {
+      await testStream.goLiveNow();
+      return;
+    }
+    if (testStream.getNormalGoLiveBlocker()) return;
+    await startGoLive();
   };
   const onStopLive = () => {
     liveStartOperationRef.current.cancel();
@@ -6639,6 +6700,8 @@ export function StudioRoom() {
     sessionElapsedSeconds: sessionRecordingElapsed,
     sessionPaused: sessionRecordingPaused,
   });
+  // "TEST - not public" for everyone in the studio while a private test runs; never alongside LIVE.
+  const testBadgeVisible = !isLive && (testStream.state.phase === 'testing' || Boolean(remoteTestStream?.active));
   const liveStatus = getLiveStreamStatus({
     live: isLive,
     startedAt: liveStartedAt,
@@ -6892,6 +6955,7 @@ export function StudioRoom() {
                 <ProgramReturnMonitor
                   stream={programReturnStream}
                   live={isLive}
+                  test={Boolean(remoteTestStream?.active)}
                   audioOutputDeviceId={selectedAudioOutputDeviceId || undefined}
                   brandColor={waitingBrandColor}
                 />
@@ -7111,6 +7175,9 @@ export function StudioRoom() {
               <span style={styles.recDot} />
               {recordingStatus.paused ? 'PAUSED' : 'REC'} {recordingStatus.formattedTime}
             </span>
+          )}
+          {testBadgeVisible && (
+            <span style={styles.testBadge} role="status" data-testid="test-stream-header-badge">{TEST_BANNER_LABEL}</span>
           )}
           {liveStatus.active && (
             <span style={styles.liveBadge}>
@@ -7907,11 +7974,32 @@ export function StudioRoom() {
               onRetryRelayReadiness={checkRelayReadiness}
               onGoLive={onGoLive}
               onStopLive={onStopLive}
+              testStreamSlot={isStudioHost ? (
+                <Suspense fallback={null}>
+                  <TestStreamPanel
+                    controls={testStream}
+                    onWatchOutput={() => setShowTestOutput(true)}
+                    enabledDestinationCount={destinations.filter((d) => d.enabled).length}
+                  />
+                </Suspense>
+              ) : undefined}
               onClose={() => setShowStreamDest(false)}
               defaultBroadcastTitle={room?.name || 'Live stream'}
               onYouTubeBroadcastCreated={onYouTubeBroadcastCreated}
             />
           </Suspense>
+          </PanelErrorBoundary>
+        )}
+
+        {isStudioHost && showTestOutput && testStream.state.phase === 'testing' && (
+          <PanelErrorBoundary label="Test output">
+            <Suspense fallback={null}>
+              <TestOutputPlayer
+                mediaHttpUrl={resolveMediaHttpUrl()}
+                watchId={testStream.state.watchId}
+                onClose={() => setShowTestOutput(false)}
+              />
+            </Suspense>
           </PanelErrorBoundary>
         )}
 
@@ -8261,6 +8349,7 @@ export function StudioRoom() {
         onOpenHealthPanel={() => toggleToolPanel('health', true)}
         participantCount={allParticipantsMap.size}
         isLive={isLive}
+        isTestStream={testBadgeVisible}
         captionsActive={captionsEnabled}
         talkbackActive={talkback.active}
         onToggleTalkback={isHostOrCoHost ? talkback.toggle : undefined}
@@ -8672,6 +8761,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     fontVariantNumeric: 'tabular-nums',
     minWidth: 78,
+  },
+  testBadge: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 12, fontWeight: 700, padding: '3px 12px', borderRadius: 20,
+    background: '#b45309', color: 'white',
+    letterSpacing: 0, whiteSpace: 'nowrap' as const,
   },
   liveBadgeDot: {
     width: 6, height: 6, borderRadius: '50%', background: 'white',

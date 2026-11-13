@@ -69,6 +69,8 @@ interface StreamDestinationsProps {
   onRetryRelayReadiness?: () => void | Promise<unknown>;
   onGoLive: () => void | Promise<void>;
   onStopLive: () => void | Promise<void>;
+  /** The private test, shown beside Go Live (host only). */
+  testStreamSlot?: React.ReactNode;
   onClose: () => void;
   /** Suggested title for broadcasts created through a connected account. */
   defaultBroadcastTitle?: string;
@@ -106,6 +108,7 @@ export function StreamDestinations({
   onRetryRelayReadiness,
   onGoLive,
   onStopLive,
+  testStreamSlot,
   onClose,
   defaultBroadcastTitle = 'Live stream',
   onYouTubeBroadcastCreated,
@@ -756,6 +759,8 @@ export function StreamDestinations({
             </button>
           )}
         </div>
+
+        {!isLive && testStreamSlot}
 
         {/* Details that rarely change sit below the controls used for every show. */}
         <details className="sd-disclosure" style={styles.disclosure}>

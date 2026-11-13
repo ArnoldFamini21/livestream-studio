@@ -45,6 +45,8 @@ interface ControlBarProps {
   unreadChatCount?: number;
   participantCount?: number;
   isLive?: boolean;
+  /** A private test runs: the Go Live button reads TEST, never LIVE. */
+  isTestStream?: boolean;
   captionsActive?: boolean;
   /** Talk backstage: the mic is off the broadcast while guests still hear it. */
   talkbackActive?: boolean;
@@ -89,6 +91,7 @@ export function ControlBar({
   unreadChatCount = 0,
   participantCount = 0,
   isLive = false,
+  isTestStream = false,
   captionsActive = false,
   talkbackActive = false,
   onToggleTalkback,
@@ -616,9 +619,9 @@ export function ControlBar({
         {onOpenStreamDestinations && (
           <button
             className="cb-focusable"
-            style={{ ...styles.liveBtn, ...(isLive ? styles.liveBtnActive : {}) }}
+            style={{ ...styles.liveBtn, ...(isLive ? styles.liveBtnActive : isTestStream ? styles.liveBtnTest : {}) }}
             onClick={onOpenStreamDestinations}
-            aria-label={isLive ? 'Live: open stream destinations' : 'Go live: open stream destinations'}
+            aria-label={isLive ? 'Live: open stream destinations' : isTestStream ? 'Test running, not public: open stream destinations' : 'Go live: open stream destinations'}
             title={withShortcutHint(isLive ? 'Stream destinations' : 'Go live', 'open-go-live')}
           >
             {isLive && <span style={styles.liveDot} />}
@@ -627,7 +630,7 @@ export function ControlBar({
               <circle cx="12" cy="12" r="2" fill="currentColor" />
               <path d="M17 15a12 12 0 0 0 0-6M21.5 17a24.12 24.12 0 0 0 0-10" />
             </svg>
-            {isLive ? 'LIVE' : 'Go Live'}
+            {isLive ? 'LIVE' : isTestStream ? 'TEST' : 'Go Live'}
           </button>
         )}
         <button className="cb-focusable" style={styles.endBtn} onClick={onLeave} aria-label="End session">
@@ -846,6 +849,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.15s ease',
     boxShadow: 'none',
   },
+  liveBtnTest: { background: '#b45309', color: 'white', borderColor: '#b45309' },
   liveBtnActive: {
     background: '#ef4444',
     boxShadow: '0 0 0 3px rgba(239, 68, 68, 0.2)',

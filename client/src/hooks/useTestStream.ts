@@ -49,7 +49,7 @@ export interface TestStreamControls {
   goLiveNow: () => Promise<void>;
   dismiss: () => void;
   /** Wire to the relay's "stopped for good" callback. */
-  handleRelayLost: (message: string) => void;
+  handleRelayLost: (message: string) => boolean;
   /** Wire to the Go Live button; null when the normal path may run. */
   getNormalGoLiveBlocker: () => string | null;
 }
@@ -158,11 +158,13 @@ export function useTestStream(options: UseTestStreamOptions): TestStreamControls
     }
   }, [dispatch]);
 
-  const handleRelayLost = useCallback((message: string) => {
+  /** True when a test was running and took the news; false when it belongs to a broadcast. */
+  const handleRelayLost = useCallback((message: string): boolean => {
     const phase = stateRef.current.phase;
-    if (phase !== 'testing' && phase !== 'starting') return;
+    if (phase !== 'testing' && phase !== 'starting') return false;
     optionsRef.current.announce(false);
     dispatch({ type: 'RELAY_LOST', message: `The test stopped: ${message}` });
+    return true;
   }, [dispatch]);
 
   const dismiss = useCallback(() => {
