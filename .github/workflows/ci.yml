@@ -20,7 +20,9 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04 (FFmpeg 8) on 2026-11-13 and four FFmpeg
+    # tests (edited export, relay restart) fail there. Unpin once they pass on FFmpeg 8.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
