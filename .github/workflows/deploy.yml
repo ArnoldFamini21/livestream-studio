@@ -21,6 +21,10 @@ on:
         description: Verify Render health, commit metadata, and host access after this run
         type: boolean
         default: false
+      deploy_while_live:
+        description: EMERGENCY ONLY. Skip the hold that waits for a broadcast to end, and skip the catch-up redeploy of services that are behind. Can end a live broadcast.
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -41,11 +45,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # Full history: the classify step compares each Render service's running
+          # commit (from its /health) with this commit.
+          fetch-depth: 0
 
       - name: Classify changed paths
         id: changed-paths
         shell: bash
+        env:
+          # An emergency run deploys only what it was asked to, nothing extra.
+          SKIP_SERVICE_CATCH_UP: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_while_live }}
         run: |
           event_name="${{ github.event_name }}"
           before="${{ github.event.before }}"
@@ -57,7 +66,7 @@ jobs:
             git diff-tree --no-commit-id --name-only -r "$after" > changed-files.txt
           else
             if ! git cat-file -e "$before^{commit}" 2>/dev/null; then
-              git fetch --no-tags --depth=2 origin "$before" || true
+              git fetch --no-tags origin "$before" || true
             fi
 
             if git cat-file -e "$before^{commit}" 2>/dev/null; then
@@ -69,7 +78,15 @@ jobs:
 
           echo "Changed files:"
           cat changed-files.txt
-          node scripts/classify-production-changes.mjs --files-from changed-files.txt --github-output "$GITHUB_OUTPUT"
+
+          # The files of this push, plus what each Render service is still missing
+          # since the commit it reports in /health (a held or failed deploy leaves
+          # a service behind). classifyProductionChanges maps files to services.
+          lag_args=()
+          if [ "$SKIP_SERVICE_CATCH_UP" = "true" ]; then
+            lag_args+=(--skip-lag)
+          fi
+          node scripts/classify-service-lag.mjs --files-from changed-files.txt --github-output "$GITHUB_OUTPUT" --head "$after" "${lag_args[@]}"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -126,6 +143,25 @@ jobs:
             find client/dist -name '*.mjs'
             exit 1
           fi
+
+      # Nothing below this step changes production until no broadcast is on the
+      # air, so a held deploy has changed nothing: no Render hook, no client publish.
+      # Numbers: the wait is 8 minutes (the step limit is 12, room for the last poll
+      # of a sleeping media server). Before it come the builds and tests (about 5
+      # minutes, 10 at worst); after it the publish (2), the static client check
+      # (up to 5) and the service check (up to 15): 10 + 12 + 2 + 5 + 15 = 44 of the
+      # job's 45 minutes. A push can never skip this step; only a manual run with
+      # deploy_while_live can.
+      - name: Hold the deploy while a broadcast is on the air
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.deploy_while_live) }}
+        timeout-minutes: 12
+        env:
+          MEDIA_IDLE_BUDGET_MINUTES: 8
+        run: node scripts/wait-for-idle-media.mjs
+
+      - name: Emergency deploy without the hold
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_while_live }}
+        run: echo "::warning::deploy_while_live is on. This run does not wait for a broadcast to end and can end one that is on the air."
 
       - name: Trigger Render deploys
         id: render-deploys
