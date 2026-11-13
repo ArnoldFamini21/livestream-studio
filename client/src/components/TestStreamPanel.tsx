@@ -59,6 +59,19 @@ export function TestStreamPanel({ controls, onWatchOutput, enabledDestinationCou
     );
   }
 
+  const verdictBox = health ? (
+    <div
+      style={{ ...styles.verdict, ...(health.kind === 'ready' ? styles.verdictReady : health.kind === 'problem' ? styles.verdictProblem : styles.verdictChecking) }}
+      role="status"
+      aria-live="polite"
+    >
+      <strong data-testid="test-stream-verdict">{health.headline}</strong>
+      <span style={styles.verdictDetail}>{health.detail}</span>
+    </div>
+  ) : (
+    <p style={styles.text}>{state.phase === 'starting' ? 'Connecting to the media server (waking it can take up to a minute)...' : phase.label}</p>
+  );
+
   return (
     <section style={{ ...styles.card, ...styles.cardActive }} aria-label="Test stream running" data-testid="test-stream-panel" data-phase={state.phase}>
       <div style={styles.top}>
@@ -66,32 +79,9 @@ export function TestStreamPanel({ controls, onWatchOutput, enabledDestinationCou
         <span style={styles.private}>Nothing is sent anywhere</span>
       </div>
 
-      {health ? (
-        <div data-testid="test-stream-health" data-verdict={health.kind}>
-          <div
-            style={{ ...styles.verdict, ...(health.kind === 'ready' ? styles.verdictReady : health.kind === 'problem' ? styles.verdictProblem : styles.verdictChecking) }}
-            role="status"
-            aria-live="polite"
-          >
-            <strong data-testid="test-stream-verdict">{health.headline}</strong>
-            <span style={styles.verdictDetail}>{health.detail}</span>
-          </div>
-          <ul style={styles.checks}>
-            {health.checks.map((check) => (
-              <li key={check.id} style={styles.check} data-check={check.id} data-status={check.status}>
-                <span style={{ ...styles.mark, color: STATUS_COLOR[check.status] }}>{STATUS_MARK[check.status]}</span>
-                <span>
-                  <span style={styles.checkLabel}>{check.label}</span>
-                  <span style={styles.checkDetail}>{check.detail}</span>
-                  {check.status !== 'ok' && check.status !== 'pending' && check.action && <span style={styles.checkAction}>{check.action}</span>}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : (
-        <p style={styles.text}>{state.phase === 'starting' ? 'Connecting to the media server (waking it can take up to a minute)...' : phase.label}</p>
-      )}
+      <div data-testid="test-stream-health" data-verdict={health?.kind ?? 'starting'}>
+        {verdictBox}
+      </div>
 
       {notice && <p style={styles.error} role="alert" data-testid="test-stream-notice">{notice}</p>}
 
@@ -116,6 +106,21 @@ export function TestStreamPanel({ controls, onWatchOutput, enabledDestinationCou
           <p style={styles.note}>Turn on at least one destination above before going live.</p>
         )}
       </div>
+
+      {health && (
+        <ul style={styles.checks} aria-label="Health checks">
+          {health.checks.map((check) => (
+            <li key={check.id} style={styles.check} data-check={check.id} data-status={check.status}>
+              <span style={{ ...styles.mark, color: STATUS_COLOR[check.status] }}>{STATUS_MARK[check.status]}</span>
+              <span>
+                <span style={styles.checkLabel}>{check.label}</span>
+                <span style={styles.checkDetail}>{check.detail}</span>
+                {check.status !== 'ok' && check.status !== 'pending' && check.action && <span style={styles.checkAction}>{check.action}</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
