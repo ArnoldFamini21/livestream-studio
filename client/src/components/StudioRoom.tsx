@@ -5207,8 +5207,10 @@ export function StudioRoom() {
     await startGoLive();
   };
   // After a crash or reload the broadcast may still be on the air on the slate: tell the host and offer Continue.
+  // "Live" here means this page is sending it: after a quick reload the studio server may still say the room is live.
+  const hostSendsBroadcast = isLive && (relayStats.status === 'connecting' || relayStats.status === 'live');
   const heldBroadcast = useHeldBroadcast({
-    active: isStudioHost && joined && !isLive && isHeldBroadcastSupported(mediaServerHealth),
+    active: isStudioHost && joined && !hostSendsBroadcast && isHeldBroadcastSupported(mediaServerHealth),
     connected,
     roomId: roomId || null,
     requestToken: requestLiveStreamToken,
@@ -5217,7 +5219,7 @@ export function StudioRoom() {
   const heldBannerView = decideHeldBanner({
     watch: heldBroadcast.state,
     isHost: isStudioHost,
-    isLive,
+    isLive: hostSendsBroadcast,
     destinations,
     goLiveBlocker: getGoLiveBlocker({ destinations, relayReadiness, sessionHealth, sceneCount: scenes.length }),
     starting: false,
@@ -5226,6 +5228,12 @@ export function StudioRoom() {
   const continueHeldBroadcast = async (): Promise<string | null> => {
     const blocker = testStream.getNormalGoLiveBlocker();
     if (blocker) return blocker;
+    // The studio server may still remember the broadcast from before the page reloaded; nothing is sent from here yet.
+    if (isLiveRef.current && !relayActiveRef.current && !liveStartOperationRef.current.active) {
+      isLiveRef.current = false;
+      setIsLive(false);
+      setLiveStartedAt(null);
+    }
     await onGoLive();
     return goLiveFailureReasonRef.current;
   };

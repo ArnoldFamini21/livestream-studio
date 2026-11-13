@@ -4,7 +4,7 @@ import {
   heldWatchReducer,
   type HeldWatchState,
 } from '../utils/heldBroadcastState.ts';
-import { createHeldBroadcastAsker, fetchHeldBroadcast } from '../utils/heldBroadcastAsker.ts';
+import { createHeldBroadcastAsker, fetchHeldBroadcast, type HeldBroadcastAsker } from '../utils/heldBroadcastAsker.ts';
 
 interface UseHeldBroadcastOptions {
   /** The host has joined, the media server knows the request, and the studio is not live. */
@@ -34,6 +34,7 @@ export function useHeldBroadcast(options: UseHeldBroadcastOptions): HeldBroadcas
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  const askerRef = useRef<HeldBroadcastAsker | null>(null);
   const { active, connected, roomId } = options;
 
   // Nothing is shown to a guest, a co-host, a live host or on an old media server.
@@ -51,9 +52,19 @@ export function useHeldBroadcast(options: UseHeldBroadcastOptions): HeldBroadcas
       },
       onAnswer: (answer) => dispatch({ type: 'ANSWER', answer }),
     });
+    askerRef.current = asker;
     asker.start(stateRef.current.phase === 'held');
-    return () => asker.stop();
+    return () => {
+      asker.stop();
+      if (askerRef.current === asker) askerRef.current = null;
+    };
   }, [active, connected, roomId]);
+
+  // The countdown ran out before an answer said so: nothing is held, so stop asking.
+  const ended = state.phase === 'ended';
+  useEffect(() => {
+    if (ended) askerRef.current?.stop();
+  }, [ended]);
 
   // The countdown between answers: from the seconds the server gave, never from a clock comparison.
   const holding = state.phase === 'held';
