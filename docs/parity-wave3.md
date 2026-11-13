@@ -20,7 +20,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [ ] **P1.13** Private mentions, shared notes and teleprompter collaboration
 - [ ] **P1.14** Phone/desktop secondary camera seats and ISO recording
 - [ ] **P1.15** Camera controls, smoothing and same-origin MediaPipe assets
-- [ ] **P1.16** Screen-share mix volume and music transport controls
+- [x] **P1.16** Screen-share mix volume and music transport controls
 - [x] **P1.17** Private test stream before public broadcast
 - [ ] **P1.18** Scheduled prerecorded premieres within free-tier limits
 - [ ] **P1.19** Viewer captions and CC control
@@ -332,6 +332,59 @@ media server in a browser (covered by unit tests of the capability check), a
 real camera and a real internet uplink (the verdict thresholds come from the
 design, not from field data), and a signaling reconnect in the middle of a test
 (the room would lose the TEST badge until the test is restarted).
+
+## P1.16 — screen-share volume and music transport controls
+
+**Screen-share volume.** In the People panel (where the host already sets each
+person's broadcast volume) a "Screen share volume" slider (0 to 100 percent,
+default 100) appears while a screen share is on the program. It changes what
+viewers and the recording hear (the shared sound is one input of the program
+mix, `screen:local` and `screen:<id>`), the backstage guests' program return
+(remote shares), and the host's own monitor of a guest's separate screen tile.
+It is applied once: the mix gain is set only in `buildProgramAudioInputs`, the
+tile monitor volume is set only on the tile, and the two never feed each other.
+Changes ride the mixer's existing 50 ms gain smoothing, so there are no clicks.
+When the share carries no sound the panel says so ("The shared screen has no
+sound...") instead of a dead slider. The value is kept per room in
+`sessionStorage` (survives a reload, not a new browser session).
+
+- Co-hosts: the program is mixed in the browser of the stage owner (the host, or
+  the first co-host while the host is away), so the volume that applies is the
+  one set in that browser. A co-host who is not running the program sees a line
+  saying so instead of a slider, and their own stored value is ignored.
+- Limits: a guest's share that arrives inside their camera stream (SFU
+  screen-replaces-camera) has its sound mixed into their voice at the source and
+  cannot be turned down separately; it shows no slider. The browser keeps playing
+  a shared tab's own sound on the host's computer: that part is not ours to
+  change, only the monitor of a guest's separate screen tile is.
+
+**Music transport.** The background music panel shows the track name, elapsed
+time, total length and time remaining, and a scrub bar that seeks while playing
+or paused (`BackgroundMusicPlayer.seek`, on the same element that feeds the
+program mix). A track without a known length (still loading, a live stream)
+shows elapsed time only and no bar. The player publishes time at most four times
+a second.
+
+Helpers (`client/src/audio/mixControls.ts`): percent to gain, clamping, clock
+formatting, seek clamping, the transport view and the rule for which control
+shows, tested in `client/test/mixControls.test.ts`, `screenVolumeStore.test.ts`,
+`programAudioMixer.test.ts` and `backgroundMusicPlayer.test.ts`.
+
+Verification: see the PR for the exact counts. Real Chromium (fake media): a
+shared source with a 440 Hz test tone, local recording to lease the program mix,
+an analyser on the mix output. Net level at 100, 50 and 0 percent: 0.354, 0.176,
+and only the fake microphone beep left at 0 (ratio 0.496 at 50 percent); arrow
+keys, Home and End move the slider; a 60 s music file shows 0:30 / 1:00 / -0:30
+after a seek to the middle by pointer, 0:58 / 1:00 / -0:02 near the end, and
+seeks while paused; reload restores the volume; a silent share shows the plain
+message; at 390x844 there is no horizontal scroll and the slider is 32 px tall.
+Screenshots at 1440x900 and 390x844 were looked at.
+
+Not verified: a real browser-tab or system-audio capture (the fake share is a
+canvas plus oscillator), a co-host browser running the program (covered by the
+stage-owner unit tests), a live-stream music source (covered by unit tests of
+the unknown-length view), a screen reader. No e2e scenario was added: the share
+needs a faked `getDisplayMedia`, which the shared e2e harness does not provide.
 
 ## Resume here next session
 
