@@ -32,17 +32,32 @@
   color: var(--text-muted);
   line-height: 1.35;
 }
-.mix-slider {
+/* The global range style draws a 4px track; padding gives a 32px touch target around it. */
+input[type="range"].mix-slider {
+  display: block;
+  box-sizing: content-box;
   width: 100%;
   min-width: 0;
-  /* A comfortable thumb target on a phone, and vertical page scrolling still works over the bar. */
-  height: 32px;
+  height: 4px;
   margin: 0;
+  padding: 14px 0;
+  background-clip: content-box;
   accent-color: var(--accent-solid, var(--accent));
   cursor: pointer;
   touch-action: pan-y;
 }
-.mix-slider:disabled {
+input[type="range"].mix-slider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+  border-radius: 4px;
+}
+@media (pointer: coarse) {
+  input[type="range"].mix-slider::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+  }
+}
+input[type="range"].mix-slider:disabled {
   cursor: default;
   opacity: 0.5;
 }
