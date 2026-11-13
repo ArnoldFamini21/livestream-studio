@@ -20,7 +20,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [ ] **P1.13** Private mentions, shared notes and teleprompter collaboration
 - [ ] **P1.14** Phone/desktop secondary camera seats and ISO recording
 - [ ] **P1.15** Camera controls, smoothing and same-origin MediaPipe assets
-- [x] **P1.16** Screen-share mix volume and music transport controls
+- [ ] **P1.16** Screen-share mix volume and music transport controls (volume and transport done; see the P1.16 section for the one open point: the host's own monitor of their own shared tab)
 - [x] **P1.17** Private test stream before public broadcast
 - [ ] **P1.18** Scheduled prerecorded premieres within free-tier limits
 - [ ] **P1.19** Viewer captions and CC control
@@ -356,7 +356,11 @@ sound...") instead of a dead slider. The value is kept per room in
   screen-replaces-camera) has its sound mixed into their voice at the source and
   cannot be turned down separately; it shows no slider. The browser keeps playing
   a shared tab's own sound on the host's computer: that part is not ours to
-  change, only the monitor of a guest's separate screen tile is.
+  change, only the monitor of a guest's separate screen tile is. This is the one
+  open point of the item: the slider does not turn down the host's own shared tab
+  on the host's own speakers. Doing that needs the capture to suppress local
+  playback and the studio to play the share itself, which changes what the host
+  hears on every share and was not tried on air-critical audio in this change.
 
 **Music transport.** The background music panel shows the track name, elapsed
 time, total length and time remaining, and a scrub bar that seeks while playing
