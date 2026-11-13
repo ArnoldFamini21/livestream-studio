@@ -54,7 +54,10 @@ export function ScreenShareVolume({ view, percent, onChange, programRunnerName }
           onChange={(event) => onChange(Number(event.target.value))}
         />
       </label>
-      <small>What viewers and the recording hear. Starts at 100%.</small>
+      <small>
+        Sets how loud the share is for viewers and in the recording. If you share your own
+        browser tab, your own speakers still play it at the tab&apos;s own volume.
+      </small>
     </section>
   );
 }
