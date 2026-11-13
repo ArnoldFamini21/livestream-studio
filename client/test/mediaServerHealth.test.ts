@@ -5,6 +5,7 @@ import {
   buildMediaServerParityDiagnostics,
   buildInitialMediaServerHealth,
   checkMediaServerHealth,
+  getTestStreamSupport,
   normalizeMediaServerHealthPayload,
 } from '../src/utils/mediaServerHealth.ts';
 
@@ -258,5 +259,34 @@ describe('recording storage readiness', () => {
       const diagnostics = buildMediaServerParityDiagnostics(normalizeMediaServerHealthPayload({ ...base, capabilities }, input));
       assert.equal(diagnostics.status, 'ready');
     }
+  });
+});
+
+describe('private test support', () => {
+  const base = { mediaHttpUrl: 'https://media.example.com', checkedAt: 1 } as const;
+
+  it('is offered only when the media server advertises it', () => {
+    const ready = { status: 'ready' as const, message: 'ok', ...base };
+    assert.equal(getTestStreamSupport({ ...ready, testStream: { ready: true, message: 'ok' } }).supported, true);
+    const old = getTestStreamSupport(ready);
+    assert.equal(old.supported, false);
+    assert.match(old.reason, /older version/);
+    assert.match(old.reason, /few minutes/);
+  });
+
+  it('says why when the media server is unreachable, still checking or not ready', () => {
+    assert.match(getTestStreamSupport({ status: 'unavailable', message: 'Health check timed out.', ...base }).reason, /not reachable/);
+    assert.match(getTestStreamSupport({ status: 'checking', message: '', ...base }).reason, /Checking/);
+    assert.equal(getTestStreamSupport(null).supported, false);
+    const off = getTestStreamSupport({ status: 'ready', message: '', ...base, testStream: { ready: false, message: 'Shared encode is off.' } });
+    assert.equal(off.reason, 'Shared encode is off.');
+  });
+
+  it('reads the capability from /health', () => {
+    const health = normalizeMediaServerHealthPayload(
+      { status: 'ok', service: 'media-server', capabilities: { testStream: { ready: true, message: 'Test ready' } } },
+      { mediaHttpUrl: 'https://media.example.com', checkedAt: 1 }
+    );
+    assert.equal(health.testStream?.ready, true);
   });
 });

@@ -390,3 +390,26 @@ export async function checkMediaServerHealth(
     globalThis.clearTimeout(timeoutId);
   }
 }
+
+/**
+ * Whether the media server can run a private test. During a deploy the new
+ * studio can meet the old media server, which does not advertise it.
+ */
+export function getTestStreamSupport(health: MediaServerHealth | null | undefined): { supported: boolean; reason: string } {
+  if (!health || health.status === 'checking') {
+    return { supported: false, reason: 'Checking the media server. The test will be available in a moment.' };
+  }
+  if (health.status === 'unavailable') {
+    return { supported: false, reason: `The media server is not reachable, so a test cannot run. ${health.message}`.trim() };
+  }
+  if (!health.testStream) {
+    return {
+      supported: false,
+      reason: 'The media server is on an older version without the test stream. It is probably being updated: try again in a few minutes.',
+    };
+  }
+  if (!health.testStream.ready) {
+    return { supported: false, reason: health.testStream.message || 'The media server cannot run a test right now.' };
+  }
+  return { supported: true, reason: '' };
+}
