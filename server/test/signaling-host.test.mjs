@@ -1155,6 +1155,73 @@ describe('live stream state synchronization', () => {
     }
   });
 
+  it('shows a private test to the room without ever making it live', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Test stream state test', 'Arnold', {
+      creatorIp: `test-stream-state-${Date.now()}`,
+    });
+    const roomState = getRooms().get(room.id);
+    assert.ok(roomState);
+    roomState.room.settings.greenRoomEnabled = false;
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const hostJoin = await hostJoined;
+
+      const guest = await connectClient(harness.url);
+      const guestJoined = waitForMessage(guest, 'room-joined');
+      joinRoom(guest, { roomId: room.id, name: 'Guest', role: 'guest' });
+      await guestJoined;
+
+      // A guest cannot start a test.
+      const guestRefused = waitForMessage(guest, 'error');
+      sendSignal(guest, { type: 'test-stream-state-changed', payload: { active: true, performedBy: 'x' } });
+      assert.equal((await guestRefused).payload.code, 'UNAUTHORIZED');
+      assert.equal(roomState.testStreamStartedAt, undefined);
+
+      const guestSawTest = waitForMessage(guest, 'test-stream-state-changed', (message) => message.payload.active === true);
+      sendSignal(host, { type: 'test-stream-state-changed', payload: { active: true, performedBy: 'client-claimed-host' } });
+      const seen = await guestSawTest;
+      assert.equal(seen.payload.performedBy, hostJoin.payload.participant.id);
+      assert.equal(typeof seen.payload.startedAt, 'string');
+      // Never live: the room status and the live state stay as they were.
+      assert.equal(roomState.liveStreamStartedAt, undefined);
+      assert.equal(roomState.room.status, 'waiting');
+
+      const lateGuest = await connectClient(harness.url);
+      const lateJoined = waitForMessage(lateGuest, 'room-joined');
+      joinRoom(lateGuest, { roomId: room.id, name: 'Late Guest', role: 'guest' });
+      const late = await lateJoined;
+      assert.equal(late.payload.testStreamState.active, true);
+      assert.equal(late.payload.liveStreamState, undefined);
+      assert.equal(late.payload.room.status, 'waiting');
+
+      // Going live ends the test for everyone.
+      const guestSawEnd = waitForMessage(guest, 'test-stream-state-changed', (message) => message.payload.active === false);
+      const guestSawLive = waitForMessage(guest, 'live-stream-state-changed', (message) => message.payload.live === true);
+      sendSignal(host, { type: 'live-stream-state-changed', payload: { live: true, performedBy: 'x' } });
+      await Promise.all([guestSawEnd, guestSawLive]);
+      assert.equal(roomState.testStreamStartedAt, undefined);
+
+      // A test cannot start while live.
+      const refusedWhileLive = waitForMessage(host, 'error');
+      sendSignal(host, { type: 'test-stream-state-changed', payload: { active: true, performedBy: 'x' } });
+      assert.match((await refusedWhileLive).payload.message, /live/);
+      assert.equal(roomState.testStreamStartedAt, undefined);
+
+      sendSignal(host, { type: 'live-stream-state-changed', payload: { live: false, performedBy: 'x' } });
+      const ended = waitForMessage(guest, 'test-stream-state-changed', (message) => message.payload.active === false);
+      sendSignal(host, { type: 'test-stream-state-changed', payload: { active: true, performedBy: 'x' } });
+      sendSignal(host, { type: 'test-stream-state-changed', payload: { active: false, performedBy: 'x' } });
+      await ended;
+      assert.equal(roomState.testStreamStartedAt, undefined);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it('rejects guest live state changes', async () => {
     const harness = await createSignalingHarness();
     const { room } = createRoom('Live state guest test', 'Arnold', {
