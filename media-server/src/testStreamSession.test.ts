@@ -340,6 +340,55 @@ describe('a test start while the same room has a held broadcast', { skip: !ffmpe
     await returned.stop();
   });
 
+  it('continues the held broadcast when only the destination ids differ, and speaks the new ids from then on', async () => {
+    // An earlier test's connection may still be closing: count from here.
+    const openAtStart = listener.open();
+    const openedAtStart = listener.opened();
+    const studio = await goLiveAndWaitForDestination(real);
+    assert.equal(listener.opened() - openedAtStart, 1, 'one connection for the broadcast');
+    const connectionsBefore = listener.opened();
+    await closeAndWaitForHold(studio);
+    assert.equal(listener.open() - openAtStart, 1, 'the destination connection stays open during the hold');
+
+    // A reload: same RTMP URL and stream key, another id and name.
+    const reloaded = (real.destinations as typeof destination[]).map((d) => ({ ...d, id: 'saved-0', name: 'YouTube (saved)' }));
+    const returned = await Relay.open(port);
+    returned.start({ destinations: reloaded });
+    const resumed = await returned.next('session-started');
+    assert.deepEqual(resumed.payload.destinationIds, ['saved-0']);
+    assert.match(output.slice(output.lastIndexOf('holding for')), /reconnected to its live broadcast/);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    assert.equal(listener.opened(), connectionsBefore, 'no second connection at the destination');
+    assert.equal(listener.open() - openAtStart, 1);
+
+    // Every per-destination message after the resume carries the returning id.
+    const idsSeen = (messages: RtmpRelayServerMessage[]) => messages.flatMap((message) => (
+      message.type === 'destination-status' || message.type === 'destination-stats' ? [message.payload.destinationId] : []
+    ));
+    assert.ok(idsSeen(returned.messages).length > 0, 'a status was sent after the resume');
+    assert.deepEqual([...new Set(idsSeen(returned.messages))], ['saved-0']);
+    const resumedStatus = returned.messages.find((message) => message.type === 'destination-status');
+    assert.ok(resumedStatus && resumedStatus.type === 'destination-status' && resumedStatus.payload.status === 'live');
+
+    // The final summary uses the new id too.
+    returned.messages.length = 0;
+    await returned.stop();
+    const stopped = returned.messages.filter((message) => message.type === 'destination-status');
+    assert.ok(stopped.length > 0, 'the stop reported the destination');
+    assert.deepEqual([...new Set(idsSeen(returned.messages))], ['saved-0']);
+  });
+
+  it('replaces the held broadcast when the destination list really differs (another key)', async () => {
+    const studio = await goLiveAndWaitForDestination(real);
+    await closeAndWaitForHold(studio);
+    const other = await Relay.open(port);
+    other.start({ destinations: (real.destinations as typeof destination[]).map((d) => ({ ...d, streamKey: 'another-key' })) });
+    const started = await other.next('session-started');
+    assert.deepEqual(started.payload.destinationIds, ['d1']);
+    assert.doesNotMatch(output.slice(output.lastIndexOf('holding for')), /reconnected to its live broadcast/);
+    await other.stop();
+  });
+
   it('still lets a normal Go Live with new settings replace its own held broadcast', async () => {
     const studio = await goLiveAndWaitForDestination(real);
     await closeAndWaitForHold(studio);
