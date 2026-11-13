@@ -10,6 +10,7 @@
 import type { StageBackground } from '@studio/shared';
 import { CANVAS_BACKGROUND_MAX_BYTES, prepareCanvasBackground } from './canvasBackgroundImage.ts';
 import { getStageImageUrl, getStageMirrorSourceKey, postStageImage, type StageImageUploadAuth } from './stageMirror.ts';
+import { runWithRetry, type RetryOptions } from './pictureUpload.ts';
 
 const NO_BACKGROUND: StageBackground = { type: 'none', value: '' };
 const UPLOADABLE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -70,7 +71,9 @@ export async function uploadCanvasBackground(
   background: StageBackground,
   auth: StageImageUploadAuth,
   fetchImpl: typeof fetch = fetch,
+  retry?: RetryOptions,
 ): Promise<string> {
+  // Prepared once; only the network part has a time limit and is retried.
   const body = await prepareCanvasBackgroundUpload(background.value, fetchImpl);
-  return postStageImage(body, auth, fetchImpl);
+  return runWithRetry((signal) => postStageImage(body, auth, fetchImpl, { signal }), retry);
 }

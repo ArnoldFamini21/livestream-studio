@@ -7,6 +7,8 @@ import {
 import { useEffect, useRef, useCallback, useState } from 'react';
 import type { SignalMessage } from '@studio/shared';
 import { resolveWebSocketUrl } from '../utils/apiClient.ts';
+import { reportClientError } from '../utils/clientErrorReporter.ts';
+import { createSignalingSendGuard } from '../utils/signalingSendGuard.ts';
 
 type MessageHandler = (message: SignalMessage) => void;
 
@@ -19,6 +21,13 @@ export function useSignaling() {
   const handlersRef = useRef<Set<MessageHandler>>(new Set());
   const [connected, setConnected] = useState(false);
   const [reconnectFailed, setReconnectFailed] = useState(false);
+  // Refuses (and reports once per message type) anything above the safe size, so no message can cut the connection.
+  const sendGuardRef = useRef(createSignalingSendGuard({
+    report: (type, bytes, limit) => {
+      console.warn(`Not sending a "${type}" message: ${bytes} bytes is above the ${limit} byte limit.`);
+      reportClientError('error', new Error(`Signaling message too large: ${type}`));
+    },
+  }));
 
   // Reconnection with exponential backoff (capped attempts).
   const reconnectAttemptsRef = useRef<number>(0);
@@ -223,7 +232,9 @@ export function useSignaling() {
 
   const send = useCallback((message: SignalMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
+      // A message above the server's size cap would close this connection; refuse it instead.
+      const text = sendGuardRef.current.encode(message);
+      if (text !== null) wsRef.current.send(text);
     }
     // Room state is restored after rejoining. Never replay offline media or
     // broadcast commands belonging to a disconnected participant.

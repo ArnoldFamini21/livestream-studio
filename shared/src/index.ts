@@ -544,6 +544,11 @@ export interface RoomJoinedPayload {
   stageUploadToken?: string;
   /** Admitted participants only: authorizes reading `/api/rooms/:id/stage-images/:imageId` (header `x-stage-token`). */
   stageReadToken?: string;
+  /**
+   * Every participant, the green room included: authorizes reading the studio
+   * logo only (header `x-stage-token`). It opens no slide or other stage picture.
+   */
+  brandingReadToken?: string;
   /** Present again on the next join-room to keep this seat through a dropped connection. */
   resumeToken?: string;
   /** True when this join resumed an earlier seat (same participant id); peers were kept. */
@@ -748,9 +753,41 @@ export interface WaitingRoomBranding {
   showLogo: boolean;
 }
 
+/**
+ * The studio server closes a signaling connection that sends a message above
+ * this size (WebSocket close code 1009).
+ */
+export const SIGNALING_MAX_PAYLOAD_BYTES = 64 * 1024;
+/**
+ * Clients never send a signaling message above this many encoded bytes, so no
+ * message can cut the connection. Kept well below the server cap for headroom.
+ */
+export const SIGNALING_SAFE_MESSAGE_BYTES = 56 * 1024;
+/**
+ * Studio branding may still carry a tiny inline picture (a logo saved by an
+ * older version). Anything longer is uploaded and named by id instead.
+ */
+export const MAX_INLINE_BRANDING_DATA_URL_LENGTH = 16_000;
+/** Code of the error sent when branding carried inline image data above the cap. */
+export const BRANDING_INLINE_IMAGE_TOO_LARGE_CODE = 'BRANDING_IMAGE_TOO_LARGE';
+/** Header that marks an uploaded stage image as a studio logo (readable by the green room too). */
+export const STAGE_IMAGE_KIND_HEADER = 'x-stage-image-kind';
+export type StageImageKind = 'stage' | 'logo';
+/** The largest logo the studio keeps; the browser scales a logo down to fit. */
+export const LOGO_IMAGE_MAX_BYTES = 768 * 1024;
+/** Longest side of an uploaded logo, in pixels. */
+export const LOGO_IMAGE_MAX_EDGE = 1024;
+
 export interface StudioBrandingPayload {
   brandColor: string;
+  /** An https:// address, or a tiny inline picture. Larger pictures use `logoImageId`. */
   logoUrl: string | null;
+  /**
+   * A logo the host uploaded to `/api/rooms/:id/stage-images` (kind `logo`). The
+   * picture never rides the size-capped signaling socket; everyone, the green
+   * room included, loads it with their `brandingReadToken`.
+   */
+  logoImageId?: string;
   stageBackground: StageBackground;
   waitingRoom: WaitingRoomBranding;
   updatedAt?: string;

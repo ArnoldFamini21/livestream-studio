@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { deflateSync } from 'node:zlib';
 import { startHarness, createStudio, joinStudio, admitGuest, stageGuest, screenshot, eventually } from './harness.mjs';
 
 // Observers retain only metadata. Recording and peer media still use real browser APIs.
@@ -97,6 +98,31 @@ async function recoveryFiles(page) {
   });
 }
 
+/** A deterministic RGBA PNG of random-looking noise (about 150 KB at 205x205), so no fixture file is needed. */
+function createNoisePng(size, seed = 7) {
+  let state = seed;
+  const next = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state >>> 24; };
+  const raw = Buffer.alloc((size * 4 + 1) * size);
+  for (let y = 0; y < size; y += 1) {
+    const row = y * (size * 4 + 1);
+    for (let x = 0; x < size; x += 1) {
+      const o = row + 1 + x * 4;
+      raw[o] = next(); raw[o + 1] = next(); raw[o + 2] = next();
+      raw[o + 3] = Math.hypot(x - size / 2, y - size / 2) < size / 2 ? 255 : 0;
+    }
+  }
+  const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k += 1) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1; return c >>> 0; });
+  const crc32 = (buf) => { let crc = 0xffffffff; for (const byte of buf) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; };
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13); header.writeUInt32BE(size, 0); header.writeUInt32BE(size, 4); header[8] = 8; header[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(raw, { level: 6 })), chunk('IEND', Buffer.alloc(0))]);
+}
+
 test('built studio in real Chromium under the production CSP', { timeout: 420_000 }, async t => {
   const fixture = await startHarness();
   const pages = new Map();
@@ -131,6 +157,20 @@ test('built studio in real Chromium under the production CSP', { timeout: 420_00
       await host.getByRole('region', { name: 'Broadcast canvas' }).getByText('Test Guest', { exact: true }).waitFor();
       await guest.getByTestId('program-return-monitor').waitFor({ state: 'hidden' });
       await assertPlayingRemoteHost(guest, fixture.artifactDir, 'after-stage');
+    });
+
+await scenario('a 150 KB logo is shared by id: the guest sees it and the host never reconnects', async () => {
+      const logo = createNoisePng(205, 205);
+      assert.ok(logo.length > 120_000 && logo.length < 200_000, `logo is ${logo.length} bytes`);
+      await host.getByRole('button', { name: 'Brand', exact: true }).click();
+      await host.locator('input[aria-label="Upload brand logo"]').setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: logo });
+      await guest.locator('img[alt="Logo"]').waitFor();
+      await host.locator('img[alt="Logo"]').first().waitFor();
+      assert.equal(await host.getByText('Reconnecting to studio server…').count(), 0, 'the host never shows a reconnecting state');
+      assert.equal(await guest.getByText('Reconnecting to studio server…').count(), 0);
+      await screenshot(guest, fixture.artifactDir, 'guest-logo-150k');
+      await host.getByRole('button', { name: 'Remove logo', exact: true }).click();
+      await guest.locator('img[alt="Logo"]').waitFor({ state: 'detached' });
     });
 
     await scenario('watch-page viewer casts a poll vote visible to the host', async () => {
