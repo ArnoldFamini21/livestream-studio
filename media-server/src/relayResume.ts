@@ -15,6 +15,17 @@ export const STUDIO_INPUT_STALL_MS = 5_000;
 export const STUDIO_RECONNECT_HOLD_MS = 3 * 60_000;
 
 /**
+ * The hold time of this process: 3 minutes unless STUDIO_RECONNECT_HOLD_SECONDS
+ * names a shorter one (for local and automated checks). A longer or invalid
+ * value is ignored, so a mistake can never lengthen or break the hold.
+ */
+export function getStudioReconnectHoldMs(env: Record<string, string | undefined>): number {
+  const seconds = Number(env.STUDIO_RECONNECT_HOLD_SECONDS);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds * 1000 >= STUDIO_RECONNECT_HOLD_MS) return STUDIO_RECONNECT_HOLD_MS;
+  return seconds * 1000;
+}
+
+/**
  * A reconnecting studio may continue a running broadcast only with the same
  * places to stream to (the RTMP URL and stream key pairs, compared exactly,
  * in any order; the studio's own destination ids are ignored, see

@@ -26,6 +26,8 @@ export interface MediaServerHealth {
   recordingStorage?: MediaServerCapabilityHealth;
   /** Absent on older media servers: the private test stream is offered only when this is ready. */
   testStream?: MediaServerCapabilityHealth;
+  /** Absent on older media servers: the held-broadcast banner is shown only when this is ready. */
+  heldBroadcast?: MediaServerCapabilityHealth;
 }
 
 export type MediaServerParityFeatureStatus = 'ready' | 'checking' | 'degraded' | 'blocked';
@@ -281,6 +283,7 @@ export function normalizeMediaServerHealthPayload(
   const reportedPresentationRenderer = getCapability(value, 'presentationRenderer');
   const recordingStorage = getCapability(value, 'recordingStorage');
   const testStream = getCapability(value, 'testStream');
+  const heldBroadcast = getCapability(value, 'heldBroadcast');
 
   if (value.status !== 'ok') {
     return failure('Media server health did not report ready status.', input);
@@ -311,6 +314,7 @@ export function normalizeMediaServerHealthPayload(
     ...(presentationRenderer ? { presentationRenderer } : {}),
     ...(recordingStorage ? { recordingStorage } : {}),
     ...(testStream ? { testStream } : {}),
+    ...(heldBroadcast ? { heldBroadcast } : {}),
   };
 }
 

@@ -78,6 +78,10 @@ import { useTestStream } from '../hooks/useTestStream.ts';
 import { shouldReannounceTest } from '../utils/testStreamReannounce.ts';
 import { getTestStreamSupport } from '../utils/mediaServerHealth.ts';
 import { TEST_BANNER_LABEL } from '../utils/testStreamMachine.ts';
+import { useHeldBroadcast } from '../hooks/useHeldBroadcast.ts';
+import { decideHeldBanner, getGoLiveBlocker } from '../utils/heldBroadcastBanner.ts';
+import { getHeldTestBlocker, isHeldBroadcastSupported } from '../utils/heldBroadcastState.ts';
+import { HeldBroadcastBanner } from './HeldBroadcastBanner.tsx';
 import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
 import {
@@ -5202,6 +5206,37 @@ export function StudioRoom() {
     testStream.dismiss();
     await startGoLive();
   };
+  // After a crash or reload the broadcast may still be on the air on the slate: tell the host and offer Continue.
+  // "Live" here means this page is sending it: after a quick reload the studio server may still say the room is live.
+  const hostSendsBroadcast = isLive && (relayStats.status === 'connecting' || relayStats.status === 'live');
+  const heldBroadcast = useHeldBroadcast({
+    active: isStudioHost && joined && !hostSendsBroadcast && isHeldBroadcastSupported(mediaServerHealth),
+    connected,
+    roomId: roomId || null,
+    requestToken: requestLiveStreamToken,
+  });
+  const heldTestBlocker = getHeldTestBlocker(heldBroadcast.state);
+  const heldBannerView = decideHeldBanner({
+    watch: heldBroadcast.state,
+    isHost: isStudioHost,
+    isLive: hostSendsBroadcast,
+    destinations,
+    goLiveBlocker: getGoLiveBlocker({ destinations, relayReadiness, sessionHealth, sceneCount: scenes.length }),
+    starting: false,
+  });
+  // Continue is the Go Live button: the same checks, the same path.
+  const continueHeldBroadcast = async (): Promise<string | null> => {
+    const blocker = testStream.getNormalGoLiveBlocker();
+    if (blocker) return blocker;
+    // The studio server may still remember the broadcast from before the page reloaded; nothing is sent from here yet.
+    if (isLiveRef.current && !relayActiveRef.current && !liveStartOperationRef.current.active) {
+      isLiveRef.current = false;
+      setIsLive(false);
+      setLiveStartedAt(null);
+    }
+    await onGoLive();
+    return goLiveFailureReasonRef.current;
+  };
   const onStopLive = () => {
     liveStartOperationRef.current.cancel();
     if (liveStatusTimerRef.current) {
@@ -7393,6 +7428,14 @@ export function StudioRoom() {
       )}
 
       <CameraKeepAlive stream={localStream} />
+      {heldBannerView && (
+        <HeldBroadcastBanner
+          view={heldBannerView}
+          onContinue={continueHeldBroadcast}
+          onOpenDestinations={() => setShowStreamDest(true)}
+          onDismiss={heldBroadcast.dismiss}
+        />
+      )}
       <StudioMediaBanner problem={mediaProblem} onRetry={retryMedia} />
 
       {/* Main Area */}
@@ -8030,7 +8073,7 @@ export function StudioRoom() {
               testStreamSlot={isStudioHost ? (
                 <Suspense fallback={null}>
                   <TestStreamPanel
-                    controls={testStream}
+                    controls={heldTestBlocker ? { ...testStream, startBlocker: testStream.startBlocker || heldTestBlocker } : testStream}
                     onWatchOutput={() => setShowTestOutput(true)}
                     enabledDestinationCount={destinations.filter((d) => d.enabled).length}
                   />
