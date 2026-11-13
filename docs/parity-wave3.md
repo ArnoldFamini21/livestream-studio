@@ -21,7 +21,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [ ] **P1.14** Phone/desktop secondary camera seats and ISO recording
 - [ ] **P1.15** Camera controls, smoothing and same-origin MediaPipe assets
 - [ ] **P1.16** Screen-share mix volume and music transport controls
-- [ ] **P1.17** Private test stream before public broadcast
+- [x] **P1.17** Private test stream before public broadcast
 - [ ] **P1.18** Scheduled prerecorded premieres within free-tier limits
 - [ ] **P1.19** Viewer captions and CC control
 - [ ] **P2.20** Non-destructive transcript/timeline editor and export
@@ -280,6 +280,58 @@ shown-on-screen), pause, and hide one comment (message actions).
 Verification and what is left are in the PR description. Not covered by a
 browser check: real YouTube/Facebook comments, a real RTMP/HLS viewer of the
 output, and a co-host's browser (the server relay is covered by server tests).
+
+## P1.17 — private test stream before going live
+
+The host gets a **Test stream (private)** button in the Go Live panel, above the
+checklist. It starts the same program relay with no destination at all, so
+nothing reaches YouTube, Facebook or any other platform, whatever is enabled in
+the destination list (the list is left as it was).
+
+- **Media server** (`media-server/src/testStream.ts`, `index.ts`): a start
+  message marked `test` must carry no destination or it is refused
+  (`TEST_NOT_ALLOWED`); the session refuses destinations for its whole life
+  (also on a reconnect start, and a test is never resumed as a broadcast); no
+  backup recording is made; the program is published as HLS under a random
+  unguessable id (`t-` plus 144 random bits, returned only to the studio that
+  started the test), never under the studio's public watch id. Its playlist and
+  segments are removed as soon as the test ends. A second session is refused
+  with a plain message that names the test. `/health` advertises
+  `capabilities.testStream`; the studio offers the test only when it is there
+  (a new studio meeting the old media server during a deploy says so).
+- **Signaling** (`test-stream-state-changed`): host/co-host only, in memory, never
+  touches the live state or the room status, sent to late joiners, ends when the
+  host goes live or leaves, refused while the room is live.
+- **Studio**: "TEST - not public" badge in the header for host, co-hosts and
+  guests (backstage guests see it on the live program monitor); the Go Live
+  button in the control bar reads TEST. Nothing keyed to going live fires: no
+  LIVE badge, no live state for guests, no backup recording. "Go live now" first
+  checks the destination list (so a mistake does not cost the test), then ends
+  the test and runs the normal Go Live path with all its checks.
+- **Health panel**: connection, picture (resolution, kbps), frame rate, sound
+  (program mix meter, not silent), lost frames and backlog. One pure, tested
+  function (`client/src/utils/testStreamVerdict.ts`) holds the thresholds and
+  gives the verdict after 15 seconds: "Ready to go live" or the specific problem
+  and what to do. "Watch and listen to the test output" opens the private output
+  in a player (wear headphones).
+- **State machine** (`client/src/utils/testStreamMachine.ts`): idle, starting,
+  testing, ending, switching, live, error; a test and a broadcast never overlap.
+
+Verification: see the PR for the exact counts. Real Chromium with a local media
+server on port 3012 and two destinations pointed at a counting local listener:
+zero connections during the test, the verdict reached "Ready to go live", the
+private output played real frames, the public watch address stayed offline, host,
+stage guest and backstage guest showed TEST and never LIVE, End test removed the
+private output, and "Go live now" ended the test and started a real session that
+connected to both destinations. Screenshots at 1440x900 and 390x844 were looked at.
+`e2e/studio.test.mjs` gained one short scenario that needs no media server (the
+test is disabled with a reason when the media server does not advertise it).
+
+Not verified: a co-host browser (it uses the same signal as a guest), the old
+media server in a browser (covered by unit tests of the capability check), a
+real camera and a real internet uplink (the verdict thresholds come from the
+design, not from field data), and a signaling reconnect in the middle of a test
+(the room would lose the TEST badge until the test is restarted).
 
 ## Resume here next session
 
