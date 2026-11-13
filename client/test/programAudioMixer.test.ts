@@ -276,3 +276,37 @@ describe('program audio controller', () => {
     }
   });
 });
+
+describe('screen volume in the program inputs', () => {
+  const base = () => ({
+    localParticipant: { id: 'me', status: 'on-stage' },
+    localStream: stream(track('mic')),
+    participants: [['g1', { status: 'on-stage' }]] as Array<[string, { status: string }]>,
+    remoteStreams: new Map([['g1', stream(track('g1-mic'))]]),
+    remoteScreenStreams: new Map([['g1', stream(track('g1-screen'))]]),
+    localScreenStream: stream(track('my-screen')),
+    participantVolumes: { me: 0.9, g1: 0.8 },
+  });
+  const gains = (state: ProgramAudioMembershipState<FakeTrack>) =>
+    Object.fromEntries(buildProgramAudioInputs(state).map((input) => [input.key, input.gain]));
+
+  it('defaults to full volume for local and remote screen sound', () => {
+    const result = gains(base());
+    assert.equal(result['screen:local#0'], 1);
+    assert.equal(result['screen:g1#0'], 1);
+  });
+
+  it('applies the screen volume once to screen sound only', () => {
+    const result = gains({ ...base(), screenVolume: 0.5 });
+    assert.equal(result['screen:local#0'], 0.5);
+    assert.equal(result['screen:g1#0'], 0.5);
+    assert.equal(result['participant:me#0'], 0.9);
+    assert.equal(result['participant:g1#0'], 0.8);
+  });
+
+  it('clamps and silences', () => {
+    assert.equal(gains({ ...base(), screenVolume: 0 })['screen:local#0'], 0);
+    assert.equal(gains({ ...base(), screenVolume: 7 })['screen:local#0'], 1);
+    assert.equal(gains({ ...base(), screenVolume: Number.NaN })['screen:local#0'], 1);
+  });
+});
