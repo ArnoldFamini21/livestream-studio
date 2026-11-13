@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import type { RtmpRelayStartPayload } from '@studio/shared';
 import { isSameRelaySetup } from './relayResume.js';
 import { isServableHlsFile, isValidWatchRoomId } from './hlsOutput.js';
-import { createTestWatchId, getCapacityRefusal, getTestStartIssue, isTestWatchId, mayStartDestination } from './testStream.js';
+import { BROADCAST_HELD_CODE, createTestWatchId, getCapacityRefusal, getHeldBroadcastRefusal, isHeldRealBroadcast, getTestStartIssue, isTestWatchId, mayStartDestination } from './testStream.js';
 
 const destination = { id: 'd1', name: 'YouTube', rtmpUrl: 'rtmp://a.rtmp.youtube.com/live2', streamKey: 'key-1' };
 
@@ -70,5 +70,30 @@ describe('capacity refusal', () => {
     assert.match(getCapacityRefusal({ incomingIsTest: true, runningIsTest: false }).message, /cannot run at the same time/);
     assert.match(getCapacityRefusal({ incomingIsTest: true, runningIsTest: true }).message, /already running/);
     assert.match(getCapacityRefusal({ incomingIsTest: false, runningIsTest: false }).message, /another broadcast/);
+  });
+});
+
+describe('a test and a broadcast held for its studio', () => {
+  it('refuses a test while the room has a held broadcast, in plain words', () => {
+    const refusal = getHeldBroadcastRefusal({ incomingIsTest: true, roomHasHeldBroadcast: true });
+    assert.equal(refusal?.code, BROADCAST_HELD_CODE);
+    assert.match(refusal?.message || '', /still on the air, waiting for you.*Press Go Live.*after the broadcast ends/);
+  });
+
+  it('leaves every other start to the normal rules', () => {
+    assert.equal(getHeldBroadcastRefusal({ incomingIsTest: true, roomHasHeldBroadcast: false }), null);
+    assert.equal(getHeldBroadcastRefusal({ incomingIsTest: false, roomHasHeldBroadcast: true }), null);
+    assert.equal(getHeldBroadcastRefusal({ incomingIsTest: false, roomHasHeldBroadcast: false }), null);
+  });
+
+  it('counts only a started real broadcast of the same room whose studio is gone', () => {
+    const held = { clientGone: true, started: true, stopping: false, test: false, claims: { roomId: 'r1' } };
+    assert.equal(isHeldRealBroadcast(held, 'r1'), true);
+    assert.equal(isHeldRealBroadcast(held, 'r2'), false, 'a different room keeps the capacity refusal');
+    assert.equal(isHeldRealBroadcast({ ...held, clientGone: false }, 'r1'), false, 'a running broadcast is not held');
+    assert.equal(isHeldRealBroadcast({ ...held, stopping: true }, 'r1'), false);
+    assert.equal(isHeldRealBroadcast({ ...held, started: false }, 'r1'), false);
+    assert.equal(isHeldRealBroadcast({ ...held, test: true }, 'r1'), false);
+    assert.equal(isHeldRealBroadcast({ ...held, claims: null }, 'r1'), false);
   });
 });
