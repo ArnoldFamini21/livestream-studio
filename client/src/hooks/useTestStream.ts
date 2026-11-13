@@ -3,7 +3,9 @@ import type { RtmpRelayStats, RtmpRelayReadiness } from './useRtmpRelay.ts';
 import {
   INITIAL_TEST_STREAM_STATE,
   getGoLiveBlocker,
+  describeSwitchFailure,
   getTestStartBlocker,
+  isHeldBroadcastRefusal,
   isTestRelayInUse,
   testStreamReducer,
   type TestStreamEvent,
@@ -31,6 +33,8 @@ interface UseTestStreamOptions {
   goLive: () => Promise<boolean>;
   /** Why the real broadcast could not start (invalid destinations), or null; checked before the test ends. */
   getGoLiveIssue: () => string | null;
+  /** Why the last Go Live attempt failed, in plain words, or null when unknown. */
+  getGoLiveFailureReason: () => string | null;
   /** A real broadcast is live or starting. */
   isLive: boolean;
   isGoLiveStarting: () => boolean;
@@ -118,7 +122,11 @@ export function useTestStream(options: UseTestStreamOptions): TestStreamControls
     } catch (error) {
       if (!operation.active || isRelayOperationCancelled(error)) return;
       optionsRef.current.stopRelay();
-      dispatch({ type: 'START_FAILED', message: error instanceof Error ? error.message : 'The test could not start.' });
+      dispatch({
+        type: 'START_FAILED',
+        message: error instanceof Error ? error.message : 'The test could not start.',
+        refused: isHeldBroadcastRefusal(error),
+      });
     } finally {
       slotRef.current.finish(operation);
     }
@@ -152,9 +160,9 @@ export function useTestStream(options: UseTestStreamOptions): TestStreamControls
     try {
       const started = await optionsRef.current.goLive();
       if (started) dispatch({ type: 'SWITCH_COMPLETED' });
-      else dispatch({ type: 'SWITCH_FAILED', message: 'The test ended, but the broadcast did not start. See the destination list for the reason, then press Go Live.' });
+      else dispatch({ type: 'SWITCH_FAILED', message: describeSwitchFailure(optionsRef.current.getGoLiveFailureReason()) });
     } catch (error) {
-      dispatch({ type: 'SWITCH_FAILED', message: error instanceof Error ? error.message : 'The broadcast could not start.' });
+      dispatch({ type: 'SWITCH_FAILED', message: describeSwitchFailure(error instanceof Error ? error.message : null) });
     }
   }, [dispatch]);
 

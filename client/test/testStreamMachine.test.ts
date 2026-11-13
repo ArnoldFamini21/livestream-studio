@@ -6,7 +6,9 @@ import {
   MESSAGE_LIVE_BLOCKS_TEST,
   MESSAGE_TEST_BLOCKS_LIVE,
   TEST_BANNER_LABEL,
+  describeSwitchFailure,
   describeTestPhase,
+  isHeldBroadcastRefusal,
   getGoLiveBlocker,
   getTestStartBlocker,
   isTestOnAir,
@@ -129,5 +131,80 @@ describe('test stream state machine', () => {
       /Update the media server/
     );
     assert.equal(getTestStartBlocker(run(started), supported), 'A test is already running.');
+  });
+});
+
+describe('a test refused because the broadcast is on hold', () => {
+  const message = 'Your broadcast is still on the air, waiting for you. Press Go Live to continue it. A test can run after the broadcast ends.';
+
+  it('returns to idle with the server message, never stuck starting and never showing TEST', () => {
+    const next = run([{ type: 'START_REQUESTED' }, { type: 'START_FAILED', message, refused: true }]);
+    assert.equal(next.phase, 'idle');
+    assert.equal(next.message, message);
+    assert.equal(isTestOnAir(next), false);
+    assert.equal(isTestRelayInUse(next), false);
+    assert.equal(describeTestPhase(next).label, 'Not live');
+    assert.equal(getTestStartBlocker(next, { supported: true, unsupportedReason: '', isHost: true }), null);
+  });
+
+  it('clears the message on the next press and on dismiss', () => {
+    const refused = run([{ type: 'START_REQUESTED' }, { type: 'START_FAILED', message, refused: true }]);
+    assert.equal(run([{ type: 'START_REQUESTED' }], refused).message, null);
+    assert.equal(run([{ type: 'DISMISS' }], refused).message, null);
+    assert.equal(run([{ type: 'DISMISS' }], refused).phase, 'idle');
+  });
+
+  it('is told apart from other failures by the error code', () => {
+    assert.equal(isHeldBroadcastRefusal(Object.assign(new Error('x'), { code: 'TEST_BLOCKED_BY_HELD_BROADCAST' })), true);
+    assert.equal(isHeldBroadcastRefusal(Object.assign(new Error('x'), { code: 'RELAY_CAPACITY_REACHED' })), false);
+    assert.equal(isHeldBroadcastRefusal(new Error('x')), false);
+    assert.equal(isHeldBroadcastRefusal(null), false);
+  });
+
+  it('keeps an ordinary failure as an error', () => {
+    assert.equal(run([{ type: 'START_REQUESTED' }, { type: 'START_FAILED', message: 'boom' }]).phase, 'error');
+  });
+});
+
+describe('"Go live now" failing after the test has ended', () => {
+  const failure = describeSwitchFailure('Check destination settings before going live.');
+  const switching = run(started.concat({ type: 'GO_LIVE_REQUESTED' }));
+
+  it('words the reason in plain language', () => {
+    assert.match(failure, /test has ended, but the broadcast did not start\. Reason: Check destination settings before going live\. Fix it/);
+    assert.match(describeSwitchFailure(null), /Check the destination list/);
+  });
+
+  it('shows the message although LIVE_ON and LIVE_OFF came first', () => {
+    const next = run([{ type: 'LIVE_ON' }, { type: 'LIVE_OFF' }, { type: 'SWITCH_FAILED', message: failure }], switching);
+    assert.equal(next.phase, 'error');
+    assert.equal(next.message, failure);
+  });
+
+  it('shows the message when it arrives before LIVE_OFF, and keeps it', () => {
+    const next = run([{ type: 'LIVE_ON' }, { type: 'SWITCH_FAILED', message: failure }, { type: 'LIVE_OFF' }], switching);
+    assert.equal(next.phase, 'error');
+    assert.equal(next.message, failure);
+  });
+
+  it('shows the message when no live flip happened at all', () => {
+    assert.equal(run([{ type: 'SWITCH_FAILED', message: failure }], switching).message, failure);
+  });
+
+  it('clears it on the next action', () => {
+    const failed = run([{ type: 'SWITCH_FAILED', message: failure }], switching);
+    assert.equal(run([{ type: 'START_REQUESTED' }], failed).message, null);
+    assert.equal(run([{ type: 'DISMISS' }], failed).message, null);
+    assert.equal(run([{ type: 'LIVE_ON' }], failed).message, null);
+  });
+
+  it('a successful switch leaves no message', () => {
+    const next = run([{ type: 'LIVE_ON' }, { type: 'SWITCH_COMPLETED' }], switching);
+    assert.equal(next.message, null);
+    assert.equal(next.phase, 'live');
+  });
+
+  it('ignores a switch failure when no switch was started', () => {
+    assert.equal(run([{ type: 'SWITCH_FAILED', message: failure }], run(started)).phase, 'testing');
   });
 });

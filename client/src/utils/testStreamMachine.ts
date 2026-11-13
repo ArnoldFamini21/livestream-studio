@@ -33,7 +33,8 @@ export interface TestStreamState {
 export type TestStreamEvent =
   | { type: 'START_REQUESTED' }
   | { type: 'START_SUCCEEDED'; watchId: string | null; startedAt: string }
-  | { type: 'START_FAILED'; message: string }
+  /** `refused`: the media server declined the start on purpose; nothing is wrong and nothing was started. */
+  | { type: 'START_FAILED'; message: string; refused?: boolean }
   | { type: 'OUTPUT_CHANGED'; watchId: string }
   | { type: 'END_REQUESTED' }
   | { type: 'END_COMPLETED' }
@@ -54,6 +55,21 @@ export const INITIAL_TEST_STREAM_STATE: TestStreamState = {
 
 export const MESSAGE_LIVE_BLOCKS_TEST = 'A live broadcast is running. A test cannot run at the same time.';
 export const MESSAGE_TEST_BLOCKS_LIVE = 'A test is running. Use "Go live now" to end it and start the broadcast.';
+/** The media server's code for a test refused because the room's broadcast is on hold. */
+export const TEST_BLOCKED_BY_HELD_BROADCAST_CODE = 'TEST_BLOCKED_BY_HELD_BROADCAST';
+
+/** True for the error the relay raises when the media server declined the test on purpose. */
+export function isHeldBroadcastRefusal(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === TEST_BLOCKED_BY_HELD_BROADCAST_CODE;
+}
+
+/** Said once when "Go live now" ended the test but the broadcast did not start. */
+export function describeSwitchFailure(reason: string | null): string {
+  const base = 'The test has ended, but the broadcast did not start.';
+  const cleaned = reason?.trim().replace(/[.\s]+$/, '');
+  return cleaned ? `${base} Reason: ${cleaned}. Fix it, then press Go Live.` : `${base} Check the destination list, then press Go Live.`;
+}
+
 export const MESSAGE_BUSY = 'Please wait a moment, the studio is still changing state.';
 
 function withMessage(state: TestStreamState, message: string): TestStreamState {
@@ -76,6 +92,8 @@ export function testStreamReducer(state: TestStreamState, event: TestStreamEvent
 
     case 'START_FAILED':
       if (state.phase !== 'starting') return state;
+      // A refusal leaves the panel as it was before the press, with the reason shown.
+      if (event.refused) return { phase: 'idle', startedAt: null, watchId: null, message: event.message };
       return { phase: 'error', startedAt: null, watchId: null, message: event.message };
 
     case 'OUTPUT_CHANGED':
@@ -101,7 +119,10 @@ export function testStreamReducer(state: TestStreamState, event: TestStreamEvent
       return INITIAL_TEST_STREAM_STATE;
 
     case 'SWITCH_FAILED':
-      if (state.phase !== 'switching') return state;
+      // The broadcast's own start flips "live" on and off while the switch is
+      // still waiting for its answer, which moves the phase on before this
+      // event arrives. The failure still has to reach the host, in either order.
+      if (state.phase !== 'switching' && state.phase !== 'live' && state.phase !== 'idle') return state;
       return { phase: 'error', startedAt: null, watchId: null, message: event.message };
 
     case 'RELAY_LOST':
