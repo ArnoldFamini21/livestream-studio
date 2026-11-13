@@ -90,6 +90,10 @@ import {
 import { getLocalProgramPresence } from '../audio/programAudioMixer.ts';
 import { collectScreenSharesOnProgram, gainToPercent, getScreenVolumeView } from '../audio/mixControls.ts';
 import { useScreenShareVolume } from '../audio/useScreenShareVolume.ts';
+import { listSoundShareKeys } from '../audio/screenVolumeNotice.ts';
+import { useScreenVolumeNotice } from '../audio/useScreenVolumeNotice.ts';
+import { ScreenShareVolumeNotice } from './ScreenShareVolumeNotice.tsx';
+import { ScreenShareVolumeMarker } from './ScreenShareVolumeMarker.tsx';
 import { useBackgroundMusicPlayer } from '../audio/useBackgroundMusicPlayer.ts';
 import { useSoundBoardPlayer } from '../audio/useSoundBoardPlayer.ts';
 import { useSessionHealth } from '../hooks/useSessionHealth.ts';
@@ -1570,6 +1574,19 @@ export function StudioRoom() {
     onChange: setScreenVolumePercent,
     programRunnerName: (stageOwnerId && participants.get(stageOwnerId)?.name) || undefined,
   }), [amStageOwner, localProgramPresence.screen, meshRemoteScreenStreams, myParticipant, participants, screenStream, screenVolume, setScreenVolumePercent, stageOwnerId]);
+  // Tells the stage owner when viewers hear a share below full volume, without the People panel open.
+  const screenShareSoundKeys = useMemo(() => listSoundShareKeys({
+    localScreenOnProgram: localProgramPresence.screen,
+    localScreenStream: screenStream,
+    myParticipantId: myParticipant?.id,
+    participants,
+    remoteScreenStreams: meshRemoteScreenStreams,
+  }), [localProgramPresence.screen, meshRemoteScreenStreams, myParticipant?.id, participants, screenStream]);
+  const screenVolumeNotice = useScreenVolumeNotice({
+    view: screenShareVolumeProps.view,
+    percent: screenShareVolumeProps.percent,
+    soundShareKeys: screenShareSoundKeys,
+  });
   // Set by the stage mirror: what is staged has no picture guests can see.
   const [stageMirrorNeedsVideo, setStageMirrorNeedsVideo] = useState(false);
   const programReturnDemand = useMemo(() => (
@@ -5067,13 +5084,14 @@ export function StudioRoom() {
 
   /** The real Go Live. True when the relay for the broadcast started. */
   const startGoLive = async (): Promise<boolean> => {
+    // A new attempt never cites the reason of an older one, whichever way it ends.
+    goLiveFailureReasonRef.current = null;
     if (liveStartOperationRef.current.active || isLiveRef.current) return false;
     if (liveStatusTimerRef.current) {
       clearTimeout(liveStatusTimerRef.current);
       liveStatusTimerRef.current = null;
     }
 
-    goLiveFailureReasonRef.current = null;
     const enabledDestinations = destinations.filter((d) => d.enabled);
     if (
       enabledDestinations.length === 0 ||
@@ -7211,6 +7229,12 @@ export function StudioRoom() {
               {waitingCount} waiting
             </button>
           )}
+          {screenVolumeNotice.advice.marker && (
+            <ScreenShareVolumeMarker
+              copy={screenVolumeNotice.advice.marker}
+              onOpen={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
+            />
+          )}
           {talkbackBadge && (
             <span
               role="status"
@@ -7290,8 +7314,15 @@ export function StudioRoom() {
         </PanelErrorBoundary>
       )}
 
-      {(guestNotification || (isHostOrCoHost && liveSessionSummary)) && (
+      {(guestNotification || (isHostOrCoHost && liveSessionSummary) || screenVolumeNotice.advice.notice) && (
         <div style={styles.studioNoticeWrap} role="status" aria-live="polite">
+          {screenVolumeNotice.advice.notice && (
+            <ScreenShareVolumeNotice
+              copy={screenVolumeNotice.advice.notice}
+              onRestore={() => { setScreenVolumePercent(100); screenVolumeNotice.answer(); }}
+              onKeep={screenVolumeNotice.answer}
+            />
+          )}
           {guestNotification && (
             <div style={{
               ...styles.waitingNotice,
