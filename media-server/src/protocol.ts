@@ -14,7 +14,8 @@ function isStartPayload(payload: unknown): payload is RtmpRelayStartPayload {
     typeof candidate.video === 'object' &&
     candidate.video !== null &&
     typeof candidate.audio === 'object' &&
-    candidate.audio !== null
+    candidate.audio !== null &&
+    (candidate.test === undefined || typeof candidate.test === 'boolean')
   );
 }
 

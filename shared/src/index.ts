@@ -479,6 +479,7 @@ export type SignalMessage =
   | { type: 'sfu-token-request'; payload: SfuTokenRequestPayload }
   | { type: 'sfu-token-issued'; payload: SfuTokenIssuedPayload }
   | { type: 'live-stream-state-changed'; payload: LiveStreamStatePayload }
+  | { type: 'test-stream-state-changed'; payload: TestStreamStatePayload }
   | { type: 'live-stream-token-request'; payload: LiveStreamTokenRequestPayload }
   | { type: 'live-stream-token-issued'; payload: LiveStreamTokenIssuedPayload }
   | { type: 'external-chat-connect'; payload: ExternalChatConnectPayload }
@@ -535,6 +536,8 @@ export interface RoomJoinedPayload {
   polls?: LivePoll[];
   recordingState?: RecordingStatePayload;
   liveStreamState?: LiveStreamStatePayload;
+  /** Present while the host runs a private test stream. */
+  testStreamState?: TestStreamStatePayload;
   studioBranding?: StudioBrandingPayload;
   /** Admitted hosts and co-hosts only: the on-screen chat overlay settings. */
   chatOverlay?: ChatOverlayState;
@@ -919,6 +922,13 @@ export interface LiveStreamStatePayload {
   live: boolean;
   startedAt?: string;
   stoppedAt?: string;
+  performedBy: string;
+}
+
+/** A private test stream is running: nothing is public, nothing goes to a platform. */
+export interface TestStreamStatePayload {
+  active: boolean;
+  startedAt?: string;
   performedBy: string;
 }
 
@@ -1469,6 +1479,12 @@ export interface RtmpRelayStartPayload {
   audio: RtmpRelayAudioConfig;
   /** Missing on older studios: treated as VP8 WebM. */
   encoding?: RtmpRelayEncoding;
+  /**
+   * A private test: the media server sends nothing to any destination for the
+   * life of the session and publishes the output under a private address.
+   * `destinations` must be empty.
+   */
+  test?: boolean;
 }
 
 /** The server's live encoder, from FFmpeg's progress report (every ~2 s). */
@@ -1519,8 +1535,14 @@ export interface RtmpRelayBackupRecordingPayload {
   storageStatus?: 'uploading' | 'stored' | 'failed';
 }
 
+/** Where a test session's private output is published (host's eyes only). */
+export interface RtmpRelayTestOutput {
+  /** Unguessable id; the playlist is `/watch/<watchId>/stream.m3u8` on the media server. */
+  watchId: string;
+}
+
 export type RtmpRelayServerMessage =
-  | { type: 'session-started'; payload: { roomId: string; destinationIds: string[]; videoMode?: RtmpRelayVideoMode } }
+  | { type: 'session-started'; payload: { roomId: string; destinationIds: string[]; videoMode?: RtmpRelayVideoMode; test?: RtmpRelayTestOutput } }
   | { type: 'encoder-stats'; payload: RtmpRelayEncoderStats }
   | { type: 'destination-stats'; payload: RtmpRelayDestinationStats }
   | { type: 'session-stopped'; payload: { reason?: string } }

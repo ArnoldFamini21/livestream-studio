@@ -105,6 +105,13 @@ import { FfmpegProgressParser, FfmpegRateMeter, type FfmpegProgress } from './ff
 import { FlvProgram, type FlvProgramSource } from './flvSplice.js';
 import { isSameRelaySetup, shouldShowSlate, STUDIO_RECONNECT_HOLD_MS } from './relayResume.js';
 import {
+  createTestWatchId,
+  getCapacityRefusal,
+  getTestStartIssue,
+  isTestStreamSupported,
+  mayStartDestination,
+} from './testStream.js';
+import {
   HLS_PLAYLIST_NAME,
   HlsViewerCounter,
   createFfmpegHlsArgs,
@@ -221,6 +228,10 @@ interface RelaySession {
   lastMediaAtMs: number;
   /** The studio's connection closed; the broadcast waits on the slate. */
   clientGone: boolean;
+  /** A private test: no destination ever, no backup, output only at `testWatchId`. */
+  test: boolean;
+  /** The random private id of a test's HLS output (never the studio's watch id). */
+  testWatchId: string | null;
   watchdog: ReturnType<typeof setInterval> | null;
 }
 
@@ -279,6 +290,10 @@ async function healthPayload() {
         videoModes: ['copy', 'transcode'],
         transcodeMaxPixels: TRANSCODE_MAX_PIXELS,
         transcodeMaxFrameRate: TRANSCODE_MAX_FRAME_RATE,
+      },
+      testStream: {
+        ready: isTestStreamSupported(isEncodeOnceEnabled()),
+        message: 'A private test stream can run before going live.',
       },
       presentationRenderer: {
         ready: presentationRenderer.ready,
@@ -501,7 +516,8 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
   const program = session.program;
   // Published under the studio's private watch id. The room id is what admits
   // guests to the studio, so a watch link must never reveal it.
-  const roomId = session.claims?.watchId;
+  // A test uses its own random id instead, so nothing public ever shows it.
+  const roomId = session.test ? session.testWatchId : session.claims?.watchId;
   if (!program || session.hls || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
   let dir: string;
   try {
@@ -538,7 +554,8 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
     if (session.hls === hls) session.hls = null;
     if (liveWatchRooms.get(roomId)?.dir === dir) liveWatchRooms.delete(roomId);
     // Viewers get a moment to see the last segments before the folder goes.
-    setTimeout(() => { void removeHlsWriterDir(dir); }, 15_000);
+    // A private test has no viewers to wait for: its playlist and segments go at once.
+    setTimeout(() => { void removeHlsWriterDir(dir); }, session.test ? 0 : 15_000);
   });
 }
 
@@ -637,6 +654,11 @@ function spawnRelay(
   destination: RtmpRelayDestination,
   payload: RtmpRelayStartPayload
 ) {
+  // The last line of defence for a private test: no path may open a destination.
+  if (!mayStartDestination(session)) {
+    console.warn(`Refused to start destination ${destination.name}: this session is a private test`);
+    return;
+  }
   const options = getRelayEncoderOptions(payload);
   const program = session.encodeOnce ? session.program : null;
   const args = program ? createFfmpegPushArgs(destination) : createFfmpegArgs(destination, options);
@@ -945,6 +967,8 @@ async function spawnLiveBackup(
   claims: LiveStreamTokenClaims,
   payload: RtmpRelayStartPayload
 ) {
+  // A test leaves no recording behind that could be mistaken for a real one.
+  if (session.test) return;
   if (!isLiveBackupRecordingEnabled()) {
     sendJson(session.client, {
       type: 'backup-recording-status',
@@ -1139,6 +1163,8 @@ function createRelaySession(ws: WebSocket): RelaySession {
     slate: null,
     lastMediaAtMs: 0,
     clientGone: false,
+    test: false,
+    testWatchId: null,
     watchdog: null,
   };
 }
@@ -1224,6 +1250,8 @@ function checkStudioInput(session: RelaySession) {
 /** The studio's connection closed mid-broadcast: keep the destinations on the slate. */
 function holdSession(session: RelaySession): boolean {
   if (!session.started || session.stopping || !session.program) return false;
+  // A test has nobody to keep on the air; it ends with the studio's connection.
+  if (session.test) return false;
   if (session.confirmedDestinations.size === 0) {
     console.log('Studio disconnected before any destination went live; nothing to hold');
     return false;
@@ -1289,6 +1317,7 @@ async function resumeSession(
       roomId: claims.roomId,
       destinationIds: payload.destinations.map((destination) => destination.id),
       videoMode: getRelayVideoMode(payload.encoding),
+      ...(held.testWatchId ? { test: { watchId: held.testWatchId } } : {}),
     },
   });
   for (const relay of held.relays.values()) {
@@ -1332,7 +1361,15 @@ async function handleStart(
     return;
   }
 
-  const destinationIssue = validateDestinations(payload.destinations) || await checkRtmpDestinationHosts(payload.destinations);
+  const isTest = payload.test === true;
+  const testIssue = getTestStartIssue(payload, isEncodeOnceEnabled());
+  if (testIssue) {
+    sendError(ws, 'TEST_NOT_ALLOWED', testIssue);
+    return;
+  }
+  const destinationIssue = isTest
+    ? null
+    : validateDestinations(payload.destinations) || await checkRtmpDestinationHosts(payload.destinations);
   if (destinationIssue) {
     sendError(ws, 'INVALID_DESTINATIONS', destinationIssue);
     return;
@@ -1363,11 +1400,15 @@ async function handleStart(
     }
   }
   if (!isRelayCapacityAvailable(sessions.values(), session)) {
-    sendError(ws, 'RELAY_CAPACITY_REACHED', 'This media server is already running another broadcast. Try again when it ends.');
+    const running = Array.from(new Set(sessions.values())).find((other) => other !== session && other.started && !other.stopping);
+    const refusal = getCapacityRefusal({ incomingIsTest: isTest, runningIsTest: Boolean(running?.test) });
+    sendError(ws, refusal.code, refusal.message);
     return;
   }
 
   session.started = true;
+  session.test = isTest;
+  session.testWatchId = isTest ? createTestWatchId() : null;
   session.claims = claims;
   session.destinations = payload.destinations;
   session.encodeOnce = isEncodeOnceEnabled();
@@ -1395,6 +1436,7 @@ async function handleStart(
       roomId: claims.roomId,
       destinationIds: payload.destinations.map((destination) => destination.id),
       videoMode: getRelayVideoMode(payload.encoding),
+      ...(session.testWatchId ? { test: { watchId: session.testWatchId } } : {}),
     },
   });
 }
