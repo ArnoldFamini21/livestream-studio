@@ -77,3 +77,82 @@ input[type="range"].mix-slider:disabled {
 .music-times .music-elapsed-only {
   grid-column: 1 / -1;
 }
+
+/* Notice and marker for a screen share that viewers hear below full volume. */
+.mix-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(15, 23, 42, 0.96);
+  color: #fde68a;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  pointer-events: auto;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.mix-notice-icon {
+  flex: 0 0 auto;
+  display: flex;
+  margin-top: 1px;
+}
+.mix-notice-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.mix-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mix-notice-btn {
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.mix-notice-btn--primary {
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: #1c1203;
+}
+.mix-notice-btn:focus-visible,
+.mix-marker:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (pointer: coarse) {
+  .mix-notice-btn {
+    min-height: 44px;
+  }
+}
+.mix-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mix-marker:hover {
+  background: rgba(245, 158, 11, 0.24);
+}
