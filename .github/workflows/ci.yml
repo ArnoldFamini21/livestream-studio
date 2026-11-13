@@ -18,9 +18,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job runs on a named Ubuntu image, never `ubuntu-latest`. That label moved to
+# Ubuntu 26.04 (FFmpeg 8.0.1) on 2026-11-13, and four media-server FFmpeg tests fail
+# there (edited export, relay restart). Ubuntu 24.04 ships FFmpeg 6.1.1, the same
+# major version as the production media server (ffmpeg-static). Move to a newer image
+# only after those tests pass on its FFmpeg. scripts/dependency-policy.test.mjs checks this.
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
@@ -55,7 +60,7 @@ jobs:
         run: npm run build
 
   browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A normal run takes about ten minutes; the rest covers the fallback installs.
     timeout-minutes: 20
     env:
@@ -108,7 +113,7 @@ jobs:
 
   recording-soak:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.recording_soak }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright

@@ -25,9 +25,14 @@ on:
 permissions:
   contents: write
 
+# Every job runs on a named Ubuntu image, never `ubuntu-latest`. That label moved to
+# Ubuntu 26.04 (FFmpeg 8.0.1) on 2026-11-13, and four media-server FFmpeg tests fail
+# there (edited export, relay restart). Ubuntu 24.04 ships FFmpeg 6.1.1, the same
+# major version as the production media server (ffmpeg-static). Move to a newer image
+# only after those tests pass on its FFmpeg. scripts/dependency-policy.test.mjs checks this.
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A deploy takes two to four minutes, or about twenty when it waits out a slow
     # Render build. Without a limit a hung download would hold the job for six hours.
     timeout-minutes: 45

@@ -142,3 +142,20 @@ test('CI and deploy install FFmpeg through the bounded two-source script', () =>
   }
   assert.ok(jobCount >= 4);
 });
+
+test('CI and deploy jobs run on a named Ubuntu image, never ubuntu-latest', () => {
+  // `ubuntu-latest` changed its FFmpeg major version under a green main: Ubuntu 26.04
+  // ships FFmpeg 8, where four media-server tests fail, and deploy.yml runs those tests
+  // before it publishes. A named image changes only when someone edits it on purpose.
+  let jobCount = 0;
+  for (const workflow of ['ci.yml', 'deploy.yml']) {
+    const text = readFileSync(join(root, '.github', 'workflows', workflow), 'utf8');
+    const runners = [...text.matchAll(/^\s*runs-on:\s*(.+)$/gm)].map((match) => match[1].trim());
+    assert.ok(runners.length > 0, `${workflow} declares its runners`);
+    for (const runner of runners) {
+      jobCount += 1;
+      assert.match(runner, /^ubuntu-\d\d\.\d\d$/, `${workflow}: "${runner}" must be a named Ubuntu image`);
+    }
+  }
+  assert.ok(jobCount >= 4);
+});
