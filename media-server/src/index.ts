@@ -103,6 +103,7 @@ import { WebmSinkFeed, WebmStreamTracker } from './webmStream.js';
 import { FlvSinkFeed } from './flvStream.js';
 import { FfmpegProgressParser, FfmpegRateMeter, type FfmpegProgress } from './ffmpegProgress.js';
 import { FlvProgram, type FlvProgramSource } from './flvSplice.js';
+import { rekeySessionDestinations } from './relayRekey.js';
 import { isSameRelaySetup, shouldShowSlate, STUDIO_RECONNECT_HOLD_MS } from './relayResume.js';
 import {
   createTestWatchId,
@@ -666,16 +667,16 @@ function spawnRelay(
   const args = program ? createFfmpegPushArgs(destination) : createFfmpegArgs(destination, options);
   const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
   const onInputError = (err: Error) => {
-    console.warn(`ffmpeg ${destination.name} input closed: ${err.message}`);
+    console.warn(`ffmpeg ${relay.destination.name} input closed: ${err.message}`);
   };
   const backpressure = {
     maxBufferedBytes: bytesForSeconds(RELAY_INPUT_BACKLOG_SECONDS, options),
     onOverflow: () => {
-      console.warn(`RTMP relay ${destination.name} fell ${RELAY_INPUT_BACKLOG_SECONDS}s behind; skipping ahead to the live edge`);
+      console.warn(`RTMP relay ${relay.destination.name} fell ${RELAY_INPUT_BACKLOG_SECONDS}s behind; skipping ahead to the live edge`);
       sendJson(session.client, {
         type: 'destination-status',
         payload: {
-          destinationId: destination.id,
+          destinationId: relay.destination.id,
           status: 'live',
           message: 'Upload to this destination is falling behind; skipping ahead to stay live.',
         },
@@ -686,7 +687,7 @@ function spawnRelay(
       sendJson(session.client, {
         type: 'destination-status',
         payload: {
-          destinationId: destination.id,
+          destinationId: relay.destination.id,
           status: 'live',
           message: `Caught up: skipped about ${seconds}s to stay live.`,
         },
@@ -728,18 +729,18 @@ function spawnRelay(
 
   sendJson(session.client, {
     type: 'destination-status',
-    payload: { destinationId: destination.id, status: 'connecting' },
+    payload: { destinationId: relay.destination.id, status: 'connecting' },
   });
 
-  console.log(`RTMP relay starting for ${destination.name}: ${redactDestinationUrl(destination)}`);
+  console.log(`RTMP relay starting for ${relay.destination.name}: ${redactDestinationUrl(destination)}`);
 
   // What actually leaves the server for this platform, every ~2 s.
-  watchFfmpegStderr(child, session, destination.name, (progress) => {
+  watchFfmpegStderr(child, session, relay.destination.name, (progress) => {
     if (relay.exited || relay.retired || session.stopping || progress.ended) return;
     sendJson(session.client, {
       type: 'destination-stats',
       payload: {
-        destinationId: destination.id,
+        destinationId: relay.destination.id,
         bitrateKbps: roundStat(progress.bitrateKbps, 0),
         speed: roundStat(progress.speed),
         at: Date.now(),
@@ -752,7 +753,7 @@ function spawnRelay(
     if (relay.retired) return;
     sendJson(session.client, {
       type: 'destination-status',
-      payload: { destinationId: destination.id, status: 'error', message: err.message },
+      payload: { destinationId: relay.destination.id, status: 'error', message: err.message },
     });
   });
 
@@ -761,10 +762,10 @@ function spawnRelay(
     if (relay.confirmTimer) clearTimeout(relay.confirmTimer);
     relay.confirmTimer = null;
     if (relay.retired) return;
-    const timer = session.stopTimers.get(destination.id);
+    const timer = session.stopTimers.get(relay.destination.id);
     if (timer) {
       clearTimeout(timer);
-      session.stopTimers.delete(destination.id);
+      session.stopTimers.delete(relay.destination.id);
     }
 
     if (session.stopping) return;
@@ -774,46 +775,47 @@ function spawnRelay(
       : `FFmpeg exited with code ${code ?? 'unknown'}`;
 
     const attempts = getReconnectAttemptsAfterDrop(
-      session.restartAttempts.get(destination.id) || 0,
+      session.restartAttempts.get(relay.destination.id) || 0,
       relay.liveSinceMs,
       Date.now()
     );
     // A respawn that dies before its first Cluster was still a live destination.
     // A destination that has never held a connection (a wrong key or URL)
     // gets a short budget so the error shows quickly.
-    const maxAttempts = session.confirmedDestinations.has(destination.id)
+    const maxAttempts = session.confirmedDestinations.has(relay.destination.id)
       ? MAX_DESTINATION_RECONNECTS
       : MAX_UNCONFIRMED_DESTINATION_RECONNECTS;
     if ((relay.live || relay.joinedMidStream) && attempts < maxAttempts) {
       const nextAttempt = attempts + 1;
-      session.restartAttempts.set(destination.id, nextAttempt);
+      session.restartAttempts.set(relay.destination.id, nextAttempt);
       const delayMs = getDestinationReconnectDelayMs(nextAttempt);
       sendJson(session.client, {
         type: 'destination-status',
         payload: {
-          destinationId: destination.id,
+          destinationId: relay.destination.id,
           status: 'connecting',
           message: `Reconnecting (${nextAttempt}/${maxAttempts}) in ${Math.round(delayMs / 1000)} s`,
         },
       });
       const restartTimer = setTimeout(() => {
-        session.restartTimers.delete(destination.id);
+        session.restartTimers.delete(relay.destination.id);
         if (session.stopping) return;
-        spawnRelay(session, ffmpegPath, destination, payload);
+        // The studio may have returned under other ids meanwhile: read the current ones.
+        spawnRelay(session, ffmpegPath, relay.destination, session.payload ?? payload);
       }, delayMs);
-      session.restartTimers.set(destination.id, restartTimer);
+      session.restartTimers.set(relay.destination.id, restartTimer);
       return;
     }
 
-    console.warn(`RTMP relay ${destination.name} stopped: ${message}`);
+    console.warn(`RTMP relay ${relay.destination.name} stopped: ${message}`);
     sendJson(session.client, {
       type: 'destination-status',
       payload: {
-        destinationId: destination.id,
+        destinationId: relay.destination.id,
         status: 'error',
-        message: session.confirmedDestinations.has(destination.id)
-          ? `Lost the connection to ${destination.name} and could not reconnect. The other destinations are still live.`
-          : `Could not connect to ${destination.name}. Check the server URL and stream key, and that the platform is ready to receive.`,
+        message: session.confirmedDestinations.has(relay.destination.id)
+          ? `Lost the connection to ${relay.destination.name} and could not reconnect. The other destinations are still live.`
+          : `Could not connect to ${relay.destination.name}. Check the server URL and stream key, and that the platform is ready to receive.`,
       },
     });
     stopSessionIfNoRelayWork(session);
@@ -1289,6 +1291,11 @@ async function resumeSession(
   sessions.set(ws, held);
   held.client = ws;
   held.claims = claims;
+  // The returning studio names its destinations with ids of its own: from here
+  // on every record and every message of this broadcast uses those.
+  if (!rekeySessionDestinations(held, payload.destinations)) {
+    console.warn('Resume refused to re-key: the destination lists do not match');
+  }
   held.payload = payload;
   held.clientGone = false;
   held.lastMediaAtMs = Date.now();

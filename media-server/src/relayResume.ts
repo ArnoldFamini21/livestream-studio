@@ -1,4 +1,5 @@
 import type { RtmpRelayStartPayload } from '@studio/shared';
+import { destinationSetKey } from './relayRekey.js';
 import { getRelayVideoMode, normalizeAudioConfig, normalizeVideoConfig } from './rtmp.js';
 
 /**
@@ -13,23 +14,17 @@ export const STUDIO_INPUT_STALL_MS = 5_000;
 /** How long the broadcast waits on the slate for the studio to return. */
 export const STUDIO_RECONNECT_HOLD_MS = 3 * 60_000;
 
-function destinationKey(payload: RtmpRelayStartPayload): string {
-  return JSON.stringify(
-    payload.destinations
-      .map((destination) => [destination.id, destination.rtmpUrl, destination.streamKey])
-      .sort((a, b) => a[0].localeCompare(b[0]))
-  );
-}
-
 /**
  * A reconnecting studio may continue a running broadcast only with the same
- * destinations and the same output settings: the replacement encoder must
+ * places to stream to (the RTMP URL and stream key pairs, compared exactly,
+ * in any order; the studio's own destination ids are ignored, see
+ * relayRekey.ts) and the same output settings: the replacement encoder must
  * produce a stream the destinations can take without a restart.
  */
 export function isSameRelaySetup(running: RtmpRelayStartPayload, incoming: RtmpRelayStartPayload): boolean {
   // A test is never continued as a broadcast, nor a broadcast as a test.
   if (Boolean(running.test) !== Boolean(incoming.test)) return false;
-  if (destinationKey(running) !== destinationKey(incoming)) return false;
+  if (destinationSetKey(running.destinations) !== destinationSetKey(incoming.destinations)) return false;
   const videoA = normalizeVideoConfig(running.video);
   const videoB = normalizeVideoConfig(incoming.video);
   const audioA = normalizeAudioConfig(running.audio);
