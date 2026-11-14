@@ -5,6 +5,7 @@ import {
   seekStepToTime,
   timeToSeekStep,
 } from '../audio/mixControls.ts';
+import { getScrubReleaseSeek } from '../audio/scrubRelease.ts';
 import '../styles/mix-controls.css';
 
 export interface MusicTransportBarProps {
@@ -24,6 +25,8 @@ export interface MusicTransportBarProps {
 export function MusicTransportBar({ trackName, currentTime, duration, onSeek }: MusicTransportBarProps) {
   const [scrubStep, setScrubStep] = useState<number | null>(null);
   const pointerDown = useRef(false);
+  // The step the bar was moved to while the pointer is down; null when it has not moved.
+  const movedTo = useRef<number | null>(null);
   const view = getMusicTransportView({
     currentTime: scrubStep === null ? currentTime : seekStepToTime(scrubStep, duration),
     duration,
@@ -55,15 +58,18 @@ export function MusicTransportBar({ trackName, currentTime, duration, onSeek }: 
         value={step}
         aria-label={`Seek in ${trackName}`}
         aria-valuetext={view.valueText}
-        onPointerDown={() => { pointerDown.current = true; }}
-        onPointerUp={(event) => {
+        onPointerDown={() => { pointerDown.current = true; movedTo.current = null; }}
+        onPointerUp={() => {
           pointerDown.current = false;
-          commit(Number((event.target as HTMLInputElement).value));
+          const seconds = getScrubReleaseSeek(movedTo.current, duration);
+          movedTo.current = null;
+          if (seconds === null) setScrubStep(null);
+          else { onSeek(seconds); setScrubStep(null); }
         }}
-        onPointerCancel={() => { pointerDown.current = false; setScrubStep(null); }}
+        onPointerCancel={() => { pointerDown.current = false; movedTo.current = null; setScrubStep(null); }}
         onChange={(event) => {
           const value = Number(event.target.value);
-          if (pointerDown.current) setScrubStep(value);
+          if (pointerDown.current) { movedTo.current = value; setScrubStep(value); }
           else commit(value);
         }}
       />

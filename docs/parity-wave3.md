@@ -7,7 +7,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 
 - [x] **P0.1** Browser end-to-end qualification in Linux CI (PR #352 merged)
 - [ ] **P0.2** Three-participant recording soak (20+ minutes, reconnect, transfer, packet timing)
-- [ ] **P0.3** Free production error grouping, release tags, no PII
+- [x] **P0.3** Free production error grouping, release tags, no PII
 - [x] **P1.4** Configurable multistream destinations, health and presets (PR #360, verified locally; see below)
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
 - [x] **P1.6** Merged on-screen chat overlay, questions and export (PR #361, verified locally; see below)
