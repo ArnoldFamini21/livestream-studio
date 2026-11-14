@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { normalizeMediaServerHealthPayload } from '../src/utils/mediaServerHealth.ts';
+import {
+  buildInitialMediaServerHealth,
+  checkMediaServerHealth,
+  normalizeMediaServerHealthPayload,
+} from '../src/utils/mediaServerHealth.ts';
 import {
   INITIAL_HELD_WATCH_STATE,
   formatHeldCountdown,
+  getHeldBroadcastSupport,
   getHeldTestBlocker,
   heldWatchReducer,
   isHeldBroadcastSupported,
@@ -125,8 +130,64 @@ describe('isHeldBroadcastSupported', () => {
     assert.equal(isHeldBroadcastSupported({ status: 'ready', heldBroadcast: { ready: true, message: '' } }), true);
     assert.equal(isHeldBroadcastSupported({ status: 'ready' }), false);
     assert.equal(isHeldBroadcastSupported({ status: 'ready', heldBroadcast: { ready: false, message: '' } }), false);
-    assert.equal(isHeldBroadcastSupported({ status: 'unavailable', heldBroadcast: { ready: true, message: '' } }), false);
+    assert.equal(isHeldBroadcastSupported({ status: 'unavailable', heldBroadcast: { ready: false, message: '' } }), false);
     assert.equal(isHeldBroadcastSupported(null), false);
+    assert.equal(isHeldBroadcastSupported(undefined), false);
+  });
+
+  it('waits for the first health answer', () => {
+    assert.equal(isHeldBroadcastSupported(buildInitialMediaServerHealth('https://media.example.com')), false);
+    assert.equal(isHeldBroadcastSupported({ status: 'checking' }), false);
+  });
+
+  const check = (fetchImpl: () => Promise<Response>) => checkMediaServerHealth({
+    mediaHttpUrl: 'https://media.example.com',
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+  });
+
+  it('keeps asking through a health check that got no answer: a busy media server must not hide the banner', async () => {
+    const timedOut = await check(async () => { throw new DOMException('The operation was aborted.', 'AbortError'); });
+    assert.equal(timedOut.status, 'unavailable');
+    assert.equal(timedOut.heldBroadcast, undefined, 'a failed check carries no capabilities');
+    assert.equal(isHeldBroadcastSupported(timedOut), true);
+
+    const offline = await check(async () => { throw new TypeError('Failed to fetch'); });
+    assert.equal(isHeldBroadcastSupported(offline), true);
+
+    for (const status of [429, 500, 502, 503]) {
+      const busy = await check(async () => new Response('busy', { status }));
+      assert.equal(busy.status, 'unavailable');
+      assert.equal(isHeldBroadcastSupported(busy), true, `HTTP ${status}`);
+    }
+  });
+
+  it('does not ask a server that answered and is not a media server with the request', async () => {
+    const otherService = await check(async () => new Response(JSON.stringify({ status: 'ok', service: 'signaling-server' }), { status: 200 }));
+    assert.equal(otherService.status, 'unavailable');
+    assert.equal(isHeldBroadcastSupported(otherService), false);
+
+    const notOk = await check(async () => new Response(JSON.stringify({ status: 'starting', service: 'media-server' }), { status: 200 }));
+    assert.equal(isHeldBroadcastSupported(notOk), false);
+
+    const notFound = await check(async () => new Response('Not found', { status: 404 }));
+    assert.equal(notFound.status, 'unavailable');
+    assert.equal(isHeldBroadcastSupported(notFound), false);
+  });
+
+  it('a manual refresh keeps what was known while it checks', () => {
+    assert.equal(isHeldBroadcastSupported({ status: 'checking', heldBroadcast: { ready: true, message: '' } }), true);
+  });
+
+  it('tells an answer from an open question, so a health check that answers again can ask afresh', async () => {
+    assert.equal(getHeldBroadcastSupport({ status: 'ready', heldBroadcast: { ready: true, message: '' } }), 'yes');
+    assert.equal(getHeldBroadcastSupport({ status: 'ready' }), 'no');
+    assert.equal(getHeldBroadcastSupport({ status: 'checking' }), 'no');
+    assert.equal(getHeldBroadcastSupport(null), 'no');
+    const timedOut = await check(async () => { throw new DOMException('The operation was aborted.', 'AbortError'); });
+    assert.equal(getHeldBroadcastSupport(timedOut), 'open');
+    assert.equal(getHeldBroadcastSupport({ status: 'unavailable', httpStatus: 503 }), 'open');
+    assert.equal(getHeldBroadcastSupport({ status: 'unavailable', httpStatus: 200 }), 'no');
+    assert.equal(getHeldBroadcastSupport({ status: 'unavailable', httpStatus: 404 }), 'no');
   });
 });
 

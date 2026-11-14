@@ -46,6 +46,17 @@ Never a stream key, an RTMP URL or a destination id. Display names are cut to
 studio that meets an old media server during a deploy shows no banner and does
 not ask.
 
+The banner does not depend on every health check succeeding. A media server
+that answered its health check decides (with the capability: ask; without it:
+do not). A health check that got no answer at all (a timeout, no network) or a
+busy one (HTTP 429 or 5xx) leaves the question open, and the studio asks
+anyway: the media server is busiest exactly while a broadcast is on hold, the
+health check gives up after 4 seconds, and the host has only 3 minutes. An old
+media server answers "not found", which ends the asking. When the health check
+answers again after a failed one, the studio asks afresh (the retries of the
+first ask may have run out by then). The rule is `getHeldBroadcastSupport` in
+`client/src/utils/heldBroadcastState.ts` ('yes', 'open' or 'no').
+
 `STUDIO_RECONNECT_HOLD_SECONDS` (optional) can only shorten the hold, for local
 and automated checks. Unset, longer, zero or invalid values keep 3 minutes.
 
@@ -54,8 +65,11 @@ and automated checks. Unset, longer, zero or invalid values keep 3 minutes.
 - `client/src/utils/heldBroadcastState.ts`: reading the answer, the watch
   state (idle, held with a local countdown, ended), formatting, capability check.
 - `client/src/utils/heldBroadcastAsker.ts`: asks once, then about every 10 s
-  while a hold is reported; a failed ask retries only while a hold is known; a
-  media server that does not know the request (404/405) ends the asking.
+  while a hold is reported. A failed ask is retried: before any answer after 2,
+  4 and 8 seconds, and then the asking ends; while a hold is known every 10 s
+  for as long as the banner shows. One ask is given 8 seconds, so a request
+  that hangs is retried too. A media server that does not know the request
+  (404/405), or no media server address at all, ends the asking at once.
 - `client/src/utils/heldBroadcastBanner.ts`: what the banner shows
   (`decideHeldBanner`) and `getGoLiveBlocker`, the same rule the destinations
   panel uses for its Go Live button.

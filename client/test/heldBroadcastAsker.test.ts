@@ -94,13 +94,92 @@ describe('createHeldBroadcastAsker', () => {
     assert.equal(asked(), 1);
   });
 
-  it('a failed first ask is reported and not retried', async () => {
-    const { asker, timers, errors, asked } = setup([new Error('offline')]);
+  it('a failed first ask is retried after 2, 4 and 8 seconds, then the asking ends', async () => {
+    const { asker, timers, errors, seen, asked } = setup([new Error('offline')]);
     asker.start();
     await settle();
     assert.equal(errors.length, 1);
+    assert.equal(asker.running, true, 'still trying');
+    for (const delay of [2_000, 4_000, 8_000]) {
+      assert.deepEqual(timers.delays(), [delay]);
+      timers.fire();
+      await settle();
+    }
+    assert.equal(asked(), 4);
+    assert.equal(errors.length, 4);
+    assert.equal(timers.count(), 0, 'no fifth ask');
+    assert.equal(asker.running, false);
+    assert.equal(seen.length, 0);
+  });
+
+  it('a retry that gets an answer shows the hold and goes on asking every 10 seconds', async () => {
+    const { asker, timers, seen, asked } = setup([new Error('blip'), new Error('blip'), held, none]);
+    asker.start();
+    await settle();
+    timers.fire();
+    await settle();
+    timers.fire();
+    await settle();
+    assert.equal(asked(), 3);
+    assert.deepEqual(seen, [held]);
+    assert.deepEqual(timers.delays(), [10_000]);
+    timers.fire();
+    await settle();
+    assert.deepEqual(seen, [held, none]);
+    assert.equal(asker.running, false);
+  });
+
+  it('a retry that learns nothing is held ends the asking', async () => {
+    const { asker, timers, seen, asked } = setup([new Error('blip'), none]);
+    asker.start();
+    await settle();
+    timers.fire();
+    await settle();
+    assert.equal(asked(), 2);
+    assert.deepEqual(seen, [none]);
     assert.equal(timers.count(), 0);
+    assert.equal(asker.running, false);
+  });
+
+  it('an old media server is not retried', async () => {
+    const { asker, timers, errors, asked } = setup([new HeldBroadcastUnsupportedError()]);
+    asker.start();
+    await settle();
+    assert.equal(errors.length, 1);
     assert.equal(asked(), 1);
+    assert.equal(timers.count(), 0);
+    assert.equal(asker.running, false);
+  });
+
+  it('stop cancels a planned retry, and a new start gets the full set of retries again', async () => {
+    const { asker, timers, asked } = setup([new Error('offline')]);
+    asker.start();
+    await settle();
+    timers.fire();
+    await settle();
+    assert.deepEqual(timers.delays(), [4_000]);
+    asker.stop();
+    assert.equal(timers.count(), 0);
+    asker.start();
+    await settle();
+    assert.deepEqual(timers.delays(), [2_000], 'the count starts over');
+    assert.equal(asked(), 3);
+  });
+
+  it('retries can be switched off', async () => {
+    const timers = fakeTimers();
+    let asked = 0;
+    const asker = createHeldBroadcastAsker({
+      ask: async () => { asked += 1; throw new Error('offline'); },
+      onAnswer: () => {},
+      firstAskRetryDelaysMs: [],
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+    asker.start();
+    await settle();
+    assert.equal(asked, 1);
+    assert.equal(timers.count(), 0);
     assert.equal(asker.running, false);
   });
 
@@ -171,6 +250,49 @@ describe('fetchHeldBroadcast', () => {
   it('treats not found and a body that is not an answer as an old server', async () => {
     await assert.rejects(fetchHeldBroadcast({ roomId: 'r', token: 't', mediaHttpUrl: 'https://m', fetchImpl: respond(404, { error: 'Not found' }) }), HeldBroadcastUnsupportedError);
     await assert.rejects(fetchHeldBroadcast({ roomId: 'r', token: 't', mediaHttpUrl: 'https://m', fetchImpl: respond(200, { ok: true }) }), HeldBroadcastUnsupportedError);
+  });
+
+  it('gives up on a request that hangs, as an ordinary error that is retried', async () => {
+    let aborted = false;
+    const hanging = ((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      });
+    })) as unknown as typeof fetch;
+    await assert.rejects(
+      fetchHeldBroadcast({ roomId: 'r', token: 't', mediaHttpUrl: 'https://m', fetchImpl: hanging, timeoutMs: 20 }),
+      (error: unknown) => error instanceof Error && !(error instanceof HeldBroadcastUnsupportedError) && /in time/.test(error.message)
+    );
+    assert.equal(aborted, true, 'the request itself is cancelled');
+  });
+
+  it('a body that never finishes is a failed ask, not an old server', async () => {
+    const slowBody = (async (_url: string, init: RequestInit) => ({
+      status: 200,
+      ok: true,
+      json: () => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+      }),
+    })) as unknown as typeof fetch;
+    await assert.rejects(
+      fetchHeldBroadcast({ roomId: 'r', token: 't', mediaHttpUrl: 'https://m', fetchImpl: slowBody, timeoutMs: 20 }),
+      (error: unknown) => error instanceof Error && !(error instanceof HeldBroadcastUnsupportedError) && /in time/.test(error.message)
+    );
+  });
+
+  it('passes on a cancel from the caller', async () => {
+    const outer = new AbortController();
+    const waiting = ((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+    })) as unknown as typeof fetch;
+    const pending = fetchHeldBroadcast({ roomId: 'r', token: 't', mediaHttpUrl: 'https://m', fetchImpl: waiting, signal: outer.signal });
+    outer.abort();
+    await assert.rejects(pending, (error: unknown) => error instanceof DOMException && error.name === 'AbortError');
+  });
+
+  it('no media server address means nothing to ask, and no retry', async () => {
+    await assert.rejects(fetchHeldBroadcast({ roomId: 'r', token: 't', mediaHttpUrl: '  ' }), HeldBroadcastUnsupportedError);
   });
 
   it('reports a refusal as an ordinary error', async () => {

@@ -12,6 +12,12 @@ interface UseHeldBroadcastOptions {
   /** The signaling connection is up (asks again when it comes back). */
   connected: boolean;
   roomId: string | null;
+  /**
+   * A change of this value asks again. The studio passes what the media server's health check
+   * says about the request, so a check that answers after a failed one gets a fresh ask
+   * (the retries of the first ask may have run out by then).
+   */
+  askAgainKey?: string;
   requestToken: () => Promise<string>;
   /** For tests. */
   fetchHeld?: typeof fetchHeldBroadcast;
@@ -35,14 +41,15 @@ export function useHeldBroadcast(options: UseHeldBroadcastOptions): HeldBroadcas
   stateRef.current = state;
 
   const askerRef = useRef<HeldBroadcastAsker | null>(null);
-  const { active, connected, roomId } = options;
+  const { active, connected, roomId, askAgainKey } = options;
 
   // Nothing is shown to a guest, a co-host, a live host or on an old media server.
   useEffect(() => {
     if (!active) dispatch({ type: 'RESET' });
   }, [active]);
 
-  // Ask once, then every ~10 s while a hold is reported; stop on any change or unmount.
+  // Ask once (a failed ask is retried a few times), then every ~10 s while a hold is reported;
+  // stop on any change or unmount.
   useEffect(() => {
     if (!active || !connected || !roomId) return undefined;
     const asker = createHeldBroadcastAsker({
@@ -58,7 +65,7 @@ export function useHeldBroadcast(options: UseHeldBroadcastOptions): HeldBroadcas
       asker.stop();
       if (askerRef.current === asker) askerRef.current = null;
     };
-  }, [active, connected, roomId]);
+  }, [active, connected, roomId, askAgainKey]);
 
   // The countdown ran out before an answer said so: nothing is held, so stop asking.
   const ended = state.phase === 'ended';

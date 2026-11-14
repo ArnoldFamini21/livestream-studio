@@ -80,7 +80,7 @@ import { getTestStreamSupport } from '../utils/mediaServerHealth.ts';
 import { TEST_BANNER_LABEL } from '../utils/testStreamMachine.ts';
 import { useHeldBroadcast } from '../hooks/useHeldBroadcast.ts';
 import { decideHeldBanner, getGoLiveBlocker } from '../utils/heldBroadcastBanner.ts';
-import { getHeldTestBlocker, isHeldBroadcastSupported } from '../utils/heldBroadcastState.ts';
+import { getHeldBroadcastSupport, getHeldTestBlocker } from '../utils/heldBroadcastState.ts';
 import { HeldBroadcastBanner } from './HeldBroadcastBanner.tsx';
 import { isRelayOperationCancelled, RelayOperationSlot, startAuthorizedRelay } from '../utils/relayOperation.ts';
 import { useBroadcastAudioBus } from '../hooks/useBroadcastAudioBus.ts';
@@ -5227,8 +5227,12 @@ export function StudioRoom() {
   // After a crash or reload the broadcast may still be on the air on the slate: tell the host and offer Continue.
   // "Live" here means this page is sending it: after a quick reload the studio server may still say the room is live.
   const hostSendsBroadcast = isLive && (relayStats.status === 'connecting' || relayStats.status === 'live');
+  // A failed health check does not switch the asking off (a media server is busiest during a hold),
+  // and a health check that answers again asks afresh.
+  const heldSupport = getHeldBroadcastSupport(mediaServerHealth);
   const heldBroadcast = useHeldBroadcast({
-    active: isStudioHost && joined && !hostSendsBroadcast && isHeldBroadcastSupported(mediaServerHealth),
+    active: isStudioHost && joined && !hostSendsBroadcast && heldSupport !== 'no',
+    askAgainKey: heldSupport,
     connected,
     roomId: roomId || null,
     requestToken: requestLiveStreamToken,
