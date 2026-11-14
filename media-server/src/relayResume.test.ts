@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { RtmpRelayStartPayload } from '@studio/shared';
-import { isSameRelaySetup, shouldShowSlate, STUDIO_INPUT_STALL_MS } from './relayResume.js';
+import { getStudioReconnectHoldMs, isSameRelaySetup, shouldShowSlate, STUDIO_INPUT_STALL_MS, STUDIO_RECONNECT_HOLD_MS } from './relayResume.js';
 
 function payload(overrides: Partial<RtmpRelayStartPayload> = {}): RtmpRelayStartPayload {
   return {
@@ -76,5 +76,22 @@ describe('shouldShowSlate', () => {
   it('never before a destination is live, or twice', () => {
     assert.equal(shouldShowSlate({ ...base, nowMs: 60_000, hasLiveDestination: false }), false);
     assert.equal(shouldShowSlate({ ...base, nowMs: 60_000, slateOnAir: true }), false);
+  });
+});
+
+describe('getStudioReconnectHoldMs', () => {
+  it('keeps 3 minutes by default', () => {
+    assert.equal(getStudioReconnectHoldMs({}), 180_000);
+    assert.equal(STUDIO_RECONNECT_HOLD_MS, 180_000);
+  });
+
+  it('accepts a shorter whole number of seconds', () => {
+    assert.equal(getStudioReconnectHoldMs({ STUDIO_RECONNECT_HOLD_SECONDS: '12' }), 12_000);
+  });
+
+  it('ignores longer, zero, negative, fractional and invalid values', () => {
+    for (const value of ['180', '600', '0', '-5', '1.5', 'abc', '']) {
+      assert.equal(getStudioReconnectHoldMs({ STUDIO_RECONNECT_HOLD_SECONDS: value }), 180_000, value);
+    }
   });
 });

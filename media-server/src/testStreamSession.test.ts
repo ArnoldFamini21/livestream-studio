@@ -401,4 +401,55 @@ describe('a test start while the same room has a held broadcast', { skip: !ffmpe
     assert.match(output.slice(output.lastIndexOf('holding for')), /Live encoder starting for 1 destination\(s\): .* to 1280x720/);
     await other.stop();
   });
+
+  async function askHeld(roomId: string, bearer: string | null) {
+    const response = await fetch(`http://127.0.0.1:${port}/rtmp/held?roomId=${encodeURIComponent(roomId)}`, {
+      headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
+    });
+    const text = await response.text();
+    return { status: response.status, text, body: JSON.parse(text) as Record<string, unknown> };
+  }
+
+  it('tells the studio of the room its broadcast is on hold, with a countdown, and nothing secret', async () => {
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json() as { capabilities?: { heldBroadcast?: { ready?: boolean } } };
+    assert.equal(health.capabilities?.heldBroadcast?.ready, true, 'the capability is advertised');
+
+    const studio = await goLiveAndWaitForDestination(real);
+    const running = await askHeld('room-1', token());
+    assert.equal(running.status, 200);
+    assert.deepEqual(running.body, { held: false, state: 'broadcast' });
+
+    await closeAndWaitForHold(studio);
+    const held = await askHeld('room-1', token());
+    assert.equal(held.status, 200);
+    assert.equal(held.body.held, true);
+    assert.equal(held.body.state, 'held');
+    const secondsLeft = Number(held.body.secondsLeft);
+    assert.ok(secondsLeft > 150 && secondsLeft <= 180, `sensible countdown, got ${secondsLeft}`);
+    assert.deepEqual(held.body.destinations, [{ name: 'YouTube', connected: true }]);
+    // Nothing secret: no stream key, no RTMP address, no host, no destination id.
+    assert.doesNotMatch(held.text, /secret-key|rtmp|127\.0\.0\.1|"d1"|streamKey|token/i);
+
+    // Another room hears nothing of it, and a studio cannot ask about a room it has no token for.
+    assert.deepEqual((await askHeld('room-2', token('room-2'))).body, { held: false, state: 'none' });
+    const wrongRoom = await askHeld('room-1', token('room-2'));
+    assert.equal(wrongRoom.status, 403);
+    assert.equal(wrongRoom.body.held, undefined);
+    // A missing, broken or unsigned token is refused; so is a missing room.
+    assert.equal((await askHeld('room-1', null)).status, 401);
+    assert.equal((await askHeld('room-1', `${token()}x`)).status, 401);
+    assert.equal((await askHeld('room-1', 'not-a-token')).status, 401);
+    assert.equal((await askHeld('', token())).status, 400);
+
+    // The countdown moves, and a returning studio ends the hold.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const later = await askHeld('room-1', token());
+    assert.ok(Number(later.body.secondsLeft) < secondsLeft, 'the countdown went down');
+    const returned = await Relay.open(port);
+    returned.start(real);
+    await returned.next('session-started');
+    assert.deepEqual((await askHeld('room-1', token())).body, { held: false, state: 'broadcast' });
+    await returned.stop();
+    assert.deepEqual((await askHeld('room-1', token())).body, { held: false, state: 'none' });
+  });
 });
