@@ -14,8 +14,8 @@ interface UseHeldBroadcastOptions {
   roomId: string | null;
   /**
    * A change of this value asks again. The studio passes what the media server's health check
-   * says about the request, so a check that answers after a failed one gets a fresh ask
-   * (the retries of the first ask may have run out by then).
+   * says about the request, so a check that fails, or answers again after a failed one,
+   * gets a fresh ask.
    */
   askAgainKey?: string;
   requestToken: () => Promise<string>;
@@ -48,8 +48,8 @@ export function useHeldBroadcast(options: UseHeldBroadcastOptions): HeldBroadcas
     if (!active) dispatch({ type: 'RESET' });
   }, [active]);
 
-  // Ask once (a failed ask is retried a few times), then every ~10 s while a hold is reported;
-  // stop on any change or unmount.
+  // Ask once (a failed ask is retried for as long as a hold could last), then every ~10 s while
+  // a hold is reported; stop on any change or unmount.
   useEffect(() => {
     if (!active || !connected || !roomId) return undefined;
     const asker = createHeldBroadcastAsker({

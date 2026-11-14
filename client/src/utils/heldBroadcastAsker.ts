@@ -7,14 +7,20 @@ import { HELD_BROADCAST_ASK_INTERVAL_MS, parseHeldBroadcastAnswer, type HeldBroa
  *
  * A failed ask is tried again, because the returning host has at most three
  * minutes and the connection that dropped the broadcast is often still
- * unsteady. Before any answer, a failed ask is retried a few times, a few
- * seconds apart, and then the asking ends. While a hold is known the retries
- * go on every ~10 s (the countdown carries on locally meanwhile). An old media
- * server (route not found) ends the asking at once.
+ * unsteady. Before any answer, a failed ask is retried quickly at first and
+ * then every 30 s, for about three minutes in all, and then the asking ends:
+ * a hold that existed when the studio opened cannot outlast that. While a hold
+ * is known the retries go on every ~10 s (the countdown carries on locally
+ * meanwhile). An old media server (route not found) ends the asking at once.
  */
 
-/** The waits before each retry of an ask that failed before any hold was known. */
-export const HELD_BROADCAST_FIRST_ASK_RETRY_DELAYS_MS: readonly number[] = [2_000, 4_000, 8_000];
+/**
+ * The waits before each retry of an ask that failed before any hold was known.
+ * Together a little under three minutes, the longest a broadcast is held.
+ */
+export const HELD_BROADCAST_FIRST_ASK_RETRY_DELAYS_MS: readonly number[] = [
+  2_000, 4_000, 8_000, 15_000, 30_000, 30_000, 30_000, 30_000, 30_000,
+];
 
 /** One ask may take this long; a request that hangs counts as failed and is retried. */
 export const HELD_BROADCAST_ASK_TIMEOUT_MS = 8_000;
@@ -126,7 +132,7 @@ export function createHeldBroadcastAsker(options: HeldBroadcastAskerOptions): He
         timer = setTimer(() => { void askOnce(mine); }, intervalMs);
         return;
       }
-      // Nothing known yet: a few quick retries, then give up quietly.
+      // Nothing known yet: retry for as long as a hold could last, then give up quietly.
       const delay = firstAskRetryDelaysMs[failures];
       failures += 1;
       if (delay === undefined) {

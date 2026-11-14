@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  HELD_BROADCAST_FIRST_ASK_RETRY_DELAYS_MS,
   HeldBroadcastUnsupportedError,
   createHeldBroadcastAsker,
   fetchHeldBroadcast,
@@ -94,22 +95,55 @@ describe('createHeldBroadcastAsker', () => {
     assert.equal(asked(), 1);
   });
 
-  it('a failed first ask is retried after 2, 4 and 8 seconds, then the asking ends', async () => {
+  it('a failed first ask is retried quickly, then every 30 seconds, for about three minutes, and then the asking ends', async () => {
+    assert.deepEqual(HELD_BROADCAST_FIRST_ASK_RETRY_DELAYS_MS.slice(0, 4), [2_000, 4_000, 8_000, 15_000]);
+    assert.ok(HELD_BROADCAST_FIRST_ASK_RETRY_DELAYS_MS.slice(4).every((ms) => ms === 30_000));
+    const total = HELD_BROADCAST_FIRST_ASK_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
+    assert.ok(total >= 170_000 && total <= 180_000, `the retries span the 3 minutes a broadcast is held, got ${total}`);
+
     const { asker, timers, errors, seen, asked } = setup([new Error('offline')]);
     asker.start();
     await settle();
     assert.equal(errors.length, 1);
     assert.equal(asker.running, true, 'still trying');
-    for (const delay of [2_000, 4_000, 8_000]) {
+    for (const delay of HELD_BROADCAST_FIRST_ASK_RETRY_DELAYS_MS) {
       assert.deepEqual(timers.delays(), [delay]);
       timers.fire();
       await settle();
     }
-    assert.equal(asked(), 4);
-    assert.equal(errors.length, 4);
-    assert.equal(timers.count(), 0, 'no fifth ask');
+    assert.equal(asked(), HELD_BROADCAST_FIRST_ASK_RETRY_DELAYS_MS.length + 1);
+    assert.equal(errors.length, asked());
+    assert.equal(timers.count(), 0, 'no further ask');
     assert.equal(asker.running, false);
     assert.equal(seen.length, 0);
+  });
+
+  it('while a hold is shown, failures are retried every 10 seconds without a limit', async () => {
+    const { asker, timers, errors, asked } = setup([new Error('offline')]);
+    asker.start(true);
+    await settle();
+    for (let round = 1; round <= 12; round++) {
+      assert.deepEqual(timers.delays(), [10_000], `after failure ${round}`);
+      timers.fire();
+      await settle();
+    }
+    assert.equal(asked(), 13);
+    assert.equal(errors.length, 13);
+    assert.equal(asker.running, true);
+    asker.stop();
+    assert.equal(timers.count(), 0);
+  });
+
+  it('an old media server found on a retry ends the asking', async () => {
+    const { asker, timers, errors, asked } = setup([new Error('blip'), new HeldBroadcastUnsupportedError()]);
+    asker.start();
+    await settle();
+    timers.fire();
+    await settle();
+    assert.equal(asked(), 2);
+    assert.equal(errors.length, 2);
+    assert.equal(timers.count(), 0);
+    assert.equal(asker.running, false);
   });
 
   it('a retry that gets an answer shows the hold and goes on asking every 10 seconds', async () => {
@@ -279,6 +313,40 @@ describe('fetchHeldBroadcast', () => {
       fetchHeldBroadcast({ roomId: 'r', token: 't', mediaHttpUrl: 'https://m', fetchImpl: slowBody, timeoutMs: 20 }),
       (error: unknown) => error instanceof Error && !(error instanceof HeldBroadcastUnsupportedError) && /in time/.test(error.message)
     );
+  });
+
+  it('an answer in time is returned, and the time limit cancels nothing afterwards', async () => {
+    let inner: AbortSignal | null | undefined;
+    const answer = await fetchHeldBroadcast({
+      roomId: 'r',
+      token: 't',
+      mediaHttpUrl: 'https://m',
+      timeoutMs: 30,
+      fetchImpl: (async (_url: string, init: RequestInit) => {
+        inner = init.signal;
+        return new Response(JSON.stringify({ held: false, state: 'none' }));
+      }) as unknown as typeof fetch,
+    });
+    assert.equal(answer.held, false);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(inner?.aborted, false, 'the timer was cleared with the answer');
+  });
+
+  it('lets go of the caller signal once it is done', async () => {
+    const outer = new AbortController();
+    let inner: AbortSignal | null | undefined;
+    await fetchHeldBroadcast({
+      roomId: 'r',
+      token: 't',
+      mediaHttpUrl: 'https://m',
+      signal: outer.signal,
+      fetchImpl: (async (_url: string, init: RequestInit) => {
+        inner = init.signal;
+        return new Response(JSON.stringify({ held: false, state: 'none' }));
+      }) as unknown as typeof fetch,
+    });
+    outer.abort();
+    assert.equal(inner?.aborted, false, 'a later cancel from the caller does not reach the finished request');
   });
 
   it('passes on a cancel from the caller', async () => {

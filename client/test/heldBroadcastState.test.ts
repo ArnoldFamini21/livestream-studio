@@ -4,6 +4,7 @@ import {
   buildInitialMediaServerHealth,
   checkMediaServerHealth,
   normalizeMediaServerHealthPayload,
+  type MediaServerHealth,
 } from '../src/utils/mediaServerHealth.ts';
 import {
   INITIAL_HELD_WATCH_STATE,
@@ -11,7 +12,6 @@ import {
   getHeldBroadcastSupport,
   getHeldTestBlocker,
   heldWatchReducer,
-  isHeldBroadcastSupported,
   parseHeldBroadcastAnswer,
   type HeldBroadcastAnswer,
   type HeldWatchEvent,
@@ -115,79 +115,91 @@ describe('formatHeldCountdown', () => {
   });
 });
 
-describe('isHeldBroadcastSupported', () => {
-  it('reads the capability from /health, and an old media server has none', () => {
-    const input = { mediaHttpUrl: 'https://media.example.com', checkedAt: 1 };
-    const withIt = normalizeMediaServerHealthPayload(
-      { status: 'ok', service: 'media-server', capabilities: { heldBroadcast: { ready: true, message: 'ok' } } }, input
-    );
-    assert.equal(isHeldBroadcastSupported(withIt), true);
-    const old = normalizeMediaServerHealthPayload({ status: 'ok', service: 'media-server', capabilities: { testStream: { ready: true, message: 'ok' } } }, input);
-    assert.equal(isHeldBroadcastSupported(old), false);
-  });
-
-  it('needs a media server that advertises the request', () => {
-    assert.equal(isHeldBroadcastSupported({ status: 'ready', heldBroadcast: { ready: true, message: '' } }), true);
-    assert.equal(isHeldBroadcastSupported({ status: 'ready' }), false);
-    assert.equal(isHeldBroadcastSupported({ status: 'ready', heldBroadcast: { ready: false, message: '' } }), false);
-    assert.equal(isHeldBroadcastSupported({ status: 'unavailable', heldBroadcast: { ready: false, message: '' } }), false);
-    assert.equal(isHeldBroadcastSupported(null), false);
-    assert.equal(isHeldBroadcastSupported(undefined), false);
-  });
-
-  it('waits for the first health answer', () => {
-    assert.equal(isHeldBroadcastSupported(buildInitialMediaServerHealth('https://media.example.com')), false);
-    assert.equal(isHeldBroadcastSupported({ status: 'checking' }), false);
-  });
-
+describe('getHeldBroadcastSupport', () => {
+  const input = { mediaHttpUrl: 'https://media.example.com', checkedAt: 1, httpStatus: 200 };
+  const ready = normalizeMediaServerHealthPayload(
+    { status: 'ok', service: 'media-server', capabilities: { heldBroadcast: { ready: true, message: 'ok' } } }, input
+  );
+  const old = normalizeMediaServerHealthPayload(
+    { status: 'ok', service: 'media-server', capabilities: { testStream: { ready: true, message: 'ok' } } }, input
+  );
   const check = (fetchImpl: () => Promise<Response>) => checkMediaServerHealth({
     mediaHttpUrl: 'https://media.example.com',
     fetchImpl: fetchImpl as unknown as typeof fetch,
   });
+  const timeout = () => check(async () => { throw new DOMException('The operation was aborted.', 'AbortError'); });
+  const otherService = () => check(async () => new Response(JSON.stringify({ status: 'ok', service: 'signaling-server' }), { status: 200 }));
+  /** What useMediaServerHealth.refresh shows while a manual check runs: the last record, marked as checking. */
+  const whileRechecking = (health: MediaServerHealth): MediaServerHealth => ({
+    ...health,
+    status: 'checking',
+    message: 'Checking media-server readiness...',
+  });
 
-  it('keeps asking through a health check that got no answer: a busy media server must not hide the banner', async () => {
-    const timedOut = await check(async () => { throw new DOMException('The operation was aborted.', 'AbortError'); });
+  it('reads the capability from /health, and an old media server has none', () => {
+    assert.equal(ready.status, 'ready');
+    assert.equal(getHeldBroadcastSupport(ready), 'yes');
+    assert.equal(old.status, 'ready');
+    assert.equal(getHeldBroadcastSupport(old), 'no');
+  });
+
+  it('needs a media server that advertises the request', () => {
+    assert.equal(getHeldBroadcastSupport({ status: 'ready', heldBroadcast: { ready: true, message: '' } }), 'yes');
+    assert.equal(getHeldBroadcastSupport({ status: 'ready' }), 'no');
+    assert.equal(getHeldBroadcastSupport({ status: 'ready', heldBroadcast: { ready: false, message: '' } }), 'no');
+    assert.equal(getHeldBroadcastSupport({ status: 'unavailable', heldBroadcast: { ready: false, message: '' } }), 'no');
+    assert.equal(getHeldBroadcastSupport(null), 'no');
+    assert.equal(getHeldBroadcastSupport(undefined), 'no');
+  });
+
+  it('waits for the first health answer', () => {
+    assert.equal(getHeldBroadcastSupport(buildInitialMediaServerHealth('https://media.example.com')), 'no');
+    assert.equal(getHeldBroadcastSupport({ status: 'checking' }), 'no');
+    assert.equal(getHeldBroadcastSupport({ status: 'checking', checkedAt: null }), 'no');
+  });
+
+  it('leaves the question open after a health check that got no answer: a busy media server must not hide the banner', async () => {
+    const timedOut = await timeout();
     assert.equal(timedOut.status, 'unavailable');
     assert.equal(timedOut.heldBroadcast, undefined, 'a failed check carries no capabilities');
-    assert.equal(isHeldBroadcastSupported(timedOut), true);
+    assert.equal(getHeldBroadcastSupport(timedOut), 'open');
 
     const offline = await check(async () => { throw new TypeError('Failed to fetch'); });
-    assert.equal(isHeldBroadcastSupported(offline), true);
+    assert.equal(getHeldBroadcastSupport(offline), 'open');
 
     for (const status of [429, 500, 502, 503]) {
       const busy = await check(async () => new Response('busy', { status }));
       assert.equal(busy.status, 'unavailable');
-      assert.equal(isHeldBroadcastSupported(busy), true, `HTTP ${status}`);
+      assert.equal(getHeldBroadcastSupport(busy), 'open', `HTTP ${status}`);
     }
+    assert.equal(getHeldBroadcastSupport({ status: 'unavailable', httpStatus: 503 }), 'open');
   });
 
-  it('does not ask a server that answered and is not a media server with the request', async () => {
-    const otherService = await check(async () => new Response(JSON.stringify({ status: 'ok', service: 'signaling-server' }), { status: 200 }));
-    assert.equal(otherService.status, 'unavailable');
-    assert.equal(isHeldBroadcastSupported(otherService), false);
+  it('says no for a server that answered and is not a media server with the request', async () => {
+    const other = await otherService();
+    assert.equal(other.status, 'unavailable');
+    assert.equal(getHeldBroadcastSupport(other), 'no');
 
     const notOk = await check(async () => new Response(JSON.stringify({ status: 'starting', service: 'media-server' }), { status: 200 }));
-    assert.equal(isHeldBroadcastSupported(notOk), false);
+    assert.equal(getHeldBroadcastSupport(notOk), 'no');
 
     const notFound = await check(async () => new Response('Not found', { status: 404 }));
     assert.equal(notFound.status, 'unavailable');
-    assert.equal(isHeldBroadcastSupported(notFound), false);
-  });
-
-  it('a manual refresh keeps what was known while it checks', () => {
-    assert.equal(isHeldBroadcastSupported({ status: 'checking', heldBroadcast: { ready: true, message: '' } }), true);
-  });
-
-  it('tells an answer from an open question, so a health check that answers again can ask afresh', async () => {
-    assert.equal(getHeldBroadcastSupport({ status: 'ready', heldBroadcast: { ready: true, message: '' } }), 'yes');
-    assert.equal(getHeldBroadcastSupport({ status: 'ready' }), 'no');
-    assert.equal(getHeldBroadcastSupport({ status: 'checking' }), 'no');
-    assert.equal(getHeldBroadcastSupport(null), 'no');
-    const timedOut = await check(async () => { throw new DOMException('The operation was aborted.', 'AbortError'); });
-    assert.equal(getHeldBroadcastSupport(timedOut), 'open');
-    assert.equal(getHeldBroadcastSupport({ status: 'unavailable', httpStatus: 503 }), 'open');
+    assert.equal(getHeldBroadcastSupport(notFound), 'no');
     assert.equal(getHeldBroadcastSupport({ status: 'unavailable', httpStatus: 200 }), 'no');
-    assert.equal(getHeldBroadcastSupport({ status: 'unavailable', httpStatus: 404 }), 'no');
+  });
+
+  it('a manual re-check does not change the answer while it runs', async () => {
+    // From a ready answer the capability is kept.
+    assert.equal(getHeldBroadcastSupport(whileRechecking(ready)), 'yes');
+    // From an old media server: still no.
+    assert.equal(getHeldBroadcastSupport(whileRechecking(old)), 'no');
+    // From a check that got no answer: still open, so the banner stays through the re-check.
+    assert.equal(getHeldBroadcastSupport(whileRechecking(await timeout())), 'open');
+    const busy = await check(async () => new Response('busy', { status: 503 }));
+    assert.equal(getHeldBroadcastSupport(whileRechecking(busy)), 'open');
+    // From an answer that was not a media server: still no.
+    assert.equal(getHeldBroadcastSupport(whileRechecking(await otherService())), 'no');
   });
 });
 
