@@ -87,9 +87,38 @@ export function formatHeldCountdown(totalSeconds: number): string {
   return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
 }
 
-/** An old media server (during a deploy) does not advertise the request: no banner, no asking. */
-export function isHeldBroadcastSupported(health: Pick<MediaServerHealth, 'status' | 'heldBroadcast'> | null | undefined): boolean {
-  return Boolean(health && health.status !== 'unavailable' && health.heldBroadcast?.ready === true);
+/**
+ * What the media server's health check says about the held-broadcast request:
+ * 'yes' (it advertises it), 'no' (it answered without it, or nothing is known
+ * yet), or 'open' (the check got no answer, or only a "busy" one).
+ */
+export type HeldBroadcastSupport = 'yes' | 'open' | 'no';
+
+/**
+ * Whether the studio should ask the media server about a broadcast on hold:
+ * it asks for 'yes' and for 'open', and not for 'no'.
+ *
+ * A media server that answered its health check decides: with the capability
+ * it is asked, without it (an old media server, met during a deploy) it is
+ * not. A health check that got no answer, or only a "busy" one, says nothing
+ * either way. A broadcast on hold is exactly when the media server is busiest,
+ * and one slow health check must not hide the banner from a host who has three
+ * minutes, so the studio asks anyway ('open'). Before the first health answer
+ * the studio waits ('no'). A manual re-check (the Check button) keeps the last
+ * record while it runs, so it does not change the answer.
+ */
+export function getHeldBroadcastSupport(
+  health: (Pick<MediaServerHealth, 'status' | 'heldBroadcast' | 'httpStatus'> & Partial<Pick<MediaServerHealth, 'checkedAt'>>) | null | undefined
+): HeldBroadcastSupport {
+  if (!health) return 'no';
+  if (health.heldBroadcast) return health.heldBroadcast.ready === true ? 'yes' : 'no';
+  // The media server answered and did not list the request: an old one.
+  if (health.status === 'ready') return 'no';
+  // Nothing was checked yet. (A re-check keeps the last record and its time, and falls through.)
+  if (health.status === 'checking' && health.checkedAt == null) return 'no';
+  // A failed check, or a re-check of one. No answer at all (a timeout, no network) or a busy
+  // answer leaves the question open; any other answer came from something that cannot be asked.
+  return health.httpStatus === undefined || health.httpStatus === 429 || health.httpStatus >= 500 ? 'open' : 'no';
 }
 
 /** The one line shown under "Test stream (private)" while a hold is reported; null when a test may run. */

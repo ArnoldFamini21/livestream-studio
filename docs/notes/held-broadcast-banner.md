@@ -46,16 +46,36 @@ Never a stream key, an RTMP URL or a destination id. Display names are cut to
 studio that meets an old media server during a deploy shows no banner and does
 not ask.
 
+The banner does not depend on every health check succeeding. A media server
+that answered its health check decides (with the capability: ask; without it:
+do not). A health check that got no answer at all (a timeout, no network) or a
+busy one (HTTP 429 or 5xx) leaves the question open, and the studio asks
+anyway: the media server is busiest exactly while a broadcast is on hold, the
+health check gives up after 4 seconds, and the host has only 3 minutes. Each
+time that answer changes (a check fails, or answers again after a failed one)
+the studio asks afresh. A manual re-check (the Check button) keeps the answer
+while it runs. An old media server met with the question still open answers
+"not found", which ends the asking; in a browser that answer can also arrive as
+a failed request (it carries no CORS headers), and then the retries run out.
+The rule is `getHeldBroadcastSupport` in
+`client/src/utils/heldBroadcastState.ts` ('yes', 'open' or 'no').
+
 `STUDIO_RECONNECT_HOLD_SECONDS` (optional) can only shorten the hold, for local
 and automated checks. Unset, longer, zero or invalid values keep 3 minutes.
 
 ## Studio
 
 - `client/src/utils/heldBroadcastState.ts`: reading the answer, the watch
-  state (idle, held with a local countdown, ended), formatting, capability check.
+  state (idle, held with a local countdown, ended), formatting, and what the
+  health check says about the request (getHeldBroadcastSupport).
 - `client/src/utils/heldBroadcastAsker.ts`: asks once, then about every 10 s
-  while a hold is reported; a failed ask retries only while a hold is known; a
-  media server that does not know the request (404/405) ends the asking.
+  while a hold is reported. A failed ask is retried: before any answer after 2,
+  4, 8 and 15 seconds and then every 30 seconds, for about three minutes in all
+  (a hold that existed when the studio opened cannot outlast that), and then
+  the asking ends; while a hold is known every 10 s for as long as the banner
+  shows. One ask is given 8 seconds, so a request that hangs is retried too. A
+  media server that does not know the request (404/405), or no media server
+  address at all, ends the asking at once.
 - `client/src/utils/heldBroadcastBanner.ts`: what the banner shows
   (`decideHeldBanner`) and `getGoLiveBlocker`, the same rule the destinations
   panel uses for its Go Live button.
