@@ -8,6 +8,13 @@ import {
   MUSIC_DUCKING_GAIN,
   MUSIC_DUCKING_RELEASE_SECONDS,
 } from '../utils/audioDucking.ts';
+import {
+  checkProgramAudioClock,
+  restoreAudioOutputClock,
+  type AudioClockDeps,
+  type ClockedAudioContext,
+  type ProgramAudioCheck,
+} from '../audio/programAudioClock.ts';
 
 /**
  * The studio's media bus: sound effects, background music and clip audio.
@@ -26,6 +33,21 @@ export interface BroadcastAudioBus {
   connectOutput: (target: AudioNode) => () => void;
   /** Lower (or restore) music and clip audio routed with `duck: true`. */
   setMusicDucked: (ducked: boolean) => void;
+  /**
+   * True while the studio's audio context has no sound device (see
+   * checkProgramAudio). The host then does not hear effects, music or clips
+   * on this computer; the broadcast and the guests still get them.
+   */
+  soundOutputOff: boolean;
+  /**
+   * Is the audio clock moving? Resumes the context if needed, looks at the
+   * clock for about 1.2 s. If it is stuck, takes the sound device away from
+   * the context (Chrome setSinkId none), which runs it on a timer, and looks
+   * again. Takes about 3 s at most and never throws.
+   */
+  checkProgramAudio: () => Promise<ProgramAudioCheck>;
+  /** Give the sound device back. True when the sound is on again; false when it stays off. */
+  restoreAudioOutput: () => Promise<boolean>;
 }
 
 interface BusNodes {
@@ -72,16 +94,34 @@ function resumeIfNeeded(context: AudioContext | null | undefined) {
   });
 }
 
-export function useBroadcastAudioBus(): BroadcastAudioBus {
+const REAL_CLOCK_DEPS: AudioClockDeps = {
+  sleep: (ms) => new Promise((resolve) => { window.setTimeout(resolve, ms); }),
+  now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+};
+
+export function useBroadcastAudioBus(clockDeps: AudioClockDeps = REAL_CLOCK_DEPS): BroadcastAudioBus {
   const nodesRef = useRef<BusNodes | null>(null);
   const duckedRef = useRef(false);
   const [active, setActive] = useState(false);
+  const outputOffRef = useRef(false);
+  const [soundOutputOff, setSoundOutputOffState] = useState(false);
+  // One check or restore at a time: each one moves the audio clock and the sound device.
+  const clockQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const clockDepsRef = useRef(clockDeps);
+  clockDepsRef.current = clockDeps;
+
+  const setSoundOutputOff = useCallback((off: boolean) => {
+    outputOffRef.current = off;
+    setSoundOutputOffState(off);
+  }, []);
 
   const getNodes = useCallback((): BusNodes => {
     const existing = nodesRef.current;
     if (existing && existing.context.state !== 'closed') return existing;
 
     const context = createAudioContext();
+    // A new context starts on the default sound device.
+    if (outputOffRef.current) setSoundOutputOff(false);
     const streamMix = context.createGain();
     const duckedStream = context.createGain();
     const monitorMix = context.createGain();
@@ -99,7 +139,7 @@ export function useBroadcastAudioBus(): BroadcastAudioBus {
     const nodes = { context, streamMix, duckedStream, monitorMix, duckedMonitor };
     nodesRef.current = nodes;
     return nodes;
-  }, []);
+  }, [setSoundOutputOff]);
 
   const getContext = useCallback(() => {
     const { context } = getNodes();
@@ -152,6 +192,39 @@ export function useBroadcastAudioBus(): BroadcastAudioBus {
     }
   }, []);
 
+  const runClockJob = useCallback(<T,>(job: () => Promise<T>): Promise<T> => {
+    const run = clockQueueRef.current.then(job, job);
+    clockQueueRef.current = run.catch(() => undefined);
+    return run;
+  }, []);
+
+  const checkProgramAudio = useCallback((): Promise<ProgramAudioCheck> => runClockJob(async () => {
+    try {
+      const { context } = getNodes();
+      const result = await checkProgramAudioClock(context as unknown as ClockedAudioContext, clockDepsRef.current);
+      if (result.outputOff && nodesRef.current?.context === context) setSoundOutputOff(true);
+      return { state: result.state };
+    } catch {
+      return { state: 'running' as const };
+    }
+  }), [getNodes, runClockJob, setSoundOutputOff]);
+
+  const restoreAudioOutput = useCallback((): Promise<boolean> => runClockJob(async () => {
+    try {
+      if (!outputOffRef.current) return true;
+      const nodes = nodesRef.current;
+      if (!nodes || nodes.context.state === 'closed') {
+        setSoundOutputOff(false);
+        return true;
+      }
+      const result = await restoreAudioOutputClock(nodes.context as unknown as ClockedAudioContext, clockDepsRef.current);
+      if (nodesRef.current === nodes) setSoundOutputOff(result.outputOff);
+      return result.restored;
+    } catch {
+      return false;
+    }
+  }), [runClockJob, setSoundOutputOff]);
+
   // Autoplay rules can leave the context suspended (it may be created after an
   // await, outside the click). Resume on the next gesture and when the tab
   // becomes visible again; a running context keeps going while hidden.
@@ -183,7 +256,7 @@ export function useBroadcastAudioBus(): BroadcastAudioBus {
   }, []);
 
   return useMemo(
-    () => ({ active, getContext, connectNode, connectOutput, setMusicDucked }),
-    [active, connectNode, connectOutput, getContext, setMusicDucked]
+    () => ({ active, getContext, connectNode, connectOutput, setMusicDucked, soundOutputOff, checkProgramAudio, restoreAudioOutput }),
+    [active, checkProgramAudio, connectNode, connectOutput, getContext, restoreAudioOutput, setMusicDucked, soundOutputOff]
   );
 }

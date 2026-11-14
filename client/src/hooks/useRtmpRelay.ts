@@ -46,6 +46,21 @@ import {
   startAuthorizedRelay,
   watchRelayStartup,
 } from '../utils/relayOperation.ts';
+import {
+  decideRelayMediaAction,
+  decideRelayMediaWatch,
+  getMediaRestartsInARow,
+  RELAY_MEDIA_WATCH_POLL_MS,
+  type RelayMediaStallKind,
+} from '../utils/relayMediaWatch.ts';
+import type { ProgramAudioCheck, ProgramAudioState } from '../audio/programAudioClock.ts';
+
+/** The media watchdog found the recorder silent and is restarting the broadcast. */
+export interface RelayMediaRestartEvent {
+  kind: RelayMediaStallKind;
+  /** "sound-output-recovered": the studio switched its sound output off to get the audio clock moving. */
+  cause: 'plain' | 'sound-output-recovered';
+}
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -58,6 +73,14 @@ interface UseRtmpRelayOptions {
   readinessEnabled?: boolean;
   onDestinationStatus: (destinationId: string, status: RtmpRelayDestinationStatus, message?: string) => void;
   onRelayStopped?: (message: string) => void;
+  /**
+   * Asked when the media watchdog fires, before it restarts or ends the relay:
+   * is the program audio clock running? It may recover it. Without it the
+   * watchdog just restarts the broadcast.
+   */
+  checkProgramAudio?: () => Promise<ProgramAudioCheck>;
+  /** The watchdog is restarting the broadcast (the host should be told). */
+  onMediaRestart?: (event: RelayMediaRestartEvent) => void;
 }
 
 interface StartRelayOptions {
@@ -103,6 +126,11 @@ export interface RtmpRelayStats {
   testOutputWatchId: string | null;
   /** Test only: loudest level (dBFS) of the program mix in the last seconds. */
   audioPeakDb: number | null;
+  /**
+   * Set when the media watchdog fires (the browser's recorder is not producing
+   * the broadcast); cleared by the next chunk the recorder produces.
+   */
+  mediaStall: { since: number; kind: RelayMediaStallKind } | null;
 }
 
 export interface RtmpRelayReadiness {
@@ -143,6 +171,7 @@ const INITIAL_RELAY_STATS: RtmpRelayStats = {
   uploadVideo: null,
   testOutputWatchId: null,
   audioPeakDb: null,
+  mediaStall: null,
 };
 
 const BITRATE_WINDOW_MS = 5_000;
@@ -241,8 +270,17 @@ export function useRtmpRelay({
   readinessEnabled = true,
   onDestinationStatus,
   onRelayStopped,
+  checkProgramAudio,
+  onMediaRestart,
 }: UseRtmpRelayOptions) {
   const wsRef = useRef<WebSocket | null>(null);
+  // The media watchdog's single timer (one transport at a time) and its restart count.
+  const mediaWatchTimerRef = useRef<number | null>(null);
+  const mediaRestartsRef = useRef(0);
+  const checkProgramAudioRef = useRef(checkProgramAudio);
+  checkProgramAudioRef.current = checkProgramAudio;
+  const onMediaRestartRef = useRef(onMediaRestart);
+  onMediaRestartRef.current = onMediaRestart;
   const recorderRef = useRef<MediaRecorder | null>(null);
   const mixerRef = useRef<MixerResources | null>(null);
   const activeDestinationIdsRef = useRef<string[]>([]);
@@ -374,8 +412,16 @@ export function useRtmpRelay({
     heartbeatTimerRef.current = window.setInterval(sendHeartbeat, RELAY_HEARTBEAT_INTERVAL_MS);
   }, [clearHeartbeatTimer]);
 
+  const clearMediaWatchTimer = useCallback(() => {
+    if (mediaWatchTimerRef.current !== null) {
+      window.clearInterval(mediaWatchTimerRef.current);
+      mediaWatchTimerRef.current = null;
+    }
+  }, []);
+
   const stopActiveRelayTransport = useCallback((sendStop: boolean) => {
     clearHeartbeatTimer();
+    clearMediaWatchTimer();
     audioProbeRef.current?.stop();
     audioProbeRef.current = null;
     const recorder = recorderRef.current;
@@ -405,7 +451,7 @@ export function useRtmpRelay({
 
     cleanupMixer(mixerRef.current);
     mixerRef.current = null;
-  }, [clearHeartbeatTimer]);
+  }, [clearHeartbeatTimer, clearMediaWatchTimer]);
 
   const cleanup = useCallback((status: RtmpRelayStats['status'] = 'idle') => {
     relayOperationRef.current.cancel();
@@ -413,6 +459,7 @@ export function useRtmpRelay({
     stopActiveRelayTransport(true);
     activeDestinationIdsRef.current = [];
     reconnectAttemptsRef.current = 0;
+    mediaRestartsRef.current = 0;
     resetStats(status);
   }, [clearReconnectTimer, resetStats, stopActiveRelayTransport]);
 
@@ -517,6 +564,7 @@ export function useRtmpRelay({
       activeDestinationIdsRef.current = destinations.map((destination) => destination.id);
       intentionalStopRef.current = false;
       reconnectAttemptsRef.current = 0;
+      mediaRestartsRef.current = 0;
       setBackupRecording(null);
       audioPeakRef.current.reset();
       resetStats('connecting');
@@ -668,6 +716,89 @@ export function useRtmpRelay({
             }
           };
 
+          // Restart this transport at once (the media watchdog's way back): the
+          // same reconnect path, without waiting and without using up the
+          // reconnect attempts that socket drops and slow uplinks share.
+          const restartTransport = (message: string) => {
+            if (!isCurrentTransport() || intentionalStopRef.current || finalStopReported) return;
+            stopActiveRelayTransport(false);
+            activeDestinationIdsRef.current.forEach((id) => {
+              onDestinationStatus(id, 'connecting', message);
+            });
+            setStats((current) => ({ ...current, status: 'connecting', updatedAt: Date.now() }));
+            reconnectNow();
+          };
+
+          // The media watchdog: one per transport, started with its recorder. It
+          // looks at when the recorder last PRODUCED a chunk (not when one was
+          // sent: a slow uplink is the backlog rule's business).
+          let recorderStartedAt: number | null = null;
+          let firstChunkProducedAt: number | null = null;
+          let lastChunkProducedAt: number | null = null;
+          let mediaStallHandling = false;
+
+          const noteChunkProduced = () => {
+            const at = Date.now();
+            firstChunkProducedAt ??= at;
+            lastChunkProducedAt = at;
+            setStats((current) => (current.mediaStall ? { ...current, mediaStall: null, updatedAt: at } : current));
+          };
+
+          const handleMediaStall = async (kind: RelayMediaStallKind, firedAt: number) => {
+            setStats((current) => ({ ...current, mediaStall: { since: firedAt, kind }, updatedAt: Date.now() }));
+            let audio: ProgramAudioState | null = null;
+            const askAudio = checkProgramAudioRef.current;
+            if (askAudio) {
+              try {
+                audio = (await askAudio()).state;
+              } catch {
+                audio = null;
+              }
+            }
+            // The check takes seconds; the relay may have moved on meanwhile.
+            if (!isCurrentTransport() || intentionalStopRef.current || finalStopReported) return;
+
+            const decision = decideRelayMediaAction({
+              kind,
+              audio,
+              restartsInARow: getMediaRestartsInARow({
+                restarts: mediaRestartsRef.current,
+                firstChunkProducedAtMs: firstChunkProducedAt,
+                lastChunkProducedAtMs: lastChunkProducedAt,
+              }),
+            });
+            if (decision.action === 'end') {
+              reportClientError('stream', `Live relay ended by the media watchdog (${kind}, ${decision.reason}).`);
+              reportFinalStop(decision.message);
+              return;
+            }
+            mediaRestartsRef.current = decision.restartsInARow;
+            onMediaRestartRef.current?.({ kind, cause: decision.cause });
+            restartTransport(decision.message);
+          };
+
+          const watchMedia = () => {
+            const now = Date.now();
+            const verdict = decideRelayMediaWatch({
+              nowMs: now,
+              recorderStartedAtMs: recorderStartedAt,
+              lastChunkProducedAtMs: lastChunkProducedAt,
+              sessionStarted: started,
+              stoppingOnPurpose: intentionalStopRef.current || finalStopReported,
+              reconnectWaiting: reconnectTimerRef.current !== null,
+              transportCurrent: isCurrentTransport(),
+            });
+            if (verdict === 'fine' || mediaStallHandling) return;
+            mediaStallHandling = true;
+            clearMediaWatchTimer();
+            void handleMediaStall(verdict, now);
+          };
+
+          const startMediaWatch = () => {
+            clearMediaWatchTimer();
+            mediaWatchTimerRef.current = window.setInterval(watchMedia, RELAY_MEDIA_WATCH_POLL_MS);
+          };
+
           let backlogReconnectRequested = false;
           const startRecorder = () => {
             const estimatedFramesPerChunk = estimateDroppedFrames(
@@ -682,6 +813,7 @@ export function useRtmpRelay({
 
             recorder.ondataavailable = (event) => {
               if (!isCurrentTransport() || event.data.size === 0) return;
+              noteChunkProduced();
               if (ws.readyState !== WebSocket.OPEN) {
                 markDroppedChunk(estimatedFramesPerChunk);
                 return;
@@ -720,6 +852,7 @@ export function useRtmpRelay({
               });
             };
 
+            recorderStartedAt = Date.now();
             recorder.start(RELAY_RECORDER_TIMESLICE_MS);
           };
 
@@ -767,6 +900,7 @@ export function useRtmpRelay({
               }
               startHeartbeatTimer(ws);
               startRecorder();
+              startMediaWatch();
               resolve();
               return;
             }
@@ -870,7 +1004,7 @@ export function useRtmpRelay({
         throw error;
       }
     },
-    [acquireProgramAudio, cleanup, clearReconnectTimer, compositeStreamRef, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, resetStats, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
+    [acquireProgramAudio, cleanup, clearMediaWatchTimer, clearReconnectTimer, compositeStreamRef, markChunkSent, markDroppedChunk, markRelayLatency, onDestinationStatus, onRelayStopped, resetStats, setRelayStatus, startHeartbeatTimer, stopActiveRelayTransport]
   );
 
   useEffect(() => {
