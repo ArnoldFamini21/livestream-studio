@@ -74,6 +74,8 @@ import { mergeCaptionSegments, selectBroadcastCaption } from '../utils/captionMe
 import { GuestCaptionShare } from './GuestCaptionShare.tsx';
 import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
+import { useRelaySoundGuard, useRestoreSoundWhenRelayEnds } from '../hooks/useRelaySoundGuard.ts';
+import { SoundOutputOffNotice } from './SoundOutputOffNotice.tsx';
 import { useTestStream } from '../hooks/useTestStream.ts';
 import { shouldReannounceTest } from '../utils/testStreamReannounce.ts';
 import { getTestStreamSupport } from '../utils/mediaServerHealth.ts';
@@ -2127,6 +2129,8 @@ export function StudioRoom() {
     )));
   }, [send, showLiveSessionSummary]);
 
+  // When the browser stops producing the broadcast: the sound check, the notices and the "Turn sound back on" marker.
+  const soundGuard = useRelaySoundGuard({ bus: broadcastAudioBus, addToast });
   const {
     startRelay,
     stopRelay,
@@ -2140,7 +2144,10 @@ export function StudioRoom() {
     readinessEnabled: canUseOperatorControls,
     onDestinationStatus: handleRelayDestinationStatus,
     onRelayStopped: (message) => { if (!testRelayStoppedRef.current?.(message)) handleRelayStopped(message); },
+    checkProgramAudio: soundGuard.checkProgramAudio,
+    onMediaRestart: soundGuard.onMediaRestart,
   });
+  useRestoreSoundWhenRelayEnds(relayStats.status, broadcastAudioBus);
   // Auto ducking dips music and clips (not people) while anyone on stage talks.
   useMusicDucking({
     bus: broadcastAudioBus,
@@ -7296,10 +7303,17 @@ export function StudioRoom() {
             <span style={styles.testBadge} role="status" data-testid="test-stream-header-badge">{TEST_BANNER_LABEL}</span>
           )}
           {liveStatus.active && (
-            <span style={styles.liveBadge}>
-              <span style={styles.liveBadgeDot} />
-              LIVE {liveStatus.formattedTime}
-            </span>
+            relayStats.mediaStall ? (
+              // The relay says LIVE, but this browser is not producing the broadcast: do not look healthy.
+              <span style={{ ...styles.liveBadge, ...styles.liveBadgeNotSending }} data-testid="live-badge-not-sending">
+                NOT SENDING {liveStatus.formattedTime}
+              </span>
+            ) : (
+              <span style={styles.liveBadge}>
+                <span style={styles.liveBadgeDot} />
+                LIVE {liveStatus.formattedTime}
+              </span>
+            )
           )}
           {captionsEnabled && isHostOrCoHost && (
             <span style={styles.captionBadge}>
@@ -7353,8 +7367,15 @@ export function StudioRoom() {
         </PanelErrorBoundary>
       )}
 
-      {(guestNotification || (isHostOrCoHost && liveSessionSummary) || screenVolumeNotice.advice.notice) && (
+      {(guestNotification || (isHostOrCoHost && liveSessionSummary) || screenVolumeNotice.advice.notice || soundGuard.soundOutputOff) && (
         <div style={styles.studioNoticeWrap} role="status" aria-live="polite">
+          {soundGuard.soundOutputOff && (
+            <SoundOutputOffNotice
+              restoring={soundGuard.restoring}
+              failureMessage={soundGuard.restoreFailedMessage}
+              onRestore={() => { void soundGuard.restoreSound(); }}
+            />
+          )}
           {screenVolumeNotice.advice.notice && (
             <ScreenShareVolumeNotice
               copy={screenVolumeNotice.advice.notice}
@@ -8893,6 +8914,10 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     fontVariantNumeric: 'tabular-nums',
     minWidth: 78,
+  },
+  liveBadgeNotSending: {
+    background: '#b45309',
+    whiteSpace: 'nowrap' as const,
   },
   testBadge: {
     display: 'flex', alignItems: 'center', gap: 6,

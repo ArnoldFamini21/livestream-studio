@@ -28,6 +28,7 @@ import {
   type RelayServerHealthStatus,
 } from '../utils/relayServerHealth.ts';
 import { getRelayRecorderFormat } from '../utils/relayEncoding.ts';
+import { RELAY_NOT_SENDING_HEALTH } from '../utils/relayMediaNotices.ts';
 import { RELAY_BACKLOG_WARNING_SECONDS, formatRelayBacklog } from '../utils/rtmpRelayBackpressure.ts';
 import { buildLivePreflightChecklist, type LivePreflightStatus } from '../utils/livePreflight.ts';
 import { isYouTubeConnectionConfigured, type YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
@@ -1049,6 +1050,17 @@ function getRelayQuality(stats: RtmpRelayStats, targetKbps: number, outputLabel:
     return {
       label: 'Error',
       detail: 'Relay connection needs attention.',
+      color: '#fca5a5',
+      background: 'rgba(239, 68, 68, 0.12)',
+      border: 'rgba(239, 68, 68, 0.25)',
+    };
+  }
+
+  // The watchdog found the browser's recorder silent: say so plainly, whatever else the numbers show.
+  if (stats.mediaStall) {
+    return {
+      label: RELAY_NOT_SENDING_HEALTH.label,
+      detail: RELAY_NOT_SENDING_HEALTH.detail,
       color: '#fca5a5',
       background: 'rgba(239, 68, 68, 0.12)',
       border: 'rgba(239, 68, 68, 0.25)',
