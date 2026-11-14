@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BroadcastAudioBus } from './useBroadcastAudioBus.ts';
-import type { RelayMediaRestartEvent, RtmpRelayStats } from './useRtmpRelay.ts';
+import type { RelayMediaStallEvent, RtmpRelayStats } from './useRtmpRelay.ts';
 import {
   RELAY_NOT_SENDING_NOTICE,
   relayJustEnded,
@@ -27,7 +27,12 @@ export function useRelaySoundGuard({ bus, addToast }: { bus: BroadcastAudioBus; 
 
   const checkProgramAudio = useCallback(() => busRef.current.checkProgramAudio(), []);
 
-  const onMediaRestart = useCallback((event: RelayMediaRestartEvent) => {
+  const onMediaStall = useCallback((event: RelayMediaStallEvent) => {
+    if (event.action === 'end') {
+      // The final stop path shows the host no reason; this does, until dismissed.
+      addToastRef.current(event.message, 'error');
+      return;
+    }
     addToastRef.current(RELAY_NOT_SENDING_NOTICE, 'warning');
     if (event.cause === 'sound-output-recovered') {
       addToastRef.current(SOUND_OUTPUT_OFF_NOTICE, 'warning', { durationMs: 20_000 });
@@ -57,7 +62,7 @@ export function useRelaySoundGuard({ bus, addToast }: { bus: BroadcastAudioBus; 
     restoring,
     restoreFailedMessage: restoreFailed ? SOUND_OUTPUT_RESTORE_FAILED : null,
     checkProgramAudio,
-    onMediaRestart,
+    onMediaStall,
     restoreSound,
   };
 }

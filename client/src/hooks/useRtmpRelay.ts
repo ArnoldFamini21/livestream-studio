@@ -55,12 +55,19 @@ import {
 } from '../utils/relayMediaWatch.ts';
 import type { ProgramAudioCheck, ProgramAudioState } from '../audio/programAudioClock.ts';
 
-/** The media watchdog found the recorder silent and is restarting the broadcast. */
-export interface RelayMediaRestartEvent {
-  kind: RelayMediaStallKind;
-  /** "sound-output-recovered": the studio switched its sound output off to get the audio clock moving. */
-  cause: 'plain' | 'sound-output-recovered';
-}
+/**
+ * The media watchdog found the recorder silent. It either restarts the
+ * broadcast, or ends it (the host is told why: the final stop path alone does
+ * not put the reason on screen).
+ */
+export type RelayMediaStallEvent =
+  | {
+    action: 'restart';
+    kind: RelayMediaStallKind;
+    /** "sound-output-recovered": the studio switched its sound output off to get the audio clock moving. */
+    cause: 'plain' | 'sound-output-recovered';
+  }
+  | { action: 'end'; kind: RelayMediaStallKind; reason: 'sound-output-stuck' | 'no-media'; message: string };
 
 interface UseRtmpRelayOptions {
   compositeStreamRef: React.MutableRefObject<MediaStream | null>;
@@ -79,8 +86,8 @@ interface UseRtmpRelayOptions {
    * watchdog just restarts the broadcast.
    */
   checkProgramAudio?: () => Promise<ProgramAudioCheck>;
-  /** The watchdog is restarting the broadcast (the host should be told). */
-  onMediaRestart?: (event: RelayMediaRestartEvent) => void;
+  /** The watchdog is restarting or ending the broadcast (the host should be told). */
+  onMediaStall?: (event: RelayMediaStallEvent) => void;
 }
 
 interface StartRelayOptions {
@@ -271,7 +278,7 @@ export function useRtmpRelay({
   onDestinationStatus,
   onRelayStopped,
   checkProgramAudio,
-  onMediaRestart,
+  onMediaStall,
 }: UseRtmpRelayOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   // The media watchdog's single timer (one transport at a time) and its restart count.
@@ -279,8 +286,8 @@ export function useRtmpRelay({
   const mediaRestartsRef = useRef(0);
   const checkProgramAudioRef = useRef(checkProgramAudio);
   checkProgramAudioRef.current = checkProgramAudio;
-  const onMediaRestartRef = useRef(onMediaRestart);
-  onMediaRestartRef.current = onMediaRestart;
+  const onMediaStallRef = useRef(onMediaStall);
+  onMediaStallRef.current = onMediaStall;
   const recorderRef = useRef<MediaRecorder | null>(null);
   const mixerRef = useRef<MixerResources | null>(null);
   const activeDestinationIdsRef = useRef<string[]>([]);
@@ -769,11 +776,12 @@ export function useRtmpRelay({
             });
             if (decision.action === 'end') {
               reportClientError('stream', `Live relay ended by the media watchdog (${kind}, ${decision.reason}).`);
+              onMediaStallRef.current?.({ action: 'end', kind, reason: decision.reason, message: decision.message });
               reportFinalStop(decision.message);
               return;
             }
             mediaRestartsRef.current = decision.restartsInARow;
-            onMediaRestartRef.current?.({ kind, cause: decision.cause });
+            onMediaStallRef.current?.({ action: 'restart', kind, cause: decision.cause });
             restartTransport(decision.message);
           };
 

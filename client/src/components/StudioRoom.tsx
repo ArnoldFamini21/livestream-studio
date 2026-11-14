@@ -2145,7 +2145,7 @@ export function StudioRoom() {
     onDestinationStatus: handleRelayDestinationStatus,
     onRelayStopped: (message) => { if (!testRelayStoppedRef.current?.(message)) handleRelayStopped(message); },
     checkProgramAudio: soundGuard.checkProgramAudio,
-    onMediaRestart: soundGuard.onMediaRestart,
+    onMediaStall: soundGuard.onMediaStall,
   });
   useRestoreSoundWhenRelayEnds(relayStats.status, broadcastAudioBus);
   // Auto ducking dips music and clips (not people) while anyone on stage talks.
