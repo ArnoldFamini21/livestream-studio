@@ -30,7 +30,7 @@ export const AUDIO_CLOCK_WINDOW_MS = 1_200;
 /** How long the clock is watched after the sound device is switched. */
 export const AUDIO_CLOCK_AFTER_SWITCH_MS = 800;
 /** The longest a resume or a sound-device switch may take before it counts as no answer. */
-export const AUDIO_CLOCK_CALL_TIMEOUT_MS = 500;
+export const AUDIO_CLOCK_CALL_TIMEOUT_MS = 400;
 
 export function judgeAudioClock(input: {
   /** The context state, read after any resume. */
@@ -50,7 +50,8 @@ export function judgeAudioClock(input: {
   if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 'running';
   // At a full second or more, 0.2 s must have passed. A shorter look is judged in proportion.
   const required = AUDIO_CLOCK_MIN_ADVANCE_SECONDS * Math.min(1, elapsedMs / AUDIO_CLOCK_MIN_ELAPSED_MS);
-  return after - before < required ? 'stuck' : 'running';
+  // The small margin keeps floating point (10.2 - 10 is 0.19999...) from deciding exactly at the limit.
+  return after - before < required - 1e-9 ? 'stuck' : 'running';
 }
 
 /** The part of an AudioContext the check uses. */
@@ -66,6 +67,8 @@ export interface AudioClockDeps {
   sleep: (ms: number) => Promise<void>;
   /** A millisecond clock (performance.now or Date.now). */
   now: () => number;
+  /** How long a resume or a sound-device switch may take (default AUDIO_CLOCK_CALL_TIMEOUT_MS). */
+  callTimeoutMs?: number;
 }
 
 export interface AudioClockResult extends ProgramAudioCheck {
@@ -74,21 +77,19 @@ export interface AudioClockResult extends ProgramAudioCheck {
 }
 
 /** Ends a call that may never answer: false when it failed or timed out. */
-async function settleWithin(call: () => Promise<unknown>, ms: number, deps: AudioClockDeps): Promise<boolean> {
-  try {
-    const outcome = await Promise.race([
-      Promise.resolve().then(call).then(() => 'done' as const, () => 'failed' as const),
-      deps.sleep(ms).then(() => 'timeout' as const),
-    ]);
-    return outcome === 'done';
-  } catch {
-    return false;
-  }
+function settleWithin(call: () => Promise<unknown>, deps: AudioClockDeps): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), deps.callTimeoutMs ?? AUDIO_CLOCK_CALL_TIMEOUT_MS);
+    Promise.resolve().then(call).then(
+      () => { clearTimeout(timer); resolve(true); },
+      () => { clearTimeout(timer); resolve(false); }
+    );
+  });
 }
 
 async function resumeIfNeeded(context: ClockedAudioContext, deps: AudioClockDeps): Promise<void> {
   if (context.state === 'running' || context.state === 'closed') return;
-  await settleWithin(() => context.resume(), AUDIO_CLOCK_CALL_TIMEOUT_MS, deps);
+  await settleWithin(() => context.resume(), deps);
 }
 
 /** Watch the clock for windowMs and judge it. */
@@ -102,13 +103,14 @@ async function watchClock(context: ClockedAudioContext, windowMs: number, deps: 
 
 function setSinkNone(context: ClockedAudioContext, deps: AudioClockDeps): Promise<boolean> {
   if (typeof context.setSinkId !== 'function') return Promise.resolve(false);
-  return settleWithin(() => context.setSinkId!({ type: 'none' }), AUDIO_CLOCK_CALL_TIMEOUT_MS, deps);
+  return settleWithin(() => context.setSinkId!({ type: 'none' }), deps);
 }
 
 /**
  * Resume if needed, look at the clock for about 1.2 s. If it does not move,
  * take the sound device away from the context and look again for 0.8 s.
- * Takes about 3 s at most and never throws.
+ * Takes about 3 s at most (a resume or a device switch that does not answer is given
+ * 0.4 s) and never throws.
  */
 export async function checkProgramAudioClock(context: ClockedAudioContext, deps: AudioClockDeps): Promise<AudioClockResult> {
   let outputOff = false;
@@ -138,7 +140,7 @@ export async function checkProgramAudioClock(context: ClockedAudioContext, deps:
 export async function restoreAudioOutputClock(context: ClockedAudioContext, deps: AudioClockDeps): Promise<{ restored: boolean; outputOff: boolean }> {
   if (typeof context.setSinkId !== 'function') return { restored: false, outputOff: true };
   try {
-    const switched = await settleWithin(() => context.setSinkId!(''), AUDIO_CLOCK_CALL_TIMEOUT_MS, deps);
+    const switched = await settleWithin(() => context.setSinkId!(''), deps);
     if (switched) {
       await resumeIfNeeded(context, deps);
       if (await watchClock(context, AUDIO_CLOCK_WINDOW_MS, deps) === 'running') {
