@@ -52,6 +52,10 @@ interface FakeOptions {
   noSetSinkId?: boolean;
   /** setSinkId rejects. */
   sinkRejects?: boolean;
+  /** setSinkId takes the device away at once but answers only after 40 ms (a slow driver). */
+  sinkAnswersLate?: boolean;
+  /** setSinkId never answers and never changes the device. */
+  sinkHangs?: boolean;
   /** Even with no sound device the clock does not move. */
   neverTicks?: boolean;
   /** The clock cannot be read. */
@@ -85,13 +89,16 @@ function fakeWorld(options: FakeOptions = {}) {
     context.setSinkId = (id) => {
       sinkCalls.push(id);
       if (options.sinkRejects) return Promise.reject(new DOMException('no device', 'NotFoundError'));
+      if (options.sinkHangs) return new Promise<void>(() => {});
       sink = id;
+      if (options.sinkAnswersLate) return new Promise<void>((resolve) => { setTimeout(resolve, 40); });
       return Promise.resolve();
     };
   }
   const deps: AudioClockDeps = {
     // A call that never answers is given up on after 5 ms here (0.4 s for real).
     callTimeoutMs: 5,
+    sinkCallTimeoutMs: 5,
     now: () => world.wallMs,
     sleep: (ms) => {
       world.sleeps.push(ms);
@@ -138,6 +145,21 @@ describe('checkProgramAudioClock', () => {
     const { context, deps, sinkCalls } = fakeWorld({ deviceStuck: true, sinkRejects: true });
     assert.deepEqual(await checkProgramAudioClock(context, deps), { state: 'stuck', outputOff: false });
     assert.equal(sinkCalls.length, 1);
+  });
+
+  it('a slow device switch that lands is recovery, not a failure: recovered, and the output is off', async () => {
+    const { context, deps, currentSink } = fakeWorld({ deviceStuck: true, sinkAnswersLate: true });
+    // The switch answers after the call limit (5 ms here, 1 s for real) but has taken effect.
+    const result = await checkProgramAudioClock(context, deps);
+    assert.deepEqual(result, { state: 'recovered', outputOff: true });
+    assert.deepEqual(currentSink(), { type: 'none' });
+  });
+
+  it('a device switch that never answers is unknown: the clock is still watched, and the output is reported off', async () => {
+    const { context, deps, world } = fakeWorld({ deviceStuck: true, sinkHangs: true });
+    const result = await checkProgramAudioClock(context, deps);
+    assert.deepEqual(result, { state: 'stuck', outputOff: true });
+    assert.deepEqual(world.sleeps, [1_200, 800], 'it looked at the clock again after the switch');
   });
 
   it('says stuck, and that the output is off, when the clock still does not move without a device', async () => {

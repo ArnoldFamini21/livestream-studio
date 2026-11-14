@@ -1,11 +1,13 @@
 import {
-  SOUND_OUTPUT_OFF_MARKER,
+  soundOutputOffMarker,
   SOUND_OUTPUT_RESTORE_LABEL,
   SOUND_OUTPUT_RESTORING_LABEL,
 } from '../utils/relayMediaNotices.ts';
 import '../styles/mix-controls.css';
 
 export interface SoundOutputOffNoticeProps {
+  /** A broadcast (or test) is running: the text may say viewers still hear everything. */
+  broadcastRunning: boolean;
   restoring: boolean;
   /** Why the last "Turn sound back on" did not work; null when it has not failed. */
   failureMessage: string | null;
@@ -16,7 +18,7 @@ export interface SoundOutputOffNoticeProps {
  * Stays in the studio's notice area for as long as the studio's sound output
  * is off (it had to switch it off to keep the broadcast going).
  */
-export function SoundOutputOffNotice({ restoring, failureMessage, onRestore }: SoundOutputOffNoticeProps) {
+export function SoundOutputOffNotice({ broadcastRunning, restoring, failureMessage, onRestore }: SoundOutputOffNoticeProps) {
   return (
     <div className="mix-notice" data-testid="sound-output-off-notice">
       <span className="mix-notice-icon" aria-hidden="true">
@@ -27,7 +29,7 @@ export function SoundOutputOffNotice({ restoring, failureMessage, onRestore }: S
         </svg>
       </span>
       <span className="mix-notice-copy">
-        <strong data-testid="sound-output-off-message">{SOUND_OUTPUT_OFF_MARKER}</strong>
+        <strong data-testid="sound-output-off-message">{soundOutputOffMarker(broadcastRunning)}</strong>
         {failureMessage && <span data-testid="sound-output-off-failure">{failureMessage}</span>}
         <span className="mix-notice-actions">
           <button

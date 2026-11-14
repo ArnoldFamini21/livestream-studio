@@ -5,9 +5,13 @@ import TestRenderer, { act } from 'react-test-renderer';
 import { useBroadcastAudioBus, type BroadcastAudioBus } from '../src/hooks/useBroadcastAudioBus.ts';
 import type { AudioClockDeps } from '../src/audio/programAudioClock.ts';
 import {
-  relayJustEnded,
+  relayNotSendingNotice,
+  shouldRestoreSoundQuietly,
+  soundOutputOffMarker,
+  soundOutputOffNotice,
   RELAY_NOT_SENDING_HEALTH,
   RELAY_NOT_SENDING_NOTICE,
+  SOUND_OUTPUT_OFF_IDLE_MARKER,
   SOUND_OUTPUT_OFF_MARKER,
   SOUND_OUTPUT_OFF_NOTICE,
   SOUND_OUTPUT_RESTORE_FAILED,
@@ -181,18 +185,33 @@ describe('what the host reads when the browser stops producing the broadcast', (
   it('says what the host stops hearing, and what stays the same', () => {
     assert.match(SOUND_OUTPUT_OFF_NOTICE, /^Your computer's sound output stopped responding\./);
     assert.match(SOUND_OUTPUT_OFF_NOTICE, /sound effects, music and clips/);
-    assert.match(SOUND_OUTPUT_OFF_NOTICE, /guests' voices are not changed/);
-    assert.match(SOUND_OUTPUT_OFF_NOTICE, /Viewers still hear everything\.$/);
+    assert.match(SOUND_OUTPUT_OFF_NOTICE, /Guests' voices are played separately and are not switched off by the studio/);
+    assert.match(SOUND_OUTPUT_OFF_NOTICE, /Viewers still hear everything\./);
+    assert.match(SOUND_OUTPUT_OFF_NOTICE, /press "Turn sound back on"\.$/);
     assert.match(SOUND_OUTPUT_OFF_MARKER, /Viewers still hear everything/);
   });
 
-  it('knows when a broadcast has just ended', () => {
-    assert.equal(relayJustEnded('live', 'idle'), true);
-    assert.equal(relayJustEnded('live', 'error'), true);
-    assert.equal(relayJustEnded('connecting', 'error'), true);
-    assert.equal(relayJustEnded('live', 'connecting'), false);
-    assert.equal(relayJustEnded('connecting', 'live'), false);
-    assert.equal(relayJustEnded('idle', 'error'), false);
-    assert.equal(relayJustEnded('error', 'idle'), false);
+  it('says nothing about viewers once no broadcast runs, and uses test words for the private test', () => {
+    assert.equal(soundOutputOffMarker(true), SOUND_OUTPUT_OFF_MARKER);
+    assert.equal(soundOutputOffMarker(false), SOUND_OUTPUT_OFF_IDLE_MARKER);
+    assert.doesNotMatch(SOUND_OUTPUT_OFF_IDLE_MARKER, /[Vv]iewers/);
+    assert.match(SOUND_OUTPUT_OFF_IDLE_MARKER, /Turn sound back on/);
+    assert.equal(relayNotSendingNotice(false), RELAY_NOT_SENDING_NOTICE);
+    assert.match(relayNotSendingNotice(true), /test stream/);
+    assert.doesNotMatch(relayNotSendingNotice(true), /broadcast/);
+    assert.equal(soundOutputOffNotice(false), SOUND_OUTPUT_OFF_NOTICE);
+    assert.doesNotMatch(soundOutputOffNotice(true), /[Vv]iewers|broadcast/);
+  });
+
+  it('knows when the quiet try at turning the sound back on is due', () => {
+    const base = { relayStatus: 'idle' as const, studioLive: false, soundOutputOff: true };
+    assert.equal(shouldRestoreSoundQuietly(base), true);
+    // The relay ended with an error (the watchdog end): due.
+    assert.equal(shouldRestoreSoundQuietly({ ...base, relayStatus: 'error' }), true);
+    // Not while a broadcast or test runs, or while the studio still counts as live (a recorder error that did not end it).
+    assert.equal(shouldRestoreSoundQuietly({ ...base, relayStatus: 'live' }), false);
+    assert.equal(shouldRestoreSoundQuietly({ ...base, relayStatus: 'connecting' }), false);
+    assert.equal(shouldRestoreSoundQuietly({ ...base, relayStatus: 'error', studioLive: true }), false);
+    assert.equal(shouldRestoreSoundQuietly({ ...base, soundOutputOff: false }), false);
   });
 });

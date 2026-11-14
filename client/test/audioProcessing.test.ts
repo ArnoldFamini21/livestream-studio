@@ -293,6 +293,44 @@ describe('processed microphone with AI noise removal', () => {
     }
   });
 
+  it('gives the voice context no sound device, so a stuck sound output cannot silence the mic', () => {
+    install();
+    const sinkCalls: unknown[] = [];
+    class SinkContext extends FakeAudioContext {
+      setSinkId(id: unknown) { sinkCalls.push(id); return Promise.resolve(); }
+    }
+    Object.assign(globalThis, { AudioContext: SinkContext });
+    (globalThis as unknown as { window: { AudioContext: unknown } }).window.AudioContext = SinkContext;
+    try {
+      const result = createEnhancedAudioStream(input(), prefs, { createDenoiser: async () => new FakeNode() as unknown as AudioNode });
+      assert.equal(result.enhanced, true);
+      assert.deepEqual(sinkCalls, [{ type: 'none' }]);
+      result.cleanup();
+    } finally {
+      restore();
+    }
+  });
+
+  it('still works where the browser has no setSinkId, or setSinkId fails', async () => {
+    install();
+    class FailingSink extends FakeAudioContext {
+      setSinkId() { return Promise.reject(new Error('not supported')); }
+    }
+    try {
+      const plain = createEnhancedAudioStream(input(), prefs, { createDenoiser: async () => new FakeNode() as unknown as AudioNode });
+      assert.equal(plain.enhanced, true);
+      plain.cleanup();
+      Object.assign(globalThis, { AudioContext: FailingSink });
+      (globalThis as unknown as { window: { AudioContext: unknown } }).window.AudioContext = FailingSink;
+      const failing = createEnhancedAudioStream(input(), prefs, { createDenoiser: async () => new FakeNode() as unknown as AudioNode });
+      assert.equal(failing.enhanced, true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      failing.cleanup();
+    } finally {
+      restore();
+    }
+  });
+
   it('keeps the dry chain and asks for the browser suppressor back when RNNoise cannot start', async () => {
     install();
     try {

@@ -76,6 +76,7 @@ import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
 import { useRtmpRelay } from '../hooks/useRtmpRelay.ts';
 import { useRelaySoundGuard, useRestoreSoundWhenRelayEnds } from '../hooks/useRelaySoundGuard.ts';
 import { SoundOutputOffNotice } from './SoundOutputOffNotice.tsx';
+import { isRelayRunning } from '../utils/relayMediaNotices.ts';
 import { useTestStream } from '../hooks/useTestStream.ts';
 import { shouldReannounceTest } from '../utils/testStreamReannounce.ts';
 import { getTestStreamSupport } from '../utils/mediaServerHealth.ts';
@@ -2147,7 +2148,7 @@ export function StudioRoom() {
     checkProgramAudio: soundGuard.checkProgramAudio,
     onMediaStall: soundGuard.onMediaStall,
   });
-  useRestoreSoundWhenRelayEnds(relayStats.status, broadcastAudioBus);
+  useRestoreSoundWhenRelayEnds(relayStats.status, isLive, broadcastAudioBus);
   // Auto ducking dips music and clips (not people) while anyone on stage talks.
   useMusicDucking({
     bus: broadcastAudioBus,
@@ -7371,6 +7372,7 @@ export function StudioRoom() {
         <div style={styles.studioNoticeWrap} role="status" aria-live="polite">
           {soundGuard.soundOutputOff && (
             <SoundOutputOffNotice
+              broadcastRunning={isRelayRunning(relayStats.status)}
               restoring={soundGuard.restoring}
               failureMessage={soundGuard.restoreFailedMessage}
               onRestore={() => { void soundGuard.restoreSound(); }}

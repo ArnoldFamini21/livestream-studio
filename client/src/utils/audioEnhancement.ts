@@ -81,12 +81,31 @@ function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
   return globalWithWebkit.AudioContext || globalWithWebkit.webkitAudioContext || null;
 }
 
-function createVoiceAudioContext(AudioContextConstructor: BrowserAudioContextConstructor): AudioContext {
+/**
+ * The voice context only feeds a MediaStreamDestination: it never plays to the
+ * speakers. Giving it no sound device (Chrome: setSinkId none) means a sound
+ * output that stops responding cannot freeze it, which would silence the
+ * host's voice in the broadcast. Browsers without setSinkId keep the default.
+ */
+export function releaseSoundDevice(context: AudioContext): void {
   try {
-    return new AudioContextConstructor({ sampleRate: 48_000 });
+    const withSink = context as AudioContext & { setSinkId?: (sinkId: { type: 'none' }) => Promise<void> };
+    if (typeof withSink.setSinkId !== 'function') return;
+    void Promise.resolve(withSink.setSinkId({ type: 'none' })).catch(() => {});
   } catch {
-    return new AudioContextConstructor();
+    // No sound device change; the context keeps its default one.
   }
+}
+
+function createVoiceAudioContext(AudioContextConstructor: BrowserAudioContextConstructor): AudioContext {
+  let context: AudioContext;
+  try {
+    context = new AudioContextConstructor({ sampleRate: 48_000 });
+  } catch {
+    context = new AudioContextConstructor();
+  }
+  releaseSoundDevice(context);
+  return context;
 }
 
 function getTimeDomainRms(analyser: AnalyserNode, samples: Float32Array<ArrayBuffer>): number {

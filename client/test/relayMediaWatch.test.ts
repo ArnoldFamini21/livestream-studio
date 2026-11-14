@@ -3,7 +3,11 @@ import { describe, it } from 'node:test';
 import {
   decideRelayMediaAction,
   decideRelayMediaWatch,
-  getMediaRestartsInARow,
+  nextMediaFlowStart,
+  restartsAfterFlow,
+  runRelayMediaStall,
+  RELAY_AUDIO_STUCK_TEST_MESSAGE,
+  RELAY_NO_MEDIA_STOP_TEST_MESSAGE,
   MAX_MEDIA_RESTARTS_IN_A_ROW,
   MEDIA_RESTARTS_RESET_AFTER_FLOW_MS,
   RELAY_AUDIO_STUCK_MESSAGE,
@@ -149,36 +153,141 @@ describe('relay media watchdog: restarts in a row', () => {
     assert.match((stopped as { message: string }).message, /stopped producing the broadcast/);
   });
 
-  it('starts the count again once chunks flowed for 60 s', () => {
+  it('starts the count again once chunks flowed for 60 s in a row', () => {
     assert.equal(MEDIA_RESTARTS_RESET_AFTER_FLOW_MS, 60_000);
-    assert.equal(getMediaRestartsInARow({ restarts: 2, firstChunkProducedAtMs: T0, lastChunkProducedAtMs: T0 + 59_999 }), 2);
-    assert.equal(getMediaRestartsInARow({ restarts: 2, firstChunkProducedAtMs: T0, lastChunkProducedAtMs: T0 + 60_000 }), 0);
-    assert.equal(getMediaRestartsInARow({ restarts: 1, firstChunkProducedAtMs: T0, lastChunkProducedAtMs: T0 + 600_000 }), 0);
+    assert.equal(restartsAfterFlow(2, T0, T0 + 59_999), 2);
+    assert.equal(restartsAfterFlow(2, T0, T0 + 60_000), 0);
+    assert.equal(restartsAfterFlow(1, T0, T0 + 600_000), 0);
   });
 
-  it('keeps the count when no chunk ever flowed on the transport that stalled', () => {
-    assert.equal(getMediaRestartsInARow({ restarts: 1, firstChunkProducedAtMs: null, lastChunkProducedAtMs: null }), 1);
-    assert.equal(getMediaRestartsInARow({ restarts: 0, firstChunkProducedAtMs: null, lastChunkProducedAtMs: null }), 0);
+  it('keeps the count when no flow has begun', () => {
+    assert.equal(restartsAfterFlow(1, null, T0 + 600_000), 1);
+    assert.equal(restartsAfterFlow(0, null, T0), 0);
   });
 
-  it('walks a whole story: two restarts, a healthy minute, then two more restarts are allowed', () => {
-    let count = 0;
-    const act = (first: number | null, last: number | null) => {
-      const used = getMediaRestartsInARow({ restarts: count, firstChunkProducedAtMs: first, lastChunkProducedAtMs: last });
-      const decision = decideRelayMediaAction({ kind: 'stopped', audio: 'running', restartsInARow: used });
-      if (decision.action === 'restart') count = decision.restartsInARow;
-      return decision.action;
+  it('tracks the flow across the whole relay: a short gap keeps it, a long gap or no chunk breaks it', () => {
+    assert.equal(nextMediaFlowStart({ flowStartMs: null, previousChunkMs: null, nowMs: T0 }), T0);
+    assert.equal(nextMediaFlowStart({ flowStartMs: T0, previousChunkMs: T0 + 5_000, nowMs: T0 + 6_000 }), T0);
+    // A reconnect that took 9 s does not break it (it is not a stall).
+    assert.equal(nextMediaFlowStart({ flowStartMs: T0, previousChunkMs: T0 + 5_000, nowMs: T0 + 14_000 }), T0);
+    assert.equal(
+      nextMediaFlowStart({ flowStartMs: T0, previousChunkMs: T0 + 5_000, nowMs: T0 + 5_000 + RELAY_CHUNK_GAP_MS }),
+      T0 + 5_000 + RELAY_CHUNK_GAP_MS
+    );
+  });
+
+  it('a healthy stretch spread over several transports still resets the count', () => {
+    // Transport 1 flows 30 s, the socket drops and transport 2 carries on for 40 s: 70 s of flow.
+    let flow: number | null = null;
+    let last: number | null = null;
+    for (let t = 0; t <= 70_000; t += 1_000) {
+      flow = nextMediaFlowStart({ flowStartMs: flow, previousChunkMs: last, nowMs: T0 + t });
+      last = T0 + t;
+    }
+    assert.equal(restartsAfterFlow(2, flow, last as number), 0);
+  });
+
+  it('uses test words for the private test stream', () => {
+    const restart = decideRelayMediaAction({ kind: 'stopped', audio: 'running', restartsInARow: 0, test: true });
+    assert.match((restart as { message: string }).message, /producing the test\./);
+    assert.deepEqual(
+      decideRelayMediaAction({ kind: 'stopped', audio: 'stuck', restartsInARow: 0, test: true }),
+      { action: 'end', reason: 'sound-output-stuck', message: RELAY_AUDIO_STUCK_TEST_MESSAGE }
+    );
+    assert.deepEqual(
+      decideRelayMediaAction({ kind: 'stopped', audio: 'running', restartsInARow: 2, test: true }),
+      { action: 'end', reason: 'no-media', message: RELAY_NO_MEDIA_STOP_TEST_MESSAGE }
+    );
+    assert.doesNotMatch(RELAY_AUDIO_STUCK_TEST_MESSAGE, /broadcast/);
+    assert.doesNotMatch(RELAY_NO_MEDIA_STOP_TEST_MESSAGE, /broadcast|go live/);
+  });
+});
+
+describe('relay media watchdog: what happens after the audio check (runRelayMediaStall)', () => {
+  /** A fake relay: a shared restart count, a transport that can change, chunks that can come back. */
+  function fakeRelay(overrides: Partial<Parameters<typeof runRelayMediaStall>[0]> = {}) {
+    const state = { restarts: 0, wanted: true, lastChunk: null as number | null };
+    const deps: Parameters<typeof runRelayMediaStall>[0] = {
+      kind: 'stopped',
+      firedAtMs: T0,
+      stillWanted: () => state.wanted,
+      lastChunkProducedAtMs: () => state.lastChunk,
+      getRestarts: () => state.restarts,
+      setRestarts: (n: number) => { state.restarts = n; },
+      ...overrides,
     };
-    assert.equal(act(null, null), 'restart');
-    assert.equal(act(null, null), 'restart');
-    assert.equal(act(null, null), 'end');
-    // Same story, but the second transport flows for 2 minutes before it stalls.
-    count = 0;
-    assert.equal(act(null, null), 'restart');
-    assert.equal(act(T0, T0 + 120_000), 'restart');
-    assert.equal(count, 1, 'after a healthy minute the count started again, so this was restart 1');
-    assert.equal(act(null, null), 'restart');
-    assert.equal(act(null, null), 'end');
+    return { state, deps };
+  }
+
+  it('restarts at most twice in a row for the same cause, then ends (the count is stored)', async () => {
+    const { state, deps } = fakeRelay({ checkAudio: async () => ({ state: 'running' }) });
+    const first = await runRelayMediaStall(deps);
+    assert.equal(first.outcome === 'act' && first.decision.action, 'restart');
+    assert.equal(state.restarts, 1);
+    const second = await runRelayMediaStall(deps);
+    assert.equal(second.outcome === 'act' && second.decision.action, 'restart');
+    assert.equal(state.restarts, 2);
+    const third = await runRelayMediaStall(deps);
+    assert.equal(third.outcome === 'act' && third.decision.action, 'end');
+    assert.equal(third.outcome === 'act' && third.decision.action === 'end' && third.decision.reason, 'no-media');
+    assert.equal(state.restarts, 2, 'an end does not count as a restart');
+  });
+
+  it('does nothing when the relay moved on during the check (stopped, or another transport took over)', async () => {
+    const relay = fakeRelay({ checkAudio: async () => { relay.state.wanted = false; return { state: 'stuck' }; } });
+    assert.deepEqual(await runRelayMediaStall(relay.deps), { outcome: 'abandoned' });
+    assert.equal(relay.state.restarts, 0);
+  });
+
+  it('does nothing for a restart answer when the relay moved on during the check', async () => {
+    const relay = fakeRelay({ checkAudio: async () => { relay.state.wanted = false; return { state: 'running' }; } });
+    assert.deepEqual(await runRelayMediaStall(relay.deps), { outcome: 'abandoned' });
+    assert.equal(relay.state.restarts, 0, 'no restart is counted');
+  });
+
+  it('leaves a broadcast alone when chunks came back during the check, and does not count a restart', async () => {
+    const relay = fakeRelay({ checkAudio: async () => { relay.state.lastChunk = T0 + 1_000; return { state: 'running' }; } });
+    assert.deepEqual(await runRelayMediaStall(relay.deps), { outcome: 'self-recovered' });
+    assert.equal(relay.state.restarts, 0);
+  });
+
+  it('also leaves it alone for a stuck answer when chunks are flowing again (a working recorder is not ended)', async () => {
+    const relay = fakeRelay({ checkAudio: async () => { relay.state.lastChunk = T0 + 500; return { state: 'stuck' }; } });
+    assert.deepEqual(await runRelayMediaStall(relay.deps), { outcome: 'self-recovered' });
+  });
+
+  it('a chunk from before the stall fired does not count as chunks coming back', async () => {
+    const { state, deps } = fakeRelay({ checkAudio: async () => ({ state: 'running' }) });
+    state.lastChunk = T0 - 11_000;
+    assert.equal((await runRelayMediaStall(deps)).outcome, 'act');
+    state.lastChunk = T0;
+    assert.equal((await runRelayMediaStall(deps)).outcome, 'act');
+  });
+
+  it('keeps the wanted restart after a recovered answer, even if a chunk came out meanwhile', async () => {
+    const relay = fakeRelay({ checkAudio: async () => { relay.state.lastChunk = T0 + 900; return { state: 'recovered' }; } });
+    const result = await runRelayMediaStall(relay.deps);
+    assert.equal(result.outcome === 'act' && result.decision.action === 'restart' && result.decision.cause, 'sound-output-recovered');
+    assert.equal(relay.state.restarts, 1);
+  });
+
+  it('ends the relay when the audio is stuck and no chunk came back', async () => {
+    const { state, deps } = fakeRelay({ checkAudio: async () => ({ state: 'stuck' }) });
+    const result = await runRelayMediaStall(deps);
+    assert.equal(result.outcome === 'act' && result.decision.action === 'end' && result.decision.reason, 'sound-output-stuck');
+    assert.equal(state.restarts, 0);
+  });
+
+  it('treats a check that throws like no check', async () => {
+    const { deps } = fakeRelay({ checkAudio: async () => { throw new Error('no context'); } });
+    const result = await runRelayMediaStall(deps);
+    assert.equal(result.outcome === 'act' && result.decision.action, 'restart');
+  });
+
+  it('restarts with the test words for the private test stream', async () => {
+    const { deps } = fakeRelay({ test: true });
+    const result = await runRelayMediaStall(deps);
+    assert.match(result.outcome === 'act' && result.decision.action === 'restart' ? result.decision.message : '', /test/);
   });
 });
 
