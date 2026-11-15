@@ -8,6 +8,7 @@ import {
   MUSIC_DUCKING_GAIN,
   MUSIC_DUCKING_RELEASE_SECONDS,
 } from '../utils/audioDucking.ts';
+import { releaseProcessingSoundDevices, restoreProcessingSoundDevices } from '../audio/soundDevicePolicy.ts';
 import {
   checkProgramAudioClock,
   restoreAudioOutputClock,
@@ -111,8 +112,19 @@ export function useBroadcastAudioBus(clockDeps: AudioClockDeps = REAL_CLOCK_DEPS
   clockDepsRef.current = clockDeps;
 
   const setSoundOutputOff = useCallback((off: boolean) => {
+    const changed = outputOffRef.current !== off;
     outputOffRef.current = off;
     setSoundOutputOffState(off);
+    if (!changed) return;
+    // The voice contexts sit on the same sound device: they follow the studio's own context,
+    // or the host's voice would be missing from a broadcast that otherwise came back.
+    if (off) releaseProcessingSoundDevices();
+    else restoreProcessingSoundDevices();
+  }, []);
+
+  // Leaving the studio with the sound off: the voice contexts go back to normal use.
+  useEffect(() => () => {
+    if (outputOffRef.current) restoreProcessingSoundDevices();
   }, []);
 
   const getNodes = useCallback((): BusNodes => {

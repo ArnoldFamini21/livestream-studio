@@ -5,6 +5,7 @@ import {
   type AiNoiseRemovalStatus,
 } from './aiNoiseRemoval.ts';
 import { usesAiNoiseRemoval } from './audioProcessing.ts';
+import { registerProcessingAudioContext } from '../audio/soundDevicePolicy.ts';
 
 type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
 
@@ -81,31 +82,12 @@ function getAudioContextConstructor(): BrowserAudioContextConstructor | null {
   return globalWithWebkit.AudioContext || globalWithWebkit.webkitAudioContext || null;
 }
 
-/**
- * The voice context only feeds a MediaStreamDestination: it never plays to the
- * speakers. Giving it no sound device (Chrome: setSinkId none) means a sound
- * output that stops responding cannot freeze it, which would silence the
- * host's voice in the broadcast. Browsers without setSinkId keep the default.
- */
-export function releaseSoundDevice(context: AudioContext): void {
-  try {
-    const withSink = context as AudioContext & { setSinkId?: (sinkId: { type: 'none' }) => Promise<void> };
-    if (typeof withSink.setSinkId !== 'function') return;
-    void Promise.resolve(withSink.setSinkId({ type: 'none' })).catch(() => {});
-  } catch {
-    // No sound device change; the context keeps its default one.
-  }
-}
-
 function createVoiceAudioContext(AudioContextConstructor: BrowserAudioContextConstructor): AudioContext {
-  let context: AudioContext;
   try {
-    context = new AudioContextConstructor({ sampleRate: 48_000 });
+    return new AudioContextConstructor({ sampleRate: 48_000 });
   } catch {
-    context = new AudioContextConstructor();
+    return new AudioContextConstructor();
   }
-  releaseSoundDevice(context);
-  return context;
 }
 
 function getTimeDomainRms(analyser: AnalyserNode, samples: Float32Array<ArrayBuffer>): number {
@@ -182,6 +164,9 @@ export function createEnhancedAudioStream(
   try {
     const profile = getVoiceEnhancementProfile(preferences);
     const audioContext = createVoiceAudioContext(AudioContextConstructor);
+    // The voice context only feeds the broadcast and the guests; it never plays to the speakers.
+    // It stays on the default sound device unless the studio had to switch its sound output off.
+    const forgetAudioContext = registerProcessingAudioContext(audioContext);
     const source = audioContext.createMediaStreamSource(new MediaStream([sourceTrack]));
     const analyser = audioContext.createAnalyser();
     analyser.fftSize = 512;
@@ -237,6 +222,7 @@ export function createEnhancedAudioStream(
     const outputTrack = destination.stream.getAudioTracks()[0] || null;
     if (!outputTrack) {
       window.clearInterval(gateTimer);
+      forgetAudioContext();
       void audioContext.close();
       return passthrough();
     }
@@ -293,6 +279,7 @@ export function createEnhancedAudioStream(
         try { compressor.disconnect(); } catch { /* already disconnected */ }
         outputTrack.stop();
         if (stopSource) sourceTrack.stop();
+        forgetAudioContext();
         if (audioContext.state !== 'closed') {
           void audioContext.close();
         }

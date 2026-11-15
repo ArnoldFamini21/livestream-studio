@@ -6,6 +6,11 @@ import {
   usesAiNoiseRemoval,
 } from '../src/utils/audioProcessing.ts';
 import {
+  releaseProcessingSoundDevices,
+  resetSoundDevicePolicyForTests,
+  restoreProcessingSoundDevices,
+} from '../src/audio/soundDevicePolicy.ts';
+import {
   getVoiceEnhancementProfile,
   createEnhancedAudioStream,
   getVoiceGateState,
@@ -293,8 +298,9 @@ describe('processed microphone with AI noise removal', () => {
     }
   });
 
-  it('gives the voice context no sound device, so a stuck sound output cannot silence the mic', () => {
+  it('leaves the voice context on its sound device in normal use, and follows the studio when its sound output is switched off', () => {
     install();
+    resetSoundDevicePolicyForTests();
     const sinkCalls: unknown[] = [];
     class SinkContext extends FakeAudioContext {
       setSinkId(id: unknown) { sinkCalls.push(id); return Promise.resolve(); }
@@ -304,29 +310,50 @@ describe('processed microphone with AI noise removal', () => {
     try {
       const result = createEnhancedAudioStream(input(), prefs, { createDenoiser: async () => new FakeNode() as unknown as AudioNode });
       assert.equal(result.enhanced, true);
+      assert.deepEqual(sinkCalls, [], 'a normal session does not touch the sound device of the voice context');
+
+      // The studio had to switch its sound output off (a stuck device): the voice context leaves the device too.
+      releaseProcessingSoundDevices();
       assert.deepEqual(sinkCalls, [{ type: 'none' }]);
+      // A microphone started during that time begins without a device.
+      const second = createEnhancedAudioStream(input(), prefs, { createDenoiser: async () => new FakeNode() as unknown as AudioNode });
+      assert.deepEqual(sinkCalls, [{ type: 'none' }, { type: 'none' }]);
+      // The sound is back: both get the default device again.
+      restoreProcessingSoundDevices();
+      assert.deepEqual(sinkCalls, [{ type: 'none' }, { type: 'none' }, '', '']);
+
+      // A context that was cleaned up is forgotten.
       result.cleanup();
+      second.cleanup();
+      releaseProcessingSoundDevices();
+      assert.equal(sinkCalls.length, 4, 'closed voice contexts are left alone');
     } finally {
+      resetSoundDevicePolicyForTests();
       restore();
     }
   });
 
   it('still works where the browser has no setSinkId, or setSinkId fails', async () => {
     install();
+    resetSoundDevicePolicyForTests();
     class FailingSink extends FakeAudioContext {
       setSinkId() { return Promise.reject(new Error('not supported')); }
     }
     try {
       const plain = createEnhancedAudioStream(input(), prefs, { createDenoiser: async () => new FakeNode() as unknown as AudioNode });
       assert.equal(plain.enhanced, true);
-      plain.cleanup();
       Object.assign(globalThis, { AudioContext: FailingSink });
       (globalThis as unknown as { window: { AudioContext: unknown } }).window.AudioContext = FailingSink;
       const failing = createEnhancedAudioStream(input(), prefs, { createDenoiser: async () => new FakeNode() as unknown as AudioNode });
       assert.equal(failing.enhanced, true);
+      // Neither a missing setSinkId nor one that rejects may throw or leave an unhandled rejection.
+      releaseProcessingSoundDevices();
+      restoreProcessingSoundDevices();
       await new Promise((resolve) => setTimeout(resolve, 0));
+      plain.cleanup();
       failing.cleanup();
     } finally {
+      resetSoundDevicePolicyForTests();
       restore();
     }
   });

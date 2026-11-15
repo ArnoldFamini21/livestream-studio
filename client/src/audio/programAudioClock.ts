@@ -38,6 +38,12 @@ export const AUDIO_CLOCK_CALL_TIMEOUT_MS = 400;
  * as if it had.
  */
 export const AUDIO_CLOCK_SINK_TIMEOUT_MS = 1_000;
+/**
+ * A second, longer look when the clock still does not move after the switch.
+ * Calling the clock stuck ends the broadcast, and a real stuck device could not
+ * be tried out, so the switch gets the benefit of the doubt once.
+ */
+export const AUDIO_CLOCK_SECOND_LOOK_MS = 1_500;
 
 export function judgeAudioClock(input: {
   /** The context state, read after any resume. */
@@ -124,9 +130,10 @@ function switchSink(context: ClockedAudioContext, sinkId: string | { type: 'none
 
 /**
  * Resume if needed, look at the clock for about 1.2 s. If it does not move,
- * take the sound device away from the context and look again for 0.8 s.
- * Takes about 3 s (a resume that does not answer is given 0.4 s, a device switch 1 s)
- * and never throws. A device switch that has not answered in time is not counted as a
+ * take the sound device away from the context and look again for 0.8 s, and
+ * once more for 1.5 s if it still does not move. Takes about 5.5 s at most (a
+ * resume that does not answer is given 0.4 s, a device switch 1 s) and never
+ * throws. A device switch that has not answered in time is not counted as a
  * failure: it may land a moment later, so the clock is watched as if it had and
  * the sound output is reported as off.
  */
@@ -143,8 +150,13 @@ export async function checkProgramAudioClock(context: ClockedAudioContext, deps:
     if (sink === 'failed') return { state: 'stuck', outputOff };
     outputOff = true;
     await resumeIfNeeded(context, deps);
-    const after = await watchClock(context, AUDIO_CLOCK_AFTER_SWITCH_MS, deps);
-    return { state: after === 'running' ? 'recovered' : 'stuck', outputOff };
+    if (await watchClock(context, AUDIO_CLOCK_AFTER_SWITCH_MS, deps) === 'running') {
+      return { state: 'recovered', outputOff };
+    }
+    // Not yet. The switch may still be landing: one more, longer look before giving up.
+    await resumeIfNeeded(context, deps);
+    const second = await watchClock(context, AUDIO_CLOCK_SECOND_LOOK_MS, deps);
+    return { state: second === 'running' ? 'recovered' : 'stuck', outputOff };
   } catch {
     // The check itself failed; that proves nothing about the clock.
     return { state: 'running', outputOff };
@@ -155,14 +167,22 @@ export async function checkProgramAudioClock(context: ClockedAudioContext, deps:
  * Give the context its default sound device back and check that the clock
  * still runs. If it does not, go back to no sound device. True when the sound
  * is back on; false when it stays off. Never throws.
+ *
+ * A device that is slow to open (the switch had not answered within its limit)
+ * gets a second, longer look before the studio gives up on it. A device that
+ * took the switch and still does not run is given up on after the first look,
+ * so a dead device freezes the program sound for as short a time as possible.
  */
 export async function restoreAudioOutputClock(context: ClockedAudioContext, deps: AudioClockDeps): Promise<{ restored: boolean; outputOff: boolean }> {
   if (typeof context.setSinkId !== 'function') return { restored: false, outputOff: true };
   try {
     const switched = await switchSink(context, '', deps);
-    if (switched === 'ok') {
+    if (switched !== 'failed') {
       await resumeIfNeeded(context, deps);
       if (await watchClock(context, AUDIO_CLOCK_WINDOW_MS, deps) === 'running') {
+        return { restored: true, outputOff: false };
+      }
+      if (switched === 'timeout' && await watchClock(context, AUDIO_CLOCK_SECOND_LOOK_MS, deps) === 'running') {
         return { restored: true, outputOff: false };
       }
     }

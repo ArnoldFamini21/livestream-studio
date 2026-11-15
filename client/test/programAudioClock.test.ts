@@ -56,6 +56,10 @@ interface FakeOptions {
   sinkAnswersLate?: boolean;
   /** setSinkId never answers and never changes the device. */
   sinkHangs?: boolean;
+  /** setSinkId does not answer within the limit, and the device change lands this long after the call. */
+  sinkLandsAfterMs?: number;
+  /** While a device change is on its way the clock does not move (a device that is slow to open). */
+  clockPausedWhileSwitching?: boolean;
   /** Even with no sound device the clock does not move. */
   neverTicks?: boolean;
   /** The clock cannot be read. */
@@ -67,9 +71,11 @@ function fakeWorld(options: FakeOptions = {}) {
   const world = { wallMs: 0, sleeps: [] as number[] };
   const sinkCalls: Array<string | { type: 'none' }> = [];
   let sink: string | { type: 'none' } = '';
+  let pendingSink: { id: string | { type: 'none' }; atMs: number } | null = null;
   let audioTime = 0;
   const ticks = () => {
     if (options.neverTicks) return false;
+    if (options.clockPausedWhileSwitching && pendingSink) return false;
     const noDevice = typeof sink === 'object' && sink.type === 'none';
     return noDevice || !options.deviceStuck;
   };
@@ -90,6 +96,10 @@ function fakeWorld(options: FakeOptions = {}) {
       sinkCalls.push(id);
       if (options.sinkRejects) return Promise.reject(new DOMException('no device', 'NotFoundError'));
       if (options.sinkHangs) return new Promise<void>(() => {});
+      if (options.sinkLandsAfterMs !== undefined) {
+        pendingSink = { id, atMs: world.wallMs + options.sinkLandsAfterMs };
+        return new Promise<void>(() => {});
+      }
       sink = id;
       if (options.sinkAnswersLate) return new Promise<void>((resolve) => { setTimeout(resolve, 40); });
       return Promise.resolve();
@@ -102,8 +112,22 @@ function fakeWorld(options: FakeOptions = {}) {
     now: () => world.wallMs,
     sleep: (ms) => {
       world.sleeps.push(ms);
-      world.wallMs += ms;
-      if (ticks() && context.state === 'running') audioTime += ms / 1000;
+      const start = world.wallMs;
+      const end = start + ms;
+      const ticking = () => ticks() && context.state === 'running';
+      let tickingMs = 0;
+      if (pendingSink && pendingSink.atMs < end) {
+        // The device change lands inside this stretch of time.
+        const landsAt = Math.max(start, pendingSink.atMs);
+        if (ticking()) tickingMs += landsAt - start;
+        sink = pendingSink.id;
+        pendingSink = null;
+        if (ticking()) tickingMs += end - landsAt;
+      } else if (ticking()) {
+        tickingMs = ms;
+      }
+      world.wallMs = end;
+      audioTime += tickingMs / 1000;
       return Promise.resolve();
     },
   };
@@ -159,7 +183,22 @@ describe('checkProgramAudioClock', () => {
     const { context, deps, world } = fakeWorld({ deviceStuck: true, sinkHangs: true });
     const result = await checkProgramAudioClock(context, deps);
     assert.deepEqual(result, { state: 'stuck', outputOff: true });
-    assert.deepEqual(world.sleeps, [1_200, 800], 'it looked at the clock again after the switch');
+    assert.deepEqual(world.sleeps, [1_200, 800, 1_500], 'it looked at the clock twice more after the switch');
+  });
+
+  it('a device switch that lands late is still recovery: the second, longer look sees the clock move', async () => {
+    // The switch lands 1.5 s after the call: after the 0.8 s look, inside the 1.5 s one.
+    const { context, deps, world, currentSink } = fakeWorld({ deviceStuck: true, sinkLandsAfterMs: 1_500 });
+    const result = await checkProgramAudioClock(context, deps);
+    assert.deepEqual(result, { state: 'recovered', outputOff: true });
+    assert.deepEqual(world.sleeps, [1_200, 800, 1_500]);
+    assert.deepEqual(currentSink(), { type: 'none' });
+  });
+
+  it('does not take the second look when the first one already sees the clock move', async () => {
+    const { context, deps, world } = fakeWorld({ deviceStuck: true });
+    await checkProgramAudioClock(context, deps);
+    assert.deepEqual(world.sleeps, [1_200, 800]);
   });
 
   it('says stuck, and that the output is off, when the clock still does not move without a device', async () => {
@@ -173,11 +212,11 @@ describe('checkProgramAudioClock', () => {
     assert.equal(result.state, 'stuck');
   });
 
-  it('does not wait for a resume that never answers, and stays within about 3 s', async () => {
+  it('does not wait for a resume that never answers, and stays within about 3.5 s of looking', async () => {
     const { context, deps, world } = fakeWorld({ suspended: true, resumeHangs: true });
     const result = await checkProgramAudioClock(context, deps);
     assert.equal(result.state, 'stuck');
-    assert.ok(world.wallMs <= 3_000, `took ${world.wallMs} ms`);
+    assert.ok(world.wallMs <= 3_500, `took ${world.wallMs} ms`);
   });
 
   it('never throws, even when the clock cannot be read (that proves nothing, so: running)', async () => {
@@ -185,10 +224,11 @@ describe('checkProgramAudioClock', () => {
     assert.deepEqual(await checkProgramAudioClock(context, deps), { state: 'running', outputOff: false });
   });
 
-  it('stays within about 3 s on the longest path', async () => {
+  it('looks at the clock for 3.5 s on the longest path (1.2 s, then 0.8 s and 1.5 s after the switch)', async () => {
     const { context, deps, world } = fakeWorld({ deviceStuck: true, neverTicks: true, suspended: true });
     await checkProgramAudioClock(context, deps);
-    assert.ok(world.wallMs <= 3_500, `took ${world.wallMs} ms`);
+    assert.deepEqual(world.sleeps, [1_200, 800, 1_500]);
+    assert.equal(world.wallMs, 3_500);
   });
 });
 
@@ -213,6 +253,31 @@ describe('restoreAudioOutputClock', () => {
     const { context, deps, sinkCalls } = fakeWorld({ sinkRejects: true });
     const result = await restoreAudioOutputClock(context, deps);
     assert.deepEqual(result, { restored: false, outputOff: true });
+    assert.deepEqual(sinkCalls, ['', { type: 'none' }]);
+  });
+
+  it('a default device that is slow to open is still restored: it gets a second look', async () => {
+    // The switch back lands 2 s after the call (after the 1.2 s look, inside the 1.5 s one),
+    // and the clock stands still until it has.
+    const { context, deps, world, sinkCalls, currentSink } = fakeWorld({ sinkLandsAfterMs: 2_000, clockPausedWhileSwitching: true });
+    const result = await restoreAudioOutputClock(context, deps);
+    assert.deepEqual(result, { restored: true, outputOff: false });
+    assert.deepEqual(world.sleeps, [1_200, 1_500]);
+    assert.deepEqual(sinkCalls, ['']);
+    assert.equal(currentSink(), '');
+  });
+
+  it('a default device that took the switch and does not run is given up on after one look', async () => {
+    const { context, deps, world } = fakeWorld({ deviceStuck: true });
+    await restoreAudioOutputClock(context, deps);
+    assert.deepEqual(world.sleeps, [1_200], 'a dead device freezes the program sound for as short a time as possible');
+  });
+
+  it('a default device that never answers is given up on after the second look, and the sound stays off', async () => {
+    const { context, deps, world, sinkCalls } = fakeWorld({ sinkHangs: true, deviceStuck: true });
+    const result = await restoreAudioOutputClock(context, deps);
+    assert.deepEqual(result, { restored: false, outputOff: true });
+    assert.deepEqual(world.sleeps, [1_200, 1_500]);
     assert.deepEqual(sinkCalls, ['', { type: 'none' }]);
   });
 

@@ -89,8 +89,11 @@ resume. `useBroadcastAudioBus` wraps it:
   again. Moving: `{ state: "running" }`. Not moving: if the context has
   `setSinkId`, call `setSinkId({ type: "none" })` (Chrome: no sound device, the
   context then runs on a timer), wait 0.8 s, read again. Moving now:
-  `{ state: "recovered" }`. Otherwise `{ state: "stuck" }`. A resume that never
-  answers is given up after 0.4 s. The device switch is the recovery itself and
+  `{ state: "recovered" }`. Still not moving: one more look of 1.5 s (calling the
+  clock stuck ends the broadcast, and a real stuck device could not be tried
+  out, so the switch gets the benefit of the doubt once). Then
+  `{ state: "recovered" }` or `{ state: "stuck" }`. The whole check takes about
+  5.5 s at most. A resume that never answers is given up after 0.4 s. The device switch is the recovery itself and
   may be slow on a stuck output: it is given 1 s, and if it still has not
   answered that is not a failure (it may land a moment later): the clock is
   watched as if it had, and the output is reported as off. Only a switch that
@@ -99,6 +102,10 @@ resume. `useBroadcastAudioBus` wraps it:
   Only one check or restore runs at a time.
 - `restoreAudioOutput()`: `setSinkId("")` (the default device), check the clock
   for 1.2 s; if it is stuck again, back to `{ type: "none" }` and report false.
+  A device that is slow to open (the switch had not answered within its 1 s)
+  gets a second look of 1.5 s first. A device that took the switch and still
+  does not run is given up on after the first look, so a dead device freezes
+  the program sound for as short a time as possible (about 1.2 s).
 - `soundOutputOff` (state the hook returns): true while the bus context has no
   sound device. A new context starts with the sound on.
 - Whenever the output is off and no broadcast runs (the broadcast ended, or the
@@ -106,13 +113,20 @@ resume. `useBroadcastAudioBus` wraps it:
   `useRestoreSoundWhenRelayEnds` tries `restoreAudioOutput()` once, quietly. It
   does not run while the studio still counts as live (a recorder error that
   did not end the broadcast).
-- The studio's other audio context, the one that cleans up the host's microphone
-  (`createEnhancedAudioStream`), only feeds the program mix and never plays to
-  the speakers. It is created without a sound device (`setSinkId({ type: "none" })`
-  right after creation, where the browser has it), so a stuck output cannot
-  silence the host's voice in the broadcast. Without this, rescuing only the
-  bus would have left the preacher's own voice out of the program while every
-  indicator was green.
+- The studio's other audio context, the one that cleans up a microphone
+  (`createEnhancedAudioStream`), only feeds the program mix and the guests and
+  never plays to the speakers. It sits on the same sound device, so rescuing
+  only the bus would have left the preacher's own voice out of a broadcast that
+  otherwise came back, with every indicator green. It therefore follows the
+  bus (`client/src/audio/soundDevicePolicy.ts`): each voice context registers
+  itself; when the bus's sound output goes off, every registered context is
+  moved to `{ type: "none" }` too, a voice context created during that time
+  starts without a device, and when the sound comes back (or the host leaves
+  the studio) they get the default device again. **In normal use nothing is
+  changed**: a voice context stays on the default sound device exactly as
+  before. (A first version of this fix gave every voice context no sound device
+  from the start; that would have changed how every microphone is processed in
+  every session, on a path nobody had listened to, so it was narrowed.)
 
 The sleep and the clock are injectable (`AudioClockDeps`), so the check is
 tested with a fake context and no real waiting.
@@ -155,7 +169,8 @@ All with the existing toasts and notice area, no new panel.
   separately and are not switched off by the studio. Viewers still hear everything. When the sound output works again, press "Turn sound back on"." And a marker stays in the
   notice area while the output is off: "Sound effects, music and clips are not
   playing on this computer. Viewers still hear everything. Check the sound output
-  device, then press "Turn sound back on"." with a "Turn sound back on" button.
+  device, then press "Turn sound back on". The broadcast may pause for a few
+  seconds while the sound switches back." with a "Turn sound back on" button.
   When no broadcast runs any more it says "Sound is off on this computer (sound
   effects, music and clips). Check the sound output device, then press "Turn
   sound back on"." (nothing about viewers). The private test stream uses test
@@ -170,14 +185,17 @@ All with the existing toasts and notice area, no new panel.
   older causes.)
 
 Pressing "Turn sound back on" while the device is still stuck freezes the
-broadcast's audio clock for about 1.3 s while the check runs.
+broadcast's audio clock for about 1.3 s while the check runs (longer, up to
+about 3.7 s, for a device that does not even answer the switch). The marker
+says so while a broadcast is running.
 
 ## Tests and checks
 
 - Unit tests: `client/test/relayMediaWatch.test.ts` (includes the watchdog step
   after the sound check: restart count stored and limited, relay moved on, chunks
   came back), `programAudioClock.test.ts`, `broadcastAudioBusOutput.test.ts`,
-  `audioProcessing.test.ts` (the voice context has no sound device).
+  `soundDevicePolicy.test.ts` and `audioProcessing.test.ts` (a voice context is
+  left alone in normal use and follows the bus when its sound output goes off).
 - A real-browser check (local media server, counting RTMP listener, the built
   client, real Chromium with `--disable-audio-output`). A stuck sound output is
   simulated by wrapping `AudioContext`: the context is really suspended while
@@ -206,9 +224,10 @@ broadcast's audio clock for about 1.3 s while the check runs.
 - The hook wiring (timers, the transport closure) has no unit test (it needs a real
   recorder and a socket). The decisions it makes are in `runRelayMediaStall`,
   which has; the wiring is covered by the browser scenarios.
-- That giving the microphone context no sound device keeps the voice processing
-  smooth on a healthy computer (it should: the context then runs on a timer).
-  Not listened to.
+- How the voice processing sounds while its context has no sound device (only
+  during a recovered sound-output failure; it should be fine, the context then
+  runs on a timer). Not listened to. In normal use the voice context is not
+  changed.
 - A background browser tab: the poll and the check's waits are ordinary timers,
   which Chrome may slow down in a tab that has been hidden for a long time.
   A host with guests (live video and audio) is not affected; a solo host with

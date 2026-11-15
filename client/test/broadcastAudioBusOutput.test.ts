@@ -5,6 +5,11 @@ import TestRenderer, { act } from 'react-test-renderer';
 import { useBroadcastAudioBus, type BroadcastAudioBus } from '../src/hooks/useBroadcastAudioBus.ts';
 import type { AudioClockDeps } from '../src/audio/programAudioClock.ts';
 import {
+  areProcessingSoundDevicesReleased,
+  registerProcessingAudioContext,
+  resetSoundDevicePolicyForTests,
+} from '../src/audio/soundDevicePolicy.ts';
+import {
   relayNotSendingNotice,
   shouldRestoreSoundQuietly,
   soundOutputOffMarker,
@@ -66,6 +71,7 @@ let saved: { window: unknown; document: unknown };
 
 beforeEach(async () => {
   saved = { window: globals.window, document: globals.document };
+  resetSoundDevicePolicyForTests();
   world.wallMs = 0;
   world.deviceStuck = false;
   world.contexts = [];
@@ -108,6 +114,40 @@ describe('the studio audio bus: program audio check and sound output', () => {
     assert.deepEqual(result, { state: 'recovered' });
     assert.equal(bus.soundOutputOff, true);
     assert.deepEqual(world.sinkCalls, [{ type: 'none' }]);
+  });
+
+  it('the voice contexts follow the studio: untouched while healthy, off the device with it, back with it', async () => {
+    const voiceCalls: unknown[] = [];
+    const voice = { state: 'running', setSinkId(id: unknown) { voiceCalls.push(id); return Promise.resolve(); } };
+    registerProcessingAudioContext(voice as unknown as AudioContext);
+
+    await act(async () => { await bus.checkProgramAudio(); });
+    assert.deepEqual(voiceCalls, [], 'a healthy check leaves the microphone processing alone');
+
+    world.deviceStuck = true;
+    await act(async () => { await bus.checkProgramAudio(); });
+    assert.equal(bus.soundOutputOff, true);
+    assert.deepEqual(voiceCalls, [{ type: 'none' }]);
+
+    // Still stuck: the sound stays off, and so do the voice contexts.
+    await act(async () => { await bus.restoreAudioOutput(); });
+    assert.equal(bus.soundOutputOff, true);
+    assert.deepEqual(voiceCalls, [{ type: 'none' }]);
+
+    world.deviceStuck = false;
+    await act(async () => { await bus.restoreAudioOutput(); });
+    assert.equal(bus.soundOutputOff, false);
+    assert.deepEqual(voiceCalls, [{ type: 'none' }, '']);
+  });
+
+  it('leaving the studio with the sound off gives the voice contexts their device back', async () => {
+    world.deviceStuck = true;
+    await act(async () => { await bus.checkProgramAudio(); });
+    assert.equal(areProcessingSoundDevicesReleased(), true);
+    await act(async () => { renderer.unmount(); });
+    assert.equal(areProcessingSoundDevicesReleased(), false);
+    // The shared afterEach unmounts again; give it something to unmount.
+    await act(async () => { renderer = TestRenderer.create(h(Probe)); });
   });
 
   it('after recovery the same check says running (the clock now moves on a timer)', async () => {

@@ -40,7 +40,7 @@ export function soundOutputOffNotice(test: boolean): string {
 }
 
 /** The small marker that stays while the output is off and a broadcast is running. */
-export const SOUND_OUTPUT_OFF_MARKER = 'Sound effects, music and clips are not playing on this computer. Viewers still hear everything. Check the sound output device, then press "Turn sound back on".';
+export const SOUND_OUTPUT_OFF_MARKER = 'Sound effects, music and clips are not playing on this computer. Viewers still hear everything. Check the sound output device, then press "Turn sound back on". The broadcast may pause for a few seconds while the sound switches back.';
 /** The marker when no broadcast is running (nobody is watching, so it says nothing about viewers). */
 export const SOUND_OUTPUT_OFF_IDLE_MARKER = 'Sound is off on this computer (sound effects, music and clips). Check the sound output device, then press "Turn sound back on".';
 
