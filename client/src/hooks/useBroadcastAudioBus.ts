@@ -44,7 +44,7 @@ export interface BroadcastAudioBus {
    * Is the audio clock moving? Resumes the context if needed, looks at the
    * clock for about 1.2 s. If it is stuck, takes the sound device away from
    * the context (Chrome setSinkId none), which runs it on a timer, and looks
-   * again. Takes about 3 s at most and never throws.
+   * again, twice if needed. Takes about 6 s at most and never throws.
    */
   checkProgramAudio: () => Promise<ProgramAudioCheck>;
   /** Give the sound device back. True when the sound is on again; false when it stays off. */

@@ -44,6 +44,12 @@ export const AUDIO_CLOCK_SINK_TIMEOUT_MS = 1_000;
  * be tried out, so the switch gets the benefit of the doubt once.
  */
 export const AUDIO_CLOCK_SECOND_LOOK_MS = 1_500;
+/**
+ * How long the switch back to the default sound device may take to answer.
+ * Longer than the other calls: a device can be slow to open, and only a switch
+ * that has answered counts (see restoreAudioOutputClock).
+ */
+export const AUDIO_CLOCK_RESTORE_SINK_TIMEOUT_MS = 3_000;
 
 export function judgeAudioClock(input: {
   /** The context state, read after any resume. */
@@ -84,6 +90,8 @@ export interface AudioClockDeps {
   callTimeoutMs?: number;
   /** How long a sound-device switch may take (default AUDIO_CLOCK_SINK_TIMEOUT_MS). */
   sinkCallTimeoutMs?: number;
+  /** How long the switch back to the default device may take (default AUDIO_CLOCK_RESTORE_SINK_TIMEOUT_MS). */
+  restoreSinkTimeoutMs?: number;
 }
 
 export interface AudioClockResult extends ProgramAudioCheck {
@@ -123,15 +131,20 @@ async function watchClock(context: ClockedAudioContext, windowMs: number, deps: 
   return judgeAudioClock({ state: context.state, before, after, elapsedMs: deps.now() - startedAt });
 }
 
-function switchSink(context: ClockedAudioContext, sinkId: string | { type: 'none' }, deps: AudioClockDeps): Promise<CallResult> {
+function switchSink(
+  context: ClockedAudioContext,
+  sinkId: string | { type: 'none' },
+  deps: AudioClockDeps,
+  timeoutMs = deps.sinkCallTimeoutMs ?? AUDIO_CLOCK_SINK_TIMEOUT_MS
+): Promise<CallResult> {
   if (typeof context.setSinkId !== 'function') return Promise.resolve('failed');
-  return callWithin(() => context.setSinkId!(sinkId), deps.sinkCallTimeoutMs ?? AUDIO_CLOCK_SINK_TIMEOUT_MS);
+  return callWithin(() => context.setSinkId!(sinkId), timeoutMs);
 }
 
 /**
  * Resume if needed, look at the clock for about 1.2 s. If it does not move,
  * take the sound device away from the context and look again for 0.8 s, and
- * once more for 1.5 s if it still does not move. Takes about 5.5 s at most (a
+ * once more for 1.5 s if it still does not move. Takes about 6 s at most (a
  * resume that does not answer is given 0.4 s, a device switch 1 s) and never
  * throws. A device switch that has not answered in time is not counted as a
  * failure: it may land a moment later, so the clock is watched as if it had and
@@ -168,21 +181,20 @@ export async function checkProgramAudioClock(context: ClockedAudioContext, deps:
  * still runs. If it does not, go back to no sound device. True when the sound
  * is back on; false when it stays off. Never throws.
  *
- * A device that is slow to open (the switch had not answered within its limit)
- * gets a second, longer look before the studio gives up on it. A device that
- * took the switch and still does not run is given up on after the first look,
- * so a dead device freezes the program sound for as short a time as possible.
+ * Only a switch that has answered counts. While the switch is still on its way
+ * the context keeps running on its timer, so a moving clock would prove nothing
+ * about the device: trusting it would report a dead device as restored. A
+ * device that is slow to open gets 3 s to answer. A device that took the switch
+ * and does not run is given up on after one look, so a dead device freezes the
+ * program sound for as short a time as possible.
  */
 export async function restoreAudioOutputClock(context: ClockedAudioContext, deps: AudioClockDeps): Promise<{ restored: boolean; outputOff: boolean }> {
   if (typeof context.setSinkId !== 'function') return { restored: false, outputOff: true };
   try {
-    const switched = await switchSink(context, '', deps);
-    if (switched !== 'failed') {
+    const switched = await switchSink(context, '', deps, deps.restoreSinkTimeoutMs ?? AUDIO_CLOCK_RESTORE_SINK_TIMEOUT_MS);
+    if (switched === 'ok') {
       await resumeIfNeeded(context, deps);
       if (await watchClock(context, AUDIO_CLOCK_WINDOW_MS, deps) === 'running') {
-        return { restored: true, outputOff: false };
-      }
-      if (switched === 'timeout' && await watchClock(context, AUDIO_CLOCK_SECOND_LOOK_MS, deps) === 'running') {
         return { restored: true, outputOff: false };
       }
     }

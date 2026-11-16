@@ -93,7 +93,7 @@ resume. `useBroadcastAudioBus` wraps it:
   clock stuck ends the broadcast, and a real stuck device could not be tried
   out, so the switch gets the benefit of the doubt once). Then
   `{ state: "recovered" }` or `{ state: "stuck" }`. The whole check takes about
-  5.5 s at most. A resume that never answers is given up after 0.4 s. The device switch is the recovery itself and
+  6 s at most. A resume that never answers is given up after 0.4 s. The device switch is the recovery itself and
   may be slow on a stuck output: it is given 1 s, and if it still has not
   answered that is not a failure (it may land a moment later): the clock is
   watched as if it had, and the output is reported as off. Only a switch that
@@ -102,10 +102,14 @@ resume. `useBroadcastAudioBus` wraps it:
   Only one check or restore runs at a time.
 - `restoreAudioOutput()`: `setSinkId("")` (the default device), check the clock
   for 1.2 s; if it is stuck again, back to `{ type: "none" }` and report false.
-  A device that is slow to open (the switch had not answered within its 1 s)
-  gets a second look of 1.5 s first. A device that took the switch and still
-  does not run is given up on after the first look, so a dead device freezes
-  the program sound for as short a time as possible (about 1.2 s).
+  Only a switch that has answered counts: while it is still on its way the
+  context keeps running on its timer, so a moving clock would prove nothing
+  about the device. (A first version trusted the clock there and could report a
+  dead device as restored, then freeze the broadcast for 10 s until the
+  watchdog rescued it again. The review caught it.) A device that is slow to
+  open gets 3 s to answer. A device that took the switch and does not run is
+  given up on after one look, so a dead device freezes the program sound for as
+  short a time as possible (about 1.2 s).
 - `soundOutputOff` (state the hook returns): true while the bus context has no
   sound device. A new context starts with the sound on.
 - Whenever the output is off and no broadcast runs (the broadcast ended, or the
@@ -185,9 +189,11 @@ All with the existing toasts and notice area, no new panel.
   older causes.)
 
 Pressing "Turn sound back on" while the device is still stuck freezes the
-broadcast's audio clock for about 1.3 s while the check runs (longer, up to
-about 3.7 s, for a device that does not even answer the switch). The marker
-says so while a broadcast is running.
+broadcast's audio clock for about 1.3 s while the check runs, if the device
+takes the switch. A device that does not even answer the switch is given up on
+after 3 s; whether the program sound pauses during that wait depends on how
+Chrome handles a switch that is on its way, which was not observed. The marker
+says, while a broadcast is running, that it may pause for a few seconds.
 
 ## Tests and checks
 
@@ -228,6 +234,11 @@ says so while a broadcast is running.
   during a recovered sound-output failure; it should be fine, the context then
   runs on a timer). Not listened to. In normal use the voice context is not
   changed.
+- That the switch of a voice context to no sound device really lands. It is
+  sent and not checked afterwards (the studio's own context is checked). If it
+  failed on a real device, the host's own voice would be missing from a
+  broadcast that otherwise came back, while the marker says viewers hear
+  everything.
 - A background browser tab: the poll and the check's waits are ordinary timers,
   which Chrome may slow down in a tab that has been hidden for a long time.
   A host with guests (live video and audio) is not affected; a solo host with

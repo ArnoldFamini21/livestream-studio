@@ -333,6 +333,29 @@ describe('processed microphone with AI noise removal', () => {
     }
   });
 
+  it('leaves nothing behind when building the voice chain fails half-way', () => {
+    install();
+    resetSoundDevicePolicyForTests();
+    const sinkCalls: unknown[] = [];
+    class BrokenContext extends FakeAudioContext {
+      setSinkId(id: unknown) { sinkCalls.push(id); return Promise.resolve(); }
+      createMediaStreamSource(): never { throw new Error('no source'); }
+    }
+    Object.assign(globalThis, { AudioContext: BrokenContext });
+    (globalThis as unknown as { window: { AudioContext: unknown } }).window.AudioContext = BrokenContext;
+    try {
+      const result = createEnhancedAudioStream(input(), prefs, { createDenoiser: async () => new FakeNode() as unknown as AudioNode });
+      assert.equal(result.enhanced, false, 'it falls back to the plain microphone');
+      const context = fakeContexts[fakeContexts.length - 1];
+      assert.equal(context.state, 'closed', 'the half-built voice context is closed');
+      releaseProcessingSoundDevices();
+      assert.deepEqual(sinkCalls, [], 'and the sound device policy has forgotten it');
+    } finally {
+      resetSoundDevicePolicyForTests();
+      restore();
+    }
+  });
+
   it('still works where the browser has no setSinkId, or setSinkId fails', async () => {
     install();
     resetSoundDevicePolicyForTests();

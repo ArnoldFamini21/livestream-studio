@@ -58,8 +58,10 @@ interface FakeOptions {
   sinkHangs?: boolean;
   /** setSinkId does not answer within the limit, and the device change lands this long after the call. */
   sinkLandsAfterMs?: number;
-  /** While a device change is on its way the clock does not move (a device that is slow to open). */
-  clockPausedWhileSwitching?: boolean;
+  /** The context starts with no sound device, as after a rescue (its clock then runs on a timer). */
+  startOnNone?: boolean;
+  /** How long the switch back to the default device may take in this world (default 5 ms). */
+  restoreLimitMs?: number;
   /** Even with no sound device the clock does not move. */
   neverTicks?: boolean;
   /** The clock cannot be read. */
@@ -70,12 +72,11 @@ interface FakeOptions {
 function fakeWorld(options: FakeOptions = {}) {
   const world = { wallMs: 0, sleeps: [] as number[] };
   const sinkCalls: Array<string | { type: 'none' }> = [];
-  let sink: string | { type: 'none' } = '';
+  let sink: string | { type: 'none' } = options.startOnNone ? { type: 'none' } : '';
   let pendingSink: { id: string | { type: 'none' }; atMs: number } | null = null;
   let audioTime = 0;
   const ticks = () => {
     if (options.neverTicks) return false;
-    if (options.clockPausedWhileSwitching && pendingSink) return false;
     const noDevice = typeof sink === 'object' && sink.type === 'none';
     return noDevice || !options.deviceStuck;
   };
@@ -109,6 +110,7 @@ function fakeWorld(options: FakeOptions = {}) {
     // A call that never answers is given up on after 5 ms here (0.4 s for real).
     callTimeoutMs: 5,
     sinkCallTimeoutMs: 5,
+    restoreSinkTimeoutMs: options.restoreLimitMs ?? 5,
     now: () => world.wallMs,
     sleep: (ms) => {
       world.sleeps.push(ms);
@@ -256,15 +258,23 @@ describe('restoreAudioOutputClock', () => {
     assert.deepEqual(sinkCalls, ['', { type: 'none' }]);
   });
 
-  it('a default device that is slow to open is still restored: it gets a second look', async () => {
-    // The switch back lands 2 s after the call (after the 1.2 s look, inside the 1.5 s one),
-    // and the clock stands still until it has.
-    const { context, deps, world, sinkCalls, currentSink } = fakeWorld({ sinkLandsAfterMs: 2_000, clockPausedWhileSwitching: true });
+  it('a default device that is slow to answer is still restored: the switch back gets longer than the other calls', async () => {
+    // The device takes the switch at once but answers only after 40 ms: too slow for the
+    // other calls in this world (5 ms), in time for the switch back (500 ms here, 3 s for real).
+    const { context, deps, world, sinkCalls, currentSink } = fakeWorld({ startOnNone: true, sinkAnswersLate: true, restoreLimitMs: 500 });
     const result = await restoreAudioOutputClock(context, deps);
     assert.deepEqual(result, { restored: true, outputOff: false });
-    assert.deepEqual(world.sleeps, [1_200, 1_500]);
+    assert.deepEqual(world.sleeps, [1_200]);
     assert.deepEqual(sinkCalls, ['']);
     assert.equal(currentSink(), '');
+  });
+
+  it('the same slow device is not restored when the switch back is given no extra time', async () => {
+    const { context, deps, world, sinkCalls } = fakeWorld({ startOnNone: true, sinkAnswersLate: true });
+    const result = await restoreAudioOutputClock(context, deps);
+    assert.deepEqual(result, { restored: false, outputOff: true });
+    assert.deepEqual(world.sleeps, [], 'a switch that has not answered is never judged by the clock');
+    assert.deepEqual(sinkCalls, ['', { type: 'none' }]);
   });
 
   it('a default device that took the switch and does not run is given up on after one look', async () => {
@@ -273,12 +283,20 @@ describe('restoreAudioOutputClock', () => {
     assert.deepEqual(world.sleeps, [1_200], 'a dead device freezes the program sound for as short a time as possible');
   });
 
-  it('a default device that never answers is given up on after the second look, and the sound stays off', async () => {
-    const { context, deps, world, sinkCalls } = fakeWorld({ sinkHangs: true, deviceStuck: true });
+  it('a switch back that never answers is not a restore, even though the clock still runs on its timer', async () => {
+    // After a rescue the context has no sound device and its clock runs on a timer. The host
+    // presses "Turn sound back on" and the switch to the dead device never answers. The clock
+    // keeps running the whole time, which says nothing about the device.
+    const { context, deps, world, sinkCalls, currentSink } = fakeWorld({ startOnNone: true, deviceStuck: true, sinkHangs: true });
+    await deps.sleep(1_000);
+    assert.ok(context.currentTime >= 0.99, 'the clock runs on the timer before the switch');
+    world.sleeps.length = 0;
+
     const result = await restoreAudioOutputClock(context, deps);
     assert.deepEqual(result, { restored: false, outputOff: true });
-    assert.deepEqual(world.sleeps, [1_200, 1_500]);
+    assert.deepEqual(world.sleeps, [], 'the running clock is not taken as proof: it is not even looked at');
     assert.deepEqual(sinkCalls, ['', { type: 'none' }]);
+    assert.deepEqual(currentSink(), { type: 'none' });
   });
 
   it('keeps saying the output is off when there is no setSinkId to restore with', async () => {
