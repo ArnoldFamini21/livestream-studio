@@ -5,6 +5,7 @@ import {
   type AiNoiseRemovalStatus,
 } from './aiNoiseRemoval.ts';
 import { usesAiNoiseRemoval } from './audioProcessing.ts';
+import { registerProcessingAudioContext } from '../audio/soundDevicePolicy.ts';
 
 type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext;
 
@@ -160,9 +161,19 @@ export function createEnhancedAudioStream(
   const AudioContextConstructor = getAudioContextConstructor();
   if (!AudioContextConstructor) return passthrough();
 
+  // What a failure half-way must not leave behind.
+  let startedContext: AudioContext | null = null;
+  let forgetStartedContext: (() => void) | null = null;
+  let startedGateTimer: number | null = null;
+
   try {
     const profile = getVoiceEnhancementProfile(preferences);
     const audioContext = createVoiceAudioContext(AudioContextConstructor);
+    // The voice context only feeds the broadcast and the guests; it never plays to the speakers.
+    // It stays on the default sound device unless the studio had to switch its sound output off.
+    startedContext = audioContext;
+    const forgetAudioContext = registerProcessingAudioContext(audioContext);
+    forgetStartedContext = forgetAudioContext;
     const source = audioContext.createMediaStreamSource(new MediaStream([sourceTrack]));
     const analyser = audioContext.createAnalyser();
     analyser.fftSize = 512;
@@ -214,10 +225,12 @@ export function createEnhancedAudioStream(
         gateState.open ? profile.gateOpenTimeConstant : profile.gateCloseTimeConstant
       );
     }, 40);
+    startedGateTimer = gateTimer;
 
     const outputTrack = destination.stream.getAudioTracks()[0] || null;
     if (!outputTrack) {
       window.clearInterval(gateTimer);
+      forgetAudioContext();
       void audioContext.close();
       return passthrough();
     }
@@ -274,12 +287,22 @@ export function createEnhancedAudioStream(
         try { compressor.disconnect(); } catch { /* already disconnected */ }
         outputTrack.stop();
         if (stopSource) sourceTrack.stop();
+        forgetAudioContext();
         if (audioContext.state !== 'closed') {
           void audioContext.close();
         }
       },
     };
   } catch {
+    // Building the voice chain failed half-way: fall back to the plain microphone and leave
+    // nothing behind (no timer, no open context, no entry in the sound device policy).
+    try {
+      if (startedGateTimer !== null) window.clearInterval(startedGateTimer);
+      forgetStartedContext?.();
+      if (startedContext && startedContext.state !== 'closed') void startedContext.close().catch(() => {});
+    } catch {
+      // Nothing more can be done about a context that will not close.
+    }
     return passthrough();
   }
 }
