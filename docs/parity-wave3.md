@@ -11,7 +11,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P1.4** Configurable multistream destinations, health and presets (PR #360, verified locally; see below)
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
 - [x] **P1.6** Merged on-screen chat overlay, questions and export (PR #361, verified locally; see below)
-- [ ] **P1.7** Moderated viewer chat, reactions and Q&A
+- [x] **P1.7** Moderated viewer chat, reactions and Q&A (switches off by default; see below and docs/notes/viewer-chat.md)
 - [ ] **P1.8** Signed watch-page registration and HLS authorization
 - [ ] **P1.9** Audience call-ins through the green room
 - [ ] **P1.10** Reusable studios, synced scenes and scene folders
@@ -532,6 +532,56 @@ logged anywhere new.
 **Not verified.** A real YouTube or Facebook destination (the listener is a local dummy
 that never answers); a long hold close to 3 minutes; `e2e/studio.test.mjs` was not
 changed (it has no media server in CI).
+
+## P1.7 — viewer chat, reactions and questions on the watch page
+
+The watch page can now carry a live chat, reactions and "Ask a question". It is the
+first way for anonymous members of the public to write into a live church
+broadcast, so all three are **off until the host turns them on**, and the server,
+not the page, decides everything. Full detail, the numbers and the load estimate
+are in `docs/notes/viewer-chat.md`.
+
+- **Rules** (`shared/src/viewerChat.ts`, pure, clock passed in): plain-text
+  cleaning (name 40, message 300, no markup, no clickable links, control and
+  direction characters removed), the English and Tagalog word filter (masks, never
+  drops), per-viewer, per-network and per-room limits, the "same message twice"
+  refusal, the one rule for which studio messages viewers may see
+  (`isWatchPublicStudioMessage`, built on the on-screen chat's own public rule),
+  the cursor feed and the poll-interval hint.
+- **Server** (`server/src/services/viewerChat.ts`, `routes/watch.ts`, wiring in
+  `signaling.ts`): plain HTTP like poll voting. `GET /api/watch/:id/live?after=&epoch=`
+  returns chat, removals, reaction counts and the three switches in one small
+  answer; `POST .../chat`, `.../reactions`, `.../questions` take a 2 kB body (415,
+  400 and 413 answered plainly). Viewer id from the browser plus a salted hash of
+  the address as the network key; neither is stored raw, logged or sent on. Kept
+  in memory for the life of the room (switches, blocks, about 200 viewer
+  messages), like the on-screen chat settings.
+- **Watch page** (`WatchChatPanel.tsx`, `useWatchLive.ts`, `watchViewerChat.ts`):
+  asks every 4 seconds (the server may say slower; 15 seconds or more while the
+  tab is hidden), shows each part only while its switch is on, reactions float
+  over the picture.
+- **Studio**: the three switches and the blocked list (`ViewerChatControls.tsx`,
+  `useViewerChat.ts`) under the on-screen chat controls; viewer messages enter
+  the studio chat as an outside source (platform `watch`) marked "Viewer", on the
+  on-screen chat as "Viewer · name" under the existing All or Approved choice,
+  and viewer questions as "name (viewer)" in the Q&A queue; Remove and Block
+  viewer (this viewer only, or everyone on the same network, said in plain
+  words) with Unblock. Viewer reactions float on the studio preview only, never
+  in the broadcast picture. `StudioRoom.tsx` changed by wiring only.
+
+Verification: unit tests in shared, server and client; the existing suites stay
+green; a real Chromium check (`output/viewer-chat-check/check.mjs`, built app under
+the production security policy, one host and two watch pages, 16 steps) covering
+chat both ways, the on-screen chat, remove, both kinds of block and Unblock, the
+slow-down line, a question in the queue, a reaction, each switch off (control
+hidden and a hand-made request refused), a viewer named like the host, and a
+server log with none of the typed text. Screenshots at 1440x900 and 390x844 were
+looked at.
+
+Not verified: a co-host's or a stage guest's browser, real traffic and the load
+numbers (estimated from the limits in the code), a screen reader pass on the watch
+page, the pop-out chat (it shows the Viewer mark but has no Remove or Block).
+Publishing restarts the signaling server.
 
 ## Resume here next session
 
