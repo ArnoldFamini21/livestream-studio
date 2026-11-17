@@ -559,8 +559,9 @@ are in `docs/notes/viewer-chat.md`.
   or its first 64 bits (IPv6). Studio lines are kept for viewers only while chat
   is on, and the list starts empty each time chat is switched on. Questions are
   capped per viewer (3 waiting), per network (15) and per room (200 open: answered
-  and dismissed ones do not count). Whole-list reads have their own per-network
-  budget.
+  and dismissed ones do not count). Big answers (more than 20 lines, however a
+  page asks) have their own per-network budget; past it a page gets the newest
+  20 lines as a fresh list.
 - **Watch page** (`WatchChatPanel.tsx`, `useWatchLive.ts`, `watchViewerChat.ts`):
   asks every 4 seconds while any switch is on and every 20 seconds while all
   three are off (the server may say slower; 15 seconds or more while the tab is

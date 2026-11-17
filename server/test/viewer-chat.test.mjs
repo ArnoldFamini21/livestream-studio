@@ -3,11 +3,12 @@ import http from 'node:http';
 import { describe, it } from 'node:test';
 import express from 'express';
 import WebSocket, { WebSocketServer } from 'ws';
+import { VIEWER_LIVE_SMALL_ANSWER, VIEWER_POLL_MS_DEFAULT } from '@studio/shared';
 
 process.env.SIGNALING_RESUME_GRACE_MS = '300';
 
 const { watchRouter } = await import('../dist/routes/watch.js');
-const { createRoom, getRooms, setupSignalingServer } = await import('../dist/services/signaling.js');
+const { createRoom, getRoomViewerChat, getRooms, setupSignalingServer } = await import('../dist/services/signaling.js');
 const { ViewerChatError, ViewerChatRoom, networkGroupOf, networkKeyFor, viewerSenderId } = await import('../dist/services/viewerChat.js');
 
 // ---------------------------------------------------------------------------
@@ -238,25 +239,63 @@ describe('viewer chat rules', () => {
     assert.equal(room.live({}, 3000).pollMs, 20_000);
   });
 
-  it('lets one network ask for the whole list only so often, and never holds back a page that has its place', () => {
+  // Lines from different viewers and networks, so only the room ceiling (120 in 30 s) applies.
+  const fillChat = (room, count, { at = 500, from = 0 } = {}) => {
+    for (let i = 0; i < count; i += 1) room.postMessage({ viewerId: viewer(1000 + from + i), text: `Line number ${from + i}` }, `fill-${from + i}`, at + i);
+  };
+
+  it('lets one network get only so many big answers a minute, however it asks, and never holds back a page that keeps its place', () => {
     const room = new ViewerChatRoom(fakeHost());
     turnOnEverything(room);
-    room.postMessage({ viewerId: viewer(1), text: 'Hello' }, 'n', 500);
-    for (let i = 0; i < 120; i += 1) room.live({}, 1000 + i, 'script');
-    assert.throws(() => room.live({}, 2000, 'script'), (e) => code(e) === 'READ_BUSY' && e.statusCode === 429 && /busy/i.test(e.message) && e.retryAfterMs > 0);
-    assert.equal(room.live({}, 2000, 'church').messages.length, 1, 'another network is not affected');
-    const place = room.live({}, 2100, 'church');
-    for (let i = 0; i < 500; i += 1) assert.equal(room.live({ after: String(place.cursor), epoch: place.epoch }, 2200 + i, 'script').reset, false);
-    assert.equal(room.live({}, 62_500, 'script').messages.length, 1, 'allowed again a minute later');
+    fillChat(room, 60);
+    const place = room.live({}, 1000, 'church');
+    assert.equal(place.messages.length, 60, 'a fresh page gets the recent list');
+    for (let i = 0; i < 120; i += 1) assert.equal(room.live({}, 1001 + i, 'script').messages.length, 60);
+    // Past the budget: the newest few, as a fresh list, so a real page still works. No error.
+    const capped = room.live({}, 2000, 'script');
+    assert.equal(capped.reset, true);
+    assert.deepEqual(capped.messages.map((m) => m.text), place.messages.slice(-VIEWER_LIVE_SMALL_ANSWER).map((m) => m.text));
+    // A place far back is a big answer too, not a way around the budget.
+    const farBack = room.live({ after: String(place.cursor - 50), epoch: place.epoch }, 2001, 'script');
+    assert.equal(farBack.reset, true);
+    assert.equal(farBack.messages.length, VIEWER_LIVE_SMALL_ANSWER);
+    const elsewhere = room.live({ after: String(place.cursor - 50), epoch: place.epoch }, 2002, 'church');
+    assert.equal(elsewhere.reset, false, 'another network is not affected');
+    assert.equal(elsewhere.messages.length, 50);
+    // A page that keeps its place gets small answers and is never held back.
+    for (let i = 0; i < 500; i += 1) {
+      const answer = room.live({ after: String(place.cursor - 5), epoch: place.epoch }, 2100 + i, 'script');
+      assert.equal(answer.reset, false);
+      assert.equal(answer.messages.length, 5);
+    }
+    assert.equal(room.live({}, 62_500, 'script').messages.length, 60, 'allowed again a minute later');
   });
 
-  it('does not count full-list asks against a network while the list is empty or chat is off', () => {
+  it('does not spend the big-answer budget on short lists or while chat is off', () => {
     const room = new ViewerChatRoom(fakeHost());
     room.applySwitches({ chat: true });
     for (let i = 0; i < 300; i += 1) room.live({}, 1000 + i, 'script');
-    room.postMessage({ viewerId: viewer(1), text: 'Hello' }, 'n', 2000);
+    fillChat(room, VIEWER_LIVE_SMALL_ANSWER, { at: 1500 });
+    for (let i = 0; i < 300; i += 1) assert.equal(room.live({}, 2000 + i, 'script').messages.length, VIEWER_LIVE_SMALL_ANSWER);
+    fillChat(room, 20, { at: 2400, from: 20 });
     room.applySwitches({ chat: false });
-    for (let i = 0; i < 300; i += 1) room.live({}, 3000 + i, 'script');
+    for (let i = 0; i < 300; i += 1) assert.equal(room.live({}, 3000 + i, 'script').messages.length, 0);
+    room.applySwitches({ chat: true });
+    fillChat(room, 40, { at: 4000, from: 200 });
+    for (let i = 0; i < 120; i += 1) assert.equal(room.live({}, 5000 + i, 'script').messages.length, 40, 'the whole budget is still there');
+    assert.equal(room.live({}, 5200, 'script').messages.length, VIEWER_LIVE_SMALL_ANSWER);
+  });
+
+  it('does not let big answers make every page slow down, while ordinary asks still measure the room', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    turnOnEverything(room);
+    fillChat(room, 30);
+    const start = room.live({}, 2000, 'page');
+    for (let i = 0; i < 2000; i += 1) room.live({}, 2001 + i * 4, `script-${i % 100}`);
+    const place = { after: String(start.cursor), epoch: start.epoch };
+    assert.equal(room.live(place, 12_500, 'page').pollMs, VIEWER_POLL_MS_DEFAULT, 'big answers did not count');
+    for (let i = 0; i < 2000; i += 1) room.live(place, 12_501 + i * 4, `page-${i % 100}`);
+    assert.ok(room.live(place, 23_000, 'page').pollMs > VIEWER_POLL_MS_DEFAULT, 'ordinary asks still count');
   });
 
   it('shows the studio\'s public messages to viewers, and only those, filtered and bounded', () => {
@@ -724,6 +763,30 @@ describe('viewer chat over HTTP and the studio connection', () => {
       assert.equal(question.highlighted, false);
       await quiet;
       assert.equal(state.qaQuestions.size, 1);
+    } finally { await servers.close(); }
+  });
+
+  it('counts only waiting viewer questions in the room limit, so answering or dismissing frees room', async () => {
+    const servers = await startWebServers();
+    try {
+      const { room, host, state } = await studio(servers, 'vc-qa-cap');
+      switchOn(host, { questions: true });
+      await waitFor(host.ws, 'viewer-chat-state', (m) => m.payload.switches.questions);
+      // The real studio behind the rules; the clock is passed in and each question has its own network,
+      // so only the room limit of 200 waiting questions applies.
+      const chat = getRoomViewerChat(room.id);
+      const ask = (text, network, at) => chat.postQuestion({ viewerId: newViewer(), name: 'Ana', text }, network, at);
+      for (let i = 0; i < 200; i += 1) ask(`Question number ${i}`, `cap-${i}`, 1_000 + i * 300);
+      assert.equal(state.qaQuestions.size, 200);
+      assert.throws(() => ask('One more please', 'cap-x', 70_000), (e) => code(e) === 'QUESTIONS_FULL');
+      const [first, second] = Array.from(state.qaQuestions.keys());
+      const done = waitFor(host.ws, 'qa-question-updated', (m) => m.payload.id === second && m.payload.status === 'answered');
+      sendMessage(host.ws, 'qa-question-update', { questionId: first, updates: { status: 'dismissed' } });
+      sendMessage(host.ws, 'qa-question-update', { questionId: second, updates: { status: 'answered' } });
+      await done;
+      assert.ok(ask('Now there is room', 'cap-y', 71_000).questionId);
+      assert.ok(ask('And room for one more', 'cap-z', 71_500).questionId);
+      assert.throws(() => ask('Full again', 'cap-w', 72_000), (e) => code(e) === 'QUESTIONS_FULL');
     } finally { await servers.close(); }
   });
 

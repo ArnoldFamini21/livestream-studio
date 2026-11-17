@@ -578,9 +578,17 @@ export const VIEWER_POLL_MS_DEFAULT = 4000;
 /** While all three switches are off a page has nothing to show, so it asks this seldom (it still notices a switch within this time). */
 export const VIEWER_POLL_MS_IDLE = 20_000;
 /**
- * A page that asks for the whole recent list (it has no place yet) costs the
- * server real work and up to ~40 kB. One address may do this this often: a
- * whole congregation can open the page together on one Wi-Fi, a script cannot.
+ * The most messages one answer carries for free. A page that keeps its place
+ * gets only what is new since it last asked, which is far fewer than this.
+ */
+export const VIEWER_LIVE_SMALL_ANSWER = 20;
+/**
+ * A big answer (more than `VIEWER_LIVE_SMALL_ANSWER` messages: a page with no
+ * place yet, or one that asks from far back) costs the server real work and up
+ * to ~40 kB. One network gets this many a minute, however it asks: a whole
+ * congregation can open the page together on one Wi-Fi, a script cannot. Past
+ * that, the page gets the newest `VIEWER_LIVE_SMALL_ANSWER` messages as a fresh
+ * list instead, so it still works and a script gets little.
  */
 export const VIEWER_FULL_READ_RULE: RateRule = { minGapMs: 0, max: 120, windowMs: 60_000 };
 /** A hidden tab asks this seldom at the most often. */

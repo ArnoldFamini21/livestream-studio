@@ -129,7 +129,7 @@ export function ViewerBlockDialog({ target, onChoose, onCancel }: {
       </button>
       <button type="button" className="viewer-block-choice" data-choice="network" onClick={() => onChoose(target, 'network')}>
         <strong>Block this viewer and everyone on the same network</strong>
-        <span>This also blocks other people on the same Wi-Fi or internet connection. At a church, that can be many people.</span>
+        <span>This also blocks other people on the same Wi-Fi, and sometimes other people on the same mobile data network. At a church, that can be many people.</span>
       </button>
       <button ref={cancelRef} type="button" className="viewer-block-cancel" onClick={onCancel}>Cancel</button>
     </div>

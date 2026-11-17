@@ -37,6 +37,9 @@ the watch page) enforces every rule.
   waiting, one network (one Wi-Fi or one IPv6 /64) 15 waiting, and the room 200
   open viewer questions at most. Only questions still waiting (pending or
   approved) count: when the host answers or dismisses them there is room again.
+  Everyone on one church Wi-Fi shares the 15: while 15 of their questions wait,
+  the next person there reads "Many questions from your connection are waiting
+  for the host" until the host answers or dismisses some.
 
 ## The numbers
 
@@ -53,7 +56,8 @@ the watch page) enforces every rule.
 | Removals kept for pages that were away | 200; reactions 120 |
 | Viewers remembered per room (to trace a message back) | 3,000, oldest first |
 | Questions waiting per viewer, per network, open in the room | 3, 15, 200 |
-| Whole-list reads (a page with no place yet) per network | 120 per minute (a congregation opening the page together fits; a script does not) |
+| Big answers (more than 20 lines: a page with no place yet, or one asking from far back) per network | 120 per minute (a congregation opening the page together fits; a script does not). Past that, the newest 20 lines as a fresh list, not an error |
+| Lines in any other answer | 20 at most |
 | Reads per address, all kinds | 2,400 per minute (about 160 devices asking every 4 seconds) |
 
 A refused attempt costs nothing, so waiting is always enough. The viewer reads
@@ -112,7 +116,9 @@ shown on air costs more. The host's remove and block are the real protection.
   a viewer who only asks questions can be blocked too) asks in plain words: block
   this viewer only (this browser; it says a private window or cleared browsing
   data gets round it), or this viewer and everyone on the same network (it says
-  this also blocks other people on the same Wi-Fi). The viewer's earlier messages and
+  this also blocks other people on the same Wi-Fi, and sometimes other people on
+  the same mobile data network, because phone carriers often share one address
+  among many customers). The viewer's earlier messages and
   waiting questions are removed, and later messages, reactions and questions are
   refused with "You can no longer post in this broadcast." The list of blocked
   viewers (name, and whether the whole network) has Unblock. Removed messages do
@@ -149,15 +155,20 @@ counter. The watch page's poll card (the existing live polls) also asks
 | 300 | about 75 per second | about 135 per second |
 | 500 | about 125 per second | about 225 per second |
 
-- The server measures its own request rate (only ordinary asks, not whole-list
-  reads) and tells pages to ask less often (6 seconds above 40 per second, 10
-  above 100, 15 above 250), so the chat load levels off even for several thousand
-  viewers. A page that is told 15 seconds sees chat 15 seconds late.
-- A page with no place yet asks for the whole recent list (up to about 40 kB when
-  the lines are long; about 9 kB for 100 short lines). One network may do that 120
-  times a minute, so a script cannot turn it into a flood of large answers: the
-  most one address can pull this way is about 5 MB a minute. A page that is refused
-  tries again a little later.
+- The server measures its own request rate (only small answers, not big ones) and
+  tells pages to ask less often (6 seconds above 40 per second, 10 above 100, 15
+  above 250), so the chat load levels off even for several thousand viewers. A
+  page that is told 15 seconds sees chat 15 seconds late.
+- A page with no place yet, or one that asks from far back, gets a big answer: up
+  to 100 lines, about 40 kB when the lines are long and about 9 kB for 100 short
+  lines. One network gets 120 big answers a minute, however it asks. Past that it
+  gets the newest 20 lines as a fresh list, so a real page still works. Every
+  other answer carries at most 20 lines. So the most one hostile address can pull
+  is 120 big answers plus 2,400 small ones a minute: about 5 MB plus about 20 MB a
+  minute (about 1.5 GB an hour) while chat is on and the list is full of long
+  lines, and almost nothing when the chat is quiet or off. For scale, that is
+  about what one extra person watching the video uses (the video itself comes
+  from the media server, not from this one).
 - Memory per room is bounded: about 250 lines at most 340 characters of text and a
   40 character name (under 150 kB), plus the identities (a few hundred kB at the
   3,000 limit). Nothing is written to disk.
@@ -200,7 +211,10 @@ from a measurement with real traffic.
 - After the review the unit tests also cover: the feed starting empty when chat is
   switched on, reactions with chat off, the question caps (a host dismissing all
   questions frees the room), blocking from a question id, IPv6 /64 and
-  IPv4-mapped addresses, the whole-list read budget, the 20 second idle hint, the
+  IPv4-mapped addresses, the big-answer budget (a page with no place and a place
+  far back alike; past it, the newest 20 lines as a fresh list), big answers not
+  slowing every page down, the room limit of 200 questions counted by the real
+  studio (answering or dismissing frees room), the 20 second idle hint, the
   "Chat is busy" wording, a masked name, the filter with zero-width joiners and
   with the words that were taken off the list, and a guest not being sent the
   switches.

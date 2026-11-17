@@ -30,6 +30,7 @@ import {
   tryRecordAction,
   tryRecordKeyed,
   VIEWER_FULL_READ_RULE,
+  VIEWER_LIVE_SMALL_ANSWER,
   type ChatMessage,
   type ChatReactionType,
   type QAQuestion,
@@ -148,7 +149,6 @@ const LINES = {
   duplicate: 'You just sent that. Please write something new.',
   questionLimit: 'You already have questions waiting for the host. Please wait for an answer.',
   questionNetworkLimit: 'Many questions from your connection are waiting for the host. Please try again in a little while.',
-  readBusy: 'Chat is busy right now. Please try again in a moment.',
   questionsFull: 'The list of questions is full right now. Please try again later.',
   badReaction: 'That reaction is not available.',
 } as const;
@@ -243,8 +243,8 @@ export class ViewerChatRoom {
   private readonly identities = new Map<string, ViewerIdentity>();
   private readonly handleByViewerId = new Map<string, string>();
   private blocks: StoredBlock[] = [];
-  /** When each network last asked for the whole recent list (the costly kind of read). */
-  private readonly fullReads = new Map<string, number[]>();
+  /** When each network last got a big answer (the costly kind of read). */
+  private readonly bigReads = new Map<string, number[]>();
   private readonly meter = createRequestRateMeter(0);
   private meterStarted = false;
   private pendingReactions: Partial<Record<ChatReactionType, number>> = {};
@@ -285,25 +285,34 @@ export class ViewerChatRoom {
       this.meterStarted = true;
     }
     const read = readViewerFeed(this.feed, query);
-    // Asking for the whole list is the costly read: one network may do it only so often. A page that
-    // holds a place (the normal case) is never held back, and a refused page just tries again later.
-    if (this.switches.chat && read.reset && read.messages.length > 0) {
-      const decision = tryRecordKeyed(this.fullReads, networkKey, now, VIEWER_FULL_READ_RULE);
-      if (!decision.allowed) throw new ViewerChatError(LINES.readBusy, 429, 'READ_BUSY', decision.retryAfterMs);
-    }
-    // Only ordinary asks measure how busy the room is, so a stranger asking for the whole list over
-    // and over cannot make every real page slow down.
-    const rate = read.reset ? this.meter.rate : noteRequest(this.meter, now);
     const switches = { ...this.switches };
+    // The place (epoch and cursor) is kept while chat is off, so reactions still reach pages; only the messages are held back.
+    let messages = switches.chat ? read.messages : [];
+    let removed = switches.chat ? read.removed : [];
+    let reactions = switches.reactions ? read.reactions : {};
+    let reset = read.reset;
+    // A big answer is the costly read, whether the page has no place yet or asks from far back: one
+    // network gets only so many a minute. Past that it gets the newest few as a fresh list, so a real
+    // page still works and a script gets little. A page that keeps its place gets small answers and is
+    // never held back.
+    const big = messages.length > VIEWER_LIVE_SMALL_ANSWER;
+    if (big && !tryRecordKeyed(this.bigReads, networkKey, now, VIEWER_FULL_READ_RULE).allowed) {
+      messages = messages.slice(-VIEWER_LIVE_SMALL_ANSWER);
+      removed = [];
+      reactions = {};
+      reset = true;
+    }
+    // Only ordinary small asks measure how busy the room is, so a stranger asking for big answers over
+    // and over cannot make every real page slow down.
+    const rate = big ? this.meter.rate : noteRequest(this.meter, now);
     return {
       epoch: read.epoch,
       cursor: read.cursor,
-      // The place (epoch and cursor) is kept while chat is off, so reactions still reach pages; only the messages are held back.
-      reset: read.reset,
+      reset,
       switches,
-      messages: switches.chat ? read.messages : [],
-      removed: switches.chat ? read.removed : [],
-      reactions: switches.reactions ? read.reactions : {},
+      messages,
+      removed,
+      reactions,
       pollMs: suggestViewerPollMs(rate, switches.chat || switches.reactions || switches.questions),
     };
   }
