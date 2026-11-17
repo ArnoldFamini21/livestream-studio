@@ -555,27 +555,37 @@ are in `docs/notes/viewer-chat.md`.
   400 and 413 answered plainly). Viewer id from the browser plus a salted hash of
   the address as the network key; neither is stored raw, logged or sent on. Kept
   in memory for the life of the room (switches, blocks, about 200 viewer
-  messages), like the on-screen chat settings.
+  messages), like the on-screen chat settings. The network is the address (IPv4)
+  or its first 64 bits (IPv6). Studio lines are kept for viewers only while chat
+  is on, and the list starts empty each time chat is switched on. Questions are
+  capped per viewer (3 waiting), per network (15) and per room (200 open: answered
+  and dismissed ones do not count). Whole-list reads have their own per-network
+  budget.
 - **Watch page** (`WatchChatPanel.tsx`, `useWatchLive.ts`, `watchViewerChat.ts`):
-  asks every 4 seconds (the server may say slower; 15 seconds or more while the
-  tab is hidden), shows each part only while its switch is on, reactions float
-  over the picture.
+  asks every 4 seconds while any switch is on and every 20 seconds while all
+  three are off (the server may say slower; 15 seconds or more while the tab is
+  hidden), shows each part only while its switch is on, reactions float over the
+  picture (also with chat off).
 - **Studio**: the three switches and the blocked list (`ViewerChatControls.tsx`,
   `useViewerChat.ts`) under the on-screen chat controls; viewer messages enter
   the studio chat as an outside source (platform `watch`) marked "Viewer", on the
   on-screen chat as "Viewer · name" under the existing All or Approved choice,
   and viewer questions as "name (viewer)" in the Q&A queue; Remove and Block
   viewer (this viewer only, or everyone on the same network, said in plain
-  words) with Unblock. Viewer reactions float on the studio preview only, never
+  words; also on a viewer's question in the Q&A panel) with Unblock, and a
+  warning with a one-click "Show only approved comments" when viewer messages
+  would go straight on air. Viewer reactions float on the studio preview only, never
   in the broadcast picture. `StudioRoom.tsx` changed by wiring only.
 
 Verification: unit tests in shared, server and client; the existing suites stay
 green; a real Chromium check (`output/viewer-chat-check/check.mjs`, built app under
-the production security policy, one host and two watch pages, 16 steps) covering
-chat both ways, the on-screen chat, remove, both kinds of block and Unblock, the
-slow-down line, a question in the queue, a reaction, each switch off (control
-hidden and a hand-made request refused), a viewer named like the host, and a
-server log with none of the typed text. Screenshots at 1440x900 and 390x844 were
+the production security policy, one host and two watch pages, 18 steps) covering
+chat both ways, the on-screen chat and its warning, remove, both kinds of block
+and Unblock, blocking a viewer who only asks questions, the slow-down line, a
+question in the queue, a reaction (also with chat off), studio lines written
+before chat was on staying hidden, each switch off (control hidden and a
+hand-made request refused), a viewer named like the host, and a server log with
+none of the typed text. Screenshots at 1440x900 and 390x844 were
 looked at.
 
 Not verified: a co-host's or a stage guest's browser, real traffic and the load
