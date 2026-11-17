@@ -157,6 +157,7 @@ import {
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { ChatOverlayPreview } from './ChatOverlayPreview.tsx';
 import { useChatOverlay } from '../hooks/useChatOverlay.ts';
+import { useViewerChat } from '../hooks/useViewerChat.ts';
 import { OVERLAY_FONT_FAMILY } from '../utils/compositorOverlays.ts';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
 import { WidgetOverlayDisplay, type WidgetOverlayData } from './WidgetOverlay.tsx';
@@ -1988,6 +1989,8 @@ export function StudioRoom() {
     chatMessages,
     participants,
   });
+  // Watch page viewers: the switches, blocks and reaction counts the server keeps (preview only, never the broadcast).
+  const viewerChat = useViewerChat({ send, addHandler, canControl: canUseOperatorControls });
   const chatOverlayFontFamily = brandFontState.fontFamily || OVERLAY_FONT_FAMILY;
   const compositorChatOverlay = useMemo(
     () => (chatOverlay.comments.length > 0 ? { comments: chatOverlay.comments, settings: chatOverlay.layoutSettings } : null),
@@ -3026,6 +3029,13 @@ export function StudioRoom() {
         case 'chat-message':
           setChatMessages((prev) => upsertChatMessage(prev, message.payload));
           break;
+        case 'chat-message-removed': {
+          // Removed by the host (or its writer was blocked): gone from the list, the on-screen chat and the stage.
+          const removedId = message.payload.messageId;
+          setChatMessages((prev) => prev.filter((chatMessage) => chatMessage.id !== removedId));
+          setHighlightedComment((current) => (current && (current.id === removedId || current.sourceMessageId === removedId) ? null : current));
+          break;
+        }
         case 'chat-message-updated':
           setChatMessages((prev) => prev.map((chatMessage) => (
             chatMessage.id === message.payload.id ? message.payload : chatMessage
@@ -3407,6 +3417,13 @@ export function StudioRoom() {
         // The on-screen chat is handled by useChatOverlay.
         case 'chat-overlay-update':
         case 'chat-overlay-updated':
+        // Viewer chat switches and blocks are handled by useViewerChat.
+        case 'viewer-chat-settings-update':
+        case 'viewer-chat-state':
+        case 'viewer-chat-remove':
+        case 'viewer-chat-block':
+        case 'viewer-chat-unblock':
+        case 'viewer-reactions':
         case 'stage-action':
         case 'chat-star-update':
         case 'chat-pin-update':
@@ -7855,6 +7872,8 @@ export function StudioRoom() {
 
                 {/* Floating Reaction Overlay */}
                 <ReactionOverlay reactions={floatingReactions} />
+                {/* Reactions from the watch page: this screen only, never drawn into the broadcast picture. */}
+                <ReactionOverlay reactions={viewerChat.floatingReactions} />
 
                 {/* Live Caption Overlay */}
                 <LiveCaptionOverlay
@@ -8284,6 +8303,7 @@ export function StudioRoom() {
             onFlashComment={onFlashComment}
             onDismissComment={onDismissComment}
             chatOverlay={canUseOperatorControls ? { state: chatOverlay.state, onUpdate: chatOverlay.update, onSetPaused: chatOverlay.setPaused, serverSupported: chatOverlay.serverSupported } : undefined}
+            viewerChat={canUseOperatorControls ? { state: viewerChat.state, serverSupported: viewerChat.serverSupported, onSetSwitch: viewerChat.setSwitch, onRemove: viewerChat.removeMessage, onBlock: viewerChat.blockViewer, onUnblock: viewerChat.unblock } : undefined}
             chatPanelMessages={chatMessages}
             onSendChat={onSendChat}
             onReactChat={onReactChat}

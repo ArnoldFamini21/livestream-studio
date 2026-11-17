@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { QAQuestion } from '@studio/shared';
+import { questionAuthorLabel } from '../utils/viewerQuestionLabel.ts';
 export type { QAQuestion };
 
 // ---------------------------------------------------------------------------
@@ -141,7 +142,7 @@ export function WebinarQAPanel({
             {/* Question header */}
             <div style={panelStyles.questionHeader}>
               <div style={panelStyles.questionMeta}>
-                <span style={panelStyles.authorName}>{q.authorName}</span>
+                <span style={panelStyles.authorName}>{questionAuthorLabel(q)}</span>
                 <span style={panelStyles.timestamp}>
                   {new Date(q.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
@@ -318,7 +319,7 @@ export function WebinarQAOverlay({ question }: WebinarQAOverlayProps) {
           <span style={overlayStyles.qLabel}>Q:</span>
           <span style={overlayStyles.qText}>{question.content}</span>
         </div>
-        <span style={overlayStyles.author}>— {question.authorName}</span>
+        <span style={overlayStyles.author}>— {questionAuthorLabel(question)}</span>
         {question.status === 'answered' && question.answer && (
           <div style={overlayStyles.answerRow}>
             <span style={overlayStyles.aLabel}>A:</span>
@@ -429,7 +430,7 @@ export function WebinarQAAudience({
               {/* Question content */}
               <div style={audienceStyles.questionBody}>
                 <div style={audienceStyles.questionMeta}>
-                  <span style={audienceStyles.authorName}>{q.authorName}</span>
+                  <span style={audienceStyles.authorName}>{questionAuthorLabel(q)}</span>
                   <span style={audienceStyles.timestamp}>
                     {new Date(q.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>

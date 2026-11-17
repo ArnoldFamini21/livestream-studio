@@ -54,6 +54,7 @@ import { loadCanvasFonts } from '../utils/canvasFonts.ts';
 import { getContextCanvasSize, getProgramCanvasSize } from '../utils/compositorCanvasSize.ts';
 import { drawStageBackground } from '../utils/compositorBackground.ts';
 import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
+import { questionAuthorLabel } from '../utils/viewerQuestionLabel.ts';
 import { drawWidgetCaptureFrame, WIDGET_CAPTURE_ATTRIBUTE, type WidgetCaptureSources } from '../utils/widgetTabCapture.ts';
 
 /** The program's frame rate: the canvas stream and the draw timer. */
@@ -907,7 +908,7 @@ function drawBroadcastQA(
   const authorY = y + padding + questionLines.length * 36 + 22;
   ctx.fillStyle = 'rgba(255, 255, 255, 0.58)';
   ctx.font = 'italic 22px Inter, Arial, sans-serif';
-  ctx.fillText(`- ${truncateCanvasText(ctx, question.authorName, width - padding * 2)}`, x + padding + 42, authorY);
+  ctx.fillText(`- ${truncateCanvasText(ctx, questionAuthorLabel(question), width - padding * 2)}`, x + padding + 42, authorY);
 
   if (answerLines.length > 0) {
     const answerTop = authorY + 30;
