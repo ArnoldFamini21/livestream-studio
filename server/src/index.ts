@@ -101,10 +101,14 @@ app.use(
 // Browsers never compress request bodies; refusing gzip/deflate bodies closes the
 // decompression-bomb path in body-parser (GHSA-27r3-jxmh-p828).
 const parseJsonBody = express.json({ limit: '256kb', inflate: false });
+const VIEWER_WRITE_PATH = /^\/api\/watch\/[^/]+\/(?:chat|questions|reactions)\/?$/i;
+const VIEWER_LIVE_PATH = /^\/api\/watch\/[^/]+\/live\/?$/i;
 app.use((req, res, next) => {
   // Diagnostic JSON is parsed privately below. Besides enforcing its smaller
   // size budget, this avoids body-parser logging a malformed payload excerpt.
   if (/^\/api\/client-errors\/?$/i.test(req.path)) next();
+  // Viewer chat posts have their own 2 kB intake (and plain 400/413/415 answers) in the watch routes.
+  else if (VIEWER_WRITE_PATH.test(req.path)) next();
   else parseJsonBody(req, res, next);
 });
 
@@ -166,6 +170,11 @@ const ACCOUNT_CREDENTIAL_LIMIT_MAX = 10; // 10 sign-in/password attempts per min
 const STAGE_IMAGE_LIMIT_MAX = 600; // slide pictures read and uploaded per minute per IP
 const ICE_CONFIG_LIMIT_MAX = 120; // connection setups per minute per IP
 const WATCH_POLL_LIMIT_MAX = 1200; // watch-page poll reads and votes per minute per IP (shared venue Wi-Fi)
+// Viewer chat (P1.7). A whole congregation can share one public address, and every watch page asks for chat
+// every few seconds, so the read budget is large; the real limits per viewer, network and room are in the
+// chat service. Writes are small and already capped there, so this is only a backstop for one address.
+const WATCH_LIVE_LIMIT_MAX = 6000; // watch-page chat reads per minute per IP
+const WATCH_VIEWER_WRITE_LIMIT_MAX = 1500; // watch-page chat, reaction and question posts per minute per IP
 
 interface RateEntry {
   count: number;
@@ -224,6 +233,8 @@ const accountCredentialLimiter = makeRateLimiter(ACCOUNT_CREDENTIAL_LIMIT_MAX);
 const stageImageLimiter = makeRateLimiter(STAGE_IMAGE_LIMIT_MAX);
 const iceConfigLimiter = makeRateLimiter(ICE_CONFIG_LIMIT_MAX);
 const watchPollLimiter = makeRateLimiter(WATCH_POLL_LIMIT_MAX);
+const watchLiveLimiter = makeRateLimiter(WATCH_LIVE_LIMIT_MAX);
+const watchViewerWriteLimiter = makeRateLimiter(WATCH_VIEWER_WRITE_LIMIT_MAX);
 
 const STAGE_IMAGE_PATH = /^\/api\/rooms\/[^/]+\/stage-images(\/[^/]+)?$/;
 app.use((req, res, next) => {
@@ -239,6 +250,14 @@ app.use((req, res, next) => {
     watchPollLimiter.middleware(req, res, next);
     return;
   }
+  if (VIEWER_LIVE_PATH.test(req.path)) {
+    watchLiveLimiter.middleware(req, res, next);
+    return;
+  }
+  if (VIEWER_WRITE_PATH.test(req.path)) {
+    watchViewerWriteLimiter.middleware(req, res, next);
+    return;
+  }
   generalLimiter.middleware(req, res, next);
 });
 
@@ -252,6 +271,8 @@ const rateLimitSweepTimer = setInterval(() => {
   stageImageLimiter.sweep();
   iceConfigLimiter.sweep();
   watchPollLimiter.sweep();
+  watchLiveLimiter.sweep();
+  watchViewerWriteLimiter.sweep();
 }, 5 * 60_000);
 
 // REST API routes — room creation gets its own tighter cap.
@@ -279,7 +300,7 @@ app.use('/api/rooms', (req, res, next) => {
 app.use('/api/watch', (req, res, next) => {
   // Poll reads and votes are capped by the looser limiter above (a whole venue
   // can share one address); everything else posted here shares the room budget.
-  if (/^\/[^/]+\/poll(-votes)?$/.test(req.path)) {
+  if (/^\/[^/]+\/(?:poll(?:-votes)?|chat|questions|reactions)\/?$/i.test(req.path)) {
     next();
     return;
   }
