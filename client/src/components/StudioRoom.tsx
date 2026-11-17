@@ -8355,6 +8355,7 @@ export function StudioRoom() {
             onHighlight={onHighlightQuestion}
             onUnhighlight={onUnhighlightQuestion}
             onClose={() => setShowWebinarQA(false)}
+            onBlockViewer={viewerChat.serverSupported ? viewerChat.blockViewer : undefined}
           />
           </PanelErrorBoundary>
         )}

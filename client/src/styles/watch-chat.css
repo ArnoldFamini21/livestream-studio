@@ -16,9 +16,9 @@
 .watch-chat-name-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: rgba(244, 244, 248, 0.7); }
 .watch-chat-name-field input,
 .watch-chat-row input,
-.watch-chat-form textarea { padding: 10px 12px; border-radius: 9px; border: 1px solid rgba(255, 255, 255, 0.14); background: #0b0d14; color: #fff; font: inherit; font-size: 15px; box-sizing: border-box; min-width: 0; }
+.watch-chat-form textarea { padding: 10px 12px; border-radius: 9px; border: 1px solid rgba(255, 255, 255, 0.14); background: #0b0d14; color: #fff; font: inherit; font-size: 16px; box-sizing: border-box; min-width: 0; }
 .watch-chat-form textarea { resize: vertical; width: 100%; }
-.watch-chat-name-field input { font-size: 14px; padding: 8px 10px; }
+.watch-chat-name-field input { font-size: 16px; padding: 8px 10px; }
 .watch-chat-row { display: flex; gap: 8px; }
 .watch-chat-row input { flex: 1; }
 .watch-chat-row button,

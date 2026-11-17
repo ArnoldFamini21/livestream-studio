@@ -6,6 +6,7 @@ import { FLASH_COMMENT_DURATION_MS, createHighlightedCommentFromChatMessage, isH
 import { buildChatTranscriptCsv, buildChatTranscriptFilename, buildChatTranscriptTxt, type ChatTranscriptFormat, type ChatTranscriptScope } from '../utils/chatTranscript.ts';
 import { ChatOverlayControls, type ChatOverlayPanelProps } from './ChatOverlayControls.tsx';
 import { ViewerBlockDialog, ViewerChatControls, type ViewerChatPanelProps } from './ViewerChatControls.tsx';
+import { pinnedNoteText, publicChatNote } from '../utils/viewerChatNotes.ts';
 import { formatChatTypingNames } from '../utils/chatTyping.ts';
 import { getExternalChatPlatformMetrics } from '../utils/externalChatMetrics.ts';
 import { MAX_CHAT_MESSAGE_LENGTH, getChatDraftKey, getStudioChatMessages, prepareStudioChatMessage } from '../utils/chatWorkspace.ts';
@@ -199,7 +200,7 @@ export function StudioChat({
         </details>
       </div>
       {chatOverlay && <ChatOverlayControls {...chatOverlay} />}
-      {viewerChat && <ViewerChatControls {...viewerChat} />}
+      {viewerChat && <ViewerChatControls {...viewerChat} overlay={chatOverlay ? { state: chatOverlay.state, onUpdate: chatOverlay.onUpdate } : undefined} />}
       {errorCount > 0 && <button type="button" className="chat-connection-notice" onClick={openConnections}>A chat connection needs attention <span>→</span></button>}
       {latestPendingDirect && <button type="button" className="chat-connection-notice chat-direct-notice" onClick={openPendingDirect}>New private message from {latestPendingDirect.senderName}{pendingDirect.length > 1 ? ` (+${pendingDirect.length - 1})` : ''} <span>→</span></button>}
       {mode === 'direct' && <div className="chat-recipient-row"><select className="chat-channel-select" aria-label="Private message recipient" value={directRecipientId} onChange={event => handleRecipientChange(event.target.value)}>
@@ -207,7 +208,7 @@ export function StudioChat({
         {directRecipientId && !selectedRecipient && <option value={directRecipientId} disabled>Recipient unavailable</option>}
         {directRecipients.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}
       </select></div>}
-      {pinnedMessage && (mode === 'public' || mode === 'starred') && <div className="chat-pinned-note"><span>Pinned</span><p title={pinnedMessage.content}>{pinnedMessage.content}</p><button type="button" className="chat-icon-button" aria-label="Unpin message" onClick={() => onTogglePin(pinnedMessage.id, false)}>×</button></div>}
+      {pinnedMessage && (mode === 'public' || mode === 'starred') && <div className="chat-pinned-note"><span>Pinned</span><p title={pinnedNoteText(pinnedMessage)}>{pinnedNoteText(pinnedMessage)}</p><button type="button" className="chat-icon-button" aria-label="Unpin message" onClick={() => onTogglePin(pinnedMessage.id, false)}>×</button></div>}
       <div ref={containerRef} className="chat-messages" role="log" aria-label={channelLabels[mode]} aria-live="polite" aria-relevant="additions text" onScroll={event => {
         const el = event.currentTarget; nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         if (nearBottom.current) setHasNewMessages(false);
@@ -225,7 +226,7 @@ export function StudioChat({
       </div>
       {hasNewMessages && <button type="button" className="chat-new-messages" onClick={() => { containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight, behavior: 'smooth' }); nearBottom.current = true; setHasNewMessages(false); }}>New messages ↓</button>}
       {readOnly ? <div className="chat-readonly-note"><span>{mode === 'social' ? 'Replies stay where the comment came from.' : 'Your saved public messages.'}</span><button type="button" className="chat-text-button" onClick={() => handleModeChange('public')}>Go to public chat</button></div> : <div className="chat-composer">
-        <p className="chat-context-note">{mode === 'backstage' ? 'Visible to the backstage team' : mode === 'direct' ? selectedRecipient ? `Private · to ${selectedRecipient.name}` : 'Choose a recipient to send privately' : 'Visible to everyone in the studio'}</p>
+        <p className="chat-context-note">{mode === 'backstage' ? 'Visible to the backstage team' : mode === 'direct' ? selectedRecipient ? `Private · to ${selectedRecipient.name}` : 'Choose a recipient to send privately' : publicChatNote(viewerChat ? viewerChat.state.switches.chat : undefined)}</p>
         {typingLabel && <p className="chat-typing" role="status">{typingLabel}</p>}
         <div className="chat-input-row"><input ref={composerRef} className="chat-input" aria-label={mode === 'backstage' ? 'Backstage message' : mode === 'direct' ? 'Private message' : 'Public message'} placeholder={mode === 'direct' && !selectedRecipient ? 'Choose a recipient first' : 'Write a message…'}
           value={input} maxLength={MAX_CHAT_MESSAGE_LENGTH} disabled={mode === 'direct' && !selectedRecipient} onChange={event => handleInputChange(event.target.value)} onKeyDown={event => {
@@ -236,7 +237,7 @@ export function StudioChat({
         {input.length >= 1800 && <span className="chat-character-count">{input.length} / {MAX_CHAT_MESSAGE_LENGTH}</span>}
       </div>}
     </>}
-    {viewerChat && <ViewerBlockDialog message={blocking} onCancel={() => setBlocking(null)} onChoose={(message, scope) => { setBlocking(null); viewerChat.onBlock(message.id, scope); }} />}
+    {viewerChat && <ViewerBlockDialog target={blocking ? { id: blocking.id, name: blocking.senderName } : null} onCancel={() => setBlocking(null)} onChoose={(target, scope) => { setBlocking(null); viewerChat.onBlock(target.id, scope); }} />}
   </div>;
 }
 

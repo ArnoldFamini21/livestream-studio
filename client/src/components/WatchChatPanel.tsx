@@ -130,7 +130,7 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
         <>
           <div className="watch-chat-head">
             <span className="watch-kicker">Live chat</span>
-            <span className="watch-chat-hint">Messages are shown to everyone. Be kind.</span>
+            <span className="watch-chat-hint">Messages are shown to everyone watching, and may be shown on the broadcast. Be kind.</span>
           </div>
           <div
             ref={logRef}

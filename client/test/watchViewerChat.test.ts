@@ -16,6 +16,7 @@ import {
 } from '../src/utils/watchViewerChat.ts';
 import { selectOverlayComments, CHAT_OVERLAY_VIEWER_PREFIX } from '../src/utils/chatOverlayComments.ts';
 import { questionAuthorLabel } from '../src/utils/viewerQuestionLabel.ts';
+import { pinnedNoteText, publicChatNote, viewerMessagesGoStraightOnAir } from '../src/utils/viewerChatNotes.ts';
 import { getCommentSourceLabel, createHighlightedCommentFromChatMessage } from '../src/components/CommentHighlight.tsx';
 
 function memoryStorage(initial: Record<string, string> = {}) {
@@ -189,5 +190,28 @@ describe('a viewer is never mistaken for the host', () => {
     assert.equal(createHighlightedCommentFromChatMessage(viewerMessage('Pastor John'))?.sourcePlatform, 'watch');
     assert.equal(questionAuthorLabel({ authorName: 'Host', fromViewer: true }), 'Host (viewer)');
     assert.equal(questionAuthorLabel({ authorName: 'Maria' }), 'Maria');
+  });
+});
+
+describe('what people in the studio are told about who sees the chat', () => {
+  it('says the public chat also reaches the watch page when viewer chat is on, and is true for guests either way', () => {
+    assert.equal(publicChatNote(true), 'Visible to everyone in the studio and on the watch page');
+    assert.equal(publicChatNote(false), 'Visible to everyone in the studio');
+    assert.match(publicChatNote(undefined), /watch page if viewer chat is on/);
+  });
+
+  it('warns only when a viewer message would go straight on the broadcast', () => {
+    const all = { enabled: true, mode: 'all' as const };
+    assert.equal(viewerMessagesGoStraightOnAir({ chat: true }, all), true);
+    assert.equal(viewerMessagesGoStraightOnAir({ chat: false }, all), false, 'viewer chat is off');
+    assert.equal(viewerMessagesGoStraightOnAir({ chat: true }, { enabled: true, mode: 'approved' }), false, 'approved only');
+    assert.equal(viewerMessagesGoStraightOnAir({ chat: true }, { enabled: false, mode: 'all' }), false, 'chat on screen is off');
+    assert.equal(viewerMessagesGoStraightOnAir({ chat: true }, undefined), false);
+  });
+
+  it('marks a pinned viewer line as from a viewer, whatever name the viewer typed', () => {
+    assert.equal(pinnedNoteText({ content: 'Praying for you', senderName: 'Pastor Arnold', source: { platform: 'watch' } }), 'Pastor Arnold (viewer): Praying for you');
+    assert.equal(pinnedNoteText({ content: 'Welcome', senderName: 'Pastor Arnold' }), 'Welcome');
+    assert.equal(pinnedNoteText({ content: 'Hi', senderName: 'Ana', source: { platform: 'youtube' } }), 'Hi');
   });
 });
