@@ -8,7 +8,7 @@ process.env.SIGNALING_RESUME_GRACE_MS = '300';
 
 const { watchRouter } = await import('../dist/routes/watch.js');
 const { createRoom, getRooms, setupSignalingServer } = await import('../dist/services/signaling.js');
-const { ViewerChatError, ViewerChatRoom, networkKeyFor, viewerSenderId } = await import('../dist/services/viewerChat.js');
+const { ViewerChatError, ViewerChatRoom, networkGroupOf, networkKeyFor, viewerSenderId } = await import('../dist/services/viewerChat.js');
 
 // ---------------------------------------------------------------------------
 // The rules alone, with a fake studio and the clock passed in
@@ -25,7 +25,12 @@ function fakeHost() {
     findChatMessage: (id) => host.chat.get(id),
     chatMessageIdsBySender: (senders) => Array.from(host.chat.values()).filter((m) => senders.has(m.senderId)).map((m) => m.id),
     addQuestion(question) { log.questions.push(question); questions.push(question); },
-    countViewerQuestions: (authorId) => ({ waiting: questions.filter((q) => q.authorId === authorId && q.status === 'pending').length, total: questions.length }),
+    questions,
+    findQuestion: (id) => questions.find((q) => q.id === id),
+    countViewerQuestions: (authorIds) => {
+      const open = questions.filter((q) => q.status === 'pending' || q.status === 'approved');
+      return { waiting: open.filter((q) => authorIds.has(q.authorId)).length, open: open.length };
+    },
     dismissViewerQuestions(authorIds) { log.dismissed.push([...authorIds]); for (const q of questions) if (authorIds.has(q.authorId)) q.status = 'dismissed'; },
     sendReactionCounts(counts) { log.reactions.push(counts); },
     sendState(state) { log.states.push(state); },
@@ -123,7 +128,7 @@ describe('viewer chat rules', () => {
     const room = new ViewerChatRoom(fakeHost());
     turnOnEverything(room);
     for (let i = 0; i < 30; i += 1) room.postMessage({ viewerId: viewer(i), text: `hello ${i}` }, 'church-wifi', 10_000 + i);
-    assert.throws(() => room.postMessage({ viewerId: viewer(40), text: 'one more' }, 'church-wifi', 10_100), (e) => code(e) === 'RATE_LIMITED');
+    assert.throws(() => room.postMessage({ viewerId: viewer(40), text: 'one more' }, 'church-wifi', 10_100), (e) => code(e) === 'RATE_LIMITED' && /busy/i.test(e.message) && !/slow down/i.test(e.message));
     assert.equal(room.postMessage({ viewerId: viewer(40), text: 'one more' }, 'home', 10_100).message.name, 'Viewer');
   });
 
@@ -158,7 +163,7 @@ describe('viewer chat rules', () => {
     const room = new ViewerChatRoom(fakeHost());
     turnOnEverything(room);
     const first = room.live({}, 1000);
-    assert.deepEqual([first.reset, first.messages, first.cursor], [true, [], 0]);
+    assert.deepEqual([first.reset, first.messages], [true, []]);
     room.postMessage({ viewerId: viewer(1), name: 'Ana', text: 'Hello' }, 'n', 2000);
     const next = room.live({ after: String(first.cursor), epoch: first.epoch }, 3000);
     assert.equal(next.reset, false);
@@ -169,15 +174,89 @@ describe('viewer chat rules', () => {
     assert.ok(quiet.pollMs >= 4000);
   });
 
-  it('hides everything and makes the page start over while chat is off', () => {
+  it('hides the messages while chat is off, and starts the list empty when chat is turned back on', () => {
     const room = new ViewerChatRoom(fakeHost());
     turnOnEverything(room);
     room.postMessage({ viewerId: viewer(1), text: 'Hello' }, 'n', 2000);
+    const seen = room.live({}, 3000);
     room.applySwitches({ chat: false });
-    const off = room.live({ after: '0', epoch: room.live({}, 1).epoch }, 5000);
-    assert.deepEqual([off.messages, off.removed, off.reset, off.switches.chat], [[], [], true, false]);
+    const off = room.live({ after: String(seen.cursor), epoch: seen.epoch }, 5000);
+    assert.deepEqual([off.messages, off.removed, off.reset, off.switches.chat], [[], [], false, false], 'the page keeps its place');
+    assert.deepEqual(room.live({}, 5100).messages, [], 'a new page sees nothing while chat is off');
     room.applySwitches({ chat: true });
-    assert.equal(room.live({}, 6000).messages.length, 1, 'and the list returns for a page that starts fresh');
+    const back = room.live({ after: String(off.cursor), epoch: off.epoch }, 6000);
+    assert.deepEqual([back.reset, back.messages], [true, []], 'a page that was there starts over with an empty list');
+    assert.deepEqual(room.live({}, 6100).messages, [], 'and a new page does not see what was said before either');
+    room.postMessage({ viewerId: viewer(2), text: 'Fresh start' }, 'n', 7000);
+    assert.deepEqual(room.live({ after: String(back.cursor), epoch: back.epoch }, 8000).messages.map((m) => m.text), ['Fresh start']);
+  });
+
+  it('does not show studio lines written before chat was switched on, or while it was off', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    const guest = { senderId: 'g1', senderName: 'Rosa', timestamp: new Date(1000).toISOString(), isBackstage: false };
+    room.noteStudioMessage({ ...guest, id: 'before-1', content: 'Pastor, please mute Sis Rosa, she is coughing' }, false, 1000);
+    room.applySwitches({ chat: true });
+    assert.deepEqual(room.live({}, 2000).messages, [], 'the line was written when viewers could see nothing');
+    room.noteStudioMessage({ ...guest, id: 'during-1', content: 'Welcome everyone' }, false, 3000);
+    assert.deepEqual(room.live({}, 3100).messages.map((m) => m.id), ['during-1']);
+    room.applySwitches({ chat: false });
+    room.noteStudioMessage({ ...guest, id: 'crisis-1', content: 'Team: cut the music now' }, false, 4000);
+    room.applySwitches({ chat: true });
+    assert.deepEqual(room.live({}, 5000).messages, [], 'chat off, team talk, chat on: none of it shows');
+  });
+
+  it('lets pages see other viewers\' reactions when only reactions are on', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    room.applySwitches({ reactions: true });
+    const first = room.live({}, 1000, 'net-b');
+    assert.equal(first.switches.chat, false);
+    room.postReaction({ viewerId: viewer(1), reaction: 'love' }, 'net-a', 2000);
+    room.postReaction({ viewerId: viewer(2), reaction: 'clap' }, 'net-a', 2001);
+    const next = room.live({ after: String(first.cursor), epoch: first.epoch }, 3000, 'net-b');
+    assert.equal(next.reset, false);
+    assert.deepEqual(next.reactions, { love: 1, clap: 1 });
+    assert.deepEqual([next.messages, next.removed], [[], []]);
+    const quiet = room.live({ after: String(next.cursor), epoch: next.epoch }, 7000, 'net-b');
+    assert.deepEqual(quiet.reactions, {});
+  });
+
+  it('does not show reaction counts when the reactions switch is off', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    room.applySwitches({ reactions: true });
+    const first = room.live({}, 1000);
+    room.postReaction({ viewerId: viewer(1), reaction: 'love' }, 'n', 2000);
+    room.applySwitches({ reactions: false });
+    assert.deepEqual(room.live({ after: String(first.cursor), epoch: first.epoch }, 3000).reactions, {});
+  });
+
+  it('asks pages to come back slowly while all three switches are off', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    assert.equal(room.live({}, 1000).pollMs, 20_000);
+    room.applySwitches({ questions: true });
+    assert.equal(room.live({}, 2000).pollMs, 4000);
+    room.applySwitches({ questions: false });
+    assert.equal(room.live({}, 3000).pollMs, 20_000);
+  });
+
+  it('lets one network ask for the whole list only so often, and never holds back a page that has its place', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    turnOnEverything(room);
+    room.postMessage({ viewerId: viewer(1), text: 'Hello' }, 'n', 500);
+    for (let i = 0; i < 120; i += 1) room.live({}, 1000 + i, 'script');
+    assert.throws(() => room.live({}, 2000, 'script'), (e) => code(e) === 'READ_BUSY' && e.statusCode === 429 && /busy/i.test(e.message) && e.retryAfterMs > 0);
+    assert.equal(room.live({}, 2000, 'church').messages.length, 1, 'another network is not affected');
+    const place = room.live({}, 2100, 'church');
+    for (let i = 0; i < 500; i += 1) assert.equal(room.live({ after: String(place.cursor), epoch: place.epoch }, 2200 + i, 'script').reset, false);
+    assert.equal(room.live({}, 62_500, 'script').messages.length, 1, 'allowed again a minute later');
+  });
+
+  it('does not count full-list asks against a network while the list is empty or chat is off', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    room.applySwitches({ chat: true });
+    for (let i = 0; i < 300; i += 1) room.live({}, 1000 + i, 'script');
+    room.postMessage({ viewerId: viewer(1), text: 'Hello' }, 'n', 2000);
+    room.applySwitches({ chat: false });
+    for (let i = 0; i < 300; i += 1) room.live({}, 3000 + i, 'script');
   });
 
   it('shows the studio\'s public messages to viewers, and only those, filtered and bounded', () => {
@@ -270,6 +349,24 @@ describe('viewer chat rules', () => {
     assert.deepEqual(room.live({}, 21_000).messages.map((m) => m.name).includes('Friend of troll'), false);
   });
 
+  it('blocks a viewer who only asks questions, from the question', () => {
+    const host = fakeHost();
+    const room = new ViewerChatRoom(host);
+    turnOnEverything(room);
+    room.postQuestion({ viewerId: viewer(1), name: 'Prayer spammer', text: 'first question' }, 'cafe', 1000);
+    room.postQuestion({ viewerId: viewer(1), name: 'Prayer spammer', text: 'second question' }, 'cafe', 3000);
+    room.postQuestion({ viewerId: viewer(2), name: 'Ana', text: 'an honest question' }, 'cafe', 4000);
+    const bad = host.questions[0];
+    const block = room.blockViewer(bad.id, 'viewer', 5000);
+    assert.equal(block.name, 'Prayer spammer');
+    assert.deepEqual(host.questions.map((q) => q.status), ['dismissed', 'dismissed', 'pending'], 'only that viewer questions are taken off the queue');
+    assert.throws(() => room.postQuestion({ viewerId: viewer(1), text: 'again?' }, 'cafe', 20_000), (e) => code(e) === 'VIEWER_BLOCKED');
+    assert.equal(room.postQuestion({ viewerId: viewer(2), text: 'one more' }, 'cafe', 20_000).questionId.length > 0, true);
+    const wholeNetwork = room.blockViewer(host.questions[2].id, 'network', 21_000);
+    assert.equal(wholeNetwork.scope, 'network');
+    assert.throws(() => room.postQuestion({ viewerId: viewer(3), text: 'new person' }, 'cafe', 40_000), (e) => code(e) === 'VIEWER_BLOCKED');
+  });
+
   it('refuses a block it cannot trace or does not understand, and a second click on a gone message', () => {
     const room = new ViewerChatRoom(fakeHost());
     turnOnEverything(room);
@@ -291,6 +388,64 @@ describe('viewer chat rules', () => {
     assert.deepEqual([q.fromViewer, q.status, q.authorName, q.highlighted, q.upvotes], [true, 'pending', 'Ana', false, 0]);
     assert.ok(q.authorId.startsWith('external:watch:'));
     assert.throws(() => room.postQuestion({ viewerId: viewer(2), text: 'x'.repeat(301) }, 'n', 20_000), (e) => e.statusCode === 400);
+  });
+
+  it('frees room in the question list when the host answers or dismisses questions', () => {
+    const host = fakeHost();
+    const room = new ViewerChatRoom(host);
+    turnOnEverything(room);
+    // Every question from a new viewer id on a new network: only the room-wide count can stop it.
+    for (let i = 0; i < 200; i += 1) room.postQuestion({ viewerId: viewer(i), name: `Stranger ${i}`, text: `question ${i}` }, `net-${i}`, 1000 + i * 1000);
+    assert.throws(() => room.postQuestion({ viewerId: viewer(500), text: 'Please pray for my mother' }, 'honest-home', 300_000), (e) => code(e) === 'QUESTIONS_FULL');
+    for (const q of host.questions) q.status = 'dismissed';
+    assert.equal(room.postQuestion({ viewerId: viewer(500), text: 'Please pray for my mother' }, 'honest-home', 301_000).questionId.length > 0, true, 'the host cleared the list, so there is room again');
+    host.questions[0].status = 'answered';
+  });
+
+  it('limits the questions waiting from one network, even when every question has a new viewer id', () => {
+    const host = fakeHost();
+    const room = new ViewerChatRoom(host);
+    turnOnEverything(room);
+    for (let i = 0; i < 15; i += 1) room.postQuestion({ viewerId: viewer(i), text: `question ${i}` }, 'one-address', 1000 + i * 1000);
+    assert.throws(() => room.postQuestion({ viewerId: viewer(99), text: 'sixteenth' }, 'one-address', 20_000), (e) => code(e) === 'QUESTION_LIMIT' && /connection/.test(e.message));
+    assert.equal(room.postQuestion({ viewerId: viewer(98), text: 'from home' }, 'other-address', 20_000).questionId.length > 0, true, 'another network is not affected');
+    host.questions[0].status = 'dismissed';
+    assert.equal(room.postQuestion({ viewerId: viewer(97), text: 'room again' }, 'one-address', 21_000).questionId.length > 0, true);
+  });
+
+  it('masks a profane name too, before it reaches the studio or the page', () => {
+    const host = fakeHost();
+    const room = new ViewerChatRoom(host);
+    turnOnEverything(room);
+    const message = room.postMessage({ viewerId: viewer(1), name: 'gago ka', text: 'hello' }, 'n', 1000).message;
+    assert.equal(message.name, '**** ka');
+    assert.equal(host.log.chat[0].senderName, '**** ka');
+    room.postQuestion({ viewerId: viewer(2), name: 'shit', text: 'why?' }, 'n', 2000);
+    assert.equal(host.questions[0].authorName, '****');
+    assert.equal(room.statePayload().blocks.length, 0);
+  });
+
+  it('counts every address on one IPv6 /64 as one network, and an IPv4-mapped address as the IPv4 one', () => {
+    assert.equal(networkGroupOf('203.0.113.9'), '203.0.113.9');
+    assert.equal(networkGroupOf('::ffff:203.0.113.9'), '203.0.113.9');
+    assert.equal(networkGroupOf('::ffff:cb00:7109'), '203.0.113.9');
+    assert.equal(networkGroupOf('2001:db8:abcd:12:aaaa:bbbb:cccc:dddd'), networkGroupOf('2001:DB8:abcd:12::1'));
+    assert.equal(networkGroupOf('2001:db8:abcd:12:1:2:3:4%eth0'), networkGroupOf('2001:db8:abcd:12::99'));
+    assert.notEqual(networkGroupOf('2001:db8:abcd:12::1'), networkGroupOf('2001:db8:abcd:13::1'));
+    assert.notEqual(networkGroupOf('2001:db8:abcd:12::1'), networkGroupOf('203.0.113.9'));
+    assert.equal(networkKeyFor('2001:db8:abcd:12:1:2:3:4'), networkKeyFor('2001:db8:abcd:12:ffff:eeee:dddd:cccc'));
+    assert.equal(networkKeyFor('::ffff:203.0.113.9'), networkKeyFor('203.0.113.9'));
+    assert.notEqual(networkKeyFor('2001:db8:abcd:12::1'), networkKeyFor('2001:db8:abcd:13::1'));
+    assert.equal(networkGroupOf(undefined), 'unknown');
+    assert.equal(networkGroupOf('not an address'), 'not an address');
+  });
+
+  it('a blocked network stays blocked when the troll changes address inside the same IPv6 /64', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    turnOnEverything(room);
+    const first = room.postMessage({ viewerId: viewer(1), name: 'Troll', text: 'a' }, networkKeyFor('2001:db8:abcd:12:1:1:1:1'), 1000).message;
+    room.blockViewer(first.id, 'network', 2000);
+    assert.throws(() => room.postMessage({ viewerId: viewer(2), text: 'b' }, networkKeyFor('2001:db8:abcd:12:9:9:9:9'), 3000), (e) => code(e) === 'VIEWER_BLOCKED');
   });
 
   it('hashes the address with a salt: stable, short, and not the address', () => {
@@ -434,7 +589,7 @@ describe('viewer chat over HTTP and the studio connection', () => {
   it('is all off by default: the page sees the switches off and hand-made requests are refused', async () => {
     const servers = await startWebServers();
     try {
-      const { api, host, state } = await studio(servers, 'vc-off');
+      const { api, host, guest, state } = await studio(servers, 'vc-off');
       assert.deepEqual(host.joined.payload.viewerChat, { switches: { chat: false, reactions: false, questions: false }, blocks: [] });
       assert.equal(host.joined.payload.features.viewerChat, true);
       const answer = (await live(api)).json;
@@ -447,6 +602,7 @@ describe('viewer chat over HTTP and the studio connection', () => {
       assert.equal((await post(api, 'reactions', { viewerId, reaction: 'like' })).json.code, 'REACTIONS_OFF');
       assert.equal(state.chatMessages.size, 0);
       assert.equal(state.qaQuestions.size, 0);
+      assert.equal(guest.joined.payload.viewerChat, undefined, 'a guest is never told the switches or the blocked names');
     } finally { await servers.close(); }
   });
 

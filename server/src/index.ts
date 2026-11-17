@@ -173,7 +173,10 @@ const WATCH_POLL_LIMIT_MAX = 1200; // watch-page poll reads and votes per minute
 // Viewer chat (P1.7). A whole congregation can share one public address, and every watch page asks for chat
 // every few seconds, so the read budget is large; the real limits per viewer, network and room are in the
 // chat service. Writes are small and already capped there, so this is only a backstop for one address.
-const WATCH_LIVE_LIMIT_MAX = 6000; // watch-page chat reads per minute per IP
+// 2400 a minute is 40 asks a second: about 160 devices asking every 4 s from one Wi-Fi (more at the slower
+// asking the server suggests). The costly kind of read (the whole recent list) has its own, smaller budget
+// inside the chat service.
+const WATCH_LIVE_LIMIT_MAX = 2400; // watch-page chat reads per minute per IP
 const WATCH_VIEWER_WRITE_LIMIT_MAX = 1500; // watch-page chat, reaction and question posts per minute per IP
 
 interface RateEntry {

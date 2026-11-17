@@ -148,7 +148,11 @@ watchRouter.get('/:watchId/live', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const chat = viewerChatFor(req, res);
   if (!chat) return;
-  res.json(chat.live({ after: req.query.after, epoch: req.query.epoch }, Date.now()));
+  try {
+    res.json(chat.live({ after: req.query.after, epoch: req.query.epoch }, Date.now(), viewerNetworkKey(req)));
+  } catch (err) {
+    answerViewerError(res, err);
+  }
 });
 
 function viewerNetworkKey(req: Request): string {

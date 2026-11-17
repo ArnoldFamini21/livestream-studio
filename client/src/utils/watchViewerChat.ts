@@ -69,9 +69,12 @@ function capMessages(messages: WatchChatMessage[]): WatchChatMessage[] {
 
 /** Folds the server's answer into what the page holds. The same object comes back when nothing changed. */
 export function applyLiveResponse(view: WatchChatView, response: WatchLiveResponse): WatchChatView {
-  // Chat is off: show nothing and forget the place, so a page starts fresh when chat comes back.
+  // Chat is off: show nothing, but keep the place in the server's list. Reactions are still read from it,
+  // and when chat comes back the server tells the page to start over with a fresh list.
   if (!response.switches.chat) {
-    return view.messages.length === 0 && view.epoch === null && view.cursor === null ? view : emptyChatView();
+    return view.messages.length === 0 && view.epoch === response.epoch && view.cursor === response.cursor
+      ? view
+      : { epoch: response.epoch, cursor: response.cursor, messages: [] };
   }
   if (response.reset) {
     return { epoch: response.epoch, cursor: response.cursor, messages: capMessages(response.messages) };

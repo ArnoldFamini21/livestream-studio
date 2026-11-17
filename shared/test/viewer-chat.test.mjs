@@ -9,7 +9,10 @@ import {
   VIEWER_TALK_RULES,
   appendFeedMessage,
   appendFeedReaction,
+  VIEWER_FULL_READ_RULE,
+  VIEWER_POLL_MS_IDLE,
   checkRateRule,
+  clearFeedMessages,
   createRateLimiterState,
   createRequestRateMeter,
   createViewerFeed,
@@ -31,6 +34,7 @@ import {
   slowDownLine,
   suggestViewerPollMs,
   tryRecordAction,
+  tryRecordKeyed,
 } from '../dist/index.js';
 
 const code = (...points) => String.fromCodePoint(...points);
@@ -114,6 +118,19 @@ describe('the word filter', () => {
 
   it('leaves words with an ordinary or biblical use alone, and numbers', () => {
     for (const fine of ['hell', 'damn', 'ass', 'cock', 'Balaam rode an ass', 'the cock crowed', 'whore', 'bastard', 'Psalm 455', '455', '1 Corinthians 13:4', '5000 people', 'Dick']) {
+      assert.equal(maskProfanity(fine).masked, false, fine);
+    }
+  });
+
+  it('is not fooled by a zero-width joiner or non-joiner between the letters', () => {
+    assert.equal(mask('fu' + code(0x200c) + 'ck'), '*****');
+    assert.equal(mask('sh' + code(0x200d) + 'it you'), '***** you');
+    assert.equal(mask('Amen ' + code(0x200d) + ' praise'), 'Amen ' + code(0x200d) + ' praise');
+    assert.equal(maskProfanity('class' + code(0x200c) + 'mate').masked, false);
+  });
+
+  it('leaves ordinary words in a Philippine church alone (leche flan, a Latin cum, Lady Gaga, mf in music)', () => {
+    for (const fine of ['leche flan', 'summa cum laude', 'Lady Gaga', 'play it mf then pp']) {
       assert.equal(maskProfanity(fine).masked, false, fine);
     }
   });
@@ -209,6 +226,24 @@ describe('rate limits', () => {
   it('asks a viewer to slow down in a plain line', () => {
     assert.equal(slowDownLine(400), 'Please slow down. You can send again in 1 second.');
     assert.equal(slowDownLine(2300), 'Please slow down. You can send again in 3 seconds.');
+  });
+
+  it('does not blame the viewer when the limit is the network\'s or the room\'s', () => {
+    assert.equal(slowDownLine(400, 'network'), 'Chat is busy right now. Please try again in 1 second.');
+    assert.equal(slowDownLine(2300, 'room'), 'Chat is busy right now. Please try again in 3 seconds.');
+    assert.equal(slowDownLine(2300, 'viewer'), slowDownLine(2300));
+  });
+
+  it('limits one key in a bounded map (the whole-list read)', () => {
+    const map = new Map();
+    for (let i = 0; i < VIEWER_FULL_READ_RULE.max; i += 1) assert.equal(tryRecordKeyed(map, 'a', 1000 + i, VIEWER_FULL_READ_RULE).allowed, true);
+    const refused = tryRecordKeyed(map, 'a', 2000, VIEWER_FULL_READ_RULE);
+    assert.equal(refused.allowed, false);
+    assert.ok(refused.retryAfterMs > 0 && refused.retryAfterMs <= VIEWER_FULL_READ_RULE.windowMs);
+    assert.equal(tryRecordKeyed(map, 'b', 2000, VIEWER_FULL_READ_RULE).allowed, true, 'another key is separate');
+    assert.equal(tryRecordKeyed(map, 'a', 1000 + VIEWER_FULL_READ_RULE.windowMs + 200, VIEWER_FULL_READ_RULE).allowed, true);
+    for (let i = 0; i < 6000; i += 1) tryRecordKeyed(map, `key-${i}`, 5000, VIEWER_FULL_READ_RULE);
+    assert.ok(map.size <= 5000);
   });
 });
 
@@ -322,6 +357,19 @@ describe('the feed and its cursor', () => {
     assert.deepEqual(readViewerFeed(feed, {}).reactions, {}, 'a fresh page does not replay old reactions');
   });
 
+  it('starts every page over with an empty list when the messages are cleared', () => {
+    const feed = createViewerFeed('e1');
+    appendFeedMessage(feed, { id: 'm1', from: 'studio', name: 'A', text: 'old', at: 1 });
+    const upToDate = readViewerFeed(feed, {});
+    clearFeedMessages(feed);
+    const after = readViewerFeed(feed, { after: String(upToDate.cursor), epoch: 'e1' });
+    assert.deepEqual([after.reset, after.messages], [true, []], 'even a page that was fully up to date starts over');
+    assert.deepEqual(readViewerFeed(feed, {}).messages, []);
+    appendFeedMessage(feed, { id: 'm2', from: 'studio', name: 'A', text: 'new', at: 2 });
+    const next = readViewerFeed(feed, { after: String(after.cursor), epoch: 'e1' });
+    assert.deepEqual([next.reset, next.messages.map((m) => m.id)], [false, ['m2']]);
+  });
+
   it('keeps its reaction memory bounded', () => {
     const feed = createViewerFeed('e1');
     for (let i = 0; i < 1000; i += 1) appendFeedReaction(feed, 'like');
@@ -362,6 +410,14 @@ describe('how often a page asks', () => {
     assert.equal(suggestViewerPollMs(200), 10_000);
     assert.equal(suggestViewerPollMs(900), 15_000);
     assert.equal(suggestViewerPollMs(Number.NaN), 4000);
+  });
+
+  it('asks slowly while every switch is off, and still within sensible bounds', () => {
+    assert.equal(suggestViewerPollMs(0, false), VIEWER_POLL_MS_IDLE);
+    assert.equal(suggestViewerPollMs(900, false), VIEWER_POLL_MS_IDLE);
+    assert.equal(suggestViewerPollMs(0, true), 4000);
+    assert.ok(VIEWER_POLL_MS_IDLE >= 15_000 && VIEWER_POLL_MS_IDLE <= 30_000);
+    assert.equal(effectiveViewerPollMs(VIEWER_POLL_MS_IDLE, false), VIEWER_POLL_MS_IDLE);
   });
 
   it('asks much less often while the tab is hidden', () => {

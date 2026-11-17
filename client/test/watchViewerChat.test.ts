@@ -91,12 +91,24 @@ describe('reading the answer', () => {
     assert.equal(applyLiveResponse(view, answer()), view);
   });
 
-  it('shows nothing and forgets its place while chat is off', () => {
+  it('shows nothing while chat is off but keeps its place, so reactions still reach the page', () => {
     const view = applyLiveResponse(emptyChatView(), answer({ reset: true, messages: [line('a')] }));
-    const off = applyLiveResponse(view, answer({ reset: true, switches: { chat: false, reactions: false, questions: false } }));
-    assert.deepEqual(off, emptyChatView());
-    const stillOff = applyLiveResponse(off, answer({ reset: true, switches: { chat: false, reactions: false, questions: false } }));
+    const noChat = { chat: false, reactions: true, questions: false };
+    const off = applyLiveResponse(view, answer({ cursor: 6, switches: noChat }));
+    assert.deepEqual(off, { epoch: 'e1', cursor: 6, messages: [] });
+    assert.equal(liveQuery(off), '?after=6&epoch=e1', 'the next ask holds a place, so it is not a full reset');
+    const stillOff = applyLiveResponse(off, answer({ cursor: 6, switches: noChat }));
     assert.equal(stillOff, off);
+    const first = applyLiveResponse(emptyChatView(), answer({ reset: true, cursor: 2, switches: noChat }));
+    assert.equal(liveQuery(first), '?after=2&epoch=e1');
+  });
+
+  it('starts over with the fresh list when chat comes back on', () => {
+    const off = { epoch: 'e1', cursor: 6, messages: [] as WatchChatMessage[] };
+    const back = applyLiveResponse(off, answer({ reset: true, cursor: 7, messages: [] }));
+    assert.deepEqual(back, { epoch: 'e1', cursor: 7, messages: [] });
+    const next = applyLiveResponse(back, answer({ cursor: 8, messages: [line('x')] }));
+    assert.deepEqual(next.messages.map((m) => m.id), ['x']);
   });
 
   it('shows the viewer\'s own message at once and does not repeat it when the server sends it', () => {

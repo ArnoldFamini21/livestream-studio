@@ -2512,15 +2512,17 @@ function createViewerChatHost(roomId: string, roomState: RoomState): ViewerChatH
       roomState.qaVotes.set(question.id, new Set());
       broadcastQAQuestion(roomId, question);
     },
-    countViewerQuestions(authorId) {
+    findQuestion: (id) => roomState.qaQuestions.get(id),
+    countViewerQuestions(authorIds) {
       let waiting = 0;
-      let total = 0;
+      let open = 0;
       for (const question of roomState.qaQuestions.values()) {
-        if (!question.fromViewer) continue;
-        total += 1;
-        if (question.authorId === authorId && (question.status === 'pending' || question.status === 'approved')) waiting += 1;
+        // Answered and dismissed questions are done: they no longer take room from new ones.
+        if (!question.fromViewer || (question.status !== 'pending' && question.status !== 'approved')) continue;
+        open += 1;
+        if (authorIds.has(question.authorId)) waiting += 1;
       }
-      return { waiting, total };
+      return { waiting, open };
     },
     dismissViewerQuestions(authorIds) {
       for (const question of Array.from(roomState.qaQuestions.values())) {

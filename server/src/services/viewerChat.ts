@@ -9,6 +9,7 @@ import {
   VIEWER_TALK_RULES,
   appendFeedMessage,
   appendFeedReaction,
+  clearFeedMessages,
   createRateLimiterState,
   createRequestRateMeter,
   createViewerFeed,
@@ -27,6 +28,8 @@ import {
   slowDownLine,
   suggestViewerPollMs,
   tryRecordAction,
+  tryRecordKeyed,
+  VIEWER_FULL_READ_RULE,
   type ChatMessage,
   type ChatReactionType,
   type QAQuestion,
@@ -67,7 +70,57 @@ const NETWORK_KEY_SALT = randomBytes(32);
  * sent to another viewer.
  */
 export function networkKeyFor(address: string | undefined, salt: Buffer = NETWORK_KEY_SALT): string {
-  return createHmac('sha256', salt).update(address || 'unknown').digest('base64url').slice(0, 22);
+  return createHmac('sha256', salt).update(networkGroupOf(address)).digest('base64url').slice(0, 22);
+}
+
+/** The eight 16-bit groups of an IPv6 address (with "::" and a trailing IPv4 part understood), or null when it is not one. */
+function expandIPv6(text: string): number[] | null {
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const parse = (part: string): number[] | null => {
+    if (part === '') return [];
+    const out: number[] = [];
+    const pieces = part.split(':');
+    for (let index = 0; index < pieces.length; index += 1) {
+      const piece = pieces[index];
+      if (piece.includes('.')) {
+        if (index !== pieces.length - 1) return null;
+        const octets = piece.split('.').map((octet) => (/^\d{1,3}$/.test(octet) ? Number(octet) : NaN));
+        if (octets.length !== 4 || octets.some((octet) => !(octet >= 0 && octet <= 255))) return null;
+        out.push(octets[0] * 256 + octets[1], octets[2] * 256 + octets[3]);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(piece)) return null;
+        out.push(parseInt(piece, 16));
+      }
+    }
+    return out;
+  };
+  const head = parse(halves[0]);
+  const tail = halves.length === 2 ? parse(halves[1]) : [];
+  if (!head || !tail) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  const missing = 8 - head.length - tail.length;
+  if (missing < 1) return null;
+  return [...head, ...new Array<number>(missing).fill(0), ...tail];
+}
+
+/**
+ * What counts as "the same network" for an address. An IPv4 address stands for
+ * itself. A home or phone connection on IPv6 owns a whole /64 (every device and
+ * every privacy address in it), so only the first 64 bits count; otherwise one
+ * person could change address for each message and every limit and block
+ * would miss them. An IPv4 address written as IPv6 (::ffff:1.2.3.4) counts as
+ * the IPv4 address. Pure, so it can be tested alone.
+ */
+export function networkGroupOf(address: string | undefined): string {
+  const text = (address || 'unknown').trim().toLowerCase().split('%')[0];
+  if (!text.includes(':')) return text || 'unknown';
+  const groups = expandIPv6(text);
+  if (!groups) return text;
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return `${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`;
+  }
+  return `v6:${groups.slice(0, 4).map((group) => group.toString(16)).join(':')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +147,8 @@ const LINES = {
   questionEmpty: 'Please write your question first.',
   duplicate: 'You just sent that. Please write something new.',
   questionLimit: 'You already have questions waiting for the host. Please wait for an answer.',
+  questionNetworkLimit: 'Many questions from your connection are waiting for the host. Please try again in a little while.',
+  readBusy: 'Chat is busy right now. Please try again in a moment.',
   questionsFull: 'The list of questions is full right now. Please try again later.',
   badReaction: 'That reaction is not available.',
 } as const;
@@ -111,8 +166,12 @@ export interface ViewerChatHost {
   /** Ids of the studio chat messages written by any of these senders. */
   chatMessageIdsBySender(senderIds: ReadonlySet<string>): string[];
   addQuestion(question: QAQuestion): void;
-  /** Questions from this viewer still waiting, and all viewer questions in the room. */
-  countViewerQuestions(authorId: string): { waiting: number; total: number };
+  findQuestion(id: string): QAQuestion | undefined;
+  /**
+   * Viewer questions still waiting (pending or approved) from these authors, and
+   * all such questions in the room. Answered and dismissed ones no longer count.
+   */
+  countViewerQuestions(authorIds: ReadonlySet<string>): { waiting: number; open: number };
   /** Takes a blocked viewer's questions that are not yet answered off the queue. */
   dismissViewerQuestions(authorIds: ReadonlySet<string>): void;
   /** Counts of reactions since the last call, for hosts and co-hosts. */
@@ -145,9 +204,16 @@ interface StoredBlock {
 
 /** People remembered per room (so a message can be traced back to its writer). The oldest go first. */
 const MAX_IDENTITIES = 3000;
-/** Questions one viewer may have waiting, and all viewer questions in a room. */
+/**
+ * Questions one viewer may have waiting, one network may have waiting (a
+ * congregation on one Wi-Fi, so generous; it also stops one person from using a
+ * new viewer id for every question), and viewer questions open in the room.
+ * Only questions still waiting count: when the host answers or dismisses them,
+ * room opens up again.
+ */
 const MAX_WAITING_QUESTIONS_PER_VIEWER = 3;
-const MAX_VIEWER_QUESTIONS_PER_ROOM = 200;
+const MAX_WAITING_QUESTIONS_PER_NETWORK = 15;
+const MAX_OPEN_QUESTIONS_PER_ROOM = 200;
 /** Longest studio line repeated on the watch page. */
 const WATCH_STUDIO_TEXT_MAX = 500;
 const REACTION_BATCH_MS = 500;
@@ -177,6 +243,8 @@ export class ViewerChatRoom {
   private readonly identities = new Map<string, ViewerIdentity>();
   private readonly handleByViewerId = new Map<string, string>();
   private blocks: StoredBlock[] = [];
+  /** When each network last asked for the whole recent list (the costly kind of read). */
+  private readonly fullReads = new Map<string, number[]>();
   private readonly meter = createRequestRateMeter(0);
   private meterStarted = false;
   private pendingReactions: Partial<Record<ChatReactionType, number>> = {};
@@ -201,6 +269,8 @@ export class ViewerChatRoom {
   applySwitches(rawPatch: unknown): boolean {
     const patch = normalizeViewerChatSwitchesPatch(rawPatch);
     if (!patch) return false;
+    // Turning chat on starts the watch page list empty: nothing written while it was off (or before) is ever shown.
+    if (patch.chat === true && !this.switches.chat) clearFeedMessages(this.feed);
     this.switches = { ...this.switches, ...patch };
     this.host.sendState(this.statePayload());
     return true;
@@ -209,24 +279,32 @@ export class ViewerChatRoom {
   // ----- The page asks -----
 
   /** The one small answer: switches, new messages, removals, reaction counts. */
-  live(query: ViewerFeedQuery, now: number): WatchLiveResponse {
+  live(query: ViewerFeedQuery, now: number, networkKey = 'unknown'): WatchLiveResponse {
     if (!this.meterStarted) {
       this.meter.windowStart = now;
       this.meterStarted = true;
     }
-    const rate = noteRequest(this.meter, now);
     const read = readViewerFeed(this.feed, query);
+    // Asking for the whole list is the costly read: one network may do it only so often. A page that
+    // holds a place (the normal case) is never held back, and a refused page just tries again later.
+    if (this.switches.chat && read.reset && read.messages.length > 0) {
+      const decision = tryRecordKeyed(this.fullReads, networkKey, now, VIEWER_FULL_READ_RULE);
+      if (!decision.allowed) throw new ViewerChatError(LINES.readBusy, 429, 'READ_BUSY', decision.retryAfterMs);
+    }
+    // Only ordinary asks measure how busy the room is, so a stranger asking for the whole list over
+    // and over cannot make every real page slow down.
+    const rate = read.reset ? this.meter.rate : noteRequest(this.meter, now);
     const switches = { ...this.switches };
     return {
       epoch: read.epoch,
       cursor: read.cursor,
-      // With chat off the page shows nothing and forgets its list: it starts fresh when chat is turned back on.
-      reset: switches.chat ? read.reset : true,
+      // The place (epoch and cursor) is kept while chat is off, so reactions still reach pages; only the messages are held back.
+      reset: read.reset,
       switches,
       messages: switches.chat ? read.messages : [],
       removed: switches.chat ? read.removed : [],
       reactions: switches.reactions ? read.reactions : {},
-      pollMs: suggestViewerPollMs(rate),
+      pollMs: suggestViewerPollMs(rate, switches.chat || switches.reactions || switches.questions),
     };
   }
 
@@ -265,9 +343,11 @@ export class ViewerChatRoom {
     const text = this.cleanText(input.text, VIEWER_QUESTION_MAX, LINES.questionTooLong, LINES.questionEmpty);
     const known = this.peekIdentity(viewerId);
     this.refuseRepeat(known, text);
-    const counts = this.host.countViewerQuestions(known ? viewerSenderId(known.handle) : '');
-    if (counts.waiting >= MAX_WAITING_QUESTIONS_PER_VIEWER) throw new ViewerChatError(LINES.questionLimit, 429, 'QUESTION_LIMIT');
-    if (counts.total >= MAX_VIEWER_QUESTIONS_PER_ROOM) throw new ViewerChatError(LINES.questionsFull, 429, 'QUESTIONS_FULL');
+    const mine = this.host.countViewerQuestions(new Set(known ? [viewerSenderId(known.handle)] : []));
+    if (mine.waiting >= MAX_WAITING_QUESTIONS_PER_VIEWER) throw new ViewerChatError(LINES.questionLimit, 429, 'QUESTION_LIMIT');
+    const onNetwork = this.host.countViewerQuestions(this.senderIdsOnNetwork(networkKey));
+    if (onNetwork.waiting >= MAX_WAITING_QUESTIONS_PER_NETWORK) throw new ViewerChatError(LINES.questionNetworkLimit, 429, 'QUESTION_LIMIT');
+    if (onNetwork.open >= MAX_OPEN_QUESTIONS_PER_ROOM) throw new ViewerChatError(LINES.questionsFull, 429, 'QUESTIONS_FULL');
     this.spend(this.talkLimits, viewerId, networkKey, now, this.rules.talk);
     const identity = this.identityFor(viewerId, networkKey, name);
     const authorId = viewerSenderId(identity.handle);
@@ -321,6 +401,8 @@ export class ViewerChatRoom {
 
   /** A message written in the studio: shown to viewers only when it is public (see `isWatchPublicStudioMessage`). */
   noteStudioMessage(message: ChatMessage, senderInGreenRoom: boolean, now: number): void {
+    // Lines written while viewer chat is off are never shown to viewers later, so they are not kept for them.
+    if (!this.switches.chat) return;
     if (!isWatchPublicStudioMessage(message, { senderInGreenRoom })) return;
     const text = this.studioText(message.content);
     if (!text) return;
@@ -390,7 +472,19 @@ export class ViewerChatRoom {
     const studio = this.host.findChatMessage(messageId);
     if (studio?.source?.platform === 'watch') return handleFromSenderId(studio.senderId);
     const entry = this.feed.messages.find((item) => item.id === messageId && item.from === 'viewer');
-    return entry?.ref ?? null;
+    if (entry?.ref) return entry.ref;
+    // A viewer who only asks questions has no chat message: a question leads back to its writer too.
+    const question = this.host.findQuestion(messageId);
+    return question?.fromViewer ? handleFromSenderId(question.authorId) : null;
+  }
+
+  /** The sender ids of everyone remembered on this network (so their waiting questions can be counted). */
+  private senderIdsOnNetwork(networkKey: string): Set<string> {
+    const ids = new Set<string>();
+    for (const identity of this.identities.values()) {
+      if (identity.networkKey === networkKey) ids.add(viewerSenderId(identity.handle));
+    }
+    return ids;
   }
 
   private requireViewer(viewerId: unknown, networkKey: string): string {
@@ -430,7 +524,7 @@ export class ViewerChatRoom {
 
   private spend(state: ReturnType<typeof createRateLimiterState>, viewerId: string, networkKey: string, now: number, rules: RateRules): void {
     const decision = tryRecordAction(state, { viewerId, networkKey }, now, rules);
-    if (!decision.allowed) throw new ViewerChatError(slowDownLine(decision.retryAfterMs), 429, 'RATE_LIMITED', decision.retryAfterMs);
+    if (!decision.allowed) throw new ViewerChatError(slowDownLine(decision.retryAfterMs, decision.scope), 429, 'RATE_LIMITED', decision.retryAfterMs);
   }
 
   private identityFor(viewerId: string, networkKey: string, name: string): ViewerIdentity {

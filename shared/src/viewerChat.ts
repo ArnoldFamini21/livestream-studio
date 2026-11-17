@@ -191,19 +191,21 @@ export function isRepeatOfPrevious(previousKey: string | undefined, next: string
 /**
  * A short list of words that are not wanted in a church broadcast, matched as
  * whole words. It leaves out words with an ordinary or biblical use (hell,
- * damn, ass, cock, whore, bastard, dick). It is a speed bump, not a promise:
+ * damn, ass, cock, whore, bastard, dick) and words that are ordinary in a
+ * Philippine church (leche flan, a Latin "cum", the singer Gaga, "mf" in music).
+ * It is a speed bump, not a promise:
  * the host's blocking and removal are the real protection.
  */
 const BLOCKED_WORDS: readonly string[] = [
   // English
-  'fuck', 'fucks', 'fucker', 'fuckers', 'fucking', 'fucked', 'fuckin', 'motherfucker', 'motherfuckers', 'mf',
+  'fuck', 'fucks', 'fucker', 'fuckers', 'fucking', 'fucked', 'fuckin', 'motherfucker', 'motherfuckers',
   'shit', 'shits', 'shitty', 'shitting', 'bullshit', 'shithead', 'bitch', 'bitches', 'bitchy',
   'asshole', 'assholes', 'dickhead', 'cunt', 'cunts', 'pussy', 'slut', 'sluts', 'twat', 'wanker',
   'nigger', 'niggers', 'nigga', 'niggas', 'faggot', 'faggots', 'fag', 'chink', 'spic', 'kike', 'tranny',
-  'retard', 'retarded', 'porn', 'porno', 'blowjob', 'handjob', 'cum', 'jizz', 'whorehouse',
+  'retard', 'retarded', 'porn', 'porno', 'blowjob', 'handjob', 'jizz', 'whorehouse',
   // Tagalog
-  'putang', 'putangina', 'putanginamo', 'potangina', 'puta', 'tangina', 'tanginamo', 'tarantado', 'gago', 'gaga',
-  'ulol', 'bobo', 'tanga', 'leche', 'lintik', 'punyeta', 'pakyu', 'pakshet', 'kantot', 'kantutan', 'puki',
+  'putang', 'putangina', 'putanginamo', 'potangina', 'puta', 'tangina', 'tanginamo', 'tarantado', 'gago',
+  'ulol', 'bobo', 'tanga', 'lintik', 'punyeta', 'pakyu', 'pakshet', 'kantot', 'kantutan', 'puki',
   'pukinangina', 'burat', 'jakol', 'kupal', 'hindot', 'bwisit', 'buwisit', 'inutil', 'shunga', 'tamod',
 ];
 const BLOCKED_SET = new Set(BLOCKED_WORDS);
@@ -211,13 +213,14 @@ const BLOCKED_SET = new Set(BLOCKED_WORDS);
 const LOOKALIKES: Record<string, string> = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '8': 'b', '@': 'a', '$': 's', '!': 'i', '|': 'i', '+': 't' };
 // Letters from other alphabets that look like Latin ones.
 const OTHER_ALPHABETS: Record<string, string> = { 'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'х': 'x', 'у': 'y', 'і': 'i', 'к': 'k', 'м': 'm', 'н': 'h', 'т': 't', 'в': 'b' };
-const WORD_PARTS = /[\p{L}\p{N}\p{M}@$!|+＠＄！｜＋]+/gu;
+// A zero-width joiner or non-joiner inside a word (kept by the text clean-up between letters) is part of the word, not a gap.
+const WORD_PARTS = new RegExp('[\\p{L}\\p{N}\\p{M}@$!|+＠＄！｜＋' + codeEscape(0x200c) + codeEscape(0x200d) + ']+', 'gu');
 const EDGE_SYMBOLS_END = /[@$!|+＠＄！｜＋]+$/u;
 const EDGE_SYMBOLS_START = /^[@$!|+＠＄！｜＋]+/u;
 
 /** Letters only in a plain lower-case form: accents, full-width and look-alike letters are folded. */
 function foldWord(word: string): string {
-  const base = word.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+  const base = word.normalize('NFKD').replace(/\p{M}/gu, '').replace(JOINERS, '').toLowerCase();
   let out = '';
   for (const char of base) out += OTHER_ALPHABETS[char] ?? char;
   return out;
@@ -352,7 +355,7 @@ export function checkRateRule(history: readonly number[] | undefined, now: numbe
   return wait > 0 ? { allowed: false, retryAfterMs: wait } : { allowed: true };
 }
 
-function remember(map: Map<string, number[]>, key: string, now: number, windowMs: number) {
+function remember(map: Map<string, number[]>, key: string, now: number, windowMs: number): void {
   const history = recent(map.get(key), now, windowMs);
   history.push(now);
   if (map.has(key)) map.delete(key);
@@ -393,9 +396,27 @@ export function tryRecordAction(
   return worst;
 }
 
+/**
+ * Checks one rule for one key in a bounded history map and, when it allows the
+ * action, records it. A refused attempt costs nothing. Used for the reads that
+ * cost the server real work (see `VIEWER_FULL_READ_RULE`).
+ */
+export function tryRecordKeyed(map: Map<string, number[]>, key: string, now: number, rule: RateRule): RateDecision {
+  const result = checkRateRule(map.get(key), now, rule);
+  if (!result.allowed) return { allowed: false, scope: 'network', retryAfterMs: result.retryAfterMs };
+  remember(map, key, now, rule.windowMs);
+  return { allowed: true };
+}
+
 /** The plain line a viewer reads when asked to slow down. */
-export function slowDownLine(retryAfterMs: number): string {
+export function slowDownLine(retryAfterMs: number, scope: 'viewer' | 'network' | 'room' = 'viewer'): string {
   const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  // The limit of a whole network or room is not the viewer's doing: do not make it sound like their fault.
+  if (scope !== 'viewer') {
+    return seconds === 1
+      ? 'Chat is busy right now. Please try again in 1 second.'
+      : `Chat is busy right now. Please try again in ${seconds} seconds.`;
+  }
   return seconds === 1
     ? 'Please slow down. You can send again in 1 second.'
     : `Please slow down. You can send again in ${seconds} seconds.`;
@@ -480,6 +501,18 @@ export function removeFeedMessages(feed: ViewerFeed, shouldRemove: (message: Vie
   return removedIds;
 }
 
+/**
+ * Empties the list of messages (the host switched chat on again). The step in
+ * the numbering makes every page that holds an older place start over with
+ * the fresh, empty list, so nothing written while chat was off ever shows.
+ */
+export function clearFeedMessages(feed: ViewerFeed): void {
+  feed.messages = [];
+  feed.removals = [];
+  feed.seq += 1;
+  feed.lostBelow = feed.seq;
+}
+
 export function appendFeedReaction(feed: ViewerFeed, type: ViewerReactionType): void {
   feed.reactions.push({ seq: ++feed.seq, type });
   if (feed.reactions.length > VIEWER_FEED_REACTIONS_MAX) feed.reactions.shift();
@@ -542,11 +575,24 @@ export function readViewerFeed(feed: ViewerFeed, query: ViewerFeedQuery): Viewer
 // ---------------------------------------------------------------------------
 
 export const VIEWER_POLL_MS_DEFAULT = 4000;
+/** While all three switches are off a page has nothing to show, so it asks this seldom (it still notices a switch within this time). */
+export const VIEWER_POLL_MS_IDLE = 20_000;
+/**
+ * A page that asks for the whole recent list (it has no place yet) costs the
+ * server real work and up to ~40 kB. One address may do this this often: a
+ * whole congregation can open the page together on one Wi-Fi, a script cannot.
+ */
+export const VIEWER_FULL_READ_RULE: RateRule = { minGapMs: 0, max: 120, windowMs: 60_000 };
 /** A hidden tab asks this seldom at the most often. */
 export const VIEWER_POLL_MS_HIDDEN_MIN = 15_000;
 
-/** The wait the server suggests, given how many requests per second the room is getting. */
-export function suggestViewerPollMs(requestsPerSecond: number): number {
+/**
+ * The wait the server suggests, given how many requests per second the room is
+ * getting, and whether any switch is on (with all three off there is nothing to
+ * show, so pages ask slowly).
+ */
+export function suggestViewerPollMs(requestsPerSecond: number, anySwitchOn = true): number {
+  if (!anySwitchOn) return VIEWER_POLL_MS_IDLE;
   if (!Number.isFinite(requestsPerSecond) || requestsPerSecond <= 40) return VIEWER_POLL_MS_DEFAULT;
   if (requestsPerSecond <= 100) return 6000;
   if (requestsPerSecond <= 250) return 10_000;
