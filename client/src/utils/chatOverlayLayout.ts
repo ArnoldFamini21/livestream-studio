@@ -77,7 +77,7 @@ export const CHAT_OVERLAY_COLORS = {
   text: '#f8fafc',
   questionFill: '#f59e0b',
   questionText: '#111827',
-  accent: { studio: '#6366f1', youtube: '#ef4444', facebook: '#3b82f6' } as Record<ChatOverlaySource, string>,
+  accent: { studio: '#6366f1', youtube: '#ef4444', facebook: '#3b82f6', watch: '#14b8a6' } as Record<ChatOverlaySource, string>,
 } as const;
 
 /** Base values for a 1080-unit short side; everything scales with the canvas. */

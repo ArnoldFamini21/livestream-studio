@@ -1,5 +1,5 @@
 import { splitGraphemes } from './graphemes.ts';
-import type { ChatMessage, ChatOverlayState } from '@studio/shared';
+import { isPublicChatCandidate, type ChatMessage, type ChatOverlayState } from '@studio/shared';
 import { isQuestion } from './questionDetection.ts';
 
 /**
@@ -14,8 +14,11 @@ export const CHAT_OVERLAY_MAX_AUTHOR = 40;
 /** Newest eligible comments kept in memory for the overlay, whatever the chat holds. */
 export const CHAT_OVERLAY_BUFFER_MAX = 40;
 
-/** Where a comment came from; watch-page chat can be added as another value later. */
-export type ChatOverlaySource = 'studio' | 'youtube' | 'facebook';
+/** Where a comment came from: the studio itself, a connected platform, or the public watch page. */
+export type ChatOverlaySource = 'studio' | 'youtube' | 'facebook' | 'watch';
+
+/** What a viewer's comment shows before the name, so a viewer named "Host" is still plainly a viewer on screen. */
+export const CHAT_OVERLAY_VIEWER_PREFIX = 'Viewer · ';
 
 export interface ChatOverlayComment {
   id: string;
@@ -97,7 +100,8 @@ export function sanitizeOverlayText(value: unknown, maxLength = CHAT_OVERLAY_MAX
 
 /** Public room or platform comment: never backstage, never a private / direct message. */
 export function isPublicOverlayCandidate(message: Pick<ChatMessage, 'isBackstage' | 'recipientId'>): boolean {
-  return !message.isBackstage && !message.recipientId;
+  // One rule for "public chat", shared with the watch page (see isPublicChatCandidate).
+  return isPublicChatCandidate(message);
 }
 
 export interface SelectOverlayCommentsInput {
@@ -142,13 +146,16 @@ export function selectOverlayComments({ messages, settings, greenRoomIds, limit 
   for (const { message, at } of newest) {
     const text = sanitizeOverlayText(message.content);
     if (!text) continue;
+    const platform = message.source?.platform;
+    const source: ChatOverlaySource = platform === 'youtube' || platform === 'facebook' || platform === 'watch' ? platform : 'studio';
+    const name = sanitizeOverlayText(message.senderName, CHAT_OVERLAY_MAX_AUTHOR) || 'Viewer';
     out.push({
       id: message.id,
-      author: sanitizeOverlayText(message.senderName, CHAT_OVERLAY_MAX_AUTHOR) || 'Viewer',
+      author: source === 'watch' ? `${CHAT_OVERLAY_VIEWER_PREFIX}${name}` : name,
       text,
       // Questions are judged on the sanitized text, the same text the overlay shows.
       question: isQuestion(text),
-      source: message.source?.platform === 'youtube' || message.source?.platform === 'facebook' ? message.source.platform : 'studio',
+      source,
       at,
     });
   }

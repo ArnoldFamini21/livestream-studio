@@ -24,6 +24,9 @@
 .chat-message-heading { min-width: 0; display: flex; align-items: baseline; gap: 8px; padding-right: 29px; }
 .chat-message-sender { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 550; line-height: 1.5; }
 .chat-message-item[data-mine] .chat-message-sender { color: var(--accent-hover); }
+/* Set by the server from where the message came from, never from the name a viewer typed. */
+.chat-message-viewer { flex: none; padding: 0 6px; border-radius: 999px; background: #14b8a62e; color: #5eead4; font-size: 9px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; line-height: 1.7; }
+.chat-message-moderation button { color: var(--danger); }
 .chat-message-heading time { flex: none; font-size: 9px; color: var(--text-muted); white-space: nowrap; }
 .chat-message-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: 9px; color: var(--text-muted); line-height: 1.5; }
 .chat-message-content { font-size: 12px; line-height: 1.65; color: var(--text-secondary); margin: 6px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }

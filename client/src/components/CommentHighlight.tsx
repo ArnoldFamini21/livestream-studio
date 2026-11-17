@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import type { ChatMessage, ExternalChatPlatform } from '@studio/shared';
+import type { ChatMessage, ChatSourcePlatform } from '@studio/shared';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -11,7 +11,7 @@ export interface HighlightedComment {
   senderName: string;
   content: string;
   avatarColor?: string;
-  sourcePlatform?: ExternalChatPlatform;
+  sourcePlatform?: ChatSourcePlatform;
   displayMode?: CommentDisplayMode;
   durationMs?: number;
 }
@@ -103,9 +103,11 @@ export function isHighlightedCommentSource(comment: HighlightedComment | null, m
   return Boolean(comment && (comment.id === messageId || comment.sourceMessageId === messageId));
 }
 
-export function getCommentSourceLabel(platform: ExternalChatPlatform | undefined): string {
+export function getCommentSourceLabel(platform: ChatSourcePlatform | undefined): string {
   if (platform === 'youtube') return 'YouTube';
   if (platform === 'facebook') return 'Facebook';
+  // Anyone on the public watch page: a viewer who types the host's name is still marked as a viewer on screen.
+  if (platform === 'watch') return 'Viewer';
   return '';
 }
 

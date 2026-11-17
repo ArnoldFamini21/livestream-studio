@@ -4,6 +4,9 @@ import type Hls from 'hls.js';
 import '../styles/studio-chrome.css';
 import { StudioIcon } from './StudioIcon.tsx';
 import { WatchPollCard } from './WatchPollCard.tsx';
+import { WatchChatPanel } from './WatchChatPanel.tsx';
+import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
+import type { ViewerReactionType } from '@studio/shared';
 import { ApiRequestError, requestJson, resolveMediaHttpUrl } from '../utils/apiClient.ts';
 import { canonicalWatchPath, looksLikeReplacedWatchLink, pollWatchStatus, type WatchStatus } from '../utils/watchStatus.ts';
 import { HlsRecoveryPolicy } from '../utils/hlsRecovery.ts';
@@ -28,6 +31,10 @@ interface WatchRoom {
 
 function registrationKey(roomId: string): string {
   return `livestream-studio:watch-registered:${roomId}`;
+}
+
+function registeredNameKey(roomId: string): string {
+  return `livestream-studio:watch-registered-name:${roomId}`;
 }
 
 function formatSchedule(iso?: string): string {
@@ -58,6 +65,20 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState('');
   const [needsTap, setNeedsTap] = useState(false);
+  // Reactions from viewers float over the picture on this page (a few at a time).
+  const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
+  const reactionSequence = useRef(0);
+  const floatReactions = useCallback((types: ViewerReactionType[]) => {
+    const now = Date.now();
+    const created = types.map((type) => createFloatingReaction(type, ++reactionSequence.current, now));
+    setFloatingReactions((current) => [...current.filter((item) => now - item.createdAt < REACTION_OVERLAY_DURATION_MS + 500), ...created].slice(-18));
+    window.setTimeout(() => {
+      setFloatingReactions((current) => current.filter((item) => !created.some((made) => made.id === item.id)));
+    }, REACTION_OVERLAY_DURATION_MS + 400);
+  }, []);
+  const [savedName] = useState(() => {
+    try { return roomId ? localStorage.getItem(registeredNameKey(roomId)) ?? '' : ''; } catch { return ''; }
+  });
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
 
@@ -202,6 +223,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
         body: JSON.stringify({ name: form.name.trim(), email: form.email.trim() }),
       });
       try { localStorage.setItem(registrationKey(roomId), form.email.trim()); } catch { /* Private mode. */ }
+      try { localStorage.setItem(registeredNameKey(roomId), form.name.trim()); } catch { /* Private mode. */ }
       setRegistered(true);
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'Registration failed. Please try again.');
@@ -273,6 +295,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               )}
               {live && playerError && <div className="watch-placeholder" role="alert"><p>{playerError}</p><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry playback</button></div>}
               {live && statusFailed && <p className="watch-error" role="status">Connection interrupted. Reconnecting…</p>}
+              <ReactionOverlay reactions={floatingReactions} />
               {live && needsTap && !playerError && (
                 <button type="button" className="watch-tap" onClick={() => videoRef.current?.play().then(() => setNeedsTap(false)).catch(() => undefined)}>
                   Tap to play
@@ -284,6 +307,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               {room?.hostName && <p className="watch-host">Hosted by {room.hostName}</p>}
               {schedule && !live && !ended && <p className="watch-schedule">{schedule}</p>}
             </section>
+            {room && !ended && <WatchChatPanel watchId={watchId} registeredName={form.name.trim() || savedName} onFloat={floatReactions} />}
             {room && !ended && <WatchPollCard watchId={roomId} />}
           </>
         )}
