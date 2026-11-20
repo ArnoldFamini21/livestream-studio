@@ -1,5 +1,7 @@
 import { useState, useMemo } from 'react';
-import type { QAQuestion } from '@studio/shared';
+import type { QAQuestion, ViewerBlockScope } from '@studio/shared';
+import { questionAuthorLabel } from '../utils/viewerQuestionLabel.ts';
+import { ViewerBlockDialog, type ViewerBlockTarget } from './ViewerChatControls.tsx';
 export type { QAQuestion };
 
 // ---------------------------------------------------------------------------
@@ -14,6 +16,8 @@ interface WebinarQAPanelProps {
   onHighlight: (id: string) => void;
   onUnhighlight: (id: string) => void;
   onClose: () => void;
+  /** Blocks the viewer who asked a question from the watch page (asks which viewers first). Without it the button is not shown. */
+  onBlockViewer?: (questionId: string, scope: ViewerBlockScope) => void;
 }
 
 type FilterTab = 'all' | 'pending' | 'approved' | 'answered';
@@ -26,8 +30,10 @@ export function WebinarQAPanel({
   onHighlight,
   onUnhighlight,
   onClose,
+  onBlockViewer,
 }: WebinarQAPanelProps) {
   const [activeTab, setActiveTab] = useState<FilterTab>('all');
+  const [blocking, setBlocking] = useState<ViewerBlockTarget | null>(null);
   const [answeringId, setAnsweringId] = useState<string | null>(null);
   const [answerDraft, setAnswerDraft] = useState('');
 
@@ -141,7 +147,7 @@ export function WebinarQAPanel({
             {/* Question header */}
             <div style={panelStyles.questionHeader}>
               <div style={panelStyles.questionMeta}>
-                <span style={panelStyles.authorName}>{q.authorName}</span>
+                <span style={panelStyles.authorName}>{questionAuthorLabel(q)}</span>
                 <span style={panelStyles.timestamp}>
                   {new Date(q.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
@@ -291,10 +297,30 @@ export function WebinarQAPanel({
                   </svg>
                 </button>
               )}
+
+              {/* A question from the watch page: block the viewer who asked (also takes their waiting questions off) */}
+              {q.fromViewer && onBlockViewer && (
+                <button
+                  type="button"
+                  className="participant-action-btn"
+                  style={panelStyles.blockBtn}
+                  onClick={() => setBlocking({ id: q.id, name: q.authorName })}
+                  aria-label={`Block viewer ${q.authorName}`}
+                >
+                  Block viewer
+                </button>
+              )}
             </div>
           </div>
         ))}
       </div>
+      {onBlockViewer && (
+        <ViewerBlockDialog
+          target={blocking}
+          onCancel={() => setBlocking(null)}
+          onChoose={(target, scope) => { setBlocking(null); onBlockViewer(target.id, scope); }}
+        />
+      )}
     </div>
   );
 }
@@ -318,7 +344,7 @@ export function WebinarQAOverlay({ question }: WebinarQAOverlayProps) {
           <span style={overlayStyles.qLabel}>Q:</span>
           <span style={overlayStyles.qText}>{question.content}</span>
         </div>
-        <span style={overlayStyles.author}>— {question.authorName}</span>
+        <span style={overlayStyles.author}>— {questionAuthorLabel(question)}</span>
         {question.status === 'answered' && question.answer && (
           <div style={overlayStyles.answerRow}>
             <span style={overlayStyles.aLabel}>A:</span>
@@ -429,7 +455,7 @@ export function WebinarQAAudience({
               {/* Question content */}
               <div style={audienceStyles.questionBody}>
                 <div style={audienceStyles.questionMeta}>
-                  <span style={audienceStyles.authorName}>{q.authorName}</span>
+                  <span style={audienceStyles.authorName}>{questionAuthorLabel(q)}</span>
                   <span style={audienceStyles.timestamp}>
                     {new Date(q.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
@@ -781,6 +807,18 @@ const panelStyles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     padding: 0,
     transition: 'all 0.15s ease',
+  },
+  blockBtn: {
+    marginLeft: 'auto',
+    height: 28,
+    padding: '0 10px',
+    borderRadius: 6,
+    background: 'var(--bg-surface)',
+    border: '1px solid var(--border)',
+    color: 'var(--danger)',
+    cursor: 'pointer',
+    fontSize: 12,
+    whiteSpace: 'nowrap',
   },
   highlightActive: {
     background: 'rgba(245, 158, 11, 0.12)',

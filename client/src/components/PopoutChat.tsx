@@ -3,6 +3,7 @@ import { useLocation, useParams } from 'react-router-dom';
 import type { ChatMessage, ChatReactionType } from '@studio/shared';
 import { ChatMessageItem } from './ChatMessageItem.tsx';
 import { getChatDraftKey, prepareStudioChatMessage, MAX_CHAT_MESSAGE_LENGTH } from '../utils/chatWorkspace.ts';
+import { pinnedNoteText, publicChatNote } from '../utils/viewerChatNotes.ts';
 import {
   getPopoutChatChannelName, readPopoutChatSession,
   type PopoutChatCommand, type PopoutChatState,
@@ -100,17 +101,17 @@ export function PopoutChat() {
         const container = messagesRef.current;
         if (container) nearBottomRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
       }}>
-        {pinnedMessage && (mode === 'public' || mode === 'starred') && <div className="chat-pinned-note"><span>Pinned</span><p>{pinnedMessage.content}</p></div>}
+        {pinnedMessage && (mode === 'public' || mode === 'starred') && <div className="chat-pinned-note"><span>Pinned</span><p>{pinnedNoteText(pinnedMessage)}</p></div>}
         {visibleMessages.length === 0 && <div className="chat-empty">
           <p>{status === 'connected' ? `No ${modeLabel.toLowerCase()} ${mode === 'backstage' ? 'notes' : mode === 'social' || mode === 'starred' ? 'comments' : 'messages'} yet` : 'Open chat from your studio'}</p>
-          <span>{status !== 'connected' ? 'Keep the studio window open to stay connected.' : mode === 'backstage' ? 'Notes for the production team.' : mode === 'direct' ? 'Your private messages appear here.' : mode === 'social' ? 'Connect platform comments in the studio.' : mode === 'starred' ? 'Save public comments from their message menu.' : 'Messages are visible to everyone in the studio.'}</span>
+          <span>{status !== 'connected' ? 'Keep the studio window open to stay connected.' : mode === 'backstage' ? 'Notes for the production team.' : mode === 'direct' ? 'Your private messages appear here.' : mode === 'social' ? 'Connect platform comments in the studio.' : mode === 'starred' ? 'Save public comments from their message menu.' : 'Messages are visible to everyone in the studio, and on the watch page if viewer chat is on.'}</span>
         </div>}
-        {visibleMessages.map((message) => <ChatMessageItem key={message.id} message={message} isMine={message.senderName === state?.senderName} onReact={connected ? handleReact : undefined} onToggleStar={connected ? handleToggleStar : undefined} onTogglePin={connected ? handleTogglePin : undefined} />)}
+        {visibleMessages.map((message) => <ChatMessageItem key={message.id} message={message} isMine={!message.source && message.senderName === state?.senderName} onReact={connected ? handleReact : undefined} onToggleStar={connected ? handleToggleStar : undefined} onTogglePin={connected ? handleTogglePin : undefined} />)}
         <div ref={bottomRef} />
       </section>
       <footer className="chat-composer">
         {readOnly ? <div className="chat-context-note">{mode === 'direct' ? 'Send private messages from the studio window.' : <button type="button" className="chat-channel-select" onClick={() => changeMode('public')}>Write in Public chat</button>}</div> : <>
-          <p className="chat-context-note">{mode === 'backstage' ? 'Only visible to the backstage team' : 'Visible to everyone in the studio'}</p>
+          <p className="chat-context-note">{mode === 'backstage' ? 'Only visible to the backstage team' : publicChatNote(undefined)}</p>
           {input.length >= 1800 && <p className="chat-context-note" style={{ textAlign: 'right' }}>{input.length}/{MAX_CHAT_MESSAGE_LENGTH}</p>}
           <div className="chat-input-row">
             <input className="chat-input" aria-label={`${modeLabel} message`} placeholder={mode === 'backstage' ? 'Write a backstage note…' : 'Write a message…'} value={input} maxLength={MAX_CHAT_MESSAGE_LENGTH} disabled={!connected} onChange={(event) => { const value = event.target.value; setDrafts((previous) => ({ ...previous, [draftKey]: value })); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) handleSend(); }} />

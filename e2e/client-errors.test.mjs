@@ -18,7 +18,8 @@ test('production browser reports anonymous, release-tagged errors and server gro
     await page.goto(fixture.url);
     await page.getByRole('button', { name: 'Create studio', exact: true }).waitFor();
     const bundle = await page.locator('script[type="module"]').getAttribute('src');
-    assert.match(bundle, /\/assets\/index-[A-Za-z0-9_-]{8}\.js$/);
+    const assetHash = bundle?.match(/\/assets\/index-([A-Za-z0-9_-]{8})\.js$/)?.[1];
+    assert.ok(assetHash, 'the production bundle has a hashed filename');
     const delivered = page.waitForResponse(response => response.url() === `${fixture.apiUrl}/api/client-errors` && response.status() === 204);
     await page.evaluate(({ bundle }) => {
       // The URL, message, function name and error header must all be omitted.
@@ -37,8 +38,12 @@ test('production browser reports anonymous, release-tagged errors and server gro
     assert.ok(payloads.every(payload => /^[a-f0-9]{40}$/.test(payload.release)), 'each browser report carries the build commit');
     assert.ok(payloads.every(payload => payload.page === '/studio/:roomId'));
     assert.ok(payloads.every(payload => payload.message === 'Cannot access an undefined or null value'));
-    assert.notEqual(payloads[0].stack, payloads[1].stack);
-    assert.equal(payloads[0].stack, payloads[2].stack);
+    // Beacons can reach Playwright in any order, including the pagehide flush.
+    assert.deepEqual(payloads.map(payload => payload.stack).sort(), [
+      `asset:${assetHash}:10:20`,
+      `asset:${assetHash}:10:20`,
+      `asset:${assetHash}:11:20`,
+    ]);
     assert.doesNotMatch(JSON.stringify(payloads), /private|Private|localhost|email|invite|token|userAgent/);
     await eventually(async () => (await (await fetch(`${fixture.apiUrl}/metrics`)).text()).includes('livestream_studio_client_errors_total{kind="error"} 3'));
     for (const route of ['/api/client-errors', '/api/client-errors/', '/API/CLIENT-ERRORS']) {

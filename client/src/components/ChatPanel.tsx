@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import type { ChatMessage, ChatReactionType } from '@studio/shared';
 import { formatChatTypingNames } from '../utils/chatTyping.ts';
 import { getChatDraftKey, prepareStudioChatMessage, MAX_CHAT_MESSAGE_LENGTH } from '../utils/chatWorkspace.ts';
+import { pinnedNoteText } from '../utils/viewerChatNotes.ts';
 import { ChatMessageItem } from './ChatMessageItem.tsx';
 import '../styles/studio-chat.css';
 
@@ -55,6 +56,7 @@ export function ChatPanel({
     return Date.parse(message.pinnedAt || message.timestamp) >= Date.parse(latest.pinnedAt || latest.timestamp)
       ? message : latest;
   }, null);
+  const pinnedText = pinnedMessage ? pinnedNoteText(pinnedMessage) : null;
 
   const clearTypingTimer = useCallback(() => {
     if (typingTimerRef.current === null) return;
@@ -117,9 +119,9 @@ export function ChatPanel({
         const container = messagesContainerRef.current;
         if (container) isNearBottomRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
       }}>
-        {pinnedMessage && <div className="chat-pinned-note"><span>Pinned</span><p>{pinnedMessage.content}</p></div>}
+        {pinnedText !== null && <div className="chat-pinned-note"><span>Pinned</span><p title={pinnedText}>{pinnedText}</p></div>}
         {messages.length === 0 && <div className="chat-empty"><p>{emptyText}</p><span>{emptyHint}</span></div>}
-        {messages.map((message) => <ChatMessageItem key={message.id} message={message} isMine={message.senderName === senderName} onReact={onReact} />)}
+        {messages.map((message) => <ChatMessageItem key={message.id} message={message} isMine={!message.source && message.senderName === senderName} onReact={onReact} />)}
         <div ref={bottomRef} />
       </div>
       <div className="chat-composer">

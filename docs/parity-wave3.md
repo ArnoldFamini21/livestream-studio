@@ -11,7 +11,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P1.4** Configurable multistream destinations, health and presets (PR #360, verified locally; see below)
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
 - [x] **P1.6** Merged on-screen chat overlay, questions and export (PR #361, verified locally; see below)
-- [ ] **P1.7** Moderated viewer chat, reactions and Q&A
+- [x] **P1.7** Moderated viewer chat, reactions and Q&A (PR #374; see below and docs/notes/viewer-chat.md)
 - [ ] **P1.8** Signed watch-page registration and HLS authorization
 - [ ] **P1.9** Audience call-ins through the green room
 - [ ] **P1.10** Reusable studios, synced scenes and scene folders
@@ -532,6 +532,77 @@ logged anywhere new.
 **Not verified.** A real YouTube or Facebook destination (the listener is a local dummy
 that never answers); a long hold close to 3 minutes; `e2e/studio.test.mjs` was not
 changed (it has no media server in CI).
+
+## P1.7 — viewer chat, reactions and questions on the watch page
+
+The watch page can now carry a live chat, reactions and "Ask a question". It is the
+first way for anonymous members of the public to write into a live church
+broadcast, so all three are **off until the host turns them on**, and the server,
+not the page, decides everything. Full detail, the numbers and the load estimate
+are in `docs/notes/viewer-chat.md`.
+
+- **Rules** (`shared/src/viewerChat.ts`, pure, clock passed in): plain-text
+  cleaning (name 40, message 300, no markup, no clickable links, control and
+  direction characters removed), the English and Tagalog word filter (masks, never
+  drops), per-viewer, per-network and per-room limits, the "same message twice"
+  refusal, the one rule for which studio messages viewers may see
+  (`isWatchPublicStudioMessage`, built on the on-screen chat's own public rule),
+  the cursor feed and the poll-interval hint.
+- **Server** (`server/src/services/viewerChat.ts`, `routes/watch.ts`, wiring in
+  `signaling.ts`): plain HTTP like poll voting. `GET /api/watch/:id/live?after=&epoch=`
+  returns chat, removals, reaction counts and the three switches in one small
+  answer; `POST .../chat`, `.../reactions`, `.../questions` take a 2 kB body (415,
+  400 and 413 answered plainly). The server keeps the viewer's browser ID and
+  a salted network hash in memory. Other viewers and studio operators receive
+  neither value. Switches, blocks and about 200 viewer messages last for the
+  life of the room, like the on-screen chat settings. The network is the address (IPv4)
+  or its first 64 bits (IPv6). Studio lines are kept for viewers only while chat
+  is on, and the list starts empty each time chat is switched on. Questions are
+  capped per viewer (3 waiting), per network (15) and per room (200 open: answered
+  and dismissed ones do not count). Big answers (more than 20 lines, however a
+  page asks) have their own per-network budget; past it a page gets the newest
+  20 lines as a fresh list.
+- **Watch page** (`WatchChatPanel.tsx`, `useWatchLive.ts`, `watchViewerChat.ts`):
+  asks every 4 seconds while any switch is on and every 20 seconds while all
+  three are off (the server may say slower; 15 seconds or more while the tab is
+  hidden), shows each part only while its switch is on, reactions float over the
+  picture (also with chat off).
+- **Studio**: the three switches and the blocked list (`ViewerChatControls.tsx`,
+  `useViewerChat.ts`) under the on-screen chat controls; viewer messages enter
+  the studio chat as an outside source (platform `watch`) marked "Viewer", on the
+  on-screen chat as "Viewer · name" under the existing All or Approved choice,
+  and viewer questions as "name (viewer)" in the Q&A queue; Remove and Block
+  viewer (this viewer only, or everyone on the same network, said in plain
+  words; also on a viewer's question in the Q&A panel) with Unblock, and a
+  warning with a one-click "Show only approved comments" when viewer messages
+  would go straight on air. Viewer reactions float on the studio preview only, never
+  in the broadcast picture. `StudioRoom.tsx` changed by wiring only.
+
+The watch page refreshes chat from the moderated feed immediately after sending.
+Only one feed request runs at a time. On smaller screens, the chat history grows
+as messages arrive, and an active poll appears above the chat.
+
+Blocks cover the selected viewer and optionally the network they used when they
+posted. A viewer's pending question stays with studio operators until approved
+or answered. The broadcast Q&A card keeps the viewer label visible as it
+shortens long names. Featured avatars keep the first complete character and
+pinned messages start with the Viewer label. Turning viewer chat off removes
+earlier viewer lines from the rolling overlay.
+
+IPv6 addresses on one network share the watch request and poll limits. Each
+network also has a capped contribution to the room's polling hint. The shared
+posting limits can briefly slow or stop new posts from all viewers during a
+sustained surge from several networks.
+
+The CI browser suite in `e2e/viewer-chat.test.mjs` uses one host and two
+independent watch browsers to exercise the switches, attribution, public and
+backstage chat, on-screen approval, reactions, Q&A, blocking and unblocking.
+It collects screenshots at 1440×900, 1000×625 and 390×844. Workspace tests cover
+moderation, question privacy, request limits and polling races. The browser
+suite uses fake devices and loopback signaling. The 20-step viewer rehearsal
+also exercised the block dialog by keyboard at 390 px and checked poll
+placement and switch-off behavior. All 72 deliberate mutations were detected.
+A production release restarts the signaling server.
 
 ## Resume here next session
 

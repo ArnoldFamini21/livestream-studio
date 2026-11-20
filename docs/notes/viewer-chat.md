@@ -1,0 +1,280 @@
+# Viewer chat, reactions and questions on the watch page (P1.7)
+
+## What it does
+
+People on the public watch page can write in a chat, send a reaction, and ask
+the host a question. This is the first time anonymous members of the public can
+write into a live church broadcast, so the host decides, and the server (never
+the watch page) enforces every rule.
+
+- **Three switches, all off.** In the studio chat panel, under the on-screen chat
+  controls: "Viewers can chat", "Viewers can react", "Viewers can ask
+  questions". Hosts and co-hosts can change them. While a switch is off the
+  watch page hides that part, and the server refuses a hand-made request for it
+  (403 with a plain line). They are kept in memory for the life of the room, so
+  they survive a reload of the studio or the watch page but not a restart of the
+  signaling server (the same as the on-screen chat settings and the blocks).
+  When the host switches chat on, the watch page list starts empty: nothing
+  written before (including public chat lines written in the studio while chat
+  was off) is ever shown to viewers. The studio chat itself keeps everything.
+- **Chat.** A list (about the last 100 messages, newest at the bottom) and an
+  input. A viewer picks a name once (kept in their browser; the registration name
+  is the default). Name 40 characters, message 300. Everything is plain text:
+  trimmed and stripped of control characters, direction-changing characters and
+  unpaired UTF-16 surrogates. Valid emoji sequences keep their joiners. The page
+  renders messages as text without clickable links. Overlong text is refused
+  with a plain message.
+- **What viewers see from the studio.** Only the studio's own public messages,
+  by one pure rule (`isWatchPublicStudioMessage` in `shared/src/viewerChat.ts`):
+  not backstage, not a private message, not from someone still in the green room
+  (the on-screen chat's rule, `isPublicChatCandidate`), and written in the studio
+  itself. Comments imported from YouTube or Facebook are not repeated to this
+  audience. Each line carries a tag set by the server: "Studio" or "Viewer".
+- **Reactions.** Like, love, clap and wow (the studio's set without the laughing
+  face). Counts only, never names. Viewers see them float on the watch page. The
+  host sees them float on the studio preview. They work with chat off: reactions
+  only is a valid setup, and viewers still see each other's reactions float.
+- **Questions.** "Ask a question" puts the question in the existing Q&A queue,
+  marked from a viewer, with the viewer's name. A viewer may have 3 questions
+  waiting, one network (one Wi-Fi or one IPv6 /64) 15 waiting, and the room 200
+  open viewer questions at most. Only questions still waiting (pending or
+  approved) count: when the host answers or dismisses them there is room again.
+  Everyone on one church Wi-Fi shares the 15: while 15 of their questions wait,
+  the next person there reads "Many questions from your connection are waiting
+  for the host" until the host answers or dismisses some.
+
+## The numbers
+
+| What | Limit |
+| --- | --- |
+| Per viewer id, chat and questions | 1 per 2 seconds, 5 per 30 seconds |
+| Per network (one church Wi-Fi), chat and questions | 30 per 30 seconds |
+| Whole room, chat and questions | 120 per 30 seconds |
+| Reactions per viewer | 1 per 0.4 seconds, 20 per 30 seconds |
+| Reactions per network, per room | 300 and 600 per 30 seconds |
+| The same message twice in a row | refused (case, spaces and end punctuation ignored) |
+| Request body | 2 kB; 415 for another content type, 400 for bad JSON, 413 for too big |
+| Messages kept per room | about the last 200 from viewers (250 lines with the studio's) |
+| Removals kept for pages that were away | 200; reactions 120 |
+| Viewer handles and duplicate checks remembered per room | 3,000, oldest first |
+| Questions waiting per viewer, per network, open in the room | 3, 15, 200 |
+| Big answers (more than 20 lines: a page with no place yet, or one asking from far back) per network | 120 per minute (a congregation opening the page together fits; a script does not). Past that, the newest 20 lines as a fresh list, not an error |
+| Lines in any other answer | 20 at most |
+| Chat reads across all rooms, per network | 2,400 per minute (about 160 devices asking every 4 seconds) |
+| Chat, question and reaction requests across all rooms, per network | 1,500 per minute |
+| Watch-page poll reads and votes across all rooms, per network | 1,200 per minute |
+
+A refused attempt uses none of the posting budget. The viewer reads
+"Please slow down. You can send again in N seconds." when they reach their own
+limit. They see "Chat is busy right now" when their network or the whole room
+reaches a limit. A surge from several networks can fill the shared room limit
+again as soon as it opens. If this continues, other viewers may have to wait
+until traffic eases or the host blocks disruptive viewers. The host can also
+turn off any affected audience feature.
+
+One address is one budget for a whole congregation: 30 chat messages and
+questions per 30 seconds shared by everyone behind it, so about one message per
+second in total. At a "type Amen" moment on a big church Wi-Fi some people will
+read "Chat is busy" for a few seconds. That follows the numbers in the brief; it
+is a trade between a crowd on one connection and one person using many viewer
+ids. Chat and questions share that budget.
+
+A "network" is the request address for IPv4, and the first 64 bits (the /64) for
+IPv6, because one home or phone connection owns the whole /64 and can change
+address for every message. An IPv4 address written as IPv6 (::ffff:1.2.3.4)
+counts as the IPv4 address. The poll vote uses the same key.
+
+The word filter is a short built-in list in English and Tagalog, matched on whole
+words after folding case, repeated letters, accents, look-alike characters and
+zero-width joiners (sh1t, fuuuck, a joiner hidden between letters). Dots and
+spaces between letters (f.u.c.k, f u c k) and swapped letters (fvck) are not
+folded: it is a speed bump, not a promise. A match is masked with asterisks, not
+dropped. It leaves out words with an ordinary or biblical use, and words that
+are ordinary in a Philippine church (leche flan, a Latin "cum", Lady Gaga, "mf"
+in music). Two slurs stay on the list even though they have innocent uses ("a
+chink in the armor", the name Kike): a wrongly masked word costs a little, a slur
+shown on air costs more. The host's remove and block are the real protection.
+
+## Who is who (privacy)
+
+- The viewer id is made in the browser. The network key is an HMAC of the request
+  address with a random salt made at each server start. The address is never
+  stored or logged. Neither is ever sent to another viewer or to the studio: the
+  studio gets an opaque handle inside the chat sender id.
+- Logs hold no message text, names, addresses, ids or keys. The browser check reads
+  the server log after a full run and looks for them.
+- The watch page never learns who moderated.
+- The poll vote that already tells viewers apart now uses the same network key.
+
+## What the host sees
+
+- **A viewer's message in the studio chat** has a teal "Viewer" mark and the
+  words "Watch page", whatever name the viewer typed. A viewer who calls
+  themselves "Host" or uses the host's real name is still marked.
+- **On the on-screen chat** it shows as "Viewer · name", with its own colour. The
+  existing "All comments / Approved only" choice applies: in "Approved only" a
+  viewer message appears only after the host stars it or shows it on stage.
+  Turning viewer chat off removes earlier viewer lines from Chat on screen, even
+  when that overlay is paused or set to Approved only. The studio chat keeps the
+  earlier messages. A separately featured comment still has its own on-stage
+  controls.
+- **A viewer's question** shows as "name (viewer)" in the Q&A panel, on the
+  preview and on the broadcast when highlighted.
+- **Remove** (message menu): the message goes from the studio chat, the on-screen
+  chat, the stage (if it was featured) and every watch page.
+- **Block viewer** (message menu, and on a viewer's question in the Q&A panel, so
+  a viewer who only asks questions can be blocked too) asks in plain words: block
+  this viewer only (this browser; it says a private window or cleared browsing
+  data gets round it), or this viewer and everyone on the same network (it says
+  this also blocks other people on the same Wi-Fi, and sometimes other people on
+  the same mobile data network, because phone carriers often share one address
+  among many customers). The network is the one used for the selected message
+  or question. Blocking removes the viewer's posts and posts sent from that
+  network, clears Q&A highlights, and keeps answered questions in the archive.
+  A dismissed question remains private if it was never approved or answered.
+  New messages, reactions and questions from a blocked viewer or network are
+  refused with "You can no longer post in this broadcast." The list of blocked
+  viewers (name, and whether the whole network) has Unblock. Removed messages do
+  not come back.
+- **A warning when viewers would go straight on air.** If viewer chat is on and
+  Chat on screen is on with "All comments", a note under the switches says a
+  viewer's message will appear on the broadcast as soon as it is sent, with a
+  button "Show only approved comments". The switches panel and the watch page
+  hint ("may be shown on the broadcast") say the same. Nothing is changed for the
+  host: this follows the host's own existing choice.
+- **Who sees the Public chat.** Under the Public chat box a host or co-host reads
+  "Visible to everyone in the studio and on the watch page" while viewer chat is
+  on. Guests and the pop-out chat read "...and on the watch page if viewer chat
+  is on" (they are not told the switches).
+- Viewer reactions float on the studio preview only. They are not part of the
+  broadcast picture: the studio's own reactions are drawn into the broadcast, and
+  these deliberately are not.
+- Viewer messages sit in the studio chat's public list and in "Social comments"
+  with the other outside comments.
+
+## Load on the server (one small free instance)
+
+Viewers do not hold a connection. Each watch page asks `GET /api/watch/:id/live`
+every 4 seconds (15 seconds or more while the tab is hidden) while any switch is
+on, and **every 20 seconds while all three are off** (the default), because
+there is nothing to show; a page then notices a switch within about 20 seconds.
+With nothing new the answer is about 160 bytes of JSON and costs one lookup and a
+counter. The watch page's poll card (the existing live polls) also asks
+`/poll` every 5 seconds, so both are counted here.
+
+| Viewers | Switches off (20 s + poll card 5 s) | Any switch on (4 s + poll card 5 s) |
+| --- | --- | --- |
+| 100 | about 25 requests per second | about 45 per second |
+| 300 | about 75 per second | about 135 per second |
+| 500 | about 125 per second | about 225 per second |
+
+- The server counts ordinary small chat responses when it estimates room demand.
+  Each network contributes up to 400 of these requests per 10-second window.
+  Across networks, the server suggests 6 seconds above 40 requests per second,
+  10 above 100 and 15 above 250. A longer interval can delay chat updates.
+- A page opening fresh or catching up can receive up to 100 lines. A full list
+  of ASCII viewer messages is about 9 kB for short lines and about 42 kB for long
+  ones. Valid Unicode can use up to four UTF-8 bytes per code point. With
+  maximum-length Unicode lines and response metadata, the upper bound is about
+  150 kB for 100 viewer lines or 230 kB for 100 longer studio lines. A response
+  with at most 20 lines stays under about 48 kB, including any removal IDs.
+  One network gets up to 120 responses with more than 20 lines per minute.
+  After that, a catch-up response returns the newest 20 lines as a fresh list.
+  At the 2,400-read budget, a network can receive 120 large and 2,280 small
+  responses. With full-length emoji viewer lines this is roughly 90 MB per
+  minute before HTTP headers. The upper estimate for longer studio lines and
+  removal IDs is roughly 140 MB per minute. These are JSON size estimates.
+- The feed keeps up to 250 lines. Viewer messages allow up to 300 code points,
+  studio lines up to 500 and names up to 40. The identity table keeps up to
+  3,000 viewers, each with at most 300 code points of their last accepted text.
+  Duplicate comparisons use a normalized form temporarily and retain only the
+  bounded text. The feed and viewer identities live in memory.
+- The watch request limits use the same network grouping as viewer moderation.
+  An IPv6 network shares one budget across its addresses. About 160 pages
+  reading chat every 4 seconds or about 100 pages polling every 5 seconds can
+  reach their respective network limits. Until a budget resets, extra requests
+  can receive a temporary refusal.
+- A chat message is one small write. At most 120 chat messages and questions per
+  30 seconds are accepted for the whole room.
+
+None of this was load tested. The numbers come from the limits in the code, not
+from a measurement with real traffic.
+
+## What was verified
+
+- Unit tests: `shared/test/viewer-chat.test.mjs` (limits, filter, sanitising,
+  feed and cursor, which studio messages are public), `server/test/viewer-chat.test.mjs`
+  (routes, switches, blocks, removal, limits, privacy of the answers, 415/400/413),
+  `client/test/watchViewerChat.test.ts` (the page's list and cursor, names,
+  reactions, the "Viewer" marking on the on-screen chat, featured comment and Q&A).
+- A real Chromium check (`output/viewer-chat-check/check.mjs`, built app under the
+  production security policy, one host and two watch pages): everything off at
+  first and refused by hand; 415, 400 and 413; chat both ways; a studio message
+  reaches viewers while a backstage one does not; the on-screen chat with a viewer
+  message and the "Approved only" choice; the slow-down line and the repeat
+  refusal; the filter; remove; block one viewer and block a whole network, then
+  Unblock; reactions; a question in the queue; each switch off hides the control
+  and the server refuses a hand-made request; a viewer named like the host is
+  marked everywhere; the server log holds none of the text, names or ids. After
+  the review it also checks: a studio line written before chat was switched on is
+  never shown to viewers; the warning (and its one-click button) when viewer
+  messages would go straight on air; a viewer who only asks questions is blocked
+  from the Q&A panel, their question leaves the queue and other viewers are
+  unaffected; with chat off and reactions on, the other watch page still sees a
+  reaction float. The final 20-step run verifies that switching viewer chat off
+  clears earlier viewer lines from the rolling overlay. It also checks
+  keyboard focus and Escape in the block dialog at 390 px and verifies that a
+  live poll sits above chat. Screenshots were reviewed at 1440×900 and 390×844.
+- Lint, build, 2,670 workspace and script tests, and 15 Chromium checks passed.
+  Two PostgreSQL integration tests were skipped locally. All 72 deliberately
+  altered code variants failed their expected tests. The test runner restored
+  and compared its original files after the run.
+- After the review the unit tests also cover: the feed starting empty when chat is
+  switched on, reactions with chat off, the question caps (a host dismissing all
+  questions frees the room), blocking from a question id, IPv6 /64 and
+  IPv4-mapped addresses, the big-answer budget (a page with no place and a place
+  far back alike; past it, the newest 20 lines as a fresh list), big answers not
+  slowing every page down, the room limit of 200 questions counted by the real
+  studio (answering or dismissing frees room), the 20 second idle hint, the
+  "Chat is busy" wording, a masked name, the filter with zero-width joiners and
+  with the words that were taken off the list, and a guest not being sent the
+  switches.
+
+## What was not verified
+
+- Safari, physical phones, or a screen reader. The phone layout and keyboard
+  behavior were checked at 390×844 in desktop Chromium.
+- A co-host's browser (the co-host uses the same messages as the host; the server
+  tests cover the permission check).
+- A guest on stage seeing viewer messages in their chat panel (the same message
+  and component as other outside comments; not opened in a browser).
+- Real traffic: many viewers, a busy congregation behind one address, a slow phone
+  connection, or the load numbers above.
+- The pop-out chat window: it shows viewer messages with the Viewer mark but has
+  no Remove or Block (use the studio chat panel). It never styles a viewer's
+  message as the host's own, even for the same name.
+- Render's handling of real visitor addresses. The local HTTP test simulates
+  proxy forwarding and verifies that IPv6 addresses on one network share the
+  budget. Real visitor traffic through Render is still unverified.
+- The 20 second wait while all switches are off, with a real host turning a switch
+  on mid-service: pages follow within about 20 seconds (the browser check waited
+  for that).
+- A viewer on a very old browser, a screen reader pass on the watch page, and
+  what happens when the server restarts in the middle of a service (the switches,
+  blocks and chat start over; pages notice at their next ask and start fresh).
+- The word filter against real text from a real congregation. It is small on
+  purpose.
+
+## Known limits that were left as they are
+
+- Blocking from a message requires it to still be in the studio's 500-line chat
+  history or in the recent watch-page feed. Removing the message clears that
+  means of blocking the viewer or their network.
+- A server restart restores rooms without the viewer chat: switches are off
+  (safe) and the blocked list starts empty. The switches panel says so.
+- Dots between letters (f.u.c.k) and swapped letters (fvck) pass the filter.
+- A tab still running the current production client can label viewer messages
+  Facebook, omit the Viewer label on the overlay and throw on a viewer-message
+  removal. The guarded release requires zero open studios. Open a fresh studio
+  tab after the release.
+- Publishing restarts the signaling server and ends any open studio.

@@ -31,6 +31,7 @@ interface UseChatOverlayOptions {
   isHost: boolean;
   chatMessages: ChatMessage[];
   participants: Map<string, Participant>;
+  showWatchMessages: boolean;
 }
 
 export interface ChatOverlayControls {
@@ -63,7 +64,7 @@ function commentsSignature(comments: ChatOverlayComment[]): string {
  * old server for a few minutes during a deploy: then everything keeps working
  * locally), and are kept in this browser so a reload brings them back.
  */
-export function useChatOverlay({ roomId, send, addHandler, canControl, isHost, chatMessages, participants }: UseChatOverlayOptions): ChatOverlayControls {
+export function useChatOverlay({ roomId, send, addHandler, canControl, isHost, chatMessages, participants, showWatchMessages }: UseChatOverlayOptions): ChatOverlayControls {
   const [state, setState] = useState<ChatOverlayState>(defaultChatOverlayState);
   const [serverSupported, setServerSupported] = useState(false);
   const stateRef = useRef(state);
@@ -196,8 +197,8 @@ export function useChatOverlay({ roomId, send, addHandler, canControl, isHost, c
   }, [participants]);
 
   const selected = useMemo(
-    () => (state.enabled ? selectOverlayComments({ messages: chatMessages, settings: state, greenRoomIds }) : EMPTY_COMMENTS),
-    [chatMessages, state, greenRoomIds],
+    () => (state.enabled ? selectOverlayComments({ messages: chatMessages, settings: state, greenRoomIds, showWatchMessages }) : EMPTY_COMMENTS),
+    [chatMessages, state, greenRoomIds, showWatchMessages],
   );
   // New array identity only when what the overlay shows changed (reactions and the like do not).
   const stableRef = useRef<{ signature: string; comments: ChatOverlayComment[] }>({ signature: '', comments: EMPTY_COMMENTS });

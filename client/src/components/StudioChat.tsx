@@ -5,6 +5,8 @@ import { StudioIcon } from './StudioIcon.tsx';
 import { FLASH_COMMENT_DURATION_MS, createHighlightedCommentFromChatMessage, isHighlightedCommentSource, type HighlightedComment } from './CommentHighlight.tsx';
 import { buildChatTranscriptCsv, buildChatTranscriptFilename, buildChatTranscriptTxt, type ChatTranscriptFormat, type ChatTranscriptScope } from '../utils/chatTranscript.ts';
 import { ChatOverlayControls, type ChatOverlayPanelProps } from './ChatOverlayControls.tsx';
+import { ViewerBlockDialog, ViewerChatControls, type ViewerChatPanelProps } from './ViewerChatControls.tsx';
+import { pinnedNoteText, publicChatNote } from '../utils/viewerChatNotes.ts';
 import { formatChatTypingNames } from '../utils/chatTyping.ts';
 import { getExternalChatPlatformMetrics } from '../utils/externalChatMetrics.ts';
 import { MAX_CHAT_MESSAGE_LENGTH, getChatDraftKey, getStudioChatMessages, prepareStudioChatMessage } from '../utils/chatWorkspace.ts';
@@ -31,6 +33,7 @@ export function StudioChat({
   onTypingChange,
   onOpenPopoutChat,
   chatOverlay,
+  viewerChat,
   participants,
   myParticipantId,
   initialRecipientId = '',
@@ -62,6 +65,8 @@ export function StudioChat({
   onOpenPopoutChat?: () => void;
   /** Host and co-host only: the on-screen chat controls and the markers they need in the list. */
   chatOverlay?: ChatOverlayPanelProps;
+  /** Host and co-host only: the watch page switches, the blocked list, and removing or blocking a viewer's message. */
+  viewerChat?: ViewerChatPanelProps;
   participants: Map<string, Participant>;
   myParticipantId: string;
   initialRecipientId?: string;
@@ -78,6 +83,8 @@ export function StudioChat({
   const [connectionIds, setConnectionIds] = useState({ youtube: '', facebook: '' });
   const [directRecipientId, setDirectRecipientId] = useState(initialRecipientId);
   const [hasNewMessages, setHasNewMessages] = useState(false);
+  // The viewer message the host is deciding to block (asks which viewers to block first).
+  const [blocking, setBlocking] = useState<ChatMessage | null>(null);
   // Private messages land in their own channel. Until the host has read one
   // there, a notice in whichever channel is open points to it.
   const [seenDirectIds, setSeenDirectIds] = useState<Set<string>>(() => new Set());
@@ -193,6 +200,7 @@ export function StudioChat({
         </details>
       </div>
       {chatOverlay && <ChatOverlayControls {...chatOverlay} />}
+      {viewerChat && <ViewerChatControls {...viewerChat} overlay={chatOverlay ? { state: chatOverlay.state, onUpdate: chatOverlay.onUpdate } : undefined} />}
       {errorCount > 0 && <button type="button" className="chat-connection-notice" onClick={openConnections}>A chat connection needs attention <span>→</span></button>}
       {latestPendingDirect && <button type="button" className="chat-connection-notice chat-direct-notice" onClick={openPendingDirect}>New private message from {latestPendingDirect.senderName}{pendingDirect.length > 1 ? ` (+${pendingDirect.length - 1})` : ''} <span>→</span></button>}
       {mode === 'direct' && <div className="chat-recipient-row"><select className="chat-channel-select" aria-label="Private message recipient" value={directRecipientId} onChange={event => handleRecipientChange(event.target.value)}>
@@ -200,24 +208,25 @@ export function StudioChat({
         {directRecipientId && !selectedRecipient && <option value={directRecipientId} disabled>Recipient unavailable</option>}
         {directRecipients.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}
       </select></div>}
-      {pinnedMessage && (mode === 'public' || mode === 'starred') && <div className="chat-pinned-note"><span>Pinned</span><p title={pinnedMessage.content}>{pinnedMessage.content}</p><button type="button" className="chat-icon-button" aria-label="Unpin message" onClick={() => onTogglePin(pinnedMessage.id, false)}>×</button></div>}
+      {pinnedMessage && (mode === 'public' || mode === 'starred') && <div className="chat-pinned-note"><span>Pinned</span><p title={pinnedNoteText(pinnedMessage)}>{pinnedNoteText(pinnedMessage)}</p><button type="button" className="chat-icon-button" aria-label="Unpin message" onClick={() => onTogglePin(pinnedMessage.id, false)}>×</button></div>}
       <div ref={containerRef} className="chat-messages" role="log" aria-label={channelLabels[mode]} aria-live="polite" aria-relevant="additions text" onScroll={event => {
         const el = event.currentTarget; nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         if (nearBottom.current) setHasNewMessages(false);
       }}>
         {visibleMessages.length === 0 && <div className="chat-empty">
           <p>{mode === 'social' ? 'Your audience joins here.' : mode === 'starred' ? 'Keep the good ones close.' : mode === 'direct' ? 'A space for private messages.' : mode === 'backstage' ? 'Behind the scenes.' : 'Start the conversation.'}</p>
-          <span>{mode === 'social' ? 'Comments from YouTube and Facebook appear here.' : mode === 'starred' ? 'Star a public message to find it here.' : mode === 'direct' ? (selectedRecipient ? `Only you and ${selectedRecipient.name} can see this conversation.` : 'Choose a participant to send a private note.') : mode === 'backstage' ? 'Coordinate with the host and backstage team.' : 'Public messages appear here.'}</span>
+          <span>{mode === 'social' ? 'Comments from YouTube, Facebook and the watch page appear here.' : mode === 'starred' ? 'Star a public message to find it here.' : mode === 'direct' ? (selectedRecipient ? `Only you and ${selectedRecipient.name} can see this conversation.` : 'Choose a participant to send a private note.') : mode === 'backstage' ? 'Coordinate with the host and backstage team.' : 'Public messages appear here.'}</span>
           {mode === 'social' && canManageExternalChat && <button type="button" className="chat-text-button" onClick={openConnections}>Connect platforms</button>}
         </div>}
         {visibleMessages.map(message => <ChatMessageItem key={message.id} message={message} isMine={message.senderId === myParticipantId} onReact={onReact} onToggleStar={onToggleStar} onTogglePin={onTogglePin} onFeature={handleFeature} onFlash={handleFlash}
           hostMarkers={Boolean(chatOverlay)} shown={shownIds.has(message.id)} overlayHidden={hiddenIds.has(message.id)}
+          onRemoveViewerMessage={viewerChat?.onRemove} onBlockViewer={viewerChat ? setBlocking : undefined}
           onToggleOverlayHidden={chatOverlay ? (id, hidden) => chatOverlay.onUpdate(hidden ? { hide: [id] } : { unhide: [id] }) : undefined}
           featured={isHighlightedCommentSource(highlightedComment, message.id) && highlightedComment?.displayMode !== 'flash'} />)}
       </div>
       {hasNewMessages && <button type="button" className="chat-new-messages" onClick={() => { containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight, behavior: 'smooth' }); nearBottom.current = true; setHasNewMessages(false); }}>New messages ↓</button>}
-      {readOnly ? <div className="chat-readonly-note"><span>{mode === 'social' ? 'Replies stay on the connected platform.' : 'Your saved public messages.'}</span><button type="button" className="chat-text-button" onClick={() => handleModeChange('public')}>Go to public chat</button></div> : <div className="chat-composer">
-        <p className="chat-context-note">{mode === 'backstage' ? 'Visible to the backstage team' : mode === 'direct' ? selectedRecipient ? `Private · to ${selectedRecipient.name}` : 'Choose a recipient to send privately' : 'Visible to everyone in the studio'}</p>
+      {readOnly ? <div className="chat-readonly-note"><span>{mode === 'social' ? 'Replies stay where the comment came from.' : 'Your saved public messages.'}</span><button type="button" className="chat-text-button" onClick={() => handleModeChange('public')}>Go to public chat</button></div> : <div className="chat-composer">
+        <p className="chat-context-note">{mode === 'backstage' ? 'Visible to the backstage team' : mode === 'direct' ? selectedRecipient ? `Private · to ${selectedRecipient.name}` : 'Choose a recipient to send privately' : publicChatNote(viewerChat ? viewerChat.state.switches.chat : undefined)}</p>
         {typingLabel && <p className="chat-typing" role="status">{typingLabel}</p>}
         <div className="chat-input-row"><input ref={composerRef} className="chat-input" aria-label={mode === 'backstage' ? 'Backstage message' : mode === 'direct' ? 'Private message' : 'Public message'} placeholder={mode === 'direct' && !selectedRecipient ? 'Choose a recipient first' : 'Write a message…'}
           value={input} maxLength={MAX_CHAT_MESSAGE_LENGTH} disabled={mode === 'direct' && !selectedRecipient} onChange={event => handleInputChange(event.target.value)} onKeyDown={event => {
@@ -228,6 +237,7 @@ export function StudioChat({
         {input.length >= 1800 && <span className="chat-character-count">{input.length} / {MAX_CHAT_MESSAGE_LENGTH}</span>}
       </div>}
     </>}
+    {viewerChat && <ViewerBlockDialog target={blocking ? { id: blocking.id, name: blocking.senderName } : null} onCancel={() => setBlocking(null)} onChoose={(target, scope) => { setBlocking(null); viewerChat.onBlock(target.id, scope); }} />}
   </div>;
 }
 

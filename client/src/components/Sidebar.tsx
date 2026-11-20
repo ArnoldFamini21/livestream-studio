@@ -1,5 +1,6 @@
 import type { ChatTranscriptScope } from '../utils/chatTranscript.ts';
 import type { ChatOverlayPanelProps } from './ChatOverlayControls.tsx';
+import type { ViewerChatPanelProps } from './ViewerChatControls.tsx';
 import { formatUnreadBadge } from '../utils/chatUnread.ts';
 import { PeoplePanel } from './PeoplePanel.tsx';
 import type { ScreenShareVolumeProps } from './ScreenShareVolume.tsx';
@@ -106,6 +107,8 @@ interface SidebarProps {
   onDismissComment: () => void;
   /** On-screen chat controls (hosts and co-hosts). */
   chatOverlay?: ChatOverlayPanelProps;
+  /** Watch page viewers: switches, blocked list, remove and block (hosts and co-hosts). */
+  viewerChat?: ViewerChatPanelProps;
   // Brand props
   studioTheme: StudioThemeId;
   onStudioThemeChange: (theme: StudioThemeId) => void;
@@ -481,6 +484,7 @@ export function Sidebar(props: SidebarProps) {
               onTypingChange={props.onChatTypingChange}
               onOpenPopoutChat={props.onOpenPopoutChat}
               chatOverlay={props.chatOverlay}
+              viewerChat={props.viewerChat}
               participants={props.allParticipants}
               myParticipantId={props.myParticipantId}
             />

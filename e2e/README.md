@@ -33,7 +33,9 @@ The suite checks admission and green-room media privacy, a playing backstage
 program return, the on-screen chat overlay (a public message appears, a backstage one does not), stage transition, watch-page voting, saved custom layouts,
 portrait canvas dimensions, the server-confirmed talkback badge, a 30-second
 recording with non-empty OPFS tracks, responsive screenshots, and explicit/tab
-close departure timing. Assertions wait for application state and browser events;
+close departure timing. Separate suites verify anonymous error grouping and the
+watch-page viewer workflow, including chat attribution, on-screen approval,
+private studio chat, reactions, Q&A, viewer blocks and unblocking. Assertions wait for application state and browser events;
 there are no fixed UI sleeps. A failed scenario stops dependent scenarios, saves
 the last screenshots/accessibility trees, and closes the test processes.
 

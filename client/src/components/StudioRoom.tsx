@@ -157,6 +157,7 @@ import {
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { ChatOverlayPreview } from './ChatOverlayPreview.tsx';
 import { useChatOverlay } from '../hooks/useChatOverlay.ts';
+import { useViewerChat } from '../hooks/useViewerChat.ts';
 import { OVERLAY_FONT_FAMILY } from '../utils/compositorOverlays.ts';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
 import { WidgetOverlayDisplay, type WidgetOverlayData } from './WidgetOverlay.tsx';
@@ -1978,6 +1979,8 @@ export function StudioRoom() {
   const visibleWidgetIds = useMemo(() => widgets.filter((widget) => widget.visible).map((widget) => widget.id), [widgets]);
   // Opt-in tab capture so web widgets go out live instead of as a placeholder.
   const widgetTabCapture = useWidgetTabCapture(stageRef, visibleWidgetIds);
+  // Viewer chat state also controls the rolling overlay. Viewer reactions stay in the preview.
+  const viewerChat = useViewerChat({ send, addHandler, canControl: canUseOperatorControls });
   // On-screen chat: one state for the stage preview, the compositor and the chat panel's controls.
   const chatOverlay = useChatOverlay({
     roomId,
@@ -1987,6 +1990,7 @@ export function StudioRoom() {
     isHost: isStudioHost,
     chatMessages,
     participants,
+    showWatchMessages: viewerChat.state.switches.chat,
   });
   const chatOverlayFontFamily = brandFontState.fontFamily || OVERLAY_FONT_FAMILY;
   const compositorChatOverlay = useMemo(
@@ -3026,6 +3030,13 @@ export function StudioRoom() {
         case 'chat-message':
           setChatMessages((prev) => upsertChatMessage(prev, message.payload));
           break;
+        case 'chat-message-removed': {
+          // Removed by the host (or its writer was blocked): gone from the list, the on-screen chat and the stage.
+          const removedId = message.payload.messageId;
+          setChatMessages((prev) => prev.filter((chatMessage) => chatMessage.id !== removedId));
+          setHighlightedComment((current) => (current && (current.id === removedId || current.sourceMessageId === removedId) ? null : current));
+          break;
+        }
         case 'chat-message-updated':
           setChatMessages((prev) => prev.map((chatMessage) => (
             chatMessage.id === message.payload.id ? message.payload : chatMessage
@@ -3252,6 +3263,10 @@ export function StudioRoom() {
           navigateRef.current('/');
           break;
         case 'error':
+          if (['VIEWER_NOT_FOUND', 'VIEWER_MESSAGE_NOT_FOUND', 'VIEWER_BLOCK_NOT_FOUND', 'VIEWER_MODERATION_RATE_LIMITED'].includes(message.payload.code)) {
+            addToastRef.current(message.payload.message, 'warning');
+            break;
+          }
           console.error('Server error:', message.payload.message);
           if (message.payload.code === 'RATE_LIMITED') {
             // Negotiation retries on its own; say so once rather than fail silently.
@@ -3407,6 +3422,13 @@ export function StudioRoom() {
         // The on-screen chat is handled by useChatOverlay.
         case 'chat-overlay-update':
         case 'chat-overlay-updated':
+        // Viewer chat switches and blocks are handled by useViewerChat.
+        case 'viewer-chat-settings-update':
+        case 'viewer-chat-state':
+        case 'viewer-chat-remove':
+        case 'viewer-chat-block':
+        case 'viewer-chat-unblock':
+        case 'viewer-reactions':
         case 'stage-action':
         case 'chat-star-update':
         case 'chat-pin-update':
@@ -7855,6 +7877,8 @@ export function StudioRoom() {
 
                 {/* Floating Reaction Overlay */}
                 <ReactionOverlay reactions={floatingReactions} />
+                {/* Reactions from the watch page: this screen only, never drawn into the broadcast picture. */}
+                <ReactionOverlay reactions={viewerChat.floatingReactions} />
 
                 {/* Live Caption Overlay */}
                 <LiveCaptionOverlay
@@ -8284,6 +8308,7 @@ export function StudioRoom() {
             onFlashComment={onFlashComment}
             onDismissComment={onDismissComment}
             chatOverlay={canUseOperatorControls ? { state: chatOverlay.state, onUpdate: chatOverlay.update, onSetPaused: chatOverlay.setPaused, serverSupported: chatOverlay.serverSupported } : undefined}
+            viewerChat={canUseOperatorControls ? { state: viewerChat.state, serverSupported: viewerChat.serverSupported, onSetSwitch: viewerChat.setSwitch, onRemove: viewerChat.removeMessage, onBlock: viewerChat.blockViewer, onUnblock: viewerChat.unblock } : undefined}
             chatPanelMessages={chatMessages}
             onSendChat={onSendChat}
             onReactChat={onReactChat}
@@ -8335,6 +8360,7 @@ export function StudioRoom() {
             onHighlight={onHighlightQuestion}
             onUnhighlight={onUnhighlightQuestion}
             onClose={() => setShowWebinarQA(false)}
+            onBlockViewer={canUseOperatorControls && viewerChat.serverSupported ? viewerChat.blockViewer : undefined}
           />
           </PanelErrorBoundary>
         )}

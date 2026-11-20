@@ -21,12 +21,19 @@ export interface ChatMessageItemProps {
   /** Hidden from the on-screen chat overlay (it stays in this list). */
   overlayHidden?: boolean;
   onToggleOverlayHidden?: (id: string, hidden: boolean) => void;
+  /** Host and co-host only: take a viewer's message out of the studio chat, the on-screen chat and every watch page. */
+  onRemoveViewerMessage?: (id: string) => void;
+  /** Host and co-host only: ask which viewers to block (the studio chat shows the confirmation). */
+  onBlockViewer?: (message: ChatMessage) => void;
 }
 
-export function ChatMessageItem({ message, isMine, onReact, onToggleStar, onTogglePin, onFeature, onFlash, featured, hostMarkers, shown, overlayHidden, onToggleOverlayHidden }: ChatMessageItemProps) {
+export function ChatMessageItem({ message, isMine, onReact, onToggleStar, onTogglePin, onFeature, onFlash, featured, hostMarkers, shown, overlayHidden, onToggleOverlayHidden, onRemoveViewerMessage, onBlockViewer }: ChatMessageItemProps) {
   const menu = useRef<HTMLDetailsElement>(null);
   const isPublic = isPublicChatMessage(message);
-  const hasActions = onReact || (isPublic && (onToggleStar || onTogglePin || onFeature || onFlash || onToggleOverlayHidden));
+  // Written by someone on the public watch page, whatever name they typed.
+  const fromViewer = message.source?.platform === 'watch';
+  const canModerate = fromViewer && Boolean(onRemoveViewerMessage || onBlockViewer);
+  const hasActions = onReact || canModerate || (isPublic && (onToggleStar || onTogglePin || onFeature || onFlash || onToggleOverlayHidden));
   const question = Boolean(hostMarkers && isPublic && isQuestion(message.content));
   const isShown = Boolean(hostMarkers && isPublic && shown);
   const react = (reaction: ChatReactionType) => onReact?.(message.id, reaction);
@@ -37,13 +44,14 @@ export function ChatMessageItem({ message, isMine, onReact, onToggleStar, onTogg
   const activeReactions = CHAT_REACTION_TYPES.filter(reaction => (message.reactions?.[reaction] || 0) > 0);
   const stamp = new Date(message.timestamp);
   const validTime = Number.isFinite(stamp.getTime());
-  return <article className="chat-message-item" data-mine={isMine || undefined} data-shown={isShown || undefined} data-question={question || undefined} data-message-id={message.id} aria-label={`Message from ${message.senderName}`}>
+  return <article className="chat-message-item" data-mine={isMine || undefined} data-shown={isShown || undefined} data-question={question || undefined} data-message-id={message.id} aria-label={`${fromViewer ? 'Viewer message' : 'Message'} from ${message.senderName}`}>
     <div className="chat-message-heading">
       <span className="chat-message-sender">{message.senderName}</span>
+      {fromViewer && <span className="chat-message-viewer" title="Written by someone watching on the public page">Viewer</span>}
       {validTime && <time dateTime={stamp.toISOString()}>{stamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>}
     </div>
     {(message.source?.platform || message.recipientId || message.isBackstage || message.pinned || message.starred || question || isShown || (hostMarkers && overlayHidden)) && <div className="chat-message-meta">
-      {message.source?.platform && <span>{message.source.platform === 'youtube' ? 'YouTube' : 'Facebook'}</span>}
+      {message.source?.platform && <span>{message.source.platform === 'youtube' ? 'YouTube' : message.source.platform === 'watch' ? 'Watch page' : 'Facebook'}</span>}
       {message.recipientId ? <span>Private · to {message.recipientName || 'participant'}</span> : message.isBackstage ? <span>Backstage</span> : null}
       {isPublic && message.pinned && <span>Pinned</span>}
       {isPublic && message.starred && <span>Starred</span>}
@@ -64,6 +72,10 @@ export function ChatMessageItem({ message, isMine, onReact, onToggleStar, onTogg
       <summary aria-label={`Message actions for ${message.senderName}: ${message.content.slice(0, 45)}`}><StudioIcon name="more" /></summary>
       <div className="chat-message-action-sheet">
         {onReact && <div className="chat-reaction-picker" aria-label="Add a reaction">{CHAT_REACTION_TYPES.map(reaction => <button type="button" key={reaction} aria-label={`${CHAT_REACTION_LABELS[reaction]} reaction`} title={CHAT_REACTION_LABELS[reaction]} onClick={() => act(() => react(reaction))}>{CHAT_REACTION_EMOJIS[reaction]}</button>)}</div>}
+        {canModerate && <div className="chat-message-tools chat-message-moderation">
+          {onRemoveViewerMessage && <button type="button" onClick={() => act(() => onRemoveViewerMessage(message.id))}>Remove</button>}
+          {onBlockViewer && <button type="button" onClick={() => act(() => onBlockViewer(message))}>Block viewer…</button>}
+        </div>}
         {isPublic && <div className="chat-message-tools">
           {onFeature && <button type="button" onClick={() => act(() => onFeature(message))}>{featured ? 'Hide from stage' : 'Show on stage'}</button>}
           {onFlash && <button type="button" onClick={() => act(() => onFlash(message))}>Show briefly</button>}

@@ -1,6 +1,8 @@
 export * from './clientErrors.js';
 export * from './chatOverlay.js';
+export * from './viewerChat.js';
 import type { ChatOverlayState, ChatOverlayUpdatePayload, ChatOverlayUpdatedPayload } from './chatOverlay.js';
+import type { ViewerChatStatePayload, ViewerChatSwitches, ViewerBlockScope } from './viewerChat.js';
 
 // ============ Room & Session Types ============
 
@@ -448,6 +450,19 @@ export type SignalMessage =
   | { type: 'chat-overlay-update'; payload: ChatOverlayUpdatePayload }
   /** Server to admitted hosts and co-hosts only: the full on-screen chat overlay state (`ack` only for the sender of a change that carried a `seq`). */
   | { type: 'chat-overlay-updated'; payload: ChatOverlayUpdatedPayload }
+  /** Host/co-host: turn viewer chat, reactions or questions on or off (a patch). Needs `features.viewerChat`. */
+  | { type: 'viewer-chat-settings-update'; payload: Partial<ViewerChatSwitches> }
+  /** Server to admitted hosts and co-hosts only: the three switches and the blocked viewers. */
+  | { type: 'viewer-chat-state'; payload: ViewerChatStatePayload }
+  /** Host/co-host: take a viewer's message out of the studio chat, the on-screen chat and every watch page. */
+  | { type: 'viewer-chat-remove'; payload: { messageId: string } }
+  /** Host/co-host: block the viewer who wrote a message, alone or with everyone on the same network. */
+  | { type: 'viewer-chat-block'; payload: { messageId: string; scope: ViewerBlockScope } }
+  | { type: 'viewer-chat-unblock'; payload: { blockId: string } }
+  /** Server to everyone: a message is gone (removed by the host, or its writer was blocked). */
+  | { type: 'chat-message-removed'; payload: { messageId: string } }
+  /** Server to admitted hosts and co-hosts: watch-page reactions since the last one, as counts only. Studio preview only, never the broadcast picture. */
+  | { type: 'viewer-reactions'; payload: { counts: Partial<Record<ChatReactionType, number>> } }
   | { type: 'stage-content-updated'; payload: StageContentPayload }
   /** Co-host (or host) remote for the stage owner's deck: next/previous/goto/clear. Relayed to the stage owner only. */
   | { type: 'stage-control'; payload: StageControlPayload }
@@ -541,6 +556,8 @@ export interface RoomJoinedPayload {
   studioBranding?: StudioBrandingPayload;
   /** Admitted hosts and co-hosts only: the on-screen chat overlay settings. */
   chatOverlay?: ChatOverlayState;
+  /** Admitted hosts and co-hosts only: the viewer chat switches and blocked viewers. */
+  viewerChat?: ViewerChatStatePayload;
   /** What the host has on stage (a slide, an image), mirrored to everyone. */
   stageContent?: StageContentPayload;
   /** Hosts and co-hosts only: authorizes uploads to `/api/rooms/:id/stage-images`. */
@@ -564,6 +581,8 @@ export interface RoomJoinedPayload {
     chatTyping?: boolean;
     /** The server understands `chat-overlay-update` and keeps the overlay state. */
     chatOverlay?: boolean;
+    /** The server understands the viewer chat messages (`viewer-chat-*`). */
+    viewerChat?: boolean;
   };
   /**
    * Admitted hosts and co-hosts only: the other operators talking backstage
@@ -950,8 +969,11 @@ export interface LiveStreamTokenIssuedPayload {
 export type ExternalChatPlatform = 'youtube' | 'facebook';
 export type ExternalChatConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
+/** Where an outside comment came from: a connected platform, or the public watch page. */
+export type ChatSourcePlatform = ExternalChatPlatform | 'watch';
+
 export interface ExternalChatSource {
-  platform: ExternalChatPlatform;
+  platform: ChatSourcePlatform;
   externalId: string;
   authorChannelId?: string;
   authorUrl?: string;
@@ -1077,6 +1099,8 @@ export interface QAQuestion {
   status: 'pending' | 'approved' | 'answered' | 'dismissed';
   answer?: string;
   highlighted: boolean;
+  /** Asked from the public watch page, not from inside the studio. */
+  fromViewer?: boolean;
 }
 
 export interface LivePollOption {
