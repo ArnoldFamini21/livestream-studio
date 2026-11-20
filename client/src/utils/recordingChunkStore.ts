@@ -18,6 +18,14 @@ export interface RecordingByteSource {
   slice(start: number, end: number): Blob;
 }
 
+const MAX_BACKLOG_BATCH_BYTES = 2 * 1024 * 1024;
+const MAX_BACKLOG_BATCH_CHUNKS = 8;
+
+interface ChunkBatch {
+  chunks: Blob[];
+  bytes: number;
+}
+
 /** Commit chunks separately so a failed write cannot invalidate earlier footage. */
 export function createRecordingChunkStore(
   directory?: RecordingChunkDirectory,
@@ -26,6 +34,8 @@ export function createRecordingChunkStore(
 ) {
   let pending = Promise.resolve();
   let diskAvailable = Boolean(directory);
+  let diskWritePending = false;
+  let backlogBatch: ChunkBatch | undefined;
   let discarded = false;
   let nextIndex = 0;
   const parts: { blob: Blob; end: number }[] = [];
@@ -38,18 +48,32 @@ export function createRecordingChunkStore(
 
   const append = (data: Blob) => {
     if (!data.size || discarded) return;
-    const filename = `${prefix}-${String(nextIndex++).padStart(6, '0')}.part`;
+    // Send the first chunk straight to disk. Combine only chunks that
+    // would otherwise wait behind an unfinished filesystem operation.
+    const canBatch = diskAvailable && diskWritePending;
+    if (canBatch && backlogBatch && backlogBatch.chunks.length < MAX_BACKLOG_BATCH_CHUNKS
+        && backlogBatch.bytes + data.size <= MAX_BACKLOG_BATCH_BYTES) {
+      backlogBatch.chunks.push(data);
+      backlogBatch.bytes += data.size;
+      return;
+    }
+    const batch: ChunkBatch = { chunks: [data], bytes: data.size };
+    backlogBatch = canBatch ? batch : undefined;
     pending = pending.then(async () => {
+      if (backlogBatch === batch) backlogBatch = undefined;
       if (discarded) return;
+      const bytes = batch.chunks.length === 1 ? batch.chunks[0] : new Blob(batch.chunks);
       if (diskAvailable && directory) {
+        const filename = `${prefix}-${String(nextIndex++).padStart(6, '0')}.part`;
+        diskWritePending = true;
         let writable: ChunkWritable | undefined;
         try {
           const handle = await directory.getFileHandle(filename, { create: true });
           writable = await handle.createWritable();
-          await writable.write(data);
+          await writable.write(bytes);
           await writable.close();
           const committed = await handle.getFile();
-          if (committed.size !== data.size) throw new Error('Incomplete recording chunk');
+          if (committed.size !== bytes.size) throw new Error('Incomplete recording chunk');
           commitPart(committed);
           diskFiles.push(filename);
           return;
@@ -60,15 +84,23 @@ export function createRecordingChunkStore(
           try { await writable?.abort?.(); } catch { /* Already closed or failed. */ }
           try { await directory.removeEntry?.(filename); } catch { /* Best-effort failed-file cleanup. */ }
           try { onDiskFailure?.(error); } catch { /* Reporting must not interrupt capture. */ }
+        } finally {
+          diskWritePending = false;
         }
       }
-      commitPart(data);
+      commitPart(bytes);
     });
+  };
+
+  const flush = () => {
+    // Later appends must not extend the work a caller is already waiting for.
+    backlogBatch = undefined;
+    return pending;
   };
 
   return {
     append,
-    flush: () => pending,
+    flush,
     /** Read committed ranges without waiting for pending writes or assembling the take. */
     readCommitted(): RecordingByteSource {
       const size = discarded ? 0 : committedBytes();
@@ -106,11 +138,11 @@ export function createRecordingChunkStore(
     },
     /** Wait for the currently queued writes before taking a capture-order snapshot. */
     async snapshot(mimeType: string): Promise<Blob> {
-      await pending;
+      await flush();
       return new Blob(parts.map(part => part.blob), { type: mimeType });
     },
     async finish(mimeType: string): Promise<Blob> {
-      await pending;
+      await flush();
       return new Blob(parts.map(part => part.blob), { type: mimeType });
     },
     async discard(): Promise<void> {
