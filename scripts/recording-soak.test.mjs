@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { verifyRecordingChunks } from "../e2e/recording-checksums.mjs";
 import { inspectPacketTimeline } from "../e2e/recording-metrics.mjs";
 
 function fixture({ audioEnd = 1.99, videoEnd = 1.98 } = {}) {
@@ -60,4 +62,20 @@ test("recording soak rejects absent or empty timestamps rather than coercing the
     probe.packets[0].pts_time = value;
     assert.throws(() => inspectPacketTimeline(probe), /numeric presentation timestamp/);
   }
+});
+
+test("recording soak compares bytes at exact recorder chunk boundaries", async () => {
+  const chunks = [Buffer.from("first"), Buffer.from("chunk"), Buffer.from("last")];
+  const sha256 = buffer => createHash("sha256").update(buffer).digest("hex");
+  const checksums = chunks.map(chunk => ({ bytes: chunk.length, sha256: sha256(chunk) }));
+  const file = Buffer.concat(chunks);
+  // One recorder chunk spans two file reads and one file read spans two chunks.
+  const reads = [file.subarray(0, 3), file.subarray(3, 11), file.subarray(11)];
+  assert.equal(await verifyRecordingChunks(reads, checksums), sha256(file));
+  assert.equal(await verifyRecordingChunks([file.subarray(0, -1)], checksums), null);
+  assert.equal(await verifyRecordingChunks([file, Buffer.from("extra")], checksums), null);
+  assert.equal(await verifyRecordingChunks([chunks[1], chunks[0], chunks[2]], checksums), null);
+  const altered = Buffer.from(file);
+  altered[6] ^= 1;
+  assert.equal(await verifyRecordingChunks([altered], checksums), null);
 });

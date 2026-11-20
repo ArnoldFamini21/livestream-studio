@@ -10,10 +10,10 @@
 import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { startHarness, createStudio, joinStudio, admitGuest, stageGuest, eventually, screenshot, repoRoot } from "./harness.mjs";
 import { probeRecording } from "./recording-metrics.mjs";
+import { verifyRecordingChunks } from "./recording-checksums.mjs";
 
 const requestedSeconds = Number(process.env.SOAK_SECONDS || 1200);
 assert.ok(Number.isFinite(requestedSeconds) && requestedSeconds >= 15, "SOAK_SECONDS must be at least 15 seconds");
@@ -21,7 +21,7 @@ const artifactDir = path.resolve(process.env.SOAK_ARTIFACT_DIR || path.join(repo
 const qualification = requestedSeconds >= 1200;
 const result = { qualification, requestedSeconds, cameraPreset: "720p", startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
 await mkdir(path.join(artifactDir, "received"), { recursive: true });
-const sourceCaptures = new Map();
+const seatNames = ["Soak Host", "Soak Guest A", "Soak Guest B"];
 const pages = [];
 let harness;
 let progressTimer;
@@ -43,31 +43,27 @@ function installObserver({ folder }) {
   window.MediaRecorder = class extends nativeRecorder {
     constructor(...args) {
       super(...args);
-      const row = { id: state.recorders.length, mimeType: this.mimeType, kinds: args[0].getTracks().map(track => track.kind), settings: args[0].getTracks().map(track => { const { width, height, frameRate, sampleRate, channelCount } = track.getSettings(); return { kind: track.kind, width, height, frameRate, sampleRate, channelCount }; }), started: null, stopRequested: null, stopped: null, chunks: 0, bytes: 0, flushed: false };
+      const row = { id: state.recorders.length, mimeType: this.mimeType, kinds: args[0].getTracks().map(track => track.kind), settings: args[0].getTracks().map(track => { const { width, height, frameRate, sampleRate, channelCount } = track.getSettings(); return { kind: track.kind, width, height, frameRate, sampleRate, channelCount }; }), started: null, stopRequested: null, stopped: null, chunks: 0, bytes: 0, flushed: false, chunkChecksums: [] };
       state.recorders.push(row);
       this.__soakRecorderId = row.id;
       this.addEventListener("error", event => state.errors.push(`Recorder ${row.id}: ${event.error?.message || "error"}`));
-      let writes = Promise.resolve();
+      let hashing = Promise.resolve();
       this.addEventListener("start", () => { row.started = performance.now(); });
-      this.addEventListener("dataavailable", event => {
-        if (!event.data.size) return;
+      this.addEventListener("dataavailable", ({ data }) => {
+        if (!data.size) return;
         row.chunks += 1;
-        row.bytes += event.data.size;
-        writes = writes.then(async () => {
-          const bytes = new Uint8Array(await event.data.arrayBuffer());
-          let base64;
-          if (typeof bytes.toBase64 === "function") base64 = bytes.toBase64();
-          else {
-            let binary = "";
-            for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-            base64 = btoa(binary);
-          }
-          await window.__hashSourceChunk({ id: row.id, mimeType: row.mimeType, kinds: row.kinds, base64 });
+        row.bytes += data.size;
+        // Only one original MediaRecorder chunk per recorder is read at a time.
+        // Native hashing avoids sending the media itself through Playwright.
+        hashing = hashing.then(async () => {
+          const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await data.arrayBuffer()));
+          const sha256 = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+          row.chunkChecksums.push({ bytes: data.size, sha256 });
         }).catch(error => state.errors.push(String(error)));
       });
       this.addEventListener("stop", () => {
         row.stopped = performance.now();
-        void writes.then(() => { row.flushed = true; });
+        void hashing.then(() => { row.flushed = true; });
       });
     }
     stop() {
@@ -132,26 +128,7 @@ async function instrument(context, name, folder = false) {
       (result.consoleWarnings ||= []).push({ participant: name, type: message.type(), message: message.text() });
     }
   }));
-  await context.exposeBinding("__hashSourceChunk", async (_source, { id, mimeType, kinds, base64 }) => {
-    assert.ok(Number.isInteger(id) && id >= 0 && id < 100, "bounded recorder id");
-    const key = `${name}-${id}`;
-    let entry = sourceCaptures.get(key);
-    if (!entry) {
-      // Hash in order without an extra disk copy competing with OPFS capture.
-      entry = { name, id, mimeType, kinds, hash: createHash("sha256"), bytes: 0 };
-      sourceCaptures.set(key, entry);
-    }
-    const bytes = Buffer.from(base64, "base64");
-    entry.hash.update(bytes);
-    entry.bytes += bytes.length;
-  });
   await context.addInitScript(installObserver, { folder });
-}
-
-async function sha256(file) {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
-  return hash.digest("hex");
 }
 
 async function folderFiles(page) {
@@ -201,10 +178,10 @@ async function exportFile(page, relative) {
 try {
   harness = await startHarness({ artifactDir, ...(process.env.SOAK_DIST_DIR ? { distDir: process.env.SOAK_DIST_DIR } : {}) });
   const hostContext = await harness.browser("soak-host");
-  await instrument(hostContext, "Soak Host", true);
-  const { page: host, studioId } = await createStudio(hostContext, { url: harness.url, name: "Three-seat recording soak", hostName: "Soak Host" });
+  await instrument(hostContext, seatNames[0], true);
+  const { page: host, studioId } = await createStudio(hostContext, { url: harness.url, name: "Three-seat recording soak", hostName: seatNames[0] });
   pages.push(host);
-  for (const name of ["Soak Guest A", "Soak Guest B"]) {
+  for (const name of seatNames.slice(1)) {
     const context = await harness.browser(name.replaceAll(" ", "-"));
     await instrument(context, name);
     const guest = await joinStudio(context, { url: harness.url, studioId, name });
@@ -268,6 +245,17 @@ try {
   clearInterval(progressTimer);
   console.log(JSON.stringify({ event: "waiting-for-source-checksums" }));
   await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000, polling: 500 })));
+  const sourceCaptures = (await Promise.all(pages.map((page, index) => page.evaluate(name =>
+    window.__soak.recorders.filter(row => row.chunks > 0).map(({ id, mimeType, kinds, bytes, chunks, chunkChecksums }) => ({
+      name, id, mimeType, kinds, bytes, chunks, chunkChecksums,
+    })), seatNames[index])))).flat();
+  for (const source of sourceCaptures) {
+    assert.equal(source.chunkChecksums.length, source.chunks, `${source.name} recorder ${source.id}: every chunk was hashed`);
+    assert.equal(source.chunkChecksums.reduce((total, chunk) => total + chunk.bytes, 0), source.bytes);
+  }
+  result.sourceChecksums = sourceCaptures;
+  await saveResult();
+  console.log(JSON.stringify({ event: "source-checksums-ready", recorders: sourceCaptures.map(({ name, id, bytes, chunks }) => ({ name, id, bytes, chunks })) }));
   console.log(JSON.stringify({ event: "waiting-for-host-files" }));
   const files = await eventually(async () => {
     const files = await folderFiles(host);
@@ -276,13 +264,13 @@ try {
   }, { timeout: 180_000, interval: 1000, message: "All seven program/ISO/audio tracks must finish in the host folder" });
   const manifest = files.find(file => file.manifest).manifest;
   result.manifest = manifest;
-  for (const name of ["Soak Host", "Soak Guest A", "Soak Guest B"]) {
+  for (const name of seatNames) {
     assert.ok(manifest.tracks.some(track => track.participantName === name && track.kind === "iso"), `${name} has an isolated camera/audio recording`);
     assert.ok(manifest.tracks.some(track => track.participantName === name && track.kind === "audio"), `${name} has an isolated microphone recording`);
   }
   assert.equal(manifest.tracks.filter(track => track.origin === "guest-transfer").length, 4, "both guests transfer their ISO and audio tracks");
   const diagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
-    recorders: window.__soak.recorders,
+    recorders: window.__soak.recorders.map(({ chunkChecksums, ...row }) => row),
     channels: window.__soak.channels.map(({ channel, ...row }) => ({ ...row, state: channel.readyState })),
     transferSignals: window.__soak.transferSignals,
     errors: window.__soak.errors,
@@ -290,16 +278,22 @@ try {
   result.diagnostics = diagnostics;
   assert.ok(diagnostics[0].channels.filter(row => row.label === "rec-transfer").reduce((sum, row) => sum + row.receivedBytes, 0) > 1_000_000, "host received recording bytes through real RTC data channels");
   assert.deepEqual(diagnostics.flatMap(item => item.errors), [], "passive source checksum capture succeeded");
-  for (const source of sourceCaptures.values()) { source.sha256 = source.hash.digest("hex"); delete source.hash; }
-  result.sourceChecksums = [...sourceCaptures.values()];
   console.log(JSON.stringify({ event: "checking-recorded-packets", tracks: manifest.tracks.length }));
   for (const track of manifest.tracks) {
     assert.ok(track.bytes > 0, `${track.label} is non-empty`);
     assert.notEqual(track.startOffsetMs, null, `${track.label} has host-timeline start alignment`);
     const file = await exportFile(host, track.path);
-    const digest = await sha256(file);
-    const sources = [...sourceCaptures.values()].filter(source => source.name === (track.origin === "program" ? "Soak Host" : track.participantName));
-    const matching = sources.find(source => source.sha256 === digest && source.bytes === track.bytes);
+    const name = track.origin === "program" ? seatNames[0] : track.participantName;
+    const sources = sourceCaptures.filter(source => source.name === name && source.bytes === track.bytes);
+    let matching;
+    let digest;
+    for (const source of sources) {
+      digest = await verifyRecordingChunks(createReadStream(file, { highWaterMark: 256 * 1024 }), source.chunkChecksums);
+      if (digest) {
+        matching = source;
+        break;
+      }
+    }
     assert.ok(matching, `${track.label} is byte-identical to its original MediaRecorder chunks`);
     // Capture runs an extra half second to allow endpoint packet quantization;
     // every encoded stream still must cover the full requested duration.
@@ -332,7 +326,7 @@ try {
   await saveResult();
   if (pages[0]) result.failureFolder = await folderFiles(pages[0]).catch(failure => ({ error: String(failure) }));
   result.failureDiagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
-    recorders: window.__soak?.recorders,
+    recorders: window.__soak?.recorders.map(({ chunkChecksums, ...row }) => row),
     errors: window.__soak?.errors,
     channels: window.__soak?.channels.map(({ channel, ...row }) => ({ ...row, state: channel.readyState })),
     transferSignals: window.__soak?.transferSignals,
