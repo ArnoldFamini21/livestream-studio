@@ -73,16 +73,33 @@ function installObserver({ folder }) {
   };
   const nativePeer = window.RTCPeerConnection;
   function observeChannel(channel) {
-    const row = { channel, label: channel.label, opened: null, closed: null, messages: 0, receivedBytes: 0, sentMediaBytes: 0, sentMediaFrames: 0 };
+    const row = { channel, label: channel.label, opened: null, closed: null, messages: 0, receivedBytes: 0, sentMediaBytes: 0, sentMediaFrames: 0, control: [] };
     state.channels.push(row);
+    function noteControl(direction, data) {
+      if (row.label !== "rec-transfer" || typeof data !== "string") return;
+      try {
+        const message = JSON.parse(data);
+        if (message.t === "ping" || message.t === "pong") return;
+        row.control.push({
+          direction, kind: message.t, at: performance.now(), offset: message.offset,
+          available: message.track?.available, trackCount: message.tracks?.length, ok: message.ok,
+        });
+        if (row.control.length > 40) row.control.shift();
+      } catch { /* Only protocol state is recorded. */ }
+    }
     const nativeSend = channel.send.bind(channel);
     channel.send = data => {
       nativeSend(data);
       if (typeof data !== "string") { row.sentMediaBytes += data.byteLength || data.size || 0; row.sentMediaFrames += 1; }
+      else noteControl("sent", data);
     };
     channel.addEventListener("open", () => { row.opened = performance.now(); });
     channel.addEventListener("close", () => { row.closed = performance.now(); });
-    channel.addEventListener("message", event => { row.messages += 1; row.receivedBytes += typeof event.data === "string" ? event.data.length : event.data.byteLength || event.data.size || 0; });
+    channel.addEventListener("message", event => {
+      row.messages += 1;
+      row.receivedBytes += typeof event.data === "string" ? event.data.length : event.data.byteLength || event.data.size || 0;
+      noteControl("received", event.data);
+    });
   }
   window.RTCPeerConnection = class extends nativePeer {
     constructor(...args) { super(...args); this.addEventListener("datachannel", event => observeChannel(event.channel)); }
@@ -282,6 +299,7 @@ try {
   result.completedAt = new Date().toISOString();
   console.log(JSON.stringify({ event: "recording-soak-complete", qualification, tracks: result.tracks.length, artifactDir }));
 } catch (error) {
+  clearInterval(progressTimer);
   result.errors.push(error.stack || String(error));
   if (pages[0]) result.failureFolder = await folderFiles(pages[0]).catch(failure => ({ error: String(failure) }));
   result.failureDiagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
