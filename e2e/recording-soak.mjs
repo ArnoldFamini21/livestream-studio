@@ -43,7 +43,25 @@ function installObserver({ folder }) {
   window.MediaRecorder = class extends nativeRecorder {
     constructor(...args) {
       super(...args);
-      const row = { id: state.recorders.length, mimeType: this.mimeType, kinds: args[0].getTracks().map(track => track.kind), settings: args[0].getTracks().map(track => { const { width, height, frameRate, sampleRate, channelCount } = track.getSettings(); return { kind: track.kind, width, height, frameRate, sampleRate, channelCount }; }), started: null, stopRequested: null, stopped: null, chunks: 0, bytes: 0, flushed: false, chunkChecksums: [] };
+      const tracks = args[0].getTracks();
+      const row = {
+        id: state.recorders.length,
+        mimeType: this.mimeType,
+        kinds: tracks.map(track => track.kind),
+        settings: tracks.map(track => {
+          const { width, height, frameRate, sampleRate, channelCount } = track.getSettings();
+          return { kind: track.kind, width, height, frameRate, sampleRate, channelCount };
+        }),
+        startRequested: null,
+        started: null,
+        lastChunkDispatchedAt: null,
+        stopRequested: null,
+        stopped: null,
+        chunks: 0,
+        bytes: 0,
+        flushed: false,
+        chunkChecksums: [],
+      };
       state.recorders.push(row);
       this.__soakRecorderId = row.id;
       this.addEventListener("error", event => state.errors.push(`Recorder ${row.id}: ${event.error?.message || "error"}`));
@@ -53,6 +71,7 @@ function installObserver({ folder }) {
         if (!data.size) return;
         row.chunks += 1;
         row.bytes += data.size;
+        row.lastChunkDispatchedAt = performance.now();
         // Only one original MediaRecorder chunk per recorder is read at a time.
         // Native hashing avoids sending the media itself through Playwright.
         hashing = hashing.then(async () => {
@@ -65,6 +84,11 @@ function installObserver({ folder }) {
         row.stopped = performance.now();
         void hashing.then(() => { row.flushed = true; });
       });
+    }
+    start(...args) {
+      const row = state.recorders[this.__soakRecorderId];
+      if (row) row.startRequested = performance.now();
+      return super.start(...args);
     }
     stop() {
       const row = state.recorders[this.__soakRecorderId];
