@@ -116,6 +116,7 @@ export interface RecordingServerUploadInput {
   files: RecordedFile[];
   exportVideoCodec?: RecordingExportVideoCodec;
   normalizeAudio?: boolean;
+  reduceAudioNoise?: boolean;
 }
 
 export interface RecordingServerExportArtifactInput {
@@ -137,6 +138,7 @@ export interface RecordingServerClipExportInput {
   basename?: string;
   exportVideoCodec?: RecordingExportVideoCodec;
   normalizeAudio?: boolean;
+  reduceAudioNoise?: boolean;
 }
 
 export interface BlobExportDownload {
@@ -2541,6 +2543,7 @@ export function RecordingPanel({
   const [isRefreshingMediaExport, setIsRefreshingMediaExport] = useState(false);
   const [recordingExportVideoCodec, setRecordingExportVideoCodec] = useState<RecordingExportVideoCodec>('h264');
   const [normalizeExportAudio, setNormalizeExportAudio] = useState(false);
+  const [reduceExportAudioNoise, setReduceExportAudioNoise] = useState(false);
   const [driveLinkCopied, setDriveLinkCopied] = useState(false);
   const [libraryCopiedMp4SessionId, setLibraryCopiedMp4SessionId] = useState<string | null>(null);
   const [driveRetentionPolicyId, setDriveRetentionPolicyId] = useState<RecordingCloudRetentionPolicyId>(
@@ -2756,6 +2759,7 @@ export function RecordingPanel({
               files,
               exportVideoCodec: recordingExportVideoCodec,
               normalizeAudio: normalizeExportAudio,
+              reduceAudioNoise: reduceExportAudioNoise,
             });
             const skipped = upload.skippedTracks > 0 ? `, ${upload.skippedTracks} skipped` : '';
             const readyArtifacts = upload.exportJob?.artifacts.filter((artifact) => artifact.status === 'ready') || [];
@@ -2797,7 +2801,7 @@ export function RecordingPanel({
       setIsStopping(false);
       setRecordingControlAction(null);
     }
-  }, [onFinalizingChange, browserRecordingFallbackMessage, formattedTime, mediaServerExportBlockMessage, normalizeExportAudio, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
+  }, [onFinalizingChange, browserRecordingFallbackMessage, formattedTime, mediaServerExportBlockMessage, normalizeExportAudio, reduceExportAudioNoise, onStopRecording, onUploadRecording, recordingExportVideoCodec, roomName, saveSession, sortedRecordingMarkers, syncRecordingCatalog, updateSessionMediaExport]);
 
   const confirmDiscardActiveRecording = useCallback((action: 'cancel' | 'restart'): boolean => {
     if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
@@ -3056,6 +3060,7 @@ export function RecordingPanel({
         basename: `${roomName} cleaned`,
         exportVideoCodec: recordingExportVideoCodec,
         normalizeAudio: normalizeExportAudio,
+        reduceAudioNoise: reduceExportAudioNoise,
       }),
       download: async (job, artifact) => {
         if (!onDownloadRecordingExportArtifact) throw new Error('Downloads from the media server are unavailable.');
@@ -3063,7 +3068,7 @@ export function RecordingPanel({
         downloadBlob(download.blob, download.fileName);
       },
     };
-  }, [cleanupUploadId, normalizeExportAudio, onDownloadRecordingExportArtifact, onRequestRecordingClipExport, recordingExportVideoCodec, roomName]);
+  }, [cleanupUploadId, normalizeExportAudio, reduceExportAudioNoise, onDownloadRecordingExportArtifact, onRequestRecordingClipExport, recordingExportVideoCodec, roomName]);
 
   const cleanupServerExportUnavailableReason = !onRequestRecordingClipExport
     ? 'Cleaned video export needs the media server.'
@@ -3540,6 +3545,7 @@ export function RecordingPanel({
         basename: `${preview.sourceName} clip`,
         exportVideoCodec: recordingExportVideoCodec,
         normalizeAudio: normalizeExportAudio,
+        reduceAudioNoise: reduceExportAudioNoise,
       });
       if (previewUrlRef.current !== captureUrl) return;
       setServerClipJob(job);
@@ -3559,6 +3565,7 @@ export function RecordingPanel({
     clipStartSeconds,
     isRequestingServerClip,
     normalizeExportAudio,
+    reduceExportAudioNoise,
     onRequestRecordingClipExport,
     preview,
     previewServerClipUploadId,
@@ -4039,34 +4046,48 @@ export function RecordingPanel({
                 );
               })}
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={normalizeExportAudio}
-              style={styles.normalizeAudioRow}
-              onClick={() => setNormalizeExportAudio((current) => !current)}
-              disabled={isRecording || isStopping}
-            >
-              <span style={styles.normalizeAudioCopy}>
-                <span style={styles.normalizeAudioTitle}>Normalize audio loudness</span>
-                <span style={styles.normalizeAudioText}>
-                  Level the mix and stems to -14 LUFS for consistent playback across platforms.
-                </span>
-              </span>
-              <span
-                style={{
-                  ...styles.normalizeAudioSwitch,
-                  ...(normalizeExportAudio ? styles.normalizeAudioSwitchOn : {}),
-                }}
+            {[
+              {
+                label: 'Reduce background noise',
+                detail: 'Soften steady room noise in the exported mix, isolated videos and audio stems.',
+                checked: reduceExportAudioNoise,
+                toggle: () => setReduceExportAudioNoise((current) => !current),
+              },
+              {
+                label: 'Normalize audio loudness',
+                detail: 'Level the mix and stems to -14 LUFS for consistent playback across platforms.',
+                checked: normalizeExportAudio,
+                toggle: () => setNormalizeExportAudio((current) => !current),
+              },
+            ].map(({ label, detail, checked, toggle }) => (
+              <button
+                key={label}
+                type="button"
+                role="switch"
+                aria-checked={checked}
+                style={styles.normalizeAudioRow}
+                onClick={toggle}
+                disabled={isRecording || isStopping}
               >
+                <span style={styles.normalizeAudioCopy}>
+                  <span style={styles.normalizeAudioTitle}>{label}</span>
+                  <span style={styles.normalizeAudioText}>{detail}</span>
+                </span>
                 <span
                   style={{
-                    ...styles.normalizeAudioKnob,
-                    ...(normalizeExportAudio ? styles.normalizeAudioKnobOn : {}),
+                    ...styles.normalizeAudioSwitch,
+                    ...(checked ? styles.normalizeAudioSwitchOn : {}),
                   }}
-                />
-              </span>
-            </button>
+                >
+                  <span
+                    style={{
+                      ...styles.normalizeAudioKnob,
+                      ...(checked ? styles.normalizeAudioKnobOn : {}),
+                    }}
+                  />
+                </span>
+              </button>
+            ))}
           </div>
         )}
 

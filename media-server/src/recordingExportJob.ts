@@ -64,6 +64,7 @@ interface RecordingExportJob {
   clip?: RecordingExportClipRange | null;
   edit?: { keptRanges: number; keptSeconds: number } | null;
   normalizeAudio?: boolean;
+  reduceAudioNoise?: boolean;
   tracks: RecordingExportManifestTrack[];
   artifacts: RecordingExportArtifact[];
   error?: string;
@@ -228,6 +229,7 @@ function buildExportManifest(job: RecordingExportJob): string {
       clip: job.clip ?? null,
       edit: job.edit ?? null,
       normalizeAudio: job.normalizeAudio === true,
+      reduceAudioNoise: job.reduceAudioNoise === true,
     },
     tracks: job.tracks,
     artifacts: job.artifacts
@@ -327,6 +329,7 @@ export class RecordingExportJobStore {
         clip: parsed.clip ?? null,
         edit: parsed.edit ?? null,
         normalizeAudio: parsed.normalizeAudio === true,
+        reduceAudioNoise: parsed.reduceAudioNoise === true,
         tracks: parsed.tracks,
         artifacts: parsed.artifacts,
         error: typeof parsed.error === 'string' ? parsed.error : undefined,
@@ -413,6 +416,7 @@ export class RecordingExportJobStore {
     await mkdir(outputDirectory, { recursive: true });
 
     const normalizeAudio = request.normalizeAudio === true;
+    const reduceAudioNoise = request.reduceAudioNoise === true;
     const tracks = source.tracks.map(toExportTrack);
     const audioOnly = tracks.every((track) => track.kind === 'audio');
     let artifactCommands: RecordingExportCommand[];
@@ -420,8 +424,9 @@ export class RecordingExportJobStore {
       if (audioOnly) {
         const issue = validateRecordingExportTracks(tracks);
         if (issue) throw new Error(issue);
+        const audio = { ...request.audio, reduceAudioNoise };
         artifactCommands = tracks.flatMap((track) => (['wav', 'mp3'] as const).map((format) =>
-          createRecordingAudioStemArgs(track, outputDirectory, basename, format, request.audio, clip, normalizeAudio, edit, request.video?.frameRate)
+          createRecordingAudioStemArgs(track, outputDirectory, basename, format, audio, clip, normalizeAudio, edit, request.video?.frameRate)
         ));
       } else {
         const commands = createRecordingExportCommands({
@@ -433,6 +438,7 @@ export class RecordingExportJobStore {
           clip,
           edit,
           normalizeAudio,
+          reduceAudioNoise,
         });
         artifactCommands = [commands.mp4, ...commands.isolatedVideos, ...commands.stems];
       }
@@ -460,6 +466,7 @@ export class RecordingExportJobStore {
         }
         : null,
       normalizeAudio,
+      reduceAudioNoise,
       tracks: source.tracks.map(toManifestTrack),
       artifacts,
     };

@@ -1710,6 +1710,7 @@ export interface RecordingExportSessionRequest {
   basename?: string;
   includeAudioStems?: boolean;
   normalizeAudio?: boolean;
+  reduceAudioNoise?: boolean;
   video?: RecordingExportVideoSettings;
   audio?: RecordingExportAudioSettings;
   clip?: RecordingExportClipSettings;

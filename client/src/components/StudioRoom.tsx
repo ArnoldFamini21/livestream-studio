@@ -4915,6 +4915,7 @@ export function StudioRoom() {
       exportBasename: `${room?.name || 'Studio'} ${input.sessionId}`,
       exportVideoCodec: input.exportVideoCodec,
       normalizeAudio: input.normalizeAudio,
+      reduceAudioNoise: input.reduceAudioNoise,
     });
   }, [requestLiveStreamToken, room?.name, roomId]);
 
@@ -4959,6 +4960,7 @@ export function StudioRoom() {
       basename: input.basename,
       exportVideoCodec: input.exportVideoCodec,
       normalizeAudio: input.normalizeAudio,
+      reduceAudioNoise: input.reduceAudioNoise,
     });
   }, [requestLiveStreamToken]);
 

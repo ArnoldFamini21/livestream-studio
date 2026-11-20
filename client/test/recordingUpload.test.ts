@@ -348,7 +348,7 @@ describe('recording media-server upload helper', () => {
     );
   });
 
-  it('forwards the normalizeAudio flag on clip export requests', async () => {
+  it('forwards noise reduction and normalization on clip export requests', async () => {
     let requestBody: Record<string, unknown> | null = null;
     globalThis.fetch = async (url, init) => {
       requestBody = JSON.parse(String(init?.body));
@@ -368,12 +368,14 @@ describe('recording media-server upload helper', () => {
       uploadId: 'upload-4',
       clip: { startSeconds: 0, endSeconds: 30 },
       normalizeAudio: true,
+      reduceAudioNoise: true,
       mediaHttpUrl: 'https://media.example.com',
       pollIntervalMs: 0,
       pollTimeoutMs: 1_000,
     });
 
     assert.equal(requestBody?.normalizeAudio, true);
+    assert.equal(requestBody?.reduceAudioNoise, true);
   });
 
   it('waits for participant uploads and starts one combined recording export', async () => {

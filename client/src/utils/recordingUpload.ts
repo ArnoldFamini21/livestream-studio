@@ -37,6 +37,7 @@ export interface UploadRecordingToMediaServerInput {
   exportVideoCodec?: RecordingExportVideoCodec;
   includeAudioStems?: boolean;
   normalizeAudio?: boolean;
+  reduceAudioNoise?: boolean;
   exportPollIntervalMs?: number;
   exportPollTimeoutMs?: number;
   onProgress?: (progress: RecordingUploadProgress) => void;
@@ -69,6 +70,7 @@ export interface RequestRecordingClipExportInput {
   exportVideoCodec?: RecordingExportVideoCodec;
   includeAudioStems?: boolean;
   normalizeAudio?: boolean;
+  reduceAudioNoise?: boolean;
   mediaHttpUrl?: string;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
@@ -129,6 +131,7 @@ export interface ExportDistributedRecordingSessionInput extends DistributedRecor
   basename?: string;
   includeAudioStems?: boolean;
   normalizeAudio?: boolean;
+  reduceAudioNoise?: boolean;
   exportVideoCodec?: RecordingExportVideoCodec;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
@@ -387,6 +390,7 @@ export async function requestRecordingClipExport(
       basename: input.basename || undefined,
       includeAudioStems: input.includeAudioStems === true,
       normalizeAudio: input.normalizeAudio === true,
+      ...(input.reduceAudioNoise === true ? { reduceAudioNoise: true } : {}),
       video: {
         codec: input.exportVideoCodec || 'h264',
       },
@@ -530,6 +534,7 @@ export async function uploadRecordingToMediaServer(
             basename: input.exportBasename || input.sessionId || uploadId,
             includeAudioStems: input.includeAudioStems !== false,
             normalizeAudio: input.normalizeAudio === true,
+            ...(input.reduceAudioNoise === true ? { reduceAudioNoise: true } : {}),
             video: {
               codec: input.exportVideoCodec || 'h264',
             },
@@ -620,6 +625,7 @@ export async function exportDistributedRecordingSession(
       basename: input.basename || sessionId,
       includeAudioStems: input.includeAudioStems !== false,
       normalizeAudio: input.normalizeAudio === true,
+      ...(input.reduceAudioNoise === true ? { reduceAudioNoise: true } : {}),
       video: { codec: input.exportVideoCodec || 'h264' },
     }
   );

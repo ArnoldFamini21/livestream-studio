@@ -1,6 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
@@ -143,7 +144,53 @@ describe('edited export with real FFmpeg', { skip: !ffmpegAvailable && 'FFmpeg i
     }
   });
 
-  it('removes the cut ranges and keeps picture and sound in sync', { timeout: 120_000 }, async () => {
+  it('reduces steady background noise in a generated stem and preserves the original file', async () => {
+    const sourcePath = path.join(dir, 'room-noise.wav');
+    const fixture = await run([
+      '-v', 'error',
+      '-f', 'lavfi', '-i', 'anoisesrc=color=white:amplitude=0.004:seed=19284:d=4:r=48000',
+      '-f', 'lavfi', '-i', 'sine=frequency=997:sample_rate=48000:duration=4',
+      '-filter_complex', "[1:a]volume=enable='lt(t,2)':volume=0[signal];[0:a][signal]amix=inputs=2:normalize=0[aout]",
+      '-map', '[aout]', sourcePath,
+    ]);
+    assert.equal(fixture.code, 0, fixture.stderr);
+    const sourceHash = async () => createHash('sha256').update(await readFile(sourcePath)).digest('hex');
+    const original = await sourceHash();
+    const store = new RecordingExportJobStore(createFfmpegExportRunner(ffmpegPath));
+    const job = await store.createJob({
+      uploadId: 'noise-upload', roomId: 'noise-room', rootDir: dir,
+      tracks: [{
+        id: 'mic', label: 'Microphone', kind: 'audio', mimeType: 'audio/wav',
+        filePath: sourcePath, bytesReceived: (await stat(sourcePath)).size, complete: true,
+      }],
+    }, { reduceAudioNoise: true, audio: { channelCount: 1 } });
+    await store.startJob(job.exportId);
+    const done = store.getJob(job.exportId);
+    assert.equal(done.status, 'ready', done.error);
+    const stem = done.artifacts.find((artifact) => artifact.format === 'wav');
+    assert.ok(stem);
+    const generated = store.getArtifact(job.exportId, stem.id).path;
+    assert.ok(Math.abs(await mediaDuration(generated, 'a') - 4) < 0.05);
+
+    async function meanVolume(file: string, start: string): Promise<number> {
+      const measured = await run(['-v', 'info', '-ss', start, '-i', file, '-t', '1', '-af', 'volumedetect', '-f', 'null', '-']);
+      assert.equal(measured.code, 0, measured.stderr);
+      const match = measured.stderr.match(/mean_volume: (-?[\d.]+) dB/);
+      assert.ok(match, measured.stderr);
+      return Number(match[1]);
+    }
+    const roomLevel = await meanVolume(sourcePath, '0.5') - await meanVolume(generated, '0.5');
+    const signalLevel = await meanVolume(sourcePath, '2.5') - await meanVolume(generated, '2.5');
+    assert.ok(roomLevel > 2, `the steady noise fell by ${roomLevel} dB`);
+    assert.ok(Math.abs(signalLevel) < 1, `the signal changed by ${signalLevel} dB`);
+    assert.equal(await sourceHash(), original);
+
+    const manifest = JSON.parse(await readFile(store.getArtifact(job.exportId, 'export-manifest').path, 'utf8'));
+    assert.equal(manifest.export.reduceAudioNoise, true);
+    assert.equal(manifest.export.normalizeAudio, false);
+  });
+
+  it('keeps picture and sound in sync when cutting and reducing noise', { timeout: 120_000 }, async () => {
     const bytes = (await stat(programPath)).size;
     const store = new RecordingExportJobStore(createFfmpegExportRunner(ffmpegPath));
     const job = await store.createJob({
@@ -153,6 +200,7 @@ describe('edited export with real FFmpeg', { skip: !ffmpegAvailable && 'FFmpeg i
       tracks: [{ id: 'program', label: 'Program', kind: 'program', mimeType: 'video/webm', filePath: programPath, bytesReceived: bytes, complete: true }],
     }, {
       basename: 'episode',
+      reduceAudioNoise: true,
       video: { width: 320, height: 180, frameRate: 30, videoBitsPerSecond: 1_000_000 },
       edit: { keepRanges: [{ startSeconds: 0, endSeconds: 1 }, { startSeconds: 1.5, endSeconds: 3 }, { startSeconds: 4.2, endSeconds: 8 }] },
     });
