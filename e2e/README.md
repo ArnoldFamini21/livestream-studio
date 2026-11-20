@@ -64,9 +64,9 @@ parallel-build settings.
 The existing CI workflow also has an optional `recording_soak` manual input.
 It runs a 35-second preflight followed by the full 1,200-second qualification on
 Linux. Both runs use real browser capture, native OPFS folder writes and RTC
-transfer; the short run must pass before the long run starts. JSON, logs and
-screenshots are retained for seven days; raw captures remain on the ephemeral
-runner. This provides a repeatable Linux check when native Chrome OPFS on the
+transfer. The job retains both results and still attempts the long capture if
+the preflight fails. JSON, logs and screenshots are retained for seven days.
+Raw captures remain on the ephemeral runner. This provides a repeatable Linux check when native Chrome OPFS on the
 owner's ExFAT volume stalls. A green Linux result does not establish external
 SSD throughput or qualify the owner's actual camera and network.
 

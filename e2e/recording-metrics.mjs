@@ -28,10 +28,10 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
         const gap = pts - previous;
         maxGap = Math.max(maxGap, gap);
         if (gap > 0) positiveDeltas.push(gap);
-        assert.ok(gap <= maxGapSeconds + 1e-6, `stream ${stream.index} has a ${gap.toFixed(3)}s packet gap (limit ${maxGapSeconds}s)`);
       }
       previous = pts;
     }
+    assert.ok(maxGap <= maxGapSeconds + 1e-6, `stream ${stream.index} has a ${maxGap.toFixed(3)}s packet gap (limit ${maxGapSeconds}s)`);
     positiveDeltas.sort((a, b) => a - b);
     const typicalDuration = positiveDeltas[Math.floor(positiveDeltas.length / 2)] || 0;
     const first = Number(packets[0].pts_time);
