@@ -1193,6 +1193,7 @@ export function useCompositor({
   ), [widgets]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const compositeStreamRef = useRef<MediaStream | null>(null);
+  const requestCaptureFrameRef = useRef<(() => void) | undefined>(undefined);
   const logoImageRef = useRef<HTMLImageElement | null>(null);
   const backgroundImageRef = useRef<HTMLImageElement | null>(null);
   const activePresentationSlideImageRef = useRef<HTMLImageElement | null>(null);
@@ -1272,6 +1273,7 @@ export function useCompositor({
   useEffect(() => () => {
     compositeStreamRef.current?.getTracks().forEach((track) => track.stop());
     compositeStreamRef.current = null;
+    requestCaptureFrameRef.current = undefined;
     canvasRef.current = null;
   }, []);
   useEffect(() => {
@@ -1286,7 +1288,10 @@ export function useCompositor({
       canvasRef.current = canvas;
       // Capture the canvas video stream at 30 fps
       try {
-        compositeStreamRef.current = canvas.captureStream(COMPOSITOR_FPS);
+        const stream = canvas.captureStream(COMPOSITOR_FPS);
+        compositeStreamRef.current = stream;
+        const track = stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack | undefined;
+        requestCaptureFrameRef.current = track?.requestFrame?.bind(track);
       } catch (err) {
         console.warn('captureStream not supported in this environment');
       }
@@ -1565,7 +1570,12 @@ export function useCompositor({
     // the faces (bounded, so a missing font never holds the program back).
     void loadCanvasFonts().then(() => {
       if (cancelled) return;
-      ticker = createFrameTicker(COMPOSITOR_FPS, () => drawLoopRef.current());
+      ticker = createFrameTicker(COMPOSITOR_FPS, () => {
+        drawLoopRef.current();
+        // The drawing ticker already limits the rate. Request the completed
+        // frame explicitly so a separate browser timer cannot skip this draw.
+        requestCaptureFrameRef.current?.();
+      });
     });
     return () => {
       cancelled = true;
