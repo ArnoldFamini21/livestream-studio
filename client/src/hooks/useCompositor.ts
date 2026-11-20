@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { drawParticipantCards } from '../utils/compositorParticipantCards.ts';
 import { CHAT_REACTION_EMOJIS, type ActiveMedia, type BroadcastOrientation, type LivePoll, type LogoPlacement, type LogoPosition, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
 import type { BannerData } from '../components/BannerOverlay.tsx';
@@ -54,6 +54,7 @@ import { getContextCanvasSize, getProgramCanvasSize } from '../utils/compositorC
 import { drawStageBackground } from '../utils/compositorBackground.ts';
 import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
 import { fitQuestionAuthorLabel } from '../utils/viewerQuestionLabel.ts';
+import { createOverlayQrCanvas, fitOverlayQr } from '../utils/overlayQr.ts';
 import { drawWidgetCaptureFrame, WIDGET_CAPTURE_ATTRIBUTE, type WidgetCaptureSources } from '../utils/widgetTabCapture.ts';
 
 /** The program's frame rate: the canvas stream and the draw timer. */
@@ -1186,6 +1187,10 @@ export function useCompositor({
   chatOverlay = null,
   widgetCaptureSources,
 }: CompositorProps) {
+  const qrOverlays = useMemo(() => new Map(
+    widgets.filter(widget => widget.kind === 'qr' && widget.visible)
+      .map(widget => [widget.id, createOverlayQrCanvas(widget.url)]),
+  ), [widgets]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const compositeStreamRef = useRef<MediaStream | null>(null);
   const logoImageRef = useRef<HTMLImageElement | null>(null);
@@ -1474,6 +1479,17 @@ export function useCompositor({
       });
 
     widgets.filter((widget) => widget.visible).forEach((widget) => {
+      if (widget.kind === 'qr') {
+        const qrCanvas = qrOverlays.get(widget.id);
+        if (qrCanvas) {
+          const { x, y, size } = fitOverlayQr(getWidgetCanvasRect(widget, getContextCanvasSize(ctx)), widget.position);
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(qrCanvas, Math.round(x), Math.round(y), size, size);
+          ctx.restore();
+        }
+        return;
+      }
       const capture = widgetCaptureSources?.current.get(widget.id) ?? null;
       // A captured widget is drawn exactly where the stage shows it.
       const element = capture
@@ -1535,7 +1551,7 @@ export function useCompositor({
         return drawVideoElementFrame(ctx, stinger, 0, 0, ctx.canvas.width, ctx.canvas.height, 'cover');
       });
     }
-  }, [containerRef, mediaSourceRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition, brandFontFamily, chatOverlay, widgetCaptureSources]);
+  }, [containerRef, mediaSourceRef, banners, lowerThirds, timers, tickers, widgets, qrOverlays, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition, brandFontFamily, chatOverlay, widgetCaptureSources]);
 
   // Frames come from a worker timer at the output rate, not requestAnimationFrame,
   // so the stream and recording keep moving when the studio tab is hidden or covered.

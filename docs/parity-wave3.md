@@ -622,6 +622,14 @@ speech recognition still depends on the studio operator's browser and guest
 consent. Chromium checks reuse a preset in a different room and play a timed
 caption over local HLS.
 
+## On-air QR codes
+
+Choose **Overlays → Add overlay → QR code**. Enter a destination URL, save
+it, and choose **Show** when the code should appear on the program. The code
+uses the selected corner or center position and is included in program
+recordings and outgoing video. Saved scenes and service presets can carry
+the QR code to another studio.
+
 ## Resume here next session
 
 Draft P0.3 branch checkpoint: anonymous release-tagged error aggregation and

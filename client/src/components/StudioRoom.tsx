@@ -1994,7 +1994,7 @@ export function StudioRoom() {
   } : null), [sceneTransition?.presetId, sceneTransition?.sceneName, sceneTransition?.startedAt, sceneTransition?.durationMs]);
 
   // Initialize Canvas Compositor for RTMP
-  const visibleWidgetIds = useMemo(() => widgets.filter((widget) => widget.visible).map((widget) => widget.id), [widgets]);
+  const visibleWidgetIds = useMemo(() => widgets.filter((widget) => widget.visible && widget.kind !== 'qr').map((widget) => widget.id), [widgets]);
   // Opt-in tab capture so web widgets go out live instead of as a placeholder.
   const widgetTabCapture = useWidgetTabCapture(stageRef, visibleWidgetIds);
   // Viewer chat state also controls the rolling overlay. Viewer reactions stay in the preview.
