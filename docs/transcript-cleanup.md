@@ -61,3 +61,12 @@ All outputs use the same cut list:
 ## How the server export stays in sync
 
 The export request carries `edit.keepRanges`, up to 2000 ranges. The media server snaps each range to video-frame boundaries. It then selects exactly those frames, and cuts audio in 1 ms frames using the same ranges. Every artifact therefore removes the same moments, and picture and sound stay within a frame of each other across all cuts. The filter graph is written to a file next to the output (`-/filter_complex`), so long edits never exceed command-line limits. The export manifest records the number of kept ranges and the seconds kept.
+
+
+## Audio processing on media-server exports
+
+In **Recordings → Media export MP4**, turn on **Reduce background noise** to
+soften steady noise in exported audio. It applies to the program mix,
+isolated video audio, edited server renders, and WAV and MP3 stems. Enable
+**Normalize audio loudness** separately to target −14 LUFS for the mix and
+stems. The server applies the selected processing when it renders the export.
