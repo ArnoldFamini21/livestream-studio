@@ -24,6 +24,12 @@ export function createRecordingChunkStore(
   let nextIndex = 0;
   const parts: Blob[] = [];
   const diskFiles: string[] = [];
+  const committedSnapshots = new Map<string, Blob>();
+
+  const commitPart = (data: Blob) => {
+    parts.push(data);
+    committedSnapshots.clear();
+  };
 
   const append = (data: Blob) => {
     if (!data.size || discarded) return;
@@ -39,7 +45,7 @@ export function createRecordingChunkStore(
           await writable.close();
           const committed = await handle.getFile();
           if (committed.size !== data.size) throw new Error('Incomplete recording chunk');
-          parts.push(committed);
+          commitPart(committed);
           diskFiles.push(filename);
           return;
         } catch (error) {
@@ -51,7 +57,7 @@ export function createRecordingChunkStore(
           try { onDiskFailure?.(error); } catch { /* Reporting must not interrupt capture. */ }
         }
       }
-      parts.push(data);
+      commitPart(data);
     });
   };
 
@@ -60,7 +66,12 @@ export function createRecordingChunkStore(
     flush: () => pending,
     /** Capture-order prefix immediately readable while disk writes are pending. */
     snapshotCommitted(mimeType: string): Blob {
-      return new Blob(discarded ? [] : parts, { type: mimeType });
+      if (discarded) return new Blob([], { type: mimeType });
+      const cached = committedSnapshots.get(mimeType);
+      if (cached) return cached;
+      const snapshot = new Blob(parts, { type: mimeType });
+      committedSnapshots.set(mimeType, snapshot);
+      return snapshot;
     },
     /** Wait for the currently queued writes before taking a capture-order snapshot. */
     async snapshot(mimeType: string): Promise<Blob> {
@@ -73,6 +84,7 @@ export function createRecordingChunkStore(
     },
     async discard(): Promise<void> {
       discarded = true;
+      committedSnapshots.clear();
       await pending;
       parts.length = 0;
       for (const filename of diskFiles) {

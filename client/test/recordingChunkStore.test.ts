@@ -64,6 +64,34 @@ describe('recording chunk storage', () => {
       );
     }
   });
+  it('reuses each MIME snapshot while the committed prefix is unchanged', async () => {
+    const storage = disk(1, true);
+    const store = createRecordingChunkStore(storage.directory, 'video');
+    store.append(new Blob(['header']));
+    await store.flush();
+    const video = store.snapshotCommitted('video/webm');
+    const audio = store.snapshotCommitted('audio/webm');
+    assert.equal(video.type, 'video/webm');
+    assert.equal(audio.type, 'audio/webm');
+
+    store.append(new Blob(['-frame']));
+    assert.equal(store.snapshotCommitted('video/webm'), video);
+    assert.equal(store.snapshotCommitted('audio/webm'), audio);
+
+    await store.flush();
+    const updatedVideo = store.snapshotCommitted('video/webm');
+    const updatedAudio = store.snapshotCommitted('audio/webm');
+    assert.notEqual(updatedVideo, video);
+    assert.notEqual(updatedAudio, audio);
+    assert.equal(await video.text(), 'header', 'previous snapshots retain their bytes');
+    assert.equal(await updatedVideo.text(), 'header-frame', 'includes bytes kept after disk failure');
+    assert.equal(store.snapshotCommitted('video/webm'), updatedVideo);
+    assert.equal(store.snapshotCommitted('audio/webm'), updatedAudio);
+
+    await store.discard();
+    assert.equal(store.snapshotCommitted('video/webm').size, 0);
+  });
+
   it('supports browsers without disk storage', async () => {
     const store = createRecordingChunkStore();
     store.append(new Blob(['complete'])); store.append(new Blob());
