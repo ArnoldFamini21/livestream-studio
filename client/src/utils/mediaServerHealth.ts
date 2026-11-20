@@ -26,6 +26,8 @@ export interface MediaServerHealth {
   recordingStorage?: MediaServerCapabilityHealth;
   /** Absent on older media servers: the private test stream is offered only when this is ready. */
   testStream?: MediaServerCapabilityHealth;
+  /** Older servers cannot accept a second program. */
+  dualOutput?: MediaServerCapabilityHealth;
   /** Absent on older media servers: the held-broadcast banner is shown only when this is ready. */
   heldBroadcast?: MediaServerCapabilityHealth;
 }
@@ -283,6 +285,7 @@ export function normalizeMediaServerHealthPayload(
   const reportedPresentationRenderer = getCapability(value, 'presentationRenderer');
   const recordingStorage = getCapability(value, 'recordingStorage');
   const testStream = getCapability(value, 'testStream');
+  const dualOutput = getCapability(value, 'dualOutput');
   const heldBroadcast = getCapability(value, 'heldBroadcast');
 
   if (value.status !== 'ok') {
@@ -314,6 +317,7 @@ export function normalizeMediaServerHealthPayload(
     ...(presentationRenderer ? { presentationRenderer } : {}),
     ...(recordingStorage ? { recordingStorage } : {}),
     ...(testStream ? { testStream } : {}),
+    ...(dualOutput ? { dualOutput } : {}),
     ...(heldBroadcast ? { heldBroadcast } : {}),
   };
 }

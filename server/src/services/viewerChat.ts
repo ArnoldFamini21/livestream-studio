@@ -287,7 +287,7 @@ export class ViewerChatRoom {
   // ----- The page asks -----
 
   /** The one small answer: switches, new messages, removals, reaction counts. */
-  live(query: ViewerFeedQuery, now: number, networkKey = 'unknown'): WatchLiveResponse {
+  live(query: ViewerFeedQuery, now: number, networkKey = 'unknown', callInsEnabled = false): WatchLiveResponse {
     if (!this.meterStarted) {
       this.meter.windowStart = now;
       this.meterStarted = true;
@@ -321,7 +321,7 @@ export class ViewerChatRoom {
       messages,
       removed,
       reactions,
-      pollMs: suggestViewerPollMs(rate, switches.chat || switches.reactions || switches.questions),
+      pollMs: suggestViewerPollMs(rate, switches.chat || switches.reactions || switches.questions || callInsEnabled),
     };
   }
 
@@ -533,7 +533,8 @@ export class ViewerChatRoom {
     if (open >= MAX_OPEN_QUESTIONS_PER_ROOM) throw new ViewerChatError(LINES.questionsFull, 429, 'QUESTIONS_FULL');
   }
 
-  private requireViewer(viewerId: unknown, networkKey: string): string {
+  /** Shares viewer blocks with other public audience actions. */
+  requireViewer(viewerId: unknown, networkKey: string): string {
     if (!isValidViewerId(viewerId)) throw new ViewerChatError(LINES.badViewer, 400, 'VALIDATION_ERROR');
     const origin = { viewerId, networkKey };
     if (this.blocks.some((block) => matchesBlock(block, origin))) {

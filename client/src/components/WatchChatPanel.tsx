@@ -9,6 +9,8 @@ import {
   type ViewerReactionType,
   type WatchChatMessage,
 } from '@studio/shared';
+import { WatchCallInPanel } from './WatchCallInPanel.tsx';
+import { watchAuthHeaders } from '../utils/watchAccess.ts';
 import { postJson } from '../utils/apiClient.ts';
 import { getWatchVoterId } from '../utils/watchPollVoting.ts';
 import { readViewerName, saveViewerName, sendFailureLine, tidyViewerName } from '../utils/watchViewerChat.ts';
@@ -17,10 +19,12 @@ import '../styles/watch-chat.css';
 
 interface WatchChatPanelProps {
   watchId: string;
+  watchAccessToken?: string;
   /** The name the viewer gave when registering, used until they choose another. */
   registeredName: string;
   /** Reactions to float on the picture: other people's (from the server) and this viewer's own tap. */
   onFloat: (types: ViewerReactionType[]) => void;
+  onCaptionsAvailable?: (available: boolean) => void;
 }
 
 type Status = { kind: 'info' | 'error'; text: string } | null;
@@ -31,8 +35,8 @@ type Status = { kind: 'info' | 'error'; text: string } | null;
  * hidden control cannot be used by hand either). Everything shown is plain
  * text: a message is never read as a link or as markup.
  */
-export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPanelProps) {
-  const { switches, messages, refresh, noteOwnReaction } = useWatchLive({ watchId, onReactions: onFloat });
+export function WatchChatPanel({ watchId, watchAccessToken, registeredName, onFloat, onCaptionsAvailable }: WatchChatPanelProps) {
+  const { switches, callInsEnabled, messages, captionsAvailable, refresh, noteOwnReaction } = useWatchLive({ watchId, watchAccessToken, onReactions: onFloat });
   const viewerId = useMemo(() => getWatchVoterId(), []);
   const path = `/api/watch/${encodeURIComponent(watchId)}`;
   const [name, setName] = useState(() => readViewerName(registeredName));
@@ -46,6 +50,8 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
   const nearBottom = useRef(true);
   const previousMessages = useRef<WatchChatMessage[]>([]);
   const [hasNew, setHasNew] = useState(false);
+
+  useEffect(() => { onCaptionsAvailable?.(captionsAvailable); }, [captionsAvailable, onCaptionsAvailable]);
 
   // A registration name becomes the default only while the viewer has not chosen one.
   useEffect(() => {
@@ -76,7 +82,7 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
     setBusy(true);
     setStatus(null);
     try {
-      await postJson(`${path}/chat`, { viewerId, name: tidyViewerName(name), text });
+      await postJson(`${path}/chat`, { viewerId, name: tidyViewerName(name), text }, { headers: watchAuthHeaders(watchAccessToken) });
       saveViewerName(name);
       setDraft((current) => current === draft ? '' : current);
       nearBottom.current = true;
@@ -86,7 +92,7 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
     } finally {
       setBusy(false);
     }
-  }, [busy, draft, name, path, refresh, viewerId]);
+  }, [busy, draft, name, path, refresh, viewerId, watchAccessToken]);
 
   const sendQuestion = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -95,7 +101,7 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
     setBusy(true);
     setStatus(null);
     try {
-      await postJson(`${path}/questions`, { viewerId, name: tidyViewerName(name), text });
+      await postJson(`${path}/questions`, { viewerId, name: tidyViewerName(name), text }, { headers: watchAuthHeaders(watchAccessToken) });
       saveViewerName(name);
       setQuestion('');
       setAsking(false);
@@ -105,14 +111,14 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
     } finally {
       setBusy(false);
     }
-  }, [busy, name, path, question, viewerId]);
+  }, [busy, name, path, question, viewerId, watchAccessToken]);
 
   const react = useCallback(async (type: ViewerReactionType) => {
     if (reactionBusy) return;
     setReactionBusy(true);
     setStatus(null);
     try {
-      await postJson(`${path}/reactions`, { viewerId, reaction: type });
+      await postJson(`${path}/reactions`, { viewerId, reaction: type }, { headers: watchAuthHeaders(watchAccessToken) });
       // Float it at once; the next answer from the server will not float it a second time.
       noteOwnReaction(type);
       onFloat([type]);
@@ -122,9 +128,9 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
       // A short pause between taps; the server has its own limits too.
       window.setTimeout(() => setReactionBusy(false), 450);
     }
-  }, [noteOwnReaction, onFloat, path, reactionBusy, viewerId]);
+  }, [noteOwnReaction, onFloat, path, reactionBusy, viewerId, watchAccessToken]);
 
-  if (!switches.chat && !switches.reactions && !switches.questions) return null;
+  const showEngagement = switches.chat || switches.reactions || switches.questions;
 
   const nameField = (
     <label className="watch-chat-name-field">
@@ -134,7 +140,8 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
   );
 
   return (
-    <section className="watch-chat" aria-label="Chat, reactions and questions">
+    <>
+    {showEngagement && <section className="watch-chat" aria-label="Chat, reactions and questions">
       {switches.chat && (
         <>
           <div className="watch-chat-head">
@@ -227,6 +234,8 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
       )}
 
       <p className={`watch-chat-status${status?.kind === 'error' ? ' is-error' : ''}`} role="status" aria-live="polite">{status?.text ?? ''}</p>
-    </section>
+    </section>}
+    <WatchCallInPanel enabled={callInsEnabled} nameHint={name} watchId={watchId} watchAccessToken={watchAccessToken} viewerId={viewerId} />
+    </>
   );
 }

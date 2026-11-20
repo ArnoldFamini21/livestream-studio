@@ -42,6 +42,7 @@ import type {
   ExternalChatPlatform,
   ExternalChatStatusPayload,
 } from '@studio/shared';
+import { WatchCaptionBuffer, WATCH_CAPTIONS_OFF } from './watchCaptions.js';
 import {
   RECORDING_UPLOAD_PROGRESS_STATUSES,
   MAX_RECORDING_TRANSFER_SDP_LENGTH,
@@ -109,6 +110,8 @@ import {
 } from './roomRestoreTicket.js';
 import { isStudioCreationGated } from './studioAccessPolicy.js';
 import { buildPresentationRenderClaims } from './presentationRenderToken.js';
+import { getWatchAccessSecret, issueWatchGrant } from './watchAccess.js';
+import { WatchCallIns } from './watchCallIns.js';
 import { ViewerChatError, ViewerChatRoom, type ViewerChatHost } from './viewerChat.js';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
@@ -131,7 +134,7 @@ interface ParticipantEntry {
   resumeTimer?: ReturnType<typeof setTimeout>;
 }
 
-type RedeemedInviteKind = 'co-host' | 'guest-secure';
+type RedeemedInviteKind = 'co-host' | 'guest-secure' | 'audience-call';
 
 // In-memory store, snapshotted to PostgreSQL when DATABASE_URL is set.
 interface RoomState {
@@ -169,6 +172,7 @@ interface RoomState {
   chatOverlay?: ChatOverlayState;
   /** Viewer chat from the public watch page (switches, blocks, feed); kept in memory for the life of the room (not stored). */
   viewerChat?: ViewerChatRoom;
+  watchCalls?: WatchCallIns;
   stageContent?: StageContentPayload;
   /** Who set stageContent, so a co-host cannot clear what the host presents. */
   stageContentSetBy?: { participantId: string; role: Participant['role'] };
@@ -176,12 +180,13 @@ interface RoomState {
   talkbackParticipantIds?: Set<string>;
   /** Pictures of what is on stage, newest last; served to guests by id. */
   stageImages?: Map<string, StageImage>;
-  guestInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
+  guestInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number; audience?: true }>;
   coHostInviteTokens: Map<string, { expiresAt: number; issuedBy: string; createdAt: number }>;
   recordingStartedAt?: string;
   recordingSessionId?: string;
   recordingPaused?: boolean;
   liveStreamStartedAt?: string;
+  watchCaptions?: WatchCaptionBuffer;
   liveStreamStartedBy?: string;
   // A private test stream: in memory only, never public and never persisted.
   testStreamStartedAt?: string;
@@ -310,6 +315,9 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'studio-branding-updated',
   'chat-overlay-update',
   'viewer-chat-settings-update',
+  'watch-invite-request',
+  'watch-event-settings',
+  'watch-call-in-decide',
   'viewer-chat-remove',
   'viewer-chat-block',
   'viewer-chat-unblock',
@@ -882,6 +890,7 @@ export function createRoom(
     creatorIp: string;
     password?: string;
     registrationEnabled?: boolean;
+    privateWatch?: boolean;
     createdByOwner?: boolean;
   }
 ): CreatedRoom {
@@ -916,8 +925,9 @@ export function createRoom(
     hostName,
     scheduledFor: options.scheduledFor,
     registration: {
-      enabled: Boolean(options.registrationEnabled),
+      enabled: Boolean(options.registrationEnabled || options.privateWatch),
       fields: ['name', 'email'],
+      ...(options.privateWatch ? { inviteOnly: true } : {}),
     },
   };
 
@@ -1171,14 +1181,14 @@ function consumeCoHostInviteToken(roomState: RoomState, token: unknown): { expir
   return null;
 }
 
-function consumeGuestInviteToken(roomState: RoomState, token: unknown): { expiresAt: number } | null {
+function consumeGuestInviteToken(roomState: RoomState, token: unknown): { expiresAt: number; audience?: true } | null {
   if (typeof token !== 'string' || token.length < 20 || token.length > 120) return null;
   pruneExpiredGuestInviteTokens(roomState);
 
   for (const [candidateToken, invite] of roomState.guestInviteTokens) {
     if (safeEqual(candidateToken, token)) {
       roomState.guestInviteTokens.delete(candidateToken);
-      return { expiresAt: invite.expiresAt };
+      return { expiresAt: invite.expiresAt, audience: invite.audience };
     }
   }
   return null;
@@ -1436,6 +1446,11 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'qa-question-upvote':
       handleQAQuestionUpvote(ws, message.payload);
+      break;
+    case 'watch-invite-request':
+    case 'watch-event-settings':
+    case 'watch-call-in-decide':
+      handleWatchEventOperatorMessage(ws, message);
       break;
     case 'viewer-chat-settings-update':
       handleViewerChatSettingsUpdate(ws, message.payload);
@@ -1807,7 +1822,10 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
       ...(testStreamState ? { testStreamState } : {}),
       studioBranding: roomState.studioBranding,
       ...(operator && admitted && roomState.chatOverlay ? { chatOverlay: roomState.chatOverlay } : {}),
-      ...(operator && admitted ? { viewerChat: ensureViewerChat(roomId, roomState).statePayload() } : {}),
+      ...(operator && admitted ? {
+        viewerChat: ensureViewerChat(roomId, roomState).statePayload(),
+        watchEvent: getWatchCalls(roomState).state(),
+      } : {}),
       stageContent: admitted ? roomState.stageContent : undefined,
       stageUploadToken: entry.stageUploadToken,
       ...(admitted && entry.stageReadToken ? { stageReadToken: entry.stageReadToken } : {}),
@@ -1821,6 +1839,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
         chatTyping: true,
         chatOverlay: true,
         viewerChat: true,
+        watchEvents: true,
       },
     },
   });
@@ -1975,20 +1994,28 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   }
 
   let hasSecureGuestAccess = false;
+  let audienceCall = false;
+  let freshAudienceCall = false;
   if (effectiveRole === 'guest') {
     if (payload.guestInviteToken) {
       const invite = consumeGuestInviteToken(roomState, payload.guestInviteToken);
       if (invite) {
         hasSecureGuestAccess = true;
-        if (joinSessionId) roomState.redeemedInvites.set(joinSessionId, { kind: 'guest-secure', expiresAt: invite.expiresAt });
-      } else if (hasRedeemedInvite(roomState, joinSessionId, 'guest-secure', nowMs)) {
+        audienceCall = invite.audience === true;
+        freshAudienceCall = audienceCall;
+        if (joinSessionId) roomState.redeemedInvites.set(joinSessionId, {
+          kind: audienceCall ? 'audience-call' : 'guest-secure', expiresAt: invite.expiresAt,
+        });
+      } else if (hasRedeemedInvite(roomState, joinSessionId, 'guest-secure', nowMs) || hasRedeemedInvite(roomState, joinSessionId, 'audience-call', nowMs)) {
         hasSecureGuestAccess = true;
+        audienceCall = hasRedeemedInvite(roomState, joinSessionId, 'audience-call', nowMs);
       } else {
         rejectJoinAttempt(ws, 'Guest invite link is invalid or expired', 'GUEST_INVITE_INVALID');
         return;
       }
     } else {
-      hasSecureGuestAccess = hasRedeemedInvite(roomState, joinSessionId, 'guest-secure', nowMs);
+      audienceCall = hasRedeemedInvite(roomState, joinSessionId, 'audience-call', nowMs);
+      hasSecureGuestAccess = audienceCall || hasRedeemedInvite(roomState, joinSessionId, 'guest-secure', nowMs);
     }
   }
 
@@ -2071,12 +2098,12 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     status = 'on-stage';
   } else if (effectiveRole === 'co-host') {
     status = returningStatus ?? (roomState.room.settings.coHostsJoinOnStage ? 'on-stage' : 'backstage');
-  } else if (removed) {
+  } else if (removed || freshAudienceCall) {
     status = 'green-room';
   } else if (returningStatus) {
     status = returningStatus;
   } else {
-    status = roomState.room.settings.greenRoomEnabled ? 'green-room' : 'on-stage';
+    status = audienceCall || roomState.room.settings.greenRoomEnabled ? 'green-room' : 'on-stage';
   }
 
   // The host always gets a seat. Everyone else needs a free stage/backstage
@@ -2544,6 +2571,77 @@ function sendViewerChatStateToNewOperator(roomState: RoomState, entry: Participa
   if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') return;
   if (entry.ws.readyState !== WebSocket.OPEN) return;
   send(entry.ws, { type: 'viewer-chat-state', payload: ensureViewerChat(roomState.room.id, roomState).statePayload() });
+  if (entry.participant.capabilities?.includes('watch-events')) {
+    send(entry.ws, { type: 'watch-event-state', payload: getWatchCalls(roomState).state() });
+  }
+}
+
+function getWatchCalls(roomState: RoomState): WatchCallIns {
+  if (!roomState.watchCalls) {
+    roomState.watchCalls = new WatchCallIns(() => {
+      const payload = roomState.watchCalls!.state();
+      for (const entry of roomState.participants.values()) {
+        if (participantCanControlWatchEvents(entry.participant) && entry.participant.capabilities?.includes('watch-events')) {
+          send(entry.ws, { type: 'watch-event-state', payload });
+        }
+      }
+    });
+  }
+  return roomState.watchCalls;
+}
+
+export function getRoomWatchCalls(roomId: string): WatchCallIns | undefined {
+  const roomState = rooms.get(roomId);
+  return roomState && roomState.room.status !== 'ended' ? getWatchCalls(roomState) : undefined;
+}
+
+function participantCanControlWatchEvents(participant: Participant): boolean {
+  return isOperatorRole(participant.role) && participant.status !== 'green-room';
+}
+
+function handleWatchEventOperatorMessage(
+  ws: WebSocket,
+  message: Extract<SignalMessage, { type: 'watch-invite-request' | 'watch-event-settings' | 'watch-call-in-decide' }>,
+) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping) return;
+  const roomState = rooms.get(mapping.roomId);
+  const sender = roomState?.participants.get(mapping.participantId)?.participant;
+  if (!roomState || !sender || !participantCanControlWatchEvents(sender)) {
+    sendError(ws, 'Only admitted studio operators can manage watch access', 'UNAUTHORIZED');
+    return;
+  }
+  const rate = viewerModerationRateLimiter.check(ws, 'watch-events');
+  if (!rate.allowed) return;
+  if (message.type === 'watch-invite-request') {
+    const requestId = message.payload?.requestId;
+    if (!isValidRequestId(requestId)) return;
+    const secret = getWatchAccessSecret();
+    if (!roomState.room.registration?.inviteOnly || !secret) {
+      send(ws, { type: 'watch-invite-issued', payload: { requestId, error: 'Private watch links are unavailable for this studio.' } });
+      return;
+    }
+    send(ws, { type: 'watch-invite-issued', payload: { requestId, ...issueWatchGrant('watch-invite', roomState.watchId, secret) } });
+    return;
+  }
+  const calls = getWatchCalls(roomState);
+  if (message.type === 'watch-event-settings') {
+    if (typeof message.payload?.callInsEnabled === 'boolean') calls.setEnabled(message.payload.callInsEnabled);
+    return;
+  }
+  const { id, decision } = message.payload || {};
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{24}$/.test(id) || (decision !== 'approve' && decision !== 'decline')) return;
+  const now = Date.now();
+  calls.decide(id, decision, () => {
+    // Once a viewer receives a guest URL, every new guest seat must wait for admission.
+    // New rooms already have this setting. Protect older saved rooms as well.
+    if (!roomState.room.settings.greenRoomEnabled) {
+      roomState.room.settings.greenRoomEnabled = true;
+      persistRoomSnapshot(mapping.roomId);
+    }
+    const invite = createGuestInviteToken(roomState, mapping.participantId, now, 2 * 60_000, true);
+    return { roomId: mapping.roomId, guestInvite: invite.token, expiresAt: invite.expiresAt };
+  }, now);
 }
 
 /** The host or co-host behind a viewer chat message, or null (the sender is told why). */
@@ -2755,10 +2853,16 @@ function handleCaptionSegment(ws: WebSocket, payload: unknown) {
     sendError(ws, 'Invalid caption segment', 'INVALID_PAYLOAD');
     return;
   }
-  const message: SignalMessage = {
-    type: 'caption-segment',
-    payload: { ...segment, participantId: sender.id, speakerName: sender.name },
-  };
+  const caption = { ...segment, participantId: sender.id, speakerName: sender.name };
+  const watchCaptions = roomState.watchCaptions;
+  if (segment.final && watchCaptions?.ownerId && roomState.liveStreamStartedAt
+      && sender.audioEnabled && !roomState.talkbackParticipantIds?.has(sender.id)) {
+    const participants = Array.from(roomState.participants.values(), entry => entry.participant);
+    if (watchCaptions.ownerId === getStageOwnerId(participants)) {
+      watchCaptions.append(caption, roomState.liveStreamStartedAt, Date.now());
+    }
+  }
+  const message: SignalMessage = { type: 'caption-segment', payload: caption };
   for (const [id, entry] of roomState.participants) {
     if (id === mapping.participantId) continue;
     if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') continue;
@@ -2793,6 +2897,8 @@ function handleCaptionsState(ws: WebSocket, payload: unknown) {
   // hand-over a client can briefly think it is the owner.
   const ownerId = getStageOwnerId(Array.from(roomState.participants.values(), (entry) => entry.participant));
   if (ownerId !== sender.id) return;
+  if (state.enabled && state.watchPage) roomState.watchCaptions ??= new WatchCaptionBuffer();
+  roomState.watchCaptions?.configure(sender.id, state.enabled && state.watchPage === true, state.language);
   broadcastToRoom(mapping.roomId, { type: 'captions-state', payload: { ...state, from: sender.id } }, mapping.participantId);
 }
 
@@ -2990,6 +3096,23 @@ export function findRoomByWatchId(watchId: string): Room | undefined {
  * /watch/<roomId>, so for those (and only those) the room id still works and
  * the page switches to the canonical id.
  */
+function activeWatchCaptions(roomId: string) {
+  const roomState = rooms.get(roomId);
+  if (!roomState?.liveStreamStartedAt || !roomState.watchCaptions?.ownerId) return undefined;
+  const participants = Array.from(roomState.participants.values(), entry => entry.participant);
+  if (roomState.watchCaptions.ownerId !== getStageOwnerId(participants)) return undefined;
+  return { buffer: roomState.watchCaptions, startedAt: roomState.liveStreamStartedAt };
+}
+
+export function watchCaptionsAvailable(roomId: string): boolean {
+  return Boolean(activeWatchCaptions(roomId));
+}
+
+export function getWatchCaptionSnapshot(roomId: string) {
+  const active = activeWatchCaptions(roomId);
+  return active ? active.buffer.read(active.startedAt, Date.now()) : WATCH_CAPTIONS_OFF;
+}
+
 export function findWatchLinkRoom(id: string): { room: Room; watchId: string } | undefined {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) return undefined;
   for (const roomState of rooms.values()) {
@@ -3414,6 +3537,7 @@ function handleLiveStreamStateChange(ws: WebSocket, payload: LiveStreamStatePayl
   } else {
     roomState.liveStreamStartedAt = undefined;
     roomState.liveStreamStartedBy = undefined;
+    roomState.watchCaptions?.reset();
   }
   updateRoomActivityStatus(roomState);
   persistRoomSnapshot(mapping.roomId);
@@ -3515,7 +3639,7 @@ function handleLiveStreamTokenRequest(
     roomId: mapping.roomId,
     participantId: mapping.participantId,
     role: performer.participant.role,
-    watchId: roomState.watchId,
+    ...(roomState.room.registration?.enabled ? { protectedWatchId: roomState.watchId } : { watchId: roomState.watchId }),
     iat: Date.now(),
     exp: expiresAtMs,
     nonce: nanoid(16),
@@ -3610,7 +3734,13 @@ function handleGuestInviteTokenRequest(
     return;
   }
 
-  const now = Date.now();
+  send(ws, {
+    type: 'guest-invite-token-issued',
+    payload: { requestId: payload.requestId, ...createGuestInviteToken(roomState, mapping.participantId, Date.now()) },
+  });
+}
+
+function createGuestInviteToken(roomState: RoomState, participantId: string, now: number, ttl = GUEST_INVITE_TOKEN_TTL_MS, audience = false) {
   pruneExpiredGuestInviteTokens(roomState, now);
 
   while (roomState.guestInviteTokens.size >= MAX_GUEST_INVITE_TOKENS_PER_ROOM) {
@@ -3620,21 +3750,15 @@ function handleGuestInviteTokenRequest(
   }
 
   const token = nanoid(32);
-  const expiresAtMs = now + GUEST_INVITE_TOKEN_TTL_MS;
+  const expiresAtMs = now + ttl;
   roomState.guestInviteTokens.set(token, {
     expiresAt: expiresAtMs,
-    issuedBy: mapping.participantId,
+    issuedBy: participantId,
     createdAt: now,
+    ...(audience ? { audience: true } : {}),
   });
 
-  send(ws, {
-    type: 'guest-invite-token-issued',
-    payload: {
-      requestId: payload.requestId,
-      token,
-      expiresAt: new Date(expiresAtMs).toISOString(),
-    },
-  });
+  return { token, expiresAt: new Date(expiresAtMs).toISOString() };
 }
 
 function hasValidPeerConnectionRef(p: Record<string, unknown>): boolean {

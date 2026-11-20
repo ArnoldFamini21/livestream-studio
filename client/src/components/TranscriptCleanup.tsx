@@ -13,7 +13,9 @@ import {
   type TranscriptWord,
 } from '../utils/transcriptCleanup.ts';
 import { encodePcm16Wav } from '../utils/wavEncoder.ts';
-import { buildCleanupEditListFiles, type EditListMarker } from '../utils/editListExport.ts';
+import { buildCleanupEditListFiles, getTrackAlignmentSeconds, inferEditListTrackRole, mapKeepRangesToTrack, type EditListMarker } from '../utils/editListExport.ts';
+import type { ClipCaptionStyle } from '../utils/clipCaptions.ts';
+import { buildEditedClipCaptions, createTranscriptEditDraft, editTranscriptWordRange, limitTranscriptKeepRanges, type TranscriptEditDraft } from '../utils/transcriptEditing.ts';
 import { CleanedVideoRender, type CleanedRenderTrack } from './CleanedVideoRender.tsx';
 
 const PAUSE_THRESHOLDS = [0.7, 1, 1.5, 2, 3];
@@ -44,6 +46,7 @@ export function TranscriptCleanup({
   sourceTrackIndex = -1,
   studioName,
   markers,
+  editor,
 }: {
   words: TranscriptWord[];
   durationSeconds: number;
@@ -58,13 +61,15 @@ export function TranscriptCleanup({
   sourceTrackIndex?: number;
   studioName?: string;
   markers?: EditListMarker[];
+  editor?: { draft: TranscriptEditDraft; onChange: (draft: TranscriptEditDraft) => void; captionStyle: ClipCaptionStyle };
 }) {
-  const [removeFillers, setRemoveFillers] = useState(true);
-  const [removeRepeats, setRemoveRepeats] = useState(true);
-  const [shortenPauses, setShortenPauses] = useState(true);
-  const [pauseThreshold, setPauseThreshold] = useState(DEFAULT_CLEANUP_OPTIONS.pauseThresholdSeconds);
-  const [restored, setRestored] = useState<Set<string>>(() => new Set());
-  const [manualWords, setManualWords] = useState<Set<number>>(() => new Set());
+  const [localDraft, setLocalDraft] = useState(() => createTranscriptEditDraft(true));
+  const draft = editor?.draft ?? localDraft;
+  const { removeFillers, removeRepeats, shortenPauses, pauseThreshold, restored, manualWords, excerpt } = draft;
+  const [selecting, setSelecting] = useState(false);
+  const [selection, setSelection] = useState<[number, number] | null>(null);
+  const [focusedWord, setFocusedWord] = useState(0);
+  const selectionAnchor = useRef<number | null>(null);
   const [rendering, setRendering] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [job, setJob] = useState<RecordingExportJobResponse | null>(null);
@@ -77,9 +82,19 @@ export function TranscriptCleanup({
     removeRepeats,
     shortenPauses,
     pauseThresholdSeconds: pauseThreshold,
-    restored,
-    manualWords,
+    restored: new Set(restored),
+    manualWords: new Set(manualWords),
   }), [durationSeconds, manualWords, pauseThreshold, removeFillers, removeRepeats, restored, shortenPauses, words]);
+
+  const keepRanges = useMemo(() => limitTranscriptKeepRanges(plan.keepRanges, excerpt), [plan.keepRanges, excerpt]);
+  const captionCues = useMemo(() => editor ? buildEditedClipCaptions(plan.words, keepRanges) : [], [Boolean(editor), plan.words, keepRanges]);
+  const outputDuration = keepRanges.reduce((total, range) => total + range.endSeconds - range.startSeconds, 0);
+  const exportBaseName = excerpt ? baseName + '_clip' : baseName;
+
+  const changeDraft = (next: TranscriptEditDraft) => {
+    (editor?.onChange ?? setLocalDraft)(next);
+    setJob(null);
+  };
 
   // Pause cuts keyed by the word they follow, for inline markers.
   const pauseAfterWord = useMemo(() => {
@@ -101,21 +116,47 @@ export function TranscriptCleanup({
   }, [restored]);
 
   const toggleWord = (index: number) => {
-    const word = plan.words[index];
-    if (word.reason && word.reason !== 'manual') {
-      setRestored((current) => toggled(current, `word:${index}`));
-    } else {
-      setManualWords((current) => toggled(current, index));
+    if (selecting) {
+      const anchor = selectionAnchor.current;
+      const start = anchor ?? index;
+      setSelection([Math.min(start, index), Math.max(start, index)]);
+      selectionAnchor.current = anchor === null ? index : null;
+      setSelecting(anchor === null);
+      return;
     }
-    setJob(null);
+    changeDraft(editTranscriptWordRange(draft, plan.words, [index, index], !plan.words[index].removed));
   };
 
   const togglePause = (id: string) => {
-    setRestored((current) => toggled(current, id));
-    setJob(null);
+    changeDraft({
+      ...draft,
+      restored: restored.includes(id) ? restored.filter((value) => value !== id) : [...restored, id],
+    });
   };
 
-  const preview = useSkipPreview(source?.blob || null, plan.keepRanges);
+  const finishSelection = (mode: 'cut' | 'keep' | 'clip') => {
+    if (!selection) return;
+    if (mode === 'clip') {
+      const [first, last] = selection;
+      changeDraft({ ...draft, excerpt: { startSeconds: plan.words[first].start, endSeconds: plan.words[last].end } });
+    } else {
+      changeDraft(editTranscriptWordRange(draft, plan.words, selection, mode === 'cut'));
+    }
+    selectionAnchor.current = null;
+    setSelecting(false);
+    setSelection(null);
+  };
+
+  const programIndex = editor ? tracks?.findIndex((track) => track.kind === 'program') ?? -1 : -1;
+  const program = tracks?.[programIndex];
+  const previewSource = program ?? source;
+  const previewIsVideo = Boolean(program || (source && tracks?.[sourceTrackIndex] && inferEditListTrackRole(tracks[sourceTrackIndex]) !== 'audio'));
+  const previewShift = program && tracks && sourceTrackIndex >= 0 ? getTrackAlignmentSeconds(tracks, sourceTrackIndex)[programIndex] : 0;
+  const previewRanges = useMemo(() => mapKeepRangesToTrack(keepRanges, previewShift).map(({ sourceStart, sourceEnd }) => ({
+    startSeconds: sourceStart,
+    endSeconds: sourceEnd,
+  })), [keepRanges, previewShift]);
+  const preview = useSkipPreview(previewSource?.blob ?? null, previewRanges);
 
   const renderCleanedAudio = useCallback(async () => {
     if (!source) return;
@@ -129,14 +170,14 @@ export function TranscriptCleanup({
       const context = new OfflineAudioContext(1, 1, sampleRate);
       const decoded = await context.decodeAudioData(await source.blob.arrayBuffer());
       const channels = Array.from({ length: decoded.numberOfChannels }, (_, channel) => decoded.getChannelData(channel));
-      const spliced = spliceAudioChannels(channels, decoded.sampleRate, plan.keepRanges);
-      onDownload(encodePcm16Wav(spliced, decoded.sampleRate), `${safeName(baseName)}_${safeName(source.label)}_cleaned.wav`);
+      const spliced = spliceAudioChannels(channels, decoded.sampleRate, keepRanges);
+      onDownload(encodePcm16Wav(spliced, decoded.sampleRate), `${safeName(exportBaseName)}_${safeName(source.label)}_cleaned.wav`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not clean the audio in this browser.');
     } finally {
       setRendering(false);
     }
-  }, [baseName, onDownload, plan.durationSeconds, plan.keepRanges, source]);
+  }, [exportBaseName, keepRanges, onDownload, plan.durationSeconds, source]);
 
   const exportCleanedVideo = useCallback(async () => {
     if (!serverExport) return;
@@ -144,7 +185,7 @@ export function TranscriptCleanup({
     setError('');
     setJob(null);
     try {
-      const result = await serverExport.run(plan.keepRanges);
+      const result = await serverExport.run(keepRanges);
       setJob(result);
       if (result.status === 'error') setError(result.error || 'The cleaned export failed.');
     } catch (err) {
@@ -152,7 +193,7 @@ export function TranscriptCleanup({
     } finally {
       setExporting(false);
     }
-  }, [plan.keepRanges, serverExport]);
+  }, [keepRanges, serverExport]);
 
   const downloadArtifact = async (artifact: RecordingExportArtifactStatus) => {
     if (!job || !serverExport) return;
@@ -167,7 +208,13 @@ export function TranscriptCleanup({
     }
   };
 
-  const nothingToCut = plan.cuts.length === 0;
+  const nothingToCut = plan.cuts.length === 0 && excerpt === null;
+  const noMedia = keepRanges.length === 0;
+  const tooManyCuts = keepRanges.length > MAX_KEEP_RANGES;
+  const editDisabled = noMedia || (!editor && nothingToCut);
+  const editWords = useMemo(() => excerpt
+    ? plan.words.filter((word) => (word.start + word.end) / 2 >= excerpt.startSeconds && (word.start + word.end) / 2 < excerpt.endSeconds)
+    : plan.words, [excerpt, plan.words]);
   const editTracks = useMemo<CleanedRenderTrack[]>(() => {
     if (tracks && tracks.length > 0 && sourceTrackIndex >= 0 && sourceTrackIndex < tracks.length) return tracks;
     return source ? [{ label: source.label, fileName: `${safeName(source.label)}.${source.blob.type.includes('wav') ? 'wav' : 'webm'}`, type: source.blob.type, blob: source.blob }] : [];
@@ -178,48 +225,75 @@ export function TranscriptCleanup({
     setError('');
     try {
       const files = buildCleanupEditListFiles({
-        baseName,
+        baseName: exportBaseName,
         tracks: editTracks,
         sourceIndex: editSourceIndex,
-        keepRanges: plan.keepRanges,
-        words: plan.words,
+        keepRanges,
+        words: editWords,
         markers,
       });
       const { default: JSZip } = await import('jszip');
       const zip = new JSZip();
       for (const file of files) zip.file(file.name, file.text);
-      onDownload(await zip.generateAsync({ type: 'blob', mimeType: 'application/zip' }), `${safeName(baseName)}_cleanup_edit_list.zip`);
+      onDownload(await zip.generateAsync({ type: 'blob', mimeType: 'application/zip' }), `${safeName(exportBaseName)}_cleanup_edit_list.zip`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not build the edit list.');
     }
   };
   const readyArtifacts = job?.artifacts.filter((artifact) => artifact.status === 'ready' && artifact.format !== 'json') || [];
 
-  return <section className="transcript-cleanup" aria-label="Transcript cleanup">
+  return <section className="transcript-cleanup" aria-label={editor ? 'Transcript edit' : 'Transcript cleanup'}>
     <header className="transcript-cleanup__header">
       <div>
-        <h3 className="transcript-cleanup__title">Clean up</h3>
+        {!editor && <h3 className="transcript-cleanup__title">Clean up</h3>}
         <p className="transcript-cleanup__summary" aria-live="polite">
-          {nothingToCut
-            ? 'Nothing to remove with these settings.'
+          {editor
+            ? <>{excerpt ? 'Clip' : 'Edited duration'} <strong>{formatRemovedTime(outputDuration)}</strong> of {formatRemovedTime(plan.durationSeconds)}</>
+            : nothingToCut ? 'Nothing to remove with these settings.'
             : <>Removes <strong>{formatRemovedTime(plan.removedSeconds)}</strong> of {formatRemovedTime(plan.durationSeconds)}</>}
         </p>
       </div>
     </header>
 
     <div className="transcript-cleanup__options">
-      <Toggle checked={removeFillers} onChange={(value) => { setRemoveFillers(value); setJob(null); }} label="Filler words" count={plan.counts.filler} />
-      <Toggle checked={removeRepeats} onChange={(value) => { setRemoveRepeats(value); setJob(null); }} label="Stutters" count={plan.counts.repeat} />
-      <Toggle checked={shortenPauses} onChange={(value) => { setShortenPauses(value); setJob(null); }} label="Pauses" count={plan.counts.pause} />
+      <Toggle checked={removeFillers} onChange={(value) => changeDraft({ ...draft, removeFillers: value })} label="Filler words" count={plan.counts.filler} />
+      <Toggle checked={removeRepeats} onChange={(value) => changeDraft({ ...draft, removeRepeats: value })} label="Stutters" count={plan.counts.repeat} />
+      <Toggle checked={shortenPauses} onChange={(value) => changeDraft({ ...draft, shortenPauses: value })} label="Pauses" count={plan.counts.pause} />
       {shortenPauses && <label className="transcript-cleanup__threshold">
         <span>longer than</span>
-        <select value={pauseThreshold} onChange={(event) => { setPauseThreshold(Number(event.target.value)); setJob(null); }}>
+        <select value={pauseThreshold} onChange={(event) => changeDraft({ ...draft, pauseThreshold: Number(event.target.value) })}>
           {PAUSE_THRESHOLDS.map((seconds) => <option key={seconds} value={seconds}>{seconds}s</option>)}
         </select>
       </label>}
     </div>
 
-    <div className="transcript-cleanup__text" role="group" aria-label="Transcript. Select a word to cut or keep it.">
+    {editor && <>
+      {previewIsVideo && preview.url && <video className="transcript-cleanup__preview" ref={preview.attach} src={preview.url} playsInline preload="metadata" aria-label="Edited video preview" />}
+      <div className="transcript-cleanup__strip" aria-hidden="true">
+        {keepRanges.map((range) => <span
+          key={range.startSeconds}
+          style={{ left: `${range.startSeconds / plan.durationSeconds * 100}%`, width: `${(range.endSeconds - range.startSeconds) / plan.durationSeconds * 100}%` }}
+        />)}
+      </div>
+      <div className="transcript-cleanup__selection">
+        <button type="button" className="transcript-cleanup__button" aria-pressed={selecting} onClick={() => {
+          selectionAnchor.current = null;
+          setSelection(null);
+          setSelecting(!selecting);
+        }}>
+          {selecting ? 'Cancel selection' : 'Select passage'}
+        </button>
+        {selection && <>
+          <button type="button" className="transcript-cleanup__button" onClick={() => finishSelection('cut')}>Cut passage</button>
+          <button type="button" className="transcript-cleanup__button" onClick={() => finishSelection('keep')}>Restore passage</button>
+          <button type="button" className="transcript-cleanup__button" onClick={() => finishSelection('clip')}>Use as clip</button>
+        </>}
+        {excerpt && <button type="button" className="transcript-cleanup__button" onClick={() => changeDraft({ ...draft, excerpt: null })}>Edit full take</button>}
+      </div>
+      {selecting && <p className="transcript-cleanup__hint" role="status">Select the first and last words.</p>}
+    </>}
+    {preview.url && (!editor || !previewIsVideo) && <audio ref={preview.attach} src={preview.url} preload="metadata" />}
+    <div className="transcript-cleanup__text" role="group" aria-label="Timed transcript">
       {pauseAfterWord.get('start') && <button
         type="button"
         className="transcript-cleanup__pause is-cut"
@@ -232,7 +306,9 @@ export function TranscriptCleanup({
       {plan.words.map((word) => {
         const pause = pauseAfterWord.get(String(word.index));
         const restoredPause = restoredPauses.get(String(word.index));
-        const current = preview.playing && preview.time >= word.start && preview.time < word.end;
+        const time = preview.time - previewShift;
+        const current = preview.playing && time >= word.start && time < word.end;
+        const inSelection = Boolean(selection && word.index >= selection[0] && word.index <= selection[1]);
         return <Fragment key={word.index}>
           <button
             type="button"
@@ -241,8 +317,19 @@ export function TranscriptCleanup({
               word.removed ? 'is-cut' : '',
               word.reason && !word.removed ? 'is-kept' : '',
               current ? 'is-current' : '',
+              inSelection ? 'is-selected' : '',
             ].filter(Boolean).join(' ')}
-            aria-pressed={word.removed}
+            aria-pressed={selecting ? inSelection : word.removed}
+            data-word={word.index}
+            tabIndex={word.index === focusedWord ? 0 : -1}
+            onFocus={() => setFocusedWord(word.index)}
+            onKeyDown={(event) => {
+              const shift = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+              if (!shift) return;
+              event.preventDefault();
+              const next = Math.max(0, Math.min(plan.words.length - 1, word.index + shift));
+              event.currentTarget.parentElement?.querySelector<HTMLElement>(`[data-word="${next}"]`)?.focus();
+            }}
             title={word.removed
               ? `${labelFor(word.reason)} — cut. Select to keep.`
               : word.reason ? `${labelFor(word.reason)} — kept. Select to cut.` : 'Select to cut this word.'}
@@ -272,32 +359,34 @@ export function TranscriptCleanup({
         </Fragment>;
       })}
     </div>
-    <p className="transcript-cleanup__hint">Struck-through words and pauses are cut. Select any word to cut or keep it.</p>
+    <p className="transcript-cleanup__hint">Select a word to cut or restore it. Use the arrow keys to move between words.</p>
 
-    {plan.tooManyCuts && <p className="transcript-cleanup__error" role="alert">
+    {noMedia && <p className="transcript-cleanup__error" role="alert">Restore some words or select a longer passage to keep media in this edit.</p>}
+    {tooManyCuts && <p className="transcript-cleanup__error" role="alert">
       This makes more than {MAX_KEEP_RANGES} cuts. Turn off a category or keep some cuts to export.
     </p>}
+    {preview.error && <p className="transcript-cleanup__error" role="alert">{preview.error}</p>}
     {error && <p className="transcript-cleanup__error" role="alert">{error}</p>}
 
     <div className="transcript-cleanup__actions">
-      <button type="button" className="transcript-cleanup__button" disabled={!source || nothingToCut} onClick={preview.toggle}>
-        {preview.playing ? 'Stop preview' : 'Preview cleaned'}
+      <button type="button" className="transcript-cleanup__button" disabled={!previewSource || editDisabled || !previewRanges.length} onClick={preview.toggle}>
+        {preview.playing ? 'Pause preview' : 'Preview edit'}
       </button>
-      <button type="button" className="transcript-cleanup__button" disabled={!source || nothingToCut || rendering || plan.tooManyCuts} onClick={() => void renderCleanedAudio()}>
+      <button type="button" className="transcript-cleanup__button" disabled={!source || editDisabled || rendering || tooManyCuts} onClick={() => void renderCleanedAudio()}>
         {rendering ? 'Cleaning audio…' : 'Download cleaned audio'}
       </button>
       <button
         type="button"
         className="transcript-cleanup__button"
-        disabled={nothingToCut}
-        onClick={() => onDownload(new Blob([`${buildCleanedTranscriptText(plan)}\n`], { type: 'text/plain;charset=utf-8' }), `${safeName(baseName)}_cleaned_transcript.txt`)}
+        disabled={editDisabled}
+        onClick={() => onDownload(new Blob([`${buildCleanedTranscriptText({ ...plan, words: editWords })}\n`], { type: 'text/plain;charset=utf-8' }), `${safeName(exportBaseName)}_cleaned_transcript.txt`)}
       >
         Cleaned transcript
       </button>
       <button
         type="button"
         className="transcript-cleanup__button"
-        disabled={nothingToCut || plan.tooManyCuts || editTracks.length === 0}
+        disabled={editDisabled || tooManyCuts || editTracks.length === 0}
         title="FCPXML for DaVinci Resolve or Final Cut Pro, a CMX3600 EDL per track and re-timed SRT captions"
         onClick={() => void downloadEditList()}
       >
@@ -308,14 +397,16 @@ export function TranscriptCleanup({
     {editTracks.length > 0 && <CleanedVideoRender
       tracks={editTracks}
       sourceIndex={editSourceIndex}
-      keepRanges={plan.keepRanges}
-      baseName={baseName}
+      keepRanges={keepRanges}
+      baseName={exportBaseName}
       studioName={studioName || baseName}
-      disabled={nothingToCut || plan.tooManyCuts}
+      disabled={editDisabled || tooManyCuts}
+      excerpt={Boolean(excerpt)}
+      captions={editor ? { cues: captionCues, style: editor.captionStyle } : undefined}
       onDownload={onDownload}
     />}
 
-    <details className="transcript-cleanup__server">
+    {(serverExport || serverExportUnavailableReason) && <details className="transcript-cleanup__server">
       <summary>Media server export (optional)</summary>
       <p className="transcript-cleanup__hint">
         Re-encodes on the media server. The free server has a fraction of one CPU, so a long recording can take hours there; the browser render above is usually much faster.
@@ -324,7 +415,7 @@ export function TranscriptCleanup({
         <button
           type="button"
           className="transcript-cleanup__button"
-          disabled={!serverExport || nothingToCut || exporting || plan.tooManyCuts}
+          disabled={!serverExport || editDisabled || exporting || tooManyCuts}
           title={serverExport ? 'Export the cleaned final MP4, per-person videos, and audio stems on the media server' : serverExportUnavailableReason}
           onClick={() => void exportCleanedVideo()}
         >
@@ -332,7 +423,7 @@ export function TranscriptCleanup({
         </button>
       </div>
       {!serverExport && serverExportUnavailableReason && <p className="transcript-cleanup__hint">{serverExportUnavailableReason}</p>}
-    </details>
+    </details>}
 
     {readyArtifacts.length > 0 && <ul className="transcript-cleanup__artifacts">
       {readyArtifacts.map((artifact) => <li key={artifact.id}>
@@ -359,11 +450,14 @@ function Toggle({ checked, onChange, label, count }: { checked: boolean; onChang
  * second and would let cut audio leak through.
  */
 function useSkipPreview(blob: Blob | null, keepRanges: TimeRange[]) {
-  const mediaRef = useRef<HTMLAudioElement | null>(null);
+  const mediaRef = useRef<HTMLMediaElement | null>(null);
   const rangesRef = useRef(keepRanges);
   const frameRef = useRef(0);
+  const [url, setUrl] = useState('');
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
+  const [error, setError] = useState('');
+  const attach = useCallback((node: HTMLMediaElement | null) => { mediaRef.current = node; }, []);
   rangesRef.current = keepRanges;
 
   const stop = useCallback(() => {
@@ -373,52 +467,48 @@ function useSkipPreview(blob: Blob | null, keepRanges: TimeRange[]) {
   }, []);
 
   useEffect(() => {
-    if (!blob) return undefined;
-    const url = URL.createObjectURL(blob);
-    const media = new Audio(url);
-    media.preload = 'auto';
-    mediaRef.current = media;
+    stop();
+    setError('');
+    const objectUrl = blob ? URL.createObjectURL(blob) : '';
+    setUrl(objectUrl);
     return () => {
       cancelAnimationFrame(frameRef.current);
-      media.pause();
-      mediaRef.current = null;
-      URL.revokeObjectURL(url);
-      setPlaying(false);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [blob]);
+  }, [blob, stop]);
 
   const toggle = useCallback(() => {
     const media = mediaRef.current;
-    if (!media) return;
-    if (playing) {
+    if (!media || !rangesRef.current.length) return;
+    if (!media.paused) {
       stop();
       return;
     }
+    setError('');
+    let lastPaint = -1;
     const tick = () => {
+      if (media !== mediaRef.current) return;
       const jump = skipCutAt(rangesRef.current, media.currentTime);
-      if (jump === Number.POSITIVE_INFINITY || media.ended) {
+      if (jump === Number.POSITIVE_INFINITY || media.ended || !rangesRef.current.length) {
         stop();
         return;
       }
       if (jump !== null) media.currentTime = jump;
-      setTime(media.currentTime);
+      if (Math.abs(lastPaint - media.currentTime) > 0.10) {
+        lastPaint = media.currentTime;
+        setTime(lastPaint);
+      }
       frameRef.current = requestAnimationFrame(tick);
     };
-    media.currentTime = rangesRef.current[0]?.startSeconds || 0;
+    media.currentTime = rangesRef.current[0].startSeconds;
     void media.play().then(() => {
+      if (media !== mediaRef.current || media.paused) return;
       setPlaying(true);
       frameRef.current = requestAnimationFrame(tick);
-    }).catch(() => setPlaying(false));
-  }, [playing, stop]);
+    }).catch(() => setError('This browser could not play the preview.'));
+  }, [stop]);
 
-  return { playing, time, toggle };
-}
-
-function toggled<T>(set: ReadonlySet<T>, value: T): Set<T> {
-  const next = new Set(set);
-  if (next.has(value)) next.delete(value);
-  else next.add(value);
-  return next;
+  return { attach, error, playing, time, toggle, url };
 }
 
 function labelFor(reason: string | null): string {

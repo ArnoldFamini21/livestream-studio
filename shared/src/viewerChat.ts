@@ -88,6 +88,8 @@ export interface WatchChatMessage {
 
 /** The one answer the watch page asks for every few seconds. */
 export interface WatchLiveResponse {
+  captionsAvailable?: boolean;
+  callInsEnabled?: boolean;
   epoch: string;
   cursor: number;
   /** The page must throw away what it has and use `messages` as the whole list. */

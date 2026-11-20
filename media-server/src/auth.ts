@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { WATCH_TOKEN_PATTERN, validateWatchGrantClaims } from '@studio/shared';
 import type {
   LiveStreamTokenClaims,
   ParticipantRole,
@@ -7,6 +8,7 @@ import type {
   SfuMembershipControlAction,
   SfuMembershipControlClaims,
   SfuTokenClaims,
+  WatchGrantClaims,
 } from '@studio/shared';
 
 export function getLiveStreamTokenSecret(): string | null {
@@ -28,7 +30,7 @@ function safeSignatureEquals(actual: string, expected: string): boolean {
 }
 
 export function signLiveStreamToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims | WatchGrantClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -73,6 +75,7 @@ export function verifyLiveStreamToken(token: string, secret: string, now = Date.
     typeof claims.exp !== 'number' ||
     (claims.role !== 'host' && claims.role !== 'co-host') ||
     (claims.watchId !== undefined && typeof claims.watchId !== 'string') ||
+    (claims.protectedWatchId !== undefined && (typeof claims.protectedWatchId !== 'string' || claims.watchId !== undefined)) ||
     (claims.iat !== undefined && (typeof claims.iat !== 'number' || !Number.isFinite(claims.iat)))
   ) {
     throw new Error('Invalid live stream token claims');
@@ -83,6 +86,20 @@ export function verifyLiveStreamToken(token: string, secret: string, now = Date.
   }
 
   return claims as LiveStreamTokenClaims;
+}
+
+export function verifyWatchPlaybackToken(
+  token: unknown,
+  watchId: string,
+  secret: string,
+  now = Date.now(),
+): WatchGrantClaims | null {
+  if (typeof token !== 'string' || !WATCH_TOKEN_PATTERN.test(token)) return null;
+  try {
+    return validateWatchGrantClaims(verifyTokenPayload(token, secret), 'watch-playback', watchId, now);
+  } catch {
+    return null;
+  }
 }
 
 export function verifyRecordingUploadToken(

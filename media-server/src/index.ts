@@ -1,7 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
@@ -19,12 +19,14 @@ import { buildServiceHealthPayload } from '@studio/shared';
 import {
   getLiveStreamTokenSecret,
   verifyLiveStreamToken,
+  verifyWatchPlaybackToken,
   verifyRecordingUploadToken,
   verifySfuMembershipControlToken,
 } from './auth.js';
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
 import { checkRtmpDestinationHosts } from './rtmpHostPolicy.js';
 import { countActiveRelaySessions, isRelayCapacityAvailable } from './relayAdmission.js';
+import { admitSecondaryProgram, getDualOutputIssue, isDualOutputSupported, SECONDARY_INPUT_TIMEOUT_MS } from './dualOutput.js';
 import { checkPresentationRenderAdmission } from './presentationAdmission.js';
 import { authorizePresentationRender, isPresentationRenderAuthRequired } from './presentationAuth.js';
 import {
@@ -117,10 +119,10 @@ import {
 } from './testStream.js';
 import {
   HLS_PLAYLIST_NAME,
+  addWatchPlaybackToken,
   HlsViewerCounter,
   createFfmpegHlsArgs,
   getHlsContentType,
-  getHlsRoomDir,
   isServableHlsFile,
   isValidWatchRoomId,
   prepareHlsRoomDir,
@@ -208,6 +210,8 @@ interface RelaySession {
   started: boolean;
   stopping: boolean;
   claims: LiveStreamTokenClaims | null;
+  /** The primary that owns this second program, including its reconnect hold. */
+  secondaryOf: RelaySession | null;
   destinations: RtmpRelayDestination[];
   webm: WebmStreamTracker;
   /** One H.264 encode shared by every destination (RTMP_ENCODE_ONCE). */
@@ -245,7 +249,7 @@ const sessions = new Map<WebSocket, RelaySession>();
 const STUDIO_RECONNECT_HOLD_MS = getStudioReconnectHoldMs(process.env);
 const liveBackups = new Map<string, LiveBackupRecording>();
 /** Rooms with a live HLS program, by room id. */
-const liveWatchRooms = new Map<string, { dir: string; startedAt: string; viewers: HlsViewerCounter }>();
+const liveWatchRooms = new Map<string, { dir: string; startedAt: string; viewers: HlsViewerCounter; protected: boolean }>();
 const recordingUploads = new RecordingUploadStore();
 let recordingExports: RecordingExportJobStore | null = null;
 let recordingExportsFfmpegPath = '';
@@ -284,6 +288,7 @@ async function getCachedPresentationRendererHealth(): Promise<PresentationRender
 
 async function healthPayload() {
   const presentationRenderer = await getCachedPresentationRendererHealth();
+  const dualOutputReady = Boolean(getFfmpegPath()) && isDualOutputSupported();
   return {
     ...buildServiceHealthPayload('media-server', process.env),
     capabilities: {
@@ -296,6 +301,13 @@ async function healthPayload() {
         videoModes: ['copy', 'transcode'],
         transcodeMaxPixels: TRANSCODE_MAX_PIXELS,
         transcodeMaxFrameRate: TRANSCODE_MAX_FRAME_RATE,
+      },
+      dualOutput: {
+        ready: dualOutputReady,
+        message: dualOutputReady
+          ? 'Send separate landscape and portrait programs in one broadcast.'
+          : 'The media server needs FFmpeg, encode-once, and at least two destinations for simultaneous output.',
+        details: { maxDestinations: getMaxRtmpDestinations() },
       },
       testStream: {
         ready: isTestStreamSupported(isEncodeOnceEnabled()),
@@ -511,6 +523,13 @@ function stopSession(session: RelaySession, reason?: string) {
     });
   }
   sendJson(session.client, { type: 'session-stopped', payload: { reason } });
+  stopSecondaryProgram(session);
+}
+
+function stopSecondaryProgram(primary: RelaySession) {
+  for (const session of new Set(sessions.values())) {
+    if (session.secondaryOf === primary) stopSession(session, 'The main program ended.');
+  }
 }
 
 function stopSessionIfNoRelayWork(session: RelaySession) {
@@ -523,12 +542,17 @@ function stopSessionIfNoRelayWork(session: RelaySession) {
   stopSession(session, 'All RTMP destinations stopped.');
 }
 
+function getHlsPublication(session: RelaySession) {
+  // Watch identifiers are separate from the studio ID that admits guests.
+  // A test has its own random address and no watch invitation.
+  if (session.test) return { watchId: session.testWatchId, protectedWatch: false };
+  const protectedWatchId = session.claims?.protectedWatchId;
+  return { watchId: protectedWatchId ?? session.claims?.watchId, protectedWatch: Boolean(protectedWatchId) };
+}
+
 async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload: RtmpRelayStartPayload) {
   const program = session.program;
-  // Published under the studio's private watch id. The room id is what admits
-  // guests to the studio, so a watch link must never reveal it.
-  // A test uses its own random id instead, so nothing public ever shows it.
-  const roomId = session.test ? session.testWatchId : session.claims?.watchId;
+  const { watchId: roomId, protectedWatch } = getHlsPublication(session);
   if (!program || session.hls || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
   let dir: string;
   try {
@@ -537,7 +561,10 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
     console.warn('Watch page HLS folder could not be prepared:', err instanceof Error ? err.message : err);
     return;
   }
-  if (session.stopping || session.hls || session.program !== program) {
+  // The studio may reconnect with different watch claims while the folder is created.
+  const current = getHlsPublication(session);
+  if (session.stopping || session.hls || session.program !== program ||
+      current.watchId !== roomId || current.protectedWatch !== protectedWatch) {
     await removeHlsWriterDir(dir);
     return;
   }
@@ -551,7 +578,12 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
   feed.join();
   const hls: HlsProcess = { roomId, dir, process: child, feed, exited: false };
   session.hls = hls;
-  liveWatchRooms.set(roomId, { dir, startedAt: new Date().toISOString(), viewers: new HlsViewerCounter() });
+  liveWatchRooms.set(roomId, {
+    dir,
+    startedAt: new Date().toISOString(),
+    viewers: new HlsViewerCounter(),
+    protected: protectedWatch,
+  });
   child.stderr.on('data', (chunk: Buffer) => {
     const line = chunk.toString('utf8').trim();
     if (line) console.warn(`ffmpeg watch-page hls: ${line}`);
@@ -564,8 +596,7 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
     hls.exited = true;
     if (session.hls === hls) session.hls = null;
     if (liveWatchRooms.get(roomId)?.dir === dir) liveWatchRooms.delete(roomId);
-    // Viewers get a moment to see the last segments before the folder goes.
-    // A private test has no viewers to wait for: its playlist and segments go at once.
+    // Allow segment reads already in progress to finish. Tests clean up immediately.
     setTimeout(() => { void removeHlsWriterDir(dir); }, session.test ? 0 : 15_000);
   });
 }
@@ -588,7 +619,7 @@ function stopHlsWriter(session: RelaySession) {
 
 /**
  * Public watch page endpoints. The studio's private watch id is the
- * capability, like an unlisted video: status, the playlist, and its segments.
+ * capability for open broadcasts. Protected broadcasts also require a signed playback grant.
  */
 async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const match = url.pathname.match(/^\/watch\/([^/]+)\/([^/]+)$/);
@@ -614,12 +645,25 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
     writeJson(res, 404, { error: 'Not found' });
     return true;
   }
+  res.setHeader('Cache-Control', 'no-store');
   const live = liveWatchRooms.get(roomId);
+  let watchToken: string | null = null;
+  let watchViewerId: string | undefined;
+  if (live?.protected) {
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    watchToken = url.searchParams.get('watchToken');
+    const secret = getLiveStreamTokenSecret();
+    const grant = secret ? verifyWatchPlaybackToken(watchToken, roomId, secret) : null;
+    if (!grant) {
+      writeJson(res, 401, { error: 'Watch access required', code: 'WATCH_ACCESS_REQUIRED' });
+      return true;
+    }
+    watchViewerId = grant.nonce;
+  }
 
   if (file === 'status') {
-    res.setHeader('Cache-Control', 'no-store');
     writeJson(res, 200, live
-      ? { live: true, startedAt: live.startedAt, playlistPath: `/watch/${encodeURIComponent(roomId)}/${HLS_PLAYLIST_NAME}?generation=${encodeURIComponent(path.basename(live.dir))}`, viewers: live.viewers.count() }
+      ? { live: true, startedAt: live.startedAt, playlistPath: `/watch/${encodeURIComponent(roomId)}/${HLS_PLAYLIST_NAME}?generation=${encodeURIComponent(path.basename(live.dir))}${watchToken ? `&watchToken=${encodeURIComponent(watchToken)}` : ''}`, viewers: live.viewers.count() }
       : { live: false, viewers: 0 });
     return true;
   }
@@ -627,27 +671,44 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
     writeJson(res, 404, { error: 'Not found' });
     return true;
   }
-  const filePath = path.join(live?.dir || getHlsRoomDir(roomId), file);
-  let size = 0;
-  try {
-    size = (await stat(filePath)).size;
-  } catch {
-    writeJson(res, 404, { error: live ? 'Not ready yet' : 'This broadcast is not live' });
+  // A writer directory is storage, never an alternate watch identifier.
+  if (!live) {
+    writeJson(res, 404, { error: 'This broadcast is not live' });
     return true;
   }
-  if (file === HLS_PLAYLIST_NAME && live) {
+  const filePath = path.join(live.dir, file);
+  let size = 0;
+  let protectedPlaylist: string | undefined;
+  try {
+    if (file === HLS_PLAYLIST_NAME && watchToken) {
+      protectedPlaylist = addWatchPlaybackToken(await readFile(filePath, 'utf8'), watchToken);
+      size = Buffer.byteLength(protectedPlaylist);
+    } else {
+      size = (await stat(filePath)).size;
+    }
+  } catch {
+    writeJson(res, 404, { error: 'Not ready yet' });
+    return true;
+  }
+  if (liveWatchRooms.get(roomId) !== live) {
+    writeJson(res, 404, { error: 'This broadcast is not live' });
+    return true;
+  }
+  if (file === HLS_PLAYLIST_NAME) {
     const forwarded = req.headers['x-forwarded-for'];
     const viewerKey = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
-    live.viewers.record(viewerKey);
+    live.viewers.record(watchViewerId || viewerKey);
   }
   res.writeHead(200, {
     'Content-Type': getHlsContentType(file),
     'Content-Length': String(size),
-    // Do not retain live footage in intermediary caches.
-    'Cache-Control': 'no-store',
   });
   if (req.method === 'HEAD') {
     res.end();
+    return true;
+  }
+  if (protectedPlaylist !== undefined) {
+    res.end(protectedPlaylist);
     return true;
   }
   createReadStream(filePath)
@@ -1155,6 +1216,7 @@ function createRelaySession(ws: WebSocket): RelaySession {
     started: false,
     stopping: false,
     claims: null,
+    secondaryOf: null,
     destinations: [],
     webm: new WebmStreamTracker(),
     encodeOnce: false,
@@ -1244,6 +1306,12 @@ function stopSlate(session: RelaySession) {
 function checkStudioInput(session: RelaySession) {
   if (!session.started || session.stopping || !session.program) return;
   const now = Date.now();
+  if (session.secondaryOf) {
+    if (now - session.lastMediaAtMs >= SECONDARY_INPUT_TIMEOUT_MS) {
+      stopSession(session, 'The second program stopped sending media.');
+    }
+    return;
+  }
   const slate = session.slate;
   if (slate && now - slate.startedAtMs >= STUDIO_RECONNECT_HOLD_MS) {
     stopSession(session, 'The studio did not reconnect.');
@@ -1262,8 +1330,8 @@ function checkStudioInput(session: RelaySession) {
 /** The studio's connection closed mid-broadcast: keep the destinations on the slate. */
 function holdSession(session: RelaySession): boolean {
   if (!session.started || session.stopping || !session.program) return false;
-  // A test has nobody to keep on the air; it ends with the studio's connection.
-  if (session.test) return false;
+  // The second program uses no slate or reconnect hold of its own.
+  if (session.test || session.secondaryOf) return false;
   if (session.confirmedDestinations.size === 0) {
     console.log('Studio disconnected before any destination went live; nothing to hold');
     return false;
@@ -1278,7 +1346,7 @@ function holdSession(session: RelaySession): boolean {
 
 function findResumableSession(current: RelaySession, roomId: string, payload: RtmpRelayStartPayload): RelaySession | null {
   for (const candidate of sessions.values()) {
-    if (candidate === current || !candidate.started || candidate.stopping) continue;
+    if (candidate === current || !candidate.started || candidate.stopping || candidate.secondaryOf) continue;
     if (!candidate.program || !candidate.payload || candidate.claims?.roomId !== roomId) continue;
     if (isSameRelaySetup(candidate.payload, payload)) return candidate;
   }
@@ -1298,6 +1366,13 @@ async function resumeSession(
   if (sessions.get(previous) === held) sessions.delete(previous);
   sessions.set(ws, held);
   held.client = ws;
+  if (held.payload?.dualOutputId !== payload.dualOutputId || held.claims?.participantId !== claims.participantId) {
+    stopSecondaryProgram(held);
+  }
+  const refreshHls = !held.test && (
+    held.claims?.watchId !== claims.watchId || held.claims?.protectedWatchId !== claims.protectedWatchId
+  );
+  if (refreshHls) stopHlsWriter(held);
   held.claims = claims;
   // The returning studio names its destinations with ids of its own: from here
   // on every record and every message of this broadcast uses those.
@@ -1325,7 +1400,10 @@ async function resumeSession(
   if (old && !old.exited) endProcess(old.process, () => old.exited);
 
   if (held.backup && !held.backup.exited && held.backup.recording.status !== 'finalizing') stopBackupProcess(held);
-  await spawnLiveBackup(held, ffmpegPath, claims, payload);
+  await Promise.all([
+    spawnLiveBackup(held, ffmpegPath, claims, payload),
+    refreshHls ? spawnHlsWriter(held, ffmpegPath, payload) : undefined,
+  ]);
   if (held.stopping) return;
 
   sendJson(ws, {
@@ -1391,8 +1469,17 @@ async function handleStart(
     sendError(ws, 'INVALID_DESTINATIONS', destinationIssue);
     return;
   }
-  if (session.started) {
-    sendError(ws, 'ALREADY_STARTED', 'This relay session is already live');
+  const dualOutputIssue = getDualOutputIssue(payload);
+  if (dualOutputIssue) {
+    sendError(ws, 'INVALID_DUAL_OUTPUT', dualOutputIssue);
+    return;
+  }
+  if (payload.dualOutput && !isDualOutputSupported()) {
+    sendError(ws, 'DUAL_OUTPUT_UNAVAILABLE', 'This media server does not support simultaneous landscape and portrait.');
+    return;
+  }
+  if (session.started || session.stopping || ws.readyState !== WebSocket.OPEN) {
+    if (session.started) sendError(ws, 'ALREADY_STARTED', 'This relay session is already live');
     return;
   }
 
@@ -1412,25 +1499,39 @@ async function handleStart(
     return;
   }
 
-  if (isEncodeOnceEnabled()) {
-    const held = findResumableSession(session, claims.roomId, payload);
-    if (held) {
-      await resumeSession(ws, held, claims, payload, ffmpegPath, onResume);
+  if (payload.dualOutput === 'secondary') {
+    const admission = admitSecondaryProgram(sessions.values(), session, claims, payload);
+    if (!admission.ok) {
+      sendError(ws, admission.code, admission.message);
       return;
     }
-  }
-
-  // The same studio restarting with new settings replaces its own held broadcast.
-  for (const other of new Set(sessions.values())) {
-    if (other !== session && other.clientGone && other.started && other.claims?.roomId === claims.roomId) {
-      stopSession(other, 'replaced by a new broadcast from the same studio');
+    session.secondaryOf = admission.primary;
+  } else {
+    if (isEncodeOnceEnabled()) {
+      const held = findResumableSession(session, claims.roomId, payload);
+      if (held) {
+        await resumeSession(ws, held, claims, payload, ffmpegPath, onResume);
+        return;
+      }
     }
-  }
-  if (!isRelayCapacityAvailable(sessions.values(), session)) {
-    const running = Array.from(new Set(sessions.values())).find((other) => other !== session && other.started && !other.stopping);
-    const refusal = getCapacityRefusal({ incomingIsTest: isTest, runningIsTest: Boolean(running?.test) });
-    sendError(ws, refusal.code, refusal.message);
-    return;
+
+    // The same studio restarting with new settings replaces its own held broadcast.
+    for (const other of new Set(sessions.values())) {
+      if (other !== session && other.started && other.claims?.roomId === claims.roomId) {
+        if (other.clientGone) {
+          stopSession(other, 'replaced by a new broadcast from the same studio');
+        } else if (!isTest && !other.test && !other.secondaryOf && !other.stopping && (payload.dualOutput || other.payload?.dualOutput)) {
+          sendError(ws, 'PRIMARY_PROGRAM_ALREADY_LIVE', 'This studio already has a running main program.');
+          return;
+        }
+      }
+    }
+    if (!isRelayCapacityAvailable(sessions.values(), session)) {
+      const running = Array.from(new Set(sessions.values())).find((other) => other !== session && other.started && !other.stopping && !other.secondaryOf);
+      const refusal = getCapacityRefusal({ incomingIsTest: isTest, runningIsTest: Boolean(running?.test) });
+      sendError(ws, refusal.code, refusal.message);
+      return;
+    }
   }
 
   session.started = true;
@@ -1447,7 +1548,7 @@ async function handleStart(
     session.watchdog.unref?.();
   }
 
-  await spawnLiveBackup(session, ffmpegPath, claims, payload);
+  if (!session.secondaryOf) await spawnLiveBackup(session, ffmpegPath, claims, payload);
   if (session.stopping) return;
 
   if (session.encodeOnce) spawnEncoder(session, ffmpegPath, payload);
@@ -1455,7 +1556,7 @@ async function handleStart(
   for (const destination of payload.destinations) {
     spawnRelay(session, ffmpegPath, destination, payload);
   }
-  if (session.encodeOnce) await spawnHlsWriter(session, ffmpegPath, payload);
+  if (session.encodeOnce && !session.secondaryOf) await spawnHlsWriter(session, ffmpegPath, payload);
 
   sendJson(session.client, {
     type: 'session-started',

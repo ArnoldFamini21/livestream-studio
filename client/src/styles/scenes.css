@@ -305,3 +305,25 @@
   color: var(--text-muted);
   font-size: 11px;
 }
+
+.scene-service-presets {
+  margin: 0.75rem 0;
+  padding: 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.scene-service-presets summary { cursor: pointer; font-weight: 600; }
+.scene-preset-form, .scene-preset-list, .scene-preset-form label {
+  display: grid;
+  gap: 0.375rem;
+}
+.scene-preset-form { margin: 0.5rem 0; }
+.scene-preset-list { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+.scene-preset-list li {
+  display: flex;
+  gap: 0.375rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.scene-preset-list li > span { flex: 1 1 6rem; overflow-wrap: anywhere; }

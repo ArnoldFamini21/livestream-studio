@@ -113,6 +113,18 @@ jobs:
             output/e2e/viewer-chat/*.txt
             output/e2e/viewer-chat/*.json
             output/e2e/viewer-chat/*.log
+            output/e2e/service-tools/*.png
+            output/e2e/service-tools/*.txt
+            output/e2e/service-tools/*.json
+            output/e2e/service-tools/*.log
+            output/e2e/watch-events/*.png
+            output/e2e/watch-events/*.txt
+            output/e2e/watch-events/*.json
+            output/e2e/watch-events/*.log
+            output/e2e/transcript-editor/*.png
+            output/e2e/transcript-editor/*.txt
+            output/e2e/transcript-editor/*.json
+            output/e2e/transcript-editor/*.log
           retention-days: 7
 
   recording-soak:
@@ -146,11 +158,15 @@ jobs:
           npm run -w server build
           npm run -w client build
       - name: Preflight recording, transfer, reconnect and analysis
+        id: recording_preflight
         run: npm run test:recording-soak
         env:
           SOAK_SECONDS: '35'
           SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/preflight
       - name: Qualify twenty-minute three-participant recording
+        # Keep the short-run result and collect long-run evidence even if the
+        # preflight failed a packet timing assertion.
+        if: ${{ !cancelled() && (steps.recording_preflight.outcome == 'success' || steps.recording_preflight.outcome == 'failure') }}
         run: npm run test:recording-soak
         env:
           SOAK_SECONDS: '1200'

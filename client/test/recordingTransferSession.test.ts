@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createRecordingChunkStore } from '../src/utils/recordingChunkStore.ts';
 import {
   createTransferReceiver,
   createTransferSender,
@@ -181,6 +182,85 @@ describe('peer-to-peer recording transfer', () => {
     assert.equal(sink.sinks.length, 1, 'the same file continues');
     sender2.close();
     receiver2.close();
+  });
+
+  it('resumes the committed guest recording while its next disk write is pending', async (t) => {
+    let allowCommit!: () => void;
+    const pendingCommit = new Promise<void>((resolve) => { allowCommit = resolve; });
+    let pendingWriteStarted = false;
+    const store = createRecordingChunkStore({
+      async getFileHandle(name) {
+        let data = new Blob();
+        return {
+          async createWritable() {
+            return {
+              async write(blob) { data = blob; },
+              async close() {
+                if (name.endsWith('-000001.part')) {
+                  pendingWriteStarted = true;
+                  await pendingCommit;
+                }
+              },
+            };
+          },
+          async getFile() { return data; },
+        };
+      },
+    }, 'guest');
+    const payload = bytes(8_000, 4);
+    const prefixSize = 5_000;
+    const mimeType = 'audio/webm';
+    store.append(new Blob([payload.slice(0, prefixSize)]));
+    await store.flush();
+    t.after(allowCommit);
+
+    const track: TransferSourceTrack = {
+      id: 'take-writing', sessionId: 'recording-1', label: 'Maria audio', kind: 'audio', mimeType,
+      read: async () => store.snapshotCommitted(mimeType),
+    };
+    const memory = memorySink();
+    const registry = new HostTransferRegistry(memory.open);
+    const first = channelPair();
+    first.guest.dropBinary = (index) => index >= 1;
+    const receiver1 = createTransferReceiver({ channel: first.host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
+    const sender1 = createTransferSender({ channel: first.guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    t.after(() => { sender1.close(); receiver1.close(); });
+    const hostBytes = () => registry.tracks.get(track.id)?.received ?? 0;
+    await until(() => hostBytes() > 0);
+    const savedBeforeDrop = hostBytes();
+    assert.ok(savedBeforeDrop < prefixSize);
+    sender1.close();
+    first.guest.close();
+    receiver1.close();
+
+    store.append(new Blob([payload.slice(prefixSize)]));
+    await until(() => pendingWriteStarted);
+    let finalSize: number | undefined;
+    const finishing = store.finish(mimeType).then((blob) => { finalSize = blob.size; return blob; });
+    const second = channelPair();
+    const receiver2 = createTransferReceiver({ channel: second.host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
+    const sender2 = createTransferSender({ channel: second.guest, participantName: 'Maria', getTracks: () => [track], pollMs: 20 });
+    t.after(() => { sender2.close(); receiver2.close(); });
+
+    await until(() => hostBytes() === prefixSize);
+    const hello = controlMessages(second.guest).find((message) => message.t === 'hello');
+    assert.equal(hello?.tracks[0].available, prefixSize);
+    assert.deepEqual(
+      controlMessages(second.host).find((message) => message.t === 'resume'),
+      { t: 'resume', id: track.id, offset: savedBeforeDrop },
+    );
+    assert.equal(finalSize, undefined);
+    assert.equal(registry.tracks.get(track.id)?.status, 'receiving');
+
+    allowCommit();
+    const final = await finishing;
+    track.read = async () => final;
+    track.finished = { totalBytes: final.size };
+    sender2.refresh();
+    await until(() => sender2.progress().deliveredAll);
+    assert.equal(finalSize, payload.byteLength);
+    assert.equal(memory.sinks.length, 1);
+    assert.deepEqual(memory.sinks[0].finished, payload);
   });
 
   it('measures the guest clock offset with ping/pong', async () => {

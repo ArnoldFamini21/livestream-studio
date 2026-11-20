@@ -102,9 +102,9 @@ app.use(
 // Browsers never compress request bodies; refusing gzip/deflate bodies closes the
 // decompression-bomb path in body-parser (GHSA-27r3-jxmh-p828).
 const parseJsonBody = express.json({ limit: '256kb', inflate: false });
-const VIEWER_WRITE_PATH = /^\/api\/watch\/[^/]+\/(?:chat|questions|reactions)\/?$/i;
+const VIEWER_WRITE_PATH = /^\/api\/watch\/[^/]+\/(?:chat|questions|reactions|call-ins|call-ins\/[A-Za-z0-9_-]{24}\/cancel)\/?$/i;
 const WATCH_POLL_PATH = /^\/api\/watch\/[^/]+\/poll(?:-votes)?\/?$/i;
-const VIEWER_LIVE_PATH = /^\/api\/watch\/[^/]+\/live\/?$/i;
+const VIEWER_LIVE_PATH = /^\/api\/watch\/[^/]+\/(?:live|captions|call-ins\/[A-Za-z0-9_-]{24})\/?$/i;
 app.use((req, res, next) => {
   // Diagnostic JSON is parsed privately below. Besides enforcing its smaller
   // size budget, this avoids body-parser logging a malformed payload excerpt.

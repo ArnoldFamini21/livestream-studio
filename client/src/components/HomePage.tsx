@@ -305,6 +305,7 @@ export function HomePage() {
   const [scheduledFor, setScheduledFor] = useState('');
   const [roomPassword, setRoomPassword] = useState('');
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [privateWatch, setPrivateWatch] = useState(false);
   const [loading, setLoading] = useState(false);
   const [schedulingLoading, setSchedulingLoading] = useState(false);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
@@ -389,11 +390,16 @@ export function HomePage() {
         hostName,
         password: roomPassword.trim() || undefined,
         registrationEnabled,
+        privateWatch,
       }, {
         onWaiting: () => setProgressMessage('Still creating. The studio server is restarting; trying again.'),
         requestInit: studioCreateRequestInit(),
       });
       setStudioAccessKeyNeeded(false);
+      if (privateWatch && createdRoom.registration?.inviteOnly !== true) {
+        setError('This studio server cannot create private viewing links yet. Please try again after it updates.');
+        return;
+      }
       if (!hasCreatedRoomDetails(createdRoom)) {
         setError('Studio was created, but room details were incomplete. Please create a new studio.');
         return;
@@ -435,11 +441,16 @@ export function HomePage() {
         scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
         password: roomPassword.trim() || undefined,
         registrationEnabled,
+        privateWatch,
       }, {
         onWaiting: () => setProgressMessage('Still scheduling. The studio server is restarting; trying again.'),
         requestInit: studioCreateRequestInit(),
       });
       setStudioAccessKeyNeeded(false);
+      if (privateWatch && createdRoom.registration?.inviteOnly !== true) {
+        setError('This studio server cannot create private viewing links yet. Please try again after it updates.');
+        return;
+      }
       if (!hasCreatedRoomDetails(createdRoom)) {
         setError('Studio was scheduled, but room details were incomplete. Please schedule it again.');
         return;
@@ -1458,6 +1469,7 @@ export function HomePage() {
     setScheduledFor('');
     setRoomPassword('');
     setRegistrationEnabled(false);
+    setPrivateWatch(false);
   };
 
   const minScheduleDateTime = toDateTimeLocalValue(new Date(Date.now() + 60_000));
@@ -2048,12 +2060,20 @@ export function HomePage() {
               <label className="ws-registrationToggle" style={styles.registrationToggle}>
                 <input
                   type="checkbox"
-                  checked={registrationEnabled}
+                  checked={registrationEnabled || privateWatch}
+                  disabled={privateWatch}
                   onChange={(e) => setRegistrationEnabled(e.target.checked)}
                 />
                 <span className="ws-registrationToggleCopy" style={styles.registrationToggleCopy}>
                   <span className="ws-registrationToggleTitle" style={styles.registrationToggleTitle}>Collect guest registration</span>
-                  <span className="ws-registrationToggleText" style={styles.registrationToggleText}>Guests enter name and email before joining; hosts can export a CSV.</span>
+                  <span className="ws-registrationToggleText" style={styles.registrationToggleText}>Guests and watch-page viewers register with a name and email. You can export a CSV.</span>
+                </span>
+              </label>
+              <label className="ws-registrationToggle" style={styles.registrationToggle}>
+                <input type="checkbox" checked={privateWatch} onChange={(e) => setPrivateWatch(e.target.checked)} />
+                <span className="ws-registrationToggleCopy" style={styles.registrationToggleCopy}>
+                  <span className="ws-registrationToggleTitle" style={styles.registrationToggleTitle}>Require a private viewing link</span>
+                  <span className="ws-registrationToggleText" style={styles.registrationToggleText}>Create expiring watch links from Invite inside the studio.</span>
                 </span>
               </label>
 

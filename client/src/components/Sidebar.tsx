@@ -15,6 +15,7 @@ import { BannerManager, type BannerData } from './BannerOverlay.tsx';
 import { TimerManager, type TimerData } from './TimerOverlay.tsx';
 import { BackgroundPicker } from './BackgroundPicker.tsx';
 import { SceneManager, type ProductionSceneTemplate } from './SceneManager.tsx';
+import type { ServicePresetControls } from './ServicePresets.tsx';
 import { TickerManager, type TickerData } from './TickerOverlay.tsx';
 import { WidgetOverlayManager, type WidgetOverlayData } from './WidgetOverlay.tsx';
 import type { WidgetCaptureControls } from '../hooks/useWidgetTabCapture.ts';
@@ -175,6 +176,7 @@ interface SidebarProps {
   onExportScenePack: () => void;
   onImportScenePack: (file: File) => void | Promise<void>;
   scenePackMessage?: string | null;
+  servicePresets?: ServicePresetControls;
   // Chat props
   chatPanelMessages: ChatMessage[];
   onSendChat: (content: string, isBackstage?: boolean, recipientId?: string) => void;
@@ -920,6 +922,7 @@ export function Sidebar(props: SidebarProps) {
                   onExportScenePack={props.onExportScenePack}
                   onImportScenePack={props.onImportScenePack}
                   scenePackMessage={props.scenePackMessage}
+                  servicePresets={props.servicePresets}
                 />
               </div>
             </div>

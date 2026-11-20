@@ -26,16 +26,19 @@ export function isServableHlsFile(name: string): boolean {
   return name === HLS_PLAYLIST_NAME || SEGMENT_PATTERN.test(name);
 }
 
+/** Native HLS resolves each relative segment independently of the playlist query. */
+export function addWatchPlaybackToken(playlist: string, token: string): string {
+  return playlist.replace(/^[^\r\n]+/gm, (line) => SEGMENT_PATTERN.test(line)
+    ? `${line}?watchToken=${encodeURIComponent(token)}`
+    : line);
+}
+
 export function getHlsContentType(name: string): string {
   return name.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
 }
 
 export function getHlsRootDir(env: Record<string, string | undefined> = process.env): string {
   return env.HLS_OUTPUT_DIR?.trim() || path.join(os.tmpdir(), 'livestream-studio-hls');
-}
-
-export function getHlsRoomDir(roomId: string, rootDir = getHlsRootDir()): string {
-  return path.join(rootDir, roomId);
 }
 
 export async function prepareHlsRoomDir(roomId: string, rootDir = getHlsRootDir()): Promise<string> {
@@ -92,7 +95,7 @@ export function createFfmpegHlsArgs(dir: string): string[] {
     '-hls_list_size', String(HLS_PLAYLIST_SEGMENTS),
     // Old segments are deleted; the playlist never gets an end marker while
     // live; each segment starts on a keyframe so players can join anywhere.
-    '-hls_flags', 'delete_segments+independent_segments+omit_endlist',
+    '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time',
     '-hls_segment_filename', path.join(dir, `seg-${path.basename(dir)}-%05d.ts`),
     path.join(dir, HLS_PLAYLIST_NAME),
   ];

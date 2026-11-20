@@ -7,6 +7,7 @@ import {
   type WatchChatMessage,
   type WatchLiveResponse,
 } from '@studio/shared';
+import { watchAuthHeaders } from '../utils/watchAccess.ts';
 import { requestJson } from '../utils/apiClient.ts';
 import {
   applyLiveResponse,
@@ -18,13 +19,16 @@ import {
 
 interface UseWatchLiveOptions {
   watchId: string;
+  watchAccessToken?: string;
   /** Reactions from other viewers and the host's side, ready to float (already without this viewer's own taps). */
   onReactions: (types: ViewerReactionType[]) => void;
 }
 
 export interface WatchLive {
   switches: ViewerChatSwitches;
+  callInsEnabled: boolean;
   messages: WatchChatMessage[];
+  captionsAvailable: boolean;
   /** Asks for an up-to-date moderated feed after this viewer sends a message. */
   refresh: () => void;
   /** Remembers a reaction this viewer floated at once, so the next answer does not float it again. */
@@ -38,8 +42,10 @@ const MAX_BACKOFF_MS = 30_000;
  * seconds in one small request. The server says how often it would like to be
  * asked, and a hidden tab asks much less often. Nothing here is a WebSocket.
  */
-export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): WatchLive {
+export function useWatchLive({ watchId, watchAccessToken, onReactions }: UseWatchLiveOptions): WatchLive {
   const [switches, setSwitches] = useState<ViewerChatSwitches>(defaultViewerChatSwitches);
+  const [captionsAvailable, setCaptionsAvailable] = useState(false);
+  const [callInsEnabled, setCallInsEnabled] = useState(false);
   const [view, setView] = useState<WatchChatView>(emptyChatView);
   const viewRef = useRef(view);
   const onReactionsRef = useRef(onReactions);
@@ -67,10 +73,12 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
       queuedRefresh = false;
       controller = new AbortController();
       try {
-        const answer = await requestJson<WatchLiveResponse>(`${path}${liveQuery(viewRef.current)}`, { timeoutMs: 8_000, signal: controller.signal });
+        const answer = await requestJson<WatchLiveResponse>(`${path}${liveQuery(viewRef.current)}`, { timeoutMs: 8_000, signal: controller.signal, headers: watchAuthHeaders(watchAccessToken) });
         if (stopped) return;
         failures = 0;
         hintMs = answer.pollMs;
+        setCaptionsAvailable(answer.captionsAvailable === true);
+        setCallInsEnabled(answer.callInsEnabled === true);
         setSwitches((current) => (
           current.chat === answer.switches.chat && current.reactions === answer.switches.reactions && current.questions === answer.switches.questions
             ? current
@@ -117,7 +125,7 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
       if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [watchId]);
+  }, [watchId, watchAccessToken]);
 
   const refresh = useCallback(() => refreshRef.current?.(), []);
 
@@ -125,5 +133,5 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
     ownReactionsRef.current = { ...ownReactionsRef.current, [type]: (ownReactionsRef.current[type] ?? 0) + 1 };
   }, []);
 
-  return { switches, messages: view.messages, refresh, noteOwnReaction };
+  return { switches, callInsEnabled, messages: view.messages, captionsAvailable, refresh, noteOwnReaction };
 }

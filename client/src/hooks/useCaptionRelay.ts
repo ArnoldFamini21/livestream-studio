@@ -31,6 +31,7 @@ interface UseCaptionRelayOptions {
   /** The operator's own captions switch. */
   captionsEnabled: boolean;
   captionLanguage: string;
+  watchPage?: boolean;
   /** Changes when someone is admitted or leaves, so late joiners hear the captions state. */
   admittedParticipantKey: string;
   /**
@@ -60,6 +61,7 @@ export function useCaptionRelay({
   stageOwnerId,
   captionsEnabled,
   captionLanguage,
+  watchPage = false,
   admittedParticipantKey,
   localCaptionsBlocked,
   acceptRemoteCaption,
@@ -102,8 +104,8 @@ export function useCaptionRelay({
   // The stage owner tells the studio when captions are on, and repeats it when someone is admitted.
   useEffect(() => {
     if (!isOperator || !isStageOwner || !connected) return;
-    send({ type: 'captions-state', payload: { enabled: captionsEnabled, language: captionLanguage } });
-  }, [admittedParticipantKey, captionLanguage, captionsEnabled, connected, isOperator, isStageOwner, send]);
+    send({ type: 'captions-state', payload: { enabled: captionsEnabled, language: captionLanguage, ...(watchPage ? { watchPage: true } : {}) } });
+  }, [admittedParticipantKey, captionLanguage, captionsEnabled, connected, isOperator, isStageOwner, send, watchPage]);
 
   const hostCaptionsState = pickAuthoritativeCaptionsState(captionsStates, stageOwnerId);
   const hostCaptionsOn = Boolean(hostCaptionsState?.enabled);

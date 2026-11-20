@@ -67,7 +67,11 @@ import { isPcmWavRecordingSupported } from '../utils/pcmWavRecorder.ts';
 import { estimateRecordingBitsPerSecond } from '../utils/recordingBitrate.ts';
 import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalRecordingFileInput, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
-import { useCompositor } from '../hooks/useCompositor.ts';
+import { useCompositor, type CompositorProps } from '../hooks/useCompositor.ts';
+import { useDualOutputSettings } from '../hooks/useDualOutputSettings.ts';
+import { getDualOutputCapacityIssue, getDualOutputDestinationLimit, getDualOutputSupport, getSecondaryProgramOrientation, planBroadcastDestinations, SECONDARY_OUTPUT_PRESET } from '../utils/dualOutput.ts';
+import { getRelayRecorderFormat } from '../utils/relayEncoding.ts';
+import { SecondaryProgram } from './SecondaryProgram.tsx';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useCaptionRelay } from '../hooks/useCaptionRelay.ts';
 import { mergeCaptionSegments, selectBroadcastCaption } from '../utils/captionMerge.ts';
@@ -157,6 +161,7 @@ import {
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { ChatOverlayPreview } from './ChatOverlayPreview.tsx';
 import { useChatOverlay } from '../hooks/useChatOverlay.ts';
+import { useStudioWatchEvents } from '../hooks/useStudioWatchEvents.ts';
 import { useViewerChat } from '../hooks/useViewerChat.ts';
 import { OVERLAY_FONT_FAMILY } from '../utils/compositorOverlays.ts';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
@@ -316,6 +321,7 @@ import {
   parseScenePackJson,
   type ScenePackOverlayKind,
 } from '../utils/scenePacks.ts';
+import { captureServicePreset, prepareServicePreset, type ServicePreset } from '../utils/servicePresets.ts';
 import {
   DEFAULT_SCENE_TRANSITION_PRESET_ID,
   getSceneTransitionOverlayStyle,
@@ -1134,11 +1140,20 @@ export function StudioRoom() {
   // Output orientation, custom layouts and brand font, kept per studio (useStudioFormat).
   const studioFormat = useStudioFormat(roomId);
   const broadcastOrientation: BroadcastOrientation = studioFormat.orientation;
+  const [dualOutput, updateDualOutput] = useDualOutputSettings(roomId);
+  const secondaryOrientation = getSecondaryProgramOrientation(broadcastOrientation);
+  const secondaryStreamRef = useRef<MediaStream | null>(null);
+  const [secondaryPreviewStream, setSecondaryPreviewStream] = useState<MediaStream | null>(null);
+  const onSecondaryStream = useCallback((stream: MediaStream | null) => {
+    secondaryStreamRef.current = stream;
+    setSecondaryPreviewStream(stream);
+  }, []);
   const setBroadcastOrientation = studioFormat.setOrientation;
   const brandFontState = useBrandFont(studioFormat.brandFont);
   const [customLayoutEditorOpen, setCustomLayoutEditorOpen] = useState(false);
   const [rtmpRelayOutputPreset, setRtmpRelayOutputPreset] = useState<RtmpRelayOutputPresetId>(DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID);
   const [isLive, setIsLive] = useState(false);
+  const [isStartingLive, setIsStartingLive] = useState(false);
   // A private test is on the media server: it needs the compositor but is never "live".
   const [testStreamOnAir, setTestStreamOnAir] = useState(false);
   // What the host told the room about a test (co-hosts and guests only learn it from here).
@@ -1336,6 +1351,7 @@ export function StudioRoom() {
   const [myPollVotes, setMyPollVotes] = useState<Record<string, string>>({});
   const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
+  const [watchPageCaptions, setWatchPageCaptions] = useState(false);
   const [captionLanguage, setCaptionLanguage] = useState('en-US');
 
   // Hooks
@@ -1672,6 +1688,7 @@ export function StudioRoom() {
     }))
   ), [participants, peerBandwidthHealth]);
   const { health: mediaServerHealth, refresh: refreshMediaServerHealth } = useMediaServerHealth();
+  const dualSupportIssue = getDualOutputSupport(mediaServerHealth, getRelayRecorderFormat()?.videoMode === 'copy');
   // Direct-to-folder recording (host SSD), peer-to-peer guest track delivery,
   // storage preflight and the screen wake lock.
   const recordingWorkflow = useRecordingWorkflow({
@@ -1828,6 +1845,7 @@ export function StudioRoom() {
     stageOwnerId,
     captionsEnabled: captionsAllowed && captionsEnabled,
     captionLanguage,
+    watchPage: watchPageCaptions,
     admittedParticipantKey: onStageParticipantIds.join(','),
     localCaptionsBlocked,
     acceptRemoteCaption,
@@ -1856,7 +1874,7 @@ export function StudioRoom() {
     clearLocalCaptions();
     clearRemoteCaptions();
   }, [clearLocalCaptions, clearRemoteCaptions]);
-  const broadcastCaption = captionsAllowed
+  const broadcastCaption = captionsAllowed && !watchPageCaptions
     ? selectBroadcastCaption(captionsEnabled && !localCaptionsBlocked ? activeCaption : null, captionRelay.remote, captionRelay.clock)
     : null;
   const clipBrand = useMemo(() => ({
@@ -1981,6 +1999,10 @@ export function StudioRoom() {
   const widgetTabCapture = useWidgetTabCapture(stageRef, visibleWidgetIds);
   // Viewer chat state also controls the rolling overlay. Viewer reactions stay in the preview.
   const viewerChat = useViewerChat({ send, addHandler, canControl: canUseOperatorControls });
+  const watchEvents = useStudioWatchEvents({
+    send, addHandler, canControl: canUseOperatorControls,
+    onNewCall: () => addToastRef.current('Audience call-in requested. Open Invite to review.', 'info'),
+  });
   // On-screen chat: one state for the stage preview, the compositor and the chat panel's controls.
   const chatOverlay = useChatOverlay({
     roomId,
@@ -1997,9 +2019,7 @@ export function StudioRoom() {
     () => (chatOverlay.comments.length > 0 ? { comments: chatOverlay.comments, settings: chatOverlay.layoutSettings } : null),
     [chatOverlay.comments, chatOverlay.layoutSettings],
   );
-  const { compositeStreamRef, compositeCanvasRef } = useCompositor({
-    containerRef: stageRef,
-    isActive: shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
+  const composition: Omit<CompositorProps, 'containerRef' | 'isActive' | 'orientation'> = {
     banners,
     lowerThirds,
     timers,
@@ -2021,10 +2041,15 @@ export function StudioRoom() {
     logoOpacity,
     streamScreen: activeStreamScreen,
     sceneTransition: compositorSceneTransition,
-    orientation: broadcastOrientation,
     brandFontFamily: brandFontState.fontFamily,
     chatOverlay: compositorChatOverlay,
     widgetCaptureSources: widgetTabCapture.sourcesRef,
+  };
+  const { compositeStreamRef, compositeCanvasRef } = useCompositor({
+    ...composition,
+    containerRef: stageRef,
+    isActive: shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
+    orientation: broadcastOrientation,
   });
 
   // The program return (640x360, 15 fps, ~500 kbps) to backstage guests, and
@@ -2107,7 +2132,16 @@ export function StudioRoom() {
     }));
   }, []);
 
+  const { startRelay: startSecondaryRelay, stopRelay: stopSecondaryRelay, stats: secondaryRelayStats } = useRtmpRelay({
+    compositeStreamRef: secondaryStreamRef,
+    acquireProgramAudio: programAudioMix.acquire,
+    readinessEnabled: false,
+    onDestinationStatus: handleRelayDestinationStatus,
+    onRelayStopped: (message) => addToast(`Second program stopped: ${message}`, 'error'),
+  });
+
   const handleRelayStopped = useCallback((message: string) => {
+    stopSecondaryRelay();
     const statusMessage = message.trim() || 'Media relay stopped unexpectedly.';
     const previousLiveStartedAt = liveStartedAtRef.current;
     showLiveSessionSummary(previousLiveStartedAt, destinationsRef.current, {
@@ -2132,13 +2166,13 @@ export function StudioRoom() {
         ? { ...destination, status: 'error', statusMessage }
         : { ...destination, status: 'idle', statusMessage: undefined }
     )));
-  }, [send, showLiveSessionSummary]);
+  }, [send, showLiveSessionSummary, stopSecondaryRelay]);
 
   // When the browser stops producing the broadcast: the sound check, the notices and the "Turn sound back on" marker.
   const soundGuard = useRelaySoundGuard({ bus: broadcastAudioBus, addToast });
   const {
     startRelay,
-    stopRelay,
+    stopRelay: stopPrimaryRelay,
     stats: relayStats,
     readiness: relayReadiness,
     backupRecording: relayBackupRecording,
@@ -2152,6 +2186,10 @@ export function StudioRoom() {
     checkProgramAudio: soundGuard.checkProgramAudio,
     onMediaStall: soundGuard.onMediaStall,
   });
+  const stopRelay = useCallback(() => {
+    stopSecondaryRelay();
+    stopPrimaryRelay();
+  }, [stopPrimaryRelay, stopSecondaryRelay]);
   useRestoreSoundWhenRelayEnds(relayStats.status, isLive, broadcastAudioBus);
   // Auto ducking dips music and clips (not people) while anyone on stage talks.
   useMusicDucking({
@@ -2355,6 +2393,7 @@ export function StudioRoom() {
   useEffect(() => {
     if (!captionsAllowed && captionsEnabled) {
       setCaptionsEnabled(false);
+      setWatchPageCaptions(false);
       setShowCaptionsPanel(false);
     }
   }, [captionsAllowed, captionsEnabled]);
@@ -3423,6 +3462,11 @@ export function StudioRoom() {
         case 'chat-overlay-update':
         case 'chat-overlay-updated':
         // Viewer chat switches and blocks are handled by useViewerChat.
+        case 'watch-invite-request':
+        case 'watch-invite-issued':
+        case 'watch-event-settings':
+        case 'watch-call-in-decide':
+        case 'watch-event-state':
         case 'viewer-chat-settings-update':
         case 'viewer-chat-state':
         case 'viewer-chat-remove':
@@ -5098,23 +5142,37 @@ export function StudioRoom() {
     if (broadcast.liveChatId) onConnectExternalChat('youtube', broadcast.liveChatId);
   };
 
+  const streamSettingsLocked = () => isLiveRef.current || liveStartOperationRef.current.active;
   const onAddDestination = (dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => {
+    if (streamSettingsLocked()) return;
     setDestinations((prev) => [...prev, { ...dest, id: `dest-${++idCounters.current.dest}`, status: 'idle', statusMessage: undefined }]);
   };
   const onUpdateDestination = (id: string, dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => {
+    if (streamSettingsLocked()) return;
     setDestinations((prev) => prev.map((destination) => (
       destination.id === id ? { ...destination, ...dest, status: 'idle', statusMessage: undefined } : destination
     )));
   };
   const onRemoveDestination = (id: string) => {
+    if (streamSettingsLocked()) return;
     setDestinations((prev) => prev.filter((d) => d.id !== id));
   };
   const onToggleDestination = (id: string) => {
+    if (streamSettingsLocked()) return;
     setDestinations((prev) => prev.map((d) => (
       d.id === id ? { ...d, enabled: !d.enabled, status: 'idle', statusMessage: undefined } : d
     )));
   };
   useEffect(() => () => liveStartOperationRef.current.cancel(), []);
+  const broadcastDestinations = planBroadcastDestinations(destinations, broadcastOrientation, dualOutput.enabled);
+  const dualDestinationCount = broadcastDestinations.primary.length + broadcastDestinations.secondary.length;
+  const dualPreflightIssue = dualOutput.enabled
+    ? dualSupportIssue || broadcastDestinations.issue || getDualOutputCapacityIssue(mediaServerHealth, dualDestinationCount)
+    : null;
+  const onDestinationOrientation = (id: string, orientation: BroadcastOrientation) => {
+    if (streamSettingsLocked()) return;
+    setDestinations((current) => current.map((destination) => destination.id === id ? { ...destination, orientation } : destination));
+  };
 
   /** The real Go Live. True when the relay for the broadcast started. */
   const startGoLive = async (): Promise<boolean> => {
@@ -5126,6 +5184,11 @@ export function StudioRoom() {
       liveStatusTimerRef.current = null;
     }
 
+    if (dualPreflightIssue) {
+      goLiveFailureReasonRef.current = dualPreflightIssue;
+      addToast(dualPreflightIssue, 'error');
+      return false;
+    }
     const enabledDestinations = destinations.filter((d) => d.enabled);
     if (
       enabledDestinations.length === 0 ||
@@ -5145,6 +5208,7 @@ export function StudioRoom() {
 
     const operation = liveStartOperationRef.current.begin();
     if (!operation) return false;
+    setIsStartingLive(true);
     try {
       // The relay check can take up to a minute while a sleeping media server wakes; show that it is working.
       setDestinations((prev) => prev.map((d) => (
@@ -5152,11 +5216,20 @@ export function StudioRoom() {
       )));
       const readiness = await operation.run(checkRelayReadiness);
       operation.assertActive();
-      if (readiness.status !== 'ready') {
-        goLiveFailureReasonRef.current = readiness.message;
+      let startupIssue = readiness.status === 'ready' ? null : readiness.message;
+      if (!startupIssue && dualOutput.enabled) {
+        // Use the awake relay's current destination cap before opening either output.
+        const health = await operation.run(refreshMediaServerHealth);
+        operation.assertActive();
+        startupIssue = getDualOutputSupport(health, getRelayRecorderFormat()?.videoMode === 'copy')
+          || getDualOutputCapacityIssue(health, dualDestinationCount);
+      }
+      if (startupIssue) {
+        const message = startupIssue;
+        goLiveFailureReasonRef.current = message;
         setDestinations((prev) => prev.map((d) => (
           d.enabled
-            ? { ...d, status: 'error', statusMessage: readiness.message }
+            ? { ...d, status: 'error', statusMessage: message }
             : { ...d, status: 'idle', statusMessage: undefined }
         )));
         return false;
@@ -5171,19 +5244,30 @@ export function StudioRoom() {
           ? { ...d, status: 'connecting', statusMessage: 'Starting relay session...' }
           : { ...d, status: 'idle', statusMessage: undefined }
       )));
+      // The id remains stable through transport reconnects. A reloaded studio
+      // gets a new id and the server clears the prior tab's second program.
+      const dualOutputId = dualOutput.enabled ? window.crypto.randomUUID() : null;
       await startAuthorizedRelay(operation, requestLiveStreamToken,
-        (token) => startRelay({
-          token,
-          refreshToken: requestLiveStreamToken,
-          orientation: broadcastOrientation,
-          outputPreset: rtmpRelayOutputPreset,
-          destinations: enabledDestinations.map((destination) => ({
-            id: destination.id,
-            name: destination.name,
-            rtmpUrl: destination.rtmpUrl,
-            streamKey: destination.streamKey,
-          })),
-        }),
+        async (token) => {
+          const relayAuth = { token, refreshToken: requestLiveStreamToken };
+          await startRelay({
+            ...relayAuth,
+            orientation: broadcastOrientation,
+            outputPreset: rtmpRelayOutputPreset,
+            destinations: broadcastDestinations.primary,
+            ...(dualOutputId ? { dualOutput: { role: 'primary', id: dualOutputId } } : {}),
+          });
+          operation.assertActive();
+          if (dualOutputId) {
+            await startSecondaryRelay({
+              ...relayAuth,
+              orientation: secondaryOrientation,
+              outputPreset: SECONDARY_OUTPUT_PRESET,
+              destinations: broadcastDestinations.secondary,
+              dualOutput: { role: 'secondary', id: dualOutputId },
+            });
+          }
+        },
         () => send({
           type: 'live-stream-state-changed',
           payload: { live: true, performedBy: myParticipantRef.current?.id || '' },
@@ -5205,6 +5289,7 @@ export function StudioRoom() {
       )));
       return false;
     } finally {
+      if (operation.active) setIsStartingLive(false);
       liveStartOperationRef.current.finish(operation);
     }
   };
@@ -5232,7 +5317,7 @@ export function StudioRoom() {
       payload: { active, performedBy: myParticipantRef.current?.id || '' },
     }),
     goLive: startGoLive,
-    getGoLiveIssue: () => getEnabledDestinationPreflightIssue(destinations),
+    getGoLiveIssue: () => dualPreflightIssue || getEnabledDestinationPreflightIssue(destinations),
     getGoLiveFailureReason: () => goLiveFailureReasonRef.current,
     isLive,
     isGoLiveStarting: () => liveStartOperationRef.current.active,
@@ -5291,6 +5376,7 @@ export function StudioRoom() {
   };
   const onStopLive = () => {
     liveStartOperationRef.current.cancel();
+    setIsStartingLive(false);
     if (liveStatusTimerRef.current) {
       clearTimeout(liveStatusTimerRef.current);
       liveStatusTimerRef.current = null;
@@ -5817,80 +5903,89 @@ export function StudioRoom() {
   const onReorderScene = (sceneId: string, direction: SceneOrderDirection) => {
     setScenes(prev => moveSceneInOrder(prev, sceneId, direction));
   };
+  const buildRoomScenePack = (selectedScenes: Scene[] = scenes) => buildScenePack({
+    scenes: getPersistableScenes(selectedScenes, mediaAssets),
+    lowerThirds,
+    banners,
+    timers,
+    tickers,
+    widgets,
+  });
   const onExportScenePack = () => {
     if (scenes.length === 0) {
       setScenePackMessage('Save a scene before exporting.');
       return;
     }
-
-    const pack = buildScenePack({
-      scenes: getPersistableScenes(scenes, mediaAssets),
-      lowerThirds,
-      banners,
-      timers,
-      tickers,
-      widgets,
-    });
-
-    downloadJsonFile(
-      buildScenePackFilename(room?.name || 'Studio'),
-      JSON.stringify(pack, null, 2)
-    );
+    const pack = buildRoomScenePack();
+    const json = JSON.stringify(pack, null, 2);
+    if (new Blob([json]).size > MAX_SCENE_PACK_BYTES) {
+      setScenePackMessage('These scenes are too large to export. Try smaller graphics or fewer scenes.');
+      return;
+    }
+    downloadJsonFile(buildScenePackFilename(room?.name || 'Studio'), json);
     setScenePackMessage(`Exported ${pack.scenes.length} scene${pack.scenes.length === 1 ? '' : 's'}.`);
+  };
+  const addScenePack = (pack: ReturnType<typeof buildScenePack>) => {
+    const imported = importScenePack(pack, {
+      existingScenes: scenes,
+      maxScenes: MAX_STUDIO_SCENES,
+      sceneIdFactory: () => `scene-import-${crypto.randomUUID()}`,
+      overlayIdFactory: (kind: ScenePackOverlayKind) => {
+        switch (kind) {
+          case 'lowerThird': return `lt-${++idCounters.current.lt}`;
+          case 'banner': return `banner-${++idCounters.current.banner}`;
+          case 'timer': return `timer-${++idCounters.current.timer}`;
+          case 'ticker': return `ticker-${++idCounters.current.ticker}`;
+          case 'widget': return `widget-${++idCounters.current.widget}`;
+          default: return assertNever(kind);
+        }
+      },
+    });
+    if (imported.importedScenes === 0) throw new Error('Maximum scenes reached.');
+    setLowerThirds(prev => [...prev, ...imported.lowerThirds]);
+    setBanners(prev => [...prev, ...imported.banners]);
+    setTimers(prev => [...prev, ...imported.timers]);
+    setTickers(prev => [...prev, ...imported.tickers]);
+    setWidgets(prev => [...prev, ...imported.widgets]);
+    setScenes(prev => [...prev, ...imported.scenes].slice(0, MAX_STUDIO_SCENES));
+    setScenePackMessage(
+      `Added ${imported.importedScenes} scene${imported.importedScenes === 1 ? '' : 's'}${imported.skippedScenes ? `, skipped ${imported.skippedScenes}` : ''}.`
+    );
   };
   const onImportScenePack = async (file: File) => {
     if (file.size > MAX_SCENE_PACK_BYTES) {
       setScenePackMessage('Scene pack file is too large.');
       return;
     }
-
     try {
-      const text = await file.text();
-      if (text.length > MAX_SCENE_PACK_BYTES) {
-        setScenePackMessage('Scene pack file is too large.');
-        return;
-      }
-
-      const pack = parseScenePackJson(text);
-      const imported = importScenePack(pack, {
-        existingScenes: scenes,
-        maxScenes: MAX_STUDIO_SCENES,
-        sceneIdFactory: (_scene, index) => `scene-import-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-        overlayIdFactory: (kind: ScenePackOverlayKind) => {
-          switch (kind) {
-            case 'lowerThird':
-              return `lt-${++idCounters.current.lt}`;
-            case 'banner':
-              return `banner-${++idCounters.current.banner}`;
-            case 'timer':
-              return `timer-${++idCounters.current.timer}`;
-            case 'ticker':
-              return `ticker-${++idCounters.current.ticker}`;
-            case 'widget':
-              return `widget-${++idCounters.current.widget}`;
-            default:
-              return assertNever(kind);
-          }
-        },
-      });
-
-      if (imported.importedScenes === 0) {
-        setScenePackMessage('Maximum scenes reached.');
-        return;
-      }
-
-      setLowerThirds(prev => [...prev, ...imported.lowerThirds]);
-      setBanners(prev => [...prev, ...imported.banners]);
-      setTimers(prev => [...prev, ...imported.timers]);
-      setTickers(prev => [...prev, ...imported.tickers]);
-      setWidgets(prev => [...prev, ...imported.widgets]);
-      setScenes(prev => [...prev, ...imported.scenes].slice(0, MAX_STUDIO_SCENES));
-      setScenePackMessage(
-        `Imported ${imported.importedScenes} scene${imported.importedScenes === 1 ? '' : 's'}${imported.skippedScenes ? `, skipped ${imported.skippedScenes}` : ''}.`
-      );
+      addScenePack(parseScenePackJson(await file.text()));
     } catch (err) {
       setScenePackMessage(err instanceof Error ? err.message : 'Could not import scene pack.');
     }
+  };
+  const onCaptureServicePreset = async () => {
+    const active = scenes.find(scene => scene.id === activeSceneId);
+    let selected = scenes;
+    if (active) {
+      const updated = await buildCurrentSceneSnapshot(active.id, active.name);
+      selected = scenes.map(scene => scene.id === updated.id ? updated : scene);
+    } else if (!scenes.length) {
+      selected = [await buildCurrentSceneSnapshot('scene-preset-' + crypto.randomUUID(), 'Service setup')];
+    }
+    // Media assets and participant IDs belong to the source studio. Its
+    // layouts, overlays, backgrounds and logo can be reused in a new room.
+    const portable = selected.map(scene => ({
+      ...scene,
+      activeMedia: null,
+      focusedVideoItemId: null,
+      stageItemOrder: [],
+    }));
+    return captureServicePreset(buildRoomScenePack(portable), studioFormat.customLayouts);
+  };
+  const onLoadServicePreset = (preset: ServicePreset) => {
+    const prepared = prepareServicePreset(preset, studioFormat.customLayouts, MAX_STUDIO_SCENES - scenes.length);
+    addScenePack(prepared.pack);
+    studioFormat.setCustomLayouts(prepared.layouts);
   };
 
   // Tickers
@@ -7521,6 +7616,19 @@ export function StudioRoom() {
       {/* Main Area */}
       <main className="studio-main" style={styles.main}>
         <h1 style={styles.visuallyHidden}>{room?.name || 'Studio'}</h1>
+        {(canUseOperatorControls || relayActiveRef.current) && dualOutput.enabled && (
+          <SecondaryProgram
+            composition={composition}
+            primaryStageRef={stageRef}
+            orientation={secondaryOrientation}
+            layout={dualOutput.layout}
+            participants={applyStageItemOrder(videoItems, stageItemOrder, null).filter((item) => !item.isScreenShare)}
+            screen={sharedContentScreenShare?.item}
+            cameraShape={cameraShape}
+            nameTagStyle={nameTagStyle}
+            onStream={onSecondaryStream}
+          />
+        )}
         {/* Stage */}
         <div className="studio-stage" style={styles.stage}>
           <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : isHostOrCoHost ? 'Stage preview' : 'On stage'}</span><span>{liveStatus.active ? (isHostOrCoHost ? 'Your audience can see this stage' : 'You are live with the audience') : recordingStatus.active ? recordingStatus.paused ? (isHostOrCoHost ? 'Resume when you are ready' : 'The host paused the recording') : 'Recording session in progress' : isHostOrCoHost ? 'Prepare your stage before going live' : 'The host controls the layout'}</span></div>
@@ -8136,10 +8244,32 @@ export function StudioRoom() {
               onRemove={onRemoveDestination}
               onToggle={onToggleDestination}
               broadcastOrientation={broadcastOrientation}
-              onBroadcastOrientationChange={setBroadcastOrientation}
+              onBroadcastOrientationChange={(orientation) => {
+                if (!streamSettingsLocked()) setBroadcastOrientation(orientation);
+              }}
+              onDestinationOrientation={onDestinationOrientation}
+              dualOutput={{
+                enabled: dualOutput.enabled,
+                supportIssue: dualSupportIssue,
+                configurationIssue: dualPreflightIssue,
+                destinationLimit: getDualOutputDestinationLimit(mediaServerHealth),
+                orientation: secondaryOrientation,
+                layout: dualOutput.layout,
+                stream: secondaryPreviewStream,
+                stats: secondaryRelayStats,
+                onToggle: (enabled) => {
+                  if (!streamSettingsLocked()) updateDualOutput({ enabled });
+                },
+                onLayoutChange: (layout) => {
+                  if (!liveStartOperationRef.current.active) updateDualOutput({ layout });
+                },
+              }}
               relayOutputPreset={rtmpRelayOutputPreset}
-              onRelayOutputPresetChange={setRtmpRelayOutputPreset}
+              onRelayOutputPresetChange={(preset) => {
+                if (!streamSettingsLocked()) setRtmpRelayOutputPreset(preset);
+              }}
               isLive={isLive}
+              isStarting={isStartingLive}
               relayStats={relayStats}
               relayReadiness={relayReadiness}
               sessionHealth={sessionHealth}
@@ -8291,6 +8421,7 @@ export function StudioRoom() {
             onExportScenePack={onExportScenePack}
             onImportScenePack={onImportScenePack}
             scenePackMessage={scenePackMessage}
+            servicePresets={{ capture: onCaptureServicePreset, load: onLoadServicePreset }}
             tickers={tickers}
             onAddTicker={onAddTicker}
             onToggleTicker={onToggleTicker}
@@ -8403,6 +8534,8 @@ export function StudioRoom() {
             segments={captionSegments}
             roomName={room?.name || 'Studio'}
             onToggle={() => setCaptionsEnabled((current) => !current)}
+            viewerCaptions={watchPageCaptions}
+            onViewerCaptionsChange={amStageOwner ? setWatchPageCaptions : undefined}
             onLanguageChange={setCaptionLanguage}
             onClear={clearCaptions}
             onClose={() => setShowCaptionsPanel(false)}
@@ -8417,6 +8550,8 @@ export function StudioRoom() {
               roomName={room?.name || 'Studio'}
               roomId={roomId || ''}
               watchId={watchId}
+              watchRegistration={room?.registration}
+              watchEvents={watchEvents}
               hostName={room?.hostName}
               inviteUrl={inviteUrl}
               scheduledFor={room?.scheduledFor}

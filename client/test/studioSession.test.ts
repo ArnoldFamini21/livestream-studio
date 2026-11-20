@@ -47,7 +47,7 @@ describe('studio seat resume', () => {
 
   it('advertises the features this client understands on every join', () => {
     const join = buildStudioJoinPayload({ roomId: 'r', name: 'G', role: 'guest' });
-    assert.deepEqual(join.capabilities, ['program-return', 'talkback']);
+    assert.deepEqual(join.capabilities, ['program-return', 'talkback', 'watch-events']);
   });
 
   it('sends host credentials only for the host, and the password only for guests', () => {

@@ -1,6 +1,6 @@
 import { RecordingRecoveryNotice } from './RecordingRecoveryNotice.tsx';
 import { RecordingFolderSave } from './RecordingFolderSave.tsx';
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import type { RecordingExportArtifactStatus, RecordingExportJobResponse, RecordingExportVideoCodec } from '@studio/shared';
 import type { LiveCaptionSegment } from '../hooks/useLiveCaptions';
 import type { LocalRecordingFileResult, RecordingResult } from '../hooks/useLocalRecording';
@@ -57,6 +57,9 @@ import {
   requestEpisodeContent,
   type EpisodeContentResult,
 } from '../utils/episodeContent.ts';
+
+const RecordingTranscriptEditor = lazy(() => import('./RecordingTranscriptEditor.tsx')
+  .then((module) => ({ default: module.RecordingTranscriptEditor })));
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -2512,6 +2515,7 @@ export function RecordingPanel({
     setFolderSaving(saving);
     onFolderSavingChange?.(saving);
   }, [onFolderSavingChange]);
+  const [transcriptSession, setTranscriptSession] = useState<LocalRecordingSession | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [libraryTrackFiles, setLibraryTrackFiles] = useState<Record<string, RecordedFile[]>>({});
   const [libraryTrackError, setLibraryTrackError] = useState<{ sessionId: string; message: string } | null>(null);
@@ -5118,6 +5122,14 @@ export function RecordingPanel({
                     {isActive ? 'Loaded' : isBusy ? 'Loading...' : 'Load'}
                   </button>
                   <button
+                    type="button"
+                    style={styles.sessionBtn}
+                    onClick={() => setTranscriptSession(session)}
+                    disabled={isBusy || isRecording || isStopping}
+                  >
+                    Edit transcript
+                  </button>
+                  <button
                     style={{ ...styles.sessionBtn, ...styles.deleteBtn }}
                     onClick={() => handleDeleteSession(session.id)}
                     disabled={isBusy}
@@ -5199,6 +5211,18 @@ export function RecordingPanel({
           })}
         </div>
       </div>
+      {transcriptSession && <Suspense fallback={<p role="status" style={styles.libraryEmpty}>Opening transcript editor…</p>}>
+        <RecordingTranscriptEditor
+          key={transcriptSession.id}
+          session={transcriptSession}
+          loadFiles={loadFiles}
+          initialTranscript={activeSessionId === transcriptSession.id ? generatedTranscript : undefined}
+          language={captionLanguage}
+          captionStyle={clipBrand ?? { fontFamily: 'Inter, Arial, sans-serif', accentColor: '#facc15' }}
+          onDownload={downloadBlob}
+          onClose={() => setTranscriptSession(null)}
+        />
+      </Suspense>}
     </div>
   );
 }

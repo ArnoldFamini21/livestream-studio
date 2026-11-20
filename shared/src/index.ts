@@ -1,6 +1,8 @@
 export * from './clientErrors.js';
 export * from './chatOverlay.js';
 export * from './viewerChat.js';
+export * from './watchEvents.js';
+import type { WatchEventState } from './watchEvents.js';
 import type { ChatOverlayState, ChatOverlayUpdatePayload, ChatOverlayUpdatedPayload } from './chatOverlay.js';
 import type { ViewerChatStatePayload, ViewerChatSwitches, ViewerBlockScope } from './viewerChat.js';
 
@@ -269,6 +271,8 @@ export type RoomRegistrationField = 'name' | 'email';
 export interface RoomRegistrationSettings {
   enabled: boolean;
   fields: RoomRegistrationField[];
+  /** Only people with a valid host-issued invite can register to watch. */
+  inviteOnly?: true;
 }
 
 export interface RoomRegistrant {
@@ -326,7 +330,7 @@ export interface Participant {
  *   program-return-announce) instead of taking it for a screen share.
  * - 'talkback': silences other operators' talkback-state in its program mix.
  */
-export const STUDIO_CAPABILITIES = ['program-return', 'talkback'] as const;
+export const STUDIO_CAPABILITIES = ['program-return', 'talkback', 'watch-events'] as const;
 export type StudioCapability = typeof STUDIO_CAPABILITIES[number];
 
 const STUDIO_CAPABILITY_SET: ReadonlySet<string> = new Set(STUDIO_CAPABILITIES);
@@ -502,6 +506,11 @@ export type SignalMessage =
   | { type: 'external-chat-status'; payload: ExternalChatStatusPayload }
   | { type: 'guest-invite-token-request'; payload: GuestInviteTokenRequestPayload }
   | { type: 'guest-invite-token-issued'; payload: GuestInviteTokenIssuedPayload }
+  | { type: 'watch-invite-request'; payload: { requestId: string } }
+  | { type: 'watch-invite-issued'; payload: { requestId: string; token?: string; expiresAt?: string; error?: string } }
+  | { type: 'watch-event-settings'; payload: { callInsEnabled: boolean } }
+  | { type: 'watch-call-in-decide'; payload: { id: string; decision: 'approve' | 'decline' } }
+  | { type: 'watch-event-state'; payload: WatchEventState }
   | { type: 'co-host-invite-token-request'; payload: CoHostInviteTokenRequestPayload }
   | { type: 'co-host-invite-token-issued'; payload: CoHostInviteTokenIssuedPayload }
   | { type: 'participant-updated'; payload: Participant }
@@ -558,6 +567,8 @@ export interface RoomJoinedPayload {
   chatOverlay?: ChatOverlayState;
   /** Admitted hosts and co-hosts only: the viewer chat switches and blocked viewers. */
   viewerChat?: ViewerChatStatePayload;
+  /** Admitted hosts and co-hosts only. */
+  watchEvent?: WatchEventState;
   /** What the host has on stage (a slide, an image), mirrored to everyone. */
   stageContent?: StageContentPayload;
   /** Hosts and co-hosts only: authorizes uploads to `/api/rooms/:id/stage-images`. */
@@ -583,6 +594,7 @@ export interface RoomJoinedPayload {
     chatOverlay?: boolean;
     /** The server understands the viewer chat messages (`viewer-chat-*`). */
     viewerChat?: boolean;
+    watchEvents?: boolean;
   };
   /**
    * Admitted hosts and co-hosts only: the other operators talking backstage
@@ -626,8 +638,24 @@ export interface CaptionSegmentPayload {
   final: boolean;
 }
 
+export interface WatchCaptionCue {
+  id: string;
+  text: string;
+  speaker?: string;
+  startMs: number;
+  endMs: number;
+}
+
+export interface WatchCaptionSnapshot {
+  enabled: boolean;
+  language: string;
+  cues: WatchCaptionCue[];
+}
+
 export interface CaptionsStatePayload {
   enabled: boolean;
+  /** Share optional captions on the watch page instead of drawing them on the program. */
+  watchPage?: boolean;
   /** BCP-47 recognition language, e.g. 'en-US'. */
   language: string;
   /** Set by the server: which operator sent it. */
@@ -666,7 +694,7 @@ export function sanitizeCaptionsState(raw: unknown): Omit<CaptionsStatePayload, 
   const value = raw as Record<string, unknown>;
   if (typeof value.enabled !== 'boolean') return null;
   const language = typeof value.language === 'string' && CAPTION_LANGUAGE_PATTERN.test(value.language) ? value.language : 'en-US';
-  return { enabled: value.enabled, language };
+  return { enabled: value.enabled, language, ...(value.watchPage === true ? { watchPage: true } : {}) };
 }
 
 export interface TalkbackStatePayload {
@@ -1371,6 +1399,8 @@ export interface StreamDestination {
   rememberStreamKey?: boolean;
   /** Present when the studio created the broadcast through a connected account. */
   connection?: StreamDestinationConnection;
+  /** The program this destination receives in simultaneous output mode. */
+  orientation?: BroadcastOrientation;
 }
 
 export interface StreamDestinationConnection {
@@ -1391,6 +1421,8 @@ export interface LiveStreamTokenClaims {
   role: Extract<ParticipantRole, 'host' | 'co-host'>;
   /** The studio's private watch-page id; the HLS watch page is published under it, never under the room id. */
   watchId?: string;
+  /** Protected watch id. Older relays skip watch HLS because watchId is absent. */
+  protectedWatchId?: string;
   iat?: number;
   exp: number;
   nonce: string;
@@ -1458,6 +1490,7 @@ export interface RtmpRelayDestination {
   name: string;
   rtmpUrl: string;
   streamKey: string;
+  orientation?: BroadcastOrientation;
 }
 
 export interface RtmpRelayVideoConfig {
@@ -1497,6 +1530,11 @@ export interface RtmpRelayEncoding {
 export type RtmpRelayVideoMode = 'copy' | 'transcode';
 
 export interface RtmpRelayStartPayload {
+  /** Marks the two programs of a single broadcast. Older clients omit both fields. */
+  dualOutput?: 'primary' | 'secondary';
+  /** Also separates a resumed broadcast from an older studio tab. */
+  dualOutputId?: string;
+  orientation?: BroadcastOrientation;
   token: string;
   destinations: RtmpRelayDestination[];
   video: RtmpRelayVideoConfig;

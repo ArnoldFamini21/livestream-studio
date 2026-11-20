@@ -11,7 +11,7 @@ import { MAX_ENABLED_DESTINATIONS, STREAM_PLATFORM_GUIDES, isValidRtmpUrl } from
 export const STREAM_DESTINATIONS_STORAGE_KEY = 'livestream-studio:stream-destinations:v1';
 export const MAX_SAVED_DESTINATIONS = 12;
 
-export type SavedStreamDestination = Pick<StreamDestination, 'platform' | 'name' | 'rtmpUrl' | 'enabled'> & {
+export type SavedStreamDestination = Pick<StreamDestination, 'platform' | 'name' | 'rtmpUrl' | 'enabled' | 'orientation'> & {
   streamKey?: string;
   rememberStreamKey?: boolean;
 };
@@ -42,6 +42,7 @@ export function serializeStreamDestinations(destinations: StreamDestination[]): 
       name: destination.name.trim().slice(0, 80),
       rtmpUrl: destination.rtmpUrl.trim(),
       enabled: destination.enabled,
+      ...(destination.orientation ? { orientation: destination.orientation } : {}),
       ...(destination.rememberStreamKey && destination.streamKey.trim()
         ? { rememberStreamKey: true, streamKey: destination.streamKey.trim() }
         : {}),
@@ -72,6 +73,7 @@ export function restoreStreamDestinations(value: unknown): RestoredStreamDestina
       rtmpUrl: candidate.rtmpUrl.trim(),
       streamKey,
       enabled,
+      ...(candidate.orientation === 'landscape' || candidate.orientation === 'portrait' ? { orientation: candidate.orientation } : {}),
       ...(rememberStreamKey ? { rememberStreamKey: true } : {}),
     });
   }

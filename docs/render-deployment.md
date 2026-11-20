@@ -248,7 +248,9 @@ Set `RTMP_BACKUP_RECORDING_ENABLED=false` to disable this safety recording on co
 
 ## Public watch page
 
-Every studio has a public watch page at `https://studio.arnoldfamini.com/watch/<room id>` (the Invite panel shows the link). While the host is live, the media server writes the shared H.264/AAC encode as HLS (2-second segments, a rolling 6-segment playlist, no re-encode) under `HLS_OUTPUT_DIR` (default: the temp folder) and serves it at `/watch/<room id>/status`, `/watch/<room id>/stream.m3u8`, and the segments. The page plays it with hls.js (Safari plays HLS natively), shows LIVE with a viewer estimate (distinct addresses that fetched the playlist in the last 20 s), and reports when the broadcast ends. Segments are deleted 15 s after the session stops. When the studio has registration enabled, viewers register (name and email) before the player appears, and they show up in the host's registrant list. Latency is about 6-10 s. The watch page needs encode-once mode (the default); with `RTMP_ENCODE_ONCE=false` it stays "Not live".
+The **Invite** panel shows each studio's watch page at `https://studio.arnoldfamini.com/watch/<watch id>`. The media server packages the shared H.264/AAC encode as HLS in `HLS_OUTPUT_DIR` (the system temporary directory by default). A live stream uses a rolling playlist of six 2-second segments with about 6–10 seconds of viewing latency. The viewer count estimates the number of addresses that fetched the playlist within 20 seconds. The watch page requires encode-once mode, which is enabled by default.
+
+Studios with registration enabled require a signed viewer pass for playback. Invite-only studios also require a private viewing link before registration. The pass protects the playlist, its video segments, and audience interactions. Studios with registration disabled still support anonymous viewing. See [private viewing and audience call-ins](watch-events.md) for setup and the deployment sequence.
 
 ## Static Client CDN Caching
 

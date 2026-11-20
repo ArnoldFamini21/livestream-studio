@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
 import type Hls from 'hls.js';
 import '../styles/studio-chrome.css';
 import { StudioIcon } from './StudioIcon.tsx';
 import { WatchPollCard } from './WatchPollCard.tsx';
 import { WatchChatPanel } from './WatchChatPanel.tsx';
+import { WatchCaptions } from './WatchCaptions.tsx';
+import { readWatchPlaybackTime } from '../utils/watchCaptions.ts';
 import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
+import { captureWatchInvite, isWatchAccess, readWatchAccess, readWatchInvite, saveWatchAccess, type WatchAccess } from '../utils/watchAccess.ts';
 import type { ViewerReactionType } from '@studio/shared';
 import { ApiRequestError, requestJson, resolveMediaHttpUrl } from '../utils/apiClient.ts';
 import { canonicalWatchPath, looksLikeReplacedWatchLink, pollWatchStatus, type WatchStatus } from '../utils/watchStatus.ts';
@@ -26,11 +29,7 @@ interface WatchRoom {
   name: string;
   hostName?: string;
   scheduledFor?: string;
-  registration?: { enabled: boolean };
-}
-
-function registrationKey(roomId: string): string {
-  return `livestream-studio:watch-registered:${roomId}`;
+  registration?: { enabled: boolean; inviteOnly?: true };
 }
 
 function registeredNameKey(roomId: string): string {
@@ -55,12 +54,13 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
   const [roomError, setRoomError] = useState<'missing' | 'failed' | null>(null);
   const [status, setStatus] = useState<WatchStatus | null>(null);
   const [retry, setRetry] = useState(0);
+  const [captionsAvailable, setCaptionsAvailable] = useState(false);
   const [statusFailed, setStatusFailed] = useState(false);
   const [playerError, setPlayerError] = useState('');
   const [wasLive, setWasLive] = useState(false);
-  const [registered, setRegistered] = useState(() => {
-    try { return Boolean(roomId && localStorage.getItem(registrationKey(roomId))); } catch { return false; }
-  });
+  const [watchAccess, setWatchAccess] = useState(() => readWatchAccess(roomId));
+  const [privateInvite, setPrivateInvite] = useState(() => readWatchInvite(roomId));
+  const { hash: locationHash } = useLocation();
   const [form, setForm] = useState({ name: '', email: '' });
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState('');
@@ -81,6 +81,21 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
   });
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const getWatchPlaybackTime = useCallback(
+    () => readWatchPlaybackTime(videoRef.current, hlsRef.current?.playingDate),
+    [],
+  );
+
+  useEffect(() => {
+    const read = () => {
+      const invite = readWatchInvite(roomId);
+      if (invite) setPrivateInvite(invite);
+      captureWatchInvite(roomId);
+    };
+    read();
+    window.addEventListener('hashchange', read);
+    return () => window.removeEventListener('hashchange', read);
+  }, [locationHash, roomId]);
 
   // Room details: name, host, schedule, and whether registration gates the page.
   useEffect(() => {
@@ -92,6 +107,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
         if (!data || typeof data.id !== 'string' || typeof data.name !== 'string') throw new Error('Invalid room response');
         if (controller.signal.aborted) return;
         setRoom(data);
+        if (data.id !== roomId) setWatchAccess((current) => current || readWatchAccess(data.id));
         // An older /watch/<roomId> link: show the canonical address from now on.
         const canonical = canonicalWatchPath(roomId, data.id, window.location.pathname);
         if (canonical) {
@@ -104,20 +120,42 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     return () => controller.abort();
   }, [roomId, retry]);
 
-  const gated = Boolean(room?.registration?.enabled) && !registered;
+  const protectedWatch = Boolean(room?.registration?.enabled || room?.registration?.inviteOnly);
+  const watchAccessToken = protectedWatch && isWatchAccess(watchAccess) ? watchAccess.token : undefined;
+  const gated = protectedWatch && !watchAccessToken;
   const ready = Boolean(room) && !roomError && !gated;
   // The media server publishes under the canonical watch id (an old link may carry the room id).
   const watchId = room?.id || roomId;
 
+  const clearWatchAccess = useCallback(() => {
+    setWatchAccess(null);
+    saveWatchAccess(roomId, null);
+    saveWatchAccess(watchId, null);
+    setStatus(null);
+    setWasLive(false);
+  }, [roomId, watchId]);
+
+  useEffect(() => {
+    if (!watchAccess) return;
+    const delay = Math.max(0, Date.parse(watchAccess.expiresAt) - Date.now());
+    const timeout = window.setTimeout(clearWatchAccess, delay);
+    return () => window.clearTimeout(timeout);
+  }, [clearWatchAccess, watchAccess]);
+
   // Wait for room details and registration before requesting any live media.
   useEffect(() => {
     if (!ready || !mediaHttpUrl) return;
-    return pollWatchStatus(`${mediaHttpUrl}/watch/${encodeURIComponent(watchId)}/status`, (next) => {
+    const statusUrl = new URL(`${mediaHttpUrl}/watch/${encodeURIComponent(watchId)}/status`);
+    if (watchAccessToken) statusUrl.searchParams.set('watchToken', watchAccessToken);
+    return pollWatchStatus(statusUrl.href, (next) => {
       setStatus(next);
       setStatusFailed(false);
       if (next.live) setWasLive(true);
-    }, () => setStatusFailed(true));
-  }, [ready, mediaHttpUrl, watchId, retry]);
+    }, (httpStatus) => {
+      if (httpStatus === 401 && watchAccessToken) clearWatchAccess();
+      else setStatusFailed(true);
+    });
+  }, [ready, mediaHttpUrl, watchId, retry, watchAccessToken, clearWatchAccess]);
 
   const playlistUrl = ready && status?.live && status.playlistPath ? `${mediaHttpUrl}${status.playlistPath}` : '';
 
@@ -217,20 +255,22 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     setFormBusy(true);
     setFormError('');
     try {
-      await requestJson(`/api/watch/${encodeURIComponent(watchId)}/registrants`, {
+      const result = await requestJson<{ access?: WatchAccess }>(`/api/watch/${encodeURIComponent(watchId)}/registrants`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: form.name.trim(), email: form.email.trim() }),
+        body: JSON.stringify({ name: form.name.trim(), email: form.email.trim(), invite: privateInvite || undefined }),
       });
-      try { localStorage.setItem(registrationKey(roomId), form.email.trim()); } catch { /* Private mode. */ }
-      try { localStorage.setItem(registeredNameKey(roomId), form.name.trim()); } catch { /* Private mode. */ }
-      setRegistered(true);
+      if (!isWatchAccess(result.access)) throw new Error('Protected viewing is not ready. Please try again.');
+      saveWatchAccess(watchId, result.access);
+      if (roomId !== watchId) saveWatchAccess(roomId, result.access);
+      try { localStorage.setItem(registeredNameKey(watchId), form.name.trim()); } catch { /* Private mode. */ }
+      setWatchAccess(result.access);
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'Registration failed. Please try again.');
     } finally {
       setFormBusy(false);
     }
-  }, [form.email, form.name, roomId, watchId]);
+  }, [form.email, form.name, privateInvite, roomId, watchId]);
 
   const title = room?.name || 'Live broadcast';
   const schedule = formatSchedule(room?.scheduledFor);
@@ -269,12 +309,16 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
             <p className="watch-kicker">{room?.hostName ? `${room.hostName} invites you to` : 'Register to watch'}</p>
             <h1>{title}</h1>
             {schedule && <p className="watch-schedule">{schedule}</p>}
+            {room?.registration?.inviteOnly && !privateInvite ? (
+              <p>Ask the host for a private viewing link for this event.</p>
+            ) : (
             <form className="watch-form" onSubmit={(event) => void submitRegistration(event)}>
               <label>Your name<input required autoComplete="name" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} /></label>
               <label>Email<input required type="email" autoComplete="email" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} /></label>
               {formError && <p className="watch-error" role="alert">{formError}</p>}
               <button type="submit" disabled={formBusy || !form.name.trim() || !form.email.trim()}>{formBusy ? 'Registering…' : 'Register and watch'}</button>
             </form>
+            )}
           </section>
         ) : (
           <>
@@ -296,6 +340,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               {live && playerError && <div className="watch-placeholder" role="alert"><p>{playerError}</p><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry playback</button></div>}
               {live && statusFailed && <p className="watch-error" role="status">Connection interrupted. Reconnecting…</p>}
               <ReactionOverlay reactions={floatingReactions} />
+              {live && captionsAvailable && <WatchCaptions watchId={watchId} watchAccessToken={watchAccessToken} readPlaybackTime={getWatchPlaybackTime} />}
               {live && needsTap && !playerError && (
                 <button type="button" className="watch-tap" onClick={() => videoRef.current?.play().then(() => setNeedsTap(false)).catch(() => undefined)}>
                   Tap to play
@@ -307,8 +352,8 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               {room?.hostName && <p className="watch-host">Hosted by {room.hostName}</p>}
               {schedule && !live && !ended && <p className="watch-schedule">{schedule}</p>}
             </section>
-            {room && !ended && <WatchPollCard watchId={roomId} />}
-            {room && !ended && <WatchChatPanel watchId={watchId} registeredName={form.name.trim() || savedName} onFloat={floatReactions} />}
+            {room && !ended && <WatchPollCard watchId={watchId} watchAccessToken={watchAccessToken} />}
+            {room && !ended && <WatchChatPanel watchId={watchId} watchAccessToken={watchAccessToken} registeredName={form.name.trim() || savedName} onFloat={floatReactions} onCaptionsAvailable={setCaptionsAvailable} />}
           </>
         )}
       </main>

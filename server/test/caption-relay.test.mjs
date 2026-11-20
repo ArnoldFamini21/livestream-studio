@@ -9,6 +9,7 @@ process.env.SIGNALING_RESUME_GRACE_MS = '300';
 const {
   createRoom,
   getRooms,
+  getWatchCaptionSnapshot,
   setupSignalingServer,
 } = await import('../dist/services/signaling.js');
 
@@ -276,4 +277,50 @@ describe('client capabilities', () => {
       await harness.close();
     }
   });
+});
+
+
+it('publishes optional watch captions only for the live stage owner and audible final captions', async () => {
+  const harness = await createHarness();
+  try {
+    const { room, state, host, guest, coHost } = await studioWithCoHost(harness, 'watch-captions');
+    sendMessage(coHost.ws, 'captions-state', { enabled: true, watchPage: true, language: 'fr-FR' });
+    const announce = waitFor(guest.ws, 'captions-state', message => message.payload.from === host.id);
+    sendMessage(host.ws, 'captions-state', { enabled: true, watchPage: true, language: 'en-US' });
+    await announce;
+    assert.equal(getWatchCaptionSnapshot(room.id).enabled, false, 'captions are private before going live');
+
+    const start = waitFor(guest.ws, 'live-stream-state-changed', message => message.payload.live);
+    sendMessage(host.ws, 'live-stream-state-changed', { live: true });
+    await start;
+    assert.equal(getWatchCaptionSnapshot(room.id).language, 'en-US');
+
+    async function sendCaption(overrides) {
+      const received = waitFor(host.ws, 'caption-segment');
+      sendMessage(guest.ws, 'caption-segment', caption(overrides));
+      await received;
+    }
+    await sendCaption({ segmentId: 'interim', final: false });
+    assert.deepEqual(getWatchCaptionSnapshot(room.id).cues, []);
+    state.participants.get(guest.id).participant.audioEnabled = false;
+    await sendCaption({ segmentId: 'muted' });
+    assert.deepEqual(getWatchCaptionSnapshot(room.id).cues, []);
+    state.participants.get(guest.id).participant.audioEnabled = true;
+    await sendCaption({ segmentId: 'final' });
+    await sendCaption({ segmentId: 'final' });
+    const { cues } = getWatchCaptionSnapshot(room.id);
+    assert.equal(cues.length, 1);
+    assert.equal(cues[0].speaker, 'Maria');
+    assert.equal(cues[0].text, 'Hello from Ohio');
+    assert.equal('participantId' in cues[0], false);
+    assert.ok(cues[0].endMs > cues[0].startMs);
+
+    const stop = waitFor(guest.ws, 'live-stream-state-changed', message => !message.payload.live);
+    sendMessage(host.ws, 'live-stream-state-changed', { live: false });
+    await stop;
+    assert.deepEqual(getWatchCaptionSnapshot(room.id).cues, []);
+    assert.equal(getWatchCaptionSnapshot(room.id).enabled, false);
+  } finally {
+    await harness.close();
+  }
 });

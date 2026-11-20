@@ -1,0 +1,42 @@
+.sd-dual-output {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  font-size: 13px;
+}
+.sd-dual-output label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.sd-dual-output p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.sd-dual-output select, .sd-destination-orientation select {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.sd-dual-output video {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: 6px;
+  background: #080a10;
+}
+.sd-destination-orientation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { RecordingExportJobResponse } from '@studio/shared';
 import { acknowledgeRecordingBackups, getRecordingBackupId, listRecoverableRecordings, registerRecordingBackup, retainRecordingBackups } from '../utils/recordingRecovery.ts';
-import { openRecordingDb, RECORDING_FILE_STORE as FILE_STORE, RECORDING_SESSION_STORE as SESSION_STORE } from '../utils/recordingLibraryStorage.ts';
+import { openRecordingDb, RECORDING_FILE_STORE as FILE_STORE, RECORDING_SESSION_STORE as SESSION_STORE, RECORDING_TRANSCRIPT_STORE } from '../utils/recordingLibraryStorage.ts';
 import {
   normalizeRecordingCaptureMetadata,
   type RecordingCaptureMetadata,
@@ -240,7 +240,8 @@ async function deleteRecordingSession(sessionId: string): Promise<void> {
     const files = await requestToPromise<LocalRecordingFileRecord[]>(
       db.transaction(FILE_STORE, 'readonly').objectStore(FILE_STORE).index('sessionId').getAll(IDBKeyRange.only(sessionId))
     );
-    const transaction = db.transaction([SESSION_STORE, FILE_STORE], 'readwrite');
+    const transaction = db.transaction([SESSION_STORE, FILE_STORE, RECORDING_TRANSCRIPT_STORE], 'readwrite');
+    transaction.objectStore(RECORDING_TRANSCRIPT_STORE).delete(sessionId);
     transaction.objectStore(SESSION_STORE).delete(sessionId);
     const fileStore = transaction.objectStore(FILE_STORE);
     files.forEach((file) => fileStore.delete(file.id));

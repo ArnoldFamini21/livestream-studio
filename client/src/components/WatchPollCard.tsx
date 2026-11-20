@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { watchAuthHeaders } from '../utils/watchAccess.ts';
 import { ApiRequestError, postJson, requestJson } from '../utils/apiClient.ts';
 import {
   getWatchVoterId,
@@ -11,7 +12,7 @@ import {
 const POLL_REFRESH_MS = 5_000;
 
 /** The host's live poll on the watch page: viewers vote here, then see the results. */
-export function WatchPollCard({ watchId }: { watchId: string }) {
+export function WatchPollCard({ watchId, watchAccessToken }: { watchId: string; watchAccessToken?: string }) {
   const [poll, setPoll] = useState<WatchPoll | null>(null);
   const [choice, setChoice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -25,7 +26,7 @@ export function WatchPollCard({ watchId }: { watchId: string }) {
     const load = async () => {
       if (typeof document === 'undefined' || !document.hidden) {
         try {
-          const result = await requestJson<{ poll: WatchPoll | null }>(`${path}/poll`, { timeoutMs: 8_000 });
+          const result = await requestJson<{ poll: WatchPoll | null }>(`${path}/poll`, { timeoutMs: 8_000, headers: watchAuthHeaders(watchAccessToken) });
           if (!stopped) setPoll(result.poll);
         } catch { /* keep the last poll; try again next tick */ }
       }
@@ -33,7 +34,7 @@ export function WatchPollCard({ watchId }: { watchId: string }) {
     };
     void load();
     return () => { stopped = true; if (timer) clearTimeout(timer); };
-  }, [path]);
+  }, [path, watchAccessToken]);
 
   useEffect(() => {
     setChoice(poll ? readWatchPollChoice(poll.id) : null);
@@ -45,7 +46,7 @@ export function WatchPollCard({ watchId }: { watchId: string }) {
     setBusy(true);
     setError('');
     try {
-      const result = await postJson<{ poll: WatchPoll }>(`${path}/poll-votes`, { pollId: poll.id, optionId, voterId });
+      const result = await postJson<{ poll: WatchPoll }>(`${path}/poll-votes`, { pollId: poll.id, optionId, voterId }, { headers: watchAuthHeaders(watchAccessToken) });
       saveWatchPollChoice(poll.id, optionId);
       setChoice(optionId);
       setPoll(result.poll);
@@ -58,7 +59,7 @@ export function WatchPollCard({ watchId }: { watchId: string }) {
     } finally {
       setBusy(false);
     }
-  }, [busy, path, poll, voterId]);
+  }, [busy, path, poll, voterId, watchAccessToken]);
 
   if (!poll) return null;
   const showResults = Boolean(choice);
