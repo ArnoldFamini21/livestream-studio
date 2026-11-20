@@ -158,11 +158,15 @@ jobs:
           npm run -w server build
           npm run -w client build
       - name: Preflight recording, transfer, reconnect and analysis
+        id: recording_preflight
         run: npm run test:recording-soak
         env:
           SOAK_SECONDS: '35'
           SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/preflight
       - name: Qualify twenty-minute three-participant recording
+        # Keep the short-run result and collect long-run evidence even if the
+        # preflight failed a packet timing assertion.
+        if: ${{ !cancelled() && (steps.recording_preflight.outcome == 'success' || steps.recording_preflight.outcome == 'failure') }}
         run: npm run test:recording-soak
         env:
           SOAK_SECONDS: '1200'

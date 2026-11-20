@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { startHarness, createStudio, joinStudio, admitGuest, stageGuest, eventually, screenshot, repoRoot } from "./harness.mjs";
@@ -25,6 +25,13 @@ const sourceCaptures = new Map();
 const pages = [];
 let harness;
 let progressTimer;
+const resultPath = path.join(artifactDir, "result.json");
+
+async function saveResult() {
+  const next = resultPath + ".tmp";
+  await writeFile(next, JSON.stringify(result, null, 2));
+  await rename(next, resultPath);
+}
 
 // Passive observers: preserve original recorder calls, timing and handlers.
 function installObserver({ folder }) {
@@ -47,9 +54,14 @@ function installObserver({ folder }) {
         row.bytes += event.data.size;
         writes = writes.then(async () => {
           const bytes = new Uint8Array(await event.data.arrayBuffer());
-          let binary = "";
-          for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-          await window.__hashSourceChunk({ id: row.id, mimeType: row.mimeType, kinds: row.kinds, base64: btoa(binary) });
+          let base64;
+          if (typeof bytes.toBase64 === "function") base64 = bytes.toBase64();
+          else {
+            let binary = "";
+            for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+            base64 = btoa(binary);
+          }
+          await window.__hashSourceChunk({ id: row.id, mimeType: row.mimeType, kinds: row.kinds, base64 });
         }).catch(error => state.errors.push(String(error)));
       });
       this.addEventListener("stop", () => {
@@ -166,6 +178,7 @@ async function exportFile(page, relative) {
       for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
       const file = await (await directory.getFileHandle(parts.at(-1))).getFile();
       const bytes = new Uint8Array(await file.slice(offset, offset + 256 * 1024).arrayBuffer());
+      if (typeof bytes.toBase64 === "function") return { base64: bytes.toBase64(), total: file.size };
       let binary = "";
       for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
       return { base64: btoa(binary), total: file.size };
@@ -229,12 +242,15 @@ try {
   result.reconnect.reconnected = true;
   result.reconnect.sentMediaBytesAfter = await reconnectGuest.evaluate(previous => window.__soak.channels.slice(previous).filter(row => row.label === "rec-transfer").reduce((sum, row) => sum + row.sentMediaBytes, 0), result.reconnect.previousChannels);
   console.log(JSON.stringify({ event: "guest-reconnected", reconnect: result.reconnect }));
+  await saveResult();
   // This wait is the duration under test, not a sleep used to conceal readiness.
   await Promise.all(pages.map(page => page.waitForFunction(seconds => {
     const active = window.__soak.recorders.filter(row => row.started !== null && row.stopped === null);
     return active.length >= 2 && active.every(row => performance.now() - row.started >= seconds * 1000);
   }, requestedSeconds + 0.5, { timeout: (requestedSeconds + 120) * 1000, polling: 500 })));
-  console.log(JSON.stringify({ event: "stopping-recording", elapsedSeconds: (Date.now() - captureStarted) / 1000 }));
+  result.captureElapsedSeconds = (Date.now() - captureStarted) / 1000;
+  console.log(JSON.stringify({ event: "stopping-recording", elapsedSeconds: result.captureElapsedSeconds }));
+  await saveResult();
   await host.getByRole("button", { name: "Stop recording", exact: true }).waitFor();
   // Exercise the real production shortcut. Playwright's pointer scroll/stability
   // round-trips can starve behind software encoders on a shared runner; the
@@ -287,6 +303,7 @@ try {
       result.errors.push(`${track.label}: ${error.message}`);
     }
     result.tracks.push(evidence);
+    await saveResult();
   }
   for (const [width, height] of [[1000, 625], [1440, 900], [390, 844]]) {
     await host.setViewportSize({ width, height });
@@ -301,6 +318,9 @@ try {
 } catch (error) {
   clearInterval(progressTimer);
   result.errors.push(error.stack || String(error));
+  console.error(error);
+  process.exitCode = 1;
+  await saveResult();
   if (pages[0]) result.failureFolder = await folderFiles(pages[0]).catch(failure => ({ error: String(failure) }));
   result.failureDiagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
     recorders: window.__soak?.recorders,
@@ -308,11 +328,10 @@ try {
     channels: window.__soak?.channels.map(({ channel, ...row }) => ({ ...row, state: channel.readyState })),
     transferSignals: window.__soak?.transferSignals,
   })).catch(failure => ({ error: String(failure) }))));
-  console.error(error);
-  process.exitCode = 1;
+  await saveResult();
   await Promise.allSettled(pages.map((page, index) => screenshot(page, artifactDir, `failure-${index}`)));
 } finally {
   clearInterval(progressTimer);
-  await writeFile(path.join(artifactDir, "result.json"), JSON.stringify(result, null, 2));
+  await saveResult();
   await harness?.close();
 }
