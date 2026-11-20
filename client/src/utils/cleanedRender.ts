@@ -1,3 +1,4 @@
+import { drawClipCaption, type ClipCaptionCue, type ClipCaptionStyle } from './clipCaptions.ts';
 import type { EditSegment } from './editListExport.ts';
 import {
   KeepRangeMapper,
@@ -39,6 +40,7 @@ export interface CleanedRenderInput {
   /** Kept pieces of this track (seconds from its first frame), in order. */
   segments: EditSegment[];
   output: RenderOutputFile;
+  captions?: { cues: ClipCaptionCue[]; style: ClipCaptionStyle };
   signal?: AbortSignal;
   onProgress?: (progress: RenderProgress) => void;
 }
@@ -105,6 +107,7 @@ export async function renderCleanedTrack(input: CleanedRenderInput): Promise<Cle
 
     let videoSource: InstanceType<typeof mb.VideoSampleSource> | null = null;
     let videoCodec: string | null = null;
+    let captionContext: CanvasRenderingContext2D | null = null;
     if (decodableVideo) {
       const displayWidth = await decodableVideo.getDisplayWidth();
       const displayHeight = await decodableVideo.getDisplayHeight();
@@ -117,11 +120,17 @@ export async function renderCleanedTrack(input: CleanedRenderInput): Promise<Cle
         codec: videoCodec as (typeof VIDEO_CODEC_PREFERENCE)[number],
         bitrate,
         keyFrameInterval: 2,
-        hardwareAcceleration: 'prefer-hardware',
         // A camera that changed resolution mid-take is letterboxed, not rejected.
         sizeChangeBehavior: 'contain',
         ...(width !== displayWidth || height !== displayHeight ? { transform: { width, height, fit: 'contain' as const } } : {}),
       });
+      if (input.captions?.cues.length) {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        captionContext = canvas.getContext('2d', { alpha: false });
+        if (!captionContext) throw new Error('This browser cannot draw captions for video export.');
+      }
       output.addVideoTrack(videoSource);
     }
 
@@ -152,8 +161,11 @@ export async function renderCleanedTrack(input: CleanedRenderInput): Promise<Cle
 
     const renderVideo = async () => {
       if (!videoSource || !decodableVideo) return;
-      const sink = new mb.VideoSampleSink(decodableVideo, { hardwareAcceleration: 'prefer-hardware' });
+      // Match the browser capability check. Forcing hardware can reject software-only decoders.
+      const sink = new mb.VideoSampleSink(decodableVideo);
       const mapper = new KeepRangeMapper(segments);
+      const captions = input.captions;
+      let cueIndex = 0;
       for await (const sample of sink.samples(readStart, readEnd)) {
         try {
           throwIfCancelled(signal);
@@ -162,8 +174,25 @@ export async function renderCleanedTrack(input: CleanedRenderInput): Promise<Cle
             if (mapper.done) break;
             continue;
           }
-          sample.setTimestamp(outputTime);
-          await videoSource.add(sample);
+          if (captionContext && captions) {
+            const { canvas } = captionContext;
+            captionContext.clearRect(0, 0, canvas.width, canvas.height);
+            sample.drawWithFit(captionContext, { fit: 'contain' });
+            while (captions.cues[cueIndex]?.end <= outputTime) cueIndex += 1;
+            const cue = captions.cues[cueIndex];
+            if (cue && cue.start <= outputTime) {
+              drawClipCaption(captionContext, [cue], outputTime, captions.style, canvas.width, canvas.height);
+            }
+            const captioned = new mb.VideoSample(canvas, { timestamp: outputTime, duration: sample.duration });
+            try {
+              await videoSource.add(captioned);
+            } finally {
+              captioned.close();
+            }
+          } else {
+            sample.setTimestamp(outputTime);
+            await videoSource.add(sample);
+          }
           videoSeconds = outputTime;
           report();
         } finally {

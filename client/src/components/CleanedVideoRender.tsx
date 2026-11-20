@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ClipCaptionCue, ClipCaptionStyle } from '../utils/clipCaptions.ts';
 import type { TimeRange } from '../utils/transcriptCleanup.ts';
 import { buildEditListTracks, type EditListTrackInput } from '../utils/editListExport.ts';
 import { buildRenderFileName, getBrowserRenderSupport, type RenderProgress } from '../utils/cleanedRenderPlan.ts';
@@ -48,6 +49,8 @@ export function CleanedVideoRender({
   baseName,
   studioName,
   disabled,
+  captions,
+  excerpt,
   onDownload,
 }: {
   tracks: CleanedRenderTrack[];
@@ -56,13 +59,21 @@ export function CleanedVideoRender({
   baseName: string;
   studioName: string;
   disabled?: boolean;
+  captions?: { cues: ClipCaptionCue[]; style: ClipCaptionStyle };
+  excerpt?: boolean;
   onDownload: (blob: Blob, fileName: string) => void;
 }) {
   const support = useMemo(() => getBrowserRenderSupport(), []);
   const [selected, setSelected] = useState<Set<number>>(() => defaultSelection(tracks, sourceIndex));
+  const [burnCaptions, setBurnCaptions] = useState(true);
   const [state, setState] = useState<RenderState>({ phase: 'idle' });
   const abortRef = useRef<AbortController | null>(null);
   const rendering = state.phase === 'rendering';
+  const editTracks = useMemo(() => buildEditListTracks(tracks, sourceIndex, keepRanges), [tracks, sourceIndex, keepRanges]);
+  const order = [...selected].filter((index) => editTracks[index]?.segments.length).sort((a, b) => a - b);
+  const canBurnCaptions = Boolean(captions?.cues.length && order.some((index) => editTracks[index].role !== 'audio'));
+
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const toggle = (index: number) => setSelected((current) => {
     const next = new Set(current);
@@ -72,26 +83,27 @@ export function CleanedVideoRender({
   });
 
   const start = async () => {
-    if (rendering || selected.size === 0) return;
+    if (abortRef.current || disabled || order.length === 0) return;
     const controller = new AbortController();
     abortRef.current = controller;
-    const order = [...selected].filter((index) => tracks[index]).sort((a, b) => a - b);
     const files: RenderedFile[] = [];
     setState({ phase: 'rendering', label: tracks[order[0]]?.label || '', position: 1, count: order.length, progress: null });
 
     let folder: RenderOutputFolder;
+    let renderer: typeof import('../utils/cleanedRender.ts');
     try {
       // First, while the click still counts: folder permission or picker.
       folder = await openRenderOutputFolder({ studioName });
+      renderer = await import('../utils/cleanedRender.ts');
     } catch (error) {
+      abortRef.current = null;
       setState(error instanceof DOMException && error.name === 'AbortError'
         ? { phase: 'idle' }
-        : { phase: 'error', message: error instanceof Error ? error.message : 'No place to save the render.', files });
+        : { phase: 'error', message: error instanceof Error ? error.message : 'Could not start the render.', files });
       return;
     }
 
-    const editTracks = buildEditListTracks(tracks, sourceIndex, keepRanges);
-    const { renderCleanedTrack, RenderCancelledError } = await import('../utils/cleanedRender.ts');
+    const { renderCleanedTrack, RenderCancelledError } = renderer;
     for (const [position, index] of order.entries()) {
       const track = tracks[index];
       const isAudio = editTracks[index].role === 'audio';
@@ -100,12 +112,14 @@ export function CleanedVideoRender({
       setState({ phase: 'rendering', label: track.label, position: position + 1, count: order.length, progress: null });
       let output;
       try {
+        if (controller.signal.aborted) throw new RenderCancelledError();
         output = await folder.createFile(buildRenderFileName(baseName, track.label, extension), isAudio ? 'audio/mp4' : 'video/mp4');
         const result = await renderCleanedTrack({
           blob: track.blob,
           label: track.label,
           segments: editTracks[index].segments,
           output,
+          captions: !isAudio && burnCaptions ? captions : undefined,
           signal: controller.signal,
           onProgress: (progress) => {
             const now = performance.now();
@@ -146,21 +160,25 @@ export function CleanedVideoRender({
   return <div className="transcript-cleanup__render" aria-label="Render cleaned video in this browser">
     <div className="transcript-cleanup__render-tracks" role="group" aria-label="Tracks to render">
       {tracks.map((track, index) => <label key={`${track.fileName}-${index}`} className={`transcript-cleanup__toggle${selected.has(index) ? ' is-on' : ''}`}>
-        <input type="checkbox" checked={selected.has(index)} disabled={rendering} onChange={() => toggle(index)} />
-        <span>{track.kind === 'program' ? `${track.label} (program)` : track.label}</span>
+        <input type="checkbox" checked={selected.has(index)} disabled={rendering || !editTracks[index]?.segments.length} onChange={() => toggle(index)} />
+        <span>{track.kind === 'program' && track.label.toLowerCase() !== 'program' ? `${track.label} (program)` : track.label}</span>
       </label>)}
     </div>
+    {canBurnCaptions && <label className={burnCaptions ? 'transcript-cleanup__toggle is-on' : 'transcript-cleanup__toggle'}>
+      <input type="checkbox" checked={burnCaptions} disabled={rendering} onChange={(event) => setBurnCaptions(event.target.checked)} />
+      <span>Burn captions into video</span>
+    </label>}
     <div className="transcript-cleanup__actions">
       {rendering
         ? <button type="button" className="transcript-cleanup__button" onClick={cancel}>Cancel render</button>
         : <button
           type="button"
           className="transcript-cleanup__button is-primary"
-          disabled={disabled || selected.size === 0}
+          disabled={disabled || order.length === 0}
           title="Cut and re-encode on this computer with the browser's video encoder; nothing is uploaded"
           onClick={() => void start()}
         >
-          Render cleaned MP4 here
+          {excerpt ? 'Export clip' : 'Render edited video'}
         </button>}
     </div>
     {state.phase === 'rendering' && <div className="transcript-cleanup__progress" role="status" aria-live="polite">

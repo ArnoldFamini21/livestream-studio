@@ -159,7 +159,7 @@ export function buildCleanupPlan(
     const gapStart = prev ? prev.end : 0;
     const gapEnd = next ? next.start : duration;
     if (gapEnd <= gapStart) continue;
-    const inside = words.filter((word) => word.removed && word.start >= gapStart - 0.001 && word.end <= gapEnd + 0.001);
+    const inside = words.slice((prev?.index ?? -1) + 1, next?.index ?? words.length).filter((word) => word.removed && word.start < gapEnd && word.end > gapStart);
     const pauseId = `pause:${prev ? prev.index : 'start'}-${next ? next.index : 'end'}`;
     const keepHalf = options.keepPauseSeconds / 2;
 
@@ -175,12 +175,21 @@ export function buildCleanupPlan(
       }
     }
 
-    for (const word of inside) {
+    for (let index = 0; index < inside.length;) {
+      const word = inside[index];
+      const reason = word.reason as 'filler' | 'repeat' | 'manual';
+      let last = index;
+      // Cutting a passage removes the silence between its selected words too.
+      while (reason === 'manual' && inside[last + 1]?.reason === 'manual' && inside[last + 1].index === inside[last].index + 1) {
+        last += 1;
+      }
       const start = Math.max(gapStart + (prev ? EDGE_GUARD_SECONDS : 0), word.start - 0.02);
-      const end = Math.min(gapEnd - (next ? EDGE_GUARD_SECONDS : 0), word.end + 0.02);
-      if (end <= start) continue;
-      cuts.push({ id: `word:${word.index}`, start: round(start), end: round(end), reason: word.reason as CleanupReason });
-      counts[word.reason as 'filler' | 'repeat' | 'manual'] += 1;
+      const end = Math.min(gapEnd - (next ? EDGE_GUARD_SECONDS : 0), inside[last].end + 0.02);
+      if (end > start) {
+        cuts.push({ id: `word:${word.index}`, start: round(start), end: round(end), reason });
+        counts[reason] += last - index + 1;
+      }
+      index = last + 1;
     }
   }
 

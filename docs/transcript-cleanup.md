@@ -1,6 +1,12 @@
 # Transcript cleanup
 
-After a recording, choose **Generate Transcript** in the recording panel. When the transcript includes word timings, a **Clean up** panel appears under it.
+Open **Recordings** and choose **Edit transcript** on a saved take. Generate a timed transcript from the program track to edit the service mix, or choose another track. The optional filler, stutter and pause controls start off in this editor.
+
+Select a word to cut or restore it. To edit a passage, choose **Select passage**, select its first and last words, and choose **Cut passage**, **Restore passage**, or **Use as clip**. An excerpt uses the same cuts as the full take. **Preview edit** skips the cuts, using the program video when available. **Save edit** stores the transcript and edits in this browser's recording library so the next visit can reopen the project.
+
+**Export clip** or **Render edited video** renders a new file. The browser can burn captions into video tracks and the edit list includes re-timed SRT captions. The original recording and tracks stay in the recording library.
+
+The current take also has a quick **Clean up** panel after **Generate Transcript**. Its automatic cleanup suggestions start on.
 
 ## Transcript engines
 
@@ -18,6 +24,8 @@ Model files come from the Hugging Face CDN (allowed by the CSP's `connect-src ht
 
 ## What gets cut
 
+These defaults apply to the quick cleanup panel. Switch on any cleanup option in the saved-take editor to apply it there.
+
 | Type | Default | Rule |
 |---|---|---|
 | Filler words | On | um, uh, erm, er, ah, hmm, mm, and similar single-word disfluencies. Words such as "like", "so", or "you know" often carry meaning, so they are never cut automatically. |
@@ -32,7 +40,7 @@ Cut words appear struck through, and shortened pauses appear as red "−2.1s" ch
 
 All outputs use the same cut list:
 
-- **Preview cleaned** plays the recording in the browser and skips every cut.
+- **Preview edit** plays the recording in the browser and skips every cut.
 - **Download cleaned audio** splices the audio track in the browser, much faster than real time, and saves a WAV. An 8 ms fade at each join prevents clicks. Recordings longer than 90 minutes should use the server export instead.
 - **Cleaned transcript** downloads the text without the cut words.
 - **Edit list (FCPXML · EDL · SRT)** downloads a ZIP for finishing the edit in a free local editor such as DaVinci Resolve:
@@ -41,7 +49,7 @@ All outputs use the same cut list:
   - `*_cleaned.srt`, captions re-timed to the cleaned timeline, with cut words removed.
 
   Put the files next to the track files, or relink when the editor asks. Import the FCPXML in Resolve with File > Import > Timeline.
-- **Render cleaned MP4 here** renders the cleaned program, and any other tracks you tick, in this browser with no server CPU and no upload. Each WebM is read from disk in pieces and decoded with WebCodecs (`VideoDecoder`/`AudioDecoder` through [mediabunny](https://mediabunny.dev), MPL-2.0, loaded only when a render starts). Frames outside the kept ranges are dropped. The kept frames are re-encoded as H.264, using the hardware encoder when there is one (HEVC, VP9 or AV1 if H.264 is unavailable), with AAC audio (Opus if AAC is unavailable) and 5 ms fades at each join. The result is muxed to MP4 and written as it is produced:
+- **Render edited video** renders the cleaned program, and any other tracks you tick, in this browser with no server CPU and no upload. Each WebM is read from disk in pieces and decoded with WebCodecs (`VideoDecoder`/`AudioDecoder` through [mediabunny](https://mediabunny.dev), MPL-2.0, loaded only when a render starts). Frames outside the kept ranges are dropped. The kept frames are re-encoded as H.264, with the browser choosing whether to use hardware or software encoding (HEVC, VP9 or AV1 if H.264 is unavailable), with AAC audio (Opus if AAC is unavailable) and 5 ms fades at each join. The result is muxed to MP4 and written as it is produced:
   1. into `<recording folder>/<Studio>/Exports/` on the SSD, when a recording folder is set up (one click re-grants access);
   2. otherwise into a folder you pick;
   3. otherwise through the browser's private storage, then downloaded;
