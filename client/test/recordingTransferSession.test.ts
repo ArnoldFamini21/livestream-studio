@@ -216,7 +216,7 @@ describe('peer-to-peer recording transfer', () => {
 
     const track: TransferSourceTrack = {
       id: 'take-writing', sessionId: 'recording-1', label: 'Maria audio', kind: 'audio', mimeType,
-      read: async () => store.snapshotCommitted(mimeType),
+      read: async () => store.readCommitted(),
     };
     const memory = memorySink();
     const registry = new HostTransferRegistry(memory.open);

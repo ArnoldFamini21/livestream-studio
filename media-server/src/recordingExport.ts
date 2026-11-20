@@ -58,10 +58,29 @@ export interface RecordingExportPlan {
   clip?: RecordingExportClipRange | null;
   edit?: RecordingExportEdit | null;
   normalizeAudio?: boolean;
+  reduceAudioNoise?: boolean;
 }
+
+type TrackAudioOptions = Partial<RecordingExportAudioOptions> & Pick<RecordingExportPlan, 'reduceAudioNoise'>;
 
 // Broadcast/podcast loudness target (EBU R128 / streaming-friendly -14 LUFS).
 export const LOUDNORM_AUDIO_FILTER = 'loudnorm=I=-14:TP=-1.5:LRA=11';
+// afftdn has a two-hop delay (1,200 samples at 48 kHz). Flush its tail,
+// then remove the leading delay while preserving the original stream's timestamps.
+const NOISE_REDUCTION_AUDIO_FILTER = 'aresample=48000,apad=pad_len=1200,afftdn=nr=10:nf=-45:tn=1,atrim=start_sample=1200,asetpts=PTS-1200/SR/TB';
+
+function buildExportAudioFilters(
+  options: Pick<RecordingExportPlan, 'reduceAudioNoise' | 'normalizeAudio'>,
+  mix?: string,
+  edit?: string
+): string {
+  return [
+    mix,
+    options.reduceAudioNoise === true ? NOISE_REDUCTION_AUDIO_FILTER : '',
+    edit,
+    options.normalizeAudio === true ? LOUDNORM_AUDIO_FILTER : '',
+  ].filter(Boolean).join(',');
+}
 
 export interface RecordingExportCommand {
   label: string;
@@ -438,13 +457,9 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
 
   const videoFilter = getClipVideoGeometry(video, clip).filter;
   const audioBitrateKbps = Math.round(audio.audioBitsPerSecond / 1000);
-  const normalizeAudio = plan.normalizeAudio === true;
-
   if (audioTracks.length > 0) {
     const audioInputs = audioTracks.map((_, index) => `[${index + 1}:a:0]`).join('');
-    const mixFilter = normalizeAudio
-      ? `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2,${LOUDNORM_AUDIO_FILTER}`
-      : `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2`;
+    const mixFilter = buildExportAudioFilters(plan, `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2`);
     args.push(
       '-filter_complex',
       `[0:v:0]${videoFilter}[vout];${audioInputs}${mixFilter}[aout]`,
@@ -457,11 +472,8 @@ export function createRecordingMp4Args(plan: RecordingExportPlan): RecordingExpo
       '-map', '0:v:0',
       '-map', '0:a:0?'
     );
-    // The audio-less path is only reached with a program mix (audio present) or a
-    // silent video, so only normalize when the primary track is known to carry audio.
-    if (normalizeAudio && primaryVideoTrack.hasAudio !== false) {
-      args.push('-af', LOUDNORM_AUDIO_FILTER);
-    }
+    const audioFilters = buildExportAudioFilters(plan);
+    if (audioFilters && primaryVideoTrack.hasAudio !== false) args.push('-af', audioFilters);
   }
 
   pushVideoEncodingArgs(args, video);
@@ -496,13 +508,13 @@ function createEditedMp4Args(
 
   const videoChain = `[0:v:0]${buildEditVideoFilter(edit, video.frameRate)},${getClipVideoGeometry(video, null).filter}[vout]`;
   const audioEdit = buildEditAudioFilter(edit, audio.sampleRate);
-  const loudnorm = plan.normalizeAudio === true ? `,${LOUDNORM_AUDIO_FILTER}` : '';
   let audioChain = '';
   if (audioTracks.length > 0) {
     const inputs = audioTracks.map((_, index) => `[${index + 1}:a:0]`).join('');
-    audioChain = `${inputs}amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2,${audioEdit}${loudnorm}[aout]`;
+    const mixFilter = buildExportAudioFilters(plan, `amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2`, audioEdit);
+    audioChain = `${inputs}${mixFilter}[aout]`;
   } else if (primaryVideoTrack.hasAudio !== false) {
-    audioChain = `[0:a:0]${audioEdit}${loudnorm}[aout]`;
+    audioChain = `[0:a:0]${buildExportAudioFilters(plan, undefined, audioEdit)}[aout]`;
   }
 
   const filterScript = editScript(outputPath, audioChain ? `${videoChain};${audioChain}` : videoChain);
@@ -526,7 +538,7 @@ export function createRecordingIsolatedVideoArgs(
   outputDirectory: string,
   basename: string,
   videoOptions: Partial<RecordingExportVideoOptions> = {},
-  audioOptions: Partial<RecordingExportAudioOptions> = {},
+  audioOptions: TrackAudioOptions = {},
   clipRange: RecordingExportClipRange | null | undefined = null,
   editInput: RecordingExportEdit | null | undefined = null
 ): RecordingExportCommand {
@@ -541,7 +553,9 @@ export function createRecordingIsolatedVideoArgs(
   if (edit) {
     const outputPath = path.join(outputDirectory, `${sanitizeExportBasename(`${basename}_${track.label}_video`)}_cleaned.mp4`);
     const videoChain = `[0:v:0]${buildEditVideoFilter(edit, video.frameRate)},${getClipVideoGeometry(video, null).filter}[vout]`;
-    const audioChain = track.hasAudio === true ? `;[0:a:0]${buildEditAudioFilter(edit, audio.sampleRate)}[aout]` : '';
+    const audioChain = track.hasAudio === true
+      ? `;[0:a:0]${buildExportAudioFilters(audioOptions, undefined, buildEditAudioFilter(edit, audio.sampleRate))}[aout]`
+      : '';
     const filterScript = editScript(outputPath, `${videoChain}${audioChain}`);
     const args = ['-hide_banner', '-loglevel', 'warning', '-fflags', '+genpts', '-i', track.path, '-filter_complex_script', filterScript.path, '-map', '[vout]'];
     if (audioChain) args.push('-map', '[aout]');
@@ -575,6 +589,7 @@ export function createRecordingIsolatedVideoArgs(
     '-map', '0:v:0',
     '-map', '0:a:0?',
   );
+  if (audioOptions.reduceAudioNoise === true && track.hasAudio === true) args.push('-af', NOISE_REDUCTION_AUDIO_FILTER);
   pushVideoEncodingArgs(args, video);
   args.push(
     '-c:a', 'aac',
@@ -598,7 +613,7 @@ export function createRecordingAudioStemArgs(
   outputDirectory: string,
   basename: string,
   format: RecordingAudioStemFormat,
-  options: Partial<RecordingExportAudioOptions> = {},
+  options: TrackAudioOptions = {},
   clipRange: RecordingExportClipRange | null | undefined = null,
   normalizeAudio = false,
   editInput: RecordingExportEdit | null | undefined = null,
@@ -613,8 +628,8 @@ export function createRecordingAudioStemArgs(
   const edit = getPlanEdit({ edit: editInput, clip: clipRange }, editFrameRate);
   if (edit) {
     const outputPath = path.join(outputDirectory, `${sanitizeExportBasename(`${basename}_${track.label}`)}_cleaned.${format}`);
-    const loudnorm = normalizeAudio ? `,${LOUDNORM_AUDIO_FILTER}` : '';
-    const filterScript = editScript(outputPath, `[0:a:0]${buildEditAudioFilter(edit, audio.sampleRate)}${loudnorm}[aout]`);
+    const audioFilters = buildExportAudioFilters({ reduceAudioNoise: options.reduceAudioNoise, normalizeAudio }, undefined, buildEditAudioFilter(edit, audio.sampleRate));
+    const filterScript = editScript(outputPath, `[0:a:0]${audioFilters}[aout]`);
     const args = ['-hide_banner', '-loglevel', 'warning', '-i', track.path, '-filter_complex_script', filterScript.path, '-map', '[aout]', '-ar', String(audio.sampleRate), '-ac', String(audio.channelCount)];
     if (format === 'wav') args.push('-c:a', 'pcm_s16le');
     else args.push('-c:a', 'libmp3lame', '-b:a', `${Math.round(audio.audioBitsPerSecond / 1000)}k`);
@@ -635,9 +650,8 @@ export function createRecordingAudioStemArgs(
     '-ar', String(audio.sampleRate),
     '-ac', String(audio.channelCount),
   );
-  if (normalizeAudio) {
-    args.push('-af', LOUDNORM_AUDIO_FILTER);
-  }
+  const audioFilters = buildExportAudioFilters({ reduceAudioNoise: options.reduceAudioNoise, normalizeAudio });
+  if (audioFilters) args.push('-af', audioFilters);
 
   if (format === 'wav') {
     args.push('-c:a', 'pcm_s16le');
@@ -662,14 +676,15 @@ export function createRecordingExportCommands(plan: RecordingExportPlan): Record
   const frameRate = normalizeRecordingExportVideoOptions(plan.video).frameRate;
   const mp4 = createRecordingMp4Args(plan);
   const basename = sanitizeExportBasename(plan.basename);
+  const trackAudioOptions = { ...plan.audio, reduceAudioNoise: plan.reduceAudioNoise };
   const isolatedVideos = selectIsolatedVideoTracks(plan.tracks).map((track) => (
-    createRecordingIsolatedVideoArgs(track, plan.outputDirectory, basename, plan.video, plan.audio, clip, edit)
+    createRecordingIsolatedVideoArgs(track, plan.outputDirectory, basename, plan.video, trackAudioOptions, clip, edit)
   ));
   const normalizeAudio = plan.normalizeAudio === true;
   const audioTracks = plan.tracks.filter((track) => track.kind === 'audio' || track.hasAudio === true).slice(0, AUDIO_INPUT_LIMIT);
   const stems = audioTracks.flatMap((track) => [
-    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'wav', plan.audio, clip, normalizeAudio, edit, frameRate),
-    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'mp3', plan.audio, clip, normalizeAudio, edit, frameRate),
+    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'wav', trackAudioOptions, clip, normalizeAudio, edit, frameRate),
+    createRecordingAudioStemArgs(track, plan.outputDirectory, basename, 'mp3', trackAudioOptions, clip, normalizeAudio, edit, frameRate),
   ]);
 
   return { mp4, isolatedVideos, stems };

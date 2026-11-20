@@ -12,6 +12,12 @@ export interface RecordingChunkDirectory {
   removeEntry?(name: string): Promise<void>;
 }
 
+/** Fixed-length view of readable recording bytes, with slices at absolute byte offsets. */
+export interface RecordingByteSource {
+  readonly size: number;
+  slice(start: number, end: number): Blob;
+}
+
 /** Commit chunks separately so a failed write cannot invalidate earlier footage. */
 export function createRecordingChunkStore(
   directory?: RecordingChunkDirectory,
@@ -22,13 +28,12 @@ export function createRecordingChunkStore(
   let diskAvailable = Boolean(directory);
   let discarded = false;
   let nextIndex = 0;
-  const parts: Blob[] = [];
+  const parts: { blob: Blob; end: number }[] = [];
   const diskFiles: string[] = [];
-  const committedSnapshots = new Map<string, Blob>();
+  const committedBytes = () => parts.at(-1)?.end ?? 0;
 
-  const commitPart = (data: Blob) => {
-    parts.push(data);
-    committedSnapshots.clear();
+  const commitPart = (blob: Blob) => {
+    parts.push({ blob, end: committedBytes() + blob.size });
   };
 
   const append = (data: Blob) => {
@@ -64,27 +69,52 @@ export function createRecordingChunkStore(
   return {
     append,
     flush: () => pending,
-    /** Capture-order prefix immediately readable while disk writes are pending. */
-    snapshotCommitted(mimeType: string): Blob {
-      if (discarded) return new Blob([], { type: mimeType });
-      const cached = committedSnapshots.get(mimeType);
-      if (cached) return cached;
-      const snapshot = new Blob(parts, { type: mimeType });
-      committedSnapshots.set(mimeType, snapshot);
-      return snapshot;
+    /** Read committed ranges without waiting for pending writes or assembling the take. */
+    readCommitted(): RecordingByteSource {
+      const size = discarded ? 0 : committedBytes();
+      return {
+        size,
+        slice(start, end) {
+          const from = Math.max(0, start);
+          const to = Math.min(size, end);
+          if (from >= to) return new Blob();
+          if (discarded) throw new DOMException('The recording was discarded.', 'NotReadableError');
+
+          // Skip parts ending at or before the requested start, even on a long take.
+          let low = 0;
+          let high = parts.length;
+          while (low < high) {
+            const middle = Math.floor((low + high) / 2);
+            if (parts[middle].end <= from) low = middle + 1;
+            else high = middle;
+          }
+
+          const selected: Blob[] = [];
+          for (let index = low; index < parts.length; index += 1) {
+            const part = parts[index];
+            const partStart = part.end - part.blob.size;
+            if (partStart >= to) break;
+            const localStart = Math.max(0, from - partStart);
+            const localEnd = Math.min(part.blob.size, to - partStart);
+            selected.push(localStart === 0 && localEnd === part.blob.size
+              ? part.blob
+              : part.blob.slice(localStart, localEnd));
+          }
+          return selected.length === 1 ? selected[0] : new Blob(selected);
+        },
+      };
     },
     /** Wait for the currently queued writes before taking a capture-order snapshot. */
     async snapshot(mimeType: string): Promise<Blob> {
       await pending;
-      return new Blob(parts, { type: mimeType });
+      return new Blob(parts.map(part => part.blob), { type: mimeType });
     },
     async finish(mimeType: string): Promise<Blob> {
       await pending;
-      return new Blob(parts, { type: mimeType });
+      return new Blob(parts.map(part => part.blob), { type: mimeType });
     },
     async discard(): Promise<void> {
       discarded = true;
-      committedSnapshots.clear();
       await pending;
       parts.length = 0;
       for (const filename of diskFiles) {

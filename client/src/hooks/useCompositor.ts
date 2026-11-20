@@ -9,7 +9,6 @@ import type { TimerData } from '../components/TimerOverlay.tsx';
 import type { TickerData } from '../components/TickerOverlay.tsx';
 import type { WidgetOverlayData } from '../components/WidgetOverlay.tsx';
 import { buildLowerThirdCanvasFont, normalizeLowerThirdAccentColor } from '../utils/lowerThirds.ts';
-import { createCompositorFrameTarget, type CompositorFrameTarget } from '../utils/compositorFrameTarget.ts';
 import { getCompositorCoordinateScales } from '../utils/compositorCoordinates.ts';
 import {
   canDrawMediaImage,
@@ -1192,7 +1191,6 @@ export function useCompositor({
   const logoImageRef = useRef<HTMLImageElement | null>(null);
   const backgroundImageRef = useRef<HTMLImageElement | null>(null);
   const activePresentationSlideImageRef = useRef<HTMLImageElement | null>(null);
-  const frameTargetRef = useRef<CompositorFrameTarget | null>(null);
   const lowerThirdPresenceRef = useRef(new OverlayPresenceTracker<LowerThirdData>(LOWER_THIRD_CANVAS_EXIT_MS));
   // When each banner and ticker appeared: their scrolling starts from there.
   const bannerPresenceRef = useRef(new OverlayPresenceTracker<BannerData>(0));
@@ -1291,19 +1289,14 @@ export function useCompositor({
       canvas.width = programSize.width;
       canvas.height = programSize.height;
     }
-    frameTargetRef.current = createCompositorFrameTarget(canvas, programSize);
     layoutCacheRef.current.invalidate(performance.now());
-
-    return () => {
-      frameTargetRef.current?.dispose();
-      frameTargetRef.current = null;
-    };
   }, [programSize]);
 
   const drawLoop = useCallback(() => {
     if (!canvasRef.current || !containerRef.current) return;
-    const target = frameTargetRef.current;
-    const ctx = target?.context || canvasRef.current.getContext('2d');
+    // The capture canvas is already detached from the DOM. Drawing on it
+    // directly avoids allocating and blitting a second full-size bitmap each tick.
+    const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
     const mediaSource = mediaSourceRef?.current ?? containerRef.current;
     const backgroundVideo = mediaSource.querySelector<HTMLVideoElement>('.studio-stage-background-video');
@@ -1312,7 +1305,6 @@ export function useCompositor({
     if (streamScreen) {
       drawStageBackground(ctx, streamScreen.background, backgroundImageRef.current);
       drawStreamScreen(ctx, streamScreen, logoImageRef.current, Date.now());
-      target?.commit();
       return;
     }
 
@@ -1324,7 +1316,6 @@ export function useCompositor({
       height: containerRef.current.clientHeight,
     }, { width: canvasRef.current.width, height: canvasRef.current.height });
     if (!scales) {
-      target?.commit();
       return;
     }
 
@@ -1544,7 +1535,6 @@ export function useCompositor({
         return drawVideoElementFrame(ctx, stinger, 0, 0, ctx.canvas.width, ctx.canvas.height, 'cover');
       });
     }
-    target?.commit();
   }, [containerRef, mediaSourceRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition, brandFontFamily, chatOverlay, widgetCaptureSources]);
 
   // Frames come from a worker timer at the output rate, not requestAnimationFrame,

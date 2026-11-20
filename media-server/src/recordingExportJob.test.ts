@@ -281,6 +281,7 @@ describe('recording export jobs', () => {
     const parsed = JSON.parse(await readFile(manifest.path, 'utf8'));
     assert.equal(parsed.export.clip, null);
     assert.equal(parsed.export.normalizeAudio, false);
+    assert.equal(parsed.export.reduceAudioNoise, false);
   });
 
   it('applies loudnorm to the MP4 and stems and records it in the manifest', async () => {

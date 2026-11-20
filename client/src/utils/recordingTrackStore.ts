@@ -1,3 +1,4 @@
+import type { RecordingByteSource } from './recordingChunkStore.ts';
 import { createRecoverableRecordingStore, type RecordingRecoveryTransferMetadata, type RecoveryTrackKind } from './recordingRecovery.ts';
 import { getRecordingFileExtension } from './recordingMimeTypes.ts';
 import { FolderTrackWriteError, recordingPathSegment, type FolderTrackWriter, type TakeFolder } from './recordingTakeFolder.ts';
@@ -11,7 +12,7 @@ export interface RecordingTrackStore {
   /** Wait for queued writes before taking a capture-order snapshot. */
   snapshot(mimeType?: string): Promise<Blob>;
   /** Capture-order prefix that can be read without waiting for queued writes. */
-  snapshotCommitted?(mimeType?: string): Blob;
+  readCommitted?(): RecordingByteSource;
   finish(mimeType?: string, options?: { header?: Blob }): Promise<Blob>;
   discard(): Promise<void>;
   /** 'folder' while the recording folder takes the bytes; 'browser' for OPFS. */
@@ -54,7 +55,7 @@ export const browserRecordingTrackStoreFactory: RecordingTrackStoreFactory = (in
     append: store.append,
     flush: store.flush,
     snapshot: store.snapshot,
-    snapshotCommitted: store.snapshotCommitted,
+    readCommitted: store.readCommitted,
     finish: store.finish,
     discard: store.discard,
     location: () => 'browser',

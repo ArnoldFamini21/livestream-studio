@@ -37,7 +37,14 @@ test("recording soak rejects timestamp regressions rather than sorting them away
 test("recording soak rejects packet gaps above one second", () => {
   const probe = fixture();
   probe.packets[4].pts_time = "2.7";
-  assert.throws(() => inspectPacketTimeline(probe), /1\.200s packet gap/);
+  assert.throws(() => inspectPacketTimeline(probe), error => {
+    assert.match(error.message, /1\.200s packet gap/);
+    assert.equal(error.packetMetrics.timelines[0].maxGapStartSeconds, 1.5);
+    assert.equal(error.packetMetrics.timelines[0].lastSeconds, 2.7);
+    assert.equal(error.packetMetrics.timelines[0].lastPacketDurationSeconds, 0.02);
+    assert.equal(error.packetMetrics.timelines[1].packets, 5);
+    return true;
+  });
 });
 
 test("recording soak fails at forty milliseconds of A/V drift", () => {

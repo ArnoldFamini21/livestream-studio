@@ -303,6 +303,7 @@ try {
       if (track.kind === "iso" || track.origin === "program") assert.notEqual(evidence.metrics.avDriftMs, null, `${track.label} contains both A/V streams`);
     } catch (error) {
       evidence.metricError = error.message;
+      if (error.packetMetrics) evidence.metrics = error.packetMetrics;
       result.errors.push(`${track.label}: ${error.message}`);
     }
     result.tracks.push(evidence);

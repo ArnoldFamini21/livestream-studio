@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_CUSTOM_LAYOUTS, type CustomLayout, type Scene } from '@studio/shared';
-import { buildScenePack, importScenePack, parseScenePackJson } from '../src/utils/scenePacks.ts';
-import { captureServicePreset, prepareServicePreset } from '../src/utils/servicePresets.ts';
+import { buildScenePack, importScenePack, MAX_SCENE_PACK_BYTES, parseScenePackJson } from '../src/utils/scenePacks.ts';
+import { captureServicePreset, createServicePresetDownload, parseServicePresetFile, prepareServicePreset } from '../src/utils/servicePresets.ts';
 
 const original: CustomLayout = {
   id: 'original', name: 'Service', orientation: 'landscape',
@@ -39,4 +39,27 @@ test('a preset reuses matching layouts and refuses to silently drop a required l
   assert.throws(() => prepareServicePreset(preset, full, 1), /Make room for a custom layout/);
   assert.throws(() => prepareServicePreset(preset, [], 0), /Make room for a scene/);
   assert.throws(() => captureServicePreset(makePack(), []), /missing custom layout/);
+});
+
+
+test('a downloadable service preset retains its artwork and layout without local identifiers', () => {
+  const snapshot = captureServicePreset(makePack(), [original]);
+  const file = createServicePresetDownload({ ...snapshot, id: 'local-private-id', name: 'Sabbath service', createdAt: '2026-11-21' });
+  assert.equal(file.fileName, 'sabbath-service.service-preset.json');
+  assert.doesNotMatch(file.contents, /local-private-id|old-room-guest/);
+  const restored = parseServicePresetFile(file.contents);
+  assert.equal(restored.name, 'Sabbath service');
+  assert.equal(restored.snapshot.pack.scenes[0].logoUrl, artwork);
+  assert.equal(restored.snapshot.layouts[0].slots[0].participantId, undefined);
+  assert.equal(prepareServicePreset(restored.snapshot, [], 1, () => 'restored-layout').pack.scenes[0].customLayoutId, 'restored-layout');
+});
+
+test('foreign, oversized, and incomplete service preset files are rejected', () => {
+  const snapshot = captureServicePreset(makePack(), [original]);
+  const { contents } = createServicePresetDownload({ ...snapshot, id: 'local', name: 'Service', createdAt: '' });
+  const file = JSON.parse(contents);
+  assert.throws(() => parseServicePresetFile(JSON.stringify({ ...file, version: 2 })), /downloaded from Studio/);
+  assert.throws(() => parseServicePresetFile(JSON.stringify({ ...file, layouts: [] })), /missing custom layout/);
+  assert.throws(() => parseServicePresetFile(' '.repeat(MAX_SCENE_PACK_BYTES + 513)), /too large/);
+  assert.throws(() => parseServicePresetFile('{bad'), /not valid JSON/);
 });

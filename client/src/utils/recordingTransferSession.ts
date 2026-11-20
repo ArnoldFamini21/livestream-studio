@@ -1,3 +1,4 @@
+import type { RecordingByteSource } from './recordingChunkStore.ts';
 import {
   acceptDataFrame,
   applyResume,
@@ -57,7 +58,7 @@ export interface TransferSourceTrack {
   mimeType: string;
   lossless?: boolean;
   /** Committed bytes so far; must always be a prefix of the final file. */
-  read(): Promise<Blob>;
+  read(): Promise<RecordingByteSource>;
   /** Present once the track has stopped recording. */
   finished?: { totalBytes: number; header?: Uint8Array; capture?: unknown };
 }
@@ -82,7 +83,7 @@ export interface TransferSenderOptions {
 interface SenderLane {
   track: TransferSourceTrack;
   state: LaneSendState;
-  cached: Blob | null;
+  cached: RecordingByteSource | null;
   /** The source read() that produced cached; a replaced source invalidates it. */
   cachedRead: TransferSourceTrack['read'] | null;
   readAhead: { start: number; bytes: Uint8Array } | null;

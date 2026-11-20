@@ -15,7 +15,7 @@ import { useStudioBrandingShare } from '../hooks/useStudioBrandingShare.ts';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { deleteStoredMediaAsset, isStorableUploadedMediaAsset, loadStoredMediaAssets, mergeRestoredMediaAssets, saveStoredMediaAsset } from '../utils/mediaAssetStore.ts';
 import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, getPresentingViewLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
-import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
+import { shouldRunCompositor } from '../utils/compositorDemand.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
@@ -321,7 +321,7 @@ import {
   parseScenePackJson,
   type ScenePackOverlayKind,
 } from '../utils/scenePacks.ts';
-import { captureServicePreset, prepareServicePreset, type ServicePreset } from '../utils/servicePresets.ts';
+import { captureServicePreset, createServicePresetDownload, prepareServicePreset, type ServicePreset } from '../utils/servicePresets.ts';
 import {
   DEFAULT_SCENE_TRANSITION_PRESET_ID,
   getSceneTransitionOverlayStyle,
@@ -4915,6 +4915,7 @@ export function StudioRoom() {
       exportBasename: `${room?.name || 'Studio'} ${input.sessionId}`,
       exportVideoCodec: input.exportVideoCodec,
       normalizeAudio: input.normalizeAudio,
+      reduceAudioNoise: input.reduceAudioNoise,
     });
   }, [requestLiveStreamToken, room?.name, roomId]);
 
@@ -4959,6 +4960,7 @@ export function StudioRoom() {
       basename: input.basename,
       exportVideoCodec: input.exportVideoCodec,
       normalizeAudio: input.normalizeAudio,
+      reduceAudioNoise: input.reduceAudioNoise,
     });
   }, [requestLiveStreamToken]);
 
@@ -8421,7 +8423,14 @@ export function StudioRoom() {
             onExportScenePack={onExportScenePack}
             onImportScenePack={onImportScenePack}
             scenePackMessage={scenePackMessage}
-            servicePresets={{ capture: onCaptureServicePreset, load: onLoadServicePreset }}
+            servicePresets={{
+              capture: onCaptureServicePreset,
+              load: onLoadServicePreset,
+              download(preset) {
+                const { fileName, contents } = createServicePresetDownload(preset);
+                downloadJsonFile(fileName, contents);
+              },
+            }}
             tickers={tickers}
             onAddTicker={onAddTicker}
             onToggleTicker={onToggleTicker}

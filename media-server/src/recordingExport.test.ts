@@ -481,3 +481,42 @@ describe('recording export audio normalization', () => {
     assert.ok(commands.stems.every((stem) => stem.args.includes('-af')));
   });
 });
+
+describe('recording export noise reduction', () => {
+  const silentVideo = { ...hostVideoTrack, hasAudio: false };
+  const plan = {
+    tracks: [hostAudioTrack, silentVideo],
+    outputDirectory: '/tmp/exports',
+    basename: 'Voice isolation',
+  };
+
+  it('applies cleanup only on request and before loudness normalization', () => {
+    const normal = createRecordingExportCommands(plan);
+    for (const command of [normal.mp4, ...normal.isolatedVideos, ...normal.stems]) {
+      assert.ok(!command.args.join(' ').includes('afftdn'));
+    }
+
+    const commands = createRecordingExportCommands({ ...plan, reduceAudioNoise: true, normalizeAudio: true });
+    assert.match(commands.mp4.args[commands.mp4.args.indexOf('-filter_complex') + 1], /amix=.*?,afftdn=.*?,loudnorm=/);
+    assert.ok(commands.stems.every((stem) => /afftdn=.*?,loudnorm=/.test(stem.args[stem.args.indexOf('-af') + 1])));
+    assert.ok(!commands.isolatedVideos[0].args.includes('-af'), 'the isolated picture is silent');
+
+    const silent = createRecordingMp4Args({ ...plan, tracks: [silentVideo], reduceAudioNoise: true, normalizeAudio: true });
+    assert.ok(!silent.args.includes('-af'));
+  });
+
+  it('retains the filter through edits and processes isolated video with audio', () => {
+    const iso = { ...hostVideoTrack, kind: 'iso' as const, hasAudio: true };
+    const commands = createRecordingExportCommands({
+      ...plan,
+      tracks: [programTrack, iso],
+      reduceAudioNoise: true,
+      normalizeAudio: true,
+      edit: { keepRanges: [{ startSeconds: 1, endSeconds: 3 }] },
+    });
+
+    assert.match(commands.mp4.filterScript?.content || '', /afftdn=.*?,aselect=.*?,loudnorm=/);
+    assert.match(commands.isolatedVideos[0].filterScript?.content || '', /afftdn=.*?,aselect=/);
+    assert.ok(commands.stems.every((stem) => stem.filterScript?.content.includes('afftdn')));
+  });
+});
