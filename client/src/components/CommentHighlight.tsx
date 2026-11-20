@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ChatMessage, ChatSourcePlatform } from '@studio/shared';
+import { splitGraphemes } from '../utils/graphemes.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,6 +104,16 @@ export function isHighlightedCommentSource(comment: HighlightedComment | null, m
   return Boolean(comment && (comment.id === messageId || comment.sourceMessageId === messageId));
 }
 
+export function getCommentAvatarInitial(name: string): string {
+  return (splitGraphemes(name)[0] ?? '').toUpperCase();
+}
+
+export function getCommentSourcePillStyle(platform: ChatSourcePlatform | undefined): React.CSSProperties {
+  if (platform === 'watch') return { ...overlaySourcePill, ...overlaySourcePillWatch };
+  if (platform === 'facebook') return { ...overlaySourcePill, ...overlaySourcePillFacebook };
+  return overlaySourcePill;
+}
+
 export function getCommentSourceLabel(platform: ChatSourcePlatform | undefined): string {
   if (platform === 'youtube') return 'YouTube';
   if (platform === 'facebook') return 'Facebook';
@@ -190,7 +201,7 @@ export function CommentHighlightOverlay({ comment, onExpired }: CommentHighlight
   if (!current) return null;
 
   const color = current.avatarColor || getAvatarColor(current.senderName);
-  const initial = current.senderName.charAt(0).toUpperCase();
+  const initial = getCommentAvatarInitial(current.senderName);
   const isFlash = current.displayMode === 'flash';
   const sourceLabel = getCommentSourceLabel(current.sourcePlatform);
 
@@ -228,10 +239,7 @@ export function CommentHighlightOverlay({ comment, onExpired }: CommentHighlight
             {isFlash ? 'Audience flash' : 'Featured comment'}
           </span>
           {sourceLabel && (
-            <span style={{
-              ...overlaySourcePill,
-              ...(current.sourcePlatform === 'facebook' ? overlaySourcePillFacebook : {}),
-            }}>
+            <span style={getCommentSourcePillStyle(current.sourcePlatform)}>
               {sourceLabel}
             </span>
           )}
@@ -640,6 +648,12 @@ const overlaySourcePillFacebook: React.CSSProperties = {
   background: 'rgba(59, 130, 246, 0.15)',
   border: '1px solid rgba(96, 165, 250, 0.28)',
   color: '#dbeafe',
+};
+
+const overlaySourcePillWatch: React.CSSProperties = {
+  background: 'rgba(20, 184, 166, 0.16)',
+  border: '1px solid rgba(45, 212, 191, 0.26)',
+  color: '#99f6e4',
 };
 
 const overlayBody: React.CSSProperties = {

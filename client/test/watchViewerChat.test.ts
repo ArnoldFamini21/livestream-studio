@@ -17,7 +17,7 @@ import { selectOverlayComments, CHAT_OVERLAY_VIEWER_PREFIX } from '../src/utils/
 import { fitQuestionAuthorLabel, questionAuthorLabel } from '../src/utils/viewerQuestionLabel.ts';
 import { splitGraphemes } from '../src/utils/graphemes.ts';
 import { pinnedNoteText, publicChatNote, viewerMessagesGoStraightOnAir } from '../src/utils/viewerChatNotes.ts';
-import { getCommentSourceLabel, createHighlightedCommentFromChatMessage } from '../src/components/CommentHighlight.tsx';
+import { getCommentAvatarInitial, getCommentSourceLabel, getCommentSourcePillStyle, createHighlightedCommentFromChatMessage } from '../src/components/CommentHighlight.tsx';
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));
@@ -178,6 +178,30 @@ describe('a viewer is never mistaken for the host', () => {
     assert.equal(selectOverlayComments({ messages: [viewerMessage('Ana')], settings: shown, greenRoomIds: new Set() }).length, 1);
   });
 
+  it('takes earlier viewer lines off the rolling overlay even when approved or paused', () => {
+    const viewer = { ...viewerMessage('Ana'), starred: true };
+    const studio = { ...viewer, id: 'studio1', senderName: 'Host', source: undefined };
+    const platform = { ...viewer, id: 'yt1', source: { platform: 'youtube' as const, externalId: 'other' } };
+    const messages = [studio, platform, viewer];
+    const variants = [settings, { ...settings, mode: 'approved' as const },
+      { ...settings, paused: true, pausedIds: ['studio1', 'yt1', 'v1'] }];
+    for (const state of variants) {
+      const inputs = { messages, settings: state, greenRoomIds: new Set<string>() };
+      assert.deepEqual(selectOverlayComments({ ...inputs, showWatchMessages: true }).map(({ id }) => id), ['studio1', 'yt1', 'v1']);
+      assert.deepEqual(selectOverlayComments({ ...inputs, showWatchMessages: false }).map(({ id }) => id), ['studio1', 'yt1']);
+    }
+  });
+
+  it('keeps the whole avatar character and uses a distinct viewer pill', () => {
+    for (const name of ['👩🏽‍💻', '🇵🇭', '😀']) {
+      assert.equal(getCommentAvatarInitial(name + ' Ana'), name);
+    }
+    assert.equal(getCommentAvatarInitial('ana'), 'A');
+    assert.equal(getCommentAvatarInitial(''), '');
+    assert.equal(getCommentSourcePillStyle('watch').color, '#99f6e4');
+    assert.notEqual(getCommentSourcePillStyle('watch').color, getCommentSourcePillStyle('youtube').color);
+  });
+
   it('marks a featured comment and a question as from a viewer', () => {
     assert.equal(getCommentSourceLabel('watch'), 'Viewer');
     assert.equal(createHighlightedCommentFromChatMessage(viewerMessage('Pastor John'))?.sourcePlatform, 'watch');
@@ -217,7 +241,8 @@ describe('what people in the studio are told about who sees the chat', () => {
   });
 
   it('marks a pinned viewer line as from a viewer, whatever name the viewer typed', () => {
-    assert.equal(pinnedNoteText({ content: 'Praying for you', senderName: 'Pastor Arnold', source: { platform: 'watch' } }), 'Pastor Arnold (viewer): Praying for you');
+    assert.equal(pinnedNoteText({ content: 'Praying for you', senderName: 'Pastor Arnold', source: { platform: 'watch' } }), 'Viewer · Pastor Arnold: Praying for you');
+    assert.match(pinnedNoteText({ content: 'Hello', senderName: 'W'.repeat(40), source: { platform: 'watch' } }), /^Viewer · /u);
     assert.equal(pinnedNoteText({ content: 'Welcome', senderName: 'Pastor Arnold' }), 'Welcome');
     assert.equal(pinnedNoteText({ content: 'Hi', senderName: 'Ana', source: { platform: 'youtube' } }), 'Hi');
   });

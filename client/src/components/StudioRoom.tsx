@@ -1979,6 +1979,8 @@ export function StudioRoom() {
   const visibleWidgetIds = useMemo(() => widgets.filter((widget) => widget.visible).map((widget) => widget.id), [widgets]);
   // Opt-in tab capture so web widgets go out live instead of as a placeholder.
   const widgetTabCapture = useWidgetTabCapture(stageRef, visibleWidgetIds);
+  // Viewer chat state also controls the rolling overlay. Viewer reactions stay in the preview.
+  const viewerChat = useViewerChat({ send, addHandler, canControl: canUseOperatorControls });
   // On-screen chat: one state for the stage preview, the compositor and the chat panel's controls.
   const chatOverlay = useChatOverlay({
     roomId,
@@ -1988,9 +1990,8 @@ export function StudioRoom() {
     isHost: isStudioHost,
     chatMessages,
     participants,
+    showWatchMessages: viewerChat.state.switches.chat,
   });
-  // Watch page viewers: the switches, blocks and reaction counts the server keeps (preview only, never the broadcast).
-  const viewerChat = useViewerChat({ send, addHandler, canControl: canUseOperatorControls });
   const chatOverlayFontFamily = brandFontState.fontFamily || OVERLAY_FONT_FAMILY;
   const compositorChatOverlay = useMemo(
     () => (chatOverlay.comments.length > 0 ? { comments: chatOverlay.comments, settings: chatOverlay.layoutSettings } : null),

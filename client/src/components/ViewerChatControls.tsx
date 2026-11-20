@@ -63,7 +63,7 @@ export function ViewerChatControls({ state, serverSupported, onSetSwitch, onUnbl
         </button>
       </div>)}
       <p className="chat-overlay-note">Everything starts off. People on the watch page see only what you turn on. Their messages appear here marked Viewer.</p>
-      <p className="chat-overlay-note">Viewer messages are shown to everyone watching. If Chat on screen is on, they can also appear on the broadcast. Public studio chat also appears on the watch page while viewer chat is on. Turning viewer chat off stops new messages. To hide earlier comments from the broadcast, remove them or turn off Chat on screen.</p>
+      <p className="chat-overlay-note">Viewer messages are shown to everyone watching. If Chat on screen is on, they can also appear on the broadcast. Public studio chat also appears on the watch page while viewer chat is on. Turning viewer chat off stops new messages and hides earlier viewer messages from Chat on screen.</p>
       {!serverSupported && <p className="chat-overlay-note">The studio needs an update before these switches work. Reload in a few minutes.</p>}
       <div className="viewer-chat-blocked">
         <strong>Blocked viewers</strong>

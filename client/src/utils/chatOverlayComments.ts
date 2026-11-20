@@ -109,6 +109,8 @@ export interface SelectOverlayCommentsInput {
   settings: Pick<ChatOverlayState, 'mode' | 'paused' | 'pausedIds' | 'hiddenIds' | 'shownIds'>;
   /** Participants who are still in the green room; nothing they sent may reach the program. */
   greenRoomIds: ReadonlySet<string>;
+  /** Viewer messages leave the rolling overlay when the host switches their chat off. */
+  showWatchMessages?: boolean;
   /** Cap on comments returned (the layout fits fewer when they are tall). */
   limit?: number;
 }
@@ -124,7 +126,7 @@ function messageTime(message: ChatMessage): number {
  * list, approved mode (starred or shown on screen), and pause (the frozen id
  * list). The result is bounded and its text sanitized.
  */
-export function selectOverlayComments({ messages, settings, greenRoomIds, limit = CHAT_OVERLAY_BUFFER_MAX }: SelectOverlayCommentsInput): ChatOverlayComment[] {
+export function selectOverlayComments({ messages, settings, greenRoomIds, showWatchMessages = true, limit = CHAT_OVERLAY_BUFFER_MAX }: SelectOverlayCommentsInput): ChatOverlayComment[] {
   const hidden = new Set(settings.hiddenIds);
   const shown = new Set(settings.shownIds);
   const frozen = settings.paused ? new Set(settings.pausedIds) : null;
@@ -132,6 +134,7 @@ export function selectOverlayComments({ messages, settings, greenRoomIds, limit 
   messages.forEach((message, order) => {
     if (!isPublicOverlayCandidate(message)) return;
     if (greenRoomIds.has(message.senderId)) return;
+    if (!showWatchMessages && message.source?.platform === 'watch') return;
     if (hidden.has(message.id)) return;
     if (frozen) {
       if (!frozen.has(message.id)) return;

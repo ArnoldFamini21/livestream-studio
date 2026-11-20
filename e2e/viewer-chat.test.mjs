@@ -119,7 +119,13 @@ test('watch-page engagement reaches the studio and follows host moderation', { t
     await host.getByRole('button', { name: 'Unblock Test Host', exact: true }).waitFor({ state: 'detached' });
     await sendViewerMessage('Back again');
     await watchMessage(observer, 'Back again').waitFor();
+    const overlayShow = host.getByRole('group', { name: 'Show', exact: true });
+    if (await overlayShow.count() === 0) await host.getByRole('button', { name: 'Chat on screen settings' }).click();
+    await overlayShow.getByRole('button', { name: 'All comments', exact: true }).click();
+    const earlierLine = stage.locator('[data-chat-overlay]').getByText('Back again', { exact: true });
+    await earlierLine.waitFor();
     await setSwitch('Viewers can chat', false);
+    await earlierLine.waitFor({ state: 'detached' });
     await viewer.getByLabel('Your message').waitFor({ state: 'detached' });
     await viewer.getByRole('button', { name: 'Ask a question' }).waitFor();
 

@@ -33,5 +33,5 @@ export function viewerMessagesGoStraightOnAir(
  * the host in the pinned note either.
  */
 export function pinnedNoteText(message: { content: string; senderName: string; source?: { platform: string } }): string {
-  return message.source?.platform === 'watch' ? `${message.senderName} (viewer): ${message.content}` : message.content;
+  return message.source?.platform === 'watch' ? `Viewer · ${message.senderName}: ${message.content}` : message.content;
 }

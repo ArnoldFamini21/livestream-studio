@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { drawParticipantCards } from '../utils/compositorParticipantCards.ts';
 import { CHAT_REACTION_EMOJIS, type ActiveMedia, type BroadcastOrientation, type LivePoll, type LogoPlacement, type LogoPosition, type LogoSize, type QAQuestion, type StageBackground } from '@studio/shared';
 import type { BannerData } from '../components/BannerOverlay.tsx';
-import { getCommentSourceLabel, type HighlightedComment } from '../components/CommentHighlight.tsx';
+import { getCommentAvatarInitial, getCommentSourceLabel, type HighlightedComment } from '../components/CommentHighlight.tsx';
 import type { LowerThirdData } from '../components/LowerThird.tsx';
 import { REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from '../components/ReactionOverlay.tsx';
 import type { TimerData } from '../components/TimerOverlay.tsx';
@@ -846,7 +846,7 @@ function drawBroadcastComment(ctx: CanvasRenderingContext2D, comment: Highlighte
   ctx.font = '800 24px Inter, Arial, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(comment.senderName.charAt(0).toUpperCase(), x + padding + avatarSize / 2, y + padding + 26 + avatarSize / 2 + 1);
+  ctx.fillText(getCommentAvatarInitial(comment.senderName), x + padding + avatarSize / 2, y + padding + 26 + avatarSize / 2 + 1);
 
   ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
