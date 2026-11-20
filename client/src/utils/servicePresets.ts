@@ -2,11 +2,14 @@ import { MAX_CUSTOM_LAYOUTS, normalizeCustomLayouts, type CustomLayout } from '@
 import { MAX_SCENE_PACK_BYTES, validateScenePack, type ScenePack } from './scenePacks.ts';
 
 const DATABASE = 'livestream-studio-service-presets';
-const STORE = 'presets';
+const PRESETS = 'presets';
+const FOLDERS = 'folders';
 const MAX_PRESETS = 12;
+const MAX_FOLDERS = MAX_PRESETS;
 const PRESET_SOURCE = 'livestream-studio-service-preset';
 const PRESET_VERSION = 1;
 const MAX_PRESET_NAME_LENGTH = 60;
+export const MAX_SERVICE_PRESET_FOLDER_NAME = 40;
 const MAX_PRESET_FILE_BYTES = MAX_SCENE_PACK_BYTES + 512;
 const encoder = new TextEncoder();
 
@@ -19,6 +22,27 @@ export interface ServicePreset extends ServicePresetSnapshot {
   id: string;
   name: string;
   createdAt: string;
+  folderId?: string;
+}
+
+export interface ServicePresetFolder {
+  id: string;
+  name: string;
+}
+
+export interface ServicePresetLibrary {
+  presets: ServicePreset[];
+  folders: ServicePresetFolder[];
+}
+
+export function groupServicePresets({ presets, folders }: ServicePresetLibrary) {
+  const groups = folders.map(folder => ({ ...folder, presets: [] as ServicePreset[] }));
+  const byId = new Map(groups.map(group => [group.id, group.presets]));
+  const unfiled: ServicePreset[] = [];
+  for (const preset of presets) {
+    (byId.get(preset.folderId ?? '') ?? unfiled).push(preset);
+  }
+  return { groups, unfiled };
 }
 
 /** Keep only the portable layouts used by the saved scenes. */
@@ -115,35 +139,58 @@ function openStore(): Promise<IDBDatabase> {
       reject(new Error('This browser cannot save service presets.'));
       return;
     }
-    const request = indexedDB.open(DATABASE, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE, { keyPath: 'id' });
-    request.onsuccess = () => resolve(request.result);
+    const request = indexedDB.open(DATABASE, 2);
+    let blocked = false;
+    request.onupgradeneeded = event => {
+      if (event.oldVersion === 0) request.result.createObjectStore(PRESETS, { keyPath: 'id' });
+      request.result.createObjectStore(FOLDERS, { keyPath: 'id' });
+    };
+    request.onblocked = () => {
+      blocked = true;
+      reject(new Error('Close other Studio tabs and reopen the preset library.'));
+    };
+    request.onsuccess = () => {
+      if (blocked) {
+        request.result.close();
+        return;
+      }
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
     request.onerror = () => reject(request.error ?? new Error('Could not open service presets.'));
   });
 }
 
-export async function listServicePresets(): Promise<ServicePreset[]> {
+export async function listServicePresetLibrary(): Promise<ServicePresetLibrary> {
   const db = await openStore();
   try {
     return await new Promise((resolve, reject) => {
-      const request: IDBRequest<ServicePreset[]> = db.transaction(STORE).objectStore(STORE).getAll();
-      request.onsuccess = () => resolve(request.result.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
-      request.onerror = () => reject(request.error ?? new Error('Could not read service presets.'));
+      const transaction = db.transaction([PRESETS, FOLDERS], 'readonly');
+      const presets: IDBRequest<ServicePreset[]> = transaction.objectStore(PRESETS).getAll();
+      const folders: IDBRequest<ServicePresetFolder[]> = transaction.objectStore(FOLDERS).getAll();
+      transaction.oncomplete = () => resolve({
+        presets: presets.result.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+        folders: folders.result.sort((a, b) => a.name.localeCompare(b.name)),
+      });
+      transaction.onabort = () => reject(transaction.error ?? new Error('Could not read service presets.'));
     });
   } finally {
     db.close();
   }
 }
 
-async function changePresets(action: (store: IDBObjectStore, transaction: IDBTransaction, setError: (error: string) => void) => void) {
+async function changeLibrary(action: (presets: IDBObjectStore, folders: IDBObjectStore, abort: (message: string) => void) => void) {
   const db = await openStore();
   try {
     await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(STORE, 'readwrite');
-      let error = 'Could not update service presets.';
+      const transaction = db.transaction([PRESETS, FOLDERS], 'readwrite');
+      let error = 'Could not update presets.';
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error ?? new Error(error));
-      action(transaction.objectStore(STORE), transaction, message => { error = message; });
+      action(transaction.objectStore(PRESETS), transaction.objectStore(FOLDERS), message => {
+        error = message;
+        transaction.abort();
+      });
     });
   } finally {
     db.close();
@@ -159,12 +206,11 @@ export async function saveServicePreset(name: string, snapshot: ServicePresetSna
     name: safeName,
     createdAt: new Date().toISOString(),
   };
-  await changePresets((store, transaction, setError) => {
+  await changeLibrary((store, _folders, abort) => {
     const count = store.count();
     count.onsuccess = () => {
       if (count.result >= MAX_PRESETS) {
-        setError('The preset library is full. Remove a preset before saving another.');
-        transaction.abort();
+        abort('The preset library is full. Remove a preset before saving another.');
         return;
       }
       store.add(preset);
@@ -173,5 +219,67 @@ export async function saveServicePreset(name: string, snapshot: ServicePresetSna
 }
 
 export function removeServicePreset(id: string): Promise<void> {
-  return changePresets(store => { store.delete(id); });
+  return changeLibrary(store => { store.delete(id); });
+}
+
+
+export async function saveServicePresetFolder(name: string, id?: string): Promise<void> {
+  const safeName = name.trim().slice(0, MAX_SERVICE_PRESET_FOLDER_NAME);
+  if (!safeName) throw new Error('Enter a folder name.');
+  const nameKey = safeName.toLowerCase();
+  if (nameKey === 'unfiled') throw new Error('Choose a folder name other than Unfiled.');
+  await changeLibrary((_presets, folders, abort) => {
+    const existing: IDBRequest<ServicePresetFolder[]> = folders.getAll();
+    existing.onsuccess = () => {
+      if (id && !existing.result.some(folder => folder.id === id)) {
+        abort('This folder was already removed.');
+        return;
+      }
+      if (existing.result.some(folder => folder.id !== id && folder.name.toLowerCase() === nameKey)) {
+        abort('A folder already has that name.');
+        return;
+      }
+      if (!id && existing.result.length >= MAX_FOLDERS) {
+        abort('The folder library is full. Remove a folder before adding another.');
+        return;
+      }
+      folders.put({ id: id ?? crypto.randomUUID(), name: safeName } satisfies ServicePresetFolder);
+    };
+  });
+}
+
+export function moveServicePreset(id: string, folderId?: string): Promise<void> {
+  return changeLibrary((presets, folders, abort) => {
+    const move = () => {
+      const current: IDBRequest<ServicePreset | undefined> = presets.get(id);
+      current.onsuccess = () => {
+        if (!current.result) {
+          abort('This preset was already removed.');
+          return;
+        }
+        presets.put({ ...current.result, folderId });
+      };
+    };
+    if (!folderId) {
+      move();
+      return;
+    }
+    const target = folders.getKey(folderId);
+    target.onsuccess = () => {
+      if (target.result === undefined) abort('This folder was already removed.');
+      else move();
+    };
+  });
+}
+
+export function removeServicePresetFolder(id: string): Promise<void> {
+  return changeLibrary((presets, folders) => {
+    const existing: IDBRequest<ServicePreset[]> = presets.getAll();
+    existing.onsuccess = () => {
+      for (const preset of existing.result) {
+        if (preset.folderId === id) presets.put({ ...preset, folderId: undefined });
+      }
+      folders.delete(id);
+    };
+  });
 }

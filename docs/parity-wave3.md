@@ -14,7 +14,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P1.7** Moderated viewer chat, reactions and Q&A (PR #374; see below and docs/notes/viewer-chat.md)
 - [ ] **P1.8** Signed watch-page registration and HLS authorization
 - [ ] **P1.9** Audience call-ins through the green room
-- [ ] **P1.10** Reusable studios, synced scenes and scene folders (browser-local service presets implemented)
+- [ ] **P1.10** Reusable studios, synced scenes and scene folders (browser-local service presets and preset folders implemented)
 - [ ] **P1.11** Automatic intros/outros, banner folders, movable overlays and QR widget
 - [ ] **P1.12** Stage tile controls, backstage reordering and people audio controls
 - [ ] **P1.13** Private mentions, shared notes and teleprompter collaboration
@@ -613,6 +613,10 @@ select one when ready. Imported countdowns wait for the operator to start
 them. Source-room decks and pinned participant IDs stay with their original
 studio. To move a preset to another browser, use **Download** next to the preset
 and **Import preset** in the destination browser. Import adds a local copy.
+
+Use **New folder** and **Move** to organize the preset library. You can rename
+a folder or remove it to return its presets to **Unfiled**. Folder assignments
+belong to the local library, so an imported preset starts in **Unfiled**.
 
 For viewer-controlled captions, open **Live Captions**, set **Show captions**
 to **Optional on the watch page**, then start captions. Viewers can toggle CC.

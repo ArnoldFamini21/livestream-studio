@@ -10,7 +10,7 @@ import { createStudio, screenshot, startHarness } from './harness.mjs';
 const run = promisify(execFile);
 const artifactDir = path.join(process.env.E2E_ARTIFACT_DIR || path.resolve('output/e2e'), 'service-tools');
 
-test('reuses a service preset across browsers and lets a viewer toggle timed captions', { timeout: 115_000 }, async () => {
+test('organizes portable service presets and lets a viewer toggle timed captions', { timeout: 115_000 }, async () => {
   const fixture = await startHarness({ artifactDir });
   const pages = new Map();
   try {
@@ -21,12 +21,45 @@ test('reuses a service preset across browsers and lets a viewer toggle timed cap
       await page.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: 'Scenes', exact: true }).click();
       await page.getByText('Service presets', { exact: true }).click();
     }
+    await first.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('livestream-studio-service-presets', 1);
+      request.onupgradeneeded = () => {
+        const presets = request.result.createObjectStore('presets', { keyPath: 'id' });
+        presets.add({
+          id: 'legacy-preset',
+          name: 'Legacy service',
+          createdAt: '2026-11-20T00:00:00.000Z',
+          pack: {
+            version: 1, source: 'livestream-studio', exportedAt: '2026-11-20T00:00:00.000Z',
+            scenes: [{
+              id: 'legacy-scene', name: 'Legacy scene', layout: 'grid', customLayoutId: null,
+              brandColor: '#202020', logoUrl: '', background: { type: 'color', value: '#202020' }, visibleOverlayIds: [],
+            }],
+            overlays: { lowerThirds: [], banners: [], timers: [], tickers: [], widgets: [] },
+          },
+          layouts: [],
+        });
+      };
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        request.result.close();
+        resolve();
+      };
+    }));
     await openPresets(first);
+    await first.getByRole('group', { name: 'Unfiled', exact: true })
+      .getByRole('button', { name: 'Add scenes from Legacy service', exact: true }).waitFor();
     await first.getByLabel('Preset name').fill('Sabbath service');
     await first.getByRole('button', { name: 'Save service preset', exact: true }).click();
     await first.getByText('Service preset saved.', { exact: true }).waitFor();
+    await first.getByRole('button', { name: 'New folder', exact: true }).click();
+    await first.getByLabel('Folder name', { exact: true }).fill('Weekly services');
+    await first.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await first.getByRole('button', { name: 'Move Sabbath service', exact: true }).click();
+    await first.getByRole('combobox', { name: 'Folder for Sabbath service', exact: true }).selectOption({ label: 'Weekly services' });
     const pendingDownload = first.waitForEvent('download');
-    await first.getByRole('button', { name: 'Download Sabbath service', exact: true }).click();
+    const weeklyFolder = first.getByRole('group', { name: 'Weekly services', exact: true });
+    await weeklyFolder.getByRole('button', { name: 'Download Sabbath service', exact: true }).click();
     const download = await pendingDownload;
     assert.equal(download.suggestedFilename(), 'sabbath-service.service-preset.json');
 
@@ -40,7 +73,9 @@ test('reuses a service preset across browsers and lets a viewer toggle timed cap
     await restored.getByRole('button', { name: 'Import preset', exact: true }).click();
     await (await choosing).setFiles(await download.path());
     await restored.getByText('Service preset imported.', { exact: true }).waitFor();
-    await restored.getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).click();
+    assert.equal(await restored.getByRole('group', { name: 'Weekly services', exact: true }).count(), 0);
+    await restored.getByRole('group', { name: 'Unfiled', exact: true })
+      .getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).click();
     await restored.getByText('Added 1 scene.', { exact: true }).waitFor();
     await restored.getByRole('button', { name: 'Switch to Service setup', exact: true }).click();
     await screenshot(restored, fixture.artifactDir, 'preset-imported');
@@ -50,7 +85,18 @@ test('reuses a service preset across browsers and lets a viewer toggle timed cap
     const { page: second } = await createStudio(hostContext, { url: fixture.url, name: 'New service' });
     pages.set('studio', second);
     await openPresets(second);
-    await second.getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).click();
+    const savedFolder = second.getByRole('group', { name: 'Weekly services', exact: true });
+    await savedFolder.getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).waitFor();
+    await savedFolder.getByRole('button', { name: 'Rename folder Weekly services', exact: true }).click();
+    await savedFolder.getByLabel('Folder name', { exact: true }).fill('Sunday services');
+    await savedFolder.getByRole('button', { name: 'Save folder name', exact: true }).click();
+    const renamedFolder = second.getByRole('group', { name: 'Sunday services', exact: true });
+    await renamedFolder.getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).waitFor();
+    await renamedFolder.getByRole('button', { name: 'Remove folder Sunday services', exact: true }).click();
+    await renamedFolder.getByRole('button', { name: 'Remove folder', exact: true }).click();
+    await renamedFolder.waitFor({ state: 'detached' });
+    await second.getByRole('group', { name: 'Unfiled', exact: true })
+      .getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).click();
     await second.getByRole('button', { name: 'Switch to Service setup', exact: true }).click();
     await second.getByText('Added 1 scene.', { exact: true }).waitFor();
     await second.getByRole('button', { name: 'Open invite panel', exact: true }).click();
