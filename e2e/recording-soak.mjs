@@ -43,8 +43,9 @@ function installObserver({ folder }) {
   window.MediaRecorder = class extends nativeRecorder {
     constructor(...args) {
       super(...args);
-      const row = { id: state.recorders.length, mimeType: this.mimeType, kinds: args[0].getTracks().map(track => track.kind), settings: args[0].getTracks().map(track => { const { width, height, frameRate, sampleRate, channelCount } = track.getSettings(); return { kind: track.kind, width, height, frameRate, sampleRate, channelCount }; }), started: null, stopped: null, chunks: 0, bytes: 0, flushed: false };
+      const row = { id: state.recorders.length, mimeType: this.mimeType, kinds: args[0].getTracks().map(track => track.kind), settings: args[0].getTracks().map(track => { const { width, height, frameRate, sampleRate, channelCount } = track.getSettings(); return { kind: track.kind, width, height, frameRate, sampleRate, channelCount }; }), started: null, stopRequested: null, stopped: null, chunks: 0, bytes: 0, flushed: false };
       state.recorders.push(row);
+      this.__soakRecorderId = row.id;
       this.addEventListener("error", event => state.errors.push(`Recorder ${row.id}: ${event.error?.message || "error"}`));
       let writes = Promise.resolve();
       this.addEventListener("start", () => { row.started = performance.now(); });
@@ -68,6 +69,11 @@ function installObserver({ folder }) {
         row.stopped = performance.now();
         void writes.then(() => { row.flushed = true; });
       });
+    }
+    stop() {
+      const row = state.recorders[this.__soakRecorderId];
+      if (row) row.stopRequested = performance.now();
+      return super.stop();
     }
   };
   const nativeSocket = window.WebSocket;
@@ -251,11 +257,14 @@ try {
   result.captureElapsedSeconds = (Date.now() - captureStarted) / 1000;
   console.log(JSON.stringify({ event: "stopping-recording", elapsedSeconds: result.captureElapsedSeconds }));
   await saveResult();
-  await host.getByRole("button", { name: "Stop recording", exact: true }).waitFor();
-  // Exercise the real production shortcut. Playwright's pointer scroll/stability
-  // round-trips can starve behind software encoders on a shared runner; the
-  // short browser suite separately covers the Stop button's click behavior.
-  await host.keyboard.press("Shift+R");
+  const stopRecording = host.getByRole("button", { name: "Stop recording", exact: true });
+  await stopRecording.waitFor();
+  // Use the normal Stop handler without waiting for another frame to stabilize
+  // a pointer target on a host running several software encoders.
+  await stopRecording.evaluate(button => {
+    if (button.disabled) throw new Error("Stop recording control is disabled");
+    button.click();
+  }, undefined, { timeout: 30_000 });
   clearInterval(progressTimer);
   console.log(JSON.stringify({ event: "waiting-for-source-checksums" }));
   await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000, polling: 500 })));
