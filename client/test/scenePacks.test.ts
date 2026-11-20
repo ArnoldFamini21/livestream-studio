@@ -95,6 +95,17 @@ const widgets: WidgetOverlayData[] = [
 ];
 
 describe('scene packs', () => {
+  it('keeps a saved QR destination native when importing its scene', () => {
+    const qr: WidgetOverlayData = { ...widgets[0], kind: 'qr', url: 'https://example.com/service', position: 'bottom-right' };
+    const source = buildScenePack({ scenes: [makeScene()], lowerThirds, banners, timers, tickers, widgets: [qr] });
+    const restored = importScenePack(parseScenePackJson(JSON.stringify(source)), { existingScenes: [] });
+    assert.equal(restored.widgets[0].kind, 'qr');
+    assert.equal(restored.widgets[0].url, qr.url);
+    assert.equal(restored.widgets[0].position, qr.position);
+    assert.equal(restored.widgets[0].visible, false);
+    assert.ok(restored.scenes[0].visibleOverlayIds.includes(restored.widgets[0].id));
+  });
+
   it('exports scenes with only referenced, portable overlays', () => {
     const pack = buildScenePack({
       scenes: [makeScene()],
