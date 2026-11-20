@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StreamDestination } from '@studio/shared';
-import { getDualOutputSupport, getSecondaryProgramRects, planBroadcastDestinations } from '../src/utils/dualOutput.ts';
+import { getDualOutputCapacityIssue, getDualOutputDestinationLimit, getDualOutputSupport, getSecondaryProgramRects, planBroadcastDestinations } from '../src/utils/dualOutput.ts';
 import { restoreStreamDestinations, serializeStreamDestinations } from '../src/utils/streamDestinationStorage.ts';
 
 const wide: StreamDestination = {
@@ -37,6 +37,20 @@ test('enables dual output only with a copy encoder and a supporting media server
   const capable = { ...health, dualOutput: { ready: true, message: '' } };
   assert.equal(getDualOutputSupport(capable, true), null);
   assert.match(getDualOutputSupport(capable, false) || '', /H.264/);
+});
+
+test('checks the media server combined destination cap without requiring metadata from older relays', () => {
+  const health = { status: 'ready' as const, mediaHttpUrl: '', message: '', checkedAt: null };
+  const relayWithLimit = (maxDestinations: unknown) => ({
+    ...health, dualOutput: { ready: true, message: '', details: { maxDestinations } },
+  });
+  assert.equal(getDualOutputDestinationLimit(health), 8);
+  assert.equal(getDualOutputDestinationLimit(relayWithLimit('2')), 8);
+  assert.equal(getDualOutputDestinationLimit(relayWithLimit(2.5)), 8);
+  assert.equal(getDualOutputDestinationLimit(relayWithLimit(0)), 8);
+  assert.equal(getDualOutputDestinationLimit(relayWithLimit(12)), 8);
+  assert.equal(getDualOutputCapacityIssue(relayWithLimit(2), 2), null);
+  assert.match(getDualOutputCapacityIssue(relayWithLimit(2), 3) || '', /2 destinations across both outputs/);
 });
 
 test('places alternate-grid and spotlight tiles in the correct canvas independently of the main layout', () => {

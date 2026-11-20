@@ -7,7 +7,9 @@ export interface DualOutputControlsProps {
   enabled: boolean;
   supportIssue: string | null;
   configurationIssue: string | null;
+  destinationLimit: number;
   isLive: boolean;
+  isStarting: boolean;
   orientation: BroadcastOrientation;
   layout: SecondaryProgramLayout;
   stream: MediaStream | null;
@@ -17,7 +19,7 @@ export interface DualOutputControlsProps {
 }
 
 export function DualOutputControls({
-  enabled, supportIssue, isLive, orientation, layout, stream, stats, onToggle, onLayoutChange,
+  enabled, supportIssue, isLive, isStarting, orientation, layout, stream, stats, onToggle, onLayoutChange,
 }: DualOutputControlsProps) {
   const previewRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
@@ -32,7 +34,7 @@ export function DualOutputControls({
     <section className="sd-dual-output" aria-label="Simultaneous stream output">
       <label>
         <input type="checkbox" checked={enabled} onChange={(event) => onToggle(event.target.checked)}
-          disabled={isLive || (!enabled && Boolean(supportIssue))} />
+          disabled={isLive || isStarting || (!enabled && Boolean(supportIssue))} />
         Stream landscape and portrait together
       </label>
       {supportIssue && !isLive && <p>{supportIssue}</p>}
@@ -41,7 +43,7 @@ export function DualOutputControls({
           <p>Assign an orientation to each destination. The main stage stays on the watch page and in the relay backup. The second output is 720p and adds about 2.7 Mbps upstream.</p>
           <label>
             {name} layout
-            <select value={layout} onChange={(event) => {
+            <select value={layout} disabled={isStarting} onChange={(event) => {
               const option = OTHER_PROGRAM_LAYOUTS.find(({ value }) => value === event.target.value);
               if (option) onLayoutChange(option.value);
             }}>

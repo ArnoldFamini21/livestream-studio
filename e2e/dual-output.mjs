@@ -65,11 +65,11 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
     children.push(startProcess(process.execPath, [path.join(repoRoot, 'media-server/dist/index.js')], path.join(artifactDir, 'media.log'), {
       ...env, NODE_ENV: 'test', PORT: String(mediaPort), LIVE_STREAM_TOKEN_SECRET: secret, CLIENT_URL: fixture.url,
       FFMPEG_PATH: ffmpeg, RTMP_ENCODE_ONCE: '1', RTMP_ALLOW_PRIVATE_HOSTS: 'true', MAX_RELAY_SESSIONS: '1',
-      HLS_OUTPUT_DIR: path.join(artifactDir, 'hls'),
+      RTMP_MAX_DESTINATIONS: '2', HLS_OUTPUT_DIR: path.join(artifactDir, 'hls'),
     }));
     await eventually(async () => {
       const health = await (await fetch('http://localhost:' + mediaPort + '/health')).json();
-      return health.capabilities?.dualOutput?.ready === true;
+      return health.capabilities?.dualOutput?.ready === true && health.capabilities.dualOutput.details?.maxDestinations === 2;
     }, { message: 'Local media server did not become ready' });
 
     const savedDestinations = [];
@@ -88,7 +88,12 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
       if (self === top && self.origin === origin) {
         localStorage.setItem('livestream-studio:stream-destinations:v1', JSON.stringify(destinations));
       }
-    }, { origin: fixture.url, destinations: savedDestinations });
+    }, {
+      origin: fixture.url,
+      destinations: [...savedDestinations, {
+        ...savedDestinations[0], name: 'Extra receiver', streamKey: 'extra-fixture', enabled: false,
+      }],
+    });
     const { page: host, studioId } = await createStudio(hostContext, { url: fixture.url, name: 'Two outputs' });
     const guestContext = await fixture.browser('guest', { extraArgs: ['--disable-audio-output'] });
     await joinStudio(guestContext, { url: fixture.url, studioId, name: 'Test Guest' });
@@ -107,7 +112,14 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
     assert.ok((await tiles.first().evaluate((tile) => tile.offsetHeight)) < spotlightHeight);
     assert.equal(await host.locator('[data-second-program-stage]').getAttribute('data-second-program-stage'), 'portrait');
     await eventually(() => preview.evaluate((video) => video.videoWidth === 720 && video.videoHeight === 1280));
-    await host.getByRole('combobox', { name: 'Portrait receiver orientation' }).selectOption('portrait');
+    const portraitOrientation = host.getByRole('combobox', { name: 'Portrait receiver orientation' });
+    await portraitOrientation.selectOption('portrait');
+
+    const extraReceiver = host.locator('.participant-item').filter({ hasText: 'Extra receiver' });
+    await extraReceiver.getByRole('button', { name: 'OFF', exact: true }).click();
+    await host.getByText(/up to 2 destinations across both outputs/).waitFor();
+    assert.equal(await host.getByRole('button', { name: 'Go Live to 3 Destinations' }).isDisabled(), true);
+    await extraReceiver.getByRole('button', { name: 'ON', exact: true }).click();
 
     await host.getByText('Output settings', { exact: true }).click();
     await host.getByRole('button', { name: /720p Smooth/ }).click();
@@ -116,9 +128,27 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
       children.push(startProcess(ffmpeg, ['-hide_banner', '-v', 'info', '-listen', '1', '-timeout', '90', '-i', rtmpUrl + '/' + streamKey,
         '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-y', output], output + '.log'));
     }
-    await host.getByRole('button', { name: 'Go Live to 2 Destinations' }).click();
+    // Hold the fresh health check so the workspace remains in its real startup state.
+    let releaseHealth = () => {};
+    const healthGate = new Promise((resolve) => { releaseHealth = resolve; });
+    await host.route('http://localhost:' + mediaPort + '/health', async (route) => {
+      await healthGate;
+      await route.continue();
+    }, { times: 1 });
+    try {
+      await host.getByRole('button', { name: 'Go Live to 2 Destinations' }).click();
+      await host.getByRole('button', { name: 'Starting stream…' }).waitFor();
+      const disabled = await Promise.all([
+        dual.isDisabled(), layout.isDisabled(), portraitOrientation.isDisabled(),
+        host.getByRole('button', { name: /720p Smooth/ }).isDisabled(),
+      ]);
+      assert.ok(disabled.every(Boolean), 'in-flight startup locks output settings');
+    } finally {
+      releaseHealth();
+    }
     await Promise.all(savedDestinations.map(({ name }) =>
       host.locator('.participant-item').filter({ hasText: name }).getByText('live', { exact: true }).waitFor({ timeout: 32_000 })));
+    assert.equal(await layout.isEnabled(), true, 'the alternate layout can be changed while live');
     // Require payload from both live outputs before ending the broadcast.
     await Promise.all(outputs.map((output) =>
       eventually(async () => (await stat(output)).size > 1000, { message: 'No capture for ' + output })));

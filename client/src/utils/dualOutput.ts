@@ -1,6 +1,7 @@
 import type { BroadcastOrientation, RtmpRelayDestination, StreamDestination } from '@studio/shared';
 import type { MediaServerHealth } from './mediaServerHealth.ts';
 import type { RtmpRelayOutputPresetId } from './rtmpRelayOutput.ts';
+import { MAX_ENABLED_DESTINATIONS } from './streamDestinations.ts';
 
 export type SecondaryProgramLayout = 'grid' | 'spotlight' | 'solo';
 export const SECONDARY_OUTPUT_PRESET: RtmpRelayOutputPresetId = 'smooth-720p';
@@ -21,6 +22,20 @@ export function getDualOutputSupport(health: MediaServerHealth, copyAvailable: b
   if (health.status === 'unavailable') return 'The media server is unavailable.';
   if (!health.dualOutput?.ready) return health.dualOutput?.message || 'This media server does not support simultaneous output.';
   return null;
+}
+
+export function getDualOutputDestinationLimit(health: MediaServerHealth): number {
+  const limit = health.dualOutput?.details?.maxDestinations;
+  return typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0
+    ? Math.min(limit, MAX_ENABLED_DESTINATIONS)
+    : MAX_ENABLED_DESTINATIONS;
+}
+
+export function getDualOutputCapacityIssue(health: MediaServerHealth, destinationCount: number): string | null {
+  const limit = getDualOutputDestinationLimit(health);
+  return destinationCount > limit
+    ? `This media server supports up to ${limit} destinations across both outputs. Switch off extra destinations.`
+    : null;
 }
 
 export function planBroadcastDestinations(

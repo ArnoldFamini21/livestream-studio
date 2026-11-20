@@ -307,6 +307,7 @@ async function healthPayload() {
         message: dualOutputReady
           ? 'Send separate landscape and portrait programs in one broadcast.'
           : 'The media server needs FFmpeg, encode-once, and at least two destinations for simultaneous output.',
+        details: { maxDestinations: getMaxRtmpDestinations() },
       },
       testStream: {
         ready: isTestStreamSupported(isEncodeOnceEnabled()),

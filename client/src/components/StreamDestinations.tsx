@@ -59,10 +59,11 @@ interface StreamDestinationsProps {
   broadcastOrientation: BroadcastOrientation;
   onBroadcastOrientationChange: (orientation: BroadcastOrientation) => void;
   onDestinationOrientation?: (id: string, orientation: BroadcastOrientation) => void;
-  dualOutput?: DualOutputControlsProps;
+  dualOutput?: Omit<DualOutputControlsProps, 'isLive' | 'isStarting'>;
   relayOutputPreset: RtmpRelayOutputPresetId;
   onRelayOutputPresetChange: (preset: RtmpRelayOutputPresetId) => void;
   isLive: boolean;
+  isStarting: boolean;
   relayStats?: RtmpRelayStats;
   relayReadiness?: RtmpRelayReadiness;
   sessionHealth?: SessionHealthSummary;
@@ -104,6 +105,7 @@ export function StreamDestinations({
   relayOutputPreset,
   onRelayOutputPresetChange,
   isLive,
+  isStarting,
   relayStats,
   relayReadiness,
   sessionHealth,
@@ -121,6 +123,8 @@ export function StreamDestinations({
   defaultBroadcastTitle = 'Live stream',
   onYouTubeBroadcastCreated,
 }: StreamDestinationsProps) {
+  const settingsLocked = isLive || isStarting;
+  const destinationLimit = dualOutput?.enabled ? dualOutput.destinationLimit : MAX_ENABLED_DESTINATIONS;
   const youTubeConnectAvailable = isYouTubeConnectionConfigured();
   const [youTubeMode, setYouTubeMode] = useState<'connect' | 'key'>(youTubeConnectAvailable ? 'connect' : 'key');
   const [rememberStreamKey, setRememberStreamKey] = useState(false);
@@ -169,7 +173,7 @@ export function StreamDestinations({
       name: broadcast.title,
       rtmpUrl: broadcast.rtmpUrl,
       streamKey: broadcast.streamKey,
-      enabled: enabledSlots < MAX_ENABLED_DESTINATIONS,
+      enabled: enabledSlots < destinationLimit,
       connection: {
         provider: 'youtube',
         broadcastId: broadcast.broadcastId,
@@ -196,6 +200,7 @@ export function StreamDestinations({
   };
 
   const handleSave = () => {
+    if (settingsLocked) return;
     const selectedPlatformGuide = getStreamPlatformGuide(platform);
     const finalRtmp = rtmpUrl.trim() || getDefaultRtmpUrl(platform);
     const finalStreamKey = streamKey.trim() || (canKeepExistingStreamKey ? editingDestination?.streamKey : '') || '';
@@ -241,7 +246,7 @@ export function StreamDestinations({
     getRelayRecorderFormat()?.videoMode ?? null
   );
   const relayTargetKbps = getRtmpRelayTargetKbps(relayOutputPreset);
-  const tooManyEnabled = enabledCount > MAX_ENABLED_DESTINATIONS;
+  const tooManyEnabled = enabledCount > destinationLimit;
   const relayIssue = getRelayReadinessIssue(relayReadiness);
   const relayStatus = getRelayReadinessStatus(relayReadiness);
   const livePreflight = buildLivePreflightChecklist({
@@ -499,7 +504,7 @@ export function StreamDestinations({
           </div>
         )}
 
-        {dualOutput && <DualOutputControls {...dualOutput} />}
+        {dualOutput && <DualOutputControls {...dualOutput} isLive={isLive} isStarting={isStarting} />}
 
         {/* Destinations list */}
         {destinations.map((dest) => {
@@ -526,18 +531,18 @@ export function StreamDestinations({
                   </span>
 	                  <button
 	                    type="button"
-	                    style={{ ...styles.toggleBtn, background: dest.enabled ? 'var(--success)' : 'var(--bg-surface)', color: dest.enabled ? 'white' : 'var(--text-muted)', opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }}
+	                    style={{ ...styles.toggleBtn, background: dest.enabled ? 'var(--success)' : 'var(--bg-surface)', color: dest.enabled ? 'white' : 'var(--text-muted)', opacity: settingsLocked ? 0.5 : 1, cursor: settingsLocked ? 'not-allowed' : 'pointer' }}
 	                    onClick={() => onToggle(dest.id)}
-	                    disabled={isLive}
+	                    disabled={settingsLocked}
 	                  >
 	                    {dest.enabled ? 'ON' : 'OFF'}
 	                  </button>
                   {!dest.connection && <button
                     type="button"
                     className="participant-action-btn"
-                    style={{ ...styles.editBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }}
+                    style={{ ...styles.editBtn, opacity: settingsLocked ? 0.5 : 1, cursor: settingsLocked ? 'not-allowed' : 'pointer' }}
                     onClick={() => openEditForm(dest)}
-                    disabled={isLive}
+                    disabled={settingsLocked}
                     aria-label={`Edit ${dest.name}`}
                     title="Edit destination"
                   >
@@ -545,7 +550,7 @@ export function StreamDestinations({
                       <path d="M17 3a2.83 2.83 0 014 4L8 20l-5 1 1-5 13-13z" />
                     </svg>
                   </button>}
-	                  <button type="button" className="participant-action-btn" style={{ ...styles.removeBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={() => onRemove(dest.id)} disabled={isLive} aria-label="Remove destination">
+	                  <button type="button" className="participant-action-btn" style={{ ...styles.removeBtn, opacity: settingsLocked ? 0.5 : 1, cursor: settingsLocked ? 'not-allowed' : 'pointer' }} onClick={() => onRemove(dest.id)} disabled={settingsLocked} aria-label="Remove destination">
 	                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
 	                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                     </svg>
@@ -571,7 +576,7 @@ export function StreamDestinations({
                   <select
                     aria-label={`${dest.name} orientation`}
                     value={dest.orientation ?? broadcastOrientation}
-                    disabled={isLive}
+                    disabled={settingsLocked}
                     onChange={(event) => {
                       onDestinationOrientation?.(dest.id, event.target.value === 'portrait' ? 'portrait' : 'landscape');
                     }}
@@ -629,7 +634,7 @@ export function StreamDestinations({
             {platform === 'youtube' && youTubeMode === 'connect' && !editingDestinationId ? (
               <YouTubeConnectForm
                 defaultTitle={defaultBroadcastTitle}
-                disabled={isLive}
+                disabled={settingsLocked}
                 onCreated={addConnectedYouTubeBroadcast}
                 onUseStreamKey={() => setYouTubeMode('key')}
               />
@@ -661,7 +666,7 @@ export function StreamDestinations({
                 {platformOrientationWarning && (
                   <div style={styles.orientationWarning}>
                     <span style={styles.orientationWarningText}>{platformOrientationWarning}</span>
-                    {platformGuide.recommendedOrientation && !isLive && (
+                    {platformGuide.recommendedOrientation && !settingsLocked && (
                       <button
                         type="button"
                         className="btn-secondary"
@@ -752,7 +757,7 @@ export function StreamDestinations({
 
               <div style={styles.formActions}>
                 <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }} onClick={resetForm}>Cancel</button>
-                <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={(!streamKey.trim() && !canKeepExistingStreamKey) || isLive}>
+                <button type="submit" className="btn-primary" style={{ fontSize: 12, padding: '6px 14px' }} disabled={(!streamKey.trim() && !canKeepExistingStreamKey) || settingsLocked}>
                   {editingDestinationId ? 'Save Destination' : 'Add Destination'}
                 </button>
               </div>
@@ -760,7 +765,7 @@ export function StreamDestinations({
             )}
           </form>
         ) : (
-          <button type="button" className="btn-secondary" style={{ ...styles.addBtn, opacity: isLive ? 0.5 : 1, cursor: isLive ? 'not-allowed' : 'pointer' }} onClick={openCreateForm} disabled={isLive}>
+          <button type="button" className="btn-secondary" style={{ ...styles.addBtn, opacity: settingsLocked ? 0.5 : 1, cursor: settingsLocked ? 'not-allowed' : 'pointer' }} onClick={openCreateForm} disabled={settingsLocked}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
             </svg>
@@ -772,7 +777,7 @@ export function StreamDestinations({
           <div style={{ ...styles.preflight, ...(canGoLive ? styles.preflightReady : styles.preflightWarn) }}>
             <div style={styles.preflightTop}>
               <span style={styles.preflightLabel}>{canGoLive ? 'Ready to stream' : 'Needs setup'}</span>
-              <span style={styles.preflightCount}>{enabledCount}/{MAX_ENABLED_DESTINATIONS} enabled</span>
+              <span style={styles.preflightCount}>{enabledCount}/{destinationLimit} enabled</span>
             </div>
             {preflightIssue && <div style={styles.preflightIssue}>{preflightIssue}</div>}
             {enabledCount > 0 && (
@@ -798,9 +803,9 @@ export function StreamDestinations({
               className="btn-primary"
               style={{ ...styles.liveBtn, background: canGoLive ? '#ef4444' : 'var(--bg-surface)', color: canGoLive ? 'white' : 'var(--text-muted)' }}
               onClick={onGoLive}
-              disabled={!canGoLive}
+              disabled={!canGoLive || isStarting}
             >
-              Go Live to {enabledCount} Destination{enabledCount !== 1 ? 's' : ''}
+              {isStarting ? 'Starting stream…' : `Go Live to ${enabledCount} Destination${enabledCount !== 1 ? 's' : ''}`}
             </button>
           )}
         </div>
@@ -868,10 +873,10 @@ export function StreamDestinations({
                   style={{
                     ...styles.orientationBtn,
                     ...(active ? styles.orientationBtnActive : {}),
-                    ...(isLive ? styles.orientationBtnDisabled : {}),
+                    ...(settingsLocked ? styles.orientationBtnDisabled : {}),
                   }}
                   onClick={() => onBroadcastOrientationChange(option.value)}
-                  disabled={isLive}
+                  disabled={settingsLocked}
                 >
                   <span style={styles.orientationLabel}>{option.label}</span>
                   <span style={styles.orientationDetail}>{option.detail}</span>
@@ -895,10 +900,10 @@ export function StreamDestinations({
                   style={{
                     ...styles.outputPresetBtn,
                     ...(active ? styles.outputPresetBtnActive : {}),
-                    ...(isLive ? styles.outputPresetBtnDisabled : {}),
+                    ...(settingsLocked ? styles.outputPresetBtnDisabled : {}),
                   }}
                   onClick={() => onRelayOutputPresetChange(preset.id)}
-                  disabled={isLive}
+                  disabled={settingsLocked}
                 >
                   <span style={styles.outputPresetLabel}>{preset.label}</span>
                   <span style={styles.outputPresetDetail}>{preset.detail}</span>

@@ -69,7 +69,7 @@ import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalR
 import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
 import { useCompositor, type CompositorProps } from '../hooks/useCompositor.ts';
 import { useDualOutputSettings } from '../hooks/useDualOutputSettings.ts';
-import { getDualOutputSupport, getSecondaryProgramOrientation, planBroadcastDestinations, SECONDARY_OUTPUT_PRESET } from '../utils/dualOutput.ts';
+import { getDualOutputCapacityIssue, getDualOutputDestinationLimit, getDualOutputSupport, getSecondaryProgramOrientation, planBroadcastDestinations, SECONDARY_OUTPUT_PRESET } from '../utils/dualOutput.ts';
 import { getRelayRecorderFormat } from '../utils/relayEncoding.ts';
 import { SecondaryProgram } from './SecondaryProgram.tsx';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
@@ -1153,6 +1153,7 @@ export function StudioRoom() {
   const [customLayoutEditorOpen, setCustomLayoutEditorOpen] = useState(false);
   const [rtmpRelayOutputPreset, setRtmpRelayOutputPreset] = useState<RtmpRelayOutputPresetId>(DEFAULT_RTMP_RELAY_OUTPUT_PRESET_ID);
   const [isLive, setIsLive] = useState(false);
+  const [isStartingLive, setIsStartingLive] = useState(false);
   // A private test is on the media server: it needs the compositor but is never "live".
   const [testStreamOnAir, setTestStreamOnAir] = useState(false);
   // What the host told the room about a test (co-hosts and guests only learn it from here).
@@ -5141,27 +5142,35 @@ export function StudioRoom() {
     if (broadcast.liveChatId) onConnectExternalChat('youtube', broadcast.liveChatId);
   };
 
+  const streamSettingsLocked = () => isLiveRef.current || liveStartOperationRef.current.active;
   const onAddDestination = (dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => {
+    if (streamSettingsLocked()) return;
     setDestinations((prev) => [...prev, { ...dest, id: `dest-${++idCounters.current.dest}`, status: 'idle', statusMessage: undefined }]);
   };
   const onUpdateDestination = (id: string, dest: Omit<StreamDestination, 'id' | 'status' | 'statusMessage'>) => {
+    if (streamSettingsLocked()) return;
     setDestinations((prev) => prev.map((destination) => (
       destination.id === id ? { ...destination, ...dest, status: 'idle', statusMessage: undefined } : destination
     )));
   };
   const onRemoveDestination = (id: string) => {
+    if (streamSettingsLocked()) return;
     setDestinations((prev) => prev.filter((d) => d.id !== id));
   };
   const onToggleDestination = (id: string) => {
+    if (streamSettingsLocked()) return;
     setDestinations((prev) => prev.map((d) => (
       d.id === id ? { ...d, enabled: !d.enabled, status: 'idle', statusMessage: undefined } : d
     )));
   };
   useEffect(() => () => liveStartOperationRef.current.cancel(), []);
   const broadcastDestinations = planBroadcastDestinations(destinations, broadcastOrientation, dualOutput.enabled);
-  const dualPreflightIssue = dualOutput.enabled ? dualSupportIssue || broadcastDestinations.issue : null;
+  const dualDestinationCount = broadcastDestinations.primary.length + broadcastDestinations.secondary.length;
+  const dualPreflightIssue = dualOutput.enabled
+    ? dualSupportIssue || broadcastDestinations.issue || getDualOutputCapacityIssue(mediaServerHealth, dualDestinationCount)
+    : null;
   const onDestinationOrientation = (id: string, orientation: BroadcastOrientation) => {
-    if (isLiveRef.current || liveStartOperationRef.current.active) return;
+    if (streamSettingsLocked()) return;
     setDestinations((current) => current.map((destination) => destination.id === id ? { ...destination, orientation } : destination));
   };
 
@@ -5199,6 +5208,7 @@ export function StudioRoom() {
 
     const operation = liveStartOperationRef.current.begin();
     if (!operation) return false;
+    setIsStartingLive(true);
     try {
       // The relay check can take up to a minute while a sleeping media server wakes; show that it is working.
       setDestinations((prev) => prev.map((d) => (
@@ -5206,11 +5216,20 @@ export function StudioRoom() {
       )));
       const readiness = await operation.run(checkRelayReadiness);
       operation.assertActive();
-      if (readiness.status !== 'ready') {
-        goLiveFailureReasonRef.current = readiness.message;
+      let startupIssue = readiness.status === 'ready' ? null : readiness.message;
+      if (!startupIssue && dualOutput.enabled) {
+        // Use the awake relay's current destination cap before opening either output.
+        const health = await operation.run(refreshMediaServerHealth);
+        operation.assertActive();
+        startupIssue = getDualOutputSupport(health, getRelayRecorderFormat()?.videoMode === 'copy')
+          || getDualOutputCapacityIssue(health, dualDestinationCount);
+      }
+      if (startupIssue) {
+        const message = startupIssue;
+        goLiveFailureReasonRef.current = message;
         setDestinations((prev) => prev.map((d) => (
           d.enabled
-            ? { ...d, status: 'error', statusMessage: readiness.message }
+            ? { ...d, status: 'error', statusMessage: message }
             : { ...d, status: 'idle', statusMessage: undefined }
         )));
         return false;
@@ -5270,6 +5289,7 @@ export function StudioRoom() {
       )));
       return false;
     } finally {
+      if (operation.active) setIsStartingLive(false);
       liveStartOperationRef.current.finish(operation);
     }
   };
@@ -5356,6 +5376,7 @@ export function StudioRoom() {
   };
   const onStopLive = () => {
     liveStartOperationRef.current.cancel();
+    setIsStartingLive(false);
     if (liveStatusTimerRef.current) {
       clearTimeout(liveStatusTimerRef.current);
       liveStatusTimerRef.current = null;
@@ -8223,23 +8244,32 @@ export function StudioRoom() {
               onRemove={onRemoveDestination}
               onToggle={onToggleDestination}
               broadcastOrientation={broadcastOrientation}
-              onBroadcastOrientationChange={setBroadcastOrientation}
+              onBroadcastOrientationChange={(orientation) => {
+                if (!streamSettingsLocked()) setBroadcastOrientation(orientation);
+              }}
               onDestinationOrientation={onDestinationOrientation}
               dualOutput={{
                 enabled: dualOutput.enabled,
                 supportIssue: dualSupportIssue,
                 configurationIssue: dualPreflightIssue,
-                isLive,
+                destinationLimit: getDualOutputDestinationLimit(mediaServerHealth),
                 orientation: secondaryOrientation,
                 layout: dualOutput.layout,
                 stream: secondaryPreviewStream,
                 stats: secondaryRelayStats,
-                onToggle: (enabled) => updateDualOutput({ enabled }),
-                onLayoutChange: (layout) => updateDualOutput({ layout }),
+                onToggle: (enabled) => {
+                  if (!streamSettingsLocked()) updateDualOutput({ enabled });
+                },
+                onLayoutChange: (layout) => {
+                  if (!liveStartOperationRef.current.active) updateDualOutput({ layout });
+                },
               }}
               relayOutputPreset={rtmpRelayOutputPreset}
-              onRelayOutputPresetChange={setRtmpRelayOutputPreset}
+              onRelayOutputPresetChange={(preset) => {
+                if (!streamSettingsLocked()) setRtmpRelayOutputPreset(preset);
+              }}
               isLive={isLive}
+              isStarting={isStartingLive}
               relayStats={relayStats}
               relayReadiness={relayReadiness}
               sessionHealth={sessionHealth}
