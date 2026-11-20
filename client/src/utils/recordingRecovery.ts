@@ -214,7 +214,7 @@ export function createRecoverableRecordingStore(
     append: store.append,
     flush: store.flush,
     snapshot: (mimeType = input.mimeType): Promise<Blob> => store.snapshot(mimeType),
-    snapshotCommitted: (mimeType = input.mimeType): Blob => store.snapshotCommitted(mimeType),
+    readCommitted: store.readCommitted,
     /** `header` replaces the first bytes of the result (e.g. a patched WAV header). */
     finish(mimeType = input.mimeType, options?: { header?: Blob }): Promise<Blob> {
       return finishing ??= (async () => {

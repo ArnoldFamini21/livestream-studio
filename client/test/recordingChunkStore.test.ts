@@ -64,32 +64,39 @@ describe('recording chunk storage', () => {
       );
     }
   });
-  it('reuses each MIME snapshot while the committed prefix is unchanged', async () => {
-    const storage = disk(1, true);
+  it('reads only the parts intersecting a committed byte range', async () => {
+    const sliced: string[] = [];
+    class ObservedPart extends Blob {
+      constructor(private readonly contents: string) { super([contents]); }
+      override slice(start?: number, end?: number): Blob {
+        sliced.push(this.contents);
+        return super.slice(start, end);
+      }
+    }
+    const storage = disk(3, true);
     const store = createRecordingChunkStore(storage.directory, 'video');
-    store.append(new Blob(['header']));
+    for (const contents of ['header', 'alpha', 'bravo']) {
+      store.append(new ObservedPart(contents));
+    }
     await store.flush();
-    const video = store.snapshotCommitted('video/webm');
-    const audio = store.snapshotCommitted('audio/webm');
-    assert.equal(video.type, 'video/webm');
-    assert.equal(audio.type, 'audio/webm');
+    const original = store.readCommitted();
+    assert.equal(original.size, 16);
+    assert.equal(await original.slice(9, 13).text(), 'habr');
+    assert.deepEqual(sliced, ['alpha', 'bravo']);
+    assert.equal(await original.slice(6, 11).text(), 'alpha', 'can read a whole part directly');
 
-    store.append(new Blob(['-frame']));
-    assert.equal(store.snapshotCommitted('video/webm'), video);
-    assert.equal(store.snapshotCommitted('audio/webm'), audio);
-
+    store.append(new ObservedPart('charlie'));
+    assert.equal(store.readCommitted().size, original.size, 'pending writes are not included');
     await store.flush();
-    const updatedVideo = store.snapshotCommitted('video/webm');
-    const updatedAudio = store.snapshotCommitted('audio/webm');
-    assert.notEqual(updatedVideo, video);
-    assert.notEqual(updatedAudio, audio);
-    assert.equal(await video.text(), 'header', 'previous snapshots retain their bytes');
-    assert.equal(await updatedVideo.text(), 'header-frame', 'includes bytes kept after disk failure');
-    assert.equal(store.snapshotCommitted('video/webm'), updatedVideo);
-    assert.equal(store.snapshotCommitted('audio/webm'), updatedAudio);
+    assert.equal(await original.slice(15, 19).text(), 'o', 'an earlier view ends at its original length');
+    const latest = store.readCommitted();
+    assert.equal(latest.size, 23);
+    assert.equal(await latest.slice(15, 19).text(), 'ocha', 'the read crosses from disk into the fallback');
+    assert.equal(await (await store.finish('video/webm')).text(), 'headeralphabravocharlie');
 
     await store.discard();
-    assert.equal(store.snapshotCommitted('video/webm').size, 0);
+    assert.equal(store.readCommitted().size, 0);
+    assert.throws(() => original.slice(9, 13), { name: 'NotReadableError' });
   });
 
   it('supports browsers without disk storage', async () => {
