@@ -26,6 +26,13 @@ export function isServableHlsFile(name: string): boolean {
   return name === HLS_PLAYLIST_NAME || SEGMENT_PATTERN.test(name);
 }
 
+/** Native HLS resolves each relative segment independently of the playlist query. */
+export function addWatchPlaybackToken(playlist: string, token: string): string {
+  return playlist.replace(/^[^\r\n]+/gm, (line) => SEGMENT_PATTERN.test(line)
+    ? `${line}?watchToken=${encodeURIComponent(token)}`
+    : line);
+}
+
 export function getHlsContentType(name: string): string {
   return name.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
 }

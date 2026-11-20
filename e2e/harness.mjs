@@ -112,12 +112,16 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   };
 }
 
-export async function createStudio(context, { url = 'http://localhost:5199', name = 'Browser qualification', hostName = 'Test Host' } = {}) {
+export async function createStudio(context, { url = 'http://localhost:5199', name = 'Browser qualification', hostName = 'Test Host', privateWatch = false } = {}) {
   const page = await context.newPage();
   await page.goto(url);
   await page.getByRole('button', { name: 'Create studio', exact: true }).click();
   await page.getByLabel('Studio name', { exact: true }).fill(name);
   await page.getByLabel('Your name', { exact: true }).fill(hostName);
+  if (privateWatch) {
+    await page.getByText('Scheduling & guest access', { exact: true }).click();
+    await page.getByRole('checkbox', { name: /Require a private viewing link/ }).check();
+  }
   const created = page.waitForResponse(response => response.url().endsWith('/api/rooms') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Create Studio', exact: true }).click();
   const response = await created;

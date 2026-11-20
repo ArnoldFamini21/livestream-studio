@@ -1,7 +1,9 @@
 import express, { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { VIEWER_BODY_MAX_BYTES } from '@studio/shared';
-import { castWatchPollVote, findWatchLinkRoom, getRoomViewerChat, getWatchCaptionSnapshot, getWatchPoll, registerRoomGuest, RoomRegistrationError, watchCaptionsAvailable, WatchPollVoteError } from '../services/signaling.js';
+import { castWatchPollVote, findWatchLinkRoom, getRoomViewerChat, getRoomWatchCalls, getWatchCaptionSnapshot, getWatchPoll, registerRoomGuest, RoomRegistrationError, watchCaptionsAvailable, WatchPollVoteError } from '../services/signaling.js';
+import { authorizeWatchViewer, getWatchAccessSecret, issueWatchGrant, verifyWatchGrant } from '../services/watchAccess.js';
+import { WatchCallInError } from '../services/watchCallIns.js';
 import { ViewerChatError, networkKeyFor, type ViewerChatRoom } from '../services/viewerChat.js';
 
 /**
@@ -33,9 +35,23 @@ watchRouter.get('/:watchId', (req, res) => {
 });
 
 watchRouter.post('/:watchId/registrants', (req, res) => {
-  const room = findWatchLinkRoom(req.params.watchId)?.room;
-  if (!room) {
+  res.setHeader('Cache-Control', 'no-store');
+  const found = findWatchLinkRoom(req.params.watchId);
+  if (!found) {
     res.status(404).json({ error: 'This broadcast was not found or has ended', code: 'ROOM_NOT_FOUND' });
+    return;
+  }
+  const { room, watchId } = found;
+  const secret = getWatchAccessSecret();
+  if (room.registration?.enabled && !secret) {
+    res.status(503).json({ error: 'Protected viewing is not available for this broadcast.' });
+    return;
+  }
+  const invite = room.registration?.inviteOnly && secret
+    ? verifyWatchGrant(req.body?.invite, 'watch-invite', watchId, secret)
+    : null;
+  if (room.registration?.inviteOnly && !invite) {
+    res.status(403).json({ error: 'This private broadcast needs a valid invite link from the host.', code: 'WATCH_INVITE_REQUIRED' });
     return;
   }
   try {
@@ -44,7 +60,12 @@ watchRouter.post('/:watchId/registrants', (req, res) => {
       email: req.body?.email,
     });
     // The registrant record names the studio; the watch page needs only the count.
-    res.status(201).json({ total: result.total, registrant: { name: result.registrant.name, email: result.registrant.email, registeredAt: result.registrant.registeredAt } });
+    const access = secret ? issueWatchGrant('watch-playback', watchId, secret, invite?.exp) : undefined;
+    res.status(201).json({
+      total: result.total,
+      registrant: { name: result.registrant.name, email: result.registrant.email, registeredAt: result.registrant.registeredAt },
+      ...(access ? { access } : {}),
+    });
   } catch (err) {
     if (err instanceof RoomRegistrationError) {
       res.status(err.statusCode).json({ error: err.message, code: err.code });
@@ -61,34 +82,33 @@ watchRouter.get('/:watchId/captions', (req, res) => {
     res.status(404).json({ error: 'This broadcast was not found or has ended' });
     return;
   }
-  if (found.room.registration?.enabled) {
-    res.status(401).json({ error: 'Viewer access is required' });
-    return;
-  }
+  if (!authorizeWatchViewer(req, res, found)) return;
   res.json(getWatchCaptionSnapshot(found.room.id));
 });
 
 // Live polls for viewers: the poll on screen, and an anonymous vote per browser.
 watchRouter.get('/:watchId/poll', (req, res) => {
-  const room = findWatchLinkRoom(req.params.watchId)?.room;
+  const found = findWatchLinkRoom(req.params.watchId);
   res.setHeader('Cache-Control', 'no-store');
-  if (!room) {
+  if (!found) {
     res.status(404).json({ error: 'This broadcast was not found or has ended' });
     return;
   }
-  res.json({ poll: getWatchPoll(room.id) });
+  if (!authorizeWatchViewer(req, res, found)) return;
+  res.json({ poll: getWatchPoll(found.room.id) });
 });
 
 watchRouter.post('/:watchId/poll-votes', (req, res) => {
-  const room = findWatchLinkRoom(req.params.watchId)?.room;
-  if (!room) {
+  const found = findWatchLinkRoom(req.params.watchId);
+  if (!found) {
     res.status(404).json({ error: 'This broadcast was not found or has ended', code: 'ROOM_NOT_FOUND' });
     return;
   }
+  if (!authorizeWatchViewer(req, res, found)) return;
   // Only a salted hash of the address is kept, to cap votes per network.
   const networkKey = networkKeyFor(req.ip);
   try {
-    const poll = castWatchPollVote(room.id, {
+    const poll = castWatchPollVote(found.room.id, {
       pollId: req.body?.pollId,
       optionId: req.body?.optionId,
       voterId: req.body?.voterId,
@@ -138,14 +158,15 @@ function readViewerBody(req: Request, res: Response, next: NextFunction): void {
   });
 }
 
-function viewerChatFor(req: Request, res: Response): ViewerChatRoom | null {
-  const room = findWatchLinkRoom(req.params.watchId)?.room;
-  const chat = room ? getRoomViewerChat(room.id) : undefined;
-  if (!chat) {
+function viewerChatFor(req: Request, res: Response): { chat: ViewerChatRoom; roomId: string } | null {
+  const found = findWatchLinkRoom(req.params.watchId);
+  if (found && !authorizeWatchViewer(req, res, found)) return null;
+  const chat = found ? getRoomViewerChat(found.room.id) : undefined;
+  if (!found || !chat) {
     res.status(404).json({ error: 'This broadcast was not found or has ended', code: 'ROOM_NOT_FOUND' });
     return null;
   }
-  return chat;
+  return { chat, roomId: found.room.id };
 }
 
 function answerViewerError(res: Response, err: unknown): void {
@@ -160,12 +181,15 @@ function answerViewerError(res: Response, err: unknown): void {
 // What changed since the page last asked: chat, reactions and the three switches in one small answer.
 watchRouter.get('/:watchId/live', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const chat = viewerChatFor(req, res);
-  if (!chat) return;
+  const viewerRoom = viewerChatFor(req, res);
+  if (!viewerRoom) return;
+  const { chat } = viewerRoom;
   try {
-    const roomId = findWatchLinkRoom(req.params.watchId)?.room.id;
-    const result = chat.live({ after: req.query.after, epoch: req.query.epoch }, Date.now(), viewerNetworkKey(req));
-    res.json(roomId && watchCaptionsAvailable(roomId) ? { ...result, captionsAvailable: true } : result);
+    const callInsEnabled = getRoomWatchCalls(viewerRoom.roomId)?.isEnabled() ?? false;
+    res.json({ ...chat.live({ after: req.query.after, epoch: req.query.epoch }, Date.now(), viewerNetworkKey(req), callInsEnabled),
+      ...(callInsEnabled ? { callInsEnabled } : {}),
+      ...(watchCaptionsAvailable(viewerRoom.roomId) ? { captionsAvailable: true } : {}),
+    });
   } catch (err) {
     answerViewerError(res, err);
   }
@@ -177,8 +201,9 @@ function viewerNetworkKey(req: Request): string {
 
 watchRouter.post('/:watchId/chat', readViewerBody, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const chat = viewerChatFor(req, res);
-  if (!chat) return;
+  const viewerRoom = viewerChatFor(req, res);
+  if (!viewerRoom) return;
+  const { chat } = viewerRoom;
   try {
     res.status(201).json(chat.postMessage(req.body, viewerNetworkKey(req), Date.now()));
   } catch (err) {
@@ -188,8 +213,9 @@ watchRouter.post('/:watchId/chat', readViewerBody, (req, res) => {
 
 watchRouter.post('/:watchId/questions', readViewerBody, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const chat = viewerChatFor(req, res);
-  if (!chat) return;
+  const viewerRoom = viewerChatFor(req, res);
+  if (!viewerRoom) return;
+  const { chat } = viewerRoom;
   try {
     chat.postQuestion(req.body, viewerNetworkKey(req), Date.now());
     res.status(201).json({ ok: true });
@@ -200,12 +226,63 @@ watchRouter.post('/:watchId/questions', readViewerBody, (req, res) => {
 
 watchRouter.post('/:watchId/reactions', readViewerBody, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const chat = viewerChatFor(req, res);
-  if (!chat) return;
+  const viewerRoom = viewerChatFor(req, res);
+  if (!viewerRoom) return;
+  const { chat } = viewerRoom;
   try {
     chat.postReaction(req.body, viewerNetworkKey(req), Date.now());
     res.json({ ok: true });
   } catch (err) {
     answerViewerError(res, err);
   }
+});
+
+function watchCallsFor(req: Request, res: Response) {
+  res.setHeader('Cache-Control', 'no-store');
+  const found = findWatchLinkRoom(req.params.watchId);
+  if (found && !authorizeWatchViewer(req, res, found)) return null;
+  const calls = found ? getRoomWatchCalls(found.room.id) : undefined;
+  if (!found || !calls) {
+    res.status(404).json({ error: 'This broadcast was not found or has ended' });
+    return null;
+  }
+  return { calls, roomId: found.room.id };
+}
+
+watchRouter.post('/:watchId/call-ins', readViewerBody, (req, res) => {
+  const room = watchCallsFor(req, res);
+  if (!room) return;
+  const network = viewerNetworkKey(req);
+  try {
+    getRoomViewerChat(room.roomId)?.requireViewer(req.body?.viewerId, network);
+    const receipt = room.calls.request(req.body, network);
+    res.status(201).json(receipt);
+  } catch (error) {
+    if (error instanceof WatchCallInError) {
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    answerViewerError(res, error);
+  }
+});
+
+watchRouter.get('/:watchId/call-ins/:id', (req, res) => {
+  const room = watchCallsFor(req, res);
+  if (!room) return;
+  const status = room.calls.status(req.params.id, req.get('X-Watch-Call-Key') || '');
+  if (!status) {
+    res.status(404).json({ error: 'This call-in request is no longer available.' });
+    return;
+  }
+  res.json(status);
+});
+
+watchRouter.post('/:watchId/call-ins/:id/cancel', (req, res) => {
+  const room = watchCallsFor(req, res);
+  if (!room) return;
+  if (!room.calls.cancel(req.params.id, req.get('X-Watch-Call-Key') || '')) {
+    res.status(404).json({ error: 'This call-in request is no longer waiting.' });
+    return;
+  }
+  res.json({ state: 'cancelled' });
 });

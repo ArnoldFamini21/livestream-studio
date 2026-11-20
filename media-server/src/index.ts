@@ -1,7 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
@@ -19,6 +19,7 @@ import { buildServiceHealthPayload } from '@studio/shared';
 import {
   getLiveStreamTokenSecret,
   verifyLiveStreamToken,
+  verifyWatchPlaybackToken,
   verifyRecordingUploadToken,
   verifySfuMembershipControlToken,
 } from './auth.js';
@@ -117,6 +118,7 @@ import {
 } from './testStream.js';
 import {
   HLS_PLAYLIST_NAME,
+  addWatchPlaybackToken,
   HlsViewerCounter,
   createFfmpegHlsArgs,
   getHlsContentType,
@@ -245,7 +247,7 @@ const sessions = new Map<WebSocket, RelaySession>();
 const STUDIO_RECONNECT_HOLD_MS = getStudioReconnectHoldMs(process.env);
 const liveBackups = new Map<string, LiveBackupRecording>();
 /** Rooms with a live HLS program, by room id. */
-const liveWatchRooms = new Map<string, { dir: string; startedAt: string; viewers: HlsViewerCounter }>();
+const liveWatchRooms = new Map<string, { dir: string; startedAt: string; viewers: HlsViewerCounter; protected: boolean }>();
 const recordingUploads = new RecordingUploadStore();
 let recordingExports: RecordingExportJobStore | null = null;
 let recordingExportsFfmpegPath = '';
@@ -528,7 +530,7 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
   // Published under the studio's private watch id. The room id is what admits
   // guests to the studio, so a watch link must never reveal it.
   // A test uses its own random id instead, so nothing public ever shows it.
-  const roomId = session.test ? session.testWatchId : session.claims?.watchId;
+  const roomId = session.test ? session.testWatchId : session.claims?.protectedWatchId ?? session.claims?.watchId;
   if (!program || session.hls || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
   let dir: string;
   try {
@@ -551,7 +553,12 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
   feed.join();
   const hls: HlsProcess = { roomId, dir, process: child, feed, exited: false };
   session.hls = hls;
-  liveWatchRooms.set(roomId, { dir, startedAt: new Date().toISOString(), viewers: new HlsViewerCounter() });
+  liveWatchRooms.set(roomId, {
+    dir,
+    startedAt: new Date().toISOString(),
+    viewers: new HlsViewerCounter(),
+    protected: !session.test && session.claims?.protectedWatchId === roomId,
+  });
   child.stderr.on('data', (chunk: Buffer) => {
     const line = chunk.toString('utf8').trim();
     if (line) console.warn(`ffmpeg watch-page hls: ${line}`);
@@ -588,7 +595,7 @@ function stopHlsWriter(session: RelaySession) {
 
 /**
  * Public watch page endpoints. The studio's private watch id is the
- * capability, like an unlisted video: status, the playlist, and its segments.
+ * capability for open broadcasts. Protected broadcasts also require a signed playback grant.
  */
 async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const match = url.pathname.match(/^\/watch\/([^/]+)\/([^/]+)$/);
@@ -615,11 +622,25 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
     return true;
   }
   const live = liveWatchRooms.get(roomId);
+  let watchToken: string | null = null;
+  let watchViewerId: string | undefined;
+  if (live?.protected) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    watchToken = url.searchParams.get('watchToken');
+    const secret = getLiveStreamTokenSecret();
+    const grant = secret ? verifyWatchPlaybackToken(watchToken, roomId, secret) : null;
+    if (!grant) {
+      writeJson(res, 401, { error: 'Watch access required', code: 'WATCH_ACCESS_REQUIRED' });
+      return true;
+    }
+    watchViewerId = grant.nonce;
+  }
 
   if (file === 'status') {
     res.setHeader('Cache-Control', 'no-store');
     writeJson(res, 200, live
-      ? { live: true, startedAt: live.startedAt, playlistPath: `/watch/${encodeURIComponent(roomId)}/${HLS_PLAYLIST_NAME}?generation=${encodeURIComponent(path.basename(live.dir))}`, viewers: live.viewers.count() }
+      ? { live: true, startedAt: live.startedAt, playlistPath: `/watch/${encodeURIComponent(roomId)}/${HLS_PLAYLIST_NAME}?generation=${encodeURIComponent(path.basename(live.dir))}${watchToken ? `&watchToken=${encodeURIComponent(watchToken)}` : ''}`, viewers: live.viewers.count() }
       : { live: false, viewers: 0 });
     return true;
   }
@@ -629,8 +650,14 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
   }
   const filePath = path.join(live?.dir || getHlsRoomDir(roomId), file);
   let size = 0;
+  let protectedPlaylist: string | undefined;
   try {
-    size = (await stat(filePath)).size;
+    if (file === HLS_PLAYLIST_NAME && watchToken) {
+      protectedPlaylist = addWatchPlaybackToken(await readFile(filePath, 'utf8'), watchToken);
+      size = Buffer.byteLength(protectedPlaylist);
+    } else {
+      size = (await stat(filePath)).size;
+    }
   } catch {
     writeJson(res, 404, { error: live ? 'Not ready yet' : 'This broadcast is not live' });
     return true;
@@ -638,7 +665,7 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
   if (file === HLS_PLAYLIST_NAME && live) {
     const forwarded = req.headers['x-forwarded-for'];
     const viewerKey = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
-    live.viewers.record(viewerKey);
+    live.viewers.record(watchViewerId || viewerKey);
   }
   res.writeHead(200, {
     'Content-Type': getHlsContentType(file),
@@ -648,6 +675,10 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
   });
   if (req.method === 'HEAD') {
     res.end();
+    return true;
+  }
+  if (protectedPlaylist !== undefined) {
+    res.end(protectedPlaylist);
     return true;
   }
   createReadStream(filePath)

@@ -38,7 +38,7 @@ export interface RoomSessionSnapshot {
   bannedIps?: Array<{ ip: string; expiresAt: number }>;
   returningGuests?: Array<{ joinSessionId: string; status: 'on-stage' | 'backstage'; leftAtMs: number; present?: boolean }>;
   removedJoinSessionIds?: Array<{ joinSessionId: string; removedAt: number }>;
-  redeemedInvites?: Array<{ joinSessionId: string; kind: 'co-host' | 'guest-secure'; expiresAt: number }>;
+  redeemedInvites?: Array<{ joinSessionId: string; kind: 'co-host' | 'guest-secure' | 'audience-call'; expiresAt: number }>;
 }
 
 const MAX_SESSION_LIST = 200;
@@ -110,7 +110,8 @@ export function normalizeRoomSessionSnapshot(value: unknown): RoomSessionSnapsho
   const redeemed = normalizeSessionList(input.redeemedInvites, (item) => {
     const joinSessionId = safeText(item.joinSessionId, 128);
     const expiresAt = finiteNumber(item.expiresAt);
-    const kind: 'co-host' | 'guest-secure' | null = item.kind === 'co-host' || item.kind === 'guest-secure' ? item.kind : null;
+    const kind: 'co-host' | 'guest-secure' | 'audience-call' | null =
+      item.kind === 'co-host' || item.kind === 'guest-secure' || item.kind === 'audience-call' ? item.kind : null;
     return SESSION_ID_PATTERN.test(joinSessionId) && expiresAt !== null && kind ? { joinSessionId, kind, expiresAt } : null;
   });
   if (redeemed.length) result.redeemedInvites = redeemed;
@@ -210,8 +211,9 @@ function normalizeRegistration(value: unknown): RoomRegistrationSettings {
     ? value as Partial<RoomRegistrationSettings>
     : {};
   return {
-    enabled: input.enabled === true,
+    enabled: input.enabled === true || input.inviteOnly === true,
     fields: ['name', 'email'],
+    ...(input.inviteOnly === true ? { inviteOnly: true } : {}),
   };
 }
 

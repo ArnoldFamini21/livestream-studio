@@ -1,6 +1,7 @@
 import '../styles/studio-chrome.css';
 import '../styles/join-room.css';
 import { StudioIcon } from './StudioIcon.tsx';
+import { saveStudioResumeToken } from '../utils/studioSession.ts';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -463,6 +464,7 @@ export function JoinRoom() {
       if (roomId) {
         sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
         if (isSecureGuestInvite) {
+          saveStudioResumeToken(roomId, null);
           sessionStorage.setItem(`guestInviteToken:${roomId}`, guestInviteToken);
         } else {
           sessionStorage.removeItem(`guestInviteToken:${roomId}`);

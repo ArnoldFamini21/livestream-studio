@@ -71,6 +71,7 @@ roomRouter.post('/', requireStudioCreator, (req, res) => {
     const hostName = sanitizeString(req.body.hostName);
     const password = sanitizeOptionalPassword(req.body.password);
     const registrationEnabled = sanitizeBoolean(req.body.registrationEnabled);
+    const privateWatch = sanitizeBoolean(req.body.privateWatch);
 
     if (!name || !hostName) {
       res.status(400).json({ error: 'name and hostName are required' });
@@ -94,6 +95,7 @@ roomRouter.post('/', requireStudioCreator, (req, res) => {
       creatorIp: getClientIp(req),
       password,
       registrationEnabled,
+      privateWatch,
       createdByOwner: createdByOwner(res),
     });
     sendCreatorRoom(res, room, hostToken, 201);
@@ -114,6 +116,7 @@ roomRouter.post('/schedule', requireStudioCreator, (req, res) => {
     const scheduledFor = sanitizeString(req.body.scheduledFor);
     const password = sanitizeOptionalPassword(req.body.password);
     const registrationEnabled = sanitizeBoolean(req.body.registrationEnabled);
+    const privateWatch = sanitizeBoolean(req.body.privateWatch);
 
     if (!name || !hostName) {
       res.status(400).json({ error: 'name and hostName are required' });
@@ -151,6 +154,7 @@ roomRouter.post('/schedule', requireStudioCreator, (req, res) => {
       creatorIp: getClientIp(req),
       password,
       registrationEnabled,
+      privateWatch,
       createdByOwner: createdByOwner(res),
     });
     sendCreatorRoom(res, room, hostToken, 201);

@@ -26,7 +26,7 @@ export interface WatchStatus {
 export function pollWatchStatus(
   url: string,
   onStatus: (status: WatchStatus) => void,
-  onError: () => void,
+  onError: (httpStatus?: number) => void,
   options: { intervalMs?: number; timeoutMs?: number; fetcher?: typeof fetch } = {},
 ): () => void {
   let stopped = false;
@@ -37,7 +37,10 @@ export function pollWatchStatus(
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
     try {
       const response = await (options.fetcher ?? fetch)(url, { cache: 'no-store', signal: controller.signal });
-      if (!response.ok) throw new Error('Watch status unavailable');
+      if (!response.ok) {
+        if (!stopped) onError(response.status);
+        return;
+      }
       const status = await response.json() as WatchStatus;
       if (typeof status?.live !== 'boolean' || (status.live && (
         typeof status.playlistPath !== 'string' || !status.playlistPath.startsWith('/watch/')

@@ -157,6 +157,7 @@ import {
 import { CommentHighlightOverlay, type HighlightedComment } from './CommentHighlight.tsx';
 import { ChatOverlayPreview } from './ChatOverlayPreview.tsx';
 import { useChatOverlay } from '../hooks/useChatOverlay.ts';
+import { useStudioWatchEvents } from '../hooks/useStudioWatchEvents.ts';
 import { useViewerChat } from '../hooks/useViewerChat.ts';
 import { OVERLAY_FONT_FAMILY } from '../utils/compositorOverlays.ts';
 import { TickerOverlayDisplay, type TickerData } from './TickerOverlay.tsx';
@@ -1984,6 +1985,10 @@ export function StudioRoom() {
   const widgetTabCapture = useWidgetTabCapture(stageRef, visibleWidgetIds);
   // Viewer chat state also controls the rolling overlay. Viewer reactions stay in the preview.
   const viewerChat = useViewerChat({ send, addHandler, canControl: canUseOperatorControls });
+  const watchEvents = useStudioWatchEvents({
+    send, addHandler, canControl: canUseOperatorControls,
+    onNewCall: () => addToastRef.current('Audience call-in requested. Open Invite to review.', 'info'),
+  });
   // On-screen chat: one state for the stage preview, the compositor and the chat panel's controls.
   const chatOverlay = useChatOverlay({
     roomId,
@@ -3427,6 +3432,11 @@ export function StudioRoom() {
         case 'chat-overlay-update':
         case 'chat-overlay-updated':
         // Viewer chat switches and blocks are handled by useViewerChat.
+        case 'watch-invite-request':
+        case 'watch-invite-issued':
+        case 'watch-event-settings':
+        case 'watch-call-in-decide':
+        case 'watch-event-state':
         case 'viewer-chat-settings-update':
         case 'viewer-chat-state':
         case 'viewer-chat-remove':
@@ -8433,6 +8443,8 @@ export function StudioRoom() {
               roomName={room?.name || 'Studio'}
               roomId={roomId || ''}
               watchId={watchId}
+              watchRegistration={room?.registration}
+              watchEvents={watchEvents}
               hostName={room?.hostName}
               inviteUrl={inviteUrl}
               scheduledFor={room?.scheduledFor}

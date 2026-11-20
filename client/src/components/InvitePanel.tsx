@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { buildStudioCalendarInvite } from '@studio/shared';
+import { buildStudioCalendarInvite, type RoomRegistrationSettings } from '@studio/shared';
+import type { StudioWatchEvents } from '../hooks/useStudioWatchEvents.ts';
+import { buildPrivateWatchUrl } from '../utils/watchAccess.ts';
 import { buildGuestInviteDetails, buildGuestInviteEmailHref } from '../utils/inviteLinks.ts';
 
 interface InvitePanelProps {
@@ -11,6 +13,8 @@ interface InvitePanelProps {
    * room, so it is never put in a public watch link.
    */
   watchId?: string | null;
+  watchRegistration?: RoomRegistrationSettings;
+  watchEvents?: StudioWatchEvents;
   hostName?: string;
   inviteUrl: string;
   scheduledFor?: string;
@@ -85,6 +89,8 @@ function safeFileName(value: string): string {
 
 export function InvitePanel({
   watchId,
+  watchRegistration,
+  watchEvents,
   roomName,
   roomId,
   hostName,
@@ -136,6 +142,9 @@ export function InvitePanel({
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
   const [guestEmail, setGuestEmail] = useState('');
+  const [watchInvite, setWatchInvite] = useState<{ url: string; expiresAt: string } | null>(null);
+  const [creatingWatchInvite, setCreatingWatchInvite] = useState(false);
+  const [watchInviteError, setWatchInviteError] = useState('');
 
   const scheduledLabel = useMemo(() => {
     if (!scheduledFor) return null;
@@ -164,6 +173,21 @@ export function InvitePanel({
       return `${window.location.origin}/watch/${encodeURIComponent(watchId)}`;
     }
   }, [inviteUrl, watchId]);
+
+  const issueWatchInvite = async () => {
+    if (!watchUrl || !watchEvents || creatingWatchInvite) return;
+    setCreatingWatchInvite(true);
+    setWatchInviteError('');
+    try {
+      const invite = await watchEvents.requestInvite();
+      setWatchInvite({ url: buildPrivateWatchUrl(watchUrl, invite.token), expiresAt: invite.expiresAt });
+      setCopied(null);
+    } catch (error) {
+      setWatchInviteError(error instanceof Error ? error.message : 'Could not create the private viewing link.');
+    } finally {
+      setCreatingWatchInvite(false);
+    }
+  };
 
   const mailtoHref = useMemo(() => {
     return buildGuestInviteEmailHref({
@@ -454,6 +478,20 @@ export function InvitePanel({
         {/* Public watch page: the program as a plain video page, no YouTube needed. */}
         <div style={styles.emailBox}>
           <label style={styles.linkLabel} htmlFor="studio-watch-link">Watch page</label>
+          {watchRegistration?.inviteOnly ? (
+            <>
+              <p style={styles.secureInviteText}>Share an expiring link only with invited viewers. They register before watching.</p>
+              <button type="button" style={styles.copyBtn} disabled={!watchUrl || !watchEvents?.supported || creatingWatchInvite} onClick={() => void issueWatchInvite()}>
+                {creatingWatchInvite ? 'Creating…' : 'Create private viewing link'}
+              </button>
+              {watchInvite && <div style={styles.linkRow}>
+                <input id="studio-watch-link" aria-label="Private viewing link" style={styles.linkInput} readOnly value={watchInvite.url} onFocus={(event) => event.currentTarget.select()} />
+                <button type="button" style={styles.copyBtn} onClick={() => void handleCopy('watch', watchInvite.url)}>{copied === 'watch' ? 'Copied' : 'Copy'}</button>
+              </div>}
+              {watchInvite && <p style={styles.secureInviteText}>Expires {new Date(watchInvite.expiresAt).toLocaleString()}</p>}
+              {watchInviteError && <p role="alert" style={styles.errorText}>{watchInviteError}</p>}
+            </>
+          ) : (<>
           <div style={styles.linkRow}>
             <input
               id="studio-watch-link"
@@ -473,8 +511,26 @@ export function InvitePanel({
             </button>
           </div>
           <p style={styles.secureInviteText}>
-            Anyone with this link can watch the live program in their browser once you go live. When registration is enabled for this studio, viewers register first.
+            {watchRegistration?.enabled ? 'Viewers register before playing the live program.' : 'Anyone with this link can watch the live program once you go live.'}
           </p>
+          </>)}
+          {watchEvents?.supported && <section aria-label="Audience call-ins" style={{ marginTop: 14 }}>
+            <label style={styles.secureInviteText}>
+              <input type="checkbox" checked={watchEvents.state.callInsEnabled} onChange={(event) => watchEvents.setCallInsEnabled(event.target.checked)} />
+              {' '}Allow audience call-ins
+            </label>
+            <p style={styles.secureInviteText}>Approve requests here. Visitors check their devices and wait in the green room before you bring them on stage.</p>
+            {watchEvents.state.callIns.map((call) => (
+              <div key={call.id} style={{ ...styles.emailBox, overflowWrap: 'anywhere' }}>
+                <strong style={styles.linkLabel}>{call.name}</strong>
+                {call.note && <p style={styles.secureInviteText}>{call.note}</p>}
+                <div style={styles.linkRow}>
+                  <button type="button" style={styles.copyBtn} aria-label={`Approve call-in from ${call.name}`} onClick={() => watchEvents.decideCallIn(call.id, 'approve')}>Approve</button>
+                  <button type="button" style={styles.copyBtn} aria-label={`Decline call-in from ${call.name}`} onClick={() => watchEvents.decideCallIn(call.id, 'decline')}>Decline</button>
+                </div>
+              </div>
+            ))}
+          </section>}
         </div>
 
         <div style={styles.coHostBox}>
