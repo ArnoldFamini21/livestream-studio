@@ -54,7 +54,7 @@ import { loadCanvasFonts } from '../utils/canvasFonts.ts';
 import { getContextCanvasSize, getProgramCanvasSize } from '../utils/compositorCanvasSize.ts';
 import { drawStageBackground } from '../utils/compositorBackground.ts';
 import { DEFAULT_CANVAS_FONT_FAMILY } from '../utils/brandFonts.ts';
-import { questionAuthorLabel } from '../utils/viewerQuestionLabel.ts';
+import { fitQuestionAuthorLabel } from '../utils/viewerQuestionLabel.ts';
 import { drawWidgetCaptureFrame, WIDGET_CAPTURE_ATTRIBUTE, type WidgetCaptureSources } from '../utils/widgetTabCapture.ts';
 
 /** The program's frame rate: the canvas stream and the draw timer. */
@@ -871,7 +871,9 @@ function drawBroadcastQA(
   const x = 56;
   const width = Math.min(720, canvas.width - x * 2);
   const padding = 28;
-  const maxTextWidth = width - padding * 2 - 42;
+  const textIndent = 42;
+  const textX = x + padding + textIndent;
+  const maxTextWidth = width - padding * 2 - textIndent;
 
   ctx.save();
   ctx.font = '600 29px Inter, Arial, sans-serif';
@@ -902,13 +904,17 @@ function drawBroadcastQA(
   ctx.fillStyle = 'white';
   ctx.font = '600 29px Inter, Arial, sans-serif';
   questionLines.forEach((line, index) => {
-    ctx.fillText(line, x + padding + 42, y + padding + 28 + index * 36);
+    ctx.fillText(line, textX, y + padding + 28 + index * 36);
   });
 
   const authorY = y + padding + questionLines.length * 36 + 22;
   ctx.fillStyle = 'rgba(255, 255, 255, 0.58)';
   ctx.font = 'italic 22px Inter, Arial, sans-serif';
-  ctx.fillText(`- ${truncateCanvasText(ctx, questionAuthorLabel(question), width - padding * 2)}`, x + padding + 42, authorY);
+  const author = fitQuestionAuthorLabel(question, maxTextWidth, (text) => {
+    const metrics = ctx.measureText(text);
+    return Math.max(metrics.width, metrics.actualBoundingBoxRight || 0);
+  });
+  ctx.fillText(author, textX, authorY);
 
   if (answerLines.length > 0) {
     const answerTop = authorY + 30;
@@ -925,7 +931,7 @@ function drawBroadcastQA(
     ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
     ctx.font = '500 27px Inter, Arial, sans-serif';
     answerLines.forEach((line, index) => {
-      ctx.fillText(line, x + padding + 42, answerTop + 22 + index * 34);
+      ctx.fillText(line, textX, answerTop + 22 + index * 34);
     });
   }
 

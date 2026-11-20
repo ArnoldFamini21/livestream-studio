@@ -74,6 +74,12 @@ describe('sanitizing viewer text', () => {
     assert.equal(Array.from(sanitizeViewerText(stacked, 40).text).length, 5);
   });
 
+  it('drops unpaired surrogates while preserving emoji and their joiners', () => {
+    const family = `${code(0x1f469)}${code(0x200d)}${code(0x1f467)}`;
+    assert.deepEqual(sanitizeViewerText(`Hi \ud800${family}\udfff`, 40), { ok: true, text: `Hi ${family}` });
+    assert.deepEqual(sanitizeViewerText('\udfff\ud800', 40), { ok: false, reason: 'empty' });
+  });
+
   it('does not turn a name into something else: the name limit is 40', () => {
     assert.equal(sanitizeViewerText('n'.repeat(VIEWER_NAME_MAX), VIEWER_NAME_MAX).ok, true);
     assert.equal(sanitizeViewerText('n'.repeat(VIEWER_NAME_MAX + 1), VIEWER_NAME_MAX).reason, 'too-long');
@@ -302,7 +308,8 @@ describe('the feed and its cursor', () => {
 
   it('never carries an id, a key or who moderated', () => {
     const feed = createViewerFeed('e1');
-    add(feed, 'm1', { ref: 'secret-handle' });
+    const origin = Symbol('private origin');
+    add(feed, 'm1', { [origin]: 'secret-handle' });
     const wire = JSON.stringify(readViewerFeed(feed, {}));
     assert.equal(wire.includes('secret-handle'), false);
     assert.deepEqual(Object.keys(readViewerFeed(feed, {}).messages[0]).sort(), ['at', 'from', 'id', 'name', 'text']);
@@ -310,10 +317,10 @@ describe('the feed and its cursor', () => {
 
   it('tells pages about removals, and a new page never gets a removed message', () => {
     const feed = createViewerFeed('e1');
-    add(feed, 'm1', { ref: 'h1' });
-    add(feed, 'm2', { ref: 'h2' });
+    add(feed, 'm1');
+    add(feed, 'm2');
     const cursor = readViewerFeed(feed, { epoch: 'e1' }).cursor;
-    assert.deepEqual(removeFeedMessages(feed, (m) => m.ref === 'h1'), ['m1']);
+    assert.deepEqual(removeFeedMessages(feed, (m) => m.id === 'm1'), ['m1']);
     assert.deepEqual(readViewerFeed(feed, { after: String(cursor), epoch: 'e1' }).removed, ['m1']);
     assert.deepEqual(readViewerFeed(feed, {}).messages.map((m) => m.id), ['m2']);
     assert.deepEqual(removeFeedMessages(feed, () => false), []);

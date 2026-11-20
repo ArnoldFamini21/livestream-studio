@@ -1763,7 +1763,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
     .filter((p) => p.id !== participant.id && (admitted || isOperatorRole(p.role)));
   const qaQuestions = admitted
     ? Array.from(roomState.qaQuestions.values())
-      .filter((q) => operator || q.status === 'approved' || q.status === 'answered')
+      .filter((question) => operator || isPublicQAQuestion(question))
     : [];
   const polls = admitted
     ? Array.from(roomState.polls.values()).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
@@ -2504,34 +2504,20 @@ function createViewerChatHost(roomId: string, roomState: RoomState): ViewerChatH
       }
     },
     findChatMessage: (id) => roomState.chatMessages.get(id),
-    chatMessageIdsBySender: (senderIds) => Array.from(roomState.chatMessages.values())
-      .filter((message) => senderIds.has(message.senderId))
-      .map((message) => message.id),
+    getChatMessages: () => roomState.chatMessages.values(),
     addQuestion(question) {
       roomState.qaQuestions.set(question.id, question);
       roomState.qaVotes.set(question.id, new Set());
       broadcastQAQuestion(roomId, question);
     },
     findQuestion: (id) => roomState.qaQuestions.get(id),
-    countViewerQuestions(authorIds) {
-      let waiting = 0;
-      let open = 0;
-      for (const question of roomState.qaQuestions.values()) {
-        // Answered and dismissed questions are done: they no longer take room from new ones.
-        if (!question.fromViewer || (question.status !== 'pending' && question.status !== 'approved')) continue;
-        open += 1;
-        if (authorIds.has(question.authorId)) waiting += 1;
-      }
-      return { waiting, open };
-    },
-    dismissViewerQuestions(authorIds) {
-      for (const question of Array.from(roomState.qaQuestions.values())) {
-        if (!question.fromViewer || !authorIds.has(question.authorId)) continue;
-        if (question.status === 'answered' || question.status === 'dismissed') continue;
-        const dismissed: QAQuestion = { ...question, status: 'dismissed', highlighted: false };
-        roomState.qaQuestions.set(dismissed.id, dismissed);
-        broadcastQAQuestion(roomId, dismissed);
-      }
+    getQuestions: () => roomState.qaQuestions.values(),
+    moderateQuestion(question) {
+      const status = question.status === 'answered' ? 'answered' : 'dismissed';
+      if (question.status === status && !question.highlighted) return;
+      const moderated: QAQuestion = { ...question, status, highlighted: false };
+      roomState.qaQuestions.set(question.id, moderated);
+      broadcastQAQuestion(roomId, moderated, question);
     },
     sendReactionCounts(counts) {
       for (const entry of operators()) send(entry.ws, { type: 'viewer-reactions', payload: { counts } });
@@ -2573,7 +2559,7 @@ function getViewerChatOperator(ws: WebSocket): { chat: ViewerChatRoom } | null {
   }
   const rate = viewerModerationRateLimiter.check(ws, 'viewer-chat');
   if (!rate.allowed) {
-    if (rate.notify) sendError(ws, 'Too many viewer chat changes. Please slow down.', 'RATE_LIMITED');
+    if (rate.notify) sendError(ws, 'Too many viewer chat changes. Please slow down and try again.', 'VIEWER_MODERATION_RATE_LIMITED');
     return null;
   }
   return { chat: ensureViewerChat(mapping.roomId, roomState) };
@@ -2593,7 +2579,7 @@ function handleViewerChatRemove(ws: WebSocket, payload: unknown) {
     sendError(ws, 'Invalid viewer chat update', 'INVALID_PAYLOAD');
     return;
   }
-  if (!operator.chat.removeMessage(messageId)) sendError(ws, 'That message is already gone.', 'NOT_FOUND');
+  if (!operator.chat.removeMessage(messageId)) sendError(ws, 'That message is already gone.', 'VIEWER_MESSAGE_NOT_FOUND');
 }
 
 function handleViewerChatBlock(ws: WebSocket, payload: unknown) {
@@ -2619,7 +2605,7 @@ function handleViewerChatUnblock(ws: WebSocket, payload: unknown) {
   const operator = getViewerChatOperator(ws);
   if (!operator) return;
   const blockId = payload && typeof payload === 'object' ? (payload as { blockId?: unknown }).blockId : undefined;
-  if (typeof blockId !== 'string' || !operator.chat.unblock(blockId)) sendError(ws, 'That viewer is not blocked.', 'NOT_FOUND');
+  if (typeof blockId !== 'string' || !operator.chat.unblock(blockId)) sendError(ws, 'That viewer is already unblocked.', 'VIEWER_BLOCK_NOT_FOUND');
 }
 
 function normalizeStageContent(payload: unknown, roomState: RoomState): StageContentPayload | null {
@@ -4948,18 +4934,6 @@ function handleQAQuestionUpdate(
   if (!existing) return;
 
   const updates = payload.updates || {};
-  const changedQuestions: QAQuestion[] = [];
-
-  if (updates.highlighted === true) {
-    for (const [id, question] of roomState.qaQuestions) {
-      if (id !== existing.id && question.highlighted) {
-        const unhighlighted = { ...question, highlighted: false };
-        roomState.qaQuestions.set(id, unhighlighted);
-        changedQuestions.push(unhighlighted);
-      }
-    }
-  }
-
   const next: QAQuestion = { ...existing };
 
   if (updates.status) {
@@ -4987,12 +4961,20 @@ function handleQAQuestionUpdate(
     next.highlighted = updates.highlighted && next.status !== 'dismissed';
   }
 
-  roomState.qaQuestions.set(next.id, next);
-  changedQuestions.push(next);
+  if (next.fromViewer && !isPublicQAQuestion(next)) next.highlighted = false;
 
-  for (const question of changedQuestions) {
-    broadcastQAQuestion(mapping.roomId, question);
+  if (updates.highlighted === true && next.highlighted) {
+    for (const [id, question] of roomState.qaQuestions) {
+      if (id !== existing.id && question.highlighted) {
+        const unhighlighted = { ...question, highlighted: false };
+        roomState.qaQuestions.set(id, unhighlighted);
+        broadcastQAQuestion(mapping.roomId, unhighlighted, question);
+      }
+    }
   }
+
+  roomState.qaQuestions.set(next.id, next);
+  broadcastQAQuestion(mapping.roomId, next, existing);
 }
 
 function handleQAQuestionUpvote(
@@ -5490,29 +5472,28 @@ function broadcastToRoom(roomId: string, message: SignalMessage, excludeId?: str
   }
 }
 
-function broadcastQAQuestion(roomId: string, question: QAQuestion) {
+function isPublicQAQuestion(question: QAQuestion): boolean {
+  return question.status === 'approved' || question.status === 'answered';
+}
+
+function broadcastQAQuestion(roomId: string, question: QAQuestion, previous?: QAQuestion) {
   const roomState = rooms.get(roomId);
   if (!roomState) return;
 
+  // A guest only gets viewer questions after they were made public. Clear the
+  // guest's copy and stage highlight when a public question goes private again.
+  let guestViewerUpdate: QAQuestion | undefined = question;
+  if (question.fromViewer && !isPublicQAQuestion(question)) {
+    guestViewerUpdate = previous && isPublicQAQuestion(previous)
+      ? { ...previous, status: 'dismissed', highlighted: false }
+      : undefined;
+  }
   for (const [id, { participant, ws }] of roomState.participants) {
     if (ws.readyState !== WebSocket.OPEN) continue;
-    if (
-      question.status === 'pending' &&
-      participant.role === 'guest' &&
-      id !== question.authorId
-    ) {
-      continue;
-    }
     if (participant.status === 'green-room' && id !== question.authorId) continue;
-
-    try {
-      send(ws, {
-        type: 'qa-question-updated',
-        payload: question,
-      });
-    } catch (err) {
-      console.error(`Failed to send Q&A update to participant ${id}:`, (err as Error).message);
-    }
+    if (question.status === 'pending' && !question.fromViewer && participant.role === 'guest' && id !== question.authorId) continue;
+    const update = participant.role === 'guest' ? guestViewerUpdate : question;
+    if (update) send(ws, { type: 'qa-question-updated', payload: update });
   }
 }
 

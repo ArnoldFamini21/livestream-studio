@@ -63,7 +63,7 @@ export function ViewerChatControls({ state, serverSupported, onSetSwitch, onUnbl
         </button>
       </div>)}
       <p className="chat-overlay-note">Everything starts off. People on the watch page see only what you turn on. Their messages appear here marked Viewer.</p>
-      <p className="chat-overlay-note">Viewer messages are shown to everyone watching. If Chat on screen is on, they can also appear on the broadcast. Public chat lines you write in the studio show on the watch page too while viewer chat is on. Each time you turn viewer chat on, the watch page list starts empty.</p>
+      <p className="chat-overlay-note">Viewer messages are shown to everyone watching. If Chat on screen is on, they can also appear on the broadcast. Public studio chat also appears on the watch page while viewer chat is on. Turning viewer chat off stops new messages. To hide earlier comments from the broadcast, remove them or turn off Chat on screen.</p>
       {!serverSupported && <p className="chat-overlay-note">The studio needs an update before these switches work. Reload in a few minutes.</p>}
       <div className="viewer-chat-blocked">
         <strong>Blocked viewers</strong>
@@ -122,7 +122,7 @@ export function ViewerBlockDialog({ target, onChoose, onCancel }: {
   return <div className="viewer-block-overlay" role="dialog" aria-modal="true" aria-labelledby="viewer-block-title" onClick={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
     <div ref={dialogRef} className="viewer-block-dialog">
       <h2 id="viewer-block-title">Block this viewer?</h2>
-      <p>Their earlier messages and questions will be removed. They cannot send anything new until you unblock them. Their name was <strong>{name}</strong>.</p>
+      <p>Their earlier messages and open questions will be removed. They cannot send anything new until you unblock them. Their name was <strong>{name}</strong>.</p>
       <button type="button" className="viewer-block-choice" data-choice="viewer" onClick={() => onChoose(target, 'viewer')}>
         <strong>Block this viewer only</strong>
         <span>Blocks this person&apos;s browser. A private window or cleared browsing data gets around it, so block the network too if they come back. Other people on the same Wi-Fi can still write.</span>

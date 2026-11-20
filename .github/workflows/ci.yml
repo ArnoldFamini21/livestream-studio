@@ -93,7 +93,7 @@ jobs:
           VITE_MEDIA_HTTP_URL: http://localhost:3001
           VITE_MEDIA_WS_URL: ws://localhost:3001/rtmp
           VITE_INVITE_BASE_URL: http://localhost:5199
-      - name: Qualify studio and anonymous error intake in serial browser suites
+      - name: Qualify studio, viewer engagement and anonymous error intake in serial browser suites
         run: npm run test:e2e
       - name: Upload screenshots and qualification evidence
         if: always()
@@ -109,6 +109,10 @@ jobs:
             output/e2e/client-errors/*.txt
             output/e2e/client-errors/*.json
             output/e2e/client-errors/*.log
+            output/e2e/viewer-chat/*.png
+            output/e2e/viewer-chat/*.txt
+            output/e2e/viewer-chat/*.json
+            output/e2e/viewer-chat/*.log
           retention-days: 7
 
   recording-soak:

@@ -11,7 +11,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P1.4** Configurable multistream destinations, health and presets (PR #360, verified locally; see below)
 - [ ] **P1.5** Simultaneous landscape and portrait streaming
 - [x] **P1.6** Merged on-screen chat overlay, questions and export (PR #361, verified locally; see below)
-- [x] **P1.7** Moderated viewer chat, reactions and Q&A (switches off by default; see below and docs/notes/viewer-chat.md)
+- [x] **P1.7** Moderated viewer chat, reactions and Q&A (PR #374; see below and docs/notes/viewer-chat.md)
 - [ ] **P1.8** Signed watch-page registration and HLS authorization
 - [ ] **P1.9** Audience call-ins through the green room
 - [ ] **P1.10** Reusable studios, synced scenes and scene folders
@@ -552,10 +552,10 @@ are in `docs/notes/viewer-chat.md`.
   `signaling.ts`): plain HTTP like poll voting. `GET /api/watch/:id/live?after=&epoch=`
   returns chat, removals, reaction counts and the three switches in one small
   answer; `POST .../chat`, `.../reactions`, `.../questions` take a 2 kB body (415,
-  400 and 413 answered plainly). Viewer id from the browser plus a salted hash of
-  the address as the network key; neither is stored raw, logged or sent on. Kept
-  in memory for the life of the room (switches, blocks, about 200 viewer
-  messages), like the on-screen chat settings. The network is the address (IPv4)
+  400 and 413 answered plainly). The server keeps the viewer's browser ID and
+  a salted network hash in memory. Other viewers and studio operators receive
+  neither value. Switches, blocks and about 200 viewer messages last for the
+  life of the room, like the on-screen chat settings. The network is the address (IPv4)
   or its first 64 bits (IPv6). Studio lines are kept for viewers only while chat
   is on, and the list starts empty each time chat is switched on. Questions are
   capped per viewer (3 waiting), per network (15) and per room (200 open: answered
@@ -578,21 +578,22 @@ are in `docs/notes/viewer-chat.md`.
   would go straight on air. Viewer reactions float on the studio preview only, never
   in the broadcast picture. `StudioRoom.tsx` changed by wiring only.
 
-Verification: unit tests in shared, server and client; the existing suites stay
-green; a real Chromium check (`output/viewer-chat-check/check.mjs`, built app under
-the production security policy, one host and two watch pages, 18 steps) covering
-chat both ways, the on-screen chat and its warning, remove, both kinds of block
-and Unblock, blocking a viewer who only asks questions, the slow-down line, a
-question in the queue, a reaction (also with chat off), studio lines written
-before chat was on staying hidden, each switch off (control hidden and a
-hand-made request refused), a viewer named like the host, and a server log with
-none of the typed text. Screenshots at 1440x900 and 390x844 were
-looked at.
+The watch page refreshes chat from the moderated feed immediately after sending.
+Only one feed request runs at a time. On smaller screens, the chat history grows
+as messages arrive, and an active poll appears above the chat.
 
-Not verified: a co-host's or a stage guest's browser, real traffic and the load
-numbers (estimated from the limits in the code), a screen reader pass on the watch
-page, the pop-out chat (it shows the Viewer mark but has no Remove or Block).
-Publishing restarts the signaling server.
+Blocks cover the selected viewer and optionally the network they used when they
+posted. A viewer's pending question stays with studio operators until approved
+or answered. The broadcast Q&A card keeps the viewer label visible as it
+shortens long names.
+
+The CI browser suite in `e2e/viewer-chat.test.mjs` uses one host and two
+independent watch browsers to exercise the switches, attribution, public and
+backstage chat, on-screen approval, reactions, Q&A, blocking and unblocking.
+It collects screenshots at 1440×900, 1000×625 and 390×844. Workspace tests cover
+moderation, question privacy, request limits and polling races. The browser
+suite uses fake devices and loopback signaling. A production release restarts
+the signaling server.
 
 ## Resume here next session
 

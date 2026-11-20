@@ -3262,6 +3262,10 @@ export function StudioRoom() {
           navigateRef.current('/');
           break;
         case 'error':
+          if (['VIEWER_NOT_FOUND', 'VIEWER_MESSAGE_NOT_FOUND', 'VIEWER_BLOCK_NOT_FOUND', 'VIEWER_MODERATION_RATE_LIMITED'].includes(message.payload.code)) {
+            addToastRef.current(message.payload.message, 'warning');
+            break;
+          }
           console.error('Server error:', message.payload.message);
           if (message.payload.code === 'RATE_LIMITED') {
             // Negotiation retries on its own; say so once rather than fail silently.
@@ -8355,7 +8359,7 @@ export function StudioRoom() {
             onHighlight={onHighlightQuestion}
             onUnhighlight={onUnhighlightQuestion}
             onClose={() => setShowWebinarQA(false)}
-            onBlockViewer={viewerChat.serverSupported ? viewerChat.blockViewer : undefined}
+            onBlockViewer={canUseOperatorControls && viewerChat.serverSupported ? viewerChat.blockViewer : undefined}
           />
           </PanelErrorBoundary>
         )}

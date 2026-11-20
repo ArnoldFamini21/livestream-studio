@@ -9,7 +9,6 @@ import {
 } from '@studio/shared';
 import { requestJson } from '../utils/apiClient.ts';
 import {
-  addSentMessage,
   applyLiveResponse,
   emptyChatView,
   liveQuery,
@@ -26,8 +25,8 @@ interface UseWatchLiveOptions {
 export interface WatchLive {
   switches: ViewerChatSwitches;
   messages: WatchChatMessage[];
-  /** Shows a message this viewer just sent without waiting for the next answer. */
-  addSent: (message: WatchChatMessage) => void;
+  /** Asks for an up-to-date moderated feed after this viewer sends a message. */
+  refresh: () => void;
   /** Remembers a reaction this viewer floated at once, so the next answer does not float it again. */
   noteOwnReaction: (type: ViewerReactionType) => void;
 }
@@ -43,10 +42,10 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
   const [switches, setSwitches] = useState<ViewerChatSwitches>(defaultViewerChatSwitches);
   const [view, setView] = useState<WatchChatView>(emptyChatView);
   const viewRef = useRef(view);
-  viewRef.current = view;
   const onReactionsRef = useRef(onReactions);
   onReactionsRef.current = onReactions;
   const ownReactionsRef = useRef<Partial<Record<ViewerReactionType, number>>>({});
+  const refreshRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let stopped = false;
@@ -54,6 +53,7 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
     let controller: AbortController | undefined;
     let failures = 0;
     let hintMs: number | undefined;
+    let queuedRefresh = false;
     const path = `/api/watch/${encodeURIComponent(watchId)}/live`;
 
     const schedule = (delay: number) => {
@@ -63,7 +63,8 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
     };
 
     const ask = async () => {
-      if (stopped) return;
+      if (stopped || controller) return;
+      queuedRefresh = false;
       controller = new AbortController();
       try {
         const answer = await requestJson<WatchLiveResponse>(`${path}${liveQuery(viewRef.current)}`, { timeoutMs: 8_000, signal: controller.signal });
@@ -80,7 +81,9 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
           viewRef.current = next;
           setView(next);
         }
-        if (answer.switches.reactions && !answer.reset) {
+        if (!answer.switches.reactions || answer.reset) {
+          ownReactionsRef.current = {};
+        } else {
           const { floats, ownLeft } = reactionsToFloat(answer.reactions ?? {}, ownReactionsRef.current);
           ownReactionsRef.current = ownLeft;
           if (floats.length > 0) onReactionsRef.current(floats);
@@ -90,36 +93,37 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
         // Keep what is on screen and try again, a little slower each time.
         failures += 1;
       }
+      controller = undefined;
       const hidden = typeof document !== 'undefined' && document.hidden;
       const base = effectiveViewerPollMs(hintMs, hidden);
-      schedule(failures > 0 ? Math.min(MAX_BACKOFF_MS, base * 2 ** Math.min(failures, 3)) : base);
+      const delay = failures > 0 ? Math.min(MAX_BACKOFF_MS, base * 2 ** Math.min(failures, 3)) : base;
+      schedule(queuedRefresh && failures === 0 ? 0 : delay);
     };
 
+    refreshRef.current = () => {
+      if (controller) queuedRefresh = true;
+      else schedule(0);
+    };
     // Coming back to the tab: ask at once instead of waiting out the slow wait.
     const onVisibility = () => {
-      if (typeof document !== 'undefined' && !document.hidden) schedule(0);
+      if (!document.hidden && !controller) schedule(0);
     };
     document.addEventListener('visibilitychange', onVisibility);
     void ask();
     return () => {
       stopped = true;
+      refreshRef.current = null;
       controller?.abort();
       if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [watchId]);
 
-  const addSent = useCallback((message: WatchChatMessage) => {
-    const next = addSentMessage(viewRef.current, message);
-    if (next !== viewRef.current) {
-      viewRef.current = next;
-      setView(next);
-    }
-  }, []);
+  const refresh = useCallback(() => refreshRef.current?.(), []);
 
   const noteOwnReaction = useCallback((type: ViewerReactionType) => {
     ownReactionsRef.current = { ...ownReactionsRef.current, [type]: (ownReactionsRef.current[type] ?? 0) + 1 };
   }, []);
 
-  return { switches, messages: view.messages, addSent, noteOwnReaction };
+  return { switches, messages: view.messages, refresh, noteOwnReaction };
 }

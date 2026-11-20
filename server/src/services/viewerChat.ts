@@ -163,17 +163,12 @@ export interface ViewerChatHost {
   /** Takes messages out of the studio chat and tells every screen (the on-screen chat follows the chat list). */
   removeChatMessages(ids: readonly string[]): void;
   findChatMessage(id: string): ChatMessage | undefined;
-  /** Ids of the studio chat messages written by any of these senders. */
-  chatMessageIdsBySender(senderIds: ReadonlySet<string>): string[];
+  getChatMessages(): Iterable<ChatMessage>;
   addQuestion(question: QAQuestion): void;
   findQuestion(id: string): QAQuestion | undefined;
-  /**
-   * Viewer questions still waiting (pending or approved) from these authors, and
-   * all such questions in the room. Answered and dismissed ones no longer count.
-   */
-  countViewerQuestions(authorIds: ReadonlySet<string>): { waiting: number; open: number };
-  /** Takes a blocked viewer's questions that are not yet answered off the queue. */
-  dismissViewerQuestions(authorIds: ReadonlySet<string>): void;
+  getQuestions(): Iterable<QAQuestion>;
+  /** Takes a blocked viewer's question off the queue and clears any highlight. */
+  moderateQuestion(question: QAQuestion): void;
   /** Counts of reactions since the last call, for hosts and co-hosts. */
   sendReactionCounts(counts: Partial<Record<ChatReactionType, number>>): void;
   /** The switches and the blocked list changed. */
@@ -186,23 +181,34 @@ export interface ViewerChatHost {
 
 interface ViewerIdentity {
   handle: string;
+  /** Last accepted text, bounded by the posting length limit. Its comparison form can be much longer. */
+  lastText?: string;
+}
+
+interface ViewerPostOrigin {
   viewerId: string;
   networkKey: string;
-  name: string;
-  /** What the viewer last said (comparison form), so the same message twice in a row is refused. */
-  lastKey?: string;
 }
+
+// Object spreads preserve the posting network when a question or message
+// changes. The symbol keeps the metadata out of every JSON response.
+const VIEWER_POST_ORIGIN = Symbol('viewer post origin');
+type StoredViewerPost = { id: string; [VIEWER_POST_ORIGIN]?: ViewerPostOrigin };
 
 interface StoredBlock {
   id: string;
   scope: ViewerBlockScope;
-  /** The viewer id, or the network key. Never leaves the server. */
-  key: string;
+  viewerId: string;
+  networkKey?: string;
   name: string;
   blockedAt: string;
 }
 
-/** People remembered per room (so a message can be traced back to its writer). The oldest go first. */
+function matchesBlock(block: StoredBlock, origin: ViewerPostOrigin): boolean {
+  return block.viewerId === origin.viewerId || block.networkKey === origin.networkKey;
+}
+
+/** Viewer handles and duplicate checks remembered per room. The oldest go first. */
 const MAX_IDENTITIES = 3000;
 /**
  * Questions one viewer may have waiting, one network may have waiting (a
@@ -224,10 +230,6 @@ export function viewerSenderId(handle: string): string {
   return `${VIEWER_SENDER_PREFIX}${handle}`;
 }
 
-function handleFromSenderId(senderId: string): string | null {
-  return senderId.startsWith(VIEWER_SENDER_PREFIX) ? senderId.slice(VIEWER_SENDER_PREFIX.length) : null;
-}
-
 export interface ViewerPostInput {
   viewerId?: unknown;
   name?: unknown;
@@ -241,7 +243,6 @@ export class ViewerChatRoom {
   private readonly talkLimits = createRateLimiterState();
   private readonly reactionLimits = createRateLimiterState();
   private readonly identities = new Map<string, ViewerIdentity>();
-  private readonly handleByViewerId = new Map<string, string>();
   private blocks: StoredBlock[] = [];
   /** When each network last got a big answer (the costly kind of read). */
   private readonly bigReads = new Map<string, number[]>();
@@ -324,16 +325,18 @@ export class ViewerChatRoom {
     const viewerId = this.requireViewer(input.viewerId, networkKey);
     const name = this.cleanName(input.name);
     const text = this.cleanText(input.text, VIEWER_MESSAGE_MAX, LINES.messageTooLong, LINES.messageEmpty);
-    this.refuseRepeat(this.peekIdentity(viewerId), text);
+    this.refuseRepeat(this.identities.get(viewerId), text);
     this.spend(this.talkLimits, viewerId, networkKey, now, this.rules.talk);
     // Only a message that got through is remembered, so refused attempts cannot fill the memory.
-    const identity = this.identityFor(viewerId, networkKey, name);
+    const identity = this.identityFor(viewerId);
 
     const id = nanoid(10);
     const message: WatchChatMessage = { id, from: 'viewer', name, text, at: now };
-    identity.lastKey = repeatKey(text);
-    appendFeedMessage(this.feed, { ...message, ref: identity.handle });
-    this.host.addChatMessage({
+    identity.lastText = text;
+    const origin = { viewerId, networkKey };
+    const feedMessage = { ...message, [VIEWER_POST_ORIGIN]: origin };
+    appendFeedMessage(this.feed, feedMessage);
+    const studioMessage: ChatMessage & StoredViewerPost = {
       id,
       senderId: viewerSenderId(identity.handle),
       senderName: name,
@@ -341,7 +344,9 @@ export class ViewerChatRoom {
       timestamp: new Date(now).toISOString(),
       isBackstage: false,
       source: { platform: 'watch', externalId: identity.handle, publishedAt: new Date(now).toISOString() },
-    });
+      [VIEWER_POST_ORIGIN]: origin,
+    };
+    this.host.addChatMessage(studioMessage);
     return { message };
   }
 
@@ -350,19 +355,15 @@ export class ViewerChatRoom {
     const viewerId = this.requireViewer(input.viewerId, networkKey);
     const name = this.cleanName(input.name);
     const text = this.cleanText(input.text, VIEWER_QUESTION_MAX, LINES.questionTooLong, LINES.questionEmpty);
-    const known = this.peekIdentity(viewerId);
+    const known = this.identities.get(viewerId);
     this.refuseRepeat(known, text);
-    const mine = this.host.countViewerQuestions(new Set(known ? [viewerSenderId(known.handle)] : []));
-    if (mine.waiting >= MAX_WAITING_QUESTIONS_PER_VIEWER) throw new ViewerChatError(LINES.questionLimit, 429, 'QUESTION_LIMIT');
-    const onNetwork = this.host.countViewerQuestions(this.senderIdsOnNetwork(networkKey));
-    if (onNetwork.waiting >= MAX_WAITING_QUESTIONS_PER_NETWORK) throw new ViewerChatError(LINES.questionNetworkLimit, 429, 'QUESTION_LIMIT');
-    if (onNetwork.open >= MAX_OPEN_QUESTIONS_PER_ROOM) throw new ViewerChatError(LINES.questionsFull, 429, 'QUESTIONS_FULL');
+    this.enforceQuestionLimits(viewerId, networkKey);
     this.spend(this.talkLimits, viewerId, networkKey, now, this.rules.talk);
-    const identity = this.identityFor(viewerId, networkKey, name);
+    const identity = this.identityFor(viewerId);
     const authorId = viewerSenderId(identity.handle);
 
-    identity.lastKey = repeatKey(text);
-    const question: QAQuestion = {
+    identity.lastText = text;
+    const question: QAQuestion & StoredViewerPost = {
       id: nanoid(10),
       authorId,
       authorName: name,
@@ -372,6 +373,7 @@ export class ViewerChatRoom {
       status: 'pending',
       highlighted: false,
       fromViewer: true,
+      [VIEWER_POST_ORIGIN]: { viewerId, networkKey },
     };
     this.host.addQuestion(question);
     return { questionId: question.id };
@@ -432,23 +434,23 @@ export class ViewerChatRoom {
   }
 
   /**
-   * Blocks the viewer who wrote `messageId`, alone or with everyone on the same
-   * network, and removes their earlier messages and unanswered questions.
+   * Blocks the viewer who wrote `messageId` and, when requested, the network
+   * they used for that post. Removes matching posts from chat and the Q&A queue.
    */
   blockViewer(messageId: string, scope: unknown, now: number): ViewerBlockSummary {
     if (!(VIEWER_BLOCK_SCOPES as readonly unknown[]).includes(scope)) throw new ViewerChatError('Choose who to block.', 400, 'VALIDATION_ERROR');
     const blockScope = scope as ViewerBlockScope;
-    const handle = this.handleOfMessage(messageId);
-    const identity = handle ? this.identities.get(handle) : undefined;
-    if (!identity) throw new ViewerChatError('That viewer can no longer be found. If they write again, block them from the new message.', 404, 'VIEWER_NOT_FOUND');
+    const target = this.findPost(messageId);
+    if (!target) throw new ViewerChatError('That viewer can no longer be found. If they write again, block them from the new message.', 404, 'VIEWER_NOT_FOUND');
 
-    const key = blockScope === 'viewer' ? identity.viewerId : identity.networkKey;
-    let block = this.blocks.find((entry) => entry.scope === blockScope && entry.key === key);
+    const { viewerId } = target.origin;
+    const networkKey = blockScope === 'network' ? target.origin.networkKey : undefined;
+    let block = this.blocks.find((entry) => entry.viewerId === viewerId && entry.networkKey === networkKey);
     if (!block) {
-      block = { id: nanoid(8), scope: blockScope, key, name: identity.name, blockedAt: new Date(now).toISOString() };
+      block = { id: nanoid(8), scope: blockScope, viewerId, networkKey, name: target.name, blockedAt: new Date(now).toISOString() };
       this.blocks.push(block);
     }
-    this.purge(blockScope, key);
+    this.purge(block);
     this.host.sendState(this.statePayload());
     return { id: block.id, scope: block.scope, name: block.name, blockedAt: block.blockedAt };
   }
@@ -464,41 +466,59 @@ export class ViewerChatRoom {
 
   // ----- Inside -----
 
-  private purge(scope: ViewerBlockScope, key: string): void {
-    const handles = new Set<string>();
-    for (const identity of this.identities.values()) {
-      if ((scope === 'viewer' ? identity.viewerId : identity.networkKey) === key) handles.add(identity.handle);
+  private purge(block: StoredBlock): void {
+    const matches = (post: StoredViewerPost) => {
+      const origin = post[VIEWER_POST_ORIGIN];
+      return origin !== undefined && matchesBlock(block, origin);
+    };
+    const ids = new Set(removeFeedMessages(this.feed, matches));
+    for (const message of this.host.getChatMessages()) {
+      if (matches(message)) ids.add(message.id);
     }
-    if (handles.size === 0) return;
-    const senderIds = new Set(Array.from(handles, viewerSenderId));
-    const removedFromFeed = removeFeedMessages(this.feed, (entry) => entry.ref !== undefined && handles.has(entry.ref));
-    const ids = new Set([...removedFromFeed, ...this.host.chatMessageIdsBySender(senderIds)]);
     if (ids.size > 0) this.host.removeChatMessages(Array.from(ids));
-    this.host.dismissViewerQuestions(senderIds);
-  }
-
-  private handleOfMessage(messageId: string): string | null {
-    const studio = this.host.findChatMessage(messageId);
-    if (studio?.source?.platform === 'watch') return handleFromSenderId(studio.senderId);
-    const entry = this.feed.messages.find((item) => item.id === messageId && item.from === 'viewer');
-    if (entry?.ref) return entry.ref;
-    // A viewer who only asks questions has no chat message: a question leads back to its writer too.
-    const question = this.host.findQuestion(messageId);
-    return question?.fromViewer ? handleFromSenderId(question.authorId) : null;
-  }
-
-  /** The sender ids of everyone remembered on this network (so their waiting questions can be counted). */
-  private senderIdsOnNetwork(networkKey: string): Set<string> {
-    const ids = new Set<string>();
-    for (const identity of this.identities.values()) {
-      if (identity.networkKey === networkKey) ids.add(viewerSenderId(identity.handle));
+    for (const question of this.host.getQuestions()) {
+      if (matches(question)) this.host.moderateQuestion(question);
     }
-    return ids;
+  }
+
+  private findPost(id: string): { origin: ViewerPostOrigin; name: string } | undefined {
+    const chat = this.host.findChatMessage(id);
+    const feed = this.feed.messages.find((entry) => entry.id === id);
+    const question = this.host.findQuestion(id);
+    const posts: { post: StoredViewerPost | undefined; name: string | undefined }[] = [
+      { post: chat, name: chat?.senderName },
+      { post: feed, name: feed?.name },
+      { post: question, name: question?.authorName },
+    ];
+    for (const { post, name } of posts) {
+      const origin = post?.[VIEWER_POST_ORIGIN];
+      if (origin && name !== undefined) return { origin, name };
+    }
+    return undefined;
+  }
+
+  private enforceQuestionLimits(viewerId: string, networkKey: string): void {
+    let byViewer = 0;
+    let byNetwork = 0;
+    let open = 0;
+    for (const question of this.host.getQuestions()) {
+      if (question.status !== 'pending' && question.status !== 'approved') continue;
+      const post: StoredViewerPost = question;
+      const origin = post[VIEWER_POST_ORIGIN];
+      if (!origin) continue;
+      open += 1;
+      if (origin.viewerId === viewerId) byViewer += 1;
+      if (origin.networkKey === networkKey) byNetwork += 1;
+    }
+    if (byViewer >= MAX_WAITING_QUESTIONS_PER_VIEWER) throw new ViewerChatError(LINES.questionLimit, 429, 'QUESTION_LIMIT');
+    if (byNetwork >= MAX_WAITING_QUESTIONS_PER_NETWORK) throw new ViewerChatError(LINES.questionNetworkLimit, 429, 'QUESTION_LIMIT');
+    if (open >= MAX_OPEN_QUESTIONS_PER_ROOM) throw new ViewerChatError(LINES.questionsFull, 429, 'QUESTIONS_FULL');
   }
 
   private requireViewer(viewerId: unknown, networkKey: string): string {
     if (!isValidViewerId(viewerId)) throw new ViewerChatError(LINES.badViewer, 400, 'VALIDATION_ERROR');
-    if (this.blocks.some((block) => (block.scope === 'viewer' ? block.key === viewerId : block.key === networkKey))) {
+    const origin = { viewerId, networkKey };
+    if (this.blocks.some((block) => matchesBlock(block, origin))) {
       throw new ViewerChatError(LINES.blocked, 403, 'VIEWER_BLOCKED');
     }
     return viewerId;
@@ -522,13 +542,10 @@ export class ViewerChatRoom {
     return maskProfanity(result.text).text;
   }
 
-  private peekIdentity(viewerId: string): ViewerIdentity | undefined {
-    const handle = this.handleByViewerId.get(viewerId);
-    return handle ? this.identities.get(handle) : undefined;
-  }
-
   private refuseRepeat(identity: ViewerIdentity | undefined, text: string): void {
-    if (isRepeatOfPrevious(identity?.lastKey, text)) throw new ViewerChatError(LINES.duplicate, 409, 'DUPLICATE_MESSAGE');
+    if (identity?.lastText !== undefined && isRepeatOfPrevious(repeatKey(identity.lastText), text)) {
+      throw new ViewerChatError(LINES.duplicate, 409, 'DUPLICATE_MESSAGE');
+    }
   }
 
   private spend(state: ReturnType<typeof createRateLimiterState>, viewerId: string, networkKey: string, now: number, rules: RateRules): void {
@@ -536,24 +553,15 @@ export class ViewerChatRoom {
     if (!decision.allowed) throw new ViewerChatError(slowDownLine(decision.retryAfterMs, decision.scope), 429, 'RATE_LIMITED', decision.retryAfterMs);
   }
 
-  private identityFor(viewerId: string, networkKey: string, name: string): ViewerIdentity {
-    const known = this.handleByViewerId.get(viewerId);
-    const existing = known ? this.identities.get(known) : undefined;
-    if (existing) {
-      existing.name = name;
-      existing.networkKey = networkKey;
-      return existing;
-    }
+  private identityFor(viewerId: string): ViewerIdentity {
+    const existing = this.identities.get(viewerId);
+    if (existing) return existing;
     if (this.identities.size >= MAX_IDENTITIES) {
-      const oldest = this.identities.values().next().value as ViewerIdentity | undefined;
-      if (oldest) {
-        this.identities.delete(oldest.handle);
-        this.handleByViewerId.delete(oldest.viewerId);
-      }
+      const oldest = this.identities.keys().next().value;
+      if (oldest !== undefined) this.identities.delete(oldest);
     }
-    const identity: ViewerIdentity = { handle: nanoid(8), viewerId, networkKey, name };
-    this.identities.set(identity.handle, identity);
-    this.handleByViewerId.set(viewerId, identity.handle);
+    const identity: ViewerIdentity = { handle: nanoid(8) };
+    this.identities.set(viewerId, identity);
     return identity;
   }
 

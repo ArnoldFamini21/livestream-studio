@@ -20,8 +20,10 @@ the watch page) enforces every rule.
 - **Chat.** A list (about the last 100 messages, newest at the bottom) and an
   input. A viewer picks a name once (kept in their browser; the registration name
   is the default). Name 40 characters, message 300. Everything is plain text:
-  trimmed, control and direction-changing characters removed, never read as HTML,
-  links are not clickable. Too long is refused with a plain line, not cut.
+  trimmed and stripped of control characters, direction-changing characters and
+  unpaired UTF-16 surrogates. Valid emoji sequences keep their joiners. The page
+  renders messages as text without clickable links. Overlong text is refused
+  with a plain message.
 - **What viewers see from the studio.** Only the studio's own public messages,
   by one pure rule (`isWatchPublicStudioMessage` in `shared/src/viewerChat.ts`):
   not backstage, not a private message, not from someone still in the green room
@@ -54,7 +56,7 @@ the watch page) enforces every rule.
 | Request body | 2 kB; 415 for another content type, 400 for bad JSON, 413 for too big |
 | Messages kept per room | about the last 200 from viewers (250 lines with the studio's) |
 | Removals kept for pages that were away | 200; reactions 120 |
-| Viewers remembered per room (to trace a message back) | 3,000, oldest first |
+| Viewer handles and duplicate checks remembered per room | 3,000, oldest first |
 | Questions waiting per viewer, per network, open in the room | 3, 15, 200 |
 | Big answers (more than 20 lines: a page with no place yet, or one asking from far back) per network | 120 per minute (a congregation opening the page together fits; a script does not). Past that, the newest 20 lines as a fresh list, not an error |
 | Lines in any other answer | 20 at most |
@@ -118,8 +120,11 @@ shown on air costs more. The host's remove and block are the real protection.
   data gets round it), or this viewer and everyone on the same network (it says
   this also blocks other people on the same Wi-Fi, and sometimes other people on
   the same mobile data network, because phone carriers often share one address
-  among many customers). The viewer's earlier messages and
-  waiting questions are removed, and later messages, reactions and questions are
+  among many customers). The network is the one used for the selected message
+  or question. Blocking removes the viewer's posts and posts sent from that
+  network, clears Q&A highlights, and keeps answered questions in the archive.
+  A dismissed question remains private if it was never approved or answered.
+  New messages, reactions and questions from a blocked viewer or network are
   refused with "You can no longer post in this broadcast." The list of blocked
   viewers (name, and whether the whole network) has Unblock. Removed messages do
   not come back.
@@ -159,19 +164,19 @@ counter. The watch page's poll card (the existing live polls) also asks
   tells pages to ask less often (6 seconds above 40 per second, 10 above 100, 15
   above 250), so the chat load levels off even for several thousand viewers. A
   page that is told 15 seconds sees chat 15 seconds late.
-- A page with no place yet, or one that asks from far back, gets a big answer: up
-  to 100 lines, about 40 kB when the lines are long and about 9 kB for 100 short
-  lines. One network gets 120 big answers a minute, however it asks. Past that it
-  gets the newest 20 lines as a fresh list, so a real page still works. Every
-  other answer carries at most 20 lines. So the most one hostile address can pull
-  is 120 big answers plus 2,400 small ones a minute: about 5 MB plus about 20 MB a
-  minute (about 1.5 GB an hour) while chat is on and the list is full of long
-  lines, and almost nothing when the chat is quiet or off. For scale, that is
-  about what one extra person watching the video uses (the video itself comes
-  from the media server, not from this one).
-- Memory per room is bounded: about 250 lines at most 340 characters of text and a
-  40 character name (under 150 kB), plus the identities (a few hundred kB at the
-  3,000 limit). Nothing is written to disk.
+- A page opening fresh or catching up can receive up to 100 lines. A full list
+  of ASCII viewer messages is about 9 kB for short lines and about 42 kB for long
+  ones. Valid Unicode can use up to four UTF-8 bytes per code point. With
+  maximum-length Unicode lines and response metadata, the upper bound is about
+  150 kB for 100 viewer lines or 230 kB for 100 longer studio lines. A response
+  with at most 20 lines stays under about 48 kB, including any removal IDs.
+  One network gets up to 120 responses with more than 20 lines per minute.
+  After that, a catch-up response returns the newest 20 lines as a fresh list.
+- The feed keeps up to 250 lines. Viewer messages allow up to 300 code points,
+  studio lines up to 500 and names up to 40. The identity table keeps up to
+  3,000 viewers, each with at most 300 code points of their last accepted text.
+  Duplicate comparisons use a normalized form temporarily and retain only the
+  bounded text. The feed and viewer identities live in memory.
 - The per-address safety net is 2,400 chat reads and 1,500 posts per minute. More
   than about 160 pages asking every 4 seconds behind one address would reach it
   (fewer once the server asks for slower), and see some answers refused until the
@@ -243,13 +248,9 @@ from a measurement with real traffic.
 
 ## Known limits that were left as they are
 
-- After "block this viewer only" the message is gone, so the host cannot widen
-  the block to the whole network from that message; they wait for the next one
-  (or block the network the first time).
-- A flood of more than 3,000 different accepted viewer ids can push out the
-  record that traces an old message to its writer (then Block says the viewer can
-  no longer be found; block from their next message). Viewer messages also share
-  the studio's 500 line chat history.
+- Blocking from a message requires it to still be in the studio's 500-line chat
+  history or in the recent watch-page feed. Removing the message clears that
+  means of blocking the viewer or their network.
 - A server restart restores rooms without the viewer chat: switches are off
   (safe) and the blocked list starts empty. The switches panel says so.
 - Dots between letters (f.u.c.k) and swapped letters (fvck) pass the filter.

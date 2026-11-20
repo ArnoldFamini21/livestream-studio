@@ -3,7 +3,6 @@ import { describe, it } from 'node:test';
 import type { ChatMessage, WatchChatMessage, WatchLiveResponse } from '@studio/shared';
 import { VIEWER_FEED_VISIBLE, VIEWER_NAME_MAX } from '@studio/shared';
 import {
-  addSentMessage,
   applyLiveResponse,
   emptyChatView,
   liveQuery,
@@ -15,7 +14,8 @@ import {
   tidyViewerName,
 } from '../src/utils/watchViewerChat.ts';
 import { selectOverlayComments, CHAT_OVERLAY_VIEWER_PREFIX } from '../src/utils/chatOverlayComments.ts';
-import { questionAuthorLabel } from '../src/utils/viewerQuestionLabel.ts';
+import { fitQuestionAuthorLabel, questionAuthorLabel } from '../src/utils/viewerQuestionLabel.ts';
+import { splitGraphemes } from '../src/utils/graphemes.ts';
 import { pinnedNoteText, publicChatNote, viewerMessagesGoStraightOnAir } from '../src/utils/viewerChatNotes.ts';
 import { getCommentSourceLabel, createHighlightedCommentFromChatMessage } from '../src/components/CommentHighlight.tsx';
 
@@ -111,13 +111,6 @@ describe('reading the answer', () => {
     const next = applyLiveResponse(back, answer({ cursor: 8, messages: [line('x')] }));
     assert.deepEqual(next.messages.map((m) => m.id), ['x']);
   });
-
-  it('shows the viewer\'s own message at once and does not repeat it when the server sends it', () => {
-    let view = addSentMessage(emptyChatView(), line('mine'));
-    assert.equal(addSentMessage(view, line('mine')), view);
-    view = applyLiveResponse({ ...view, epoch: 'e1', cursor: 4 }, answer({ cursor: 5, messages: [line('mine'), line('theirs')] }));
-    assert.deepEqual(view.messages.map((m) => m.id), ['mine', 'theirs']);
-  });
 });
 
 describe('floating reactions', () => {
@@ -190,6 +183,20 @@ describe('a viewer is never mistaken for the host', () => {
     assert.equal(createHighlightedCommentFromChatMessage(viewerMessage('Pastor John'))?.sourcePlatform, 'watch');
     assert.equal(questionAuthorLabel({ authorName: 'Host', fromViewer: true }), 'Host (viewer)');
     assert.equal(questionAuthorLabel({ authorName: 'Maria' }), 'Maria');
+  });
+
+  it('keeps the full author attribution within the measured canvas width', () => {
+    const measureWidth = (text: string) => splitGraphemes(text).reduce(
+      (width, char) => width + (char === 'W' || char === '👩🏽‍💻' ? 24 : 9), 0,
+    );
+    const width = 200;
+    for (const authorName of ['W'.repeat(40), '👩🏽‍💻'.repeat(19)]) {
+      const fitted = fitQuestionAuthorLabel({ authorName, fromViewer: true }, width, measureWidth);
+      assert.ok(measureWidth(fitted) <= width);
+      assert.match(fitted, /^- (?:W|👩🏽‍💻)+… \(viewer\)$/u);
+    }
+    assert.equal(fitQuestionAuthorLabel({ authorName: 'Ana', fromViewer: true }, width, measureWidth), '- Ana (viewer)');
+    assert.equal(fitQuestionAuthorLabel({ authorName: 'Ana' }, width, measureWidth), '- Ana');
   });
 });
 

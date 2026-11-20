@@ -123,8 +123,9 @@ export type ViewerBlockScope = typeof VIEWER_BLOCK_SCOPES[number];
 // ---------------------------------------------------------------------------
 
 // C0 and C1 controls, DEL, soft hyphen, bidirectional controls, line and paragraph separators, zero-width
-// characters, invisible "filler" letters that make a name look empty, noncharacters, and the tag block.
-const UNSAFE_RANGES: ReadonlyArray<readonly [number, number]> = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180e], [0x200b, 0x200b], [0x200e, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0x2800, 0x2800], [0x3164, 0x3164], [0xfe00, 0xfe0e], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff9, 0xfffb], [0xfffe, 0xffff], [0xe0000, 0xe007f]];
+// characters, invisible filler letters, unpaired surrogates, noncharacters, and the tag block.
+// Unicode-mode matching treats valid surrogate pairs as single code points, so emoji stay intact.
+const UNSAFE_RANGES: ReadonlyArray<readonly [number, number]> = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180e], [0x200b, 0x200b], [0x200e, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0x2800, 0x2800], [0x3164, 0x3164], [0xd800, 0xdfff], [0xfe00, 0xfe0e], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff9, 0xfffb], [0xfffe, 0xffff], [0xe0000, 0xe007f]];
 const codeEscape = (code: number) => `\\u{${code.toString(16)}}`;
 /** A character class (u mode) for the given code point ranges. */
 const rangeClass = (list: ReadonlyArray<readonly [number, number]>) => `[${list.map(([from, to]) => (from === to ? codeEscape(from) : `${codeEscape(from)}-${codeEscape(to)}`)).join('')}]`;
@@ -454,8 +455,6 @@ export function isWatchPublicStudioMessage(
 
 export interface ViewerFeedMessage extends WatchChatMessage {
   seq: number;
-  /** Server-only handle of the viewer who wrote it (for removal by viewer). Never sent. */
-  ref?: string;
 }
 
 export interface ViewerFeed {

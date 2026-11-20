@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   CHAT_REACTION_EMOJIS,
   CHAT_REACTION_LABELS,
@@ -32,8 +32,7 @@ type Status = { kind: 'info' | 'error'; text: string } | null;
  * text: a message is never read as a link or as markup.
  */
 export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPanelProps) {
-  const live = useWatchLive({ watchId, onReactions: onFloat });
-  const { switches, messages } = live;
+  const { switches, messages, refresh, noteOwnReaction } = useWatchLive({ watchId, onReactions: onFloat });
   const viewerId = useMemo(() => getWatchVoterId(), []);
   const path = `/api/watch/${encodeURIComponent(watchId)}`;
   const [name, setName] = useState(() => readViewerName(registeredName));
@@ -45,6 +44,7 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
   const [status, setStatus] = useState<Status>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
+  const previousMessages = useRef<WatchChatMessage[]>([]);
   const [hasNew, setHasNew] = useState(false);
 
   // A registration name becomes the default only while the viewer has not chosen one.
@@ -53,12 +53,21 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
   }, [registeredName]);
 
   // Keep the newest message in view, unless the viewer scrolled up to read.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const log = logRef.current;
-    if (!log) return;
-    if (nearBottom.current) log.scrollTo({ top: log.scrollHeight, behavior: 'auto' });
-    else setHasNew(true);
-  }, [messages.length]);
+    const previous = previousMessages.current;
+    previousMessages.current = messages;
+    if (!log) {
+      nearBottom.current = true;
+      setHasNew(false);
+    } else if (nearBottom.current) {
+      log.scrollTop = log.scrollHeight;
+      setHasNew(false);
+    } else {
+      const newest = messages[messages.length - 1];
+      if (newest && !previous.some((message) => message.id === newest.id)) setHasNew(true);
+    }
+  }, [messages, switches.chat]);
 
   const sendChat = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -67,17 +76,17 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
     setBusy(true);
     setStatus(null);
     try {
-      const result = await postJson<{ message: WatchChatMessage }>(`${path}/chat`, { viewerId, name: tidyViewerName(name), text });
+      await postJson(`${path}/chat`, { viewerId, name: tidyViewerName(name), text });
       saveViewerName(name);
-      live.addSent(result.message);
-      setDraft('');
+      setDraft((current) => current === draft ? '' : current);
       nearBottom.current = true;
+      refresh();
     } catch (error) {
       setStatus({ kind: 'error', text: sendFailureLine(error) });
     } finally {
       setBusy(false);
     }
-  }, [busy, draft, live, name, path, viewerId]);
+  }, [busy, draft, name, path, refresh, viewerId]);
 
   const sendQuestion = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -105,7 +114,7 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
     try {
       await postJson(`${path}/reactions`, { viewerId, reaction: type });
       // Float it at once; the next answer from the server will not float it a second time.
-      live.noteOwnReaction(type);
+      noteOwnReaction(type);
       onFloat([type]);
     } catch (error) {
       setStatus({ kind: 'error', text: sendFailureLine(error) });
@@ -113,7 +122,7 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
       // A short pause between taps; the server has its own limits too.
       window.setTimeout(() => setReactionBusy(false), 450);
     }
-  }, [live, onFloat, path, reactionBusy, viewerId]);
+  }, [noteOwnReaction, onFloat, path, reactionBusy, viewerId]);
 
   if (!switches.chat && !switches.reactions && !switches.questions) return null;
 
@@ -139,6 +148,7 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
             aria-label="Chat messages"
             aria-live="polite"
             aria-relevant="additions"
+            tabIndex={0}
             onScroll={(event) => {
               const el = event.currentTarget;
               nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;

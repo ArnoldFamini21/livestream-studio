@@ -93,12 +93,6 @@ export function applyLiveResponse(view: WatchChatView, response: WatchLiveRespon
   return { epoch: response.epoch, cursor: response.cursor, messages };
 }
 
-/** Shows the viewer's own message at once; the next answer from the server carries it again and is not added twice. */
-export function addSentMessage(view: WatchChatView, message: WatchChatMessage): WatchChatView {
-  if (view.messages.some((existing) => existing.id === message.id)) return view;
-  return { ...view, messages: capMessages([...view.messages, message]) };
-}
-
 /** Most floating reactions a page draws from one answer (a busy room would otherwise fill the picture). */
 export const MAX_FLOATING_REACTIONS_PER_ANSWER = 8;
 

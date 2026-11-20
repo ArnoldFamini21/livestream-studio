@@ -307,8 +307,8 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               {room?.hostName && <p className="watch-host">Hosted by {room.hostName}</p>}
               {schedule && !live && !ended && <p className="watch-schedule">{schedule}</p>}
             </section>
-            {room && !ended && <WatchChatPanel watchId={watchId} registeredName={form.name.trim() || savedName} onFloat={floatReactions} />}
             {room && !ended && <WatchPollCard watchId={roomId} />}
+            {room && !ended && <WatchChatPanel watchId={watchId} registeredName={form.name.trim() || savedName} onFloat={floatReactions} />}
           </>
         )}
       </main>

@@ -16,7 +16,7 @@ const { ViewerChatError, ViewerChatRoom, networkGroupOf, networkKeyFor, viewerSe
 // ---------------------------------------------------------------------------
 
 function fakeHost() {
-  const log = { chat: [], removed: [], questions: [], dismissed: [], reactions: [], states: [] };
+  const log = { chat: [], removed: [], questions: [], reactions: [], states: [] };
   const questions = [];
   const host = {
     log,
@@ -24,15 +24,15 @@ function fakeHost() {
     addChatMessage(message) { log.chat.push(message); host.chat.set(message.id, message); },
     removeChatMessages(ids) { for (const id of ids) { log.removed.push(id); host.chat.delete(id); } },
     findChatMessage: (id) => host.chat.get(id),
-    chatMessageIdsBySender: (senders) => Array.from(host.chat.values()).filter((m) => senders.has(m.senderId)).map((m) => m.id),
+    getChatMessages: () => host.chat.values(),
     addQuestion(question) { log.questions.push(question); questions.push(question); },
     questions,
     findQuestion: (id) => questions.find((q) => q.id === id),
-    countViewerQuestions: (authorIds) => {
-      const open = questions.filter((q) => q.status === 'pending' || q.status === 'approved');
-      return { waiting: open.filter((q) => authorIds.has(q.authorId)).length, open: open.length };
+    getQuestions: () => questions,
+    moderateQuestion(question) {
+      if (question.status !== 'answered') question.status = 'dismissed';
+      question.highlighted = false;
     },
-    dismissViewerQuestions(authorIds) { log.dismissed.push([...authorIds]); for (const q of questions) if (authorIds.has(q.authorId)) q.status = 'dismissed'; },
     sendReactionCounts(counts) { log.reactions.push(counts); },
     sendState(state) { log.states.push(state); },
   };
@@ -123,6 +123,18 @@ describe('viewer chat rules', () => {
     for (let i = 0; i < 5; i += 1) room.postMessage({ viewerId: viewer(1), text: `line ${i}` }, 'n', 10_000 + i * 2000);
     assert.throws(() => room.postMessage({ viewerId: viewer(1), text: 'line 5' }, 'n', 20_000), (e) => code(e) === 'RATE_LIMITED');
     assert.equal(room.postMessage({ viewerId: viewer(1), text: 'line 6' }, 'n', 40_001).message.text, 'line 6');
+  });
+
+  it('compares complete normalized messages across chat and questions when normalization expands the text', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    turnOnEverything(room);
+    const viewerId = viewer(1);
+    const prefix = '\ufdfa'.repeat(299);
+    room.postMessage({ viewerId, text: `${prefix}!` }, 'n', 10_000);
+    assert.throws(() => room.postQuestion({ viewerId, text: `${prefix}?` }, 'n', 12_000), (e) => code(e) === 'DUPLICATE_MESSAGE');
+    assert.ok(room.postQuestion({ viewerId, text: `${prefix}a` }, 'n', 12_000).questionId);
+    assert.throws(() => room.postMessage({ viewerId, text: `${prefix}A` }, 'n', 14_000), (e) => code(e) === 'DUPLICATE_MESSAGE');
+    assert.equal(room.postMessage({ viewerId, text: `${prefix}b` }, 'n', 14_000).message.text, `${prefix}b`);
   });
 
   it('lets a congregation behind one network write (30 in 30 s), and stops a flood past that', () => {
@@ -388,6 +400,37 @@ describe('viewer chat rules', () => {
     assert.deepEqual(room.live({}, 21_000).messages.map((m) => m.name).includes('Friend of troll'), false);
   });
 
+  for (const targetType of ['message', 'question']) {
+    it(`uses the network and name of the selected ${targetType} after viewers change connections`, () => {
+      const host = fakeHost();
+      const room = new ViewerChatRoom(host);
+      turnOnEverything(room);
+      const original = { viewerId: viewer(1), name: 'Original name', text: 'Original post' };
+      const targetId = targetType === 'message'
+        ? room.postMessage(original, 'original-wifi', 1000).message.id
+        : room.postQuestion(original, 'original-wifi', 1000).questionId;
+      const cafeLine = room.postMessage({ viewerId: viewer(2), text: 'Posted from the same Wi-Fi' }, 'original-wifi', 1100).message;
+      const cafeQuestion = room.postQuestion({ viewerId: viewer(3), text: 'Asked from the same Wi-Fi' }, 'original-wifi', 1200);
+      room.postMessage({ viewerId: viewer(1), name: 'New name', text: 'Switched connections' }, 'new-network', 3000);
+      const keep = room.postMessage({ viewerId: viewer(2), text: 'Also switched connections' }, 'new-network', 3100).message;
+      const keepQuestion = room.postQuestion({ viewerId: viewer(3), text: 'Asked from elsewhere' }, 'new-network', 3200);
+
+      const block = room.blockViewer(targetId, 'network', 5000);
+
+      assert.equal(block.name, 'Original name');
+      assert.equal(host.chat.has(cafeLine.id), false);
+      assert.deepEqual(room.live({}, 5100).messages.map((message) => message.id), [keep.id]);
+      assert.deepEqual([...host.chat.keys()], [keep.id]);
+      assert.equal(host.findQuestion(cafeQuestion.questionId).status, 'dismissed');
+      assert.equal(host.findQuestion(keepQuestion.questionId).status, 'pending');
+      assert.throws(() => room.postMessage({ viewerId: viewer(4), text: 'On blocked Wi-Fi' }, 'original-wifi', 6000), (error) => code(error) === 'VIEWER_BLOCKED');
+      assert.throws(() => room.postMessage({ viewerId: viewer(1), text: 'Target from elsewhere' }, 'new-network', 6000), (error) => code(error) === 'VIEWER_BLOCKED');
+      assert.ok(room.postMessage({ viewerId: viewer(4), text: 'New network still open' }, 'new-network', 6000).message.id);
+      assert.ok(room.unblock(block.id));
+      assert.ok(room.postMessage({ viewerId: viewer(1), text: 'Unblocked' }, 'original-wifi', 8000).message.id);
+    });
+  }
+
   it('blocks a viewer who only asks questions, from the question', () => {
     const host = fakeHost();
     const room = new ViewerChatRoom(host);
@@ -446,6 +489,7 @@ describe('viewer chat rules', () => {
     const room = new ViewerChatRoom(host);
     turnOnEverything(room);
     for (let i = 0; i < 15; i += 1) room.postQuestion({ viewerId: viewer(i), text: `question ${i}` }, 'one-address', 1000 + i * 1000);
+    room.postMessage({ viewerId: viewer(0), text: 'Switched networks' }, 'other-address', 18_000);
     assert.throws(() => room.postQuestion({ viewerId: viewer(99), text: 'sixteenth' }, 'one-address', 20_000), (e) => code(e) === 'QUESTION_LIMIT' && /connection/.test(e.message));
     assert.equal(room.postQuestion({ viewerId: viewer(98), text: 'from home' }, 'other-address', 20_000).questionId.length > 0, true, 'another network is not affected');
     host.questions[0].status = 'dismissed';
@@ -766,6 +810,59 @@ describe('viewer chat over HTTP and the studio connection', () => {
     } finally { await servers.close(); }
   });
 
+  it('keeps dismissed private questions from guests and clears previously public highlights', async () => {
+    const servers = await startWebServers();
+    try {
+      const { api, host, guest } = await studio(servers, 'vc-qa-privacy');
+      switchOn(host, { questions: true });
+      await waitFor(host.ws, 'viewer-chat-state', (message) => message.payload.switches.questions);
+      const wifi = '192.0.2.77';
+      const ask = async (text) => {
+        const question = waitFor(host.ws, 'qa-question-updated', (message) => message.payload.content === text);
+        const viewerId = newViewer();
+        assert.equal((await post(api, 'questions', { viewerId, text }, { network: wifi })).status, 201);
+        const { payload } = await question;
+        assert.equal(payload.status, 'pending');
+        assert.ok(!JSON.stringify(payload).includes(viewerId));
+        assert.ok(!JSON.stringify(payload).includes(networkKeyFor(wifi)));
+        return payload.id;
+      };
+      const manual = await ask('Private question to dismiss');
+      const pending = await ask('Private question to block');
+      const approved = await ask('Question to show to guests');
+      const answered = await ask('Question to answer and highlight');
+
+      const privateUpdates = [];
+      guest.ws.on('message', (data) => {
+        const message = JSON.parse(data.toString());
+        if (message.type === 'qa-question-updated' && [manual, pending].includes(message.payload.id)) {
+          privateUpdates.push(message.payload.id);
+        }
+      });
+      const manuallyDismissed = waitFor(host.ws, 'qa-question-updated', (message) => message.payload.id === manual && message.payload.status === 'dismissed');
+      sendMessage(host.ws, 'qa-question-update', { questionId: manual, updates: { status: 'dismissed' } });
+      await manuallyDismissed;
+
+      const publicApproved = waitFor(guest.ws, 'qa-question-updated', (message) => message.payload.id === approved && message.payload.status === 'approved');
+      sendMessage(host.ws, 'qa-question-update', { questionId: approved, updates: { status: 'approved', highlighted: true } });
+      assert.equal((await publicApproved).payload.highlighted, true);
+
+      const publicAnswered = waitFor(guest.ws, 'qa-question-updated', (message) => message.payload.id === answered && message.payload.status === 'answered');
+      sendMessage(host.ws, 'qa-question-update', { questionId: answered, updates: { answer: 'Yes', highlighted: true } });
+      assert.equal((await publicAnswered).payload.highlighted, true);
+
+      const pendingDismissed = waitFor(host.ws, 'qa-question-updated', (message) => message.payload.id === pending && message.payload.status === 'dismissed');
+      const approvedDismissed = waitFor(guest.ws, 'qa-question-updated', (message) => message.payload.id === approved && message.payload.status === 'dismissed');
+      const answeredCleared = waitFor(guest.ws, 'qa-question-updated', (message) => message.payload.id === answered && !message.payload.highlighted);
+      sendMessage(host.ws, 'viewer-chat-block', { messageId: approved, scope: 'network' });
+      const [, cleared, archived] = await Promise.all([pendingDismissed, approvedDismissed, answeredCleared]);
+      assert.deepEqual(privateUpdates, []);
+      assert.equal(cleared.payload.highlighted, false);
+      assert.equal(archived.payload.status, 'answered');
+      assert.equal(archived.payload.answer, 'Yes');
+    } finally { await servers.close(); }
+  });
+
   it('counts only waiting viewer questions in the room limit, so answering or dismissing frees room', async () => {
     const servers = await startWebServers();
     try {
@@ -897,7 +994,7 @@ describe('viewer chat over HTTP and the studio connection', () => {
         sendMessage(host.ws, type, payload);
         assert.ok(['INVALID_PAYLOAD', 'VIEWER_NOT_FOUND', 'VALIDATION_ERROR'].includes((await error).payload.code));
       }
-      const missing = waitFor(host.ws, 'error', (m) => m.payload.code === 'NOT_FOUND');
+      const missing = waitFor(host.ws, 'error', (m) => m.payload.code === 'VIEWER_BLOCK_NOT_FOUND');
       sendMessage(host.ws, 'viewer-chat-unblock', { blockId: 'nope' });
       await missing;
       assert.equal((await live(api)).json.switches.chat, false);
