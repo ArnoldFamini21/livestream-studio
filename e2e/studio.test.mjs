@@ -151,7 +151,22 @@ test('built studio in real Chromium under the production CSP', { timeout: 420_00
 
     await scenario('backstage guest receives a playing program return and moves onto stage', async () => {
       await guest.locator('video[aria-label="Live program (Preview)"]').waitFor();
-      await guest.waitForFunction(() => [...document.querySelectorAll('video')].some(video => video.getAttribute('aria-label')?.startsWith('Live program') && video.readyState >= 2 && video.currentTime > 0));
+      await guest.waitForFunction(() => {
+        const video = document.querySelector('video[aria-label="Live program (Preview)"]');
+        if (!video || video.readyState < 2 || video.currentTime <= 0) return false;
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 18;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        // Require actual camera pixels in the program, beyond the title and any status icon.
+        let greenPixels = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          if (pixels[i + 1] > Math.max(pixels[i], pixels[i + 2]) + 20) greenPixels++;
+        }
+        return greenPixels > 24;
+      }, null, { polling: 200 });
       await screenshot(guest, fixture.artifactDir, 'backstage-program-1440');
       await stageGuest(host, 'Test Guest');
       await host.getByRole('region', { name: 'Broadcast canvas' }).getByText('Test Guest', { exact: true }).waitFor();

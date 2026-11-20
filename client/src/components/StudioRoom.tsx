@@ -15,7 +15,7 @@ import { useStudioBrandingShare } from '../hooks/useStudioBrandingShare.ts';
 import { assertMediaLibraryCapacity, getMediaBatchFailureMessage, getMediaFilePreparationError, getPersistableMediaAssets, normalizeMediaAssetUrl, probeMediaAsset } from '../utils/mediaPreparation.ts';
 import { deleteStoredMediaAsset, isStorableUploadedMediaAsset, loadStoredMediaAssets, mergeRestoredMediaAssets, saveStoredMediaAsset } from '../utils/mediaAssetStore.ts';
 import { getAutoGridColumnCount, getPresentingView, getPresentingViewLayout, isPresentingViewDisabled, isStudioLayoutDisabled, normalizeMediaShareLayout, getPresentingViewLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_LABELS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
-import { shouldRunCompositor } from '../utils/compositorFrameTarget.ts';
+import { shouldRunCompositor } from '../utils/compositorDemand.ts';
 import '../styles/studio-chrome.css';
 import '../styles/transcript-cleanup.css';
 import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
