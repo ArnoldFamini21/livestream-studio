@@ -321,7 +321,7 @@ import {
   parseScenePackJson,
   type ScenePackOverlayKind,
 } from '../utils/scenePacks.ts';
-import { captureServicePreset, prepareServicePreset, type ServicePreset } from '../utils/servicePresets.ts';
+import { captureServicePreset, createServicePresetDownload, prepareServicePreset, type ServicePreset } from '../utils/servicePresets.ts';
 import {
   DEFAULT_SCENE_TRANSITION_PRESET_ID,
   getSceneTransitionOverlayStyle,
@@ -8421,7 +8421,14 @@ export function StudioRoom() {
             onExportScenePack={onExportScenePack}
             onImportScenePack={onImportScenePack}
             scenePackMessage={scenePackMessage}
-            servicePresets={{ capture: onCaptureServicePreset, load: onLoadServicePreset }}
+            servicePresets={{
+              capture: onCaptureServicePreset,
+              load: onLoadServicePreset,
+              download(preset) {
+                const { fileName, contents } = createServicePresetDownload(preset);
+                downloadJsonFile(fileName, contents);
+              },
+            }}
             tickers={tickers}
             onAddTicker={onAddTicker}
             onToggleTicker={onToggleTicker}

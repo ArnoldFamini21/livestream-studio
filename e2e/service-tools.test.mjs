@@ -10,7 +10,7 @@ import { createStudio, screenshot, startHarness } from './harness.mjs';
 const run = promisify(execFile);
 const artifactDir = path.join(process.env.E2E_ARTIFACT_DIR || path.resolve('output/e2e'), 'service-tools');
 
-test('reuses a service preset in another studio and lets a viewer toggle timed captions', { timeout: 115_000 }, async () => {
+test('reuses a service preset across browsers and lets a viewer toggle timed captions', { timeout: 115_000 }, async () => {
   const fixture = await startHarness({ artifactDir });
   const pages = new Map();
   try {
@@ -25,6 +25,27 @@ test('reuses a service preset in another studio and lets a viewer toggle timed c
     await first.getByLabel('Preset name').fill('Sabbath service');
     await first.getByRole('button', { name: 'Save service preset', exact: true }).click();
     await first.getByText('Service preset saved.', { exact: true }).waitFor();
+    const pendingDownload = first.waitForEvent('download');
+    await first.getByRole('button', { name: 'Download Sabbath service', exact: true }).click();
+    const download = await pendingDownload;
+    assert.equal(download.suggestedFilename(), 'sabbath-service.service-preset.json');
+
+    const restoredContext = await fixture.browser('restored-host');
+    const { page: restored } = await createStudio(restoredContext, { url: fixture.url, name: 'Imported service' });
+    pages.set('imported', restored);
+    await openPresets(restored);
+    await restored.getByRole('button', { name: 'Import preset', exact: true }).waitFor();
+    assert.equal(await restored.getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).count(), 0);
+    const choosing = restored.waitForEvent('filechooser');
+    await restored.getByRole('button', { name: 'Import preset', exact: true }).click();
+    await (await choosing).setFiles(await download.path());
+    await restored.getByText('Service preset imported.', { exact: true }).waitFor();
+    await restored.getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).click();
+    await restored.getByText('Added 1 scene.', { exact: true }).waitFor();
+    await restored.getByRole('button', { name: 'Switch to Service setup', exact: true }).click();
+    await screenshot(restored, fixture.artifactDir, 'preset-imported');
+    pages.delete('imported');
+    await restoredContext.close();
 
     const { page: second } = await createStudio(hostContext, { url: fixture.url, name: 'New service' });
     pages.set('studio', second);

@@ -611,7 +611,8 @@ scenes, artwork, custom layouts and placed overlays such as countdowns into
 another studio in the same browser. Load the preset to add its scenes, then
 select one when ready. Imported countdowns wait for the operator to start
 them. Source-room decks and pinned participant IDs stay with their original
-studio.
+studio. To move a preset to another browser, use **Download** next to the preset
+and **Import preset** in the destination browser. Import adds a local copy.
 
 For viewer-controlled captions, open **Live Captions**, set **Show captions**
 to **Optional on the watch page**, then start captions. Viewers can toggle CC.

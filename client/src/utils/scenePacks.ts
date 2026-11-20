@@ -366,6 +366,10 @@ export function parseScenePackJson(json: string): ScenePack {
     throw new Error('Scene pack is not valid JSON.');
   }
 
+  return validateScenePack(parsed);
+}
+
+export function validateScenePack(parsed: unknown): ScenePack {
   if (!isRecord(parsed) || parsed.version !== SCENE_PACK_VERSION || parsed.source !== SCENE_PACK_SOURCE) {
     throw new Error('Scene pack is not compatible with this studio.');
   }
