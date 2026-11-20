@@ -117,6 +117,14 @@ jobs:
             output/e2e/service-tools/*.txt
             output/e2e/service-tools/*.json
             output/e2e/service-tools/*.log
+            output/e2e/watch-events/*.png
+            output/e2e/watch-events/*.txt
+            output/e2e/watch-events/*.json
+            output/e2e/watch-events/*.log
+            output/e2e/transcript-editor/*.png
+            output/e2e/transcript-editor/*.txt
+            output/e2e/transcript-editor/*.json
+            output/e2e/transcript-editor/*.log
           retention-days: 7
 
   recording-soak:

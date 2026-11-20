@@ -59,6 +59,7 @@ test('protected events require a private link and approve call-ins into the gree
   assert.equal((await register(issueWatchGrant('watch-invite', watchId, secret, Date.now() - 1).token)).status, 403);
   assert.equal((await fetch(watch + '/live')).status, 401);
   assert.equal((await fetch(watch + '/poll')).status, 401);
+  assert.equal((await fetch(watch + '/captions')).status, 401);
   host.send('watch-invite-request', { requestId: 'check-watch-link' });
   const invite = await host.take('watch-invite-issued');
   assert.equal(invite.requestId, 'check-watch-link');
@@ -70,7 +71,7 @@ test('protected events require a private link and approve call-ins into the gree
   const headers = { Authorization: 'Bearer ' + access.token };
   assert.doesNotMatch(Buffer.from(access.token.split('.')[0], 'base64url').toString(), /viewer@example.com/);
   assert.ok(Date.parse(access.expiresAt) <= Date.parse(invite.expiresAt));
-  for (const route of ['/live', '/poll']) assert.equal((await fetch(watch + route, { headers })).status, 200);
+  for (const route of ['/live', '/poll', '/captions']) assert.equal((await fetch(watch + route, { headers })).status, 200);
   host.send('live-stream-token-request', { requestId: 'watch-relay' });
   const credential = await host.take('live-stream-token-issued');
   const claims = JSON.parse(Buffer.from(credential.token.split('.')[0], 'base64url').toString());
