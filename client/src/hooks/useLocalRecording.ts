@@ -519,7 +519,8 @@ export function useLocalRecording(roomName = 'Studio') {
       mimeType,
       ...(trackRecorder.wav ? { lossless: true } : {}),
       store: trackRecorder.chunkStore,
-      read: () => trackRecorder.chunkStore.snapshot(mimeType),
+      read: async () => trackRecorder.chunkStore.snapshotCommitted?.(mimeType)
+        ?? trackRecorder.chunkStore.snapshot(mimeType),
     });
     bumpTransfer();
   };

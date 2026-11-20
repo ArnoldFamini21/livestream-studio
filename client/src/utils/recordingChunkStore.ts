@@ -58,7 +58,11 @@ export function createRecordingChunkStore(
   return {
     append,
     flush: () => pending,
-    /** Committed bytes so far, in capture order; equal to a prefix of finish(). */
+    /** Capture-order prefix immediately readable while disk writes are pending. */
+    snapshotCommitted(mimeType: string): Blob {
+      return new Blob(discarded ? [] : parts, { type: mimeType });
+    },
+    /** Wait for the currently queued writes before taking a capture-order snapshot. */
     async snapshot(mimeType: string): Promise<Blob> {
       await pending;
       return new Blob(parts, { type: mimeType });
