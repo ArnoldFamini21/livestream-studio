@@ -17,13 +17,15 @@ export function getMaxRelaySessions(env: NodeJS.ProcessEnv = process.env): numbe
 export interface RelaySessionLike {
   started: boolean;
   stopping: boolean;
+  /** The second program shares the relay slot of its active primary. */
+  secondaryOf?: unknown;
 }
 
-/** Started broadcasts other than `exclude`; a session registered under two sockets counts once. */
+/** Each running studio counts once, including a studio with two programs. */
 export function countActiveRelaySessions<T extends RelaySessionLike>(sessions: Iterable<T>, exclude?: T): number {
   const active = new Set<T>();
   for (const session of sessions) {
-    if (session !== exclude && session.started && !session.stopping) active.add(session);
+    if (session !== exclude && session.started && !session.stopping && !session.secondaryOf) active.add(session);
   }
   return active.size;
 }

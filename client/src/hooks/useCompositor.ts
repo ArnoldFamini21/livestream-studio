@@ -60,8 +60,11 @@ import { drawWidgetCaptureFrame, WIDGET_CAPTURE_ATTRIBUTE, type WidgetCaptureSou
 /** The program's frame rate: the canvas stream and the draw timer. */
 const COMPOSITOR_FPS = 30;
 
-interface CompositorProps {
+export interface CompositorProps {
   containerRef: React.RefObject<HTMLDivElement>;
+  /** The second program shares active media and playback with the primary stage. */
+  mediaSourceRef?: React.RefObject<HTMLDivElement>;
+  outputSize?: { width: number; height: number };
   isActive: boolean;
   banners: BannerData[];
   lowerThirds: LowerThirdData[];
@@ -442,7 +445,8 @@ function drawActiveMediaOverlay(
   presentationSlideImage: HTMLImageElement | null,
   brandColor: string,
   slideIndex: number,
-  clipShapes: CompositorClipShape[] = []
+  clipShapes: CompositorClipShape[] = [],
+  playbackNode: Element | null = mediaNode,
 ) {
   const rect = getScaledNodeRect(mediaNode, containerBounds, scaleX, scaleY);
   ctx.save();
@@ -450,7 +454,7 @@ function drawActiveMediaOverlay(
   // rounded corners follow the stage exactly.
   applyCompositorClipShapes(ctx, clipShapes);
 
-  const image = mediaNode?.querySelector('img');
+  const image = playbackNode?.querySelector('img');
   if (media.type === 'image' && image instanceof HTMLImageElement && canDrawMediaImage(image, window.location.href)) {
     drawContainedSource(ctx, image, image.naturalWidth, image.naturalHeight, rect.x, rect.y, rect.width, rect.height);
     ctx.restore();
@@ -458,7 +462,7 @@ function drawActiveMediaOverlay(
   }
 
   if (media.type === 'video') {
-    const video = mediaNode?.querySelector('video');
+    const video = playbackNode?.querySelector('video');
     if (video instanceof HTMLVideoElement && canDrawMediaVideo(video, window.location.href)) {
       try {
         drawContainedSource(ctx, video, video.videoWidth, video.videoHeight, rect.x, rect.y, rect.width, rect.height);
@@ -1154,6 +1158,8 @@ function drawStreamScreen(
 
 export function useCompositor({
   containerRef,
+  mediaSourceRef,
+  outputSize,
   isActive,
   banners,
   lowerThirds,
@@ -1259,7 +1265,12 @@ export function useCompositor({
     };
   }, [activePresentationSlideImageUrl]);
 
-  const programSize = getProgramCanvasSize(orientation);
+  const programSize = outputSize ?? getProgramCanvasSize(orientation);
+  useEffect(() => () => {
+    compositeStreamRef.current?.getTracks().forEach((track) => track.stop());
+    compositeStreamRef.current = null;
+    canvasRef.current = null;
+  }, []);
   useEffect(() => {
     // One canvas and one captured stream for the studio's lifetime: the relay,
     // recordings and the program return keep their track when the orientation
@@ -1294,7 +1305,8 @@ export function useCompositor({
     const target = frameTargetRef.current;
     const ctx = target?.context || canvasRef.current.getContext('2d');
     if (!ctx) return;
-    const backgroundVideo = containerRef.current.querySelector('.studio-stage-background-video') as HTMLVideoElement | null;
+    const mediaSource = mediaSourceRef?.current ?? containerRef.current;
+    const backgroundVideo = mediaSource.querySelector<HTMLVideoElement>('.studio-stage-background-video');
 
     // 1. Clear & stage background
     if (streamScreen) {
@@ -1371,7 +1383,8 @@ export function useCompositor({
         activePresentationSlideImageRef.current,
         brandColor,
         activeMediaSlideIndex,
-        mediaNode ? getCompositorClipShapes(mediaNode, containerRef.current, containerBounds, scales) : []
+        mediaNode ? getCompositorClipShapes(mediaNode, containerRef.current, containerBounds, scales) : [],
+        mediaSource.querySelector('.studio-active-media'),
       );
       ctx.restore();
     }
@@ -1526,13 +1539,13 @@ export function useCompositor({
     // 6. Scene transitions run over the whole program, as on the stage.
     if (sceneTransition) {
       drawSceneTransitionOverlay(ctx, sceneTransition, now, brandColor, overlayScale, () => {
-        const stinger = container.querySelector(`${SCENE_TRANSITION_SELECTOR} video`) as HTMLVideoElement | null;
+        const stinger = mediaSource.querySelector(`${SCENE_TRANSITION_SELECTOR} video`) as HTMLVideoElement | null;
         if (!stinger || !canDrawMediaVideo(stinger, window.location.href)) return false;
         return drawVideoElementFrame(ctx, stinger, 0, 0, ctx.canvas.width, ctx.canvas.height, 'cover');
       });
     }
     target?.commit();
-  }, [containerRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition, brandFontFamily, chatOverlay, widgetCaptureSources]);
+  }, [containerRef, mediaSourceRef, banners, lowerThirds, timers, tickers, widgets, activeMedia, activeMediaSlideIndex, highlightedComment, highlightedQA, highlightedPoll, floatingReactions, caption, stageBackground, brandColor, logoPlacement, logoPosition, logoSize, logoOpacity, streamScreen, sceneTransition, brandFontFamily, chatOverlay, widgetCaptureSources]);
 
   // Frames come from a worker timer at the output rate, not requestAnimationFrame,
   // so the stream and recording keep moving when the studio tab is hidden or covered.

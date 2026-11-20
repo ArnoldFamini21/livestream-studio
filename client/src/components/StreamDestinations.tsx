@@ -34,6 +34,9 @@ import { buildLivePreflightChecklist, type LivePreflightStatus } from '../utils/
 import { isYouTubeConnectionConfigured, type YouTubeConnectedBroadcast } from '../utils/youtubeLiveBroadcast.ts';
 import { YouTubeConnectForm } from './YouTubeConnectForm.tsx';
 import { DestinationHealthList } from './DestinationHealthList.tsx';
+import { DualOutputControls, type DualOutputControlsProps } from './DualOutputControls.tsx';
+import { SECONDARY_OUTPUT_PRESET } from '../utils/dualOutput.ts';
+import '../styles/dualOutput.css';
 import {
   buildDestinationHealth,
   describeServerUploadEstimate,
@@ -55,6 +58,8 @@ interface StreamDestinationsProps {
   onToggle: (id: string) => void;
   broadcastOrientation: BroadcastOrientation;
   onBroadcastOrientationChange: (orientation: BroadcastOrientation) => void;
+  onDestinationOrientation?: (id: string, orientation: BroadcastOrientation) => void;
+  dualOutput?: DualOutputControlsProps;
   relayOutputPreset: RtmpRelayOutputPresetId;
   onRelayOutputPresetChange: (preset: RtmpRelayOutputPresetId) => void;
   isLive: boolean;
@@ -94,6 +99,8 @@ export function StreamDestinations({
   onToggle,
   broadcastOrientation,
   onBroadcastOrientationChange,
+  onDestinationOrientation,
+  dualOutput,
   relayOutputPreset,
   onRelayOutputPresetChange,
   isLive,
@@ -129,7 +136,7 @@ export function StreamDestinations({
     : undefined;
   const canKeepExistingStreamKey = Boolean(editingDestination && editingDestination.platform === platform);
   const platformGuide = getStreamPlatformGuide(platform);
-  const platformOrientationWarning = getPlatformOrientationWarning(platform, broadcastOrientation);
+  const platformOrientationWarning = getPlatformOrientationWarning(platform, dualOutput?.enabled ? editingDestination?.orientation ?? broadcastOrientation : broadcastOrientation);
 
   const resetForm = () => {
     setShowForm(false);
@@ -211,6 +218,7 @@ export function StreamDestinations({
       onUpdate(editingDestinationId, {
         ...savedDestination,
         enabled: editingDestination?.enabled ?? true,
+        orientation: editingDestination?.orientation,
       });
     } else {
       onAdd(savedDestination);
@@ -245,23 +253,38 @@ export function StreamDestinations({
     outputStatus: selectedOutputPreflight.status,
     outputDetail: selectedOutputPreflight.detail,
   });
-  const preflightIssue = livePreflight.blockingIssue || getEnabledDestinationPreflightIssue(destinations, relayIssue);
-  const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !relayIssue && !livePreflight.blockingIssue;
+  const preflightIssue = livePreflight.blockingIssue || getEnabledDestinationPreflightIssue(destinations, relayIssue) || dualOutput?.configurationIssue;
+  const canGoLive = enabledCount > 0 && enabledIssues.length === 0 && !tooManyEnabled && !preflightIssue;
+  const secondaryIds = dualOutput?.enabled
+    ? enabledDestinations.filter(({ orientation }) => orientation === dualOutput.orientation).map(({ id }) => id)
+    : [];
+  const secondaryStats = dualOutput?.enabled ? dualOutput.stats : null;
   const serverHealth = relayStats && isLive
     ? evaluateRelayServerHealth({
       encoder: relayStats.serverEncoder,
       videoMode: relayStats.serverVideoMode,
       destinationStats: relayStats.destinationStats,
-      destinationIds: enabledDestinations.map((dest) => dest.id),
+      destinationIds: enabledDestinations.map((dest) => dest.id).filter((id) => !secondaryIds.includes(id)),
       upstreamKbps: relayStats.bitrateKbps,
       now: relayStats.updatedAt || Date.now(),
     })
     : null;
+  const secondaryHealth = secondaryStats && isLive
+    ? evaluateRelayServerHealth({
+      encoder: secondaryStats.serverEncoder,
+      videoMode: secondaryStats.serverVideoMode,
+      destinationStats: secondaryStats.destinationStats,
+      destinationIds: secondaryIds,
+      upstreamKbps: secondaryStats.bitrateKbps,
+      now: secondaryStats.updatedAt || Date.now(),
+    })
+    : null;
+  const perDestinationHealth = { ...serverHealth?.destinations, ...secondaryHealth?.destinations };
   const destinationHealth = relayStats && isLive
     ? buildDestinationHealth({
       destinations: enabledDestinations,
-      destinationStats: relayStats.destinationStats,
-      serverHealth: serverHealth?.destinations,
+      destinationStats: { ...relayStats.destinationStats, ...secondaryStats?.destinationStats },
+      serverHealth: perDestinationHealth,
       now: relayStats.updatedAt || Date.now(),
     })
     : null;
@@ -392,7 +415,7 @@ export function StreamDestinations({
           <div style={styles.healthCard}>
             <div style={styles.healthTop}>
               <div>
-                <span style={styles.healthLabel}>Stream Health</span>
+                <span style={styles.healthLabel}>{dualOutput?.enabled ? 'Main program health' : 'Stream Health'}</span>
                 {relayQuality && <p style={styles.healthDetail}>{relayQuality.detail}</p>}
               </div>
               <span style={{
@@ -476,6 +499,8 @@ export function StreamDestinations({
           </div>
         )}
 
+        {dualOutput && <DualOutputControls {...dualOutput} />}
+
         {/* Destinations list */}
         {destinations.map((dest) => {
           const platformInfo = getStreamPlatformGuide(dest.platform);
@@ -540,10 +565,27 @@ export function StreamDestinations({
                   <div style={styles.destRtmp}>{dest.rtmpUrl}</div>
                 </>
               )}
+              {dualOutput?.enabled && (
+                <label className="sd-destination-orientation">
+                  Output
+                  <select
+                    aria-label={`${dest.name} orientation`}
+                    value={dest.orientation ?? broadcastOrientation}
+                    disabled={isLive}
+                    onChange={(event) => {
+                      onDestinationOrientation?.(dest.id, event.target.value === 'portrait' ? 'portrait' : 'landscape');
+                    }}
+                  >
+                    {ORIENTATION_OPTIONS.map((orientation) => (
+                      <option key={orientation.value} value={orientation.value}>{orientation.label}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {dest.statusMessage && !issue && <div style={styles.destStatusMessage}>{dest.statusMessage}</div>}
-              {isLive && dest.enabled && serverHealth?.destinations[dest.id] && serverHealth.destinations[dest.id].status !== 'unknown' && (
-                <div style={{ ...styles.destStatusMessage, color: getServerStatusColor(serverHealth.destinations[dest.id].status) }}>
-                  {serverHealth.destinations[dest.id].detail}
+              {isLive && dest.enabled && perDestinationHealth[dest.id] && perDestinationHealth[dest.id].status !== 'unknown' && (
+                <div style={{ ...styles.destStatusMessage, color: getServerStatusColor(perDestinationHealth[dest.id].status) }}>
+                  {perDestinationHealth[dest.id].detail}
                 </div>
               )}
               {issue && <div style={styles.destIssue}>{issue}</div>}
@@ -735,7 +777,9 @@ export function StreamDestinations({
             {preflightIssue && <div style={styles.preflightIssue}>{preflightIssue}</div>}
             {enabledCount > 0 && (
               <div style={styles.preflightUpload} data-testid="server-upload-estimate">
-                {describeServerUploadEstimate(serverUploadEstimate)}
+                {dualOutput?.enabled
+                  ? `About ${((relayTargetKbps + getRtmpRelayTargetKbps(SECONDARY_OUTPUT_PRESET)) / 1000).toFixed(1)} Mbps combined browser upload.`
+                  : describeServerUploadEstimate(serverUploadEstimate)}
               </div>
             )}
           </div>

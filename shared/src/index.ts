@@ -1399,6 +1399,8 @@ export interface StreamDestination {
   rememberStreamKey?: boolean;
   /** Present when the studio created the broadcast through a connected account. */
   connection?: StreamDestinationConnection;
+  /** The program this destination receives in simultaneous output mode. */
+  orientation?: BroadcastOrientation;
 }
 
 export interface StreamDestinationConnection {
@@ -1488,6 +1490,7 @@ export interface RtmpRelayDestination {
   name: string;
   rtmpUrl: string;
   streamKey: string;
+  orientation?: BroadcastOrientation;
 }
 
 export interface RtmpRelayVideoConfig {
@@ -1527,6 +1530,11 @@ export interface RtmpRelayEncoding {
 export type RtmpRelayVideoMode = 'copy' | 'transcode';
 
 export interface RtmpRelayStartPayload {
+  /** Marks the two programs of a single broadcast. Older clients omit both fields. */
+  dualOutput?: 'primary' | 'secondary';
+  /** Also separates a resumed broadcast from an older studio tab. */
+  dualOutputId?: string;
+  orientation?: BroadcastOrientation;
   token: string;
   destinations: RtmpRelayDestination[];
   video: RtmpRelayVideoConfig;

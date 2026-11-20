@@ -35,6 +35,7 @@ export function getStudioReconnectHoldMs(env: Record<string, string | undefined>
 export function isSameRelaySetup(running: RtmpRelayStartPayload, incoming: RtmpRelayStartPayload): boolean {
   // A test is never continued as a broadcast, nor a broadcast as a test.
   if (Boolean(running.test) !== Boolean(incoming.test)) return false;
+  if (running.dualOutput !== incoming.dualOutput || running.orientation !== incoming.orientation) return false;
   if (destinationSetKey(running.destinations) !== destinationSetKey(incoming.destinations)) return false;
   const videoA = normalizeVideoConfig(running.video);
   const videoB = normalizeVideoConfig(incoming.video);

@@ -26,6 +26,7 @@ import {
 import { buildMediaRelayPrometheusMetrics } from './metrics.js';
 import { checkRtmpDestinationHosts } from './rtmpHostPolicy.js';
 import { countActiveRelaySessions, isRelayCapacityAvailable } from './relayAdmission.js';
+import { admitSecondaryProgram, getDualOutputIssue, isDualOutputSupported, SECONDARY_INPUT_TIMEOUT_MS } from './dualOutput.js';
 import { checkPresentationRenderAdmission } from './presentationAdmission.js';
 import { authorizePresentationRender, isPresentationRenderAuthRequired } from './presentationAuth.js';
 import {
@@ -210,6 +211,8 @@ interface RelaySession {
   started: boolean;
   stopping: boolean;
   claims: LiveStreamTokenClaims | null;
+  /** The primary that owns this second program, including its reconnect hold. */
+  secondaryOf: RelaySession | null;
   destinations: RtmpRelayDestination[];
   webm: WebmStreamTracker;
   /** One H.264 encode shared by every destination (RTMP_ENCODE_ONCE). */
@@ -286,6 +289,7 @@ async function getCachedPresentationRendererHealth(): Promise<PresentationRender
 
 async function healthPayload() {
   const presentationRenderer = await getCachedPresentationRendererHealth();
+  const dualOutputReady = Boolean(getFfmpegPath()) && isDualOutputSupported();
   return {
     ...buildServiceHealthPayload('media-server', process.env),
     capabilities: {
@@ -298,6 +302,12 @@ async function healthPayload() {
         videoModes: ['copy', 'transcode'],
         transcodeMaxPixels: TRANSCODE_MAX_PIXELS,
         transcodeMaxFrameRate: TRANSCODE_MAX_FRAME_RATE,
+      },
+      dualOutput: {
+        ready: dualOutputReady,
+        message: dualOutputReady
+          ? 'Send separate landscape and portrait programs in one broadcast.'
+          : 'The media server needs FFmpeg, encode-once, and at least two destinations for simultaneous output.',
       },
       testStream: {
         ready: isTestStreamSupported(isEncodeOnceEnabled()),
@@ -513,6 +523,13 @@ function stopSession(session: RelaySession, reason?: string) {
     });
   }
   sendJson(session.client, { type: 'session-stopped', payload: { reason } });
+  stopSecondaryProgram(session);
+}
+
+function stopSecondaryProgram(primary: RelaySession) {
+  for (const session of new Set(sessions.values())) {
+    if (session.secondaryOf === primary) stopSession(session, 'The main program ended.');
+  }
 }
 
 function stopSessionIfNoRelayWork(session: RelaySession) {
@@ -1186,6 +1203,7 @@ function createRelaySession(ws: WebSocket): RelaySession {
     started: false,
     stopping: false,
     claims: null,
+    secondaryOf: null,
     destinations: [],
     webm: new WebmStreamTracker(),
     encodeOnce: false,
@@ -1275,6 +1293,12 @@ function stopSlate(session: RelaySession) {
 function checkStudioInput(session: RelaySession) {
   if (!session.started || session.stopping || !session.program) return;
   const now = Date.now();
+  if (session.secondaryOf) {
+    if (now - session.lastMediaAtMs >= SECONDARY_INPUT_TIMEOUT_MS) {
+      stopSession(session, 'The second program stopped sending media.');
+    }
+    return;
+  }
   const slate = session.slate;
   if (slate && now - slate.startedAtMs >= STUDIO_RECONNECT_HOLD_MS) {
     stopSession(session, 'The studio did not reconnect.');
@@ -1293,8 +1317,8 @@ function checkStudioInput(session: RelaySession) {
 /** The studio's connection closed mid-broadcast: keep the destinations on the slate. */
 function holdSession(session: RelaySession): boolean {
   if (!session.started || session.stopping || !session.program) return false;
-  // A test has nobody to keep on the air; it ends with the studio's connection.
-  if (session.test) return false;
+  // The second program uses no slate or reconnect hold of its own.
+  if (session.test || session.secondaryOf) return false;
   if (session.confirmedDestinations.size === 0) {
     console.log('Studio disconnected before any destination went live; nothing to hold');
     return false;
@@ -1309,7 +1333,7 @@ function holdSession(session: RelaySession): boolean {
 
 function findResumableSession(current: RelaySession, roomId: string, payload: RtmpRelayStartPayload): RelaySession | null {
   for (const candidate of sessions.values()) {
-    if (candidate === current || !candidate.started || candidate.stopping) continue;
+    if (candidate === current || !candidate.started || candidate.stopping || candidate.secondaryOf) continue;
     if (!candidate.program || !candidate.payload || candidate.claims?.roomId !== roomId) continue;
     if (isSameRelaySetup(candidate.payload, payload)) return candidate;
   }
@@ -1329,6 +1353,9 @@ async function resumeSession(
   if (sessions.get(previous) === held) sessions.delete(previous);
   sessions.set(ws, held);
   held.client = ws;
+  if (held.payload?.dualOutputId !== payload.dualOutputId || held.claims?.participantId !== claims.participantId) {
+    stopSecondaryProgram(held);
+  }
   held.claims = claims;
   // The returning studio names its destinations with ids of its own: from here
   // on every record and every message of this broadcast uses those.
@@ -1422,8 +1449,17 @@ async function handleStart(
     sendError(ws, 'INVALID_DESTINATIONS', destinationIssue);
     return;
   }
-  if (session.started) {
-    sendError(ws, 'ALREADY_STARTED', 'This relay session is already live');
+  const dualOutputIssue = getDualOutputIssue(payload);
+  if (dualOutputIssue) {
+    sendError(ws, 'INVALID_DUAL_OUTPUT', dualOutputIssue);
+    return;
+  }
+  if (payload.dualOutput && !isDualOutputSupported()) {
+    sendError(ws, 'DUAL_OUTPUT_UNAVAILABLE', 'This media server does not support simultaneous landscape and portrait.');
+    return;
+  }
+  if (session.started || session.stopping || ws.readyState !== WebSocket.OPEN) {
+    if (session.started) sendError(ws, 'ALREADY_STARTED', 'This relay session is already live');
     return;
   }
 
@@ -1443,25 +1479,39 @@ async function handleStart(
     return;
   }
 
-  if (isEncodeOnceEnabled()) {
-    const held = findResumableSession(session, claims.roomId, payload);
-    if (held) {
-      await resumeSession(ws, held, claims, payload, ffmpegPath, onResume);
+  if (payload.dualOutput === 'secondary') {
+    const admission = admitSecondaryProgram(sessions.values(), session, claims, payload);
+    if (!admission.ok) {
+      sendError(ws, admission.code, admission.message);
       return;
     }
-  }
-
-  // The same studio restarting with new settings replaces its own held broadcast.
-  for (const other of new Set(sessions.values())) {
-    if (other !== session && other.clientGone && other.started && other.claims?.roomId === claims.roomId) {
-      stopSession(other, 'replaced by a new broadcast from the same studio');
+    session.secondaryOf = admission.primary;
+  } else {
+    if (isEncodeOnceEnabled()) {
+      const held = findResumableSession(session, claims.roomId, payload);
+      if (held) {
+        await resumeSession(ws, held, claims, payload, ffmpegPath, onResume);
+        return;
+      }
     }
-  }
-  if (!isRelayCapacityAvailable(sessions.values(), session)) {
-    const running = Array.from(new Set(sessions.values())).find((other) => other !== session && other.started && !other.stopping);
-    const refusal = getCapacityRefusal({ incomingIsTest: isTest, runningIsTest: Boolean(running?.test) });
-    sendError(ws, refusal.code, refusal.message);
-    return;
+
+    // The same studio restarting with new settings replaces its own held broadcast.
+    for (const other of new Set(sessions.values())) {
+      if (other !== session && other.started && other.claims?.roomId === claims.roomId) {
+        if (other.clientGone) {
+          stopSession(other, 'replaced by a new broadcast from the same studio');
+        } else if (!isTest && !other.test && !other.secondaryOf && !other.stopping && (payload.dualOutput || other.payload?.dualOutput)) {
+          sendError(ws, 'PRIMARY_PROGRAM_ALREADY_LIVE', 'This studio already has a running main program.');
+          return;
+        }
+      }
+    }
+    if (!isRelayCapacityAvailable(sessions.values(), session)) {
+      const running = Array.from(new Set(sessions.values())).find((other) => other !== session && other.started && !other.stopping && !other.secondaryOf);
+      const refusal = getCapacityRefusal({ incomingIsTest: isTest, runningIsTest: Boolean(running?.test) });
+      sendError(ws, refusal.code, refusal.message);
+      return;
+    }
   }
 
   session.started = true;
@@ -1478,7 +1528,7 @@ async function handleStart(
     session.watchdog.unref?.();
   }
 
-  await spawnLiveBackup(session, ffmpegPath, claims, payload);
+  if (!session.secondaryOf) await spawnLiveBackup(session, ffmpegPath, claims, payload);
   if (session.stopping) return;
 
   if (session.encodeOnce) spawnEncoder(session, ffmpegPath, payload);
@@ -1486,7 +1536,7 @@ async function handleStart(
   for (const destination of payload.destinations) {
     spawnRelay(session, ffmpegPath, destination, payload);
   }
-  if (session.encodeOnce) await spawnHlsWriter(session, ffmpegPath, payload);
+  if (session.encodeOnce && !session.secondaryOf) await spawnHlsWriter(session, ffmpegPath, payload);
 
   sendJson(session.client, {
     type: 'session-started',

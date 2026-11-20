@@ -67,7 +67,11 @@ import { isPcmWavRecordingSupported } from '../utils/pcmWavRecorder.ts';
 import { estimateRecordingBitsPerSecond } from '../utils/recordingBitrate.ts';
 import { persistRecordingSession, updateRecordingSessionMediaExport, type LocalRecordingFileInput, type LocalRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import { saveParticipantRecording } from '../utils/participantRecordingSave.ts';
-import { useCompositor } from '../hooks/useCompositor.ts';
+import { useCompositor, type CompositorProps } from '../hooks/useCompositor.ts';
+import { useDualOutputSettings } from '../hooks/useDualOutputSettings.ts';
+import { getDualOutputSupport, getSecondaryProgramOrientation, planBroadcastDestinations, SECONDARY_OUTPUT_PRESET } from '../utils/dualOutput.ts';
+import { getRelayRecorderFormat } from '../utils/relayEncoding.ts';
+import { SecondaryProgram } from './SecondaryProgram.tsx';
 import { useLiveCaptions } from '../hooks/useLiveCaptions.ts';
 import { useCaptionRelay } from '../hooks/useCaptionRelay.ts';
 import { mergeCaptionSegments, selectBroadcastCaption } from '../utils/captionMerge.ts';
@@ -1136,6 +1140,14 @@ export function StudioRoom() {
   // Output orientation, custom layouts and brand font, kept per studio (useStudioFormat).
   const studioFormat = useStudioFormat(roomId);
   const broadcastOrientation: BroadcastOrientation = studioFormat.orientation;
+  const [dualOutput, updateDualOutput] = useDualOutputSettings(roomId);
+  const secondaryOrientation = getSecondaryProgramOrientation(broadcastOrientation);
+  const secondaryStreamRef = useRef<MediaStream | null>(null);
+  const [secondaryPreviewStream, setSecondaryPreviewStream] = useState<MediaStream | null>(null);
+  const onSecondaryStream = useCallback((stream: MediaStream | null) => {
+    secondaryStreamRef.current = stream;
+    setSecondaryPreviewStream(stream);
+  }, []);
   const setBroadcastOrientation = studioFormat.setOrientation;
   const brandFontState = useBrandFont(studioFormat.brandFont);
   const [customLayoutEditorOpen, setCustomLayoutEditorOpen] = useState(false);
@@ -1675,6 +1687,7 @@ export function StudioRoom() {
     }))
   ), [participants, peerBandwidthHealth]);
   const { health: mediaServerHealth, refresh: refreshMediaServerHealth } = useMediaServerHealth();
+  const dualSupportIssue = getDualOutputSupport(mediaServerHealth, getRelayRecorderFormat()?.videoMode === 'copy');
   // Direct-to-folder recording (host SSD), peer-to-peer guest track delivery,
   // storage preflight and the screen wake lock.
   const recordingWorkflow = useRecordingWorkflow({
@@ -2005,9 +2018,7 @@ export function StudioRoom() {
     () => (chatOverlay.comments.length > 0 ? { comments: chatOverlay.comments, settings: chatOverlay.layoutSettings } : null),
     [chatOverlay.comments, chatOverlay.layoutSettings],
   );
-  const { compositeStreamRef, compositeCanvasRef } = useCompositor({
-    containerRef: stageRef,
-    isActive: shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
+  const composition: Omit<CompositorProps, 'containerRef' | 'isActive' | 'orientation'> = {
     banners,
     lowerThirds,
     timers,
@@ -2029,10 +2040,15 @@ export function StudioRoom() {
     logoOpacity,
     streamScreen: activeStreamScreen,
     sceneTransition: compositorSceneTransition,
-    orientation: broadcastOrientation,
     brandFontFamily: brandFontState.fontFamily,
     chatOverlay: compositorChatOverlay,
     widgetCaptureSources: widgetTabCapture.sourcesRef,
+  };
+  const { compositeStreamRef, compositeCanvasRef } = useCompositor({
+    ...composition,
+    containerRef: stageRef,
+    isActive: shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
+    orientation: broadcastOrientation,
   });
 
   // The program return (640x360, 15 fps, ~500 kbps) to backstage guests, and
@@ -2115,7 +2131,16 @@ export function StudioRoom() {
     }));
   }, []);
 
+  const { startRelay: startSecondaryRelay, stopRelay: stopSecondaryRelay, stats: secondaryRelayStats } = useRtmpRelay({
+    compositeStreamRef: secondaryStreamRef,
+    acquireProgramAudio: programAudioMix.acquire,
+    readinessEnabled: false,
+    onDestinationStatus: handleRelayDestinationStatus,
+    onRelayStopped: (message) => addToast(`Second program stopped: ${message}`, 'error'),
+  });
+
   const handleRelayStopped = useCallback((message: string) => {
+    stopSecondaryRelay();
     const statusMessage = message.trim() || 'Media relay stopped unexpectedly.';
     const previousLiveStartedAt = liveStartedAtRef.current;
     showLiveSessionSummary(previousLiveStartedAt, destinationsRef.current, {
@@ -2140,13 +2165,13 @@ export function StudioRoom() {
         ? { ...destination, status: 'error', statusMessage }
         : { ...destination, status: 'idle', statusMessage: undefined }
     )));
-  }, [send, showLiveSessionSummary]);
+  }, [send, showLiveSessionSummary, stopSecondaryRelay]);
 
   // When the browser stops producing the broadcast: the sound check, the notices and the "Turn sound back on" marker.
   const soundGuard = useRelaySoundGuard({ bus: broadcastAudioBus, addToast });
   const {
     startRelay,
-    stopRelay,
+    stopRelay: stopPrimaryRelay,
     stats: relayStats,
     readiness: relayReadiness,
     backupRecording: relayBackupRecording,
@@ -2160,6 +2185,10 @@ export function StudioRoom() {
     checkProgramAudio: soundGuard.checkProgramAudio,
     onMediaStall: soundGuard.onMediaStall,
   });
+  const stopRelay = useCallback(() => {
+    stopSecondaryRelay();
+    stopPrimaryRelay();
+  }, [stopPrimaryRelay, stopSecondaryRelay]);
   useRestoreSoundWhenRelayEnds(relayStats.status, isLive, broadcastAudioBus);
   // Auto ducking dips music and clips (not people) while anyone on stage talks.
   useMusicDucking({
@@ -5129,6 +5158,12 @@ export function StudioRoom() {
     )));
   };
   useEffect(() => () => liveStartOperationRef.current.cancel(), []);
+  const broadcastDestinations = planBroadcastDestinations(destinations, broadcastOrientation, dualOutput.enabled);
+  const dualPreflightIssue = dualOutput.enabled ? dualSupportIssue || broadcastDestinations.issue : null;
+  const onDestinationOrientation = (id: string, orientation: BroadcastOrientation) => {
+    if (isLiveRef.current || liveStartOperationRef.current.active) return;
+    setDestinations((current) => current.map((destination) => destination.id === id ? { ...destination, orientation } : destination));
+  };
 
   /** The real Go Live. True when the relay for the broadcast started. */
   const startGoLive = async (): Promise<boolean> => {
@@ -5140,6 +5175,11 @@ export function StudioRoom() {
       liveStatusTimerRef.current = null;
     }
 
+    if (dualPreflightIssue) {
+      goLiveFailureReasonRef.current = dualPreflightIssue;
+      addToast(dualPreflightIssue, 'error');
+      return false;
+    }
     const enabledDestinations = destinations.filter((d) => d.enabled);
     if (
       enabledDestinations.length === 0 ||
@@ -5185,19 +5225,30 @@ export function StudioRoom() {
           ? { ...d, status: 'connecting', statusMessage: 'Starting relay session...' }
           : { ...d, status: 'idle', statusMessage: undefined }
       )));
+      // The id remains stable through transport reconnects. A reloaded studio
+      // gets a new id and the server clears the prior tab's second program.
+      const dualOutputId = dualOutput.enabled ? window.crypto.randomUUID() : null;
       await startAuthorizedRelay(operation, requestLiveStreamToken,
-        (token) => startRelay({
-          token,
-          refreshToken: requestLiveStreamToken,
-          orientation: broadcastOrientation,
-          outputPreset: rtmpRelayOutputPreset,
-          destinations: enabledDestinations.map((destination) => ({
-            id: destination.id,
-            name: destination.name,
-            rtmpUrl: destination.rtmpUrl,
-            streamKey: destination.streamKey,
-          })),
-        }),
+        async (token) => {
+          const relayAuth = { token, refreshToken: requestLiveStreamToken };
+          await startRelay({
+            ...relayAuth,
+            orientation: broadcastOrientation,
+            outputPreset: rtmpRelayOutputPreset,
+            destinations: broadcastDestinations.primary,
+            ...(dualOutputId ? { dualOutput: { role: 'primary', id: dualOutputId } } : {}),
+          });
+          operation.assertActive();
+          if (dualOutputId) {
+            await startSecondaryRelay({
+              ...relayAuth,
+              orientation: secondaryOrientation,
+              outputPreset: SECONDARY_OUTPUT_PRESET,
+              destinations: broadcastDestinations.secondary,
+              dualOutput: { role: 'secondary', id: dualOutputId },
+            });
+          }
+        },
         () => send({
           type: 'live-stream-state-changed',
           payload: { live: true, performedBy: myParticipantRef.current?.id || '' },
@@ -5246,7 +5297,7 @@ export function StudioRoom() {
       payload: { active, performedBy: myParticipantRef.current?.id || '' },
     }),
     goLive: startGoLive,
-    getGoLiveIssue: () => getEnabledDestinationPreflightIssue(destinations),
+    getGoLiveIssue: () => dualPreflightIssue || getEnabledDestinationPreflightIssue(destinations),
     getGoLiveFailureReason: () => goLiveFailureReasonRef.current,
     isLive,
     isGoLiveStarting: () => liveStartOperationRef.current.active,
@@ -7544,6 +7595,19 @@ export function StudioRoom() {
       {/* Main Area */}
       <main className="studio-main" style={styles.main}>
         <h1 style={styles.visuallyHidden}>{room?.name || 'Studio'}</h1>
+        {(canUseOperatorControls || relayActiveRef.current) && dualOutput.enabled && (
+          <SecondaryProgram
+            composition={composition}
+            primaryStageRef={stageRef}
+            orientation={secondaryOrientation}
+            layout={dualOutput.layout}
+            participants={applyStageItemOrder(videoItems, stageItemOrder, null).filter((item) => !item.isScreenShare)}
+            screen={sharedContentScreenShare?.item}
+            cameraShape={cameraShape}
+            nameTagStyle={nameTagStyle}
+            onStream={onSecondaryStream}
+          />
+        )}
         {/* Stage */}
         <div className="studio-stage" style={styles.stage}>
           <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : isHostOrCoHost ? 'Stage preview' : 'On stage'}</span><span>{liveStatus.active ? (isHostOrCoHost ? 'Your audience can see this stage' : 'You are live with the audience') : recordingStatus.active ? recordingStatus.paused ? (isHostOrCoHost ? 'Resume when you are ready' : 'The host paused the recording') : 'Recording session in progress' : isHostOrCoHost ? 'Prepare your stage before going live' : 'The host controls the layout'}</span></div>
@@ -8160,6 +8224,19 @@ export function StudioRoom() {
               onToggle={onToggleDestination}
               broadcastOrientation={broadcastOrientation}
               onBroadcastOrientationChange={setBroadcastOrientation}
+              onDestinationOrientation={onDestinationOrientation}
+              dualOutput={{
+                enabled: dualOutput.enabled,
+                supportIssue: dualSupportIssue,
+                configurationIssue: dualPreflightIssue,
+                isLive,
+                orientation: secondaryOrientation,
+                layout: dualOutput.layout,
+                stream: secondaryPreviewStream,
+                stats: secondaryRelayStats,
+                onToggle: (enabled) => updateDualOutput({ enabled }),
+                onLayoutChange: (layout) => updateDualOutput({ layout }),
+              }}
               relayOutputPreset={rtmpRelayOutputPreset}
               onRelayOutputPresetChange={setRtmpRelayOutputPreset}
               isLive={isLive}

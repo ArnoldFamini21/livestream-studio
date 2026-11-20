@@ -101,6 +101,7 @@ interface StartRelayOptions {
   outputPreset: RtmpRelayOutputPresetId;
   /** A private test: no destination, output only at a private address. */
   test?: boolean;
+  dualOutput?: { role: 'primary' | 'secondary'; id: string };
 }
 
 interface MixerResources {
@@ -542,7 +543,7 @@ export function useRtmpRelay({
   }, []);
 
   const startRelay = useCallback(
-    async ({ token, refreshToken, destinations, orientation, outputPreset, test = false }: StartRelayOptions): Promise<void> => {
+    async ({ token, refreshToken, destinations, orientation, outputPreset, test = false, dualOutput }: StartRelayOptions): Promise<void> => {
       if (relayOperationRef.current.active || wsRef.current || reconnectTimerRef.current) {
         throw new Error('A live relay session is already active.');
       }
@@ -566,6 +567,10 @@ export function useRtmpRelay({
       const recorderFormat = getRelayRecorderFormat();
       if (!recorderFormat) {
         throw new Error('This browser does not support WebM recording for RTMP relay.');
+      }
+
+      if (dualOutput && recorderFormat.videoMode !== 'copy') {
+        throw new Error('Simultaneous output needs browser H.264 encoding.');
       }
 
       // H.264 goes out at the preset's size; a re-encode on the server is
@@ -895,6 +900,7 @@ export function useRtmpRelay({
                 audio: RELAY_AUDIO,
                 encoding: recorderFormat.encoding,
                 ...(test ? { test: true } : {}),
+                ...(dualOutput ? { dualOutput: dualOutput.role, dualOutputId: dualOutput.id, orientation } : {}),
               },
             }));
           };

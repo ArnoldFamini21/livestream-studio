@@ -22,7 +22,7 @@ export async function eventually(check, { timeout = 30_000, interval = 100, mess
 }
 
 /** Run the built application with no production accounts, credentials, or external services. */
-export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR || path.join(repoRoot, 'output/e2e'), apiPort = Number(process.env.E2E_API_PORT || 3001), port = Number(process.env.E2E_PORT || 5199), reuseServer = process.env.E2E_REUSE_SERVER === '1', distDir = path.join(repoRoot, 'client/dist') } = {}) {
+export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR || path.join(repoRoot, 'output/e2e'), apiPort = Number(process.env.E2E_API_PORT || 3001), port = Number(process.env.E2E_PORT || 5199), reuseServer = process.env.E2E_REUSE_SERVER === '1', distDir = path.join(repoRoot, 'client/dist'), loopbackMediaPort, liveTokenSecret } = {}) {
   assert.ok(!reuseServer || !process.env.CI, 'CI must start isolated application servers');
   artifactDir = path.resolve(artifactDir);
   await mkdir(artifactDir, { recursive: true });
@@ -36,6 +36,7 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   // An allowlist prevents developer shell credentials being used by a test run.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PATH|TMPDIR|TMP|TEMP|XDG_.*|NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|SYSTEMROOT)$/.test(key)));
   Object.assign(env, { NODE_ENV: 'test', PORT: String(apiPort), CLIENT_URL: url, STUDIO_OWNER_EMAILS: '', STUDIO_CREATE_SECRET: '', STUN_URLS: 'stun:127.0.0.1:9', ROOM_PERSISTENCE_DISABLED: 'true', ACCOUNT_AUTH_PERSISTENCE_DISABLED: 'true', RECORDING_CATALOG_PERSISTENCE_DISABLED: 'true', BRAND_KIT_CATALOG_PERSISTENCE_DISABLED: 'true', WORKSPACE_STUDIO_CATALOG_PERSISTENCE_DISABLED: 'true', WORKSPACE_TEAM_CATALOG_PERSISTENCE_DISABLED: 'true' });
+  if (liveTokenSecret) env.LIVE_STREAM_TOKEN_SECRET = liveTokenSecret;
   const server = reuseServer ? null : spawn(process.execPath, [path.join(repoRoot, 'server/dist/index.js')], { cwd: artifactDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   server?.stdout.pipe(serverLog);
   server?.stderr.pipe(serverLog);
@@ -46,7 +47,9 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   const htaccess = await readFile(path.join(repoRoot, 'client/public/.htaccess'), 'utf8');
   const productionCsp = htaccess.match(/Content-Security-Policy "([^"]+)"/)[1];
   // Only the loopback API's transport differs from production's https/wss.
-  const csp = productionCsp.replace("connect-src 'self'", `connect-src 'self' ${apiUrl} ws://localhost:${apiPort}`);
+  assert.ok(loopbackMediaPort === undefined || (Number.isInteger(loopbackMediaPort) && loopbackMediaPort > 0 && loopbackMediaPort <= 65535));
+  const mediaOrigins = loopbackMediaPort ? ` http://localhost:${loopbackMediaPort} ws://localhost:${loopbackMediaPort}` : '';
+  const csp = productionCsp.replace("connect-src 'self'", `connect-src 'self' ${apiUrl} ws://localhost:${apiPort}${mediaOrigins}`);
   const dist = path.resolve(distDir);
   const staticServer = http.createServer(async (request, response) => {
     try {
@@ -86,14 +89,14 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   } catch (error) { await close(); throw error; }
   return {
     url, apiUrl, artifactDir, pageErrors, cspViolations, close,
-    async browser(name, { viewport = { width: 1440, height: 900 }, initScript } = {}) {
+    async browser(name, { viewport = { width: 1440, height: 900 }, initScript, extraArgs = [] } = {}) {
       const profile = path.join(scratch, `profile-${name}`);
       const downloadsPath = path.join(artifactDir, 'downloads');
       await mkdir(downloadsPath, { recursive: true });
       const context = await chromium.launchPersistentContext(profile, {
         executablePath: process.env.E2E_CHROMIUM_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined),
         headless: process.env.E2E_HEADED !== '1', viewport, permissions: ['camera', 'microphone'], acceptDownloads: true, downloadsPath,
-        args: ['--use-fake-device-for-media-stream=fps=30', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', `--disk-cache-dir=${path.join(scratch, `cache-${name}`)}`],
+        args: ['--use-fake-device-for-media-stream=fps=30', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', `--disk-cache-dir=${path.join(scratch, `cache-${name}`)}`, ...extraArgs],
       });
       contexts.push(context);
       await context.route(/^https?:\/\//, route => {
