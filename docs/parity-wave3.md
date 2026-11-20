@@ -585,15 +585,24 @@ as messages arrive, and an active poll appears above the chat.
 Blocks cover the selected viewer and optionally the network they used when they
 posted. A viewer's pending question stays with studio operators until approved
 or answered. The broadcast Q&A card keeps the viewer label visible as it
-shortens long names.
+shortens long names. Featured avatars keep the first complete character and
+pinned messages start with the Viewer label. Turning viewer chat off removes
+earlier viewer lines from the rolling overlay.
+
+IPv6 addresses on one network share the watch request and poll limits. Each
+network also has a capped contribution to the room's polling hint. The shared
+posting limits can briefly slow or stop new posts from all viewers during a
+sustained surge from several networks.
 
 The CI browser suite in `e2e/viewer-chat.test.mjs` uses one host and two
 independent watch browsers to exercise the switches, attribution, public and
 backstage chat, on-screen approval, reactions, Q&A, blocking and unblocking.
 It collects screenshots at 1440×900, 1000×625 and 390×844. Workspace tests cover
 moderation, question privacy, request limits and polling races. The browser
-suite uses fake devices and loopback signaling. A production release restarts
-the signaling server.
+suite uses fake devices and loopback signaling. The 20-step viewer rehearsal
+also exercised the block dialog by keyboard at 390 px and checked poll
+placement and switch-off behavior. All 72 deliberate mutations were detected.
+A production release restarts the signaling server.
 
 ## Resume here next session
 

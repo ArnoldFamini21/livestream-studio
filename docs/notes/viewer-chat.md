@@ -60,12 +60,17 @@ the watch page) enforces every rule.
 | Questions waiting per viewer, per network, open in the room | 3, 15, 200 |
 | Big answers (more than 20 lines: a page with no place yet, or one asking from far back) per network | 120 per minute (a congregation opening the page together fits; a script does not). Past that, the newest 20 lines as a fresh list, not an error |
 | Lines in any other answer | 20 at most |
-| Reads per address, all kinds | 2,400 per minute (about 160 devices asking every 4 seconds) |
+| Chat reads across all rooms, per network | 2,400 per minute (about 160 devices asking every 4 seconds) |
+| Chat, question and reaction requests across all rooms, per network | 1,500 per minute |
+| Watch-page poll reads and votes across all rooms, per network | 1,200 per minute |
 
-A refused attempt costs nothing, so waiting is always enough. The viewer reads
-"Please slow down. You can send again in N seconds." when it is their own limit,
-and "Chat is busy right now. Please try again in N seconds." when it is the
-network's or the room's limit (not their doing).
+A refused attempt uses none of the posting budget. The viewer reads
+"Please slow down. You can send again in N seconds." when they reach their own
+limit. They see "Chat is busy right now" when their network or the whole room
+reaches a limit. A surge from several networks can fill the shared room limit
+again as soon as it opens. If this continues, other viewers may have to wait
+until traffic eases or the host blocks disruptive viewers. The host can also
+turn off any affected audience feature.
 
 One address is one budget for a whole congregation: 30 chat messages and
 questions per 30 seconds shared by everyone behind it, so about one message per
@@ -109,7 +114,10 @@ shown on air costs more. The host's remove and block are the real protection.
 - **On the on-screen chat** it shows as "Viewer · name", with its own colour. The
   existing "All comments / Approved only" choice applies: in "Approved only" a
   viewer message appears only after the host stars it or shows it on stage.
-  Nothing else reaches the broadcast picture.
+  Turning viewer chat off removes earlier viewer lines from Chat on screen, even
+  when that overlay is paused or set to Approved only. The studio chat keeps the
+  earlier messages. A separately featured comment still has its own on-stage
+  controls.
 - **A viewer's question** shows as "name (viewer)" in the Q&A panel, on the
   preview and on the broadcast when highlighted.
 - **Remove** (message menu): the message goes from the studio chat, the on-screen
@@ -160,10 +168,10 @@ counter. The watch page's poll card (the existing live polls) also asks
 | 300 | about 75 per second | about 135 per second |
 | 500 | about 125 per second | about 225 per second |
 
-- The server measures its own request rate (only small answers, not big ones) and
-  tells pages to ask less often (6 seconds above 40 per second, 10 above 100, 15
-  above 250), so the chat load levels off even for several thousand viewers. A
-  page that is told 15 seconds sees chat 15 seconds late.
+- The server counts ordinary small chat responses when it estimates room demand.
+  Each network contributes up to 400 of these requests per 10-second window.
+  Across networks, the server suggests 6 seconds above 40 requests per second,
+  10 above 100 and 15 above 250. A longer interval can delay chat updates.
 - A page opening fresh or catching up can receive up to 100 lines. A full list
   of ASCII viewer messages is about 9 kB for short lines and about 42 kB for long
   ones. Valid Unicode can use up to four UTF-8 bytes per code point. With
@@ -172,19 +180,20 @@ counter. The watch page's poll card (the existing live polls) also asks
   with at most 20 lines stays under about 48 kB, including any removal IDs.
   One network gets up to 120 responses with more than 20 lines per minute.
   After that, a catch-up response returns the newest 20 lines as a fresh list.
+  At the 2,400-read budget, a network can receive 120 large and 2,280 small
+  responses. With full-length emoji viewer lines this is roughly 90 MB per
+  minute before HTTP headers. The upper estimate for longer studio lines and
+  removal IDs is roughly 140 MB per minute. These are JSON size estimates.
 - The feed keeps up to 250 lines. Viewer messages allow up to 300 code points,
   studio lines up to 500 and names up to 40. The identity table keeps up to
   3,000 viewers, each with at most 300 code points of their last accepted text.
   Duplicate comparisons use a normalized form temporarily and retain only the
   bounded text. The feed and viewer identities live in memory.
-- The per-address safety net is 2,400 chat reads and 1,500 posts per minute. More
-  than about 160 pages asking every 4 seconds behind one address would reach it
-  (fewer once the server asks for slower), and see some answers refused until the
-  next minute. The poll card's own net (1,200 a minute, about 100 pages at 5
-  seconds) is lower still and was there before this feature. One hostile address
-  can still add up to 40 ordinary asks a second to the room's request meter; two or
-  more can push the hint to 6 seconds for everyone. That only slows chat, it does
-  not stop it.
+- The watch request limits use the same network grouping as viewer moderation.
+  An IPv6 network shares one budget across its addresses. About 160 pages
+  reading chat every 4 seconds or about 100 pages polling every 5 seconds can
+  reach their respective network limits. Until a budget resets, extra requests
+  can receive a temporary refusal.
 - A chat message is one small write. At most 120 chat messages and questions per
   30 seconds are accepted for the whole room.
 
@@ -212,7 +221,14 @@ from a measurement with real traffic.
   messages would go straight on air; a viewer who only asks questions is blocked
   from the Q&A panel, their question leaves the queue and other viewers are
   unaffected; with chat off and reactions on, the other watch page still sees a
-  reaction float. Screens were looked at at 1440x900 and 390x844.
+  reaction float. The final 20-step run verifies that switching viewer chat off
+  clears earlier viewer lines from the rolling overlay. It also checks
+  keyboard focus and Escape in the block dialog at 390 px and verifies that a
+  live poll sits above chat. Screenshots were reviewed at 1440×900 and 390×844.
+- Lint, build, 2,670 workspace and script tests, and 15 Chromium checks passed.
+  Two PostgreSQL integration tests were skipped locally. All 72 deliberately
+  altered code variants failed their expected tests. The test runner restored
+  and compared its original files after the run.
 - After the review the unit tests also cover: the feed starting empty when chat is
   switched on, reactions with chat off, the question caps (a host dismissing all
   questions frees the room), blocking from a question id, IPv6 /64 and
@@ -226,6 +242,8 @@ from a measurement with real traffic.
 
 ## What was not verified
 
+- Safari, physical phones, or a screen reader. The phone layout and keyboard
+  behavior were checked at 390×844 in desktop Chromium.
 - A co-host's browser (the co-host uses the same messages as the host; the server
   tests cover the permission check).
 - A guest on stage seeing viewer messages in their chat panel (the same message
@@ -235,8 +253,9 @@ from a measurement with real traffic.
 - The pop-out chat window: it shows viewer messages with the Viewer mark but has
   no Remove or Block (use the studio chat panel). It never styles a viewer's
   message as the host's own, even for the same name.
-- The IPv6 grouping with a real address behind Render's proxy: it is tested with
-  address strings only, not with real IPv6 traffic.
+- Render's handling of real visitor addresses. The local HTTP test simulates
+  proxy forwarding and verifies that IPv6 addresses on one network share the
+  budget. Real visitor traffic through Render is still unverified.
 - The 20 second wait while all switches are off, with a real host turning a switch
   on mid-service: pages follow within about 20 seconds (the browser check waited
   for that).
@@ -254,5 +273,8 @@ from a measurement with real traffic.
 - A server restart restores rooms without the viewer chat: switches are off
   (safe) and the blocked list starts empty. The switches panel says so.
 - Dots between letters (f.u.c.k) and swapped letters (fvck) pass the filter.
-- Publishing this restarts the signaling server, which ends any studio that is open
-  at that moment.
+- A tab still running the current production client can label viewer messages
+  Facebook, omit the Viewer label on the overlay and throw on a viewer-message
+  removal. The guarded release requires zero open studios. Open a fresh studio
+  tab after the release.
+- Publishing restarts the signaling server and ends any open studio.
