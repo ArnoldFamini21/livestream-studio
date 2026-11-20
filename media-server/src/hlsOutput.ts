@@ -92,7 +92,7 @@ export function createFfmpegHlsArgs(dir: string): string[] {
     '-hls_list_size', String(HLS_PLAYLIST_SEGMENTS),
     // Old segments are deleted; the playlist never gets an end marker while
     // live; each segment starts on a keyframe so players can join anywhere.
-    '-hls_flags', 'delete_segments+independent_segments+omit_endlist',
+    '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time',
     '-hls_segment_filename', path.join(dir, `seg-${path.basename(dir)}-%05d.ts`),
     path.join(dir, HLS_PLAYLIST_NAME),
   ];

@@ -16,6 +16,8 @@ interface LiveCaptionsPanelProps {
   roomName?: string;
   onToggle: () => void;
   onLanguageChange: (language: string) => void;
+  viewerCaptions?: boolean;
+  onViewerCaptionsChange?: (enabled: boolean) => void;
   onClear: () => void;
   onClose: () => void;
 }
@@ -169,6 +171,8 @@ export function LiveCaptionsPanel({
   roomName,
   onToggle,
   onLanguageChange,
+  viewerCaptions = false,
+  onViewerCaptionsChange,
   onClear,
   onClose,
 }: LiveCaptionsPanelProps) {
@@ -260,6 +264,15 @@ export function LiveCaptionsPanel({
       </div>
 
       <div style={styles.controls}>
+        {onViewerCaptionsChange && (
+          <label style={styles.field}>
+            <span style={styles.label}>Show captions</span>
+            <select value={viewerCaptions ? 'watch' : 'broadcast'} onChange={event => onViewerCaptionsChange(event.currentTarget.value === 'watch')} style={styles.select}>
+              <option value="broadcast">On the broadcast</option>
+              <option value="watch">Optional on the watch page</option>
+            </select>
+          </label>
+        )}
         <label style={styles.field}>
           <span style={styles.label}>Language</span>
           <select

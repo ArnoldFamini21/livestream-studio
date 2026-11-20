@@ -20,7 +20,8 @@ import { buildDuplicatedSceneName } from './sceneOrder.ts';
 export const SCENE_PACK_VERSION = 1;
 export const SCENE_PACK_SOURCE = 'livestream-studio';
 export const MAX_SCENE_PACK_SCENES = 12;
-export const MAX_SCENE_PACK_BYTES = 512_000;
+export const MAX_SCENE_PACK_BYTES = 8 * 1024 * 1024;
+const MAX_EMBEDDED_IMAGE_LENGTH = 2_800_000;
 
 export type ScenePackOverlayKind = 'lowerThird' | 'banner' | 'timer' | 'ticker' | 'widget';
 
@@ -110,22 +111,26 @@ function readOptionalDuration(value: unknown): number | undefined {
   return Math.min(24 * 60 * 60, Math.round(value));
 }
 
+function readPortableAsset(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const url = value.trim();
+  if (url.startsWith('blob:')) return '';
+  const limit = /^data:image\/[a-z0-9.+-]+[;,]/i.test(url) ? MAX_EMBEDDED_IMAGE_LENGTH : 100_000;
+  return url.length <= limit ? url : '';
+}
+
 function sanitizeBackground(input: unknown): StageBackground {
   if (!isRecord(input) || !isAllowed(input.type, BACKGROUND_TYPES)) {
     return { type: 'none', value: '' };
   }
-  const value = readString(input.value, 100_000);
-  if ((input.type === 'image' || input.type === 'video') && value.startsWith('blob:')) {
-    return { type: 'none', value: '' };
-  }
-  return { type: input.type, value };
+  const value = readPortableAsset(input.value);
+  return (input.type === 'image' || input.type === 'video') && !value
+    ? { type: 'none', value: '' }
+    : { type: input.type, value };
 }
 
 function sanitizeLogoUrl(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  const url = readString(value, 100_000);
-  if (!url || url.startsWith('blob:')) return null;
-  return url;
+  return readPortableAsset(value) || null;
 }
 
 function sanitizeScene(input: unknown): Scene | null {

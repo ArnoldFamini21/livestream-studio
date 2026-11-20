@@ -1,7 +1,7 @@
 import express, { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { VIEWER_BODY_MAX_BYTES } from '@studio/shared';
-import { castWatchPollVote, findWatchLinkRoom, getRoomViewerChat, getWatchPoll, registerRoomGuest, RoomRegistrationError, WatchPollVoteError } from '../services/signaling.js';
+import { castWatchPollVote, findWatchLinkRoom, getRoomViewerChat, getWatchCaptionSnapshot, getWatchPoll, registerRoomGuest, RoomRegistrationError, WatchPollVoteError } from '../services/signaling.js';
 import { ViewerChatError, networkKeyFor, type ViewerChatRoom } from '../services/viewerChat.js';
 
 /**
@@ -52,6 +52,20 @@ watchRouter.post('/:watchId/registrants', (req, res) => {
     }
     res.status(500).json({ error: 'Failed to register' });
   }
+});
+
+watchRouter.get('/:watchId/captions', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const found = findWatchLinkRoom(req.params.watchId);
+  if (!found) {
+    res.status(404).json({ error: 'This broadcast was not found or has ended' });
+    return;
+  }
+  if (found.room.registration?.enabled) {
+    res.status(401).json({ error: 'Viewer access is required' });
+    return;
+  }
+  res.json(getWatchCaptionSnapshot(found.room.id));
 });
 
 // Live polls for viewers: the poll on screen, and an anonymous vote per browser.

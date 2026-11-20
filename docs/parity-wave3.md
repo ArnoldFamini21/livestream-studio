@@ -14,7 +14,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P1.7** Moderated viewer chat, reactions and Q&A (PR #374; see below and docs/notes/viewer-chat.md)
 - [ ] **P1.8** Signed watch-page registration and HLS authorization
 - [ ] **P1.9** Audience call-ins through the green room
-- [ ] **P1.10** Reusable studios, synced scenes and scene folders
+- [ ] **P1.10** Reusable studios, synced scenes and scene folders (browser-local service presets implemented)
 - [ ] **P1.11** Automatic intros/outros, banner folders, movable overlays and QR widget
 - [ ] **P1.12** Stage tile controls, backstage reordering and people audio controls
 - [ ] **P1.13** Private mentions, shared notes and teleprompter collaboration
@@ -603,6 +603,23 @@ suite uses fake devices and loopback signaling. The 20-step viewer rehearsal
 also exercised the block dialog by keyboard at 390 px and checked poll
 placement and switch-off behavior. All 72 deliberate mutations were detected.
 A production release restarts the signaling server.
+
+## Reusable service presets and watch captions
+
+Open **Scenes → Service presets** to capture a named setup. It carries the
+scenes, artwork, custom layouts and placed overlays such as countdowns into
+another studio in the same browser. Load the preset to add its scenes, then
+select one when ready. Imported countdowns wait for the operator to start
+them. Source-room decks and pinned participant IDs stay with their original
+studio.
+
+For viewer-controlled captions, open **Live Captions**, set **Show captions**
+to **Optional on the watch page**, then start captions. Viewers can toggle CC.
+The caption timing follows the video program clock, including playback delay.
+The watch feed receives final captions from the live stage only. Automatic
+speech recognition still depends on the studio operator's browser and guest
+consent. Chromium checks reuse a preset in a different room and play a timed
+caption over local HLS.
 
 ## Resume here next session
 

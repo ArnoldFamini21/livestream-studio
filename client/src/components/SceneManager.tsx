@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import '../styles/scenes.css';
+import { ServicePresets, type ServicePresetControls } from './ServicePresets.tsx';
 import type { CustomLayout, Scene, LayoutMode } from '@studio/shared';
 import {
   getBackgroundPreview,
@@ -49,6 +50,7 @@ interface SceneManagerProps {
   onExportScenePack: () => void;
   onImportScenePack: (file: File) => void | Promise<void>;
   scenePackMessage?: string | null;
+  servicePresets?: ServicePresetControls;
 }
 
 const MAX_SCENES = 12;
@@ -252,6 +254,7 @@ export function SceneManager({
   onExportScenePack,
   onImportScenePack,
   scenePackMessage,
+  servicePresets,
 }: SceneManagerProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -654,6 +657,7 @@ export function SceneManager({
           </div>
         </section>
       )}
+      {servicePresets && <ServicePresets {...servicePresets} />}
       <input
         ref={importInputRef}
         type="file"

@@ -316,6 +316,7 @@ import {
   parseScenePackJson,
   type ScenePackOverlayKind,
 } from '../utils/scenePacks.ts';
+import { captureServicePreset, prepareServicePreset, type ServicePreset } from '../utils/servicePresets.ts';
 import {
   DEFAULT_SCENE_TRANSITION_PRESET_ID,
   getSceneTransitionOverlayStyle,
@@ -1336,6 +1337,7 @@ export function StudioRoom() {
   const [myPollVotes, setMyPollVotes] = useState<Record<string, string>>({});
   const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
+  const [watchPageCaptions, setWatchPageCaptions] = useState(false);
   const [captionLanguage, setCaptionLanguage] = useState('en-US');
 
   // Hooks
@@ -1828,6 +1830,7 @@ export function StudioRoom() {
     stageOwnerId,
     captionsEnabled: captionsAllowed && captionsEnabled,
     captionLanguage,
+    watchPage: watchPageCaptions,
     admittedParticipantKey: onStageParticipantIds.join(','),
     localCaptionsBlocked,
     acceptRemoteCaption,
@@ -1856,7 +1859,7 @@ export function StudioRoom() {
     clearLocalCaptions();
     clearRemoteCaptions();
   }, [clearLocalCaptions, clearRemoteCaptions]);
-  const broadcastCaption = captionsAllowed
+  const broadcastCaption = captionsAllowed && !watchPageCaptions
     ? selectBroadcastCaption(captionsEnabled && !localCaptionsBlocked ? activeCaption : null, captionRelay.remote, captionRelay.clock)
     : null;
   const clipBrand = useMemo(() => ({
@@ -2355,6 +2358,7 @@ export function StudioRoom() {
   useEffect(() => {
     if (!captionsAllowed && captionsEnabled) {
       setCaptionsEnabled(false);
+      setWatchPageCaptions(false);
       setShowCaptionsPanel(false);
     }
   }, [captionsAllowed, captionsEnabled]);
@@ -5817,80 +5821,89 @@ export function StudioRoom() {
   const onReorderScene = (sceneId: string, direction: SceneOrderDirection) => {
     setScenes(prev => moveSceneInOrder(prev, sceneId, direction));
   };
+  const buildRoomScenePack = (selectedScenes: Scene[] = scenes) => buildScenePack({
+    scenes: getPersistableScenes(selectedScenes, mediaAssets),
+    lowerThirds,
+    banners,
+    timers,
+    tickers,
+    widgets,
+  });
   const onExportScenePack = () => {
     if (scenes.length === 0) {
       setScenePackMessage('Save a scene before exporting.');
       return;
     }
-
-    const pack = buildScenePack({
-      scenes: getPersistableScenes(scenes, mediaAssets),
-      lowerThirds,
-      banners,
-      timers,
-      tickers,
-      widgets,
-    });
-
-    downloadJsonFile(
-      buildScenePackFilename(room?.name || 'Studio'),
-      JSON.stringify(pack, null, 2)
-    );
+    const pack = buildRoomScenePack();
+    const json = JSON.stringify(pack, null, 2);
+    if (new Blob([json]).size > MAX_SCENE_PACK_BYTES) {
+      setScenePackMessage('These scenes are too large to export. Try smaller graphics or fewer scenes.');
+      return;
+    }
+    downloadJsonFile(buildScenePackFilename(room?.name || 'Studio'), json);
     setScenePackMessage(`Exported ${pack.scenes.length} scene${pack.scenes.length === 1 ? '' : 's'}.`);
+  };
+  const addScenePack = (pack: ReturnType<typeof buildScenePack>) => {
+    const imported = importScenePack(pack, {
+      existingScenes: scenes,
+      maxScenes: MAX_STUDIO_SCENES,
+      sceneIdFactory: () => `scene-import-${crypto.randomUUID()}`,
+      overlayIdFactory: (kind: ScenePackOverlayKind) => {
+        switch (kind) {
+          case 'lowerThird': return `lt-${++idCounters.current.lt}`;
+          case 'banner': return `banner-${++idCounters.current.banner}`;
+          case 'timer': return `timer-${++idCounters.current.timer}`;
+          case 'ticker': return `ticker-${++idCounters.current.ticker}`;
+          case 'widget': return `widget-${++idCounters.current.widget}`;
+          default: return assertNever(kind);
+        }
+      },
+    });
+    if (imported.importedScenes === 0) throw new Error('Maximum scenes reached.');
+    setLowerThirds(prev => [...prev, ...imported.lowerThirds]);
+    setBanners(prev => [...prev, ...imported.banners]);
+    setTimers(prev => [...prev, ...imported.timers]);
+    setTickers(prev => [...prev, ...imported.tickers]);
+    setWidgets(prev => [...prev, ...imported.widgets]);
+    setScenes(prev => [...prev, ...imported.scenes].slice(0, MAX_STUDIO_SCENES));
+    setScenePackMessage(
+      `Added ${imported.importedScenes} scene${imported.importedScenes === 1 ? '' : 's'}${imported.skippedScenes ? `, skipped ${imported.skippedScenes}` : ''}.`
+    );
   };
   const onImportScenePack = async (file: File) => {
     if (file.size > MAX_SCENE_PACK_BYTES) {
       setScenePackMessage('Scene pack file is too large.');
       return;
     }
-
     try {
-      const text = await file.text();
-      if (text.length > MAX_SCENE_PACK_BYTES) {
-        setScenePackMessage('Scene pack file is too large.');
-        return;
-      }
-
-      const pack = parseScenePackJson(text);
-      const imported = importScenePack(pack, {
-        existingScenes: scenes,
-        maxScenes: MAX_STUDIO_SCENES,
-        sceneIdFactory: (_scene, index) => `scene-import-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-        overlayIdFactory: (kind: ScenePackOverlayKind) => {
-          switch (kind) {
-            case 'lowerThird':
-              return `lt-${++idCounters.current.lt}`;
-            case 'banner':
-              return `banner-${++idCounters.current.banner}`;
-            case 'timer':
-              return `timer-${++idCounters.current.timer}`;
-            case 'ticker':
-              return `ticker-${++idCounters.current.ticker}`;
-            case 'widget':
-              return `widget-${++idCounters.current.widget}`;
-            default:
-              return assertNever(kind);
-          }
-        },
-      });
-
-      if (imported.importedScenes === 0) {
-        setScenePackMessage('Maximum scenes reached.');
-        return;
-      }
-
-      setLowerThirds(prev => [...prev, ...imported.lowerThirds]);
-      setBanners(prev => [...prev, ...imported.banners]);
-      setTimers(prev => [...prev, ...imported.timers]);
-      setTickers(prev => [...prev, ...imported.tickers]);
-      setWidgets(prev => [...prev, ...imported.widgets]);
-      setScenes(prev => [...prev, ...imported.scenes].slice(0, MAX_STUDIO_SCENES));
-      setScenePackMessage(
-        `Imported ${imported.importedScenes} scene${imported.importedScenes === 1 ? '' : 's'}${imported.skippedScenes ? `, skipped ${imported.skippedScenes}` : ''}.`
-      );
+      addScenePack(parseScenePackJson(await file.text()));
     } catch (err) {
       setScenePackMessage(err instanceof Error ? err.message : 'Could not import scene pack.');
     }
+  };
+  const onCaptureServicePreset = async () => {
+    const active = scenes.find(scene => scene.id === activeSceneId);
+    let selected = scenes;
+    if (active) {
+      const updated = await buildCurrentSceneSnapshot(active.id, active.name);
+      selected = scenes.map(scene => scene.id === updated.id ? updated : scene);
+    } else if (!scenes.length) {
+      selected = [await buildCurrentSceneSnapshot('scene-preset-' + crypto.randomUUID(), 'Service setup')];
+    }
+    // Media assets and participant IDs belong to the source studio. Its
+    // layouts, overlays, backgrounds and logo can be reused in a new room.
+    const portable = selected.map(scene => ({
+      ...scene,
+      activeMedia: null,
+      focusedVideoItemId: null,
+      stageItemOrder: [],
+    }));
+    return captureServicePreset(buildRoomScenePack(portable), studioFormat.customLayouts);
+  };
+  const onLoadServicePreset = (preset: ServicePreset) => {
+    const prepared = prepareServicePreset(preset, studioFormat.customLayouts, MAX_STUDIO_SCENES - scenes.length);
+    addScenePack(prepared.pack);
+    studioFormat.setCustomLayouts(prepared.layouts);
   };
 
   // Tickers
@@ -8291,6 +8304,7 @@ export function StudioRoom() {
             onExportScenePack={onExportScenePack}
             onImportScenePack={onImportScenePack}
             scenePackMessage={scenePackMessage}
+            servicePresets={{ capture: onCaptureServicePreset, load: onLoadServicePreset }}
             tickers={tickers}
             onAddTicker={onAddTicker}
             onToggleTicker={onToggleTicker}
@@ -8403,6 +8417,8 @@ export function StudioRoom() {
             segments={captionSegments}
             roomName={room?.name || 'Studio'}
             onToggle={() => setCaptionsEnabled((current) => !current)}
+            viewerCaptions={watchPageCaptions}
+            onViewerCaptionsChange={amStageOwner ? setWatchPageCaptions : undefined}
             onLanguageChange={setCaptionLanguage}
             onClear={clearCaptions}
             onClose={() => setShowCaptionsPanel(false)}

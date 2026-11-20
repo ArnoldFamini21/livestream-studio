@@ -113,6 +113,10 @@ jobs:
             output/e2e/viewer-chat/*.txt
             output/e2e/viewer-chat/*.json
             output/e2e/viewer-chat/*.log
+            output/e2e/service-tools/*.png
+            output/e2e/service-tools/*.txt
+            output/e2e/service-tools/*.json
+            output/e2e/service-tools/*.log
           retention-days: 7
 
   recording-soak:

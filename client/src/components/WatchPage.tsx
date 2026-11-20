@@ -5,6 +5,8 @@ import '../styles/studio-chrome.css';
 import { StudioIcon } from './StudioIcon.tsx';
 import { WatchPollCard } from './WatchPollCard.tsx';
 import { WatchChatPanel } from './WatchChatPanel.tsx';
+import { WatchCaptions } from './WatchCaptions.tsx';
+import { readWatchPlaybackTime } from '../utils/watchCaptions.ts';
 import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
 import type { ViewerReactionType } from '@studio/shared';
 import { ApiRequestError, requestJson, resolveMediaHttpUrl } from '../utils/apiClient.ts';
@@ -81,6 +83,10 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
   });
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const getWatchPlaybackTime = useCallback(
+    () => readWatchPlaybackTime(videoRef.current, hlsRef.current?.playingDate),
+    [],
+  );
 
   // Room details: name, host, schedule, and whether registration gates the page.
   useEffect(() => {
@@ -296,6 +302,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               {live && playerError && <div className="watch-placeholder" role="alert"><p>{playerError}</p><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry playback</button></div>}
               {live && statusFailed && <p className="watch-error" role="status">Connection interrupted. Reconnecting…</p>}
               <ReactionOverlay reactions={floatingReactions} />
+              {live && <WatchCaptions watchId={watchId} readPlaybackTime={getWatchPlaybackTime} />}
               {live && needsTap && !playerError && (
                 <button type="button" className="watch-tap" onClick={() => videoRef.current?.play().then(() => setNeedsTap(false)).catch(() => undefined)}>
                   Tap to play

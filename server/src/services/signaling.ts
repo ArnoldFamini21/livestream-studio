@@ -42,6 +42,7 @@ import type {
   ExternalChatPlatform,
   ExternalChatStatusPayload,
 } from '@studio/shared';
+import { WatchCaptionBuffer, WATCH_CAPTIONS_OFF } from './watchCaptions.js';
 import {
   RECORDING_UPLOAD_PROGRESS_STATUSES,
   MAX_RECORDING_TRANSFER_SDP_LENGTH,
@@ -182,6 +183,7 @@ interface RoomState {
   recordingSessionId?: string;
   recordingPaused?: boolean;
   liveStreamStartedAt?: string;
+  watchCaptions?: WatchCaptionBuffer;
   liveStreamStartedBy?: string;
   // A private test stream: in memory only, never public and never persisted.
   testStreamStartedAt?: string;
@@ -2755,10 +2757,16 @@ function handleCaptionSegment(ws: WebSocket, payload: unknown) {
     sendError(ws, 'Invalid caption segment', 'INVALID_PAYLOAD');
     return;
   }
-  const message: SignalMessage = {
-    type: 'caption-segment',
-    payload: { ...segment, participantId: sender.id, speakerName: sender.name },
-  };
+  const caption = { ...segment, participantId: sender.id, speakerName: sender.name };
+  const watchCaptions = roomState.watchCaptions;
+  if (segment.final && watchCaptions?.ownerId && roomState.liveStreamStartedAt
+      && sender.audioEnabled && !roomState.talkbackParticipantIds?.has(sender.id)) {
+    const participants = Array.from(roomState.participants.values(), entry => entry.participant);
+    if (watchCaptions.ownerId === getStageOwnerId(participants)) {
+      watchCaptions.append(caption, roomState.liveStreamStartedAt, Date.now());
+    }
+  }
+  const message: SignalMessage = { type: 'caption-segment', payload: caption };
   for (const [id, entry] of roomState.participants) {
     if (id === mapping.participantId) continue;
     if (!isOperatorRole(entry.participant.role) || entry.participant.status === 'green-room') continue;
@@ -2793,6 +2801,8 @@ function handleCaptionsState(ws: WebSocket, payload: unknown) {
   // hand-over a client can briefly think it is the owner.
   const ownerId = getStageOwnerId(Array.from(roomState.participants.values(), (entry) => entry.participant));
   if (ownerId !== sender.id) return;
+  if (state.enabled && state.watchPage) roomState.watchCaptions ??= new WatchCaptionBuffer();
+  roomState.watchCaptions?.configure(sender.id, state.enabled && state.watchPage === true, state.language);
   broadcastToRoom(mapping.roomId, { type: 'captions-state', payload: { ...state, from: sender.id } }, mapping.participantId);
 }
 
@@ -2990,6 +3000,14 @@ export function findRoomByWatchId(watchId: string): Room | undefined {
  * /watch/<roomId>, so for those (and only those) the room id still works and
  * the page switches to the canonical id.
  */
+export function getWatchCaptionSnapshot(roomId: string) {
+  const roomState = rooms.get(roomId);
+  if (!roomState?.liveStreamStartedAt || !roomState.watchCaptions?.ownerId) return WATCH_CAPTIONS_OFF;
+  const participants = Array.from(roomState.participants.values(), entry => entry.participant);
+  if (roomState.watchCaptions.ownerId !== getStageOwnerId(participants)) return WATCH_CAPTIONS_OFF;
+  return roomState.watchCaptions.read(roomState.liveStreamStartedAt, Date.now());
+}
+
 export function findWatchLinkRoom(id: string): { room: Room; watchId: string } | undefined {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) return undefined;
   for (const roomState of rooms.values()) {
@@ -3414,6 +3432,7 @@ function handleLiveStreamStateChange(ws: WebSocket, payload: LiveStreamStatePayl
   } else {
     roomState.liveStreamStartedAt = undefined;
     roomState.liveStreamStartedBy = undefined;
+    roomState.watchCaptions?.reset();
   }
   updateRoomActivityStatus(roomState);
   persistRoomSnapshot(mapping.roomId);

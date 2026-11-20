@@ -626,8 +626,24 @@ export interface CaptionSegmentPayload {
   final: boolean;
 }
 
+export interface WatchCaptionCue {
+  id: string;
+  text: string;
+  speaker?: string;
+  startMs: number;
+  endMs: number;
+}
+
+export interface WatchCaptionSnapshot {
+  enabled: boolean;
+  language: string;
+  cues: WatchCaptionCue[];
+}
+
 export interface CaptionsStatePayload {
   enabled: boolean;
+  /** Share optional captions on the watch page instead of drawing them on the program. */
+  watchPage?: boolean;
   /** BCP-47 recognition language, e.g. 'en-US'. */
   language: string;
   /** Set by the server: which operator sent it. */
@@ -666,7 +682,7 @@ export function sanitizeCaptionsState(raw: unknown): Omit<CaptionsStatePayload, 
   const value = raw as Record<string, unknown>;
   if (typeof value.enabled !== 'boolean') return null;
   const language = typeof value.language === 'string' && CAPTION_LANGUAGE_PATTERN.test(value.language) ? value.language : 'en-US';
-  return { enabled: value.enabled, language };
+  return { enabled: value.enabled, language, ...(value.watchPage === true ? { watchPage: true } : {}) };
 }
 
 export interface TalkbackStatePayload {
