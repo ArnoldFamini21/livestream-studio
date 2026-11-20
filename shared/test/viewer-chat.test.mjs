@@ -74,6 +74,25 @@ describe('sanitizing viewer text', () => {
     assert.equal(Array.from(sanitizeViewerText(stacked, 40).text).length, 5);
   });
 
+  it('strips invisible music and shorthand controls before checking names and words', () => {
+    for (const point of [0x1bca0, 0x1bca3, 0x1d173, 0x1d17a]) {
+      const invisible = String.fromCodePoint(point);
+      assert.deepEqual(sanitizeViewerText(invisible, 40), { ok: false, reason: 'empty' });
+      const cleaned = sanitizeViewerText('sh' + invisible + 'it', 40);
+      assert.equal(cleaned.text, 'shit');
+      assert.equal(maskProfanity(cleaned.text).text, '****');
+    }
+  });
+
+  it('caps consecutive marks even when joiners divide them', () => {
+    const mark = String.fromCodePoint(0x0334);
+    const joiner = String.fromCodePoint(0x200d);
+    const result = sanitizeViewerText('x' + Array(12).fill(mark).join(joiner) + 'a', 40);
+    assert.equal(result.ok, true);
+    assert.equal(result.text.match(/\p{M}/gu)?.length, 4);
+    assert.ok(result.text.includes(joiner), 'useful joiners are preserved');
+  });
+
   it('drops unpaired surrogates while preserving emoji and their joiners', () => {
     const family = `${code(0x1f469)}${code(0x200d)}${code(0x1f467)}`;
     assert.deepEqual(sanitizeViewerText(`Hi \ud800${family}\udfff`, 40), { ok: true, text: `Hi ${family}` });
@@ -211,6 +230,26 @@ describe('rate limits', () => {
     assert.equal(tryRecordAction(state, who('a'), 0, VIEWER_REACTION_RULES).allowed, true);
     assert.equal(tryRecordAction(state, who('a'), 200, VIEWER_REACTION_RULES).allowed, false);
     assert.equal(tryRecordAction(state, who('a'), 400, VIEWER_REACTION_RULES).allowed, true);
+  });
+
+  it('holds each reaction ceiling at the viewer, network and room limits', () => {
+    const person = createRateLimiterState();
+    for (let i = 0; i < 20; i += 1) {
+      assert.equal(tryRecordAction(person, who('a'), i * 400, VIEWER_REACTION_RULES).allowed, true);
+    }
+    assert.equal(tryRecordAction(person, who('a'), 8000, VIEWER_REACTION_RULES).scope, 'viewer');
+
+    const network = createRateLimiterState();
+    for (let i = 0; i < 300; i += 1) {
+      assert.equal(tryRecordAction(network, who(String(i), 'one-network'), 1000, VIEWER_REACTION_RULES).allowed, true);
+    }
+    assert.equal(tryRecordAction(network, who('new', 'one-network'), 1000, VIEWER_REACTION_RULES).scope, 'network');
+
+    const room = createRateLimiterState();
+    for (let i = 0; i < 600; i += 1) {
+      assert.equal(tryRecordAction(room, who(String(i), String(i)), 1000, VIEWER_REACTION_RULES).allowed, true);
+    }
+    assert.equal(tryRecordAction(room, who('new', 'new'), 1000, VIEWER_REACTION_RULES).scope, 'room');
   });
 
   it('checks one rule from a history and ignores a clock that went backwards', () => {

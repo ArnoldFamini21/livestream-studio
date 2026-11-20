@@ -5,6 +5,8 @@ import {
   VIEWER_MESSAGE_MAX,
   VIEWER_NAME_MAX,
   VIEWER_QUESTION_MAX,
+  RATE_MAX_TRACKED_KEYS,
+  REQUEST_RATE_WINDOW_MS,
   VIEWER_REACTION_RULES,
   VIEWER_TALK_RULES,
   appendFeedMessage,
@@ -64,6 +66,10 @@ import {
 
 /** Random for each server start: keys cannot be compared across restarts and the address cannot be recovered. */
 const NETWORK_KEY_SALT = randomBytes(32);
+
+/** Per minute, shared by everyone on one network. */
+export const WATCH_LIVE_LIMIT_MAX = 2400;
+const METER_READS_PER_NETWORK = WATCH_LIVE_LIMIT_MAX * REQUEST_RATE_WINDOW_MS / 60_000;
 
 /**
  * A salted hash of the request address. Used to tell networks apart (limits,
@@ -247,6 +253,7 @@ export class ViewerChatRoom {
   /** When each network last got a big answer (the costly kind of read). */
   private readonly bigReads = new Map<string, number[]>();
   private readonly meter = createRequestRateMeter(0);
+  private readonly meteredReads = new Map<string, number>();
   private meterStarted = false;
   private pendingReactions: Partial<Record<ChatReactionType, number>> = {};
   private reactionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -305,7 +312,7 @@ export class ViewerChatRoom {
     }
     // Only ordinary small asks measure how busy the room is, so a stranger asking for big answers over
     // and over cannot make every real page slow down.
-    const rate = big ? this.meter.rate : noteRequest(this.meter, now);
+    const rate = big ? this.meter.rate : this.noteRead(networkKey, now);
     return {
       epoch: read.epoch,
       cursor: read.cursor,
@@ -316,6 +323,17 @@ export class ViewerChatRoom {
       reactions,
       pollMs: suggestViewerPollMs(rate, switches.chat || switches.reactions || switches.questions),
     };
+  }
+
+  /** Count sustained demand across groups without letting one network's burst drive the room hint. */
+  private noteRead(networkKey: string, now: number): number {
+    if (now - this.meter.windowStart >= REQUEST_RATE_WINDOW_MS) this.meteredReads.clear();
+    const reads = this.meteredReads.get(networkKey) ?? 0;
+    if (reads >= METER_READS_PER_NETWORK || (reads === 0 && this.meteredReads.size >= RATE_MAX_TRACKED_KEYS)) {
+      return this.meter.rate;
+    }
+    this.meteredReads.set(networkKey, reads + 1);
+    return noteRequest(this.meter, now);
   }
 
   // ----- Viewers write -----

@@ -125,7 +125,7 @@ export type ViewerBlockScope = typeof VIEWER_BLOCK_SCOPES[number];
 // C0 and C1 controls, DEL, soft hyphen, bidirectional controls, line and paragraph separators, zero-width
 // characters, invisible filler letters, unpaired surrogates, noncharacters, and the tag block.
 // Unicode-mode matching treats valid surrogate pairs as single code points, so emoji stay intact.
-const UNSAFE_RANGES: ReadonlyArray<readonly [number, number]> = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180e], [0x200b, 0x200b], [0x200e, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0x2800, 0x2800], [0x3164, 0x3164], [0xd800, 0xdfff], [0xfe00, 0xfe0e], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff9, 0xfffb], [0xfffe, 0xffff], [0xe0000, 0xe007f]];
+const UNSAFE_RANGES: ReadonlyArray<readonly [number, number]> = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180e], [0x200b, 0x200b], [0x200e, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0x2800, 0x2800], [0x3164, 0x3164], [0xd800, 0xdfff], [0xfe00, 0xfe0e], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff9, 0xfffb], [0xfffe, 0xffff], [0x1bca0, 0x1bca3], [0x1d173, 0x1d17a], [0xe0000, 0xe007f]];
 const codeEscape = (code: number) => `\\u{${code.toString(16)}}`;
 /** A character class (u mode) for the given code point ranges. */
 const rangeClass = (list: ReadonlyArray<readonly [number, number]>) => `[${list.map(([from, to]) => (from === to ? codeEscape(from) : `${codeEscape(from)}-${codeEscape(to)}`)).join('')}]`;
@@ -135,11 +135,27 @@ const LINE_BREAKS = new RegExp(rangeClass([[0x85, 0x85], [0x2028, 0x2029]]), 'gu
 const JOINERS = new RegExp(rangeClass([[0x200c, 0x200d]]) + '+', 'gu');
 /** Combining marks in a row beyond this many are dropped (stacked marks smear over other lines). */
 export const VIEWER_MAX_COMBINING_MARKS = 4;
-const MARK_RUN = /\p{M}{5,}/gu;
+// A joiner inside a mark run cannot start a new run.
+const MARK_RUN = new RegExp('[\\p{M}' + codeEscape(0x200c) + codeEscape(0x200d) + ']{' + (VIEWER_MAX_COMBINING_MARKS + 1) + ',}', 'gu');
+const IS_MARK = /^\p{M}$/u;
 const VISIBLE = new RegExp('[^\\s\\p{M}' + codeEscape(0x200c) + codeEscape(0x200d) + ']', 'u');
 
 function capMarkRun(run: string): string {
-  return Array.from(run).slice(0, VIEWER_MAX_COMBINING_MARKS).join('');
+  let marks = 0;
+  let lastWasMark = false;
+  let kept = '';
+  for (const character of run) {
+    if (IS_MARK.test(character)) {
+      if (marks >= VIEWER_MAX_COMBINING_MARKS) continue;
+      marks += 1;
+      lastWasMark = true;
+    } else {
+      if (!lastWasMark && marks >= VIEWER_MAX_COMBINING_MARKS) continue;
+      lastWasMark = false;
+    }
+    kept += character;
+  }
+  return kept;
 }
 
 /** Joiners stay only between two visible characters (emoji sequences, some scripts); elsewhere they are invisible clutter. */
@@ -369,8 +385,8 @@ function remember(map: Map<string, number[]>, key: string, now: number, windowMs
 
 /**
  * Checks the viewer, the network and the room rules together and, only when
- * all three allow it, records the action. A refused attempt costs nothing, so
- * waiting is always enough.
+ * all three allow it, records the action. A refused attempt uses none of the
+ * viewer, network or room budgets.
  */
 export function tryRecordAction(
   state: RateLimiterState,
@@ -583,8 +599,8 @@ export const VIEWER_POLL_MS_IDLE = 20_000;
 export const VIEWER_LIVE_SMALL_ANSWER = 20;
 /**
  * A big answer (more than `VIEWER_LIVE_SMALL_ANSWER` messages: a page with no
- * place yet, or one that asks from far back) costs the server real work and up
- * to ~40 kB. One network gets this many a minute, however it asks: a whole
+ * place yet, or one that asks from far back) can carry up to 100 lines, including
+ * multi-byte text. One network gets this many a minute, however it asks: a whole
  * congregation can open the page together on one Wi-Fi, a script cannot. Past
  * that, the page gets the newest `VIEWER_LIVE_SMALL_ANSWER` messages as a fresh
  * list instead, so it still works and a script gets little.

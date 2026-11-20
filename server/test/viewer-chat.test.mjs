@@ -100,6 +100,19 @@ describe('viewer chat rules', () => {
     assert.equal(room.postMessage({ viewerId: viewer(3), name: String.fromCodePoint(0x3164), text: 'an invisible name' }, 'n', 10_000).message.name, 'Viewer');
   });
 
+  it('accepts a 300-character question and refuses 301 before it reaches the host', () => {
+    const host = fakeHost();
+    const room = new ViewerChatRoom(host);
+    room.applySwitches({ questions: true });
+    assert.throws(
+      () => room.postQuestion({ viewerId: viewer(1), text: 'q'.repeat(301) }, 'n', 1000),
+      (error) => code(error) === 'VALIDATION_ERROR' && error.statusCode === 400 && /300/.test(error.message),
+    );
+    room.postQuestion({ viewerId: viewer(1), text: 'q'.repeat(300) }, 'n', 1000);
+    assert.equal(host.log.questions.length, 1);
+    assert.equal(host.log.questions[0].content.length, 300);
+  });
+
   it('keeps messages as plain text: nothing is turned into markup or a link', () => {
     const room = new ViewerChatRoom(fakeHost());
     turnOnEverything(room);
@@ -310,6 +323,22 @@ describe('viewer chat rules', () => {
     assert.ok(room.live(place, 23_000, 'page').pollMs > VIEWER_POLL_MS_DEFAULT, 'ordinary asks still count');
   });
 
+  it('caps the room polling hint contribution of one network per meter window', () => {
+    const room = new ViewerChatRoom(fakeHost());
+    turnOnEverything(room);
+    const group = networkKeyFor('2001:db8::1');
+    for (let i = 0; i < 800; i += 1) {
+      const address = '2001:db8::' + (i + 1).toString(16);
+      room.live({}, 1000 + i, networkKeyFor(address));
+    }
+    assert.equal(room.live({}, 11_000, group).pollMs, VIEWER_POLL_MS_DEFAULT);
+    for (let i = 0; i < 300; i += 1) {
+      room.live({}, 11_001 + i, group);
+      room.live({}, 11_001 + i, 'another-network');
+    }
+    assert.equal(room.live({}, 21_000, group).pollMs, 6000, 'the next window counts demand across different networks');
+  });
+
   it('shows the studio\'s public messages to viewers, and only those, filtered and bounded', () => {
     const room = new ViewerChatRoom(fakeHost());
     turnOnEverything(room);
@@ -430,6 +459,22 @@ describe('viewer chat rules', () => {
       assert.ok(room.postMessage({ viewerId: viewer(1), text: 'Unblocked' }, 'original-wifi', 8000).message.id);
     });
   }
+
+  it('evicts older viewer handles at the cap while retained posts remain moderatable', () => {
+    const host = fakeHost();
+    const room = new ViewerChatRoom(host);
+    turnOnEverything(room);
+    const first = room.postMessage({ viewerId: viewer(1), text: 'earlier' }, 'first-network', 1000).message;
+    const originalSender = host.chat.get(first.id).senderId;
+    for (let i = 2; i <= 3001; i += 1) {
+      room.postMessage({ viewerId: viewer(i), text: 'hello' }, 'another-network', i * 3000);
+    }
+    const newPost = room.postMessage({ viewerId: viewer(1), text: 'later' }, 'new-network', 9_010_000).message;
+    assert.notEqual(host.chat.get(newPost.id).senderId, originalSender);
+    room.blockViewer(first.id, 'network', 9_020_000);
+    assert.equal(host.chat.has(first.id), false);
+    assert.equal(host.chat.has(newPost.id), false, 'the viewer remains traceable across both handles');
+  });
 
   it('blocks a viewer who only asks questions, from the question', () => {
     const host = fakeHost();

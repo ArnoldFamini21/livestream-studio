@@ -15,6 +15,7 @@ import {
 import { authRouter, configureAccountAuthStore } from './routes/auth.js';
 import { configureInviteEmailOrigins, roomRouter } from './routes/rooms.js';
 import { watchRouter } from './routes/watch.js';
+import { networkKeyFor, WATCH_LIVE_LIMIT_MAX } from './services/viewerChat.js';
 import { configureRecordingCatalogStore, recordingRouter } from './routes/recordings.js';
 import { brandKitRouter, configureBrandKitCatalogStore } from './routes/brandKits.js';
 import { configureWorkspaceStudioCatalogStore, workspaceStudioRouter } from './routes/workspaceStudios.js';
@@ -102,6 +103,7 @@ app.use(
 // decompression-bomb path in body-parser (GHSA-27r3-jxmh-p828).
 const parseJsonBody = express.json({ limit: '256kb', inflate: false });
 const VIEWER_WRITE_PATH = /^\/api\/watch\/[^/]+\/(?:chat|questions|reactions)\/?$/i;
+const WATCH_POLL_PATH = /^\/api\/watch\/[^/]+\/poll(?:-votes)?\/?$/i;
 const VIEWER_LIVE_PATH = /^\/api\/watch\/[^/]+\/live\/?$/i;
 app.use((req, res, next) => {
   // Diagnostic JSON is parsed privately below. Besides enforcing its smaller
@@ -169,41 +171,40 @@ const ACCOUNT_CREDENTIAL_LIMIT_MAX = 10; // 10 sign-in/password attempts per min
 // of the general 30/min: every guest loads every slide the host shows.
 const STAGE_IMAGE_LIMIT_MAX = 600; // slide pictures read and uploaded per minute per IP
 const ICE_CONFIG_LIMIT_MAX = 120; // connection setups per minute per IP
-const WATCH_POLL_LIMIT_MAX = 1200; // watch-page poll reads and votes per minute per IP (shared venue Wi-Fi)
+const WATCH_POLL_LIMIT_MAX = 1200; // watch-page poll reads and votes per minute per network
 // Viewer chat (P1.7). A whole congregation can share one public address, and every watch page asks for chat
 // every few seconds, so the read budget is large; the real limits per viewer, network and room are in the
-// chat service. Writes are small and already capped there, so this is only a backstop for one address.
+// chat service. Writes are small and already capped there, so this is only a per-network backstop.
 // 2400 a minute is 40 asks a second: about 160 devices asking every 4 s from one Wi-Fi (more at the slower
 // asking the server suggests). The costly kind of read (the whole recent list) has its own, smaller budget
 // inside the chat service.
-const WATCH_LIVE_LIMIT_MAX = 2400; // watch-page chat reads per minute per IP
-const WATCH_VIEWER_WRITE_LIMIT_MAX = 1500; // watch-page chat, reaction and question posts per minute per IP
+const WATCH_VIEWER_WRITE_LIMIT_MAX = 1500; // watch-page chat, reaction and question posts per minute per network
 
 interface RateEntry {
   count: number;
   resetAt: number;
 }
 
-function makeRateLimiter(maxPerWindow: number) {
+function makeRateLimiter(maxPerWindow: number, keyForAddress: (address: string | undefined) => string = (address) => address || 'unknown') {
   const buckets = new Map<string, RateEntry>();
 
-  function set(ip: string, entry: RateEntry) {
+  function set(key: string, entry: RateEntry) {
     // Bound the map: drop the oldest entry once we hit the ceiling.
-    if (buckets.size >= RATE_LIMIT_MAP_MAX && !buckets.has(ip)) {
+    if (buckets.size >= RATE_LIMIT_MAP_MAX && !buckets.has(key)) {
       const oldestKey = buckets.keys().next().value;
       if (oldestKey !== undefined) buckets.delete(oldestKey);
     }
-    buckets.set(ip, entry);
+    buckets.set(key, entry);
   }
 
   return {
     middleware(req: express.Request, res: express.Response, next: express.NextFunction): void {
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+      const key = keyForAddress(req.ip || req.socket.remoteAddress);
       const now = Date.now();
-      const entry = buckets.get(ip);
+      const entry = buckets.get(key);
 
       if (!entry || now > entry.resetAt) {
-        set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
+        set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
         next();
         return;
       }
@@ -219,8 +220,8 @@ function makeRateLimiter(maxPerWindow: number) {
     },
     sweep() {
       const now = Date.now();
-      for (const [ip, e] of buckets) {
-        if (now > e.resetAt) buckets.delete(ip);
+      for (const [key, e] of buckets) {
+        if (now > e.resetAt) buckets.delete(key);
       }
     },
   };
@@ -235,9 +236,9 @@ clientErrorFlushTimer.unref();
 const accountCredentialLimiter = makeRateLimiter(ACCOUNT_CREDENTIAL_LIMIT_MAX);
 const stageImageLimiter = makeRateLimiter(STAGE_IMAGE_LIMIT_MAX);
 const iceConfigLimiter = makeRateLimiter(ICE_CONFIG_LIMIT_MAX);
-const watchPollLimiter = makeRateLimiter(WATCH_POLL_LIMIT_MAX);
-const watchLiveLimiter = makeRateLimiter(WATCH_LIVE_LIMIT_MAX);
-const watchViewerWriteLimiter = makeRateLimiter(WATCH_VIEWER_WRITE_LIMIT_MAX);
+const watchPollLimiter = makeRateLimiter(WATCH_POLL_LIMIT_MAX, networkKeyFor);
+const watchLiveLimiter = makeRateLimiter(WATCH_LIVE_LIMIT_MAX, networkKeyFor);
+const watchViewerWriteLimiter = makeRateLimiter(WATCH_VIEWER_WRITE_LIMIT_MAX, networkKeyFor);
 
 const STAGE_IMAGE_PATH = /^\/api\/rooms\/[^/]+\/stage-images(\/[^/]+)?$/;
 app.use((req, res, next) => {
@@ -249,7 +250,7 @@ app.use((req, res, next) => {
     iceConfigLimiter.middleware(req, res, next);
     return;
   }
-  if (/^\/api\/watch\/[^/]+\/poll(-votes)?$/.test(req.path)) {
+  if (WATCH_POLL_PATH.test(req.path)) {
     watchPollLimiter.middleware(req, res, next);
     return;
   }
@@ -301,13 +302,10 @@ app.use('/api/rooms', (req, res, next) => {
 
 // The public watch page, addressed by its private watch id. Registering shares the room budget.
 app.use('/api/watch', (req, res, next) => {
-  // Poll reads and votes are capped by the looser limiter above (a whole venue
-  // can share one address); everything else posted here shares the room budget.
-  if (/^\/[^/]+\/(?:poll(?:-votes)?|chat|questions|reactions)\/?$/i.test(req.path)) {
-    next();
-    return;
-  }
-  if (req.method === 'POST') {
+  // Poll and viewer chat requests use the watch limits above. Registration
+  // and other watch posts share the room-creation budget.
+  const watchPath = req.baseUrl + req.path;
+  if (req.method === 'POST' && !WATCH_POLL_PATH.test(watchPath) && !VIEWER_WRITE_PATH.test(watchPath)) {
     roomCreateLimiter.middleware(req, res, next);
     return;
   }
@@ -653,8 +651,10 @@ if (serverReadiness.production) {
 }
 
 server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`WebSocket signaling on ws://localhost:${PORT}/ws`);
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : PORT;
+  console.log(`Server running on http://localhost:${port}`);
+  console.log(`WebSocket signaling on ws://localhost:${port}/ws`);
 });
 
 // Graceful shutdown on SIGTERM and SIGINT
