@@ -1,7 +1,7 @@
 import express, { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { VIEWER_BODY_MAX_BYTES } from '@studio/shared';
-import { castWatchPollVote, findWatchLinkRoom, getRoomViewerChat, getWatchCaptionSnapshot, getWatchPoll, registerRoomGuest, RoomRegistrationError, WatchPollVoteError } from '../services/signaling.js';
+import { castWatchPollVote, findWatchLinkRoom, getRoomViewerChat, getWatchCaptionSnapshot, getWatchPoll, registerRoomGuest, RoomRegistrationError, watchCaptionsAvailable, WatchPollVoteError } from '../services/signaling.js';
 import { ViewerChatError, networkKeyFor, type ViewerChatRoom } from '../services/viewerChat.js';
 
 /**
@@ -163,7 +163,9 @@ watchRouter.get('/:watchId/live', (req, res) => {
   const chat = viewerChatFor(req, res);
   if (!chat) return;
   try {
-    res.json(chat.live({ after: req.query.after, epoch: req.query.epoch }, Date.now(), viewerNetworkKey(req)));
+    const roomId = findWatchLinkRoom(req.params.watchId)?.room.id;
+    const result = chat.live({ after: req.query.after, epoch: req.query.epoch }, Date.now(), viewerNetworkKey(req));
+    res.json(roomId && watchCaptionsAvailable(roomId) ? { ...result, captionsAvailable: true } : result);
   } catch (err) {
     answerViewerError(res, err);
   }

@@ -61,15 +61,24 @@ test('reuses a service preset in another studio and lets a viewer toggle timed c
       assert.match(file, /^(stream\.m3u8|seg\d{5}\.ts)$/);
       return route.fulfill({ headers, path: path.join(media, file), contentType: file.endsWith('.ts') ? 'video/mp2t' : 'application/vnd.apple.mpegurl' });
     });
-    await viewer.route(fixture.apiUrl + '/api/watch/' + watchId + '/captions', route => route.fulfill({
+    await viewer.route(fixture.apiUrl + '/api/watch/' + watchId + '/live*', route => route.fulfill({
       headers,
-      json: { enabled: true, language: 'en-US', cues: [{ id: 'a', text: 'Welcome to the service', startMs: date, endMs: date + 9500 }] },
+      json: { switches: { chat: false, reactions: false, questions: false }, epoch: 'test', cursor: 0, reset: true, messages: [], removed: [], reactions: {}, pollMs: 20_000, captionsAvailable: true },
     }));
+    let captionReads = 0;
+    await viewer.route(fixture.apiUrl + '/api/watch/' + watchId + '/captions', route => {
+      captionReads += 1;
+      return route.fulfill({
+      headers,
+        json: { enabled: true, language: 'en-US', cues: [{ id: 'a', text: 'Welcome to the service', startMs: date, endMs: date + 9500 }] },
+      });
+    });
     await viewer.goto(new URL(watchUrl.pathname, fixture.url).href);
     const button = viewer.getByRole('button', { name: 'Closed captions', exact: true });
     await button.waitFor();
     const line = viewer.getByText('Welcome to the service', { exact: true });
     assert.equal(await line.count(), 0);
+    assert.equal(captionReads, 0, 'the viewer feed advertises availability without polling for caption text');
     await button.click();
     await line.waitFor();
     assert.equal(await button.getAttribute('aria-pressed'), 'true');

@@ -15,6 +15,7 @@ export function WatchCaptions({ watchId, watchAccessToken, readPlaybackTime }: W
   const [caption, setCaption] = useState<WatchCaptionCue | null>(null);
 
   useEffect(() => {
+    if (!show) return;
     const controller = new AbortController();
     let timer: number | undefined;
     async function load() {
@@ -35,7 +36,7 @@ export function WatchCaptions({ watchId, watchAccessToken, readPlaybackTime }: W
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [watchAccessToken, watchId]);
+  }, [show, watchAccessToken, watchId]);
 
   useEffect(() => {
     if (!show || !snapshot?.enabled) {
@@ -48,12 +49,11 @@ export function WatchCaptions({ watchId, watchAccessToken, readPlaybackTime }: W
     return () => window.clearInterval(timer);
   }, [readPlaybackTime, show, snapshot]);
 
-  if (!snapshot?.enabled) return null;
   return (
     <>
       <button className="watch-captions-toggle" type="button" aria-label="Closed captions" aria-pressed={show} onClick={() => setShow(value => !value)}>CC</button>
       {show && caption && (
-        <div className="watch-caption-line" lang={snapshot.language}>
+        <div className="watch-caption-line" lang={snapshot?.language}>
           {caption.speaker && <strong>{caption.speaker}: </strong>}{caption.text}
         </div>
       )}

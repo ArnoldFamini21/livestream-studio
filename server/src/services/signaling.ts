@@ -3000,12 +3000,21 @@ export function findRoomByWatchId(watchId: string): Room | undefined {
  * /watch/<roomId>, so for those (and only those) the room id still works and
  * the page switches to the canonical id.
  */
-export function getWatchCaptionSnapshot(roomId: string) {
+function activeWatchCaptions(roomId: string) {
   const roomState = rooms.get(roomId);
-  if (!roomState?.liveStreamStartedAt || !roomState.watchCaptions?.ownerId) return WATCH_CAPTIONS_OFF;
+  if (!roomState?.liveStreamStartedAt || !roomState.watchCaptions?.ownerId) return undefined;
   const participants = Array.from(roomState.participants.values(), entry => entry.participant);
-  if (roomState.watchCaptions.ownerId !== getStageOwnerId(participants)) return WATCH_CAPTIONS_OFF;
-  return roomState.watchCaptions.read(roomState.liveStreamStartedAt, Date.now());
+  if (roomState.watchCaptions.ownerId !== getStageOwnerId(participants)) return undefined;
+  return { buffer: roomState.watchCaptions, startedAt: roomState.liveStreamStartedAt };
+}
+
+export function watchCaptionsAvailable(roomId: string): boolean {
+  return Boolean(activeWatchCaptions(roomId));
+}
+
+export function getWatchCaptionSnapshot(roomId: string) {
+  const active = activeWatchCaptions(roomId);
+  return active ? active.buffer.read(active.startedAt, Date.now()) : WATCH_CAPTIONS_OFF;
 }
 
 export function findWatchLinkRoom(id: string): { room: Room; watchId: string } | undefined {

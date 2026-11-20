@@ -21,6 +21,7 @@ interface WatchChatPanelProps {
   registeredName: string;
   /** Reactions to float on the picture: other people's (from the server) and this viewer's own tap. */
   onFloat: (types: ViewerReactionType[]) => void;
+  onCaptionsAvailable?: (available: boolean) => void;
 }
 
 type Status = { kind: 'info' | 'error'; text: string } | null;
@@ -31,8 +32,8 @@ type Status = { kind: 'info' | 'error'; text: string } | null;
  * hidden control cannot be used by hand either). Everything shown is plain
  * text: a message is never read as a link or as markup.
  */
-export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPanelProps) {
-  const { switches, messages, refresh, noteOwnReaction } = useWatchLive({ watchId, onReactions: onFloat });
+export function WatchChatPanel({ watchId, registeredName, onFloat, onCaptionsAvailable }: WatchChatPanelProps) {
+  const { switches, messages, captionsAvailable, refresh, noteOwnReaction } = useWatchLive({ watchId, onReactions: onFloat });
   const viewerId = useMemo(() => getWatchVoterId(), []);
   const path = `/api/watch/${encodeURIComponent(watchId)}`;
   const [name, setName] = useState(() => readViewerName(registeredName));
@@ -46,6 +47,8 @@ export function WatchChatPanel({ watchId, registeredName, onFloat }: WatchChatPa
   const nearBottom = useRef(true);
   const previousMessages = useRef<WatchChatMessage[]>([]);
   const [hasNew, setHasNew] = useState(false);
+
+  useEffect(() => { onCaptionsAvailable?.(captionsAvailable); }, [captionsAvailable, onCaptionsAvailable]);
 
   // A registration name becomes the default only while the viewer has not chosen one.
   useEffect(() => {

@@ -25,6 +25,7 @@ interface UseWatchLiveOptions {
 export interface WatchLive {
   switches: ViewerChatSwitches;
   messages: WatchChatMessage[];
+  captionsAvailable: boolean;
   /** Asks for an up-to-date moderated feed after this viewer sends a message. */
   refresh: () => void;
   /** Remembers a reaction this viewer floated at once, so the next answer does not float it again. */
@@ -40,6 +41,7 @@ const MAX_BACKOFF_MS = 30_000;
  */
 export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): WatchLive {
   const [switches, setSwitches] = useState<ViewerChatSwitches>(defaultViewerChatSwitches);
+  const [captionsAvailable, setCaptionsAvailable] = useState(false);
   const [view, setView] = useState<WatchChatView>(emptyChatView);
   const viewRef = useRef(view);
   const onReactionsRef = useRef(onReactions);
@@ -71,6 +73,7 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
         if (stopped) return;
         failures = 0;
         hintMs = answer.pollMs;
+        setCaptionsAvailable(answer.captionsAvailable === true);
         setSwitches((current) => (
           current.chat === answer.switches.chat && current.reactions === answer.switches.reactions && current.questions === answer.switches.questions
             ? current
@@ -125,5 +128,5 @@ export function useWatchLive({ watchId, onReactions }: UseWatchLiveOptions): Wat
     ownReactionsRef.current = { ...ownReactionsRef.current, [type]: (ownReactionsRef.current[type] ?? 0) + 1 };
   }, []);
 
-  return { switches, messages: view.messages, refresh, noteOwnReaction };
+  return { switches, messages: view.messages, captionsAvailable, refresh, noteOwnReaction };
 }

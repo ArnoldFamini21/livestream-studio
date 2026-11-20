@@ -57,6 +57,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
   const [roomError, setRoomError] = useState<'missing' | 'failed' | null>(null);
   const [status, setStatus] = useState<WatchStatus | null>(null);
   const [retry, setRetry] = useState(0);
+  const [captionsAvailable, setCaptionsAvailable] = useState(false);
   const [statusFailed, setStatusFailed] = useState(false);
   const [playerError, setPlayerError] = useState('');
   const [wasLive, setWasLive] = useState(false);
@@ -302,7 +303,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               {live && playerError && <div className="watch-placeholder" role="alert"><p>{playerError}</p><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry playback</button></div>}
               {live && statusFailed && <p className="watch-error" role="status">Connection interrupted. Reconnecting…</p>}
               <ReactionOverlay reactions={floatingReactions} />
-              {live && <WatchCaptions watchId={watchId} readPlaybackTime={getWatchPlaybackTime} />}
+              {live && captionsAvailable && <WatchCaptions watchId={watchId} readPlaybackTime={getWatchPlaybackTime} />}
               {live && needsTap && !playerError && (
                 <button type="button" className="watch-tap" onClick={() => videoRef.current?.play().then(() => setNeedsTap(false)).catch(() => undefined)}>
                   Tap to play
@@ -315,7 +316,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               {schedule && !live && !ended && <p className="watch-schedule">{schedule}</p>}
             </section>
             {room && !ended && <WatchPollCard watchId={roomId} />}
-            {room && !ended && <WatchChatPanel watchId={watchId} registeredName={form.name.trim() || savedName} onFloat={floatReactions} />}
+            {room && !ended && <WatchChatPanel watchId={watchId} registeredName={form.name.trim() || savedName} onFloat={floatReactions} onCaptionsAvailable={setCaptionsAvailable} />}
           </>
         )}
       </main>
