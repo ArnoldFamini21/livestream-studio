@@ -10,6 +10,7 @@ function namedError(name: string, message = name) {
 export interface MemoryFsOptions {
   /** Fail writes to files whose name matches. */
   failWrite?: (name: string) => boolean;
+  onWrite?: (name: string, bytes: number) => void;
   permission?: PermissionState;
   requestedPermission?: PermissionState;
 }
@@ -32,6 +33,7 @@ export class MemoryFileHandle {
           return;
         }
         const chunk = data instanceof Blob ? data : new Blob([data as Uint8Array<ArrayBuffer>]);
+        this.options.onWrite?.(this.name, chunk.size);
         next = new Blob([next, chunk]);
       },
       close: async () => {
