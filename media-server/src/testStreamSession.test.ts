@@ -453,6 +453,37 @@ describe('a test start while the same room has a held broadcast', { skip: !ffmpe
     assert.deepEqual((await askHeld('room-1', token())).body, { held: false, state: 'none' });
   });
 
+  it('applies the current watch grants when a held broadcast resumes', async () => {
+    const watchId = 'public-watch-id';
+    const base = 'http://127.0.0.1:' + port + '/watch/' + watchId;
+    const studio = await goLiveAndWaitForDestination(real);
+    let returned: Relay | undefined;
+    try {
+      const previousStatus = await (await fetch(base + '/status')).json();
+      assert.equal(previousStatus.live, true);
+      const previousGeneration = new URL(previousStatus.playlistPath, base).searchParams.get('generation');
+      assert.ok(previousGeneration);
+      const connections = listener.opened();
+
+      await closeAndWaitForHold(studio);
+      returned = await Relay.open(port);
+      returned.start({ ...real, token: token('room-1', watchId) });
+      await returned.next('session-started');
+      assert.equal(listener.opened(), connections, 'the returned host resumed the RTMP relay');
+      assert.equal((await fetch(base + '/status')).status, 401);
+      const access = signLiveStreamToken({
+        v: 1, purpose: 'watch-playback', watchId, nonce: 'authorized-viewer-id', exp: Date.now() + 60_000,
+      }, SECRET);
+      const newStatus = await (await fetch(base + '/status?watchToken=' + access)).json();
+      assert.equal(newStatus.live, true);
+      const newGeneration = new URL(newStatus.playlistPath, base).searchParams.get('generation');
+      assert.ok(newGeneration);
+      assert.notEqual(newGeneration, previousGeneration, 'the old watch writer was replaced');
+    } finally {
+      await (returned ?? studio).stop();
+    }
+  });
+
   it('requires a scoped grant on protected status, playlist and each media segment', async () => {
     const watchId = 'protected-watch-id';
     const relay = await Relay.open(port);
@@ -482,14 +513,27 @@ describe('a test start while the same room has a held broadcast', { skip: !ffmpe
         assert.equal((await fetch(base + path)).status, 401);
       }
       const status = await (await fetch(base + '/status?watchToken=' + grant)).json();
-      assert.equal(new URL(status.playlistPath, base).searchParams.get('watchToken'), grant);
+      const manifestUrl = new URL(status.playlistPath, base);
+      assert.equal(manifestUrl.searchParams.get('watchToken'), grant);
+      const generation = manifestUrl.searchParams.get('generation');
+      assert.ok(generation);
       const segment = playlist.split('\n').find((line) => line.startsWith('seg-'));
       assert.ok(segment);
       const authorized = new URL(segment, base + '/stream.m3u8');
       assert.equal(authorized.searchParams.get('watchToken'), grant);
       assert.equal((await fetch(authorized)).status, 200);
+      const activeSegmentUrl = new URL(authorized);
       authorized.search = '';
       assert.equal((await fetch(authorized)).status, 401);
+
+      // A writer's generation is not a published watch identifier.
+      const unpublished = new URL('/watch/' + generation + '/', base);
+      assert.equal((await fetch(new URL('stream.m3u8', unpublished))).status, 404);
+      assert.equal((await fetch(new URL(authorized.pathname.split('/').at(-1)!, unpublished))).status, 404);
+
+      await relay.stop();
+      assert.equal((await fetch(manifestUrl)).status, 404);
+      assert.equal((await fetch(activeSegmentUrl)).status, 404);
     } finally {
       await relay.stop();
     }

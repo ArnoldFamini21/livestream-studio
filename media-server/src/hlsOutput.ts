@@ -41,10 +41,6 @@ export function getHlsRootDir(env: Record<string, string | undefined> = process.
   return env.HLS_OUTPUT_DIR?.trim() || path.join(os.tmpdir(), 'livestream-studio-hls');
 }
 
-export function getHlsRoomDir(roomId: string, rootDir = getHlsRootDir()): string {
-  return path.join(rootDir, roomId);
-}
-
 export async function prepareHlsRoomDir(roomId: string, rootDir = getHlsRootDir()): Promise<string> {
   if (!isValidWatchRoomId(roomId)) throw new Error('Invalid watch room id');
   await mkdir(rootDir, { recursive: true });

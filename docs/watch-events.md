@@ -21,5 +21,10 @@ Call-ins are off by default and waiting requests expire after five minutes.
 The queue resets on a signaling restart.
 
 Private playback uses the studio's existing shared live stream signing
-secret. An older media relay omits protected watch HLS during a rolling
-upgrade because its relay credential contains no public watch identifier.
+secret. Coordinate the signaling and media relay rollout when enabling
+protected playback. Before updating, drain active and reconnecting live
+relays or schedule the rollout during a break in broadcasts. Pre-upgrade
+relays published registered events with public credentials. Resume normal
+broadcasts after both servers are updated. An older media relay omits
+protected watch HLS from newly issued credentials because they contain no
+public watch identifier.

@@ -123,7 +123,6 @@ import {
   HlsViewerCounter,
   createFfmpegHlsArgs,
   getHlsContentType,
-  getHlsRoomDir,
   isServableHlsFile,
   isValidWatchRoomId,
   prepareHlsRoomDir,
@@ -542,12 +541,17 @@ function stopSessionIfNoRelayWork(session: RelaySession) {
   stopSession(session, 'All RTMP destinations stopped.');
 }
 
+function getHlsPublication(session: RelaySession) {
+  // Watch identifiers are separate from the studio ID that admits guests.
+  // A test has its own random address and no watch invitation.
+  if (session.test) return { watchId: session.testWatchId, protectedWatch: false };
+  const protectedWatchId = session.claims?.protectedWatchId;
+  return { watchId: protectedWatchId ?? session.claims?.watchId, protectedWatch: Boolean(protectedWatchId) };
+}
+
 async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload: RtmpRelayStartPayload) {
   const program = session.program;
-  // Published under the studio's private watch id. The room id is what admits
-  // guests to the studio, so a watch link must never reveal it.
-  // A test uses its own random id instead, so nothing public ever shows it.
-  const roomId = session.test ? session.testWatchId : session.claims?.protectedWatchId ?? session.claims?.watchId;
+  const { watchId: roomId, protectedWatch } = getHlsPublication(session);
   if (!program || session.hls || !roomId || !isValidWatchRoomId(roomId) || session.stopping) return;
   let dir: string;
   try {
@@ -556,7 +560,10 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
     console.warn('Watch page HLS folder could not be prepared:', err instanceof Error ? err.message : err);
     return;
   }
-  if (session.stopping || session.hls || session.program !== program) {
+  // The studio may reconnect with different watch claims while the folder is created.
+  const current = getHlsPublication(session);
+  if (session.stopping || session.hls || session.program !== program ||
+      current.watchId !== roomId || current.protectedWatch !== protectedWatch) {
     await removeHlsWriterDir(dir);
     return;
   }
@@ -574,7 +581,7 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
     dir,
     startedAt: new Date().toISOString(),
     viewers: new HlsViewerCounter(),
-    protected: !session.test && session.claims?.protectedWatchId === roomId,
+    protected: protectedWatch,
   });
   child.stderr.on('data', (chunk: Buffer) => {
     const line = chunk.toString('utf8').trim();
@@ -588,8 +595,7 @@ async function spawnHlsWriter(session: RelaySession, ffmpegPath: string, payload
     hls.exited = true;
     if (session.hls === hls) session.hls = null;
     if (liveWatchRooms.get(roomId)?.dir === dir) liveWatchRooms.delete(roomId);
-    // Viewers get a moment to see the last segments before the folder goes.
-    // A private test has no viewers to wait for: its playlist and segments go at once.
+    // Allow segment reads already in progress to finish. Tests clean up immediately.
     setTimeout(() => { void removeHlsWriterDir(dir); }, session.test ? 0 : 15_000);
   });
 }
@@ -638,11 +644,11 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
     writeJson(res, 404, { error: 'Not found' });
     return true;
   }
+  res.setHeader('Cache-Control', 'no-store');
   const live = liveWatchRooms.get(roomId);
   let watchToken: string | null = null;
   let watchViewerId: string | undefined;
   if (live?.protected) {
-    res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
     watchToken = url.searchParams.get('watchToken');
     const secret = getLiveStreamTokenSecret();
@@ -655,7 +661,6 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
   }
 
   if (file === 'status') {
-    res.setHeader('Cache-Control', 'no-store');
     writeJson(res, 200, live
       ? { live: true, startedAt: live.startedAt, playlistPath: `/watch/${encodeURIComponent(roomId)}/${HLS_PLAYLIST_NAME}?generation=${encodeURIComponent(path.basename(live.dir))}${watchToken ? `&watchToken=${encodeURIComponent(watchToken)}` : ''}`, viewers: live.viewers.count() }
       : { live: false, viewers: 0 });
@@ -665,7 +670,12 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
     writeJson(res, 404, { error: 'Not found' });
     return true;
   }
-  const filePath = path.join(live?.dir || getHlsRoomDir(roomId), file);
+  // A writer directory is storage, never an alternate watch identifier.
+  if (!live) {
+    writeJson(res, 404, { error: 'This broadcast is not live' });
+    return true;
+  }
+  const filePath = path.join(live.dir, file);
   let size = 0;
   let protectedPlaylist: string | undefined;
   try {
@@ -676,10 +686,14 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
       size = (await stat(filePath)).size;
     }
   } catch {
-    writeJson(res, 404, { error: live ? 'Not ready yet' : 'This broadcast is not live' });
+    writeJson(res, 404, { error: 'Not ready yet' });
     return true;
   }
-  if (file === HLS_PLAYLIST_NAME && live) {
+  if (liveWatchRooms.get(roomId) !== live) {
+    writeJson(res, 404, { error: 'This broadcast is not live' });
+    return true;
+  }
+  if (file === HLS_PLAYLIST_NAME) {
     const forwarded = req.headers['x-forwarded-for'];
     const viewerKey = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
     live.viewers.record(watchViewerId || viewerKey);
@@ -687,8 +701,6 @@ async function handleWatchRequest(req: IncomingMessage, res: ServerResponse, url
   res.writeHead(200, {
     'Content-Type': getHlsContentType(file),
     'Content-Length': String(size),
-    // Do not retain live footage in intermediary caches.
-    'Cache-Control': 'no-store',
   });
   if (req.method === 'HEAD') {
     res.end();
@@ -1356,6 +1368,10 @@ async function resumeSession(
   if (held.payload?.dualOutputId !== payload.dualOutputId || held.claims?.participantId !== claims.participantId) {
     stopSecondaryProgram(held);
   }
+  const refreshHls = !held.test && (
+    held.claims?.watchId !== claims.watchId || held.claims?.protectedWatchId !== claims.protectedWatchId
+  );
+  if (refreshHls) stopHlsWriter(held);
   held.claims = claims;
   // The returning studio names its destinations with ids of its own: from here
   // on every record and every message of this broadcast uses those.
@@ -1383,7 +1399,10 @@ async function resumeSession(
   if (old && !old.exited) endProcess(old.process, () => old.exited);
 
   if (held.backup && !held.backup.exited && held.backup.recording.status !== 'finalizing') stopBackupProcess(held);
-  await spawnLiveBackup(held, ffmpegPath, claims, payload);
+  await Promise.all([
+    spawnLiveBackup(held, ffmpegPath, claims, payload),
+    refreshHls ? spawnHlsWriter(held, ffmpegPath, payload) : undefined,
+  ]);
   if (held.stopping) return;
 
   sendJson(ws, {

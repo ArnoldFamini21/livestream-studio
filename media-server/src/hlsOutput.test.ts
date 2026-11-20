@@ -10,7 +10,6 @@ import {
   sweepStaleHlsWriterDirs,
   createFfmpegHlsArgs,
   getHlsContentType,
-  getHlsRoomDir,
   isServableHlsFile,
   isValidWatchRoomId,
 } from './hlsOutput.js';
@@ -41,7 +40,6 @@ describe('watch page HLS output', () => {
     assert.match(args[args.indexOf('-hls_flags') + 1], /omit_endlist/);
     assert.match(args[args.indexOf('-hls_flags') + 1], /program_date_time/);
     assert.equal(args[args.length - 1], '/tmp/hls/room/stream.m3u8');
-    assert.equal(getHlsRoomDir('abc', '/x'), '/x/abc');
   });
 
   it('keeps a restarted broadcast intact when the previous writer is cleaned up', async () => {
