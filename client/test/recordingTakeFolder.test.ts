@@ -63,6 +63,64 @@ describe('take folder layout', () => {
     assert.deepEqual(root.list(), ['Studio/2026-11-05 2130 take/Host/Host ISO.webm']);
   });
 
+  it('combines separately recovered parts with a header that spans part boundaries', async () => {
+    const finalWrites: number[] = [];
+    const root = new MemoryDirectoryHandle('SSD', {
+      onWrite(name, bytes) {
+        if (name === 'track.wav') finalWrites.push(bytes);
+      },
+    });
+    const take = await openTakeFolder(root, { studioName: 'Studio', startedAt });
+    const writer = await take.createTrackWriter('Host', 'track.wav');
+    for (const segment of ['ab', 'cde', 'fghij', 'klmn']) {
+      await writer.append(new Blob([segment]));
+      await writer.flush();
+    }
+    const final = await writer.finish({ header: new Blob(['1234567']), mimeType: 'audio/wav' });
+    assert.equal(await blobText(final), '1234567hijklmn');
+    assert.equal(final.type, 'audio/wav');
+    assert.deepEqual(finalWrites, [14]);
+    assert.deepEqual(root.list(), [writer.path]);
+  });
+
+  it('aborts a failed later batch and removes the placeholder without losing the parts', async () => {
+    const finalWrites: number[] = [];
+    const fileName = 'camera.webm';
+    const root = new MemoryDirectoryHandle('SSD', {
+      failWrite: (name) => name === fileName && finalWrites.length > 0,
+      onWrite(name, bytes) {
+        if (name === fileName) finalWrites.push(bytes);
+      },
+    });
+    const take = await openTakeFolder(root, { studioName: 'Studio', startedAt });
+    const writer = await take.createTrackWriter('Host', fileName);
+    const part = new Blob([new Uint8Array(4 * 1024 * 1024)]);
+    for (let index = 0; index < 5; index++) await writer.append(part);
+
+    await assert.rejects(writer.finish(), /parts remain in “camera.webm.parts”/);
+    assert.deepEqual(finalWrites, [16 * 1024 * 1024]);
+    assert.equal(writer.committedBytes(), 5 * part.size);
+    assert.equal((await writer.snapshot()).size, 5 * part.size);
+    assert.equal(root.list().filter(path => path.endsWith('.part')).length, 5);
+    assert.ok(!root.list().includes(writer.path));
+  });
+
+  it('preserves a file placed at the destination while recording', async () => {
+    const root = new MemoryDirectoryHandle('SSD');
+    const take = await openTakeFolder(root, { studioName: 'Studio', startedAt });
+    const writer = await take.createTrackWriter('Host', 'camera.webm');
+    await writer.append(new Blob(['recording']));
+    const participant = await take.directory.getDirectoryHandle('Host');
+    const existing = await participant.getFileHandle('camera.webm', { create: true });
+    const writable = await existing.createWritable();
+    await writable.write(new Blob(['existing']));
+    await writable.close();
+
+    await assert.rejects(writer.finish(), /already exists/);
+    assert.equal(await blobText(await root.readFile(writer.path)), 'existing');
+    assert.equal(await blobText(await writer.snapshot()), 'recording');
+  });
+
   it('writes the manifest as JSON', async () => {
     const root = new MemoryDirectoryHandle('SSD');
     const take = await openTakeFolder(root, { studioName: 'Studio', startedAt });
@@ -109,6 +167,28 @@ describe('folder track store', () => {
     assert.deepEqual(finished, ['Studio/2026-11-05 2130 take/Arnold/Host audio.webm']);
     assert.equal(store.folderPath?.(), finished[0]);
     assert.deepEqual(warnings, []);
+  });
+
+  it('returns a playable track from retained parts if the final file write fails', async () => {
+    const root = new MemoryDirectoryHandle('SSD', { failWrite: name => name === 'Host audio.wav' });
+    const take = await openTakeFolder(root, { studioName: 'Studio', startedAt });
+    const finished: string[] = [];
+    const warnings: string[] = [];
+    const factory = createFolderRecordingTrackStoreFactory({
+      take, participantName: 'Host', onTrackFinished: ({ path }) => finished.push(path),
+    });
+    const store = factory({ ...input, mimeType: 'audio/wav' }, (message) => warnings.push(message));
+    store.append(new Blob(['wav-']));
+    await store.flush();
+    store.append(new Blob(['pcm']));
+    const file = await store.finish('audio/wav', { header: new Blob(['WAV-']) });
+    assert.equal(await blobText(file), 'WAV-pcm');
+    assert.equal(file.type, 'audio/wav');
+    assert.deepEqual(finished, []);
+    assert.equal(store.folderPath?.(), undefined);
+    assert.match(warnings[0], /parts remain/);
+    assert.equal(root.list().filter(path => path.endsWith('.part')).length, 2);
+    assert.ok(!root.list().some(path => path.endsWith('/Host audio.wav')));
   });
 
   it('continues in browser storage when the drive stops accepting writes, keeping every byte in order', async () => {

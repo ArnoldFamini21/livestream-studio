@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_CUSTOM_LAYOUTS, type CustomLayout, type Scene } from '@studio/shared';
 import { buildScenePack, importScenePack, MAX_SCENE_PACK_BYTES, parseScenePackJson } from '../src/utils/scenePacks.ts';
-import { captureServicePreset, createServicePresetDownload, parseServicePresetFile, prepareServicePreset } from '../src/utils/servicePresets.ts';
+import { captureServicePreset, createServicePresetDownload, groupServicePresets, parseServicePresetFile, prepareServicePreset } from '../src/utils/servicePresets.ts';
 
 const original: CustomLayout = {
   id: 'original', name: 'Service', orientation: 'landscape',
@@ -44,9 +44,9 @@ test('a preset reuses matching layouts and refuses to silently drop a required l
 
 test('a downloadable service preset retains its artwork and layout without local identifiers', () => {
   const snapshot = captureServicePreset(makePack(), [original]);
-  const file = createServicePresetDownload({ ...snapshot, id: 'local-private-id', name: 'Sabbath service', createdAt: '2026-11-21' });
+  const file = createServicePresetDownload({ ...snapshot, id: 'local-private-id', folderId: 'local-folder-private-id', name: 'Sabbath service', createdAt: '2026-11-21' });
   assert.equal(file.fileName, 'sabbath-service.service-preset.json');
-  assert.doesNotMatch(file.contents, /local-private-id|old-room-guest/);
+  assert.doesNotMatch(file.contents, /local-private-id|local-folder-private-id|old-room-guest|folderId/);
   const restored = parseServicePresetFile(file.contents);
   assert.equal(restored.name, 'Sabbath service');
   assert.equal(restored.snapshot.pack.scenes[0].logoUrl, artwork);
@@ -62,4 +62,18 @@ test('foreign, oversized, and incomplete service preset files are rejected', () 
   assert.throws(() => parseServicePresetFile(JSON.stringify({ ...file, layouts: [] })), /missing custom layout/);
   assert.throws(() => parseServicePresetFile(' '.repeat(MAX_SCENE_PACK_BYTES + 513)), /too large/);
   assert.throws(() => parseServicePresetFile('{bad'), /not valid JSON/);
+});
+
+
+test('folders group presets by stable IDs and leave legacy and orphaned presets visible', () => {
+  const snapshot = captureServicePreset(makePack(), [original]);
+  const legacy = { ...snapshot, id: 'legacy', name: 'Legacy', createdAt: '2026-11-21' };
+  const filed = { ...legacy, id: 'filed', folderId: 'weekly' };
+  const orphaned = { ...legacy, id: 'orphaned', folderId: 'missing' };
+  const folder = { id: 'weekly', name: 'Weekly services' };
+  const emptyFolder = { id: 'special', name: 'Special events' };
+
+  const result = groupServicePresets({ presets: [legacy, filed, orphaned], folders: [folder, emptyFolder] });
+  assert.deepEqual(result.groups, [{ ...folder, presets: [filed] }, { ...emptyFolder, presets: [] }]);
+  assert.deepEqual(result.unfiled, [legacy, orphaned]);
 });

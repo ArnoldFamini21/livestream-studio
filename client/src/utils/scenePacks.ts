@@ -259,6 +259,7 @@ function sanitizeWidget(input: unknown): WidgetOverlayData | null {
     id,
     name: readString(input.name, 64, getWidgetOverlayDisplayUrl(url)) || getWidgetOverlayDisplayUrl(url),
     url,
+    ...(input.kind === 'qr' ? { kind: 'qr' } : {}),
     position: normalizeWidgetOverlayPosition(input.position),
     widthPercent: normalizeWidgetOverlayPercent(input.widthPercent, 42, 20, 95),
     heightPercent: normalizeWidgetOverlayPercent(input.heightPercent, 26, 12, 85),

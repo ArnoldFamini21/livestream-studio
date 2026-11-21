@@ -19,6 +19,8 @@ test("recording soak checks actual encoded A/V packet spans", () => {
   assert.equal(result.avDriftMs, 0);
   assert.equal(result.timelines.length, 2);
   assert.equal(result.timelines[0].maxGapSeconds, 0.5);
+  assert.ok(Math.abs(result.avTimestampSpanDifferenceMs + 10) < 1e-6);
+  assert.equal(result.timelines[0].medianPacketGapSeconds, 0.5);
 });
 
 test("recording soak rejects missing tracks and non-finite timestamps", () => {
@@ -42,6 +44,7 @@ test("recording soak rejects packet gaps above one second", () => {
     assert.equal(error.packetMetrics.timelines[0].maxGapStartSeconds, 1.5);
     assert.equal(error.packetMetrics.timelines[0].lastSeconds, 2.7);
     assert.equal(error.packetMetrics.timelines[0].lastPacketDurationSeconds, 0.02);
+    assert.deepEqual(error.packetMetrics.timelines[0].tailPacketTimestamps, [0, 0.5, 1, 1.5, 2.7]);
     assert.equal(error.packetMetrics.timelines[1].packets, 5);
     return true;
   });

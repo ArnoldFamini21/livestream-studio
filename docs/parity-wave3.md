@@ -14,7 +14,7 @@ unit coverage alone does not complete a browser acceptance criterion.
 - [x] **P1.7** Moderated viewer chat, reactions and Q&A (PR #374; see below and docs/notes/viewer-chat.md)
 - [ ] **P1.8** Signed watch-page registration and HLS authorization
 - [ ] **P1.9** Audience call-ins through the green room
-- [ ] **P1.10** Reusable studios, synced scenes and scene folders (browser-local service presets implemented)
+- [ ] **P1.10** Reusable studios, synced scenes and scene folders (browser-local service presets and preset folders implemented)
 - [ ] **P1.11** Automatic intros/outros, banner folders, movable overlays and QR widget
 - [ ] **P1.12** Stage tile controls, backstage reordering and people audio controls
 - [ ] **P1.13** Private mentions, shared notes and teleprompter collaboration
@@ -614,6 +614,10 @@ them. Source-room decks and pinned participant IDs stay with their original
 studio. To move a preset to another browser, use **Download** next to the preset
 and **Import preset** in the destination browser. Import adds a local copy.
 
+Use **New folder** and **Move** to organize the preset library. You can rename
+a folder or remove it to return its presets to **Unfiled**. Folder assignments
+belong to the local library, so an imported preset starts in **Unfiled**.
+
 For viewer-controlled captions, open **Live Captions**, set **Show captions**
 to **Optional on the watch page**, then start captions. Viewers can toggle CC.
 The caption timing follows the video program clock, including playback delay.
@@ -621,6 +625,14 @@ The watch feed receives final captions from the live stage only. Automatic
 speech recognition still depends on the studio operator's browser and guest
 consent. Chromium checks reuse a preset in a different room and play a timed
 caption over local HLS.
+
+## On-air QR codes
+
+Choose **Overlays → Add overlay → QR code**. Enter a destination URL, save
+it, and choose **Show** when the code should appear on the program. The code
+uses the selected corner or center position and is included in program
+recordings and outgoing video. Saved scenes and service presets can carry
+the QR code to another studio.
 
 ## Resume here next session
 

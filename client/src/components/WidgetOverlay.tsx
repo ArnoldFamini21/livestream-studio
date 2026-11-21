@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { WIDGET_CAPTURE_ATTRIBUTE, WIDGET_STUDIO_ONLY_LABEL } from '../utils/widgetTabCapture.ts';
+import { createOverlayQrCanvas } from '../utils/overlayQr.ts';
 import type { WidgetCaptureControls } from '../hooks/useWidgetTabCapture.ts';
 
 export type WidgetOverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
@@ -8,6 +9,7 @@ export interface WidgetOverlayData {
   id: string;
   name: string;
   url: string;
+  kind?: 'qr';
   position: WidgetOverlayPosition;
   widthPercent: number;
   heightPercent: number;
@@ -16,6 +18,7 @@ export interface WidgetOverlayData {
 }
 
 interface WidgetOverlayManagerProps {
+  kind?: 'qr';
   initialValue?: WidgetOverlayData;
   editorOnly?: boolean;
   submitLabel?: string;
@@ -139,11 +142,12 @@ export function getWidgetOverlayPositionStyle(widget: Pick<WidgetOverlayData, 'p
   }
 }
 
-export function WidgetOverlayManager({ initialValue, editorOnly = false, submitLabel, widgets, onAdd, onToggle, onRemove, capture }: WidgetOverlayManagerProps) {
+export function WidgetOverlayManager({ kind, initialValue, editorOnly = false, submitLabel, widgets, onAdd, onToggle, onRemove, capture }: WidgetOverlayManagerProps) {
+  const isQr = kind === 'qr';
   const [name, setName] = useState(initialValue?.name || '');
   const [url, setUrl] = useState(initialValue?.url || '');
-  const [position, setPosition] = useState<WidgetOverlayPosition>(initialValue?.position || 'center');
-  const [sizePreset, setSizePreset] = useState<{ label: string; widthPercent: number; heightPercent: number }>(initialValue ? { label: WIDGET_SIZE_PRESETS.find(preset => preset.widthPercent === initialValue.widthPercent && preset.heightPercent === initialValue.heightPercent)?.label || 'Custom', widthPercent: initialValue.widthPercent, heightPercent: initialValue.heightPercent } : WIDGET_SIZE_PRESETS[1]);
+  const [position, setPosition] = useState<WidgetOverlayPosition>(initialValue?.position || (isQr ? 'bottom-right' : 'center'));
+  const [sizePreset, setSizePreset] = useState<{ label: string; widthPercent: number; heightPercent: number }>(initialValue ? { label: WIDGET_SIZE_PRESETS.find(preset => preset.widthPercent === initialValue.widthPercent && preset.heightPercent === initialValue.heightPercent)?.label || 'Custom', widthPercent: initialValue.widthPercent, heightPercent: initialValue.heightPercent } : WIDGET_SIZE_PRESETS[isQr ? 0 : 1]);
   const [error, setError] = useState<string | null>(null);
 
   const handleAdd = () => {
@@ -153,10 +157,15 @@ export function WidgetOverlayManager({ initialValue, editorOnly = false, submitL
     }
     const normalizedUrl = normalizeWidgetOverlayUrl(url);
     if (!normalizedUrl) {
-      setError('Enter a valid HTTP or HTTPS widget URL.');
+      setError('Enter a valid HTTP or HTTPS URL.');
+      return;
+    }
+    if (isQr && !createOverlayQrCanvas(normalizedUrl)) {
+      setError('Could not create a QR code for this URL.');
       return;
     }
     onAdd({
+      ...(isQr ? { kind: 'qr' } : {}),
       name: name.trim().slice(0, MAX_WIDGET_NAME_LENGTH) || getWidgetOverlayDisplayUrl(normalizedUrl),
       url: normalizedUrl,
       position,
@@ -171,8 +180,8 @@ export function WidgetOverlayManager({ initialValue, editorOnly = false, submitL
 
   return (
     <div className={editorOnly ? "overlay-editor-form" : undefined} style={styles.container}>
-      <h4 className="overlay-editor-title" style={styles.sectionTitle}>Widget Overlays</h4>
-      <div style={styles.noticeWrap}><WidgetBroadcastNotice capture={capture} /></div>
+      <h4 className="overlay-editor-title" style={styles.sectionTitle}>{isQr ? 'QR code' : 'Widget Overlays'}</h4>
+      {!isQr && <div style={styles.noticeWrap}><WidgetBroadcastNotice capture={capture} /></div>}
 
       {widgets.length > 0 && (
         <div className={editorOnly ? "overlay-editor-existing" : undefined} style={styles.list}>
@@ -186,9 +195,9 @@ export function WidgetOverlayManager({ initialValue, editorOnly = false, submitL
                 <div style={styles.itemMeta}>
                   <span style={styles.itemTag}>{widget.position.replace('-', ' ')}</span>
                   <span style={styles.itemTag}>{getWidgetOverlayDisplayUrl(widget.url)}</span>
-                  <span style={styles.itemTag} title={capture?.capturedWidgetIds.includes(widget.id) ? 'Viewers see this widget live' : WIDGET_STUDIO_ONLY_LABEL}>
+                  {!isQr && <span style={styles.itemTag} title={capture?.capturedWidgetIds.includes(widget.id) ? 'Viewers see this widget live' : WIDGET_STUDIO_ONLY_LABEL}>
                     {capture?.capturedWidgetIds.includes(widget.id) ? 'Live on air' : 'Studio only'}
-                  </span>
+                  </span>}
                 </div>
               </div>
               <div style={styles.itemActions}>
@@ -222,13 +231,13 @@ export function WidgetOverlayManager({ initialValue, editorOnly = false, submitL
         )}
         <input
           style={styles.input}
-          placeholder="Widget name" aria-label="Widget name"
+          placeholder={isQr ? "QR code name" : "Widget name"} aria-label={isQr ? "QR code name" : "Widget name"}
           value={name}
           onChange={(event) => setName(event.currentTarget.value.slice(0, MAX_WIDGET_NAME_LENGTH))}
         />
         <input
           style={styles.input}
-          placeholder="https://widget.example.com/embed" aria-label="Widget URL"
+          placeholder={isQr ? "https://example.com/event" : "https://widget.example.com/embed"} aria-label={isQr ? "Destination URL" : "Widget URL"}
           value={url}
           onChange={(event) => setUrl(event.currentTarget.value)}
           onKeyDown={(event) => {
@@ -289,7 +298,17 @@ export function WidgetOverlayManager({ initialValue, editorOnly = false, submitL
 }
 
 export function WidgetOverlayDisplay({ data }: { data: WidgetOverlayData }) {
+  const qrUrl = useMemo(() => data.visible && data.kind === 'qr'
+    ? createOverlayQrCanvas(data.url)?.toDataURL() : undefined, [data.kind, data.url, data.visible]);
   if (!data.visible) return null;
+  if (data.kind === 'qr') {
+    return qrUrl ? <div style={{ position: 'absolute', zIndex: 7, pointerEvents: 'none', ...getWidgetOverlayPositionStyle(data) }}>
+      <img alt={`QR code for ${data.name}`} src={qrUrl} style={{
+        width: '100%', height: '100%', objectFit: 'contain', imageRendering: 'pixelated',
+        objectPosition: data.position.replace('-', ' '),
+      }} />
+    </div> : null;
+  }
 
   return (
     <div

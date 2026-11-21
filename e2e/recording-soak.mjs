@@ -43,7 +43,25 @@ function installObserver({ folder }) {
   window.MediaRecorder = class extends nativeRecorder {
     constructor(...args) {
       super(...args);
-      const row = { id: state.recorders.length, mimeType: this.mimeType, kinds: args[0].getTracks().map(track => track.kind), settings: args[0].getTracks().map(track => { const { width, height, frameRate, sampleRate, channelCount } = track.getSettings(); return { kind: track.kind, width, height, frameRate, sampleRate, channelCount }; }), started: null, stopRequested: null, stopped: null, chunks: 0, bytes: 0, flushed: false, chunkChecksums: [] };
+      const tracks = args[0].getTracks();
+      const row = {
+        id: state.recorders.length,
+        mimeType: this.mimeType,
+        kinds: tracks.map(track => track.kind),
+        settings: tracks.map(track => {
+          const { width, height, frameRate, sampleRate, channelCount } = track.getSettings();
+          return { kind: track.kind, width, height, frameRate, sampleRate, channelCount };
+        }),
+        startRequested: null,
+        started: null,
+        lastChunkDispatchedAt: null,
+        stopRequested: null,
+        stopped: null,
+        chunks: 0,
+        bytes: 0,
+        flushed: false,
+        chunkChecksums: [],
+      };
       state.recorders.push(row);
       this.__soakRecorderId = row.id;
       this.addEventListener("error", event => state.errors.push(`Recorder ${row.id}: ${event.error?.message || "error"}`));
@@ -53,6 +71,7 @@ function installObserver({ folder }) {
         if (!data.size) return;
         row.chunks += 1;
         row.bytes += data.size;
+        row.lastChunkDispatchedAt = performance.now();
         // Only one original MediaRecorder chunk per recorder is read at a time.
         // Native hashing avoids sending the media itself through Playwright.
         hashing = hashing.then(async () => {
@@ -65,6 +84,11 @@ function installObserver({ folder }) {
         row.stopped = performance.now();
         void hashing.then(() => { row.flushed = true; });
       });
+    }
+    start(...args) {
+      const row = state.recorders[this.__soakRecorderId];
+      if (row) row.startRequested = performance.now();
+      return super.start(...args);
     }
     stop() {
       const row = state.recorders[this.__soakRecorderId];
@@ -139,7 +163,10 @@ async function folderFiles(page) {
       for await (const [name, handle] of directory.entries()) {
         const relative = prefix ? `${prefix}/${name}` : name;
         if (handle.kind === "directory") { if (!name.endsWith(".parts")) await scan(handle, relative); }
-        else { const file = await handle.getFile(); files.push({ path: relative, bytes: file.size, ...(name === "take-manifest.json" ? { manifest: JSON.parse(await file.text()) } : {}) }); }
+        else if (!name.endsWith(".crswap")) {
+          const file = await handle.getFile();
+          files.push({ path: relative, bytes: file.size, ...(name === "take-manifest.json" ? { manifest: JSON.parse(await file.text()) } : {}) });
+        }
       }
     }
     await scan(root);
@@ -260,7 +287,8 @@ try {
   const files = await eventually(async () => {
     const files = await folderFiles(host);
     const manifest = files.find(file => file.manifest)?.manifest;
-    return manifest?.tracks.length >= 7 && manifest.tracks.every(track => track.status === "complete") && files.filter(file => !file.manifest).length >= 7 ? files : null;
+    return manifest?.tracks.length >= 7 && manifest.tracks.every(track => track.status === "complete"
+      && files.some(file => file.path === track.path && file.bytes === track.bytes)) ? files : null;
   }, { timeout: 180_000, interval: 1000, message: "All seven program/ISO/audio tracks must finish in the host folder" });
   const manifest = files.find(file => file.manifest).manifest;
   result.manifest = manifest;

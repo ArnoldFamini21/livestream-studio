@@ -954,7 +954,7 @@ export function Sidebar(props: SidebarProps) {
   );
 }
 
-type OverlayEditorType = 'lower-third' | 'banner' | 'timer' | 'ticker' | 'widget';
+type OverlayEditorType = 'lower-third' | 'banner' | 'timer' | 'ticker' | 'widget' | 'qr';
 type OverlayPanelView = OverlayEditorType | 'choose' | 'packs' | 'speakers' | 'comments' | null;
 
 const OVERLAY_TYPES: { id: OverlayEditorType; label: string; description: string }[] = [
@@ -963,6 +963,7 @@ const OVERLAY_TYPES: { id: OverlayEditorType; label: string; description: string
   { id: 'timer', label: 'Timer', description: 'Count down or keep time' },
   { id: 'ticker', label: 'Ticker', description: 'A scrolling message' },
   { id: 'widget', label: 'Web widget', description: 'Embed an external overlay' },
+  { id: 'qr', label: 'QR code', description: 'Show a link viewers can scan' },
 ];
 
 function OverlayPanel(props: SidebarProps) {
@@ -995,7 +996,7 @@ function OverlayPanel(props: SidebarProps) {
     ...props.banners.map(item => ({ id: item.id, type: 'banner' as const, name: item.text, caption: 'Banner', visible: item.visible, toggle: () => props.onToggleBanner(item.id), remove: () => props.onRemoveBanner(item.id), editable: Boolean(props.onUpdateBanner) })),
     ...props.timers.map(item => ({ id: item.id, type: 'timer' as const, name: `${item.mode === 'countdown' ? 'Countdown' : 'Count up'} · ${formatTimer(item.remainingSeconds)}`, caption: item.isRunning ? 'Timer running' : 'Timer paused', visible: item.visible, toggle: () => props.onToggleTimer(item.id), remove: () => props.onRemoveTimer(item.id), editable: true, timer: item })),
     ...props.tickers.map(item => ({ id: item.id, type: 'ticker' as const, name: item.text, caption: 'Ticker', visible: item.visible, toggle: () => props.onToggleTicker(item.id), remove: () => props.onRemoveTicker(item.id), editable: true })),
-    ...props.widgets.map(item => ({ id: item.id, type: 'widget' as const, name: item.name, caption: 'Web widget', visible: item.visible, toggle: () => props.onToggleWidget(item.id), remove: () => props.onRemoveWidget(item.id), editable: Boolean(props.onUpdateWidget) })),
+    ...props.widgets.map(item => ({ id: item.id, type: item.kind === 'qr' ? 'qr' as const : 'widget' as const, name: item.name, caption: item.kind === 'qr' ? 'QR code' : 'Web widget', visible: item.visible, toggle: () => props.onToggleWidget(item.id), remove: () => props.onRemoveWidget(item.id), editable: Boolean(props.onUpdateWidget) })),
   ];
   const dismissMenu = (element: HTMLElement) => element.closest('details')?.removeAttribute('open');
   const hideAll = () => {
@@ -1047,7 +1048,7 @@ function OverlayPanel(props: SidebarProps) {
           closeEditor();
         }} />}
         {view === 'ticker' && <TickerManager key={editingId || 'new'} editorOnly initialValue={ticker} submitLabel={editingId ? 'Save changes' : 'Add overlay'} tickers={props.tickers} onToggle={props.onToggleTicker} onRemove={props.onRemoveTicker} onUpdate={props.onUpdateTicker} onAdd={value => { if (ticker) props.onUpdateTicker(ticker.id, value); else props.onAddTicker(value); closeEditor(); }} />}
-        {view === 'widget' && <WidgetOverlayManager key={editingId || 'new'} editorOnly initialValue={widget} submitLabel={editingId ? 'Save changes' : 'Add overlay'} widgets={props.widgets} capture={props.widgetCapture} onToggle={props.onToggleWidget} onRemove={props.onRemoveWidget} onAdd={value => { if (widget) props.onUpdateWidget?.(widget.id, value); else props.onAddWidget(value); closeEditor(); }} />}
+        {(view === 'widget' || view === 'qr') && <WidgetOverlayManager key={editingId || view} kind={view === 'qr' ? 'qr' : undefined} editorOnly initialValue={widget} submitLabel={editingId ? 'Save changes' : 'Add overlay'} widgets={props.widgets.filter(item => (item.kind === 'qr') === (view === 'qr'))} capture={props.widgetCapture} onToggle={props.onToggleWidget} onRemove={props.onRemoveWidget} onAdd={value => { if (widget) props.onUpdateWidget?.(widget.id, value); else props.onAddWidget(value); closeEditor(); }} />}
         {view === 'speakers' && <div className="overlay-speakers"><label><span>Automatic speaker names</span><input type="checkbox" checked={props.autoSpeakerLowerThirds} onChange={event => props.onAutoSpeakerLowerThirdsChange(event.target.checked)} /></label><p>Show the active speaker’s name automatically.</p><div className="overlay-speaker-list">{Array.from(props.allParticipants.values()).filter(person => person.status === 'on-stage').map(person => <button key={person.id} type="button" onClick={() => { props.onAddLowerThird({ name: person.name, title: person.role === 'host' ? 'Host' : person.role === 'co-host' ? 'Co-host' : 'Guest', style: 'bold', durationSeconds: 10, animation: 'slide', animationDirection: 'left', visible: true, source: 'participant', participantId: person.id }); closeEditor(); }}><span>{person.name}</span><small>Show name</small></button>)}</div></div>}
         {view === 'packs' && <OverlayPacks hostName={props.chatSenderName} brandColor={props.brandColor} onAddLowerThird={props.onAddLowerThird} onAddBanner={props.onAddBanner} onAddTimer={props.onAddTimer} onAddTicker={props.onAddTicker} onDone={closeEditor} />}
         {view === 'comments' && <CommentHighlightManager chatMessages={props.chatMessages} activeComment={props.highlightedComment} onHighlightComment={props.onHighlightComment} onFlashComment={props.onFlashComment} onDismissComment={props.onDismissComment} />}

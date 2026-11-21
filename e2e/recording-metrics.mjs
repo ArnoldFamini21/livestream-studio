@@ -42,6 +42,8 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
     const first = Number(packets[0].pts_time);
     const lastPacket = packets.at(-1);
     const last = Number(lastPacket.pts_time);
+    const mediaTimestampSpanSeconds = last - first;
+    const tailPacketTimestamps = packets.slice(-6).map(packet => Number(packet.pts_time));
     const packetDuration = Number(lastPacket.duration_time);
     const lastPacketDurationSeconds = Number.isFinite(packetDuration) && packetDuration > 0 ? packetDuration : typicalDuration;
     const end = last + lastPacketDurationSeconds;
@@ -50,6 +52,7 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
     return {
       index: stream.index, kind: stream.codec_type, packets: packets.length,
       firstSeconds: first, lastSeconds: last, lastPacketDurationSeconds, endSeconds: end, spanSeconds,
+      mediaTimestampSpanSeconds, medianPacketGapSeconds: typicalDuration, tailPacketTimestamps,
       maxGapSeconds: maxGap, maxGapStartSeconds,
     };
   });
@@ -63,6 +66,9 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
   }
   const packetMetrics = {
     timelines, avDriftMs,
+    // Keep a signed PTS-only comparison alongside the existing packet coverage
+    // gate. The muxer's reported duration of the last packet can differ by track.
+    avTimestampSpanDifferenceMs: video && audio ? (video.mediaTimestampSpanSeconds - audio.mediaTimestampSpanSeconds) * 1000 : null,
     initialAvOffsetMs: video && audio ? (video.firstSeconds - audio.firstSeconds) * 1000 : null,
     finalAvOffsetMs: video && audio ? (video.endSeconds - audio.endSeconds) * 1000 : null,
   };

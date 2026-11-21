@@ -34,6 +34,7 @@ export interface TakeDirectoryHandle extends RecordingFolderDirectoryHandle {
 export const TAKE_MANIFEST_FILE_NAME = 'take-manifest.json';
 export const DEFAULT_PART_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_PART_MS = 5_000;
+const STITCH_BATCH_BYTES = 16 * 1024 * 1024;
 
 const pad = (value: number, length = 2) => String(value).padStart(length, '0');
 
@@ -113,6 +114,25 @@ async function writeWholeFile(directory: TakeDirectoryHandle, name: string, data
   const file = await handle.getFile();
   if (file.size !== data.size) throw new Error(`“${name}” was not written completely (${file.size} of ${data.size} bytes).`);
   return file;
+}
+
+/**
+ * Composite Blobs retain references to the disk-backed parts. Batching
+ * reduces writes across the file stream without reading the track into memory.
+ */
+function* stitchBatches(pieces: Blob[]): IterableIterator<Blob> {
+  let batch: Blob[] = [];
+  let bytes = 0;
+  for (const piece of pieces) {
+    if (bytes && bytes + piece.size > STITCH_BATCH_BYTES) {
+      yield batch.length === 1 ? batch[0] : new Blob(batch);
+      batch = [];
+      bytes = 0;
+    }
+    batch.push(piece);
+    bytes += piece.size;
+  }
+  if (batch.length) yield batch.length === 1 ? batch[0] : new Blob(batch);
 }
 
 export interface FolderTrackWriterOptions {
@@ -245,20 +265,30 @@ export function createFolderTrackWriter(
           pieces.push(skip ? part.slice(skip) : part);
           skip = 0;
         }
-        const handle = await directory.getFileHandle(fileName, { create: true });
-        const writable = await handle.createWritable({ keepExistingData: false });
+        let handle: TakeFileHandle | undefined;
+        let writable: TakeFileWritable | undefined;
+        let file: Blob;
+        let invalidFinalSize = false;
         try {
-          // Each part is a disk-backed File: the browser streams it, so the
-          // take is never assembled in memory.
-          for (const piece of pieces) await writable.write(piece);
+          if (await entryExists(directory, fileName)) throw new Error('A file with this name already exists.');
+          handle = await directory.getFileHandle(fileName, { create: true });
+          writable = await handle.createWritable({ keepExistingData: false });
+          for (const batch of stitchBatches(pieces)) await writable.write(batch);
           await writable.close();
+          file = await handle.getFile();
+          if (file.size !== expected) {
+            invalidFinalSize = true;
+            throw new Error(`File size check failed (${file.size} of ${expected} bytes).`);
+          }
         } catch (error) {
-          try { await writable.abort?.(error); } catch { /* Keep the original failure. */ }
-          throw new Error(`Could not finish “${path}”; its parts remain in “${partsName}”. ${error instanceof Error ? error.message : ''}`.trim(), { cause: error });
-        }
-        const file = await handle.getFile();
-        if (file.size !== expected) {
-          throw new Error(`“${path}” failed its size check (${file.size} of ${expected} bytes); its parts remain in “${partsName}”.`);
+          try { await writable?.abort?.(error); } catch { /* Keep the original failure. */ }
+          if (handle) {
+            try {
+              // A failed staged write can leave an empty placeholder behind.
+              if (invalidFinalSize || (await handle.getFile()).size === 0) await directory.removeEntry?.(fileName);
+            } catch { /* Preserve the recovery parts if the folder is inaccessible. */ }
+          }
+          throw new Error(`Could not finish “${path}”. Its parts remain in “${partsName}”. ${error instanceof Error ? error.message : ''}`.trim(), { cause: error });
         }
         if (committed.length) {
           try { await directory.removeEntry?.(partsName, { recursive: true }); } catch { /* Parts are a harmless leftover. */ }

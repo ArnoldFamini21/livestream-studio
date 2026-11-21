@@ -1,3 +1,4 @@
+import QRCode from 'qrcode';
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -147,6 +148,49 @@ test('built studio in real Chromium under the production CSP', { timeout: 420_00
       assert.equal(await guest.evaluate(() => window.__e2eMedia.remoteTracks.filter(track => track.readyState === 'live').length), 0, 'waiting guests receive no remote media');
       await admitGuest(host, 'Test Guest');
       await guest.getByTestId('program-return-monitor').waitFor();
+    });
+
+    await scenario('a QR overlay appears in the real program return and can be hidden', async () => {
+      const destination = 'https://example.com/service';
+      await host.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: 'Overlays', exact: true }).click();
+      await host.getByRole('button', { name: 'Add overlay', exact: true }).click();
+      await host.getByRole('button', { name: /QR code Show a link/ }).click();
+      await host.getByLabel('QR code name', { exact: true }).fill('Service link');
+      await host.getByLabel('Destination URL', { exact: true }).fill(destination);
+      await host.getByText('Appearance & options', { exact: true }).click();
+      await host.getByRole('button', { name: 'Panel', exact: true }).click();
+      await host.getByRole('button', { name: 'Add overlay', exact: true }).click();
+      await host.getByRole('button', { name: 'Show Service link', exact: true }).click();
+      await host.getByRole('img', { name: 'QR code for Service link', exact: true }).waitFor();
+      const { modules } = QRCode.create(destination, { errorCorrectionLevel: 'M' });
+      await guest.waitForFunction(({ count, expected }) => {
+        const video = document.querySelector('video[aria-label="Live program (Preview)"]');
+        if (!video || video.readyState < 2 || !video.videoWidth) return false;
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        context.drawImage(video, 0, 0);
+        const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+        const side = Math.round(1080 * .26);
+        const x = 1920 - 48 - side;
+        const y = 1080 - 48 - 52 - side;
+        let matched = 0;
+        for (let row = 0; row < count; row += 1) {
+          for (let col = 0; col < count; col += 1) {
+            const px = Math.floor((x + (col + 4.5) * side / (count + 8)) * canvas.width / 1920);
+            const py = Math.floor((y + (row + 4.5) * side / (count + 8)) * canvas.height / 1080);
+            const offset = (py * canvas.width + px) * 4;
+            const luma = (data[offset] + data[offset + 1] + data[offset + 2]) / 3;
+            if (expected[row * count + col] ? luma < 80 : luma > 180) matched += 1;
+          }
+        }
+        return matched / expected.length > .9;
+      }, { count: modules.size, expected: Array.from(modules.data) }, { polling: 250 });
+      await screenshot(host, fixture.artifactDir, 'qr-overlay-stage');
+      await host.getByRole('button', { name: 'Hide Service link', exact: true }).click();
+      await host.getByRole('img', { name: 'QR code for Service link', exact: true }).waitFor({ state: 'detached' });
+      await host.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: 'Overlays', exact: true }).click();
     });
 
     await scenario('backstage guest receives a playing program return and moves onto stage', async () => {
