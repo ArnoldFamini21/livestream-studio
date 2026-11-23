@@ -1226,6 +1226,7 @@ export function StudioRoom() {
   const [backgroundExportCount, setBackgroundExportCount] = useState(0);
   const [localRecordingFinalizing, setLocalRecordingFinalizing] = useState(false);
   const recordingActionRef = useRef(false);
+  const localRecordingStartingRef = useRef(false);
   const [participantRecordingFinalizing, setParticipantRecordingFinalizing] = useState(false);
   const [sessionRecordingElapsed, setSessionRecordingElapsed] = useState(0);
 
@@ -3913,6 +3914,7 @@ export function StudioRoom() {
       sessionStartedAt: sessionRecordingStartedAt,
       localRecording: isLocalRecording,
     });
+    if (action === 'start' && localRecordingStartingRef.current) return;
     recordingActionRef.current = true;
     setProgramRecordingFinalizing(action !== 'start');
     let programRecordingStart: AbortController | undefined;
@@ -4220,8 +4222,9 @@ export function StudioRoom() {
 
   // Local recording (separate on-stage tracks)
   const onStartLocalRecording = useCallback(async () => {
-    if (!myParticipant || !canControlRecording || folderSaving || recordingActionRef.current || localRecordingFinalizing || programRecordingFinalizing || !recordingReadiness.canStart) return;
-    recordingActionRef.current = true;
+    if (!myParticipant || !canControlRecording || folderSaving || recordingActionRef.current || localRecordingStartingRef.current
+      || localRecordingFinalizing || programRecordingFinalizing || !recordingReadiness.canStart) return;
+    localRecordingStartingRef.current = true;
     let recordingStart: AbortController | undefined;
     let releasePreparedSources: (() => void) | undefined;
     let pendingTakeId: string | null = null;
@@ -4276,7 +4279,7 @@ export function StudioRoom() {
       }
       releasePreparedSources?.();
       if (recordingStart) finishRecordingPreparation(recordingStart);
-      recordingActionRef.current = false;
+      localRecordingStartingRef.current = false;
     }
   }, [
     addToast,
