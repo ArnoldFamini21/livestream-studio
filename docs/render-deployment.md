@@ -124,6 +124,28 @@ The media server gets 24-hour credentials the same way the signaling server does
 
 The SFU also asks a publisher for a keyframe (RTCP PLI) whenever a subscriber joins, connects, switches simulcast layer or reports a lost picture, so late joiners do not see frozen video, and each browser reports its downlink budget from its inbound stats so the SFU picks layers that fit.
 
+#### Native SFU screen sharing preview
+
+Set `SFU_NATIVE_SCREEN_ENABLED=true` on a test media server to enable a separate screen and system-audio publisher on the authenticated SFU socket. The flag defaults to off. The signaling and media servers still need the same `LIVE_STREAM_TOKEN_SECRET`. Set `MEDIA_SERVER_URL` on signaling to the media server so backstage moves, removal, and room closure also revoke the screen. Production-style Render tests also need the existing SFU TURN setup.
+
+An on-stage client receives the capability when it authenticates with a current SFU token. Screen video and available system audio use a separate connection while the camera and microphone remain on their original connection. Backstage and older clients continue receiving screens over mesh when connected. When a stage peer cannot receive the separate screen by SFU or mesh, the presenter returns to the combined screen and camera with mixed audio.
+
+Run the standalone Chromium qualification on a development machine or CI runner with the browser installed and ports 3079, 3379, and 5279 available. The test starts isolated signaling and media services and sets a shared test secret and preview flag for them.
+
+```sh
+npm run -w @studio/shared build
+npm run -w @studio/server build
+npm run -w @studio/media-server build
+VITE_API_URL=http://localhost:3079 VITE_WS_URL=ws://localhost:3079/ws \
+  VITE_MEDIA_HTTP_URL=http://localhost:3379 VITE_MEDIA_WS_URL=ws://localhost:3379/rtmp \
+  npm run -w @studio/client build
+node --test e2e/sfu-native-screen.mjs
+```
+
+The test uses a synthetic display stream while each guest's camera and microphone are active. It checks that the receiver gets four distinct media tracks, that restarting the screen reuses the same subscriber track IDs, and that moving a presenter backstage closes both their publishers while the other guests remain on SFU. Qualification before production also needs a flag-off and mixed-version browser run, a check for duplicate audible playback, and the same media checks over the deployed TURN route.
+
+The local Chromium run connected the SFU publish and subscribe transports and forwarded microphone audio. The same cameras decoded over mesh, while the SFU publishers reported zero outbound video RTP. The test stopped at its camera precondition before exercising native screen media. On failure it writes connection states, transceiver details, and RTP counters to `native-screen-transport.json` in its artifact directory. Keep the preview flag off until a run completes all four media checks.
+
 **Fallback.** With no TURN settings at all, the server uses Metered's free Open Relay (`staticauth.openrelay.metered.ca`) and mints short-lived credentials from its published secret. The old static `openrelayproject` password no longer works. The free relay is shared by everyone and capped at 20 GB a month, so it is not treated as production ready by the health metadata.
 
 Use either a complete JSON config:

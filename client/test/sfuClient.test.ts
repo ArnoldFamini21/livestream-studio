@@ -356,4 +356,49 @@ describe('SfuWebRtcTransport', () => {
     assert.deepEqual(delivered[1].getVideoTracks(), [video]);
     assert.deepEqual(delivered[1].getAudioTracks(), [audio]);
   });
+
+  it('hides a parked screen and restores its same-MID tracks only for an active producer', async () => {
+    const subscribePc = new FakePeerConnection(['video', 'audio']);
+    const delivered = new Map<string, MediaStream>();
+    const errors: string[] = [];
+    let active = true;
+    const transport = new SfuWebRtcTransport(() => undefined, {
+      createPeerConnection: () => subscribePc,
+      createMediaStream: fakeMediaStream,
+      isScreenProducerActive: () => active,
+      onRemoteStream: (id, stream) => delivered.set(id, stream),
+      onRemoteStreamRemoved: (id) => delivered.delete(id),
+      onError: (message) => errors.push(message),
+    });
+    const id = 'screen:alice';
+    const mids = { [id]: { video: 'video-0', audio: 'audio-1' } };
+    const offer = (producerMids: Record<string, { video?: string; audio?: string }>) => transport.handleOffer({
+      side: 'subscribe', sdp: 'subscribe-offer', producerMids,
+    });
+    const video = Object.assign(new EventTarget(), { kind: 'video', readyState: 'live', muted: false });
+    const audio = Object.assign(new EventTarget(), { kind: 'audio', readyState: 'live', muted: true });
+    await offer(mids);
+    for (const [index, track] of [video, audio].entries()) {
+      subscribePc.ontrack?.({ transceiver: subscribePc.transceivers[index], track } as unknown as RTCTrackEvent);
+    }
+    assert.deepEqual(delivered.get(id)?.getVideoTracks(), [video]);
+    assert.deepEqual(delivered.get(id)?.getAudioTracks(), []);
+
+    active = false;
+    transport.removeProducer(id);
+    await offer(mids); // A queued offer may still describe the now-stopped source.
+    audio.muted = false;
+    audio.dispatchEvent(new Event('unmute'));
+    assert.equal(delivered.has(id), false);
+
+    active = true;
+    await offer(mids);
+    assert.deepEqual(delivered.get(id)?.getVideoTracks(), [video]);
+    assert.deepEqual(delivered.get(id)?.getAudioTracks(), [audio]);
+
+    await offer({ [id]: { video: 'replacement-2' } });
+    assert.equal(delivered.has(id), false, 'a new MID does not reuse the former receiver tracks');
+    assert.deepEqual(errors, []);
+    transport.close();
+  });
 });

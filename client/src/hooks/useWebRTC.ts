@@ -131,7 +131,10 @@ export function useWebRTC({ localStream, myParticipantId, send, musicMode = fals
   // The program return we send (stage owner only) and who gets which part of it.
   const programReturnSourceRef = useRef<ProgramReturnSource | null>(null);
   const programReturnRouteRef = useRef<(participantId: string) => ProgramReturnRoute>(() => NO_PROGRAM_RETURN);
-  const publishedScreenRef = useRef<{ track: MediaStreamTrack; stream: MediaStream; audioTrack: MediaStreamTrack | null } | null>(null);
+  const publishedScreenRef = useRef<{
+    track: MediaStreamTrack; stream: MediaStream; audioTrack: MediaStreamTrack | null;
+    includeParticipant?: (participantId: string) => boolean;
+  } | null>(null);
   const screenOptimizationRef = useRef<ScreenShareOptimization>('text');
   const rebuildCountsRef = useRef<Map<string, number>>(new Map());
   // Peers whose media link dropped after connecting and is recovering.
@@ -440,7 +443,7 @@ export function useWebRTC({ localStream, myParticipantId, send, musicMode = fals
 
       // A screen we are already sharing goes to this new peer as well, with its sound.
       const publishedScreen = publishedScreenRef.current;
-      if (publishedScreen) {
+      if (publishedScreen && (publishedScreen.includeParticipant?.(remoteParticipantId) ?? true)) {
         peerState.screenTransceiver = pc.addTransceiver(publishedScreen.track, { direction: 'sendonly', streams: [publishedScreen.stream] });
         if (publishedScreen.audioTrack) {
           peerState.screenAudioTransceiver = pc.addTransceiver(publishedScreen.audioTrack, { direction: 'sendonly', streams: [publishedScreen.stream] });
@@ -702,12 +705,13 @@ export function useWebRTC({ localStream, myParticipantId, send, musicMode = fals
     track: MediaStreamTrack | null,
     stream?: MediaStream,
     audioTrack?: MediaStreamTrack | null,
+    includeParticipant?: (participantId: string) => boolean,
   ) => {
     const screenAudio = track && stream && audioTrack && audioTrack.readyState === 'live' ? audioTrack : null;
-    publishedScreenRef.current = track && stream ? { track, stream, audioTrack: screenAudio } : null;
+    publishedScreenRef.current = track && stream ? { track, stream, audioTrack: screenAudio, includeParticipant } : null;
     for (const [participantId, peer] of peersRef.current) {
       try {
-        if (track && stream) {
+        if (track && stream && (includeParticipant?.(participantId) ?? true)) {
           peer.screenTransceiver = await sendScreenOnConnection(peer.connection, peer.screenTransceiver, track, stream);
           if (screenAudio) {
             peer.screenAudioTransceiver = await sendScreenOnConnection(peer.connection, peer.screenAudioTransceiver, screenAudio, stream);

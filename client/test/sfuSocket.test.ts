@@ -99,6 +99,13 @@ describe('SFU remote media readiness', () => {
     assert.equal(areSfuRemoteStreamsReady([], new Map(), new Map()), false);
     assert.equal(areSfuRemoteStreamsReady(['alice'], new Map(), new Map()), false);
   });
+
+  it('does not make a new screen source a prerequisite for base media', () => {
+    const expected = new Map([['alice', new Set<'audio' | 'video'>(['audio'])]]);
+    const baseStreams = new Map([['alice', mediaStream([mediaTrack('audio')])]]);
+    assert.equal(areSfuRemoteStreamsReady(['alice', 'screen:alice'], expected, baseStreams), true);
+    assert.equal(areSfuRemoteStreamsReady(['screen:alice'], expected, baseStreams), false);
+  });
 });
 
 describe('SfuSocketSession', () => {
@@ -183,6 +190,62 @@ describe('SfuSocketSession', () => {
       layers: [{ rid: 'h', bitrateKbps: 700, scaleResolutionDownBy: 1 }],
       audio: true,
     });
+    session.close();
+  });
+
+  it('negotiates screen capability and keeps each screen attempt separate from the microphone', () => {
+    const socket = new FakeSocket();
+    const microphone = mediaTrack('audio');
+    const shareAudio = mediaTrack('audio');
+    const screen = {
+      kind: 'video', readyState: 'live', getSettings: () => ({ width: 640, height: 360, frameRate: 30 }),
+    } as MediaStreamTrack;
+    const screenErrors: string[] = [];
+    const baseErrors: string[] = [];
+    let peerChanges = 0;
+    const session = new SfuSocketSession({
+      token: 'signed-token',
+      localVideoTrack: null,
+      localAudioTrack: microphone,
+      downlinkKbps: 4500,
+      url: 'ws://media.test/sfu',
+      createWebSocket: () => socket,
+      onScreenPeersChange: () => { peerChanges += 1; },
+      onScreenError: (message) => screenErrors.push(message),
+      onError: (message) => baseErrors.push(message),
+    });
+    session.connect();
+    socket.open();
+    session.setLocalScreenTracks(screen, shareAudio);
+    assert.equal(socket.sent.length, 1, 'no screen command is sent before enabling the capability');
+    socket.receive({ type: 'sfu-ready', roomId: 'room-1', participantId: 'local', supportsScreenSource: true });
+    assert.deepEqual(socket.sent[1], { type: 'sfu-join', downlinkKbps: 4500, supportsScreenSource: true });
+    assert.equal(session.canPublishScreenTo(['alice']), false);
+    socket.receive({ type: 'sfu-screen-peers', participantIds: ['local', 'alice'] });
+    assert.equal(peerChanges, 1);
+    assert.equal(session.canPublishScreenTo(['local', 'alice']), true);
+    assert.equal(session.canPublishScreenTo(['alice', 'legacy']), false);
+
+    session.setLocalScreenTracks(screen, shareAudio);
+    const first = socket.sent[3] as { type: string; requestId: string; audio: boolean };
+    assert.equal(first.type, 'sfu-publish-screen');
+    assert.equal(first.audio, true);
+    session.setLocalScreenTracks(screen, shareAudio);
+    assert.equal(socket.sent.length, 4, 'identical tracks do not renegotiate');
+    session.setLocalScreenTracks(screen, null);
+    assert.deepEqual(socket.sent[4], { type: 'sfu-unpublish-screen', requestId: first.requestId });
+    const second = socket.sent[5] as { type: string; requestId: string; audio: boolean };
+    assert.equal(second.type, 'sfu-publish-screen');
+    assert.equal(second.audio, false);
+    assert.notEqual(second.requestId, first.requestId);
+
+    socket.receive({ type: 'sfu-screen-error', requestId: first.requestId, message: 'Stale failure' });
+    assert.deepEqual(screenErrors, []);
+    socket.receive({ type: 'sfu-screen-error', requestId: second.requestId, message: 'Active failure' });
+    assert.deepEqual(screenErrors, ['Active failure']);
+    assert.deepEqual(socket.sent[6], { type: 'sfu-unpublish-screen', requestId: second.requestId });
+    assert.deepEqual(socket.sent[2], { type: 'sfu-publish', layers: [], audio: true });
+    assert.deepEqual(baseErrors, []);
     session.close();
   });
 });

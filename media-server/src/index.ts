@@ -15,7 +15,7 @@ import type {
   LiveStreamTokenClaims,
   RecordingUploadTokenClaims,
 } from '@studio/shared';
-import { buildServiceHealthPayload } from '@studio/shared';
+import { buildServiceHealthPayload, sfuScreenProducerOwner } from '@studio/shared';
 import {
   getLiveStreamTokenSecret,
   verifyLiveStreamToken,
@@ -2412,11 +2412,14 @@ server.on('upgrade', (req, socket, head) => {
 
 // One TURN credential set for every SFU peer connection (Render has no inbound UDP).
 const resolveSfuIceConfig = createSfuIceConfigProvider();
+const sfuScreenSourceEnabled = process.env.SFU_NATIVE_SCREEN_ENABLED === 'true';
 const sfuManager = new SfuManager({}, (roomSend) => new SfuMediaTransport({
-  onIceCandidate: (participantId, side, candidate) => {
-    roomSend(participantId, { type: 'sfu-transport-ice', side, candidate });
+  onIceCandidate: (participantId, side, candidate, requestId) => {
+    const screenOwner = side === 'publish' ? sfuScreenProducerOwner(participantId) : null;
+    if (screenOwner && requestId) roomSend(screenOwner, { type: 'sfu-transport-ice', side: 'screen-publish', candidate, requestId });
+    else if (!screenOwner) roomSend(participantId, { type: 'sfu-transport-ice', side, candidate });
   },
-}, undefined, { resolveIceConfig: resolveSfuIceConfig }));
+}, undefined, { resolveIceConfig: resolveSfuIceConfig }), sfuScreenSourceEnabled);
 
 sfuWss.on('connection', (ws) => {
   let sfuParticipantId: string | null = null;
@@ -2454,6 +2457,9 @@ sfuWss.on('connection', (ws) => {
       }
       try {
         const identity = verifySfuIdentity(frame.token, secret);
+        // Legacy operator tokens still connect for camera/mic compatibility.
+        // A current SFU token (minted only for on-stage participants) is required for screens.
+        const allowScreenSource = sfuScreenSourceEnabled && identity.iat !== undefined;
         sfuConnection = sfuManager.connect(
           identity.roomId,
           identity.participantId,
@@ -2463,6 +2469,7 @@ sfuWss.on('connection', (ws) => {
           {
             expiresAtMs: identity.exp,
             issuedAtMs: identity.iat,
+            allowScreenSource,
             onRevoke: (reason) => {
               if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
                 ws.close(1008, reason.slice(0, 120));
@@ -2475,6 +2482,7 @@ sfuWss.on('connection', (ws) => {
           type: 'sfu-ready',
           roomId: identity.roomId,
           participantId: identity.participantId,
+          ...(allowScreenSource ? { supportsScreenSource: true } : {}),
         }));
       } catch {
         ws.close(1008, 'Unauthorized');

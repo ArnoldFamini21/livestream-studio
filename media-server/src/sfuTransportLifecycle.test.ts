@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { MediaStreamTrack, RTCPeerConnection, RtpPacket } from 'werift';
+import { RtpHeader, RtpPacket, type MediaStreamTrack, type RTCPeerConnection } from 'werift';
 import { SfuMediaTransport, type SfuSessionDescription } from './sfuTransport.js';
 import type { SfuIceConfig } from './sfuIceServers.js';
 
@@ -18,6 +18,7 @@ class Signal<T> {
 
 class FakePeerConnection {
   readonly onIceCandidate = new Signal<Record<string, unknown>>();
+  readonly rebases: Array<{ sequenceNumber: number; timestamp: number }> = [];
   readonly transceivers: Array<{
     onTrack: Signal<MediaStreamTrack>;
     sender: { track: unknown };
@@ -37,7 +38,7 @@ class FakePeerConnection {
   addTransceiver(track: unknown) {
     const transceiver = {
       onTrack: new Signal<MediaStreamTrack>(),
-      sender: { track },
+      sender: { track, replaceRTP: (header: { sequenceNumber: number; timestamp: number }) => this.rebases.push(header) },
       mid: String(this.transceivers.length),
     };
     this.transceivers.push(transceiver);
@@ -70,6 +71,54 @@ function createHarness(
 }
 
 describe('SFU transport lifecycle ownership', () => {
+  it('keeps the screen receiver MIDs across stop and restart while publishing only active kinds', async () => {
+    const { transport, peers } = createHarness();
+    const screen = { producerId: 'screen:bob', hasVideo: true, hasAudio: true };
+    try {
+      const first = await transport.createSubscribeOffer('alice', [...PRODUCERS, screen]);
+      assert.equal(peers[0].transceivers.length, 4);
+      transport.removeProducer(screen.producerId, true);
+      const paused = await transport.createSubscribeOffer('alice', PRODUCERS);
+      assert.deepEqual(Object.keys(paused.producerMids), ['bob']);
+      const videoOnly = await transport.createSubscribeOffer('alice', [...PRODUCERS, { ...screen, hasAudio: false }]);
+      assert.deepEqual(videoOnly.producerMids[screen.producerId], { video: first.producerMids[screen.producerId].video });
+      const restarted = await transport.createSubscribeOffer('alice', [...PRODUCERS, screen]);
+      assert.deepEqual(restarted.producerMids, first.producerMids);
+      assert.equal(peers[0].transceivers.length, 4);
+    } finally {
+      await transport.closeAll();
+    }
+  });
+
+  it('rebases screen RTP when a fresh publisher uses the same subscriber track', async () => {
+    const { transport, peers } = createHarness();
+    const screen = { producerId: 'screen:bob', hasVideo: true, hasAudio: true };
+    const packet = (sequenceNumber: number, timestamp: number, ssrc: number) =>
+      new RtpPacket(new RtpHeader({ sequenceNumber, timestamp, ssrc }), Buffer.from([1]));
+    try {
+      await transport.createSubscribeOffer('alice', [screen]);
+      await transport.createPublishOffer(screen.producerId, ['h'], true, 'first');
+      transport.setForwardedLayer('alice', screen.producerId, 'h');
+      transport.injectPublisherRtp(screen.producerId, 'h', packet(30, 31_000, 1));
+      transport.injectPublisherAudioRtp(screen.producerId, packet(11, 11_000, 2));
+      assert.deepEqual(peers[0].rebases, []);
+
+      transport.removeProducer(screen.producerId, true);
+      await transport.closePublisher(screen.producerId);
+      await transport.createSubscribeOffer('alice', [screen]);
+      await transport.createPublishOffer(screen.producerId, ['h'], true, 'second');
+      transport.setForwardedLayer('alice', screen.producerId, 'h');
+      transport.injectPublisherRtp(screen.producerId, 'h', packet(5, 10_000, 3));
+      transport.injectPublisherAudioRtp(screen.producerId, packet(2, 8000, 4));
+      assert.deepEqual(peers[0].rebases, [
+        { sequenceNumber: 4, timestamp: 7000 },
+        { sequenceNumber: 1, timestamp: 7040 },
+      ]);
+    } finally {
+      await transport.closeAll();
+    }
+  });
+
   it('does not install an older publish attempt after waiting for an old PC to close', async () => {
     const { transport, peers } = createHarness();
     await transport.createPublishOffer('alice', ['h'], true);

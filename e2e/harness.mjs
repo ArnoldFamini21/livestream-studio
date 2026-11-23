@@ -22,14 +22,17 @@ export async function eventually(check, { timeout = 30_000, interval = 100, mess
 }
 
 /** Run the built application with no production accounts, credentials, or external services. */
-export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR || path.join(repoRoot, 'output/e2e'), apiPort = Number(process.env.E2E_API_PORT || 3001), port = Number(process.env.E2E_PORT || 5199), reuseServer = process.env.E2E_REUSE_SERVER === '1', distDir = path.join(repoRoot, 'client/dist'), loopbackMediaPort, liveTokenSecret } = {}) {
+export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR || path.join(repoRoot, 'output/e2e'), apiPort = Number(process.env.E2E_API_PORT || 3001), port = Number(process.env.E2E_PORT || 5199), reuseServer = process.env.E2E_REUSE_SERVER === '1', distDir = path.join(repoRoot, 'client/dist'), loopbackMediaPort, liveTokenSecret, mediaMembershipControl = false, sharedBrowserProcess = false } = {}) {
   assert.ok(!reuseServer || !process.env.CI, 'CI must start isolated application servers');
+  assert.ok(loopbackMediaPort === undefined || (Number.isInteger(loopbackMediaPort) && loopbackMediaPort > 0 && loopbackMediaPort <= 65535));
+  assert.ok(!mediaMembershipControl || (loopbackMediaPort && liveTokenSecret && !reuseServer), 'Membership control requires isolated signaling, media and a shared test secret');
   artifactDir = path.resolve(artifactDir);
   await mkdir(artifactDir, { recursive: true });
   const scratch = await mkdtemp(path.join(artifactDir, 'scratch-'));
   const url = `http://localhost:${port}`;
   const apiUrl = `http://localhost:${apiPort}`;
   const contexts = [];
+  let browserProcess;
   const pageErrors = [];
   const cspViolations = [];
   const serverLog = createWriteStream(path.join(artifactDir, 'server.log'));
@@ -37,6 +40,7 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PATH|TMPDIR|TMP|TEMP|XDG_.*|NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|SYSTEMROOT)$/.test(key)));
   Object.assign(env, { NODE_ENV: 'test', PORT: String(apiPort), CLIENT_URL: url, STUDIO_OWNER_EMAILS: '', STUDIO_CREATE_SECRET: '', STUN_URLS: 'stun:127.0.0.1:9', ROOM_PERSISTENCE_DISABLED: 'true', ACCOUNT_AUTH_PERSISTENCE_DISABLED: 'true', RECORDING_CATALOG_PERSISTENCE_DISABLED: 'true', BRAND_KIT_CATALOG_PERSISTENCE_DISABLED: 'true', WORKSPACE_STUDIO_CATALOG_PERSISTENCE_DISABLED: 'true', WORKSPACE_TEAM_CATALOG_PERSISTENCE_DISABLED: 'true' });
   if (liveTokenSecret) env.LIVE_STREAM_TOKEN_SECRET = liveTokenSecret;
+  if (mediaMembershipControl) env.MEDIA_SERVER_URL = `http://localhost:${loopbackMediaPort}`;
   const server = reuseServer ? null : spawn(process.execPath, [path.join(repoRoot, 'server/dist/index.js')], { cwd: artifactDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   server?.stdout.pipe(serverLog);
   server?.stderr.pipe(serverLog);
@@ -47,7 +51,6 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   const htaccess = await readFile(path.join(repoRoot, 'client/public/.htaccess'), 'utf8');
   const productionCsp = htaccess.match(/Content-Security-Policy "([^"]+)"/)[1];
   // Only the loopback API's transport differs from production's https/wss.
-  assert.ok(loopbackMediaPort === undefined || (Number.isInteger(loopbackMediaPort) && loopbackMediaPort > 0 && loopbackMediaPort <= 65535));
   const mediaOrigins = loopbackMediaPort ? ` http://localhost:${loopbackMediaPort} ws://localhost:${loopbackMediaPort}` : '';
   const csp = productionCsp.replace("connect-src 'self'", `connect-src 'self' ${apiUrl} ws://localhost:${apiPort}${mediaOrigins}`);
   const dist = path.resolve(distDir);
@@ -66,6 +69,7 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   });
   const close = async () => {
     await Promise.allSettled(contexts.map(context => context.close()));
+    await browserProcess?.close().catch(() => undefined);
     if (!reuseServer) await new Promise(resolve => staticServer.close(resolve));
     if (server && !serverError && server.exitCode === null && server.signalCode === null) {
       const exited = new Promise(resolve => server.once('exit', resolve));
@@ -93,11 +97,16 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
       const profile = path.join(scratch, `profile-${name}`);
       const downloadsPath = path.join(artifactDir, 'downloads');
       await mkdir(downloadsPath, { recursive: true });
-      const context = await chromium.launchPersistentContext(profile, {
+      const launchOptions = {
         executablePath: process.env.E2E_CHROMIUM_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined),
-        headless: process.env.E2E_HEADED !== '1', viewport, permissions: ['camera', 'microphone'], acceptDownloads: true, downloadsPath,
-        args: ['--use-fake-device-for-media-stream=fps=30', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', `--disk-cache-dir=${path.join(scratch, `cache-${name}`)}`, ...extraArgs],
-      });
+        headless: process.env.E2E_HEADED !== '1', downloadsPath,
+        args: ['--use-fake-device-for-media-stream=fps=30', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', `--disk-cache-dir=${path.join(scratch, sharedBrowserProcess ? 'shared-cache' : `cache-${name}`)}`, ...extraArgs],
+      };
+      const contextOptions = { viewport, permissions: ['camera', 'microphone'], acceptDownloads: true };
+      if (sharedBrowserProcess) browserProcess ??= await chromium.launch(launchOptions);
+      const context = browserProcess
+        ? await browserProcess.newContext(contextOptions)
+        : await chromium.launchPersistentContext(profile, { ...launchOptions, ...contextOptions });
       contexts.push(context);
       await context.route(/^https?:\/\//, route => {
         const target = new URL(route.request().url());

@@ -4,6 +4,7 @@ export * from './viewerChat.js';
 export * from './watchEvents.js';
 export * from './productionRundown.js';
 export * from './premieres.js';
+export * from './sfuScreenSource.js';
 import type { ProductionRundown, ProductionRundownStateMessage, ProductionRundownUpdate } from './productionRundown.js';
 import type { WatchEventState } from './watchEvents.js';
 import type { ChatOverlayState, ChatOverlayUpdatePayload, ChatOverlayUpdatedPayload } from './chatOverlay.js';

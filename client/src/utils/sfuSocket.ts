@@ -1,5 +1,7 @@
+import { sfuScreenProducerOwner } from '@studio/shared';
 import { resolveSfuWsUrl } from './apiClient.ts';
 import {
+  encodingsToWireLayers,
   SfuClientSession,
   type SfuClientInbound,
   type SfuClientOutbound,
@@ -10,7 +12,8 @@ import { buildVideoSimulcastEncodingsForTrack } from './webrtcSimulcast.ts';
 import { readInboundTotals, SfuDownlinkEstimator } from './sfuDownlinkEstimate.ts';
 
 const SOCKET_OPEN = 1;
-const MAX_SFU_PRODUCERS = 64;
+const MAX_SFU_PARTICIPANTS = 64;
+const MAX_SFU_PRODUCERS = MAX_SFU_PARTICIPANTS * 2;
 const MAX_PRODUCER_ID_LENGTH = 128;
 const MAX_SFU_SDP_LENGTH = 128 * 1024;
 const MAX_SFU_ICE_LENGTH = 1024;
@@ -44,6 +47,8 @@ export interface SfuSocketSessionOptions {
   onReady?: () => void;
   onPublishStart?: () => void;
   onPublishReady?: () => void;
+  onScreenPeersChange?: () => void;
+  onScreenError?: (message: string) => void;
   onError?: (message: string) => void;
   onClose?: () => void;
 }
@@ -142,7 +147,8 @@ export function areSfuRemoteStreamsReady(
   expectedMediaByProducer: ReadonlyMap<string, ReadonlySet<'audio' | 'video'>>,
   remoteStreams: ReadonlyMap<string, MediaStream>
 ): boolean {
-  const ids = [...producerIds];
+  // A share can start or renegotiate without moving the room's base media back to mesh.
+  const ids = [...producerIds].filter((id) => sfuScreenProducerOwner(id) === null);
   if (ids.length === 0) return false;
   for (const producerId of ids) {
     const expected = expectedMediaByProducer.get(producerId);
@@ -170,6 +176,16 @@ export class SfuSocketSession {
   private localVideoTrack: MediaStreamTrack | null;
   private localAudioTrack: MediaStreamTrack | null;
   private publishedMediaSignature: string | null = null;
+  private supportsScreenSource = false;
+  private participantId: string | null = null;
+  private screenPeers = new Set<string>();
+  private screenPublishSequence = 0;
+  private screenPublish: {
+    requestId: string;
+    transport: SfuWebRtcTransport;
+    video: MediaStreamTrack;
+    audio: MediaStreamTrack | null;
+  } | null = null;
   private remoteMediaReady = false;
   private ready = false;
   private readonly downlinkEstimator: SfuDownlinkEstimator;
@@ -186,6 +202,7 @@ export class SfuSocketSession {
     this.transport = new SfuWebRtcTransport((message) => this.send(message), {
       iceConfiguration: options.iceConfiguration,
       musicMode: options.musicMode,
+      isScreenProducerActive: (producerId) => this.knownProducers.has(producerId),
       onRemoteStream: (producerId, stream) => {
         this.remoteStreams.set(producerId, stream);
         options.onRemoteStream?.(producerId, stream);
@@ -226,6 +243,7 @@ export class SfuSocketSession {
     socket.onerror = () => this.options.onError?.('The SFU media connection encountered a network error.');
     socket.onclose = () => {
       this.ready = false;
+      this.resetScreenSource();
       this.stopDownlinkMonitor();
       this.socket = null;
       this.transport.close();
@@ -247,6 +265,44 @@ export class SfuSocketSession {
     this.localAudioTrack = track?.kind === 'audio' && track.readyState === 'live' ? track : null;
     this.transport.setPublishAudioTrack(this.localAudioTrack);
     this.syncPublishing();
+  }
+
+  canPublishScreenTo(participantIds: Iterable<string>): boolean {
+    return this.ready && this.supportsScreenSource && [...participantIds].every(
+      (id) => id === this.participantId || this.screenPeers.has(id)
+    );
+  }
+
+  setLocalScreenTracks(video: MediaStreamTrack | null, audio: MediaStreamTrack | null): void {
+    const screenVideo = video?.kind === 'video' && video.readyState === 'live' ? video : null;
+    const screenAudio = audio?.kind === 'audio' && audio.readyState === 'live' ? audio : null;
+    if (!screenVideo) {
+      this.closeScreenPublish(true);
+      return;
+    }
+    if (!this.ready || !this.supportsScreenSource) return;
+    if (this.screenPublish?.video === screenVideo && this.screenPublish.audio === screenAudio) return;
+
+    this.closeScreenPublish(true);
+    const requestId = `screen-${++this.screenPublishSequence}`;
+    const transport = new SfuWebRtcTransport((message) => {
+      if (this.screenPublish?.requestId !== requestId) return;
+      if (message.type === 'sfu-transport-answer' || message.type === 'sfu-transport-ice') {
+        this.sendRaw({ ...message, side: 'screen-publish', requestId });
+      }
+    }, {
+      iceConfiguration: this.options.iceConfiguration,
+      onError: (message) => this.failScreenPublish(requestId, message),
+    });
+    this.screenPublish = { requestId, transport, video: screenVideo, audio: screenAudio };
+    transport.setPublishTrack(screenVideo);
+    transport.setPublishAudioTrack(screenAudio);
+    this.sendRaw({
+      type: 'sfu-publish-screen',
+      requestId,
+      layers: encodingsToWireLayers(getSfuVideoEncodings(screenVideo)),
+      audio: screenAudio !== null,
+    });
   }
 
   reportDownlink(downlinkKbps: number): void {
@@ -278,6 +334,7 @@ export class SfuSocketSession {
   close(): void {
     if (this.ready) this.session.leave();
     this.ready = false;
+    this.resetScreenSource();
     this.stopDownlinkMonitor();
     this.transport.close();
     this.knownProducers.clear();
@@ -300,12 +357,40 @@ export class SfuSocketSession {
     if (!isObject(message)) return;
     if (message.type === 'sfu-ready') {
       this.ready = true;
-      this.session.join(this.options.downlinkKbps);
+      this.participantId = isProducerId(message.participantId) ? message.participantId : null;
+      this.supportsScreenSource = message.supportsScreenSource === true && this.participantId !== null;
+      this.session.join(this.options.downlinkKbps, this.supportsScreenSource);
       this.startDownlinkMonitor();
       this.transport.setPublishTrack(this.localVideoTrack);
       this.transport.setPublishAudioTrack(this.localAudioTrack);
       this.syncPublishing();
       this.options.onReady?.();
+      return;
+    }
+
+    if (message.type === 'sfu-screen-peers') {
+      const peers = message.participantIds;
+      if (this.supportsScreenSource && Array.isArray(peers) && peers.length <= MAX_SFU_PARTICIPANTS && peers.every(isProducerId)) {
+        const next = new Set(peers);
+        if (next.size !== this.screenPeers.size || [...next].some((id) => !this.screenPeers.has(id))) {
+          this.screenPeers = next;
+          this.options.onScreenPeersChange?.();
+        }
+      }
+      return;
+    }
+    if (message.type === 'sfu-screen-error') {
+      if (typeof message.requestId === 'string' && typeof message.message === 'string' && message.message.length <= 1000) {
+        this.failScreenPublish(message.requestId, message.message);
+      }
+      return;
+    }
+    if (message.side === 'screen-publish' && (message.type === 'sfu-transport-offer' || message.type === 'sfu-transport-ice')) {
+      const screen = this.screenPublish;
+      if (!screen || message.requestId !== screen.requestId) return;
+      const frame = parseSfuInbound({ ...message, side: 'publish' });
+      if (frame?.type === 'sfu-transport-offer') void screen.transport.handleOffer(frame);
+      if (frame?.type === 'sfu-transport-ice') void screen.transport.handleIce(frame.side, frame.candidate);
       return;
     }
 
@@ -315,6 +400,27 @@ export class SfuSocketSession {
       return;
     }
     this.session.handleServerMessage(inbound);
+  }
+
+  private closeScreenPublish(notifyServer: boolean): void {
+    const active = this.screenPublish;
+    if (!active) return;
+    this.screenPublish = null;
+    active.transport.close();
+    if (notifyServer) this.sendRaw({ type: 'sfu-unpublish-screen', requestId: active.requestId });
+  }
+
+  private resetScreenSource(): void {
+    this.closeScreenPublish(false);
+    this.supportsScreenSource = false;
+    this.participantId = null;
+    this.screenPeers.clear();
+  }
+
+  private failScreenPublish(requestId: string, message: string): void {
+    if (this.screenPublish?.requestId !== requestId) return;
+    this.closeScreenPublish(true);
+    this.options.onScreenError?.(message);
   }
 
   private send(message: SfuClientOutbound): void {

@@ -28,14 +28,18 @@ function flushAsyncWork(): Promise<void> {
 class FakeSfuTransport implements SfuTransportLike {
   readonly subscribeOffers: Array<{ consumerId: string; producerIds: string[] }> = [];
   readonly forwardedLayers: Array<{ consumerId: string; producerId: string; rid: string | null }> = [];
+  readonly publishOffers: Array<{ producerId?: string; audio?: boolean; requestId?: string }> = [];
+  readonly publishAnswers: string[] = [];
+  readonly closedPublishers: string[] = [];
 
-  async createPublishOffer() {
+  async createPublishOffer(producerId?: string, _rids?: string[], audio?: boolean, requestId?: string) {
+    this.publishOffers.push({ producerId, audio, requestId });
     return { type: 'offer' as const, sdp: 'publish-offer' };
   }
 
-  async setPublishAnswer() {}
+  async setPublishAnswer(producerId?: string) { if (producerId) this.publishAnswers.push(producerId); }
   async addPublishIceCandidate() {}
-  async closePublisher() {}
+  async closePublisher(producerId?: string) { if (producerId) this.closedPublishers.push(producerId); }
 
   async createSubscribeOffer(consumerId: string, producers: SfuProducerMedia[]) {
     const producerIds = producers.map((producer) => producer.producerId);
@@ -57,6 +61,52 @@ class FakeSfuTransport implements SfuTransportLike {
   removeProducer() {}
   async closeParticipant() {}
 }
+
+it('ties the auxiliary screen and audio to one connection, filters legacy peers, and revokes the source', async () => {
+  const transport = new FakeSfuTransport();
+  const manager = new SfuManager({}, () => transport, true);
+  const sent: Array<{ to: string; message: SfuServerMessage }> = [];
+  const connect = (id: string, allowScreenSource = true) =>
+    manager.connect('room', id, (message) => sent.push({ to: id, message }), { allowScreenSource });
+  const alice = connect('alice');
+  const bob = connect('bob');
+  const legacy = connect('legacy', false);
+  try {
+    manager.handleMessage('alice', { type: 'sfu-join', supportsScreenSource: true, downlinkKbps: 6000 }, alice);
+    manager.handleMessage('bob', { type: 'sfu-join', supportsScreenSource: true, downlinkKbps: 6000 }, bob);
+    manager.handleMessage('legacy', { type: 'sfu-join', supportsScreenSource: true, downlinkKbps: 6000 }, legacy);
+    assert.ok(sent.some(({ to, message }) => to === 'alice' && message.type === 'sfu-screen-peers' && message.participantIds.join(',') === 'alice,bob'));
+    assert.ok(!sent.some(({ to, message }) => to === 'legacy' && message.type === 'sfu-screen-peers'));
+    manager.handleMessage('alice', { type: 'sfu-publish', layers: LAYERS, audio: true }, alice);
+    await flushAsyncWork();
+    manager.handleMessage('bob', { type: 'sfu-transport-answer', side: 'subscribe', sdp: 'legacy-ready' }, bob);
+    manager.handleMessage('legacy', { type: 'sfu-transport-answer', side: 'subscribe', sdp: 'legacy-ready' }, legacy);
+    await flushAsyncWork();
+
+    manager.handleMessage('alice', { type: 'sfu-publish-screen', layers: LAYERS, audio: true, requestId: 'attempt-1', participantId: 'legacy' }, alice);
+    await flushAsyncWork();
+    assert.deepEqual(transport.publishOffers.at(-1), { producerId: 'screen:alice', audio: true, requestId: 'attempt-1' });
+    assert.ok(sent.some(({ to, message }) => to === 'alice' && message.type === 'sfu-transport-offer' && message.side === 'screen-publish' && message.requestId === 'attempt-1'));
+    assert.ok(sent.some(({ to, message }) => to === 'bob' && message.type === 'sfu-transport-offer' && message.side === 'subscribe'
+      && message.producerMids?.['screen:alice']?.video && message.producerMids?.['screen:alice']?.audio));
+    assert.ok(!transport.subscribeOffers.some(({ consumerId, producerIds }) => consumerId !== 'bob' && producerIds.includes('screen:alice')));
+    assert.equal(manager.getParticipantCount(), 3);
+
+    manager.handleMessage('alice', { type: 'sfu-transport-answer', side: 'screen-publish', requestId: 'old', sdp: 'stale' }, alice);
+    manager.handleMessage('alice', { type: 'sfu-transport-answer', side: 'screen-publish', requestId: 'attempt-1', sdp: 'current' }, alice);
+    await flushAsyncWork();
+    assert.deepEqual(transport.publishAnswers, ['screen:alice']);
+
+    assert.equal(manager.revokeParticipant('room', 'alice'), true);
+    assert.ok(transport.closedPublishers.includes('screen:alice'));
+    assert.ok(sent.some(({ to, message }) => to === 'bob' && message.type === 'sfu-producer-removed' && message.producerId === 'screen:alice'));
+    assert.ok(sent.some(({ to, message }) => to === 'legacy' && message.type === 'sfu-producer-removed' && message.producerId === 'alice'));
+    assert.equal(manager.handleMessage('alice', { type: 'sfu-publish-screen', layers: LAYERS, requestId: 'attempt-2' }, alice), false);
+  } finally {
+    manager.disconnect('bob', bob);
+    manager.disconnect('legacy', legacy);
+  }
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

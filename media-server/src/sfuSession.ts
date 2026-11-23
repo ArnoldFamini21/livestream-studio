@@ -4,6 +4,7 @@ import {
   type LayerSelectionOptions,
   type SimulcastLayer,
 } from './sfuRouter.js';
+import { sfuScreenProducerId } from '@studio/shared';
 
 /**
  * Per-room SFU orchestration on top of the {@link SfuRouter}.
@@ -19,6 +20,7 @@ export interface SfuParticipantState {
   participantId: string;
   publishing: boolean;
   downlinkKbps: number;
+  supportsScreenSource?: true;
 }
 
 export interface SfuLayerChange {
@@ -33,6 +35,7 @@ const MAX_SFU_PARTICIPANTS = 64;
 export class SfuSessionCoordinator {
   private readonly router: SfuRouter;
   private readonly participants = new Map<string, SfuParticipantState>();
+  private readonly screenPublishers = new Set<string>();
 
   constructor(options: LayerSelectionOptions = {}) {
     this.router = new SfuRouter(options);
@@ -51,7 +54,7 @@ export class SfuSessionCoordinator {
   }
 
   /** Add a participant as a consumer subscribed to every current producer. */
-  join(participantId: string, downlinkKbps = 0): void {
+  join(participantId: string, downlinkKbps = 0, supportsScreenSource = false): void {
     if (!participantId) throw new Error('participantId is required');
     if (this.participants.has(participantId)) {
       this.setDownlink(participantId, downlinkKbps);
@@ -60,13 +63,39 @@ export class SfuSessionCoordinator {
     if (this.participants.size >= MAX_SFU_PARTICIPANTS) {
       throw new Error(`SFU room is full (max ${MAX_SFU_PARTICIPANTS} participants)`);
     }
-    this.participants.set(participantId, { participantId, publishing: false, downlinkKbps: Math.max(0, downlinkKbps) });
+    this.participants.set(participantId, {
+      participantId, publishing: false, downlinkKbps: Math.max(0, downlinkKbps),
+      ...(supportsScreenSource ? { supportsScreenSource: true as const } : {}),
+    });
     this.router.addConsumer(participantId, Math.max(0, downlinkKbps));
     for (const other of this.participants.values()) {
       if (other.participantId !== participantId && other.publishing) {
         this.router.subscribe(participantId, other.participantId);
       }
     }
+    if (supportsScreenSource) {
+      for (const owner of this.screenPublishers) {
+        if (owner !== participantId) this.router.subscribe(participantId, sfuScreenProducerId(owner));
+      }
+    }
+  }
+
+  supportsScreenSource(participantId: string): boolean {
+    return this.participants.get(participantId)?.supportsScreenSource === true;
+  }
+
+  publishScreen(owner: string, layers: SimulcastLayer[]): void {
+    if (!this.supportsScreenSource(owner)) throw new Error('This participant has no separate SFU screen capability.');
+    const id = sfuScreenProducerId(owner);
+    this.router.addProducer(id, layers);
+    this.screenPublishers.add(owner);
+    for (const participant of this.participants.values()) {
+      if (participant.participantId !== owner && participant.supportsScreenSource) this.router.subscribe(participant.participantId, id);
+    }
+  }
+
+  unpublishScreen(owner: string): void {
+    if (this.screenPublishers.delete(owner)) this.router.removeProducer(sfuScreenProducerId(owner));
   }
 
   /** Register the participant's published simulcast layers and subscribe everyone else. */
@@ -94,6 +123,7 @@ export class SfuSessionCoordinator {
   leave(participantId: string): void {
     if (!this.participants.has(participantId)) return;
     this.router.removeProducer(participantId);
+    this.unpublishScreen(participantId);
     this.router.removeConsumer(participantId);
     this.participants.delete(participantId);
   }

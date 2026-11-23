@@ -23,7 +23,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { isSecondaryCameraEntry, secondaryCameraSearch, studioSeatStorageKey } from '../utils/secondaryCamera.ts';
 import { SecondaryCameraSeat } from './SecondaryCameraSeat.tsx';
 import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload, StageControlAction, StageControlPayload, ProductionRundownItem, ProductionRundownScene } from '@studio/shared';
-import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia, getStageOwnerId } from '@studio/shared';
+import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia, getStageOwnerId, sfuScreenProducerOwner } from '@studio/shared';
 import { NO_PROGRAM_RETURN, getProgramReturnAudioParticipants, getProgramReturnDemand, getProgramReturnRoute, isStageOwner, pickProgramReturnStream, stageContentNeedsProgramVideo } from '../utils/programReturn.ts';
 import { useProgramReturnFeed } from '../hooks/useProgramReturnFeed.ts';
 import { useTalkback } from '../hooks/useTalkback.ts';
@@ -1491,11 +1491,22 @@ export function StudioRoom() {
     if (roomLostRetryTimerRef.current !== null) window.clearTimeout(roomLostRetryTimerRef.current);
   }, []);
 
+  const { sfuCameras, sfuScreens } = useMemo(() => {
+    const cameras = new Map<string, MediaStream>();
+    const screens = new Map<string, MediaStream>();
+    for (const [producerId, stream] of sfuRemoteStreams) {
+      const owner = sfuScreenProducerOwner(producerId);
+      if (owner) screens.set(owner, stream);
+      else cameras.set(producerId, stream);
+    }
+    return { sfuCameras: cameras, sfuScreens: screens };
+  }, [sfuRemoteStreams]);
+  const remoteScreenStreams = useMemo(() => mergeSfuMediaWithMeshFallback(meshRemoteScreenStreams, sfuScreens), [meshRemoteScreenStreams, sfuScreens]);
   const remoteStreams = useMemo(() => (
     sfuTransportStatus === 'active'
-      ? mergeSfuMediaWithMeshFallback(meshRemoteStreams, sfuRemoteStreams)
+      ? mergeSfuMediaWithMeshFallback(meshRemoteStreams, sfuCameras)
       : meshRemoteStreams
-  ), [meshRemoteStreams, sfuRemoteStreams, sfuTransportStatus]);
+  ), [meshRemoteStreams, sfuCameras, sfuTransportStatus]);
 
   const onStageParticipantIds = useMemo(() => {
     const ids: string[] = [];
@@ -1564,7 +1575,7 @@ export function StudioRoom() {
     localStream,
     participants,
     remoteStreams,
-    remoteScreenStreams: meshRemoteScreenStreams,
+    remoteScreenStreams,
     screenStream,
     participantVolumes: programMixVolumes,
     screenVolume,
@@ -1593,7 +1604,7 @@ export function StudioRoom() {
     localStream: null,
     participants: programReturnAudioParticipants,
     remoteStreams,
-    remoteScreenStreams: meshRemoteScreenStreams,
+    remoteScreenStreams,
     screenStream: null,
     participantVolumes,
     screenVolume,
@@ -1615,21 +1626,21 @@ export function StudioRoom() {
         localScreenStream: screenStream,
         myParticipantId: myParticipant?.id,
         participants,
-        remoteScreenStreams: meshRemoteScreenStreams,
+        remoteScreenStreams,
       }),
     }),
     percent: gainToPercent(screenVolume),
     onChange: setScreenVolumePercent,
     programRunnerName: (stageOwnerId && participants.get(stageOwnerId)?.name) || undefined,
-  }), [amStageOwner, localProgramPresence.screen, meshRemoteScreenStreams, myParticipant, participants, screenStream, screenVolume, setScreenVolumePercent, stageOwnerId]);
+  }), [amStageOwner, localProgramPresence.screen, remoteScreenStreams, myParticipant, participants, screenStream, screenVolume, setScreenVolumePercent, stageOwnerId]);
   // Tells the stage owner when viewers hear a share below full volume, without the People panel open.
   const screenShareSoundKeys = useMemo(() => listSoundShareKeys({
     localScreenOnProgram: localProgramPresence.screen,
     localScreenStream: screenStream,
     myParticipantId: myParticipant?.id,
     participants,
-    remoteScreenStreams: meshRemoteScreenStreams,
-  }), [localProgramPresence.screen, meshRemoteScreenStreams, myParticipant?.id, participants, screenStream]);
+    remoteScreenStreams,
+  }), [localProgramPresence.screen, remoteScreenStreams, myParticipant?.id, participants, screenStream]);
   const screenVolumeNotice = useScreenVolumeNotice({
     view: screenShareVolumeProps.view,
     percent: screenShareVolumeProps.percent,
@@ -1990,6 +2001,7 @@ export function StudioRoom() {
   const disconnectRef = useRef(disconnect);
   const stopMediaRef = useRef(stopMedia);
   const publishedScreenShareCleanupRef = useRef<(() => void) | null>(null);
+  const refreshSfuScreenRouteRef = useRef<((forceFallback?: boolean) => void) | null>(null);
   const stopPublishedScreenShareRef = useRef<() => void>(() => {
     publishedScreenShareCleanupRef.current?.();
     publishedScreenShareCleanupRef.current = null;
@@ -2763,6 +2775,8 @@ export function StudioRoom() {
   useEffect(() => { stopMediaRef.current = stopMedia; }, [stopMedia]);
   useEffect(() => {
     stopPublishedScreenShareRef.current = () => {
+      refreshSfuScreenRouteRef.current = null;
+      sfuSessionRef.current?.setLocalScreenTracks(null, null);
       publishedScreenShareCleanupRef.current?.();
       publishedScreenShareCleanupRef.current = null;
       stopScreenShare();
@@ -3738,25 +3752,20 @@ export function StudioRoom() {
       const screenTrack = stream.getVideoTracks()[0];
       const screenAudioTrack = stream.getAudioTracks()[0] || null;
       if (screenTrack) {
-        const separate = shouldUseSeparateScreenShare(
+        const canUseMeshScreen = () => shouldUseSeparateScreenShare(
           Boolean(sfuSessionRef.current),
           participantsForMeshRef.current.values(),
           isMeshPeerConnected,
         );
-        separateScreenStreamIdRef.current = separate ? stream.id : null;
         try { screenTrack.contentHint = contentHint; } catch { /* Optional encoder hint. */ }
-        if (separate) {
-          // Name the stream before its tracks arrive, even on peers with no mesh camera track.
-          announce(true, stream.id);
-          await publishScreenTrackRef.current(screenTrack, stream, screenAudioTrack);
-        } else {
+        const publishCombinedScreen = async () => {
           const screenPip = createScreenPictureInPictureStream({
             screenStream: stream,
             cameraStream: localStreamRef.current,
             frameRate: 30,
           });
           publishedScreenShareCleanupRef.current?.();
-          // The SFU takes one audio track per publisher: mix the shared sound into ours.
+          // Fall back to the compatible camera/screen composite and one audio track.
           let screenAudioCleanup: (() => void) | null = null;
           if (screenAudioTrack) {
             const context = acquireAudioContext();
@@ -3785,15 +3794,65 @@ export function StudioRoom() {
           try { publishedVideoTrack.contentHint = contentHint; } catch { /* Optional encoder hint. */ }
           publishedVideoTrackRef.current = publishedVideoTrack;
           await replaceTrackRef.current(publishedVideoTrack);
+          if (screenTrack.readyState !== 'live') return;
           sfuSessionRef.current?.setLocalVideoTrack(publishedVideoTrack);
           publishedTrackIdsRef.current.video = publishedVideoTrack.id;
+          announce(true);
+        };
+        const sfu = sfuSessionRef.current;
+        const unsupportedWithoutMesh = () => Array.from(participantsForMeshRef.current.values())
+          .filter((participant) => participant.status === 'on-stage' && !isMeshPeerConnected(participant.id))
+          .map((participant) => participant.id);
+        const canUseNativeScreen = () => Boolean(sfu && sfuSessionRef.current === sfu && sfu.canPublishScreenTo(unsupportedWithoutMesh()));
+        const publishMeshScreen = (native: boolean) => publishScreenTrackRef.current(screenTrack, stream, screenAudioTrack,
+          native ? (id) => participantsForMeshRef.current.get(id)?.status !== 'on-stage' || !sfu?.canPublishScreenTo([id]) : undefined);
+        if (sfu && canUseNativeScreen()) {
+          separateScreenStreamIdRef.current = stream.id;
+          announce(true, stream.id);
+          let inFlight = Promise.resolve();
+          let nativeRecipients: string | undefined;
+          const refresh = (forceFallback = false) => {
+            inFlight = inFlight.then(async () => {
+              if (refreshSfuScreenRouteRef.current !== refresh || screenTrack.readyState !== 'live') return;
+              if (!forceFallback && canUseNativeScreen()) {
+                const recipients = Array.from(participantsForMeshRef.current.values())
+                  .filter((participant) => participant.status === 'on-stage' && sfu.canPublishScreenTo([participant.id]))
+                  .map(({ id }) => id).sort().join(',');
+                if (recipients === nativeRecipients) return;
+                nativeRecipients = recipients;
+                await publishMeshScreen(true);
+                return;
+              }
+              refreshSfuScreenRouteRef.current = null;
+              sfu.setLocalScreenTracks(null, null);
+              if (canUseMeshScreen()) {
+                await publishMeshScreen(false);
+                return;
+              }
+              separateScreenStreamIdRef.current = null;
+              // Clear the old stream ID before announcing the combined share, which has no separate ID.
+              announce(false);
+              await publishScreenTrackRef.current(null);
+              if (screenTrack.readyState === 'live') await publishCombinedScreen();
+            }).catch((error) => console.warn('Screen transport switch failed:', error));
+          };
+          refreshSfuScreenRouteRef.current = refresh;
+          sfu.setLocalScreenTracks(screenTrack, screenAudioTrack);
+          refresh();
+        } else if (canUseMeshScreen()) {
+          separateScreenStreamIdRef.current = stream.id;
+          // Announce the separate stream before the receiver gets either track.
+          announce(true, stream.id);
+          await publishMeshScreen(false);
+        } else {
+          separateScreenStreamIdRef.current = null;
+          await publishCombinedScreen();
         }
         screenTrack.addEventListener('ended', async () => {
           stopPublishedScreenShareRef.current();
           await restoreCameraAfterScreen();
           announce(false);
         });
-        if (!separate) announce(true);
       } else {
         announce(true);
       }
@@ -3802,6 +3861,10 @@ export function StudioRoom() {
       console.warn('Screen share cancelled or failed:', err);
     }
   }, [isMeshPeerConnected]);
+
+  useEffect(() => {
+    refreshSfuScreenRouteRef.current?.();
+  }, [participants, reconnectingPeerIds, sfuTransportStatus]);
 
   // "Optimize for: Text / Motion" applies to a share in progress too.
   useEffect(() => {
@@ -4132,7 +4195,7 @@ export function StudioRoom() {
       localStream,
       participants,
       remoteStreams,
-      remoteScreenStreams: meshRemoteScreenStreams,
+      remoteScreenStreams,
       screenStream,
       isScreenSharing,
       programSource,
@@ -4158,7 +4221,7 @@ export function StudioRoom() {
     participants,
     recordingReadiness.canStart,
     remoteStreams,
-    meshRemoteScreenStreams,
+    remoteScreenStreams,
     screenStream,
     startLocalRecording,
   ]);
@@ -4589,6 +4652,8 @@ export function StudioRoom() {
           void setAudioForwardingEnabled(true);
           void setVideoForwardingEnabled(true);
         },
+        onScreenPeersChange: () => { refreshSfuScreenRouteRef.current?.(); },
+        onScreenError: () => { refreshSfuScreenRouteRef.current?.(true); },
         onError: failToMesh,
         onClose: () => {
           if (cancelled || sfuSessionRef.current !== session) return;
@@ -6195,7 +6260,7 @@ export function StudioRoom() {
       if (p.status === 'on-stage') {
         // A separate screen stream keeps the camera on stage beside the screen;
         // otherwise (SFU) the screen has replaced the camera.
-        const separateScreen = p.screenSharing ? meshRemoteScreenStreams.get(id) || null : null;
+        const separateScreen = p.screenSharing ? remoteScreenStreams.get(id) || null : null;
         const screenReplacesCamera = Boolean(p.screenSharing) && !separateScreen;
         items.push({ id, name: screenReplacesCamera ? `${p.name}'s screen` : p.name, stream: remoteStreams.get(id) || null, isLocal: false, audioEnabled: p.audioEnabled, audibleWhileMuted: !screenReplacesCamera, videoEnabled: screenReplacesCamera ? true : p.videoEnabled, volume: participantVolumes[id] ?? 1, isScreenShare: screenReplacesCamera, connectionHealth: peerBandwidthHealth.get(id) || null, reconnecting: reconnectingPeerIds.has(id) });
         // A shared tab's sound plays with the screen tile.
@@ -6203,7 +6268,7 @@ export function StudioRoom() {
       }
     }
     return items;
-  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, meshRemoteScreenStreams, isScreenSharing, screenStream, participantVolumes, screenVolume, peerBandwidthHealth, reconnectingPeerIds]);
+  }, [myParticipant, participants, localStream, effectiveAudioEnabled, effectiveVideoEnabled, remoteStreams, remoteScreenStreams, isScreenSharing, screenStream, participantVolumes, screenVolume, peerBandwidthHealth, reconnectingPeerIds]);
 
   const localPresenterCameraItem = useMemo((): StageVideoItem | null => {
     if (!myParticipant || !isStudioOperator(myParticipant) || myParticipant.status === 'green-room') return null;
