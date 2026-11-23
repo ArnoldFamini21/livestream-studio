@@ -4,6 +4,7 @@ export function observeCaptureResources() {
     timeOrigin: performance.timeOrigin,
     longTasks: { count: 0, totalMs: 0, longest: [] },
     programCanvases: [],
+    cameraFrames: { intervalMs: 1000, maxSamples: 1300, busyPolls: 0, samples: [] },
     writes: { count: 0, pending: 0, peakPending: 0, pendingBytes: 0, peakPendingBytes: 0, longestWriteMs: 0, longestCloseMs: 0, longest: [] },
   };
   if (window.PerformanceObserver?.supportedEntryTypes.includes("longtask")) {
@@ -20,6 +21,55 @@ export function observeCaptureResources() {
       }
     }).observe({ type: "longtask", buffered: true });
   }
+
+  // Sample only the live 720p ISO input and use at most one stats request
+  // per seat per interval. The track id excludes the separate program canvas.
+  const camera = state.cameraFrames;
+  const isCameraInput = track => track.kind === "video" && track.width === 1280 && track.height === 720;
+  let reading = false;
+  setInterval(async () => {
+    const soak = window.__soak;
+    const recorder = soak?.recorders.find(row => row.startRequested !== null && row.stopRequested === null
+      && row.stopped === null && row.settings.some(isCameraInput));
+    if (!recorder || camera.samples.length >= camera.maxSamples) return;
+    if (reading) {
+      camera.busyPolls++;
+      return;
+    }
+    const trackId = recorder.settings.find(isCameraInput).trackId;
+    const sample = { requestedAtMs: performance.now(), recorderId: recorder.id, trackId, status: "no-sender" };
+    reading = true;
+    try {
+      for (const [peer, peerId] of soak.peers) {
+        if (peer.connectionState !== "connected") continue;
+        const sender = peer.getSenders().find(candidate => candidate.track?.id === trackId);
+        if (!sender) continue;
+        sample.peerId = peerId;
+        const stats = await sender.getStats();
+        sample.status = "no-counter";
+        for (const source of stats.values()) {
+          if (source.type !== "media-source" || source.kind !== "video" || source.trackIdentifier !== trackId || !Number.isFinite(source.frames)) continue;
+          Object.assign(sample, {
+            status: "ok",
+            sourceId: source.id,
+            sourceTimestampMs: source.timestamp,
+            frames: source.frames,
+            framesPerSecond: source.framesPerSecond,
+            width: source.width,
+            height: source.height,
+          });
+          break;
+        }
+        break;
+      }
+    } catch {
+      sample.status = "stats-error";
+    } finally {
+      sample.receivedAtMs = performance.now();
+      camera.samples.push(sample);
+      reading = false;
+    }
+  }, camera.intervalMs);
 
   const canvases = new WeakMap();
   const canvas = window.HTMLCanvasElement.prototype;

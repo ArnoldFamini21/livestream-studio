@@ -61,10 +61,16 @@ drift below 40 ms; fixed initial offsets are reported separately. This does not
 prove lip-sync with real hardware. See `e2e/recording-soak.mjs` for output and
 parallel-build settings.
 
-The soak reports browser long tasks, full-canvas paint cadence and draw call
-time, chunk dispatch gaps, and pending writes and hashes. Compare those with
-encoded packet timing. A long disk write or recorder event interval alone does
-not mean that media packets were lost.
+The soak reports browser long tasks, full-canvas paint cadence, draw call time,
+chunk dispatch gaps, and pending writes and hashes. Each seat also samples the
+active ISO camera’s matching WebRTC `media-source` frame counter once per second
+with a limit of 1,300 samples. Compare deltas only within one peer and source id.
+Missing samples, peer changes and counter resets are visible in the evidence.
+
+Browser event, sample request and write times share a page clock. Add the page’s
+`resources.timeOrigin` to compare seats. To correlate a gap in an encoded track,
+add its time from the first packet to the recorder’s `startRequested`. The exact
+encoder start can fall later, so use this mapping as an estimate.
 
 For an encoder comparison, `SOAK_SECONDS=20 node e2e/recording-isolation.mjs`
 records a single 720p camera and then a single 1080p canvas with one scaled

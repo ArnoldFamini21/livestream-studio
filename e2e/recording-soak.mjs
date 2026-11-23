@@ -45,7 +45,7 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
   // Exercise the real user-selectable preset, matching the short CI suite.
   // The program remains the production 1920x1080 compositor output.
   try { sessionStorage.setItem("preferredVideoQuality", "720p"); } catch { /* storage unavailable */ }
-  const state = window.__soak = { recorders: [], channels: [], sockets: [], errors: [], transferSignals: [] };
+  const state = window.__soak = { recorders: [], channels: [], sockets: [], peers: new Map(), errors: [], transferSignals: [] };
   const nativeRecorder = window.MediaRecorder;
   window.MediaRecorder = class extends nativeRecorder {
     static isTypeSupported(mimeType) {
@@ -62,10 +62,11 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
         kinds: tracks.map(track => track.kind),
         settings: tracks.map(track => {
           const { width, height, frameRate, sampleRate, channelCount } = track.getSettings();
-          return { kind: track.kind, width, height, frameRate, sampleRate, channelCount };
+          return { kind: track.kind, ...(track.kind === "video" ? { trackId: track.id } : {}), width, height, frameRate, sampleRate, channelCount };
         }),
         startRequested: null,
         started: null,
+        firstChunkDispatchedAt: null,
         lastChunkDispatchedAt: null,
         stopRequested: null,
         stopped: null,
@@ -73,6 +74,7 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
         bytes: 0,
         peakHashQueueBytes: 0,
         largestChunkDispatchGapMs: 0,
+        largestChunkDispatchGapStartedAtMs: null,
         flushed: false,
         chunkChecksums: [],
       };
@@ -87,8 +89,10 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
         row.chunks += 1;
         row.bytes += data.size;
         const at = performance.now();
-        if (row.lastChunkDispatchedAt !== null) {
-          row.largestChunkDispatchGapMs = Math.max(row.largestChunkDispatchGapMs, at - row.lastChunkDispatchedAt);
+        row.firstChunkDispatchedAt ??= at;
+        if (row.lastChunkDispatchedAt !== null && at - row.lastChunkDispatchedAt > row.largestChunkDispatchGapMs) {
+          row.largestChunkDispatchGapMs = at - row.lastChunkDispatchedAt;
+          row.largestChunkDispatchGapStartedAtMs = row.lastChunkDispatchedAt;
         }
         row.lastChunkDispatchedAt = at;
         pendingHashBytes += data.size;
@@ -167,9 +171,18 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
       noteControl("received", event.data);
     });
   }
+  let nextPeerId = 0;
   window.RTCPeerConnection = class extends nativePeer {
-    constructor(...args) { super(...args); this.addEventListener("datachannel", event => observeChannel(event.channel)); }
+    constructor(...args) {
+      super(...args);
+      state.peers.set(this, nextPeerId++);
+      this.addEventListener("datachannel", event => observeChannel(event.channel));
+    }
     createDataChannel(...args) { const channel = super.createDataChannel(...args); observeChannel(channel); return channel; }
+    close() {
+      state.peers.delete(this);
+      return super.close();
+    }
   };
   if (folder) window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle("soak-recording-folder", { create: true });
 }
@@ -298,6 +311,7 @@ try {
     for (const socket of sockets) socket.close(3001, "Synthetic soak reconnect");
     return { atSeconds: performance.now() / 1000, interruptedChannels: transfers.length, interruptedSockets: sockets.length, sentMediaBytesBefore, previousChannels };
   });
+  result.reconnect.participant = seatNames[1];
   await reconnectGuest.waitForFunction(previous => window.__soak.channels.slice(previous).some(row => row.label === "rec-transfer" && row.channel.readyState === "open" && row.messages > 0 && row.sentMediaBytes > 0), result.reconnect.previousChannels, { timeout: 60_000, polling: 500 });
   result.reconnect.reconnected = true;
   result.reconnect.sentMediaBytesAfter = await reconnectGuest.evaluate(previous => window.__soak.channels.slice(previous).filter(row => row.label === "rec-transfer").reduce((sum, row) => sum + row.sentMediaBytes, 0), result.reconnect.previousChannels);
@@ -349,13 +363,14 @@ try {
     assert.ok(manifest.tracks.some(track => track.participantName === name && track.kind === "audio"), `${name} has an isolated microphone recording`);
   }
   assert.equal(manifest.tracks.filter(track => track.origin === "guest-transfer").length, 4, "both guests transfer their ISO and audio tracks");
-  const diagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
+  const diagnostics = await Promise.all(pages.map((page, index) => page.evaluate(participant => ({
+    participant,
     recorders: window.__soak.recorders.map(({ chunkChecksums, ...row }) => row),
     channels: window.__soak.channels.map(({ channel, ...row }) => ({ ...row, state: channel.readyState })),
     transferSignals: window.__soak.transferSignals,
     errors: window.__soak.errors,
     resources: window.__captureResources,
-  }))));
+  }), seatNames[index])));
   result.diagnostics = diagnostics;
   assert.ok(diagnostics[0].channels.filter(row => row.label === "rec-transfer").reduce((sum, row) => sum + row.receivedBytes, 0) > 1_000_000, "host received recording bytes through real RTC data channels");
   assert.deepEqual(diagnostics.flatMap(item => item.errors), [], "passive source checksum capture succeeded");
@@ -413,13 +428,14 @@ try {
   process.exitCode = 1;
   await saveResult();
   if (pages[0]) result.failureFolder = await folderFiles(pages[0]).catch(failure => ({ error: String(failure) }));
-  result.failureDiagnostics = await Promise.all(pages.map(page => page.evaluate(() => ({
+  result.failureDiagnostics = await Promise.all(pages.map((page, index) => page.evaluate(participant => ({
+    participant,
     recorders: window.__soak?.recorders.map(({ chunkChecksums, ...row }) => row),
     errors: window.__soak?.errors,
     channels: window.__soak?.channels.map(({ channel, ...row }) => ({ ...row, state: channel.readyState })),
     transferSignals: window.__soak?.transferSignals,
     resources: window.__captureResources,
-  })).catch(failure => ({ error: String(failure) }))));
+  }), seatNames[index]).catch(failure => ({ participant: seatNames[index], error: String(failure) }))));
   await saveResult();
   await Promise.allSettled(pages.map((page, index) => screenshot(page, artifactDir, `failure-${index}`)));
 } finally {
