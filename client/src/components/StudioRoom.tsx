@@ -1709,6 +1709,7 @@ export function StudioRoom() {
     isOperator: isHostOrCoHost,
     participants,
     cloudAvailable: mediaServerHealth.status !== 'unavailable' && mediaServerHealth.recordingStorage?.ready === true,
+    reviewOpen: showRecordingPanel,
     keepAwake: isRecording || isLive || testStreamOnAir || isLocalRecording || isParticipantLocalRecording || myParticipant?.status === 'on-stage',
     getLocalTracks: getParticipantTransferTracks,
     localTracksVersion: participantTransferVersion,
@@ -3902,9 +3903,6 @@ export function StudioRoom() {
               const folderName = recordingWorkflowRef.current.destination.folderName || 'your recording folder';
               addToast(`Recording saved to ${folderName}/${folderTake.folder.path}. Guests’ tracks keep arriving in the same folder.`, 'success');
               setShowRecordingPanel(true);
-              void recordingWorkflowRef.current.waitForHostSettled(30 * 60_000).then((settled) => {
-                if (settled && recordingWorkflowRef.current.transfers.length > 0) addToast('Every guest track is in your recording folder.', 'success');
-              });
             } else {
               try {
                 if (mediaServerHealth.status === 'unavailable') {
@@ -4042,8 +4040,16 @@ export function StudioRoom() {
         }
         if (streams.size === 0) return;
         const recordingSessionId = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const plannedProgram = [...streams.values()].map(track => ({
+          participantName: 'Program', label: track.name, kind: track.kind ?? 'program', origin: 'program' as const,
+        }));
+        const plannedHost = buildParticipantRecordingSources({
+          localParticipant: myParticipant, localStream, screenStream, isScreenSharing,
+        }).map(track => ({
+          participantName: myParticipant.name, label: track.label, kind: track.kind, origin: 'host' as const,
+        }));
         const folderTake = startCheck.folderReady
-          ? await recordingWorkflowRef.current.beginTake(recordingSessionId, myParticipant.name)
+          ? await recordingWorkflowRef.current.beginTake(recordingSessionId, myParticipant.name, [...plannedProgram, ...plannedHost])
           : null;
         if (!folderTake && recordingWorkflowRef.current.destination.status === 'none') {
           addToast('Recording to browser storage. Choose a recording folder in Recordings to record straight to your SSD.', 'info');
@@ -8663,6 +8669,10 @@ export function StudioRoom() {
                   preferences={recordingWorkflow.destination.preferences}
                   cloudAvailable={recordingWorkflow.cloudAvailable}
                   transfers={recordingWorkflow.transfers}
+                  checklists={recordingWorkflow.takeChecklists}
+                  checklistError={recordingWorkflow.destination.takeHistoryError}
+                  retryableGuests={recordingWorkflow.retryableGuests}
+                  onRetryGuestTake={recordingWorkflow.retryGuestTake}
                   disabled={isRecording || isLocalRecording}
                   onChooseFolder={() => void recordingWorkflow.destination.chooseFolder()}
                   onReconnectFolder={() => void recordingWorkflow.destination.reconnectFolder()}

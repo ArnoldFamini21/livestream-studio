@@ -178,14 +178,15 @@ export function createFolderTrackWriter(
   fileName: string,
   path: string,
   options: FolderTrackWriterOptions = {},
+  savedParts: Blob[] = [],
 ): FolderTrackWriter {
   const partBytes = Math.max(64 * 1024, options.partBytes ?? DEFAULT_PART_BYTES);
   const partMs = Math.max(250, options.partMs ?? DEFAULT_PART_MS);
   const now = options.now ?? (() => Date.now());
   const partsName = `${fileName}.parts`;
   let partsDirectory: Promise<TakeDirectoryHandle> | undefined;
-  const committed: Blob[] = [];
-  let committedSize = 0;
+  const committed = [...savedParts];
+  let committedSize = committed.reduce((total, part) => total + part.size, 0);
   let pending: Blob[] = [];
   let pendingSize = 0;
   let firstPendingAt = 0;
@@ -320,6 +321,7 @@ export interface TakeFolder {
   readonly takeName: string;
   readonly directory: TakeDirectoryHandle;
   createTrackWriter(participantName: string, fileName: string, options?: FolderTrackWriterOptions): Promise<FolderTrackWriter>;
+  reopenTrackWriter(path: string, available: number): Promise<FolderTrackWriter | null>;
   /**
    * The folder name for one participant (by a stable key such as the
    * participant id), unique within the take: two guests both called "Maria"
@@ -327,6 +329,7 @@ export interface TakeFolder {
    * write into the host's folder.
    */
   participantFolder(ownerKey: string, participantName: string): string;
+  reserveExistingParticipants(): Promise<void>;
   writeJson(name: string, value: unknown): Promise<void>;
 }
 
@@ -337,6 +340,53 @@ export async function openTakeFolder(
   const studioName = recordingPathSegment(input.studioName, 'Studio', 64);
   const studio = await root.getDirectoryHandle(studioName, { create: true });
   const take = await createFreshDirectory(studio, formatTakeFolderName(input.startedAt, input.suffix));
+  return createTakeFolder(studioName, take.name, take.directory);
+}
+
+export async function reopenTakeFolder(
+  root: TakeDirectoryHandle,
+  studioName: string,
+  takeName: string,
+): Promise<TakeFolder> {
+  const studio = await root.getDirectoryHandle(studioName);
+  const take = await studio.getDirectoryHandle(takeName);
+  return createTakeFolder(studioName, takeName, take);
+}
+
+export function takeTrackSegments(folder: string, path: string): [string, string] | null {
+  if (!path.startsWith(folder + '/')) return null;
+  const parts = path.slice(folder.length + 1).split('/');
+  if (parts.length !== 2 || parts.some(part => !part || part === '.' || part === '..' || /[\\\x00-\x1f]/.test(part))) return null;
+  return [parts[0], parts[1]];
+}
+
+async function readCommittedTakeParts(directory: TakeDirectoryHandle, fileName: string): Promise<Blob[] | null> {
+  let parts: TakeDirectoryHandle;
+  try { parts = await directory.getDirectoryHandle(fileName + '.parts'); }
+  catch (error) {
+    if (isNamedError(error, 'NotFoundError')) return [];
+    throw error;
+  }
+  const indexed: string[] = [];
+  for await (const name of parts.keys()) {
+    if (/^\d{6}\.part$/.test(name)) indexed.push(name);
+    if (indexed.length > 50_000) return null;
+  }
+  indexed.sort();
+  const files: Blob[] = [];
+  for (const [index, name] of indexed.entries()) {
+    if (name !== String(index + 1).padStart(6, '0') + '.part') return null;
+    const chunk = await (await parts.getFileHandle(name)).getFile();
+    // A browser may have created a zero-length tail before crashing.
+    if (!chunk.size && index === indexed.length - 1) break;
+    if (!chunk.size) return null;
+    files.push(chunk);
+  }
+  return files;
+}
+
+function createTakeFolder(studioName: string, takeName: string, directory: TakeDirectoryHandle): TakeFolder {
+  const takePath = `${studioName}/${takeName}`;
   const participantDirectories = new Map<string, Promise<{ name: string; directory: TakeDirectoryHandle }>>();
   const reservedNames = new Map<string, Set<string>>();
   let jsonQueue: Promise<void> = Promise.resolve();
@@ -346,7 +396,7 @@ export async function openTakeFolder(
     const key = name.toLowerCase();
     let entry = participantDirectories.get(key);
     if (!entry) {
-      entry = take.directory.getDirectoryHandle(name, { create: true }).then((directory) => ({ name, directory }));
+      entry = directory.getDirectoryHandle(name, { create: true }).then((directory) => ({ name, directory }));
       participantDirectories.set(key, entry);
       entry.catch(() => participantDirectories.delete(key));
     }
@@ -369,21 +419,50 @@ export async function openTakeFolder(
   };
 
   return {
-    path: `${studioName}/${take.name}`,
+    path: takePath,
     studioName,
-    takeName: take.name,
-    directory: take.directory,
+    takeName,
+    directory,
     participantFolder,
+    async reserveExistingParticipants() {
+      for await (const name of directory.keys()) ownedFolders.add(name.toLowerCase());
+    },
     async createTrackWriter(participantName, fileName, options) {
       const { name, directory } = await participantDirectory(participantName);
       const reserved = reservedNames.get(name.toLowerCase()) || new Set<string>();
       reservedNames.set(name.toLowerCase(), reserved);
       const unique = await uniqueFileName(directory, recordingPathSegment(fileName, 'track.webm', 120), reserved);
-      return createFolderTrackWriter(directory, unique, `${studioName}/${take.name}/${name}/${unique}`, options);
+      return createFolderTrackWriter(directory, unique, `${takePath}/${name}/${unique}`, options);
+    },
+    async reopenTrackWriter(path, available) {
+      const segments = takeTrackSegments(takePath, path);
+      if (!segments) return null;
+      const [name, file] = segments;
+      let participant: TakeDirectoryHandle;
+      try { participant = await directory.getDirectoryHandle(name); }
+      catch (error) {
+        if (isNamedError(error, 'NotFoundError')) return null;
+        throw error;
+      }
+      try {
+        const existing = await (await participant.getFileHandle(file)).getFile();
+        // Never replace a completed recording or a different file.
+        if (existing.size || !participant.removeEntry) return null;
+        await participant.removeEntry(file);
+      } catch (error) {
+        if (isNamedError(error, 'TypeMismatchError')) return null;
+        if (!isNamedError(error, 'NotFoundError')) throw error;
+      }
+      const parts = await readCommittedTakeParts(participant, file);
+      if (!parts || parts.reduce((sum, part) => sum + part.size, 0) > available) return null;
+      const reserved = reservedNames.get(name.toLowerCase()) || new Set<string>();
+      reserved.add(file.toLowerCase());
+      reservedNames.set(name.toLowerCase(), reserved);
+      return createFolderTrackWriter(participant, file, path, {}, parts);
     },
     writeJson(name, value) {
       // Serialise writes: the manifest is rewritten as tracks arrive.
-      const run = jsonQueue.then(() => writeWholeFile(take.directory, name, new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: 'application/json' })).then(() => {}));
+      const run = jsonQueue.then(() => writeWholeFile(directory, name, new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: 'application/json' })).then(() => {}));
       jsonQueue = run.catch(() => {});
       return run;
     },

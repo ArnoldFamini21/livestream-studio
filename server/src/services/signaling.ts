@@ -3456,6 +3456,7 @@ function handleRecordingTransferSignal(
 
   const options = isRecord(payload.options)
     ? {
+        ...(payload.kind === 'invite' && payload.sessionId && payload.options.retrySessionOnly === true ? { retrySessionOnly: true } : {}),
         ...(typeof payload.options.losslessAudio === 'boolean' ? { losslessAudio: payload.options.losslessAudio } : {}),
         ...(typeof payload.options.cloudUpload === 'boolean' ? { cloudUpload: payload.options.cloudUpload } : {}),
       }

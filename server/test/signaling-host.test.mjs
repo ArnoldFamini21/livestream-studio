@@ -846,6 +846,26 @@ describe('progressive recording upload reporting', () => {
       assert.equal(received.payload.sessionId, 'recording-progress-123');
       assert.deepEqual(received.payload.options, { losslessAudio: true, cloudUpload: false });
 
+      const requested = waitForMessage(guest, 'recording-transfer-signal');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: {
+          targetParticipantId: guestId,
+          transferId: 'take-retry',
+          kind: 'invite',
+          sessionId: 'recording-progress-123',
+          options: { retrySessionOnly: true },
+        },
+      });
+      assert.equal((await requested).payload.options.retrySessionOnly, true);
+
+      const unscoped = waitForMessage(guest, 'recording-transfer-signal');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'unscoped', kind: 'invite', options: { retrySessionOnly: true } },
+      });
+      assert.equal((await unscoped).payload.options.retrySessionOnly, undefined);
+
       const offer = waitForMessage(host, 'recording-transfer-signal');
       sendSignal(guest, {
         type: 'recording-transfer-signal',

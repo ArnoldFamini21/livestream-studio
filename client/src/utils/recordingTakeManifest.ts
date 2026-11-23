@@ -97,7 +97,17 @@ export function getTrackStartOffsetsSeconds(files: Array<{ capture?: unknown }>)
   return starts.map((start) => (start === null ? 0 : Math.max(0, Math.round(start - origin) / 1000)));
 }
 
+export interface ExpectedTakeTrack {
+  participantId?: string;
+  participantName: string;
+  label: string;
+  kind: string;
+  origin: TakeManifestTrackInput['origin'];
+  lossless?: boolean;
+}
+
 export interface TakeManifestTrackInput {
+  trackId?: string;
   participantId?: string;
   participantName: string;
   label: string;
@@ -115,6 +125,7 @@ export interface TakeManifestTrackInput {
 }
 
 export interface TakeManifestTrack {
+  trackId?: string;
   participantId?: string;
   participantName: string;
   label: string;
@@ -151,6 +162,7 @@ export interface TakeManifest {
   alignment: string;
   pauses: Array<{ startOffsetMs: number; endOffsetMs: number }>;
   tracks: TakeManifestTrack[];
+  expectedTracks?: ExpectedTakeTrack[];
   updatedAt: string;
 }
 
@@ -164,6 +176,7 @@ export function buildTakeManifest(input: {
   timeOrigin?: number;
   pauses?: Array<{ startMs: number; endMs?: number }>;
   tracks: TakeManifestTrackInput[];
+  expectedTracks?: ExpectedTakeTrack[];
   now?: number;
 }): TakeManifest {
   const origin = input.startedAtMs;
@@ -184,12 +197,14 @@ export function buildTakeManifest(input: {
       startOffsetMs: relative(pause.startMs),
       endOffsetMs: relative(pause.endMs ?? input.stoppedAtMs ?? pause.startMs),
     })),
+    ...(input.expectedTracks?.length ? { expectedTracks: input.expectedTracks } : {}),
     tracks: input.tracks.map((track) => {
       const capture = normalizeRecordingCaptureMetadata(track.capture);
       const timeline = capture?.timeline;
       const offset = timeline?.clockOffsetMs ?? 0;
       const start = getAlignedTrackStartMs(capture);
       return {
+        ...(track.trackId ? { trackId: track.trackId } : {}),
         ...(track.participantId ? { participantId: track.participantId } : {}),
         participantName: track.participantName,
         label: track.label,

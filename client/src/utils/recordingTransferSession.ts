@@ -334,6 +334,8 @@ export interface ReceivedTrackSink {
   write(bytes: Uint8Array): Promise<void>;
   /** Bytes the sink has accepted so far. */
   accepted(): number;
+  /** A previous visit already closed and size-verified this exact track. */
+  savedFile?: { bytes: number; path: string; file: Blob };
   finish(options: { header?: Uint8Array; totalBytes: number }): Promise<{ bytes: number; path: string; file?: Blob }>;
 }
 
@@ -390,10 +392,10 @@ export class HostTransferRegistry {
     participantId: string;
     participantName: string;
     track: TransferTrackAnnouncement;
-  }) => Promise<ReceivedTrackSink>, private readonly onTrackComplete?: (entry: ReceivedTrackEntry) => void) {}
+  }) => Promise<ReceivedTrackSink>, private readonly onTrackComplete?: (entry: ReceivedTrackEntry) => void | Promise<void>) {}
 
-  reportComplete(entry: ReceivedTrackEntry): void {
-    try { this.onTrackComplete?.(entry); } catch { /* Library/manifest updates are best-effort. */ }
+  async reportComplete(entry: ReceivedTrackEntry): Promise<void> {
+    await this.onTrackComplete?.(entry);
   }
 
   subscribe(listener: () => void): () => void {
@@ -535,6 +537,7 @@ export interface TransferReceiverOptions {
   channel: TransferChannel;
   participantId: string;
   registry: HostTransferRegistry;
+  allowedSessionId?: string;
   now?: () => number;
   /** Clock-sync pings at connect, then this often. */
   pingIntervalMs?: number;
@@ -589,6 +592,7 @@ export function createTransferReceiver(options: TransferReceiverOptions): Transf
   };
 
   const addLane = async (track: TransferTrackAnnouncement) => {
+    if (options.allowedSessionId && track.sessionId !== options.allowedSessionId) return;
     if (!registry.tracks.has(track.id)) {
       const refusal = trackAdmissionError(registry.tracks.values(), participantId, track, limits);
       if (refusal) {
@@ -597,6 +601,8 @@ export function createTransferReceiver(options: TransferReceiverOptions): Transf
       }
     }
     const entry = registry.ensureTrack(participantId, participantName, track);
+    if (entry.finishing) await entry.finishing;
+    if (closed) return;
     if (entry.status === 'complete') {
       sendControl({ t: 'done', id: entry.id, bytes: entry.received, ok: true, ...(entry.path ? { path: entry.path } : {}) });
       return;
@@ -610,6 +616,12 @@ export function createTransferReceiver(options: TransferReceiverOptions): Transf
     }
     // Pending writes from an earlier connection decide where we really are.
     await entry.writes;
+    if (closed) return;
+    const sink = await entry.sink.catch(() => null);
+    if (sink?.savedFile && track.totalBytes === sink.savedFile.bytes) {
+      finishTrack(track.id, track.totalBytes, track.header, track.capture);
+      return;
+    }
     if (entry.status !== 'receiving') { refuseTrack(entry); return; }
     refused.delete(track.id);
     lanes.set(track.lane, { id: track.id, state: createLaneReceiveState(entry.received) });
@@ -618,6 +630,9 @@ export function createTransferReceiver(options: TransferReceiverOptions): Transf
 
   const finishTrack = (id: string, totalBytes: number, header?: string, capture?: unknown) => {
     const entry = registry.tracks.get(id);
+    if (entry && (entry.participantId !== participantId
+        || (options.allowedSessionId && entry.announcement.sessionId !== options.allowedSessionId))) return;
+    if (entry?.finishing) return;
     if (!entry || entry.status === 'complete') {
       if (entry) sendControl({ t: 'done', id, bytes: entry.received, ok: true, ...(entry.path ? { path: entry.path } : {}) });
       return;
@@ -642,19 +657,21 @@ export function createTransferReceiver(options: TransferReceiverOptions): Transf
         return;
       }
       try {
+        if (entry.received !== totalBytes) throw new Error('The announced recording size does not match the bytes received.');
         const sink = await entry.sink;
-        const result = await sink.finish({ totalBytes: entry.received, ...(header ? { header: base64ToBytes(header) } : {}) });
+        const result = await sink.finish({ totalBytes, ...(header ? { header: base64ToBytes(header) } : {}) });
         entry.status = 'complete';
         entry.path = result.path;
         entry.received = result.bytes;
         if (result.file) entry.file = result.file;
+        await registry.reportComplete(entry);
         sendControl({ t: 'done', id, bytes: result.bytes, ok: true, path: result.path });
-        registry.reportComplete(entry);
       } catch (error) {
         entry.status = 'failed';
         entry.error = error instanceof Error ? error.message : 'The track could not be saved.';
         refuseTrack(entry);
       }
+      entry.finishing = undefined;
       registry.notify();
     })();
   };

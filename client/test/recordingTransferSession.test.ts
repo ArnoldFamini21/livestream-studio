@@ -112,7 +112,7 @@ describe('peer-to-peer recording transfer', () => {
     const { guest, host } = channelPair();
     const sink = memorySink();
     const completed: string[] = [];
-    const registry = new HostTransferRegistry(sink.open, (entry) => completed.push(entry.id));
+    const registry = new HostTransferRegistry(sink.open, (entry) => { completed.push(entry.id); });
     const receiver = createTransferReceiver({ channel: host, participantId: 'guest-1', registry, pingIntervalMs: 60_000 });
     const payload = bytes(10_000);
     const track = growingTrack('take-maria', payload);
@@ -145,6 +145,41 @@ describe('peer-to-peer recording transfer', () => {
     assert.equal(sender.progress().deliveredAll, true);
     sender.close();
     receiver.close();
+  });
+
+  it('limits a retry to its requested take and waits for the host manifest before acknowledging', async (t) => {
+    const { guest, host } = channelPair();
+    const sink = memorySink();
+    let allowManifest!: () => void;
+    const manifest = new Promise<void>((resolve) => { allowManifest = resolve; });
+    let writingManifest = false;
+    const registry = new HostTransferRegistry(sink.open, async () => {
+      writingManifest = true;
+      await manifest;
+    });
+    const receiver = createTransferReceiver({
+      channel: host, participantId: 'guest-1', registry, allowedSessionId: 'recording-1', pingIntervalMs: 60_000,
+    });
+    const wanted = growingTrack('wanted', bytes(2048));
+    wanted.finish();
+    const unrelated = growingTrack('unrelated', bytes(512));
+    unrelated.finish();
+    unrelated.sessionId = 'recording-2';
+    const delivered: string[] = [];
+    const sender = createTransferSender({
+      channel: guest, participantName: 'Maria', getTracks: () => [wanted, unrelated],
+      pollMs: 20, onDelivered: (id) => delivered.push(id),
+    });
+    t.after(() => { allowManifest(); sender.close(); receiver.close(); });
+
+    await until(() => writingManifest);
+    assert.equal(registry.tracks.has(unrelated.id), false);
+    assert.deepEqual(delivered, []);
+    assert.ok(registry.tracks.get(wanted.id)?.finishing);
+    allowManifest();
+    await until(() => delivered.length === 1);
+    assert.deepEqual(delivered, [wanted.id]);
+    assert.equal(registry.tracks.get(wanted.id)?.status, 'complete');
   });
 
   it('resumes from the bytes the host already saved after a reconnect, without duplicates', async () => {

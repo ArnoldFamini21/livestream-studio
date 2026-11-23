@@ -931,6 +931,8 @@ export interface RecordingUploadControlPayload {
 export type RecordingTransferSignalKind = 'invite' | 'offer' | 'answer' | 'hangup' | 'ready';
 
 export interface RecordingTransferSignalOptions {
+  /** Re-offer only retained, undelivered tracks for the invited recording session. */
+  retrySessionOnly?: boolean;
   /** Ask participants to also capture a lossless 48 kHz WAV of their microphone. */
   losslessAudio?: boolean;
   /** Keep the media-server upload running beside the peer-to-peer transfer. */
