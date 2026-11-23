@@ -6,7 +6,6 @@ import {
 } from "../utils/recordingClipBatch.ts";
 import { buildClipFileName, captureRecordingClip, formatClipTimecode, type ClipRenderOptions } from "../utils/recordingClips.ts";
 import type { TranscriptWord } from "../utils/transcriptCleanup.ts";
-import "../styles/recording-clip-batch.css";
 
 export interface BatchClipOutput {
   blob: Blob;

@@ -22,6 +22,7 @@ import '@fontsource/inter/latin-900.css';
 import './styles/global.css';
 import './styles/recording-recovery.css';
 import './styles/recording-folder-save.css';
+import './styles/recording-clip-batch.css';
 
 const ResetPassword = React.lazy(() => import('./components/ResetPassword.tsx').then((module) => ({ default: module.ResetPassword })));
 const WatchPage = React.lazy(() => import('./components/WatchPage.tsx'));
