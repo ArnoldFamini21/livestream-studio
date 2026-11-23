@@ -26,6 +26,7 @@ import './styles/recording-clip-batch.css';
 
 const ResetPassword = React.lazy(() => import('./components/ResetPassword.tsx').then((module) => ({ default: module.ResetPassword })));
 const WatchPage = React.lazy(() => import('./components/WatchPage.tsx'));
+const FinishRecordingUpload = React.lazy(() => import('./components/FinishRecordingUpload.tsx'));
 const PopoutChat = React.lazy(() => import('./components/PopoutChat.tsx').then((module) => ({ default: module.PopoutChat })));
 
 function RouteFallback() {
@@ -55,6 +56,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/join/:roomId" element={<React.Suspense fallback={<RouteFallback />}><JoinRoom /></React.Suspense>} />
             <Route path="/reset-password" element={<React.Suspense fallback={<RouteFallback />}><ResetPassword /></React.Suspense>} />
             <Route path="/watch/:roomId" element={<React.Suspense fallback={<RouteFallback />}><WatchPage /></React.Suspense>} />
+            <Route path="/finish-upload" element={<React.Suspense fallback={<RouteFallback />}><FinishRecordingUpload /></React.Suspense>} />
             <Route path="/privacy" element={<PrivacyPolicy />} />
             <Route path="/terms" element={<TermsOfService />} />
             <Route path="*" element={<NotFound />} />

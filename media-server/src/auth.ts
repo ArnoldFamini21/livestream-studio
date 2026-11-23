@@ -1,11 +1,13 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { WATCH_TOKEN_PATTERN, validateWatchGrantClaims } from '@studio/shared';
+import { RECORDING_RECOVERY_IDENTIFIER, RECORDING_RECOVERY_SHA256, WATCH_TOKEN_PATTERN, validateWatchGrantClaims } from '@studio/shared';
 import type {
   LiveStreamTokenClaims,
   ParticipantRole,
   PresentationRenderTokenClaims,
   PremiereUploadClaims,
   RecordingUploadTokenClaims,
+  RecordingRecoveryCreateClaims,
+  RecordingRecoveryUploadClaims,
   SfuMembershipControlAction,
   SfuMembershipControlClaims,
   SfuTokenClaims,
@@ -31,7 +33,7 @@ function safeSignatureEquals(actual: string, expected: string): boolean {
 }
 
 export function signLiveStreamToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims | WatchGrantClaims | PremiereUploadClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims | WatchGrantClaims | PremiereUploadClaims | RecordingRecoveryCreateClaims | RecordingRecoveryUploadClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -112,6 +114,24 @@ export function verifyPremiereUploadToken(token: string, watchId: string, secret
       typeof claims.startsAt === 'number' && Number.isSafeInteger(claims.startsAt)
       ? claims as PremiereUploadClaims : null;
   } catch { return null; }
+}
+
+export function verifyRecordingRecoveryToken(token: string, secret: string, now: number): RecordingRecoveryCreateClaims | RecordingRecoveryUploadClaims | null {
+  if (!WATCH_TOKEN_PATTERN.test(token)) return null;
+  try {
+    const claims = verifyTokenPayload(token, secret) as Partial<RecordingRecoveryUploadClaims | RecordingRecoveryCreateClaims> | null;
+    if (claims?.v !== 1 ||
+        typeof claims.roomId !== 'string' || !RECORDING_RECOVERY_IDENTIFIER.test(claims.roomId) ||
+        typeof claims.takeId !== 'string' || !RECORDING_RECOVERY_IDENTIFIER.test(claims.takeId) ||
+        typeof claims.storageId !== 'string' || !RECORDING_RECOVERY_SHA256.test(claims.storageId) ||
+        typeof claims.exp !== 'number' || !Number.isSafeInteger(claims.exp) || claims.exp <= now) return null;
+    if (claims.purpose === 'recording-recovery-create') return claims as RecordingRecoveryCreateClaims;
+    if (claims.purpose === 'recording-recovery-upload' &&
+        typeof claims.participantId === 'string' && RECORDING_RECOVERY_IDENTIFIER.test(claims.participantId)) {
+      return claims as RecordingRecoveryUploadClaims;
+    }
+  } catch { /* Invalid signatures and invalid payloads are both unauthorized. */ }
+  return null;
 }
 
 export function verifyRecordingUploadToken(

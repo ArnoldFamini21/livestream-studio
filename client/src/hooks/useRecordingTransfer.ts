@@ -284,6 +284,7 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
     const channel = pc.createDataChannel(RECORDING_TRANSFER_CHANNEL_LABEL, { ordered: true });
     const sender = createTransferSender({
       channel: channel as unknown as TransferChannel,
+      getMaxMessageSize: () => pc.sctp?.maxMessageSize,
       participantName: self.name,
       getTracks: pendingGuestTracks,
       onDelivered: (trackId) => {

@@ -19,7 +19,7 @@ class FakeChannel implements TransferChannel {
   bufferedAmount = 0;
   bufferedAmountLowThreshold = 0;
   binaryType = 'blob';
-  maxMessageSize = 1024;
+  maxMessageSize: number | undefined = 1024;
   peer: FakeChannel | null = null;
   readonly sent: Array<string | ArrayBuffer> = [];
   /** Drop binary frames whose index matches (simulates a lost connection mid-flight). */
@@ -108,6 +108,33 @@ function growingTrack(id: string, total: Uint8Array): TransferSourceTrack & { gr
 }
 
 describe('peer-to-peer recording transfer', () => {
+  for (const [negotiatedLimit, expectedFrameSize] of [[24 * 1024, 24 * 1024], [256 * 1024, 64 * 1024], [undefined, 16 * 1024]] as const) {
+    it(`uses ${expectedFrameSize} byte frames with an SCTP limit of ${negotiatedLimit ?? 'unknown'}`, async (t) => {
+      const { guest, host } = channelPair();
+      guest.maxMessageSize = undefined;
+      guest.readyState = 'connecting';
+      let maxMessageSize: number | undefined;
+      const sink = memorySink();
+      const receiver = createTransferReceiver({ channel: host, participantId: 'guest-1', registry: new HostTransferRegistry(sink.open) });
+      const payload = bytes(160 * 1024 + 73);
+      const track = growingTrack('sctp-limit', payload);
+      track.finish();
+      const sender = createTransferSender({
+        channel: guest, getMaxMessageSize: () => maxMessageSize, participantName: 'Maria', getTracks: () => [track],
+      });
+      t.after(() => { sender.close(); receiver.close(); });
+
+      maxMessageSize = negotiatedLimit;
+      guest.readyState = 'open';
+      guest.emit('open');
+      await until(() => sender.progress().deliveredAll);
+      const frames = guest.sent.filter((message): message is ArrayBuffer => typeof message !== 'string');
+      assert.equal(frames[0]?.byteLength, expectedFrameSize);
+      assert.ok(frames.every(frame => frame.byteLength <= expectedFrameSize));
+      assert.deepEqual(sink.sinks[0].finished, payload);
+    });
+  }
+
   it('streams a growing track during the take and verifies the final size', async () => {
     const { guest, host } = channelPair();
     const sink = memorySink();

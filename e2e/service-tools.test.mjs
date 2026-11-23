@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import ffmpegStatic from 'ffmpeg-static';
-import { createStudio, screenshot, startHarness } from './harness.mjs';
+import { createStudio, screenshot, startHarness, openStudioTool } from './harness.mjs';
 
 const run = promisify(execFile);
 const artifactDir = path.join(process.env.E2E_ARTIFACT_DIR || path.resolve('output/e2e'), 'service-tools');
@@ -18,7 +18,7 @@ test('organizes portable service presets and lets a viewer toggle timed captions
     const { page: first } = await createStudio(hostContext, { url: fixture.url, name: 'Service preset source' });
     pages.set('source', first);
     async function openPresets(page) {
-      await page.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: 'Scenes', exact: true }).click();
+      await openStudioTool(page, 'Scenes');
       await page.getByText('Service presets', { exact: true }).click();
     }
     await first.evaluate(() => new Promise((resolve, reject) => {
@@ -99,7 +99,7 @@ test('organizes portable service presets and lets a viewer toggle timed captions
       .getByRole('button', { name: 'Add scenes from Sabbath service', exact: true }).click();
     await second.getByRole('button', { name: 'Switch to Service setup', exact: true }).click();
     await second.getByText('Added 1 scene.', { exact: true }).waitFor();
-    await second.getByRole('button', { name: 'Open invite panel', exact: true }).click();
+    await openStudioTool(second, 'Invite guests');
     const watchUrl = new URL(await second.getByLabel('Public watch page link', { exact: true }).inputValue());
     const watchId = watchUrl.pathname.split('/').at(-1);
     await second.getByRole('button', { name: 'Close invite panel', exact: true }).click();

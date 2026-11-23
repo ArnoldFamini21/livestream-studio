@@ -30,6 +30,7 @@ import {
 export interface TransferChannel {
   readonly readyState: string;
   readonly bufferedAmount: number;
+  readonly maxMessageSize?: number;
   bufferedAmountLowThreshold: number;
   binaryType?: string;
   send(data: string | ArrayBuffer): void;
@@ -70,6 +71,8 @@ export interface TransferSenderProgress {
 
 export interface TransferSenderOptions {
   channel: TransferChannel;
+  /** The SCTP limit can become available after the data channel is created. */
+  getMaxMessageSize?: () => number | undefined;
   participantName: string;
   getTracks: () => TransferSourceTrack[];
   onDelivered?: (trackId: string, path?: string) => void;
@@ -111,7 +114,7 @@ export function createTransferSender(options: TransferSenderOptions): TransferSe
   let pumpAgain = false;
   let closed = false;
   let helloSent = false;
-  const maxPayload = () => getFramePayloadBytes((channel as { maxMessageSize?: number }).maxMessageSize);
+  const maxPayload = () => getFramePayloadBytes(options.getMaxMessageSize?.() ?? channel.maxMessageSize);
 
   channel.binaryType = 'arraybuffer';
   channel.bufferedAmountLowThreshold = TRANSFER_LOW_WATER_BYTES;

@@ -59,10 +59,12 @@ import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts'
 import { SfuSocketSession } from '../utils/sfuSocket.ts';
 import { getSfuSessionParticipantId, mergeSfuMediaWithMeshFallback, shouldUseSeparateScreenShare, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
 import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
-import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
+import { PROGRAM_AUDIO_BITS_PER_SECOND, PROGRAM_VIDEO_BITS_PER_SECOND, useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
+import { preparePrimaryRecordingRecorder, useStreamingPrimaryRecording } from '../utils/primaryRecordingRecorder.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
 import { useRecordingWorkflow } from '../hooks/useRecordingWorkflow.ts';
+import { listPrivateRecoveryGrants, privateRecoveryAvailable, rememberPrivateRecoveryGrant, rememberPrivateRecoveryTake } from '../utils/recordingCloudRecovery.ts';
 import { RecordingDestinationPanel, RecordingTransferBadge } from './RecordingDestinationPanel.tsx';
 import { planParticipantRecording, shouldPauseOwnUploadWhileLive, type ParticipantRecordingPlan } from '../utils/recordingWorkflowPolicy.ts';
 import { isPcmWavRecordingSupported } from '../utils/pcmWavRecorder.ts';
@@ -111,6 +113,7 @@ import { useBackgroundMusicPlayer } from '../audio/useBackgroundMusicPlayer.ts';
 import { useSoundBoardPlayer } from '../audio/useSoundBoardPlayer.ts';
 import { useSessionHealth } from '../hooks/useSessionHealth.ts';
 import { SessionHealthPill } from './SessionHealthPill.tsx';
+import { summarizeHealthChecks, type HealthAudience } from '../utils/sessionHealthSummary.ts';
 import { StudioStatusAnnouncer } from './StudioStatusAnnouncer.tsx';
 import { useMediaServerHealth } from '../hooks/useMediaServerHealth.ts';
 import { useIsPortraitPhone } from '../hooks/usePortraitPhone.ts';
@@ -356,7 +359,6 @@ import { BroadcastScreenVideo } from './BroadcastScreenVideo.tsx';
 import { useBroadcastScreens } from '../hooks/useBroadcastScreens.ts';
 import { useToast } from './Toast.tsx';
 import { StudioMediaBanner } from './StudioMediaBanner.tsx';
-import { EmptyStageInvite } from './EmptyStageInvite.tsx';
 import { useRecordingCountdownMirror } from '../hooks/useRecordingCountdownMirror.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 import { PanelErrorBoundary } from './ErrorBoundary.tsx';
@@ -1010,7 +1012,6 @@ export function StudioRoom() {
 
   // UI panels
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
-  const [showSidebar, setShowSidebar] = useState(true);
   const [showStreamDest, setShowStreamDest] = useState(false);
   const [showSoundBoard, setShowSoundBoard] = useState(false);
   const [showTeleprompter, setShowTeleprompter] = useState(false);
@@ -1095,6 +1096,7 @@ export function StudioRoom() {
     requestArrivalNotificationPermission();
   }, []);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<SidebarTab | null>(null);
+  const toggleSidebarTab = (tab: SidebarTab) => setSidebarActiveTab((current) => current === tab ? null : tab);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatTypingIndicators, setChatTypingIndicators] = useState<ChatTypingIndicator[]>([]);
   const [supportsChatTyping, setSupportsChatTyping] = useState(false);
@@ -1702,6 +1704,25 @@ export function StudioRoom() {
   const isHostOrCoHost = isStudioOperator(myParticipant);
   const canUseOperatorControls = canUseAdmittedOperatorControls(myParticipant);
   const canControlRecording = canControlStudioRecording(myParticipant);
+  const [privateRecoveryReady, setPrivateRecoveryReady] = useState(false);
+  const [privateRecoverySelected, setPrivateRecoverySelected] = useState(false);
+  const [guestRecoveryAvailable, setGuestRecoveryAvailable] = useState(false);
+  const recoveryRoomName = useRef('Studio');
+  recoveryRoomName.current = room?.name || 'Studio';
+  useEffect(() => {
+    setGuestRecoveryAvailable(listPrivateRecoveryGrants().some(grant => grant.roomId === roomId));
+  }, [roomId]);
+  const maySetPrivateRecovery = myParticipant?.role === 'host' && Boolean(roomHostToken);
+  useEffect(() => {
+    setPrivateRecoveryReady(false);
+    setPrivateRecoverySelected(false);
+    if (!maySetPrivateRecovery) return;
+    const request = new AbortController();
+    void privateRecoveryAvailable(request.signal).then(ready => {
+      if (!request.signal.aborted) setPrivateRecoveryReady(ready);
+    }).catch(() => undefined);
+    return () => request.abort();
+  }, [maySetPrivateRecovery, roomId]);
   const captionsAllowed = canUseOperatorControls;
   const sessionPeerConnectionParticipants = useMemo<SessionPeerHealthParticipant[]>(() => (
     Array.from(participants.entries()).map(([id, participant]) => ({
@@ -3241,6 +3262,27 @@ export function StudioRoom() {
           setSessionRecordingPaused(Boolean(message.payload.recording && message.payload.paused));
           setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(isLiveRef.current, sessionRecordingStartedAtRef.current) } : prev);
           break;
+        case 'recording-recovery-grant': {
+          const grant = message.payload;
+          if (grant.roomId !== roomId || grant.participantId !== myParticipantRef.current?.id) break;
+          const known = listPrivateRecoveryGrants().some(item => item.roomId === grant.roomId && item.takeId === grant.takeId && item.participantId === grant.participantId);
+          if (rememberPrivateRecoveryGrant(grant)) {
+            setGuestRecoveryAvailable(true);
+            if (!known) addToastRef.current('Private backup is available. Use Finish upload after recording.', 'info');
+          } else addToastRef.current('This browser could not save upload access. Your local recording can still be saved.', 'warning');
+          break;
+        }
+        case 'recording-recovery-state': {
+          if (!roomId) break;
+          const { takeId, status } = message.payload;
+          if (message.payload.status === 'ready') {
+            const { expiresAt } = message.payload;
+            const saved = rememberPrivateRecoveryTake({ roomId, takeId, expiresAt, roomName: recoveryRoomName.current });
+            if (!saved) addToastRef.current('This browser could not save the private backup in Recordings.', 'warning');
+            else addToastRef.current('Private guest backup is ready for this take.', 'info');
+          } else if (status === 'unavailable') addToastRef.current('Private backup is unavailable. Local recording continues.', 'warning');
+          break;
+        }
         case 'live-stream-state-changed': {
           const previousLiveStartedAt = liveStartedAtRef.current;
           isLiveRef.current = message.payload.live;
@@ -3329,7 +3371,8 @@ export function StudioRoom() {
           cleanupRef.current();
           stopMediaRef.current();
           stopPublishedScreenShareRef.current();
-          navigateRef.current('/');
+          navigateRef.current(myParticipantRef.current?.role === 'guest' && listPrivateRecoveryGrants().some(grant => grant.roomId === roomId)
+            ? '/finish-upload' : '/');
           break;
         case 'error':
           if (['VIEWER_NOT_FOUND', 'VIEWER_MESSAGE_NOT_FOUND', 'VIEWER_BLOCK_NOT_FOUND', 'VIEWER_MODERATION_RATE_LIMITED'].includes(message.payload.code)) {
@@ -3517,6 +3560,7 @@ export function StudioRoom() {
         case 'poll-update':
         case 'live-stream-token-request':
         case 'recording-upload-token-request':
+        case 'recording-recovery-grant-request':
         case 'sfu-token-request':
         case 'external-chat-connect':
         case 'external-chat-disconnect':
@@ -3532,7 +3576,7 @@ export function StudioRoom() {
           assertNever(message);
       }
     },
-    [seatKey, showLiveSessionSummary]
+    [roomId, seatKey, showLiveSessionSummary]
   );
 
   useEffect(() => {
@@ -4043,12 +4087,16 @@ export function StudioRoom() {
         });
 
         if (programSource) {
+          const recorder = useStreamingPrimaryRecording
+            ? await preparePrimaryRecordingRecorder(programSource.stream, PROGRAM_VIDEO_BITS_PER_SECOND, PROGRAM_AUDIO_BITS_PER_SECOND)
+            : null;
           streams.set(programSource.id, {
             stream: programSource.stream,
             name: programSource.label,
             isLocal: true,
             kind: programSource.kind,
             cleanup: programSource.cleanup,
+            ...(recorder ? { recorder } : {}),
           });
         } else {
           if (localStream && myParticipant.status === 'on-stage') {
@@ -4098,6 +4146,8 @@ export function StudioRoom() {
           return;
         }
         const startedAt = new Date().toISOString();
+        const privateRecovery = maySetPrivateRecovery && privateRecoveryReady && privateRecoverySelected;
+        if (privateRecovery) setPrivateRecoverySelected(false);
         const localCaptureCount = myParticipant.status === 'on-stage' && (myParticipant.audioEnabled || myParticipant.videoEnabled) ? 1 : 0;
         const remoteCaptureCount = Array.from(participants.values()).filter((participant) => (
           participant.status === 'on-stage' && (participant.audioEnabled || participant.videoEnabled)
@@ -4113,6 +4163,7 @@ export function StudioRoom() {
             sessionId: recordingSessionId,
             paused: false,
             startedAt,
+            ...(privateRecovery ? { privateRecovery: true } : {}),
             performedBy: myParticipant.id,
           },
         });
@@ -4620,6 +4671,13 @@ export function StudioRoom() {
     };
   }, [audioProcessing.musicMode, requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, sfuSessionParticipantId]);
 
+  const recoveryGuestId = myParticipant?.role === 'guest' && myParticipant.status === 'on-stage' ? myParticipant.id : '';
+  useEffect(() => {
+    if (!connected || !roomId || !recoveryGuestId || !sessionRecordingSessionId || !sessionRecordingStartedAt) return;
+    if (listPrivateRecoveryGrants().some(grant => grant.roomId === roomId && grant.takeId === sessionRecordingSessionId && grant.participantId === recoveryGuestId)) return;
+    send({ type: 'recording-recovery-grant-request', payload: { takeId: sessionRecordingSessionId } });
+  }, [connected, recoveryGuestId, roomId, send, sessionRecordingSessionId, sessionRecordingStartedAt]);
+
   useEffect(() => {
     if (
       !sessionRecordingStartedAt ||
@@ -4673,6 +4731,7 @@ export function StudioRoom() {
     }
     participantRecordingPlanRef.current = { ...plan, sessionId, hostFolderTake: Boolean(hostTake), lossless };
     void startParticipantLocalRecording(sources, null, {
+      useStreamingEncoder: useStreamingPrimaryRecording,
       progressiveUpload: plan.progressiveUpload ? progressiveUpload : undefined,
       ...(hostTake ? { storage: hostTake.forParticipant(myParticipant.name) } : {}),
       // Tags the browser backup so it can resume to the host after a reload.
@@ -6490,7 +6549,7 @@ export function StudioRoom() {
   }, [autoDirectorEnabled, isHostOrCoHost, onSpotlightParticipant]);
 
   // Unread chat: messages from others since the chat was last open.
-  const chatOpen = isHostOrCoHost ? showSidebar && sidebarActiveTab === 'chat' : showGuestChat;
+  const chatOpen = isHostOrCoHost ? sidebarActiveTab === 'chat' : showGuestChat;
   const [chatSeenAt, setChatSeenAt] = useState(() => Date.now());
   useEffect(() => {
     if (chatOpen) setChatSeenAt(Date.now());
@@ -6528,14 +6587,6 @@ export function StudioRoom() {
       changeVisibleLayout(next);
       return true;
     }
-    const openSidebarTab = (tab: SidebarTab) => {
-      if (showSidebar && sidebarActiveTab === tab) {
-        setShowSidebar(false);
-      } else {
-        setShowSidebar(true);
-        setSidebarActiveTab(tab);
-      }
-    };
     switch (shortcutId) {
       case 'toggle-mic': if (cameraOnly) return false; onToggleAudio(); return true;
       case 'toggle-camera': onToggleVideo(); return true;
@@ -6562,12 +6613,12 @@ export function StudioRoom() {
         if (!activeMedia) return false;
         onStopMedia();
         return true;
-      case 'open-people': openSidebarTab('people'); return true;
-      case 'open-chat': openSidebarTab('chat'); return true;
-      case 'open-media': openSidebarTab('media'); return true;
-      case 'open-overlays': openSidebarTab('overlays'); return true;
-      case 'open-brand': openSidebarTab('brand'); return true;
-      case 'open-scenes': openSidebarTab('scenes'); return true;
+      case 'open-people': toggleSidebarTab('people'); return true;
+      case 'open-chat': toggleSidebarTab('chat'); return true;
+      case 'open-media': toggleSidebarTab('media'); return true;
+      case 'open-overlays': toggleSidebarTab('overlays'); return true;
+      case 'open-brand': toggleSidebarTab('brand'); return true;
+      case 'open-scenes': toggleSidebarTab('scenes'); return true;
       case 'open-invite': openInvitePanel(); return true;
       case 'show-shortcuts': setShowShortcutHelp((current) => !current); return true;
       default: return false;
@@ -7180,7 +7231,6 @@ export function StudioRoom() {
     visibleBanners.length > 0 ? 132 : 0,
     highlightedComment ? 128 : 0
   );
-  const waitingParticipants = Array.from(participants.values()).filter((participant) => participant.status === 'green-room' && participant.id !== myParticipant?.id);
   const waitingCount = Array.from(participants.values()).filter((participant) => participant.status === 'green-room').length;
   const offStageGuestStatus = !isHostOrCoHost ? myParticipant?.status : null;
   const isHeldOffStageGuest = offStageGuestStatus === 'green-room' || offStageGuestStatus === 'backstage';
@@ -7338,12 +7388,10 @@ export function StudioRoom() {
           onToggleVideo={onToggleVideo}
           onLeave={onLeave}
           onOpenDeviceSettings={() => setShowDeviceSettings(true)}
-          roomId={roomId || ''}
-          roomName={room?.name || 'Studio'}
           isHost={false}
           isScreenSharing={false}
           onOpenChat={isHeldOffStageGuest ? () => setShowGuestChat(!showGuestChat) : undefined}
-          participantCount={allParticipantsMap.size}
+          onFinishGuestUpload={guestRecoveryAvailable && !recordingStatus.active && !participantRecordingFinalizing ? () => navigate('/finish-upload') : undefined}
           isLive={isLive}
         />
 
@@ -7454,7 +7502,9 @@ export function StudioRoom() {
   const useMobileStage = !isHostOrCoHost && isPortraitPhone;
 
   const dockBackstage = isHostOrCoHost && wideStudioLayout
-    && (waitingParticipants.length > 0 || backstagePrivateItems.length > 0);
+    && backstagePrivateItems.length > 0;
+  const healthAudience: HealthAudience = isHostOrCoHost ? 'operator' : 'guest';
+  const showHealthPrompt = connected && !studioServerLost && summarizeHealthChecks(sessionHealth.checks, healthAudience).status !== 'good';
 
   return (
     <div className="studio-container" style={styles.container}>
@@ -7469,27 +7519,10 @@ export function StudioRoom() {
             </svg>
           </div>
           <h2 className="studio-roomTitle" style={styles.roomTitle}>{room?.name || 'Studio'}</h2>
-          <div style={styles.divider} />
-          <span style={styles.badge}>
-            <span style={styles.badgeDot} />
-            {orderedVideoItems.length} on stage
-          </span>
-          {isHostOrCoHost && waitingCount > 0 && (
-            <button
-              type="button"
-              style={{ ...styles.waitingBadge, ...styles.waitingBadgeButton }}
-              onClick={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
-              aria-label={`${waitingCount} waiting in the green room: open People to let them in`}
-              title="Open People to let them in"
-            >
-              <span style={styles.waitingDot} />
-              {waitingCount} waiting
-            </button>
-          )}
           {screenVolumeNotice.advice.marker && (
             <ScreenShareVolumeMarker
               copy={screenVolumeNotice.advice.marker}
-              onOpen={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
+              onOpen={() => setSidebarActiveTab('people')}
             />
           )}
           {talkbackBadge && (
@@ -7526,15 +7559,6 @@ export function StudioRoom() {
               </span>
             )
           )}
-          {captionsEnabled && isHostOrCoHost && (
-            <span style={styles.captionBadge}>
-              <span style={{
-                ...styles.captionBadgeDot,
-                background: captionsListening ? 'var(--success)' : 'var(--warning)',
-              }} />
-              CC
-            </span>
-          )}
           {myParticipant && myParticipant.role !== 'host' && (
             <span style={styles.roleBadge}>{myParticipant.role === 'co-host' ? 'Co-host' : 'Guest'}</span>
           )}
@@ -7547,21 +7571,7 @@ export function StudioRoom() {
             </span>
           )}
           {reconnectFailed && <button type="button" className="btn-ghost" onClick={retryConnection}>Retry connection</button>}
-          <SessionHealthPill summary={sessionHealth} audience={isHostOrCoHost ? 'operator' : 'guest'} onClick={() => toggleToolPanel('health', true)} />
-          {isHostOrCoHost && (
-            <button
-              style={{ ...styles.headerBtn, ...(showSidebar ? styles.headerBtnActive : {}) }}
-              onClick={() => setShowSidebar(!showSidebar)}
-              title="Toggle sidebar"
-              aria-label="Toggle sidebar"
-              aria-pressed={showSidebar}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="15" y1="3" x2="15" y2="21" />
-              </svg>
-            </button>
-          )}
+          {showHealthPrompt && <SessionHealthPill summary={sessionHealth} audience={healthAudience} onClick={() => toggleToolPanel('health', true)} />}
 
         </div>
       </div>
@@ -7724,7 +7734,6 @@ export function StudioRoom() {
         )}
         {/* Stage */}
         <div className="studio-stage" style={styles.stage}>
-          <div className="studio-stage-caption"><span><i className={liveStatus.active ? 'on-air' : ''} />{liveStatus.active ? 'On air' : recordingStatus.active ? recordingStatus.paused ? 'Recording paused' : 'Recording' : isHostOrCoHost ? 'Stage preview' : 'On stage'}</span><span>{liveStatus.active ? (isHostOrCoHost ? 'Your audience can see this stage' : 'You are live with the audience') : recordingStatus.active ? recordingStatus.paused ? (isHostOrCoHost ? 'Resume when you are ready' : 'The host paused the recording') : 'Recording session in progress' : isHostOrCoHost ? 'Prepare your stage before going live' : 'The host controls the layout'}</span></div>
           {recordingCountdown !== null && (
             <div className="studio-recording-countdown" role="status" aria-live="assertive">
               <span className="studio-recording-countdown-number">{recordingCountdown}</span>
@@ -7737,14 +7746,6 @@ export function StudioRoom() {
               <span className="studio-recording-countdown-number">{remoteRecordingCountdown}</span>
               <span className="studio-recording-countdown-label">Recording starts</span>
             </div>
-          )}
-          {isHostOrCoHost && allParticipantsMap.size <= 1 && !liveStatus.active && !recordingStatus.active && recordingCountdown === null && (
-            <EmptyStageInvite
-              roomId={roomId || ''}
-              inviteUrl={inviteUrl}
-              onOpenInvite={openInvitePanel}
-              onChooseRecordingFolder={canControlRecording ? () => setShowRecordingPanel(true) : undefined}
-            />
           )}
           {/* Scale the complete broadcast composition; panels never reflow it. */}
           {useMobileStage ? (
@@ -8188,16 +8189,7 @@ export function StudioRoom() {
           )}
 
 
-          {!dockBackstage && (<>
-          {isHostOrCoHost && waitingParticipants.length > 0 && (
-            <WaitingGuestsStrip
-              guests={waitingParticipants}
-              docked={false}
-              onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
-              onMoveBackstage={(participantId) => onStageAction('move-to-backstage', participantId)}
-            />
-          )}
-          {isHostOrCoHost && backstagePrivateItems.length > 0 && (
+          {!dockBackstage && isHostOrCoHost && backstagePrivateItems.length > 0 && (
             <BackstagePrivateRoom
               items={backstagePrivateItems}
               brandColor={brandColor}
@@ -8208,9 +8200,8 @@ export function StudioRoom() {
               onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
             />
           )}
-          </>)}
 
-          {/* Floating layout switcher (like StreamYard) — below canvas */}
+          {/* Layout controls below the stage */}
           {isHostOrCoHost && (
             <div className="studio-layoutBar" style={styles.layoutBar}>
               <LayoutSwitcher
@@ -8312,16 +8303,7 @@ export function StudioRoom() {
         </div>
 
         {dockBackstage && (
-          <aside className="studio-backstage-dock" style={styles.backstageDock} aria-label="Backstage and waiting guests">
-          {isHostOrCoHost && waitingParticipants.length > 0 && (
-            <WaitingGuestsStrip
-              guests={waitingParticipants}
-              docked={true}
-              onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
-              onMoveBackstage={(participantId) => onStageAction('move-to-backstage', participantId)}
-            />
-          )}
-          {isHostOrCoHost && backstagePrivateItems.length > 0 && (
+          <aside className="studio-backstage-dock" style={styles.backstageDock} aria-label="Backstage">
             <BackstagePrivateRoom
               items={backstagePrivateItems}
               brandColor={brandColor}
@@ -8331,7 +8313,6 @@ export function StudioRoom() {
               docked={true}
               onAddToStage={(participantId) => onStageAction('move-to-stage', participantId)}
             />
-          )}
           </aside>
         )}
 
@@ -8443,11 +8424,10 @@ export function StudioRoom() {
         )}
 
         {/* Sidebar (right) - host/co-host only */}
-        {isHostOrCoHost && showSidebar && (
+        {isHostOrCoHost && (
           <PanelErrorBoundary label="Sidebar" resetKey={sidebarActiveTab}>
           <Sidebar
             activeTab={sidebarActiveTab}
-            tabBadges={{ chat: unreadChatCount }}
             onActiveTabChange={setSidebarActiveTab}
             lowerThirds={lowerThirds}
             onAddLowerThird={onAddLowerThird}
@@ -8725,6 +8705,7 @@ export function StudioRoom() {
                   persisted={recordingWorkflow.destination.persistence?.persisted ?? null}
                   preferences={recordingWorkflow.destination.preferences}
                   cloudAvailable={recordingWorkflow.cloudAvailable}
+                  privateRecovery={privateRecoveryReady && maySetPrivateRecovery ? { selected: privateRecoverySelected, setSelected: setPrivateRecoverySelected } : undefined}
                   transfers={recordingWorkflow.transfers}
                   checklists={recordingWorkflow.takeChecklists}
                   checklistError={recordingWorkflow.destination.takeHistoryError}
@@ -8751,36 +8732,37 @@ export function StudioRoom() {
         onToggleVideo={onToggleVideo}
         onLeave={onLeave}
         onOpenDeviceSettings={() => setShowDeviceSettings(true)}
-        roomId={roomId || ''}
-        roomName={room?.name || 'Studio'}
         isHost={isHostOrCoHost}
         isRecording={recordingStatus.active}
         recordingPaused={recordingStatus.paused}
         recordingFinalizing={folderSaving || programRecordingFinalizing || localRecordingFinalizing || participantRecordingFinalizing}
-        formattedTime={recordingStatus.formattedTime}
         onToggleRecording={canControlRecording ? onToggleRecording : undefined}
         onToggleRecordingPause={canControlRecording && isRecording ? onToggleRecordingPause : undefined}
         isScreenSharing={isScreenSharing}
         onToggleScreenShare={screenShareSupported || isScreenSharing ? onToggleScreenShare : undefined}
         screenShareOptimizeFor={screenShareOptimizeFor}
         onScreenShareOptimizeForChange={screenShareSupported ? setScreenShareOptimizeFor : undefined}
-        onOpenChat={isHostOrCoHost ? () => { setShowSidebar(true); setSidebarActiveTab('chat'); } : () => setShowGuestChat(!showGuestChat)}
+        onOpenChat={isHostOrCoHost ? () => toggleSidebarTab('chat') : () => setShowGuestChat(!showGuestChat)}
         unreadChatCount={unreadChatCount}
-        onOpenParticipants={() => { setShowSidebar(true); setSidebarActiveTab('people'); }}
+        onOpenParticipants={() => toggleSidebarTab('people')}
+        waitingCount={waitingCount}
         onOpenInvitePanel={isHostOrCoHost ? openInvitePanel : undefined}
         onOpenStreamDestinations={() => toggleToolPanel('streamDest')}
         onOpenSoundBoard={() => toggleToolPanel('soundBoard')}
         onOpenTeleprompter={() => setShowTeleprompter(!showTeleprompter)}
-        onOpenMediaPanel={() => { setShowSidebar(true); setSidebarActiveTab('media'); }}
+        onOpenMediaPanel={isHostOrCoHost ? () => toggleSidebarTab('media') : undefined}
+        onOpenOverlays={isHostOrCoHost ? () => toggleSidebarTab('overlays') : undefined}
+        onOpenBrand={isHostOrCoHost ? () => toggleSidebarTab('brand') : undefined}
+        onOpenScenes={isHostOrCoHost ? () => toggleSidebarTab('scenes') : undefined}
         onOpenBackgroundMusic={() => toggleToolPanel('backgroundMusic')}
         backgroundMusicPlaying={backgroundMusicPlaying}
         onOpenRecordingPanel={canControlRecording ? () => toggleToolPanel('recording') : undefined}
+        onFinishGuestUpload={!isHostOrCoHost && guestRecoveryAvailable && !recordingStatus.active && !participantRecordingFinalizing ? () => navigate('/finish-upload') : undefined}
         onOpenProducerPanel={() => toggleToolPanel('producer')}
         onOpenWebinarQA={() => toggleToolPanel('webinarQA')}
         onOpenPolls={() => toggleToolPanel('polls')}
         onOpenCaptions={isHostOrCoHost ? () => toggleToolPanel('captions') : undefined}
-        onOpenHealthPanel={() => toggleToolPanel('health', true)}
-        participantCount={allParticipantsMap.size}
+        onOpenHealthPanel={showHealthPrompt ? undefined : () => toggleToolPanel('health', true)}
         isLive={isLive}
         isTestStream={testBadgeVisible}
         captionsActive={captionsEnabled}
@@ -8965,57 +8947,6 @@ export function StudioRoom() {
 /** Wide enough for the backstage dock to the right of the stage (narrower screens keep it under the stage). */
 const BACKSTAGE_DOCK_MEDIA_QUERY = '(min-width: 901px)';
 
-/** Hosts: guests waiting to be let in, under the stage or in the right-hand dock. */
-function WaitingGuestsStrip({
-  guests,
-  docked = false,
-  onAddToStage,
-  onMoveBackstage,
-}: {
-  guests: Participant[];
-  /** In the right-hand dock: full width, one guest per row. */
-  docked?: boolean;
-  onAddToStage: (participantId: string) => void;
-  onMoveBackstage: (participantId: string) => void;
-}) {
-  return (
-    <section style={{ ...styles.backstageRoom, ...styles.backstageRoomCompact, ...(docked ? styles.backstageRoomDocked : {}) }} aria-label="Guests waiting to join">
-      <div style={{ ...styles.backstageRoomHeader, ...(docked ? styles.backstageRoomHeaderDocked : {}) }}>
-        <span style={styles.backstageRoomTitle}>
-          <span style={styles.backstageRoomDot} />
-          Waiting
-          <span style={styles.backstageRoomCount}>{guests.length}</span>
-        </span>
-        <span style={styles.backstageRoomMeta}>Not on stream</span>
-      </div>
-      <div style={{ ...styles.backstageRoomRow, ...(docked ? styles.backstageRoomRowDocked : {}) }}>
-        {guests.map((guest) => (
-          <div key={guest.id} style={styles.waitingGuestCard}>
-            <span style={styles.waitingGuestAvatar} aria-hidden="true">{(guest.name.trim()[0] || '?').toUpperCase()}</span>
-            <span style={styles.waitingGuestName} title={guest.name}>{guest.name}</span>
-            <button
-              type="button"
-              style={styles.waitingGuestAction}
-              onClick={() => onMoveBackstage(guest.id)}
-              aria-label={`Move ${guest.name} backstage`}
-            >
-              Backstage
-            </button>
-            <button
-              type="button"
-              style={{ ...styles.backstageRoomAddButton, ...styles.waitingGuestAdd }}
-              onClick={() => onAddToStage(guest.id)}
-              aria-label={`Add ${guest.name} to stage`}
-            >
-              Add to stage
-            </button>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function BackstagePrivateRoom({
   items,
   brandColor,
@@ -9158,19 +9089,12 @@ const styles: Record<string, React.CSSProperties> = {
   headerRight: { display: 'flex', alignItems: 'center', gap: 6 },
   roomTitle: { fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   divider: { width: 1, height: 16, background: 'var(--border-strong)' },
-  badge: {
-    display: 'flex', alignItems: 'center', gap: 6,
-    fontSize: 12, padding: '3px 10px', borderRadius: 20,
-    background: 'var(--success-subtle)', color: 'var(--success-text, var(--success))', fontWeight: 500,
-  },
-  badgeDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', animation: 'pulse 2s infinite' },
   waitingBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, padding: '3px 10px', borderRadius: 20,
     background: 'var(--warning-subtle, rgba(245, 158, 11, 0.12))', color: 'var(--warning-text, #fbbf24)', fontWeight: 600,
   },
   waitingDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--warning, #f59e0b)', animation: 'pulse 2s infinite' },
-  waitingBadgeButton: { border: '1px solid var(--warning-border, rgba(245, 158, 11, 0.35))', cursor: 'pointer', lineHeight: 'inherit' },
   talkbackBadge: {
     display: 'flex', alignItems: 'center', gap: 6,
     fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
@@ -9215,46 +9139,10 @@ const styles: Record<string, React.CSSProperties> = {
     width: 6, height: 6, borderRadius: '50%', background: 'white',
     animation: 'pulse 1.5s infinite',
   },
-  captionBadge: {
-    display: 'flex', alignItems: 'center', gap: 6,
-    fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20,
-    background: 'var(--cyan-subtle, rgba(14, 165, 233, 0.14))', color: 'var(--cyan, #bae6fd)',
-  },
-  captionBadgeDot: {
-    width: 6, height: 6, borderRadius: '50%',
-  },
   roleBadge: {
     fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
     background: 'var(--accent-subtle)', color: 'var(--accent)',
     textTransform: 'uppercase' as const, letterSpacing: '0.04em',
-  },
-  headerBtn: {
-    width: 32, height: 32, borderRadius: 8,
-    background: 'var(--bg-tertiary)', border: '1px solid var(--border)',
-    color: 'var(--text-secondary)', cursor: 'pointer',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: 0, transition: 'all var(--transition-fast)',
-  },
-  headerBtnActive: {
-    background: 'var(--accent-subtle)',
-    borderColor: 'var(--accent)',
-    color: 'var(--accent)',
-  },
-  healthBtn: {
-    height: 32,
-    minWidth: 54,
-    borderRadius: 8,
-    background: 'var(--bg-tertiary)',
-    border: '1px solid',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    padding: '0 9px',
-    fontSize: 12,
-    fontWeight: 800,
-    cursor: 'pointer',
-    fontVariantNumeric: 'tabular-nums',
   },
   healthDot: {
     width: 7,
@@ -9637,52 +9525,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#0b0f1a',
   },
   backstageRoomTileCompact: {},
-  waitingGuestCard: {
-    flex: '0 0 auto',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '4px 4px 4px 6px',
-    borderRadius: 10,
-    border: '1px solid rgba(245, 158, 11, 0.22)',
-    background: 'rgba(245, 158, 11, 0.06)',
-  },
-  waitingGuestAvatar: {
-    width: 24,
-    height: 24,
-    borderRadius: '50%',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: 'rgba(245, 158, 11, 0.18)',
-    color: '#fbbf24',
-    fontSize: 11,
-    fontWeight: 700,
-    flexShrink: 0,
-  },
-  waitingGuestName: {
-    maxWidth: 140,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    color: 'var(--text-primary)',
-    fontSize: 12,
-    fontWeight: 600,
-  },
-  waitingGuestAction: {
-    height: 28,
-    padding: '0 10px',
-    borderRadius: 8,
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    background: 'transparent',
-    color: 'var(--text-secondary)',
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: 'pointer',
-  },
-  waitingGuestAdd: {
-    width: 'auto',
-  },
   backstageRoomAddButton: {
     display: 'inline-flex',
     alignItems: 'center',

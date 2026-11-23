@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
-import { createStudio, eventually, screenshot, startHarness } from './harness.mjs';
+import { createStudio, eventually, screenshot, startHarness, openStudioTool } from './harness.mjs';
 
 test('watch-page engagement reaches the studio and follows host moderation', { timeout: 150_000 }, async () => {
   const fixture = await startHarness({
@@ -12,7 +12,7 @@ test('watch-page engagement reaches the studio and follows host moderation', { t
     const hostContext = await fixture.browser('host');
     const { page: host } = await createStudio(hostContext, { url: fixture.url });
     pages.set('host', host);
-    await host.getByRole('button', { name: 'Open invite panel', exact: true }).click();
+    await openStudioTool(host, 'Invite guests');
     const watchUrl = new URL(await host.getByLabel('Public watch page link', { exact: true }).inputValue());
     await host.getByRole('button', { name: 'Close invite panel', exact: true }).click();
     const watchHref = new URL(watchUrl.pathname, fixture.url).href;
@@ -34,7 +34,7 @@ test('watch-page engagement reaches the studio and follows host moderation', { t
     const hello = 'Hello <b>everyone</b>';
     const stage = host.getByRole('region', { name: 'Broadcast canvas' });
 
-    await host.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: /^Chat/ }).click();
+    await openStudioTool(host, /^Chat/);
     await host.getByLabel('Chat channel').selectOption('public');
     const studioMessage = (text) => host.locator('.chat-message-item', { hasText: text });
     const watchMessage = (page, text) => page.getByRole('log', { name: 'Chat messages' }).getByRole('article').filter({ hasText: text });

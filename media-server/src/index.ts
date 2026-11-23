@@ -29,6 +29,7 @@ import { countActiveRelaySessions, isRelayCapacityAvailable } from './relayAdmis
 import { admitSecondaryProgram, getDualOutputIssue, isDualOutputSupported, SECONDARY_INPUT_TIMEOUT_MS } from './dualOutput.js';
 import { checkPresentationRenderAdmission } from './presentationAdmission.js';
 import { createPremiereHandler } from './premieres.js';
+import { createRecordingRecoveryHandler } from './recordingRecovery.js';
 import { authorizePresentationRender, isPresentationRenderAuthRequired } from './presentationAuth.js';
 import {
   buildLiveBackupLatestKey,
@@ -1637,6 +1638,7 @@ function getBearerToken(req: IncomingMessage): string {
 }
 
 const handlePremiereRequest = createPremiereHandler({ applyCors: applyCorsHeaders, writeJson, getFfmpegPath });
+const handleRecordingRecovery = createRecordingRecoveryHandler({ applyCors: applyCorsHeaders, writeJson });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -2363,6 +2365,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   if (await handleHeldBroadcastRequest(req, res, url)) return;
   if (await handleWatchRequest(req, res, url)) return;
   if (await handlePremiereRequest(req, res, url)) return;
+  if (await handleRecordingRecovery(req, res, url)) return;
   if (await handleRecordingUploadRequest(req, res, url)) return;
   if (await handlePresentationPreviewRequest(req, res, url)) return;
 

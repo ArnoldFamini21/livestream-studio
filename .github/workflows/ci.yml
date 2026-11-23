@@ -7,7 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       recording_soak:
-        description: Run three-participant recording qualification (35-second preflight, then 20 minutes)
+        description: Run three-participant recording qualification (35-second preflight, then two twenty-minute takes)
+        type: boolean
+        default: false
+      recording_encoder:
+        description: Recording encoder to exercise in the isolated soak build
+        type: choice
+        default: browser
+        options:
+          - browser
+          - webcodecs
+          - webcodecs-h264
+      recording_preflight_only:
+        description: Run only the 35-second recording preflight
         type: boolean
         default: false
 
@@ -138,8 +150,9 @@ jobs:
   recording-soak:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.recording_soak }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 65
     env:
+      VITE_RECORDING_ENCODER: ${{ inputs.recording_encoder }}
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright
       VITE_API_URL: http://localhost:3001
       VITE_WS_URL: ws://localhost:3001/ws
@@ -156,6 +169,26 @@ jobs:
         # A separate step: FFMPEG_BIN reaches only the steps after the one that exports it.
         timeout-minutes: 6
         run: sh scripts/ci-install-ffmpeg.sh
+      - name: Provision and verify FFprobe
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          probe=/usr/bin/ffprobe
+          if [ ! -x "$probe" ] || ! "$probe" -version; then
+            # ffmpeg-static supplies only ffmpeg. Use the companion probe
+            # from its pinned release when the Ubuntu package is unavailable.
+            probe_dir="$(mktemp -d "$RUNNER_TEMP/recording-ffprobe.XXXXXXXX")"
+            archive="$probe_dir/ffprobe.gz"
+            probe="$probe_dir/ffprobe"
+            curl --fail --location --silent --show-error --proto '=https' \
+              --connect-timeout 12 --max-time 45 --retry 2 --output "$archive" \
+              https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-x64.gz
+            printf '%s  %s\n' '25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067' "$archive" | sha256sum -c -
+            gzip -dc "$archive" > "$probe"
+            chmod 700 "$probe"
+            "$probe" -version
+          fi
+          printf 'FFPROBE_PATH=%s\n' "$probe" >> "$GITHUB_ENV"
       - name: Install dependencies and Chromium
         run: |
           sh scripts/npm-ci-retry.sh
@@ -172,13 +205,20 @@ jobs:
           SOAK_SECONDS: '35'
           SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/preflight
       - name: Qualify twenty-minute three-participant recording
+        id: recording_qualification
         # Keep the short-run result and collect long-run evidence even if the
         # preflight failed a packet timing assertion.
-        if: ${{ !cancelled() && (steps.recording_preflight.outcome == 'success' || steps.recording_preflight.outcome == 'failure') }}
+        if: ${{ !cancelled() && !inputs.recording_preflight_only && (steps.recording_preflight.outcome == 'success' || steps.recording_preflight.outcome == 'failure') }}
         run: npm run test:recording-soak
         env:
           SOAK_SECONDS: '1200'
           SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/qualification
+      - name: Repeat twenty-minute three-participant recording
+        if: ${{ !cancelled() && (steps.recording_qualification.outcome == 'success' || steps.recording_qualification.outcome == 'failure') }}
+        run: npm run test:recording-soak
+        env:
+          SOAK_SECONDS: '1200'
+          SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/qualification-repeat
       - name: Upload recording qualification evidence
         if: always()
         uses: actions/upload-artifact@v4

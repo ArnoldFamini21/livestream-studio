@@ -67,6 +67,14 @@ Toolbar recording coordinates device-local capture for every on-stage participan
 
 The signaling server also supports optional transcription and ICE/TURN settings from `render.yaml`. Do not commit those secret values.
 
+### Private guest recording recovery
+
+Set `RECORDING_RECOVERY_ENABLED=true` on the media service only after checking that the configured recording bucket is private. Leave `RECORDING_STORAGE_PUBLIC_BASE_URL` empty. The service checks that access without credentials fails and that the bucket supports ETag-based conditional writes. The signing secret must match between the services, and signaling's `MEDIA_SERVER_URL` must point to the media service. Only an owner-created studio's host can opt a coordinated take into this backup.
+
+Allow the media service to read and write the `recording-recovery/` subprefix of its configured storage prefix. S3 must return 404 for absent objects to that credential. Limit any corresponding bucket listing permission to the backup prefix. Configure an object lifecycle rule for that subprefix to remove recovery uploads after seven days, including noncurrent object versions where versioning is enabled. The application closes access seven days after a take is registered. Bucket lifecycle deletion follows each object's age and the provider's deletion schedule.
+
+An admitted guest's upload credential opens only that seat's sealed recordings on one take. Closing the room does not invalidate it. The host can recover completed tracks using the original private host credential. The service checks chunk SHA-256 values, resumes at the verified offset and can retrieve finished tracks while another guest still has work to finish. Each guest may back up up to 4 GiB per take. Browser-local backups stay available separately.
+
 ### Optional AI features (OpenAI)
 
 Transcription, AI highlight clip suggestions, and AI show notes are all opt-in. Set an OpenAI API key on `livestream-studio-server` to enable them:

@@ -343,7 +343,7 @@ export interface TransferableRecording {
  * own live recorders (they are sent from memory instead).
  */
 export async function listTransferableRecordings(
-  filter: { roomId: string; excludeIds?: Set<string> },
+  filter: { roomId: string; sessionId?: string; participantId?: string; includeDelivered?: boolean; excludeIds?: Set<string> },
   environment = browserRecoveryEnvironment(),
 ): Promise<TransferableRecording[]> {
   if (!environment) return [];
@@ -356,7 +356,10 @@ export async function listTransferableRecordings(
         if (!available) return;
         const directory = await root.getDirectoryHandle(id, { create: false });
         const metadata = await readManifest(directory, id);
-        if (metadata.deliveredToHost || metadata.transfer?.roomId !== filter.roomId) return;
+        const transfer = metadata.transfer;
+        if ((!filter.includeDelivered && metadata.deliveredToHost) || transfer?.roomId !== filter.roomId ||
+            (filter.sessionId && transfer.sessionId !== filter.sessionId) ||
+            (filter.participantId && transfer.participantId !== filter.participantId)) return;
         const { chunks, truncated } = await readRecoveryChunks(directory);
         if (!chunks.length) return;
         results.push({ id, metadata, blob: new Blob(chunks, { type: metadata.mimeType }), complete: metadata.complete && !truncated });

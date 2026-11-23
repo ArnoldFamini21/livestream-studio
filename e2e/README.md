@@ -61,11 +61,34 @@ drift below 40 ms; fixed initial offsets are reported separately. This does not
 prove lip-sync with real hardware. See `e2e/recording-soak.mjs` for output and
 parallel-build settings.
 
+The soak reports browser long tasks, full-canvas paint cadence, draw call time,
+chunk dispatch gaps, and pending writes and hashes. Each seat also samples the
+active ISO camera’s matching WebRTC `media-source` frame counter once per second
+with a limit of 1,300 samples. Compare deltas only within one peer and source id.
+Missing samples, peer changes and counter resets are visible in the evidence.
+
+Browser event, sample request and write times share a page clock. Add the page’s
+`resources.timeOrigin` to compare seats. To correlate a gap in an encoded track,
+add its time from the first packet to the recorder’s `startRequested`. The exact
+encoder start can fall later, so use this mapping as an estimate.
+
+For an encoder comparison, `SOAK_SECONDS=20 node e2e/recording-isolation.mjs`
+records a single 720p camera and then a single 1080p canvas with one scaled
+camera and a Web Audio mix. It verifies source chunks after saving. These
+baselines exclude the studio layout, simultaneous encoders, and guest transfer.
+Use `ISOLATION_CODEC=vp8` for the alternate codec. For a short run of the real
+three-seat capture, `SOAK_COMPARE_VP8=1 SOAK_SECONDS=35 npm run test:recording-soak`
+exercises the existing VP8 fallback. Use `SOAK_COMPARE_H264=1` with the same
+short duration to exercise native H.264/AAC support, requiring chunks from
+each video recorder before Stop with the same packet checks. Full qualification
+rejects both overrides.
+
 The existing CI workflow also has an optional `recording_soak` manual input.
-It runs a 35-second preflight followed by the full 1,200-second qualification on
-Linux. Both runs use real browser capture, native OPFS folder writes and RTC
-transfer. The job retains both results and still attempts the long capture if
-the preflight fails. JSON, logs and screenshots are retained for seven days.
+It runs a 35-second preflight followed by two consecutive 1,200-second takes
+on the same Linux runner. All use real browser capture, native OPFS folder
+writes and RTC transfer. The job retains all results, including the second
+long take when the first fails. JSON, logs and screenshots are retained for
+seven days.
 Raw captures remain on the ephemeral runner. This provides a repeatable Linux check when native Chrome OPFS on the
 owner's ExFAT volume stalls. A green Linux result does not establish external
 SSD throughput or qualify the owner's actual camera and network.

@@ -1,10 +1,8 @@
 import type { ChatTranscriptScope } from '../utils/chatTranscript.ts';
 import type { ChatOverlayPanelProps } from './ChatOverlayControls.tsx';
 import type { ViewerChatPanelProps } from './ViewerChatControls.tsx';
-import { formatUnreadBadge } from '../utils/chatUnread.ts';
 import { PeoplePanel } from './PeoplePanel.tsx';
 import type { ScreenShareVolumeProps } from './ScreenShareVolume.tsx';
-import { useExitTransition } from '../hooks/useExitTransition.ts';
 import { StudioChat } from './StudioChat.tsx';
 import '../styles/overlay-panel.css';
 import '../styles/media-library.css';
@@ -59,7 +57,7 @@ import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts'
 import type { MediaServerHealth } from '../utils/mediaServerHealth.ts';
 
 // ---------------------------------------------------------------------------
-// Tab type — matches StreamYard / Riverside vertical icon pattern
+// Studio panels
 // ---------------------------------------------------------------------------
 export type SidebarTab = 'people' | 'chat' | 'media' | 'overlays' | 'brand' | 'scenes';
 
@@ -67,10 +65,8 @@ export type SidebarTab = 'people' | 'chat' | 'media' | 'overlays' | 'brand' | 's
 // Props
 // ---------------------------------------------------------------------------
 interface SidebarProps {
-  activeTab?: SidebarTab | null;
-  /** Counts shown on the rail buttons, e.g. unread chat messages. */
-  tabBadges?: Partial<Record<SidebarTab, number>>;
-  onActiveTabChange?: (tab: SidebarTab | null) => void;
+  activeTab: SidebarTab | null;
+  onActiveTabChange: (tab: SidebarTab | null) => void;
   // Overlay props
   lowerThirds: LowerThirdData[];
   onAddLowerThird: (lt: Omit<LowerThirdData, 'id' | 'visible'> & { visible?: boolean }) => void;
@@ -218,69 +214,14 @@ interface SidebarProps {
 // ---------------------------------------------------------------------------
 // Tab definitions
 // ---------------------------------------------------------------------------
-const tabDefs: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
-  {
-    id: 'people',
-    label: 'People',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-        <circle cx="9" cy="7" r="4" />
-        <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-      </svg>
-    ),
-  },
-  {
-    id: 'chat',
-    label: 'Chat',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      </svg>
-    ),
-  },
-  {
-    id: 'media',
-    label: 'Media',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="5" width="18" height="14" rx="2" />
-        <path d="M10 9l5 3-5 3V9z" />
-      </svg>
-    ),
-  },
-  {
-    id: 'overlays',
-    label: 'Overlays',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="18" height="18" rx="2" />
-        <line x1="3" y1="15" x2="21" y2="15" />
-      </svg>
-    ),
-  },
-  {
-    id: 'brand',
-    label: 'Brand',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
-      </svg>
-    ),
-  },
-  {
-    id: 'scenes',
-    label: 'Scenes',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="2" y="7" width="20" height="14" rx="2" />
-        <path d="M16 3h-8l-2 4h12l-2-4z" />
-      </svg>
-    ),
-  },
-];
+const tabLabels: Record<SidebarTab, string> = {
+  people: 'People',
+  chat: 'Chat',
+  media: 'Media',
+  overlays: 'Overlays',
+  brand: 'Brand',
+  scenes: 'Scenes',
+};
 
 function loadSavedBrandKits(): SavedBrandKit[] {
   try {
@@ -304,18 +245,28 @@ export function Sidebar(props: SidebarProps) {
   const [chatRecipient, setChatRecipient] = useState('');
   const [chatMode, setChatMode] = useState<ChatTranscriptScope>('public');
   const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({});
-  const [internalActiveTab, setInternalActiveTab] = useState<SidebarTab | null>('people');
   const [savedBrandKits, setSavedBrandKits] = useState<SavedBrandKit[]>(loadSavedBrandKits);
   const [brandKitName, setBrandKitName] = useState('');
   const [brandKitMessage, setBrandKitMessage] = useState<string | null>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
-  const activeTab = props.activeTab !== undefined ? props.activeTab : internalActiveTab;
-  const setActiveTab = props.onActiveTabChange || setInternalActiveTab;
-  // The panel slides out before it unmounts.
-  const { shown: shownTab, exiting: panelExiting } = useExitTransition(activeTab, 180);
+  const { activeTab: shownTab, onActiveTabChange: setActiveTab } = props;
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
 
-  const handleTabClick = (tabId: SidebarTab) => {
-    setActiveTab(activeTab === tabId ? null : tabId);
+  useEffect(() => {
+    if (!shownTab) {
+      returnFocusRef.current = null;
+      return;
+    }
+    const trigger = document.activeElement;
+    if (trigger instanceof HTMLElement && !panelRef.current?.contains(trigger)) returnFocusRef.current = trigger;
+    closeRef.current?.focus();
+  }, [shownTab]);
+
+  const closePanel = () => {
+    returnFocusRef.current?.focus();
+    setActiveTab(null);
   };
 
   const brandPresets = [
@@ -432,12 +383,16 @@ export function Sidebar(props: SidebarProps) {
     });
   };
 
+  if (!shownTab) return null;
   return (
-    <div className="studio-sidebar" role="complementary" aria-label="Studio side panel" style={st.wrapper}>
-      {/* Content panel — only visible when a tab is active */}
-      {shownTab && (
-        <div className={`studio-sidebar-panel${panelExiting ? ' panel-slide-out' : ''}`} aria-hidden={panelExiting || undefined} style={st.contentPanel}>
-          <div className="studio-panel-heading"><span>{tabDefs.find(tab => tab.id === shownTab)?.label}</span><button aria-label="Close sidebar panel" onClick={() => setActiveTab(null)}>×</button></div>
+    <div ref={panelRef} className="studio-sidebar" role="complementary" aria-label="Studio side panel" style={st.wrapper}
+      onKeyDown={event => {
+        if (event.key !== 'Escape' || event.defaultPrevented) return;
+        event.stopPropagation();
+        closePanel();
+      }}>
+        <div className="studio-sidebar-panel" style={st.contentPanel}>
+          <div className="studio-panel-heading"><h2>{tabLabels[shownTab]}</h2><button type="button" ref={closeRef} aria-label="Close sidebar panel" onClick={closePanel}>×</button></div>
           {shownTab === 'people' && (
             <PeoplePanel
               onMessageParticipant={id => { setChatRecipient(id); setChatMode('direct'); setActiveTab('chat'); }}
@@ -928,28 +883,6 @@ export function Sidebar(props: SidebarProps) {
             </div>
           )}
         </div>
-      )}
-
-      {/* Vertical icon strip — always visible (StreamYard / Riverside pattern) */}
-      <nav className="studio-tool-rail" aria-label="Studio panels" style={st.iconStrip}>
-        {tabDefs.map((tab) => (
-          <button
-            key={tab.id}
-            className={`sidebar-icon-btn ${activeTab === tab.id ? 'active' : ''}`}
-            style={{ ...st.iconBtn, ...(activeTab === tab.id ? st.iconBtnActive : {}) }}
-            onClick={() => handleTabClick(tab.id)}
-            title={tab.label}
-            aria-label={props.tabBadges?.[tab.id] ? `${tab.label}, ${props.tabBadges[tab.id]} unread` : tab.label}
-            aria-expanded={activeTab === tab.id}
-          >
-            {tab.icon}
-            <span style={st.iconLabel}>{tab.label}</span>
-            {Boolean(props.tabBadges?.[tab.id]) && (
-              <span style={st.iconBadge} aria-hidden="true">{formatUnreadBadge(props.tabBadges![tab.id]!)}</span>
-            )}
-          </button>
-        ))}
-      </nav>
     </div>
   );
 }
@@ -1132,11 +1065,6 @@ const st: Record<string, React.CSSProperties> = {
   wrapper: { display: 'flex', height: '100%', flexShrink: 0 },
   contentPanel: { width: 340, display: 'flex', flexDirection: 'column', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border)', height: '100%', overflow: 'hidden', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)' },
   scrollContent: { flex: 1, overflowY: 'auto' },
-  iconStrip: { width: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, gap: 2, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', height: '100%', flexShrink: 0 },
-  iconBadge: { position: 'absolute', top: 2, right: 4, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: 'var(--danger, #ef4444)', color: '#fff', fontSize: 11, fontWeight: 700, lineHeight: '16px', textAlign: 'center', boxSizing: 'border-box' },
-  iconBtn: { position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, width: 48, height: 48, borderRadius: 10, background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.15s ease' },
-  iconBtnActive: { background: 'var(--accent-subtle)', color: 'var(--accent-hover)' },
-  iconLabel: { fontSize: 12, fontWeight: 500, lineHeight: 1 },
   section: { padding: 16 },
   divider: { height: 1, background: 'var(--border)', margin: '4px 16px 8px' },
   brandLabelRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 },

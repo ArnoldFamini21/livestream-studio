@@ -195,13 +195,15 @@ export function buildLiveBackupLatestKey(prefix: string | undefined, roomId: str
 }
 
 interface SignedObjectStorageRequestInput {
-  method: 'GET' | 'PUT' | 'POST' | 'DELETE';
+  method: 'GET' | 'HEAD' | 'PUT' | 'POST' | 'DELETE';
   key: string;
   query?: Record<string, string>;
   payloadSha256: string;
   contentType?: string;
   contentLength?: number;
   ifNoneMatch?: '*';
+  ifMatch?: string;
+  metadata?: Record<string, string>;
 }
 
 /** RFC 3986 encoding, as SigV4 canonical query strings require. */
@@ -226,13 +228,16 @@ export function signObjectStorageRequest(
   const amzDate = toAmzDate(now);
   const dateStamp = toDateStamp(now);
   const credentialScope = `${dateStamp}/${config.region}/s3/aws4_request`;
-  const canonicalHeaders = [
-    `host:${url.host}`,
-    ...(input.ifNoneMatch ? [`if-none-match:${input.ifNoneMatch}`] : []),
-    `x-amz-content-sha256:${input.payloadSha256}`,
-    `x-amz-date:${amzDate}`,
-  ].join('\n');
-  const signedHeaders = input.ifNoneMatch ? 'host;if-none-match;x-amz-content-sha256;x-amz-date' : 'host;x-amz-content-sha256;x-amz-date';
+  const headerPairs = Object.entries({
+    host: url.host,
+    ...(input.ifMatch ? { 'if-match': input.ifMatch } : {}),
+    ...(input.ifNoneMatch ? { 'if-none-match': input.ifNoneMatch } : {}),
+    'x-amz-content-sha256': input.payloadSha256,
+    'x-amz-date': amzDate,
+    ...Object.fromEntries(Object.entries(input.metadata ?? {}).map(([name, value]) => [`x-amz-meta-${name}`, value])),
+  }).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const canonicalHeaders = headerPairs.map(([name, value]) => `${name}:${value}`).join('\n');
+  const signedHeaders = headerPairs.map(([name]) => name).join(';');
   const canonicalRequest = [
     input.method,
     url.pathname,
@@ -257,7 +262,9 @@ export function signObjectStorageRequest(
       Authorization: `AWS4-HMAC-SHA256 Credential=${config.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
       ...(input.contentLength !== undefined ? { 'Content-Length': String(input.contentLength) } : {}),
       ...(input.contentType ? { 'Content-Type': input.contentType } : {}),
+      ...(input.ifMatch ? { 'If-Match': input.ifMatch } : {}),
       ...(input.ifNoneMatch ? { 'If-None-Match': input.ifNoneMatch } : {}),
+      ...Object.fromEntries(headerPairs.filter(([name]) => name.startsWith('x-amz-meta-'))),
       'X-Amz-Content-Sha256': input.payloadSha256,
       'X-Amz-Date': amzDate,
     },

@@ -1480,82 +1480,67 @@ export function HomePage() {
     room.name.toLowerCase().includes(studioSearch.toLowerCase()) &&
     (studioFilter === 'all' || getScheduleState(room) === 'Upcoming')
   );
-  const viewTitles = { studios: 'Your studios', recordings: 'Recordings', brand: 'Brand kits', team: 'Team', settings: 'Settings' };
-  const viewDescriptions = {
-    studios: 'A little preparation. A great conversation.',
-    recordings: 'Your sessions, ready for the next chapter.',
-    brand: 'A consistent look for every conversation.',
-    team: 'Bring your production team together.',
-    settings: 'Manage your account and workspace.',
-  };
+  const viewTitles = { studios: 'Studios', recordings: 'Recordings', brand: 'Brand kits', team: 'Team', settings: 'Settings' };
+  const rootView = workspaceView === 'brand' || workspaceView === 'team' ? 'settings' : workspaceView;
 
   return (
     <div className="workspace-app">
       <a className="workspace-skip" href="#workspace-main">Skip to content</a>
       <aside className="workspace-nav">
         <a className="workspace-logo" href="/" aria-label="Live Stream Studio home"><span className="brand-symbol"><StudioIcon name="video" /></span><span>Live Stream<span>Studio</span></span></a>
-        <div className="workspace-switcher"><span className="workspace-avatar">AF</span><span>My workspace<small>Personal workspace</small></span></div>
-        <span className="nav-caption">WORKSPACE</span>
         <nav aria-label="Workspace">
-          {(['studios', 'recordings', 'brand', 'team'] as const).map(view => <button key={view} aria-current={workspaceView === view ? 'page' : undefined} onClick={() => setWorkspaceView(view)}><StudioIcon name={view} />{viewTitles[view]}{view === 'studios' && dashboardStudios.length > 0 && <span className="nav-count">{dashboardStudios.length}</span>}</button>)}
+          {(['studios', 'recordings', 'settings'] as const).map(view => (
+            <button key={view}
+              aria-current={rootView === view ? (workspaceView === view ? 'page' : 'location') : undefined}
+              onClick={() => setWorkspaceView(view)}>
+              <StudioIcon name={view} />{viewTitles[view]}
+            </button>
+          ))}
         </nav>
-        <div className="workspace-nav-bottom">
-          <button aria-current={workspaceView === 'settings' ? 'page' : undefined} onClick={() => setWorkspaceView('settings')}><StudioIcon name="settings" />Settings & account</button>
-          <div className="workspace-attribution">Powered by<a href="https://arnoldfamini.com" target="_blank" rel="noopener noreferrer">ArnoldFamini.com <span>↗</span></a></div>
-        </div>
       </aside>
       <div className="workspace-body">
-        <header className="workspace-topbar"><span><span className="breadcrumb-root">Workspace <span className="breadcrumb-divider">/</span> </span><strong>{viewTitles[workspaceView]}</strong></span><button className="account-chip" onClick={() => setWorkspaceView('settings')}><span className="account-avatar">{accountUser?.name.slice(0, 1).toUpperCase() || 'AF'}</span>{accountUser?.name || 'My account'}<StudioIcon name="chevron" /></button></header>
         <main id="workspace-main" className="workspace-main">
-          <div className="workspace-page-heading"><div><span className="eyebrow">CREATE. CONNECT. GO LIVE.</span><h1>{viewTitles[workspaceView]}</h1><p>{viewDescriptions[workspaceView]}</p></div><button className="workspace-primary" onClick={() => setShowCreate(true)}><StudioIcon name="plus" />Create studio</button></div>
+          <div className="workspace-page-heading">
+            <h1>{viewTitles[workspaceView]}</h1>
+            {workspaceView === 'studios' && (
+              <button className="workspace-primary" onClick={() => setShowCreate(true)}><StudioIcon name="plus" />Create studio</button>
+            )}
+            {(workspaceView === 'brand' || workspaceView === 'team') && (
+              <button className="workspace-secondary" onClick={() => setWorkspaceView('settings')}>Back to settings</button>
+            )}
+          </div>
           {folderSaving && <p className="workspace-notice" role="status">Saving your recording backup. Keep this page open and your drive connected until it finishes.</p>}
           {(dashboardError || recordingLibrary.error) && <p className="workspace-alert" role="alert">{dashboardError || recordingLibrary.error}</p>}
           {workspaceSyncNotice && !dashboardError && !recordingLibrary.error && <p className="workspace-notice" role="status">{workspaceSyncNotice}</p>}
           {error && !showCreate && <p className="workspace-alert" role="alert">{error}</p>}
-          {workspaceView === 'studios' && <>
-            {dashboardStudios.length === 0 && <section className="workspace-hero">
-              <div className="hero-copy"><span className="hero-kicker"><span /> YOUR NEXT GREAT CONVERSATION</span><h2>Big ideas.<br />Beautifully broadcast.</h2><p>Your guests, your brand, your stage.<br />One space to bring it all together.</p><button className="hero-action" onClick={() => setShowCreate(true)}>Let's create something <span>↗</span></button></div>
-              <div className="hero-illustration" aria-hidden="true"><div className="mini-studio"><div className="mini-top"><span className="mini-dot" />Studio preview <span>16:9</span></div><div className="mini-stage"><div className="mini-person person-one"><StudioIcon name="person" /><span>You</span></div><div className="mini-person person-two"><StudioIcon name="person" /><span>Your guest</span></div></div><div className="mini-controls"><span><StudioIcon name="mic" /></span><span><StudioIcon name="video" /></span><i /><b>Go live</b></div></div><span className="illustration-caption">MAKE ROOM FOR YOUR STORY.</span></div>
-            </section>}
-            {dashboardStudios.length === 0 && <section className="workspace-empty"><span className="empty-icon"><StudioIcon name="studios" /></span><h2>A fresh stage, just for you</h2><p>Create your first studio to invite guests, record a conversation,<br />or prepare your next live show.</p><button className="workspace-secondary" onClick={() => setShowCreate(true)}><StudioIcon name="plus" />Create your first studio</button></section>}
-          </>}
+          {workspaceView === 'studios' && dashboardStudios.length === 0 && (
+            <p className="workspace-empty">Create a studio to invite guests, record, or go live.</p>
+          )}
           {workspaceView === 'studios' && dashboardStudios.length > 0 && (
-            <section className="ws-schedulePanel" style={styles.schedulePanel}>
-              <div className="ws-schedulePanelHeader" style={styles.schedulePanelHeader}>
-                <h2 className="ws-schedulePanelTitle" style={styles.schedulePanelTitle}>Saved studios</h2>
-                <span className="ws-schedulePanelCount" style={styles.schedulePanelCount}>{dashboardStudios.length}</span>
-              </div>
-              <div className="studio-list-tools">
+            <section aria-label="Saved studios">
+              {(dashboardStudios.length > 1 || studioSearch || studioFilter !== 'all') && <div className="studio-list-tools">
                 <div className="studio-filters" role="group" aria-label="Filter studios">
                   <button aria-pressed={studioFilter === 'all'} onClick={() => setStudioFilter('all')}>All studios</button>
                   <button aria-pressed={studioFilter === 'upcoming'} onClick={() => setStudioFilter('upcoming')}>Upcoming</button>
                 </div>
                 <label className="studio-search"><StudioIcon name="search" /><input aria-label="Search studios" placeholder="Search studios" value={studioSearch} onChange={e => setStudioSearch(e.target.value)} /></label>
-              </div>
+              </div>}
               {filteredStudios.length === 0 && <p className="search-empty" role="status">No studios match your search.</p>}
               <div className="ws-savedRoomList" style={styles.savedRoomList}>
                 {filteredStudios.map((room) => {
                   const availability = getSavedStudioAvailability(room, studioSyncIssues);
                   return (
                     <div key={room.id} className="ws-savedRoomCard" style={styles.savedRoomCard}>
-                      <div className="ws-savedRoomTop" style={styles.savedRoomTop}><span className="room-art"><StudioIcon name="video" /></span>
+                      <div className="ws-savedRoomTop" style={styles.savedRoomTop}>
                         <div className="ws-savedRoomInfo" style={styles.savedRoomInfo}>
                           <span className="ws-savedRoomName" style={styles.savedRoomName}>{room.name}</span>
-                          <span className="ws-savedRoomMeta" style={styles.savedRoomMeta}>{formatScheduledDate(room.scheduledFor)}</span>
+                          <span className="ws-savedRoomMeta" style={styles.savedRoomMeta}>
+                            {availability.kind === 'upcoming' ? formatScheduledDate(room.scheduledFor) : availability.label}
+                          </span>
                         </div>
-                        <span className={`ws-studio-badge ws-studio-badge--${availability.kind}`}>
-                          {availability.label}
-                        </span>
                       </div>
 
-
                       <div className="ws-savedRoomActions" style={styles.savedRoomActions}>
-                        <button
-                          className="ws-savedRoomAction" style={styles.savedRoomAction}
-                          onClick={() => copySavedInviteLink(room)}
-                        >
-                          {savedRoomCopiedId === room.id ? 'Copied' : 'Guest Link'}
-                        </button>
                         {availability.canEnter ? (
                           <button
                             className="ws-savedRoomPrimaryAction" style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
@@ -1564,94 +1549,98 @@ export function HomePage() {
                             Enter studio
                           </button>
                         ) : (
-                          <>
+                          <button
+                            className="ws-savedRoomPrimaryAction" style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
+                            onClick={() => void recreateSavedStudio(room)}
+                            disabled={recreatingStudioId !== null}
+                            aria-label={`Recreate ${room.name}`}
+                          >
+                            {recreatingStudioId === room.id ? 'Recreating…' : 'Recreate studio'}
+                          </button>
+                        )}
+                        <details className="studio-row-more" onKeyDown={event => {
+                          if (event.key === 'Escape' && event.currentTarget.open) {
+                            event.currentTarget.open = false;
+                            event.currentTarget.querySelector('summary')?.focus();
+                          }
+                        }}>
+                          <summary aria-label={`More actions for ${room.name}`}><StudioIcon name="more" /></summary>
+                          <div>
+                            <button className="ws-savedRoomAction" style={styles.savedRoomAction} onClick={() => copySavedInviteLink(room)}>
+                              {savedRoomCopiedId === room.id ? 'Guest link copied' : 'Copy guest link'}
+                            </button>
+                            {room.hostToken && room.registrationEnabled && Date.parse(room.scheduledFor || '') > Date.now() && (
+                              <button className="ws-savedRoomAction" style={styles.savedRoomAction} onClick={() => setPremiereRoom(room)}>
+                                Set up premiere
+                              </button>
+                            )}
                             <button
-                              className="ws-savedRoomAction ws-savedRoomRemoveAction" style={styles.savedRoomAction}
+                              className="ws-savedRoomAction" style={styles.savedRoomAction}
+                              onClick={() => emailGuestInvite(room)}
+                            >
+                              Email guest invite
+                            </button>
+                            <button
+                              className="ws-savedRoomAction" style={styles.savedRoomAction}
+                              onClick={() => downloadGuestPreparationSheet(room)}
+                            >
+                              Download guest prep sheet
+                            </button>
+                            {dashboardTeamMembers.length > 0 && (
+                              <>
+                                <button
+                                  className="ws-savedRoomAction" style={styles.savedRoomAction}
+                                  onClick={() => emailTeamInvite(room)}
+                                  disabled={!hasTeamInviteRecipients}
+                                >
+                                  Email team invite
+                                </button>
+                                <button
+                                  className="ws-savedRoomAction" style={styles.savedRoomAction}
+                                  onClick={() => downloadTeamCallSheet(room)}
+                                >
+                                  Download team call sheet
+                                </button>
+                              </>
+                            )}
+                            <button
+                              className="ws-savedRoomAction" style={styles.savedRoomAction}
+                              onClick={() => copySavedHostLink(room)}
+                            >
+                              {savedHostCopiedId === room.id ? 'Host link copied' : 'Copy host link'}
+                            </button>
+                            <button
+                              className="ws-savedRoomAction" style={styles.savedRoomAction}
+                              onClick={() => void downloadSavedInviteQr(room)}
+                              disabled={savedQrDownloadingId === room.id}
+                            >
+                              {savedQrDownloadingId === room.id ? 'Preparing QR…' : 'Download guest QR code'}
+                            </button>
+                            {room.scheduledFor && (
+                              <button
+                                className="ws-savedRoomAction" style={styles.savedRoomAction}
+                                onClick={() => downloadCalendarInvite(room)}
+                              >
+                                Download calendar invite
+                              </button>
+                            )}
+                            {room.registrationEnabled && (
+                              <button
+                                className="ws-savedRoomAction" style={styles.savedRoomAction}
+                                onClick={() => void downloadRegistrants(room)}
+                                disabled={registrantsDownloadingId === room.id}
+                              >
+                                {registrantsDownloadingId === room.id ? 'Exporting…' : 'Export registrants'}
+                              </button>
+                            )}
+                            <button
+                              style={{ ...styles.savedRoomAction, ...styles.savedRoomDangerAction }}
                               onClick={() => forgetScheduledRoom(room.id)}
                             >
-                              Remove
+                              Remove studio
                             </button>
-                            <button
-                              className="ws-savedRoomPrimaryAction" style={{ ...styles.savedRoomAction, ...styles.savedRoomPrimaryAction }}
-                              onClick={() => void recreateSavedStudio(room)}
-                              disabled={recreatingStudioId !== null}
-                              aria-label={`Recreate ${room.name}`}
-                            >
-                              {recreatingStudioId === room.id ? 'Recreating…' : 'Recreate studio'}
-                            </button>
-                          </>
-                        )}
-                        <details className="studio-row-more"><summary aria-label={`More actions for ${room.name}`}><StudioIcon name="more" /></summary><div>
-                        {room.hostToken && room.registrationEnabled && Date.parse(room.scheduledFor || '') > Date.now() && (
-                          <button className="ws-savedRoomAction" style={styles.savedRoomAction} onClick={() => setPremiereRoom(room)}>
-                            Set up premiere
-                          </button>
-                        )}
-                        <button
-                          className="ws-savedRoomAction" style={styles.savedRoomAction}
-                          onClick={() => emailGuestInvite(room)}
-                        >
-                          Email
-                        </button>
-                        <button
-                          className="ws-savedRoomAction" style={styles.savedRoomAction}
-                          onClick={() => downloadGuestPreparationSheet(room)}
-                        >
-                          Guest Prep
-                        </button>
-                        {dashboardTeamMembers.length > 0 && (
-                          <>
-                            <button
-                              className="ws-savedRoomAction" style={styles.savedRoomAction}
-                              onClick={() => emailTeamInvite(room)}
-                              disabled={!hasTeamInviteRecipients}
-                            >
-                              Team Email
-                            </button>
-                            <button
-                              className="ws-savedRoomAction" style={styles.savedRoomAction}
-                              onClick={() => downloadTeamCallSheet(room)}
-                            >
-                              Team Sheet
-                            </button>
-                          </>
-                        )}
-                        <button
-                          className="ws-savedRoomAction" style={styles.savedRoomAction}
-                          onClick={() => copySavedHostLink(room)}
-                        >
-                          {savedHostCopiedId === room.id ? 'Copied' : 'Host Link'}
-                        </button>
-                        <button
-                          className="ws-savedRoomAction" style={styles.savedRoomAction}
-                          onClick={() => void downloadSavedInviteQr(room)}
-                          disabled={savedQrDownloadingId === room.id}
-                        >
-                          {savedQrDownloadingId === room.id ? 'QR...' : 'QR'}
-                        </button>
-                        {room.scheduledFor && (
-                          <button
-                            className="ws-savedRoomAction" style={styles.savedRoomAction}
-                            onClick={() => downloadCalendarInvite(room)}
-                          >
-                            Calendar
-                          </button>
-                        )}
-                        {room.registrationEnabled && (
-                          <button
-                            className="ws-savedRoomAction" style={styles.savedRoomAction}
-                            onClick={() => void downloadRegistrants(room)}
-                            disabled={registrantsDownloadingId === room.id}
-                          >
-                            {registrantsDownloadingId === room.id ? 'Exporting...' : 'Registrants'}
-                          </button>
-                        )}
-                        <button
-                          style={{ ...styles.savedRoomAction, ...styles.savedRoomDangerAction }}
-                          onClick={() => forgetScheduledRoom(room.id)}
-                        >
-                          Remove
-                        </button></div></details>
+                          </div>
+                        </details>
                       </div>
                     </div>
                   );
@@ -1660,10 +1649,14 @@ export function HomePage() {
             </section>
           )}
 
-          {workspaceView === 'settings' && <section className="workspace-surface" aria-label="Account and workspace settings">              <div className="ws-workspaceHeader" style={styles.workspaceHeader}>
+          {workspaceView === 'settings' && <section className="workspace-surface" aria-label="Account and workspace settings">
+              <nav className="workspace-settings-nav" aria-label="Workspace settings">
+                <button className="workspace-secondary" onClick={() => setWorkspaceView('brand')}><StudioIcon name="brand" />Brand kits</button>
+                <button className="workspace-secondary" onClick={() => setWorkspaceView('team')}><StudioIcon name="team" />Team</button>
+              </nav>
+              <div className="ws-workspaceHeader" style={styles.workspaceHeader}>
                 <div className="ws-workspaceHeaderCopy" style={styles.workspaceHeaderCopy}>
-                  <h2 className="ws-workspaceTitle" style={styles.workspaceTitle}>Workspace</h2>
-                  <p className="ws-workspaceSubtitle" style={styles.workspaceSubtitle}>Saved studios, team, recordings, and brand assets</p>
+                  <h2 className="ws-workspaceTitle" style={styles.workspaceTitle}>Workspace backup</h2>
                 </div>
                 <div className="ws-workspaceHeaderActions" style={styles.workspaceHeaderActions}>
                   <button
@@ -1678,9 +1671,6 @@ export function HomePage() {
                   >
                     Import
                   </button>
-                  <span className="ws-workspaceBadge" style={styles.workspaceBadge}>
-                    {workspaceDashboard.totalStudios + workspaceDashboard.totalRecordings + workspaceDashboard.totalBrandKits + workspaceDashboard.totalTeamMembers}
-                  </span>
                 </div>
                 <input
                   ref={workspaceImportInputRef}
@@ -1802,8 +1792,9 @@ export function HomePage() {
 
               <GoogleDriveStorage />
               <StudioAccessKeySettings />
-</section>}
-          {workspaceView === 'team' && <section className="workspace-surface">              <div className="ws-workspaceSection" style={styles.workspaceSection}>
+            </section>}
+          {workspaceView === 'team' && <section className="workspace-surface">
+              <div className="ws-workspaceSection" style={styles.workspaceSection}>
                 <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>
                   <span className="ws-workspaceSectionTitle" style={styles.workspaceSectionTitle}>Team roster</span>
                   <span className="ws-workspaceSectionCount" style={styles.workspaceSectionCount}>{workspaceDashboard.totalTeamMembers}/12</span>
@@ -1849,7 +1840,6 @@ export function HomePage() {
                   <div className="ws-workspaceRows" style={styles.workspaceRows}>
                     {recentTeamMembers.map((member) => (
                       <div key={member.id} className="ws-workspaceRow" style={styles.workspaceRow}>
-                        <span className="ws-workspaceRoleBadge" style={styles.workspaceRoleBadge}>{getWorkspaceTeamRoleLabel(member.role).slice(0, 1)}</span>
                         <div className="ws-workspaceRowCopy" style={styles.workspaceRowCopy}>
                           <span className="ws-workspaceRowTitle" style={styles.workspaceRowTitle}>{member.name}</span>
                           <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
@@ -1868,119 +1858,81 @@ export function HomePage() {
                 )}
               </div>
 
-<p className="section-footnote">Keep a production roster and generate call sheets from your studio's actions.</p></section>}
+<p className="section-footnote">Keep a production roster and generate call sheets from your studio's actions.</p>
+            </section>}
           {workspaceView === 'recordings' && <section className="workspace-surface">
-            <RecordingRecoveryNotice onRecovered={recordingLibrary.refresh} />
-            {(recordingLibrary.isLoading || serverRecordingCatalogLoading || recentRecordings.length > 0) && (
+            <RecordingRecoveryNotice onRecovered={recordingLibrary.refresh} emptyState={
+              !recordingLibrary.isLoading && !serverRecordingCatalogLoading && recentRecordings.length === 0
+                ? <p className="workspace-empty">Record a session in your studio to see it here.</p>
+                : null
+            } />
+            {recordingLibrary.isLoading || serverRecordingCatalogLoading ? (
+              <p className="workspace-empty" role="status">Loading recordings…</p>
+            ) : recentRecordings.length > 0 && (
+              <div className="workspace-recordings">
+                {recentRecordings.map((session) => {
+                  const exportState = getWorkspaceRecordingExportState(session);
+                  const local = localRecordingIds.has(session.id);
+                  return (
+                    <details key={session.id} className="workspace-recording">
+                      <summary>
+                        <span className="ws-workspaceRowCopy" style={styles.workspaceRowCopy}>
+                          <span className="ws-workspaceRowTitle" style={styles.workspaceRowTitle}>{session.roomName}</span>
+                          <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
+                            {formatDashboardDate(session.createdAt)}{session.durationSeconds != null ? ` · ${formatWorkspaceDuration(session.durationSeconds)}` : ''}
+                            {session.mediaExport ? ` · ${getWorkspaceRecordingExportLabel(session)}` : ''}
+                          </span>
+                        </span>
+                        <span className="workspace-recording-open">Open recording <StudioIcon name="chevron" /></span>
+                      </summary>
+                      <div className="workspace-recording-details">
+                        <p className="ws-workspaceRowMeta" style={{ ...styles.workspaceRowMeta, ...(exportState === 'error' ? styles.workspaceRowMetaError : {}) }}>
+                          {session.source === 'local-and-server' ? 'On this device and in cloud storage' : session.source === 'server' ? 'In cloud storage' : 'On this device'}
+                          {' · '}{session.trackCount} track{session.trackCount === 1 ? '' : 's'}
+                        </p>
+                        <div className="ws-workspaceRowActions" style={styles.workspaceRowActions}>
+                          {session.mediaExport?.mp4ShareUrl && <>
+                            <button className="workspace-secondary" onClick={() => openRecordingMp4ShareLink(session)}>Open video</button>
+                            <button className="workspace-secondary" onClick={() => void copyRecordingMp4ShareLink(session)}>Copy video link</button>
+                          </>}
+                          {local && <>
+                            <button className="workspace-secondary" onClick={() => void downloadLocalRecording(session)} disabled={folderSaving || downloadingRecordingId !== null}>
+                              {downloadingRecordingId === session.id ? 'Working…' : 'Download tracks'}
+                            </button>
+                            <button className="workspace-secondary" onClick={() => void deleteDashboardRecordingSession(session)} disabled={folderSaving || downloadingRecordingId !== null}>
+                              Delete
+                            </button>
+                          </>}
+                        </div>
+                        {local && (
+                          <RecordingFolderSave
+                            compact
+                            disabled={folderSaving || downloadingRecordingId !== null}
+                            onBusyChange={setFolderSaving}
+                            getRecording={async () => {
+                              const localSession = recordingLibrary.sessions.find((item) => item.id === session.id);
+                              if (!localSession) throw new Error('This recording is no longer in the local library.');
+                              return {
+                                id: localSession.id,
+                                roomName: localSession.roomName,
+                                createdAt: localSession.createdAt,
+                                durationSeconds: localSession.durationSeconds,
+                                files: await recordingLibrary.loadFiles(localSession.id),
+                                markers: localSession.markers,
+                              };
+                            }}
+                          />
+                        )}
+                      </div>
+                    </details>
+                  );
+                })}
+              </div>
+            )}
+          </section>}
+          {workspaceView === 'brand' && <section className="workspace-surface">
+            {recentBrandKits.length > 0 && (
                 <div className="ws-workspaceSection" style={styles.workspaceSection}>
-                  <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>
-                    <span className="ws-workspaceSectionTitle" style={styles.workspaceSectionTitle}>All recordings</span>
-                    <span className="ws-workspaceSectionCount" style={styles.workspaceSectionCount}>
-                      {recordingLibrary.isLoading || serverRecordingCatalogLoading
-                        ? 'Loading'
-                        : `${workspaceDashboard.cloudRecordingCount} cloud | ${workspaceDashboard.readyMp4RecordingCount} MP4`}
-                    </span>
-                  </div>
-                  {!recordingLibrary.isLoading && !serverRecordingCatalogLoading && (
-                    <div className="ws-workspaceRows" style={styles.workspaceRows}>
-                      {recentRecordings.map((session) => {
-                        const exportState = getWorkspaceRecordingExportState(session);
-                        const exportLabel = getWorkspaceRecordingExportLabel(session);
-                        return (
-                          <div key={session.id} className="ws-workspaceRow" style={{ ...styles.workspaceRow, flexWrap: 'wrap' }}>
-                            <span className="ws-workspaceRecordingSourceBadge" style={styles.workspaceRecordingSourceBadge}>
-                              {session.source === 'local-and-server' ? 'Both' : session.source === 'server' ? 'Cloud' : 'Local'}
-                            </span>
-                            {session.mediaExport && (
-                              <span style={{
-                                ...styles.workspaceRecordingExportBadge,
-                                ...(exportState === 'ready' ? styles.workspaceRecordingExportBadgeReady : {}),
-                                ...(exportState === 'error' ? styles.workspaceRecordingExportBadgeError : {}),
-                              }}>
-                                {exportState === 'ready' ? 'MP4' : exportState === 'error' ? 'Fix' : 'Mix'}
-                              </span>
-                            )}
-                            <div className="ws-workspaceRowCopy" style={styles.workspaceRowCopy}>
-                              <span className="ws-workspaceRowTitle" style={styles.workspaceRowTitle}>{session.roomName}</span>
-                              <span className="ws-workspaceRowMeta" style={styles.workspaceRowMeta}>
-                                {formatDashboardDate(session.createdAt)}{session.durationSeconds != null ? ` | ${formatWorkspaceDuration(session.durationSeconds)}` : ''} | {session.trackCount} track{session.trackCount === 1 ? '' : 's'}
-                              </span>
-                              {session.mediaExport && (
-                                <span style={{
-                                  ...styles.workspaceRowMeta,
-                                  ...(exportState === 'ready' ? styles.workspaceRowMetaReady : {}),
-                                  ...(exportState === 'error' ? styles.workspaceRowMetaError : {}),
-                                }}>
-                                  {exportLabel}
-                                </span>
-                              )}
-                            </div>
-                            <div className="ws-workspaceRowActions" style={styles.workspaceRowActions}>
-                              {session.mediaExport?.mp4ShareUrl && (
-                                <>
-                                  <button
-                                    className="ws-workspaceRowSecondaryAction" style={styles.workspaceRowSecondaryAction}
-                                    onClick={() => openRecordingMp4ShareLink(session)}
-                                  >
-                                    Open
-                                  </button>
-                                  <button
-                                    className="ws-workspaceRowSecondaryAction" style={styles.workspaceRowSecondaryAction}
-                                    onClick={() => void copyRecordingMp4ShareLink(session)}
-                                  >
-                                    Copy
-                                  </button>
-                                </>
-                              )}
-                              {localRecordingIds.has(session.id) && (
-                                <>
-                                <button className="ws-workspaceRowAction" style={styles.workspaceRowAction} onClick={() => void downloadLocalRecording(session)} disabled={folderSaving || downloadingRecordingId !== null}>
-                                  {downloadingRecordingId === session.id ? 'Working…' : 'Download tracks'}
-                                </button>
-                                <button
-                                  className="ws-workspaceRowAction" style={styles.workspaceRowAction}
-                                  onClick={() => void deleteDashboardRecordingSession(session)}
-                                  disabled={folderSaving || downloadingRecordingId !== null}
-                                >
-                                  Delete
-                                </button>
-                                </>
-                              )}
-                            </div>
-                            {localRecordingIds.has(session.id) && (
-                              <RecordingFolderSave
-                                compact
-                                disabled={folderSaving || downloadingRecordingId !== null}
-                                onBusyChange={setFolderSaving}
-                                getRecording={async () => {
-                                  const localSession = recordingLibrary.sessions.find((item) => item.id === session.id);
-                                  if (!localSession) throw new Error('This recording is no longer in the local library.');
-                                  return {
-                                    id: localSession.id,
-                                    roomName: localSession.roomName,
-                                    createdAt: localSession.createdAt,
-                                    durationSeconds: localSession.durationSeconds,
-                                    files: await recordingLibrary.loadFiles(localSession.id),
-                                    markers: localSession.markers,
-                                  };
-                                }}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-{!recordingLibrary.isLoading && !serverRecordingCatalogLoading && recentRecordings.length === 0 && <div className="workspace-empty"><span className="empty-icon"><StudioIcon name="recordings" /></span><h2>Your next story starts here</h2><p>Record a session in your studio to see it in your library.</p><button className="workspace-secondary" onClick={() => setWorkspaceView('studios')}>Go to studios <span>→</span></button></div>}</section>}
-          {workspaceView === 'brand' && <section className="workspace-surface">              {recentBrandKits.length > 0 && (
-                <div className="ws-workspaceSection" style={styles.workspaceSection}>
-                  <div className="ws-workspaceSectionHeader" style={styles.workspaceSectionHeader}>
-                    <span className="ws-workspaceSectionTitle" style={styles.workspaceSectionTitle}>Brand kits</span>
-                    <span className="ws-workspaceSectionCount" style={styles.workspaceSectionCount}>{recentBrandKits.length}/{workspaceDashboard.totalBrandKits}</span>
-                  </div>
                   <div className="ws-workspaceRows" style={styles.workspaceRows}>
                     {recentBrandKits.map((kit) => (
                       <div key={kit.id} className="ws-workspaceRow" style={styles.workspaceRow}>
@@ -2005,15 +1957,15 @@ export function HomePage() {
                   </div>
                 </div>
               )}
-{recentBrandKits.length === 0 && <div className="workspace-empty"><span className="empty-icon"><StudioIcon name="brand" /></span><h2>Make it unmistakably yours</h2><p>Open Brand inside a studio to save your logo, colors,<br />and background as a reusable brand kit.</p><button className="workspace-secondary" onClick={() => setWorkspaceView('studios')}>Go to studios <span>→</span></button></div>}</section>}
-          <footer className="workspace-footer"><span>Good conversations start here.</span><div><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link><a href="/THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Open-source licences</a></div></footer>
+            {recentBrandKits.length === 0 && <p className="workspace-empty">Save a brand kit from the Brand panel in a studio.</p>}
+          </section>}
+          <footer className="workspace-footer"><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link><a href="/THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Open-source licences</a></footer>
         </main>
       </div>
-      {showCreate && !scheduledRoom && <WorkspaceDialog title="Create a studio" onClose={() => { if (!loading && !schedulingLoading) setShowCreate(false); }}>          <div className="ws-card" style={styles.card}>
+      {showCreate && !scheduledRoom && <WorkspaceDialog title="Create a studio" onClose={() => { if (!loading && !schedulingLoading) setShowCreate(false); }}>
+          <div className="ws-card" style={styles.card}>
             <div className="ws-cardInner" style={styles.cardInner}>
               <h2 id="create-studio-title" className="ws-cardTitle" style={styles.cardTitle}>Create a studio</h2>
-              <p className="ws-cardSub" style={styles.cardSub}>Set up your broadcast in seconds</p>
-
               <div className="ws-field" style={styles.field}>
                 <label className="ws-label" style={styles.label} htmlFor="studio-name">Studio name</label>
                 <input
@@ -2300,11 +2252,6 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '-0.01em',
     color: 'rgba(226, 232, 240, 0.92)',
   },
-  cardSub: {
-    fontSize: 13,
-    color: 'var(--text-muted)',
-    marginBottom: 24,
-  },
   field: {
     marginBottom: 16,
   },
@@ -2463,24 +2410,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'rgba(226, 232, 240, 0.94)',
     letterSpacing: 0,
     marginBottom: 3,
-  },
-  workspaceSubtitle: {
-    fontSize: 12,
-    color: 'var(--text-muted)',
-    lineHeight: 1.35,
-  },
-  workspaceBadge: {
-    minWidth: 26,
-    height: 26,
-    borderRadius: 13,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 12,
-    fontWeight: 700,
-    color: '#bbf7d0',
-    background: 'rgba(34, 197, 94, 0.1)',
-    border: '1px solid rgba(34, 197, 94, 0.18)',
   },
   accountPanel: {
     borderRadius: 12,
@@ -2647,42 +2576,6 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     minHeight: 42,
   },
-  workspaceRecordingSourceBadge: {
-    flex: '0 0 42px',
-    minHeight: 24,
-    borderRadius: 8,
-    border: '1px solid rgba(103, 232, 249, 0.2)',
-    background: 'rgba(103, 232, 249, 0.08)',
-    color: '#67e8f9',
-    fontSize: 11,
-    fontWeight: 900,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  workspaceRecordingExportBadge: {
-    flex: '0 0 34px',
-    minHeight: 24,
-    borderRadius: 8,
-    border: '1px solid rgba(167, 139, 250, 0.22)',
-    background: 'rgba(167, 139, 250, 0.1)',
-    color: '#ddd6fe',
-    fontSize: 11,
-    fontWeight: 900,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  workspaceRecordingExportBadgeReady: {
-    borderColor: 'rgba(34, 197, 94, 0.24)',
-    background: 'rgba(34, 197, 94, 0.1)',
-    color: '#bbf7d0',
-  },
-  workspaceRecordingExportBadgeError: {
-    borderColor: 'rgba(248, 113, 113, 0.22)',
-    background: 'rgba(248, 113, 113, 0.08)',
-    color: '#fca5a5',
-  },
   workspaceRowCopy: {
     minWidth: 0,
     flex: '1 1 auto',
@@ -2707,9 +2600,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: 'var(--text-muted)',
   },
-  workspaceRowMetaReady: {
-    color: '#bbf7d0',
-  },
   workspaceRowMetaError: {
     color: '#fca5a5',
   },
@@ -2732,75 +2622,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: 'pointer',
   },
-  workspaceRowSecondaryAction: {
-    flex: '0 0 48px',
-    minHeight: 30,
-    borderRadius: 8,
-    border: '1px solid rgba(103, 232, 249, 0.22)',
-    background: 'rgba(103, 232, 249, 0.08)',
-    color: '#67e8f9',
-    fontSize: 11,
-    fontWeight: 800,
-    cursor: 'pointer',
-  },
   workspaceBrandSwatch: {
     flex: '0 0 18px',
     width: 18,
     height: 18,
     borderRadius: 999,
     border: '1px solid rgba(255, 255, 255, 0.18)',
-  },
-  workspaceRoleBadge: {
-    flex: '0 0 24px',
-    width: 24,
-    height: 24,
-    borderRadius: 999,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    border: '1px solid rgba(103, 232, 249, 0.2)',
-    background: 'rgba(103, 232, 249, 0.08)',
-    color: '#a5f3fc',
-    fontSize: 11,
-    fontWeight: 900,
-  },
-  schedulePanel: {
-    width: '100%',
-    maxWidth: 460,
-    flex: '1 1 360px',
-    background: 'rgba(255, 255, 255, 0.035)',
-    borderRadius: 18,
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
-    padding: 18,
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
-  },
-  schedulePanelHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 12,
-  },
-  schedulePanelTitle: {
-    fontSize: 16,
-    fontWeight: 700,
-    color: 'rgba(226, 232, 240, 0.94)',
-    letterSpacing: '-0.01em',
-  },
-  schedulePanelCount: {
-    minWidth: 26,
-    height: 26,
-    borderRadius: 13,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 12,
-    fontWeight: 700,
-    color: '#67e8f9',
-    background: 'rgba(103, 232, 249, 0.1)',
-    border: '1px solid rgba(103, 232, 249, 0.18)',
   },
   savedRoomList: {
     display: 'flex',

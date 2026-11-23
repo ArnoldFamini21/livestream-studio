@@ -21,3 +21,7 @@
 .recording-take-checklist li [data-state="missing"] { color: var(--danger, #f87171); }
 .recording-take-checklist li [data-state="verified"] { color: var(--success, #4ade80); }
 .recording-take-checklist button { margin: 4px 4px 0 0; }
+.recording-storage-options { margin-top: 10px; }
+.recording-storage-options summary { cursor: pointer; margin-bottom: 8px; }
+.recording-private-backup-option { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; }
+.recording-private-backup-option small { display: block; margin-top: 4px; color: var(--text-secondary); }

@@ -19,6 +19,10 @@ import {
 } from '../utils/progressiveRecordingUpload.ts';
 import type { LocalProgressiveUploadConfig } from './useLocalRecording.ts';
 import { timelineNow } from '../utils/recordingTakeManifest.ts';
+import type { PrimaryRecordingRecorder } from '../utils/primaryRecordingRecorder.ts';
+
+export const PROGRAM_VIDEO_BITS_PER_SECOND = 20_000_000;
+export const PROGRAM_AUDIO_BITS_PER_SECOND = 256_000;
 
 export interface RecordingStreamInput {
   stream: MediaStream;
@@ -26,6 +30,7 @@ export interface RecordingStreamInput {
   isLocal: boolean;
   kind?: RecordingUploadTrackKind;
   cleanup?: () => void;
+  recorder?: PrimaryRecordingRecorder;
 }
 
 export interface RecordingTrackResult {
@@ -57,7 +62,7 @@ interface RecordingTrack {
   participantId: string;
   name: string;
   kind?: RecordingUploadTrackKind;
-  recorder: MediaRecorder;
+  recorder: PrimaryRecordingRecorder;
   chunkStore: RecordingTrackStore;
   finished: Promise<Blob>;
   cleanup?: () => void;
@@ -149,7 +154,7 @@ export function useRecording(roomName = 'Studio') {
       }
 
       const mimeType = getMimeType();
-      if (!mimeType) {
+      if (!mimeType && [...streams.values()].some(input => !input.recorder)) {
         console.error('No supported recording MIME type found');
         streams.forEach((input) => input.cleanup?.());
         return false;
@@ -161,13 +166,13 @@ export function useRecording(roomName = 'Studio') {
       tracksRef.current.forEach(cleanupTrack);
       tracksRef.current.clear();
 
-      for (const [id, { stream, name, kind, cleanup }] of streams) {
-        let recorder: MediaRecorder;
+      for (const [id, { stream, name, kind, cleanup, recorder: preparedRecorder }] of streams) {
+        let recorder: PrimaryRecordingRecorder;
         try {
-          recorder = new MediaRecorder(stream, {
+          recorder = preparedRecorder ?? new MediaRecorder(stream, {
             mimeType,
-            videoBitsPerSecond: 20_000_000, // 20 Mbps for professional studio quality
-            audioBitsPerSecond: 256_000,    // 256 kbps audio
+            videoBitsPerSecond: PROGRAM_VIDEO_BITS_PER_SECOND,
+            audioBitsPerSecond: PROGRAM_AUDIO_BITS_PER_SECOND,
           });
         } catch (err) {
           console.error(`Failed to start recorder for ${name}:`, err);

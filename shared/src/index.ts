@@ -4,6 +4,8 @@ export * from './viewerChat.js';
 export * from './watchEvents.js';
 export * from './productionRundown.js';
 export * from './premieres.js';
+export * from './recordingRecovery.js';
+import type { RecordingRecoveryGrant, RecordingRecoveryState } from './recordingRecovery.js';
 import type { ProductionRundown, ProductionRundownStateMessage, ProductionRundownUpdate } from './productionRundown.js';
 import type { WatchEventState } from './watchEvents.js';
 import type { ChatOverlayState, ChatOverlayUpdatePayload, ChatOverlayUpdatedPayload } from './chatOverlay.js';
@@ -492,6 +494,9 @@ export type SignalMessage =
    */
   | { type: 'talkback-state'; payload: TalkbackStatePayload }
   | { type: 'recording-state-changed'; payload: RecordingStatePayload }
+  | { type: 'recording-recovery-grant'; payload: RecordingRecoveryGrant }
+  | { type: 'recording-recovery-grant-request'; payload: { takeId: string } }
+  | { type: 'recording-recovery-state'; payload: RecordingRecoveryState }
   /** Host/co-host only: the 3-2-1 before recording, so guests see it too. */
   | { type: 'recording-countdown'; payload: RecordingCountdownPayload }
   /** Host/co-host only: fix a participant's display name or set their name-tag title. */
@@ -878,6 +883,7 @@ export interface RecordingStatePayload {
   recording: boolean;
   sessionId?: string;
   paused?: boolean;
+  privateRecovery?: boolean;
   startedAt?: string;
   stoppedAt?: string;
   performedBy: string;

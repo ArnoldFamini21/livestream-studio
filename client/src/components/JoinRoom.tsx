@@ -3,6 +3,7 @@ import '../styles/join-room.css';
 import { StudioIcon } from './StudioIcon.tsx';
 import { isSecondaryCameraEntry, secondaryCameraSearch, studioSeatStorageKey } from '../utils/secondaryCamera.ts';
 import { saveStudioResumeToken } from '../utils/studioSession.ts';
+import { listPrivateRecoveryGrants } from '../utils/recordingCloudRecovery.ts';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -630,6 +631,7 @@ export function JoinRoom() {
   }
 
   if (notFound) {
+    const hasUpload = listPrivateRecoveryGrants().some(grant => grant.roomId === roomId);
     return (
       <div className="join-page" style={styles.page}>
         <div className="join-card" style={styles.card}>
@@ -645,8 +647,8 @@ export function JoinRoom() {
               ? `${inviteStudioName} does not exist or has already ended.`
               : "This session doesn't exist or has already ended."}
           </p>
-          <button className="btn-primary" style={styles.joinButton} onClick={() => navigate('/')}>
-            Go to homepage
+          <button className="btn-primary" style={styles.joinButton} onClick={() => navigate(hasUpload ? '/finish-upload' : '/')}>
+            {hasUpload ? 'Finish upload' : 'Go to homepage'}
           </button>
         </div>
       </div>

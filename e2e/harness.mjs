@@ -148,12 +148,38 @@ export async function joinStudio(context, { url = 'http://localhost:5199', studi
 }
 
 export async function admitGuest(host, name) {
-  await host.getByRole('button', { name: `Move ${name} backstage`, exact: true }).click();
+  const people = await openPeople(host);
+  await people.getByRole('button', { name: `Admit ${name} to backstage`, exact: true }).click();
+  await people.getByRole('button', { name: 'Close sidebar panel', exact: true }).click();
   await host.getByRole('region', { name: 'Backstage private room', exact: true }).getByText(name, { exact: true }).waitFor();
 }
 
 export async function stageGuest(host, name) {
-  await host.getByRole('button', { name: `Add ${name} to stage`, exact: true }).click();
+  const people = await openPeople(host);
+  const options = people.getByRole('button', { name: `Options for ${name}`, exact: true });
+  await options.waitFor();
+  const stage = people.getByRole('button', { name: `Bring ${name} on stage`, exact: true });
+  if (await stage.isVisible()) {
+    await stage.click();
+  } else {
+    await options.click();
+    await people.getByRole('button', { name: 'Bring on stage', exact: true }).click();
+  }
+  await people.getByRole('button', { name: 'Close sidebar panel', exact: true }).click();
+}
+
+async function openPeople(host) {
+  const panel = host.getByRole('complementary', { name: 'Studio side panel', exact: true });
+  if (!(await panel.getByRole('heading', { name: 'People', exact: true }).isVisible())) {
+    await host.getByRole('button', { name: /^People(?:, \d+ waiting)?$/ }).click();
+  }
+  return panel;
+}
+
+export async function openStudioTool(page, name) {
+  await page.getByRole('button', { name: 'More tools', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Studio tools', exact: true })
+    .getByRole('button', { name, exact: typeof name === 'string' }).click();
 }
 
 export async function screenshot(page, directory, name) {
