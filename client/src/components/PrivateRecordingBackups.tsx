@@ -3,7 +3,7 @@ import type { RecordingRecoveryTake, RecordingRecoveryTrack } from '@studio/shar
 import { getHostSession } from '../utils/hostSession.ts';
 import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 import {
-  downloadPrivateRecoveryTrack, listPrivateRecoveryTakes, readPrivateRecoveryTake,
+  downloadPrivateRecoveryTrack, listPrivateRecoveryTakes, PrivateRecoveryError, readPrivateRecoveryTake,
   type PrivateRecoveryReference,
 } from '../utils/recordingCloudRecovery.ts';
 
@@ -44,14 +44,19 @@ function PrivateRecordingTake({ reference, hostToken }: { reference: PrivateReco
     const check = async () => {
       try {
         const result = await readPrivateRecoveryTake(reference, hostToken, request.signal);
-        if (!request.signal.aborted) {
-          setTake(result);
-          setError('');
-          timer = window.setTimeout(() => void check(), 15_000);
-        }
+        if (request.signal.aborted) return;
+        setTake(result);
+        setError('');
       } catch (failure) {
-        if (!request.signal.aborted) setError(failure instanceof Error ? failure.message : 'Could not check the private copy.');
+        if (request.signal.aborted) return;
+        if (failure instanceof PrivateRecoveryError && [401, 403, 404, 410].includes(failure.status)) {
+          setTake(null);
+          setError(failure.message);
+          return;
+        }
+        setError('Could not refresh the private backup. Trying again…');
       }
+      timer = window.setTimeout(() => void check(), 15_000);
     };
     void check();
     return () => { request.abort(); window.clearTimeout(timer); };

@@ -34,7 +34,7 @@ async function listen(handler: RequestListener) {
   };
 }
 
-async function startObjectStore() {
+async function startObjectStore(missingReadStatus = 404) {
   const files = new Map<string, { bytes: Buffer; version: string; offset?: string; checksum?: string }>();
   let publicRead = false;
   let enforceConditions = true;
@@ -48,7 +48,7 @@ async function startObjectStore() {
     }
     if (req.method !== 'PUT') {
       if (!previous) {
-        res.writeHead(404).end();
+        res.writeHead(missingReadStatus).end();
         return;
       }
       res.writeHead(200, {
@@ -210,7 +210,7 @@ test('offline guest upload adopts only verified contiguous bytes across retries 
   assert.equal((await fetch(url(), { headers: host })).status, 410);
 });
 
-test('recovery fails closed with public, unconfigured or non-conditional storage', async (t) => {
+test('recovery fails closed when storage is public, unconfigured or lacks required object semantics', async (t) => {
   const storage = await startObjectStore();
   t.after(storage.server.close);
   const ready = async (env: NodeJS.ProcessEnv) => {
@@ -222,6 +222,9 @@ test('recovery fails closed with public, unconfigured or non-conditional storage
   };
   assert.deepEqual(await ready({ ...storage.env, RECORDING_RECOVERY_ENABLED: 'false' }), { ready: false });
   assert.deepEqual(await ready({ ...storage.env, RECORDING_STORAGE_PUBLIC_BASE_URL: storage.server.url }), { ready: false });
+  const storageWithoutMissingReads = await startObjectStore(403);
+  t.after(storageWithoutMissingReads.server.close);
+  assert.deepEqual(await ready(storageWithoutMissingReads.env), { ready: false });
   storage.setPublic();
   assert.deepEqual(await ready(storage.env), { ready: false });
   storage.ignoreConditions();

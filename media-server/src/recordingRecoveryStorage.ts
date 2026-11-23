@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { RECORDING_RECOVERY_CHUNK_BYTES, RECORDING_RECOVERY_SHA256 } from '@studio/shared';
 import { getRecordingObjectStorageConfig, signObjectStorageRequest, type ObjectStorageConfig } from './objectStorage.js';
 
@@ -102,6 +102,9 @@ export class RecordingRecoveryStorage {
     if (probe?.value !== PRIVATE_PROBE ||
         await this.writeJson(key, PRIVATE_PROBE, null) ||
         await this.writeJson(key, PRIVATE_PROBE, '"invalid-recovery-probe-version"')) return false;
+    // A guest who has not started uploading has no track index yet.
+    const missingIndex = this.key(scope, 'participants', randomUUID(), 'tracks.json');
+    if (await this.readJson(missingIndex) !== null) return false;
     const sample = new TextEncoder().encode(PRIVATE_PROBE);
     const receipt = { offset: 0, bytes: sample.length, sha256: createHash('sha256').update(sample).digest('hex') };
     const sampleKey = this.key(scope, 'participants', 'probe', 'tracks', 'probe', '0');
