@@ -156,6 +156,26 @@ jobs:
         # A separate step: FFMPEG_BIN reaches only the steps after the one that exports it.
         timeout-minutes: 6
         run: sh scripts/ci-install-ffmpeg.sh
+      - name: Provision and verify FFprobe
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          probe=/usr/bin/ffprobe
+          if [ ! -x "$probe" ] || ! "$probe" -version; then
+            # ffmpeg-static supplies only ffmpeg. Use the companion probe
+            # from its pinned release when the Ubuntu package is unavailable.
+            probe_dir="$(mktemp -d "$RUNNER_TEMP/recording-ffprobe.XXXXXXXX")"
+            archive="$probe_dir/ffprobe.gz"
+            probe="$probe_dir/ffprobe"
+            curl --fail --location --silent --show-error --proto '=https' \
+              --connect-timeout 12 --max-time 45 --retry 2 --output "$archive" \
+              https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-x64.gz
+            printf '%s  %s\n' '25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067' "$archive" | sha256sum -c -
+            gzip -dc "$archive" > "$probe"
+            chmod 700 "$probe"
+            "$probe" -version
+          fi
+          printf 'FFPROBE_PATH=%s\n' "$probe" >> "$GITHUB_ENV"
       - name: Install dependencies and Chromium
         run: |
           sh scripts/npm-ci-retry.sh
