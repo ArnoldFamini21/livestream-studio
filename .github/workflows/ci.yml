@@ -125,6 +125,14 @@ jobs:
             output/e2e/transcript-editor/*.txt
             output/e2e/transcript-editor/*.json
             output/e2e/transcript-editor/*.log
+            output/e2e/production-rundown/*.png
+            output/e2e/production-rundown/*.txt
+            output/e2e/production-rundown/*.json
+            output/e2e/production-rundown/*.log
+            output/e2e/premiere-watch/*.png
+            output/e2e/premiere-watch/*.txt
+            output/e2e/premiere-watch/*.json
+            output/e2e/premiere-watch/*.log
           retention-days: 7
 
   recording-soak:
