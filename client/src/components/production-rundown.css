@@ -1,0 +1,43 @@
+.production-rundown {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding: 16px;
+}
+
+.production-rundown h2 { font-size: 16px; margin: 0; }
+.production-rundown p { margin: 0; }
+.production-rundown button { align-self: flex-start; }
+
+.production-rundown-cue,
+.production-rundown-list li,
+.production-rundown-editor {
+  display: grid;
+  gap: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+
+.production-rundown-cue { border-color: var(--accent); }
+.production-rundown-list { display: grid; gap: 8px; padding: 0; margin: 0; list-style: none; }
+.production-rundown-item-head,
+.production-rundown-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
+.production-rundown-item-head span,
+.production-rundown-list li > span { color: var(--text-secondary); font-size: 12px; }
+.production-rundown-notes { white-space: pre-wrap; }
+.production-rundown-editor label { display: grid; gap: 4px; }
+.production-rundown-editor input,
+.production-rundown-editor textarea {
+  width: 100%;
+  padding: 8px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}

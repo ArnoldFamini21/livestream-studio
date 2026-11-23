@@ -41,9 +41,12 @@ import type {
   RoomRegistrantResponse,
   ExternalChatPlatform,
   ExternalChatStatusPayload,
+  ProductionRundown,
+  ProductionRundownUpdate,
 } from '@studio/shared';
 import { WatchCaptionBuffer, WATCH_CAPTIONS_OFF } from './watchCaptions.js';
 import {
+  EMPTY_PRODUCTION_RUNDOWN,
   RECORDING_UPLOAD_PROGRESS_STATUSES,
   MAX_RECORDING_TRANSFER_SDP_LENGTH,
   MAX_PARTICIPANT_TITLE_LENGTH,
@@ -112,6 +115,7 @@ import { isStudioCreationGated } from './studioAccessPolicy.js';
 import { buildPresentationRenderClaims } from './presentationRenderToken.js';
 import { getWatchAccessSecret, issueWatchGrant } from './watchAccess.js';
 import { WatchCallIns } from './watchCallIns.js';
+import { changeProductionRundown } from './productionRundown.js';
 import { ViewerChatError, ViewerChatRoom, type ViewerChatHost } from './viewerChat.js';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
@@ -173,6 +177,7 @@ interface RoomState {
   /** Viewer chat from the public watch page (switches, blocks, feed); kept in memory for the life of the room (not stored). */
   viewerChat?: ViewerChatRoom;
   watchCalls?: WatchCallIns;
+  productionRundown?: ProductionRundown;
   stageContent?: StageContentPayload;
   /** Who set stageContent, so a co-host cannot clear what the host presents. */
   stageContentSetBy?: { participantId: string; role: Participant['role'] };
@@ -316,6 +321,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'chat-overlay-update',
   'viewer-chat-settings-update',
   'watch-invite-request',
+  'production-rundown-update',
   'watch-event-settings',
   'watch-call-in-decide',
   'viewer-chat-remove',
@@ -431,6 +437,7 @@ const viewerModerationRateLimiter = new WsRateLimiter<WebSocket>(
   { control: 30, relay: 30 },
   10_000,
 );
+const productionRundownRateLimiter = new WsRateLimiter<WebSocket>({ control: 20, relay: 20 }, 10_000);
 const talkbackStateRateLimiter = new WsRateLimiter<WebSocket>(
   { control: TALKBACK_STATE_RATE_LIMIT_MAX, relay: TALKBACK_STATE_RATE_LIMIT_MAX },
   TALKBACK_STATE_RATE_LIMIT_WINDOW_MS,
@@ -602,6 +609,7 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
     hostToken: snapshot.hostToken,
     creatorIp: snapshot.creatorIp,
     ...(session?.createdByOwner ? { createdByOwner: true } : {}),
+    ...(session?.productionRundown ? { productionRundown: session.productionRundown } : {}),
     hasBeenJoined: snapshot.hasBeenJoined,
     ...(snapshot.studioBranding ? { studioBranding: withoutUnstoredBackgroundImage(snapshot.studioBranding) } : {}),
     ...(snapshot.passwordHash ? { passwordHash: snapshot.passwordHash } : {}),
@@ -624,6 +632,7 @@ function buildRoomSessionSnapshot(roomState: RoomState): RoomSessionSnapshot {
     watchId: roomState.watchId,
     ...(roomState.legacyWatchByRoomId ? { legacyWatchByRoomId: true } : {}),
     ...(roomState.createdByOwner ? { createdByOwner: true } : {}),
+    ...(roomState.productionRundown ? { productionRundown: roomState.productionRundown } : {}),
     ...(roomState.recordingSessionId ? {
       recording: {
         sessionId: roomState.recordingSessionId,
@@ -1447,6 +1456,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'qa-question-upvote':
       handleQAQuestionUpvote(ws, message.payload);
       break;
+    case 'production-rundown-update':
+      handleProductionRundownUpdate(ws, message.payload);
+      break;
     case 'watch-invite-request':
     case 'watch-event-settings':
     case 'watch-call-in-decide':
@@ -1826,6 +1838,8 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
         viewerChat: ensureViewerChat(roomId, roomState).statePayload(),
         watchEvent: getWatchCalls(roomState).state(),
       } : {}),
+      ...(admitted && operator && participant.capabilities?.includes('production-rundown')
+        ? { productionRundown: roomState.productionRundown ?? EMPTY_PRODUCTION_RUNDOWN } : {}),
       stageContent: admitted ? roomState.stageContent : undefined,
       stageUploadToken: entry.stageUploadToken,
       ...(admitted && entry.stageReadToken ? { stageReadToken: entry.stageReadToken } : {}),
@@ -1840,6 +1854,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
         chatOverlay: true,
         viewerChat: true,
         watchEvents: true,
+        productionRundown: true,
       },
     },
   });
@@ -2642,6 +2657,36 @@ function handleWatchEventOperatorMessage(
     const invite = createGuestInviteToken(roomState, mapping.participantId, now, 2 * 60_000, true);
     return { roomId: mapping.roomId, guestInvite: invite.token, expiresAt: invite.expiresAt };
   }, now);
+}
+
+function handleProductionRundownUpdate(ws: WebSocket, payload: ProductionRundownUpdate) {
+  const operator = getAdmittedOperator(ws, 'change the production rundown');
+  if (!operator || !isValidRequestId(payload?.requestId)) return;
+  const { mapping, roomState, performer } = operator;
+  if (!performer.participant.capabilities?.includes('production-rundown')) return;
+  const current = roomState.productionRundown ?? EMPTY_PRODUCTION_RUNDOWN;
+  if (!productionRundownRateLimiter.check(ws, 'production-rundown-update').allowed) {
+    send(ws, { type: 'production-rundown-state', payload: { rundown: current, requestId: payload.requestId, error: 'Wait a moment before editing the rundown again.' } });
+    return;
+  }
+  const canTake = payload.action === 'take-item' && mapping.participantId === getStageOwnerId(
+    Array.from(roomState.participants.values(), (entry) => entry.participant)
+  );
+  const result = changeProductionRundown(current, payload, canTake);
+  if ('error' in result) {
+    send(ws, { type: 'production-rundown-state', payload: { rundown: current, requestId: payload.requestId, error: result.error } });
+    return;
+  }
+  roomState.productionRundown = result.rundown;
+  persistRoomSnapshot(mapping.roomId);
+  for (const entry of roomState.participants.values()) {
+    const person = entry.participant;
+    if (!isOperatorRole(person.role) || person.status === 'green-room' || !person.capabilities?.includes('production-rundown')) continue;
+    send(entry.ws, {
+      type: 'production-rundown-state',
+      payload: { rundown: result.rundown, ...(entry.ws === ws ? { requestId: payload.requestId } : {}) },
+    });
+  }
 }
 
 /** The host or co-host behind a viewer chat message, or null (the sender is told why). */

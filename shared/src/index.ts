@@ -2,6 +2,8 @@ export * from './clientErrors.js';
 export * from './chatOverlay.js';
 export * from './viewerChat.js';
 export * from './watchEvents.js';
+export * from './productionRundown.js';
+import type { ProductionRundown, ProductionRundownStateMessage, ProductionRundownUpdate } from './productionRundown.js';
 import type { WatchEventState } from './watchEvents.js';
 import type { ChatOverlayState, ChatOverlayUpdatePayload, ChatOverlayUpdatedPayload } from './chatOverlay.js';
 import type { ViewerChatStatePayload, ViewerChatSwitches, ViewerBlockScope } from './viewerChat.js';
@@ -330,7 +332,7 @@ export interface Participant {
  *   program-return-announce) instead of taking it for a screen share.
  * - 'talkback': silences other operators' talkback-state in its program mix.
  */
-export const STUDIO_CAPABILITIES = ['program-return', 'talkback', 'watch-events'] as const;
+export const STUDIO_CAPABILITIES = ['program-return', 'talkback', 'watch-events', 'production-rundown'] as const;
 export type StudioCapability = typeof STUDIO_CAPABILITIES[number];
 
 const STUDIO_CAPABILITY_SET: ReadonlySet<string> = new Set(STUDIO_CAPABILITIES);
@@ -511,6 +513,8 @@ export type SignalMessage =
   | { type: 'watch-event-settings'; payload: { callInsEnabled: boolean } }
   | { type: 'watch-call-in-decide'; payload: { id: string; decision: 'approve' | 'decline' } }
   | { type: 'watch-event-state'; payload: WatchEventState }
+  | { type: 'production-rundown-update'; payload: ProductionRundownUpdate }
+  | { type: 'production-rundown-state'; payload: ProductionRundownStateMessage }
   | { type: 'co-host-invite-token-request'; payload: CoHostInviteTokenRequestPayload }
   | { type: 'co-host-invite-token-issued'; payload: CoHostInviteTokenIssuedPayload }
   | { type: 'participant-updated'; payload: Participant }
@@ -569,6 +573,8 @@ export interface RoomJoinedPayload {
   viewerChat?: ViewerChatStatePayload;
   /** Admitted hosts and co-hosts only. */
   watchEvent?: WatchEventState;
+  /** Admitted operators with rundown support only. */
+  productionRundown?: ProductionRundown;
   /** What the host has on stage (a slide, an image), mirrored to everyone. */
   stageContent?: StageContentPayload;
   /** Hosts and co-hosts only: authorizes uploads to `/api/rooms/:id/stage-images`. */
@@ -595,6 +601,7 @@ export interface RoomJoinedPayload {
     /** The server understands the viewer chat messages (`viewer-chat-*`). */
     viewerChat?: boolean;
     watchEvents?: boolean;
+    productionRundown?: boolean;
   };
   /**
    * Admitted hosts and co-hosts only: the other operators talking backstage

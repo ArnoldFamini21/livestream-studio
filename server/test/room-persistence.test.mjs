@@ -254,6 +254,38 @@ describe('PostgresRoomSnapshotStore', () => {
     await store.close();
     assert.equal(fakeDb.closed, true);
   });
+
+  it('keeps snapshots and deletes in arrival order for one room', async () => {
+    let finishFirstWrite;
+    const firstWriteGate = new Promise(resolve => { finishFirstWrite = resolve; });
+    const writes = [];
+    const store = new PostgresRoomSnapshotStore({
+      async query(sql, values) {
+        if (sql.includes('INSERT INTO')) {
+          const { revision } = JSON.parse(values[9]).productionRundown;
+          writes.push(revision);
+          if (revision === 1) await firstWriteGate;
+        } else {
+          assert.match(sql, /DELETE FROM/);
+          writes.push('delete');
+        }
+        return { rows: [] };
+      },
+    });
+    const snapshot = baseSnapshot();
+    const save = revision => store.saveRoomSnapshot({
+      ...snapshot,
+      sessionState: { productionRundown: { revision, items: [], cueItemId: null, lastTakenItemId: null } },
+    });
+
+    const first = save(1);
+    const second = save(2);
+    const deletion = store.deleteRoomSnapshot(snapshot.room.id);
+    assert.deepEqual(writes, [1]);
+    finishFirstWrite();
+    await Promise.all([first, second, deletion]);
+    assert.deepEqual(writes, [1, 2, 'delete']);
+  });
 });
 
 describe('signaling room snapshot restore', () => {
