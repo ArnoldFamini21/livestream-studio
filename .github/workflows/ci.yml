@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       recording_soak:
-        description: Run three-participant recording qualification (35-second preflight, then 20 minutes)
+        description: Run three-participant recording qualification (35-second preflight, then two twenty-minute takes)
         type: boolean
         default: false
 
@@ -138,7 +138,7 @@ jobs:
   recording-soak:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.recording_soak }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 65
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright
       VITE_API_URL: http://localhost:3001
@@ -172,6 +172,7 @@ jobs:
           SOAK_SECONDS: '35'
           SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/preflight
       - name: Qualify twenty-minute three-participant recording
+        id: recording_qualification
         # Keep the short-run result and collect long-run evidence even if the
         # preflight failed a packet timing assertion.
         if: ${{ !cancelled() && (steps.recording_preflight.outcome == 'success' || steps.recording_preflight.outcome == 'failure') }}
@@ -179,6 +180,12 @@ jobs:
         env:
           SOAK_SECONDS: '1200'
           SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/qualification
+      - name: Repeat twenty-minute three-participant recording
+        if: ${{ !cancelled() && (steps.recording_qualification.outcome == 'success' || steps.recording_qualification.outcome == 'failure') }}
+        run: npm run test:recording-soak
+        env:
+          SOAK_SECONDS: '1200'
+          SOAK_ARTIFACT_DIR: ${{ github.workspace }}/output/recording-soak/qualification-repeat
       - name: Upload recording qualification evidence
         if: always()
         uses: actions/upload-artifact@v4

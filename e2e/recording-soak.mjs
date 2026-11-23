@@ -103,7 +103,14 @@ function installObserver({ folder, useVp8Fallback }) {
     }
     start(...args) {
       const row = state.recorders[this.__soakRecorderId];
-      if (row) row.startRequested = performance.now();
+      if (row) {
+        row.startRequested = performance.now();
+        const program = row.settings.some(track => track.kind === "video" && track.width === 1920 && track.height === 1080);
+        if (program) {
+          const lastPaint = window.__captureResources?.programCanvases[0]?.lastFrameAtMs;
+          row.programPaintAgeAtStartMs = typeof lastPaint === "number" ? row.startRequested - lastPaint : null;
+        }
+      }
       return super.start(...args);
     }
     stop() {
@@ -308,6 +315,8 @@ try {
   }, { timeout: 180_000, interval: 1000, message: "All seven program/ISO/audio tracks and their capture timing must finish in the host folder" });
   const manifest = files.find(file => file.manifest).manifest;
   result.manifest = manifest;
+  assert.equal(manifest.tracks.length, 7, "exactly seven original tracks survive reconnect");
+  assert.equal(manifest.tracks.filter(track => track.origin === "program").length, 1, "one program mix is saved");
   for (const name of seatNames) {
     assert.ok(manifest.tracks.some(track => track.participantName === name && track.kind === "iso"), `${name} has an isolated camera/audio recording`);
     assert.ok(manifest.tracks.some(track => track.participantName === name && track.kind === "audio"), `${name} has an isolated microphone recording`);
@@ -344,7 +353,9 @@ try {
     // every encoded stream still must cover the full requested duration.
     const evidence = { ...track, file, sha256: digest, source: { participant: matching.name, recorder: matching.id, bytes: matching.bytes } };
     try {
-      evidence.metrics = await probeRecording(file, { minimumSeconds: requestedSeconds });
+      const expectedVideoSize = track.origin === "program" ? { width: 1920, height: 1080 }
+        : track.kind === "iso" ? { width: 1280, height: 720 } : undefined;
+      evidence.metrics = await probeRecording(file, { minimumSeconds: requestedSeconds, expectedVideoSize });
       if (track.kind === "iso" || track.origin === "program") assert.notEqual(evidence.metrics.avDriftMs, null, `${track.label} contains both A/V streams`);
     } catch (error) {
       evidence.metricError = error.message;

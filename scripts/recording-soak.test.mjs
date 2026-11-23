@@ -59,6 +59,13 @@ test("recording soak fails when a capture ends early", () => {
   assert.throws(() => inspectPacketTimeline(fixture(), { minimumSeconds: 1200 }), /expected at least 1200/);
 });
 
+test("recording soak checks the encoded video dimensions rather than the input settings", () => {
+  const probe = fixture();
+  Object.assign(probe.streams[0], { width: 1280, height: 720 });
+  assert.equal(inspectPacketTimeline(probe, { expectedVideoSize: { width: 1280, height: 720 } }).timelines[0].width, 1280);
+  assert.throws(() => inspectPacketTimeline(probe, { expectedVideoSize: { width: 1920, height: 1080 } }), /1280x720, expected 1920x1080/);
+});
+
 test("recording soak ignores a fixed initial A/V offset when measuring drift", () => {
   const probe = fixture();
   for (const packet of probe.packets.filter(packet => packet.stream_index === 1)) packet.pts_time = String(Number(packet.pts_time) + 0.15);

@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
  * for the Chrome VP8/VP9/AAC/Opus captures used by the soak; this intentionally
  * rejects reordered PTS rather than silently sorting damaged/repeated packets.
  */
-export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 40, minimumSeconds = 0 } = {}) {
+export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 40, minimumSeconds = 0, expectedVideoSize } = {}) {
   const streams = (probe.streams || []).filter(stream => ["audio", "video"].includes(stream.codec_type));
   assert.ok(streams.length, "recording contains an encoded audio or video stream");
   const failures = [];
@@ -51,6 +51,7 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
     if (spanSeconds < minimumSeconds) failures.push(`stream ${stream.index} recorded ${spanSeconds.toFixed(3)}s, expected at least ${minimumSeconds}s`);
     return {
       index: stream.index, kind: stream.codec_type, packets: packets.length,
+      ...(stream.codec_type === "video" ? { width: stream.width, height: stream.height } : {}),
       firstSeconds: first, lastSeconds: last, lastPacketDurationSeconds, endSeconds: end, spanSeconds,
       mediaTimestampSpanSeconds, medianPacketGapSeconds: typicalDuration, tailPacketTimestamps,
       maxGapSeconds: maxGap, maxGapStartSeconds,
@@ -58,6 +59,9 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
   });
   const video = timelines.find(stream => stream.kind === "video");
   const audio = timelines.find(stream => stream.kind === "audio");
+  if (expectedVideoSize && (video?.width !== expectedVideoSize.width || video?.height !== expectedVideoSize.height)) {
+    failures.push(`Encoded video was ${video ? `${video.width}x${video.height}` : "missing"}, expected ${expectedVideoSize.width}x${expectedVideoSize.height}`);
+  }
   // Remove the initial A/V offset: drift is the change in relative media-clock
   // position during the take. This is not a real-camera lip-sync measurement.
   const avDriftMs = video && audio ? Math.abs(video.spanSeconds - audio.spanSeconds) * 1000 : null;
@@ -79,7 +83,7 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
 export async function probeRecording(file, options = {}) {
   const { stdout } = await execFileAsync(process.env.FFPROBE_PATH || "ffprobe", [
     "-v", "error", "-show_packets", "-show_streams", "-show_entries",
-    "packet=stream_index,pts_time,duration_time:stream=index,codec_type", "-of", "json", file,
+    "packet=stream_index,pts_time,duration_time:stream=index,codec_type,width,height", "-of", "json", file,
   ], { maxBuffer: 128 * 1024 * 1024 });
   return inspectPacketTimeline(JSON.parse(stdout), options);
 }

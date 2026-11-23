@@ -10,3 +10,10 @@ it('renders video during offline mixed and local recordings, not only live broad
   assert.equal(shouldRunCompositor({ live: false, mixRecording: false, localRecording: false, programReturn: true }), true);
   assert.equal(shouldRunCompositor({ live: false, mixRecording: false, localRecording: false, programReturn: false }), false);
 });
+
+it('warms the program canvas during the recording countdown', () => {
+  const idle = { live: false, mixRecording: false, localRecording: false };
+  assert.equal(shouldRunCompositor({ ...idle, preparingMixRecording: true }), true);
+  assert.equal(shouldRunCompositor({ ...idle, preparingMixRecording: false }), false);
+  assert.equal(shouldRunCompositor({ ...idle, preparingMixRecording: false, mixRecording: true }), true);
+});

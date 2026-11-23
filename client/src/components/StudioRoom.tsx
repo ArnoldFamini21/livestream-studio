@@ -1021,6 +1021,7 @@ export function StudioRoom() {
   // A short on-stage countdown before a recording starts. Escape or Cancel
   // stops it, so a misclick never produces a stray take.
   const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
+  const [preparingProgramCapture, setPreparingProgramCapture] = useState(false);
   // The host's countdown as guests see it (one message from the host, ticked locally).
   const { value: remoteRecordingCountdown, start: startRemoteRecordingCountdown, stop: stopRemoteRecordingCountdown } = useRecordingCountdownMirror();
   const isPortraitPhone = useIsPortraitPhone();
@@ -2092,7 +2093,7 @@ export function StudioRoom() {
   const { compositeStreamRef, compositeCanvasRef } = useCompositor({
     ...composition,
     containerRef: stageRef,
-    isActive: shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
+    isActive: shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video, preparingMixRecording: preparingProgramCapture }),
     orientation: broadcastOrientation,
   });
 
@@ -4071,6 +4072,7 @@ export function StudioRoom() {
         ));
         if (!startCheck.proceed) return;
         if (startCheck.headroom.status === 'warning') addToast(startCheck.headroom.message, 'warning');
+        setPreparingProgramCapture(true);
         // Guests see the same 3-2-1 (and its cancellation) on their screens.
         send({ type: 'recording-countdown', payload: { seconds: RECORDING_COUNTDOWN_SECONDS } });
         if (!(await runRecordingCountdown())) {
@@ -4161,7 +4163,11 @@ export function StudioRoom() {
           },
         });
       }
-    } finally { recordingActionRef.current = false; setProgramRecordingFinalizing(false); }
+    } finally {
+      recordingActionRef.current = false;
+      setPreparingProgramCapture(false);
+      setProgramRecordingFinalizing(false);
+    }
   };
 
   // Local recording (separate on-stage tracks)
