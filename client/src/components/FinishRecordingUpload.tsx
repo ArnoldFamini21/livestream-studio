@@ -43,6 +43,8 @@ export default function FinishRecordingUpload() {
 
   const finish = async ({ grant, recordings }: PendingTake) => {
     if (controller.current) return;
+    const pending = recordings.filter(track => track.complete && !done.has(track.id));
+    if (!pending.length) return;
     const request = new AbortController();
     controller.current = request;
     setError('');
@@ -52,7 +54,7 @@ export default function FinishRecordingUpload() {
       await navigator.locks.request(`private-recording-upload:${grant.roomId}:${grant.takeId}:${grant.participantId}`,
         { ifAvailable: true }, async lock => {
           if (!lock) throw new Error('This take is already uploading in another tab.');
-          const sources = await Promise.all(recordings.filter(track => track.complete).map(async ({ id, blob, metadata }) => ({
+          const sources = await Promise.all(pending.map(async ({ id, blob, metadata }) => ({
             id, blob: await finalizeRecoverySource(blob), label: metadata.label, kind: metadata.kind, capture: metadata.transfer?.capture,
           })));
           await uploadRecoveredTake(grant, sources, {
@@ -60,7 +62,7 @@ export default function FinishRecordingUpload() {
             onProgress: (received, total) => setProgress(total ? Math.min(100, Math.round(received / total * 100)) : 0),
           });
         });
-      if (!request.signal.aborted) setDone(current => new Set([...current, grant.takeId]));
+      if (!request.signal.aborted) setDone(current => new Set([...current, ...pending.map(track => track.id)]));
     } catch (failure) {
       if (!request.signal.aborted) setError(failure instanceof TypeError ? 'Connection interrupted. Choose Finish upload to continue.'
         : failure instanceof Error ? failure.message : 'Upload stopped. Your tracks are still saved on this device.');
@@ -78,7 +80,8 @@ export default function FinishRecordingUpload() {
     {takes?.length === 0 && <p>No private uploads are available on this device.</p>}
     {takes && takes.length > 0 && <ul>{takes.map(take => {
       const { grant, recordings } = take;
-      const ready = recordings.filter(track => track.complete).length;
+      const ready = recordings.filter(track => track.complete && !done.has(track.id)).length;
+      const verified = recordings.filter(track => done.has(track.id)).length;
       const hasIncomplete = recordings.some(track => !track.complete);
       const active = working === grant.takeId;
       return <li key={`${grant.roomId}:${grant.takeId}:${grant.participantId}`}>
@@ -87,14 +90,15 @@ export default function FinishRecordingUpload() {
           <progress value={progress} max={100} aria-label="Uploading recording tracks" />
           <p role="status">{progress}% uploaded. Keep this tab open.</p>
           <button type="button" className="workspace-secondary" onClick={() => controller.current?.abort()}>Pause upload</button>
-        </> : done.has(grant.takeId) ? <p role="status">{ready} {ready === 1 ? 'track' : 'tracks'} verified.</p> : ready > 0 ? <>
+        </> : ready > 0 ? <>
           <p>{ready} {ready === 1 ? 'track is' : 'tracks are'} ready to send to your host.</p>
           <button type="button" className="workspace-secondary" disabled={Boolean(working)} onClick={() => void finish(take)}>Finish upload</button>
-        </> : <p>No completed tracks were found. If you recorded on another device, open this page there.</p>}
+        </> : verified > 0 ? <p role="status">{verified} {verified === 1 ? 'track' : 'tracks'} verified.</p>
+          : <p>No completed tracks were found. If you recorded on another device, open this page there.</p>}
         {hasIncomplete && <p>Interrupted tracks are still available for local recovery.</p>}
       </li>;
     })}</ul>}
-    {(error || takes?.some(take => !take.recordings.some(track => track.complete))) && !working && (
+    {(error || takes?.some(take => !take.recordings.length || take.recordings.some(track => !track.complete))) && !working && (
       <button type="button" className="workspace-secondary" onClick={() => { setError(''); setRefresh(value => value + 1); }}>Check this device again</button>
     )}
   </main>;

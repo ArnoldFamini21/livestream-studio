@@ -7,20 +7,20 @@ const artifactDir = path.join(process.env.E2E_ARTIFACT_DIR || path.resolve('outp
 
 async function openScenes(page) {
   await openStudioTool(page, 'Scenes');
+  return page.getByRole('complementary', { name: 'Studio side panel', exact: true });
 }
 
 async function createScene(page, name) {
-  await openScenes(page);
-  await page.getByRole('button', { name: 'Add scene', exact: true }).click();
-  await page.getByRole('button', { name: /Browse templates/ }).click();
-  await page.locator('#scene-templates').getByRole('button', { name, exact: true }).click();
-  await page.getByRole('button', { name: `Switch to ${name}`, exact: true }).waitFor();
+  const scenes = await openScenes(page);
+  await scenes.getByRole('button', { name: 'Add scene', exact: true }).click();
+  await scenes.getByRole('button', { name: /Browse templates/ }).click();
+  await scenes.locator('#scene-templates').getByRole('button', { name, exact: true }).click();
+  await scenes.getByRole('button', { name: `Switch to ${name}`, exact: true }).waitFor();
+  return scenes;
 }
 
 async function openRundown(page) {
-  await page.getByRole('button', { name: 'More tools', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Studio tools' })
-    .getByRole('button', { name: 'Producer', exact: true }).click();
+  await openStudioTool(page, 'Producer');
   await page.getByRole('button', { name: /^Rundown(?: · Cue ready)?$/ }).click();
   return page.getByRole('region', { name: 'Production rundown', exact: true });
 }
@@ -32,11 +32,11 @@ test('takes a portable scene from a co-host in a browser without that saved scen
     const hostContext = await fixture.browser('rundown-host');
     const { page: host } = await createStudio(hostContext, { url: fixture.url, name: 'Rundown handoff' });
     pages.set('host', host);
-    await createScene(host, 'Starting Soon');
+    const initialScenes = await createScene(host, 'Starting Soon');
     const hostBanner = host.locator('.studio-stage').getByRole('status', { name: '', exact: true }).filter({ hasText: /^Starting Soon$/ });
     await hostBanner.waitFor();
-    await host.getByRole('button', { name: 'Switch to Starting Soon', exact: true }).waitFor();
-    assert.equal(await host.getByRole('button', { name: 'Switch to Presentation', exact: true }).count(), 0);
+    assert.equal(await initialScenes.getByRole('button', { name: 'Switch to Presentation', exact: true }).count(), 0);
+    await initialScenes.getByRole('button', { name: 'Close sidebar panel', exact: true }).click();
 
     await openStudioTool(host, 'Invite guests');
     await host.getByText('Co-host Link', { exact: true }).locator('xpath=../..')
@@ -51,7 +51,8 @@ test('takes a portable scene from a co-host in a browser without that saved scen
     await producer.getByRole('button', { name: 'Join as Co-host', exact: true }).click();
     await producer.getByRole('button', { name: 'More tools', exact: true }).waitFor();
     await stageGuest(host, 'Crew Operator');
-    await createScene(producer, 'Presentation');
+    const producerScenes = await createScene(producer, 'Presentation');
+    await producerScenes.getByRole('button', { name: 'Close sidebar panel', exact: true }).click();
 
     const producerRundown = await openRundown(producer);
     await producerRundown.getByRole('button', { name: 'Add rundown item', exact: true }).click();
@@ -81,8 +82,9 @@ test('takes a portable scene from a co-host in a browser without that saved scen
 
     await layoutSwitcher.getByRole('radio', { name: /^PiP layout/, checked: true }).waitFor();
     await hostBanner.waitFor();
-    await host.getByRole('button', { name: 'Switch to Starting Soon', exact: true }).waitFor();
-    assert.equal(await host.getByRole('button', { name: 'Switch to Presentation', exact: true }).count(), 0);
+    const savedScenes = await openScenes(host);
+    await savedScenes.getByRole('button', { name: 'Switch to Starting Soon', exact: true }).waitFor();
+    assert.equal(await savedScenes.getByRole('button', { name: 'Switch to Presentation', exact: true }).count(), 0);
     assert.deepEqual(fixture.pageErrors, []);
     assert.deepEqual(fixture.cspViolations, []);
   } catch (error) {

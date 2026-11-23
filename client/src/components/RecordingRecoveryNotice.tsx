@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { persistRecordingSession } from '../hooks/useRecordingLibrary.ts';
 import { listRecoverableRecordings, recoverRecording, type RecoverableRecording } from '../utils/recordingRecovery.ts';
 import { listPrivateRecoveryGrants, listPrivateRecoveryTakes, RECOVERY_CHANGED_EVENT } from '../utils/recordingCloudRecovery.ts';
 import { PrivateRecordingBackups } from './PrivateRecordingBackups.tsx';
 
-export function RecordingRecoveryNotice({ onRecovered }: { onRecovered: () => Promise<void> }) {
+export function RecordingRecoveryNotice({ onRecovered, emptyState = null }: { onRecovered: () => Promise<void>; emptyState?: ReactNode }) {
   const [recordings, setRecordings] = useState<RecoverableRecording[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +39,7 @@ export function RecordingRecoveryNotice({ onRecovered }: { onRecovered: () => Pr
       setError(error instanceof Error ? error.message : 'Recovery failed. Your saved fragments have been kept.');
     } finally { setBusyId(null); }
   };
-  if (!recordings.length && !error && !notice && !privateTakes.length && !hasPrivateUpload) return null;
+  if (!recordings.length && !error && !notice && !privateTakes.length && !hasPrivateUpload) return <>{emptyState}</>;
   return <section className="recording-recovery" aria-label="Recording recovery">
     {hasPrivateUpload && <p><Link to="/finish-upload">Finish upload</Link></p>}
     <PrivateRecordingBackups references={privateTakes} />

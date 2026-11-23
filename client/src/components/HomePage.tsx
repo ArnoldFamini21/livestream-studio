@@ -1861,12 +1861,14 @@ export function HomePage() {
 <p className="section-footnote">Keep a production roster and generate call sheets from your studio's actions.</p>
             </section>}
           {workspaceView === 'recordings' && <section className="workspace-surface">
-            <RecordingRecoveryNotice onRecovered={recordingLibrary.refresh} />
+            <RecordingRecoveryNotice onRecovered={recordingLibrary.refresh} emptyState={
+              !recordingLibrary.isLoading && !serverRecordingCatalogLoading && recentRecordings.length === 0
+                ? <p className="workspace-empty">Record a session in your studio to see it here.</p>
+                : null
+            } />
             {recordingLibrary.isLoading || serverRecordingCatalogLoading ? (
               <p className="workspace-empty" role="status">Loading recordings…</p>
-            ) : recentRecordings.length === 0 ? (
-              <p className="workspace-empty">Record a session in your studio to see it here.</p>
-            ) : (
+            ) : recentRecordings.length > 0 && (
               <div className="workspace-recordings">
                 {recentRecordings.map((session) => {
                   const exportState = getWorkspaceRecordingExportState(session);

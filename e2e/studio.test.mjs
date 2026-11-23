@@ -239,8 +239,7 @@ await scenario('a 150 KB logo is shared by id: the guest sees it and the host ne
     });
 
     await scenario('watch-page viewer casts a poll vote visible to the host', async () => {
-      await host.getByRole('button', { name: 'More tools', exact: true }).click();
-      await host.getByRole('dialog', { name: 'Studio tools' }).getByRole('button', { name: 'Polls', exact: true }).click();
+      await openStudioTool(host, 'Polls');
       await host.getByPlaceholder('What should we cover next?').fill('Which topic comes next?');
       await host.getByPlaceholder('Option 1', { exact: true }).fill('Prayer');
       await host.getByPlaceholder('Option 2', { exact: true }).fill('Study');
@@ -251,8 +250,7 @@ await scenario('a 150 KB logo is shared by id: the guest sees it and the host ne
       const watchUrl = new URL(await host.getByLabel('Public watch page link', { exact: true }).inputValue());
       assert.match(watchUrl.pathname, /^\/watch\/[^/]+$/);
       await host.getByRole('button', { name: 'Close invite panel', exact: true }).click();
-      await host.getByRole('button', { name: 'More tools', exact: true }).click();
-      await host.getByRole('dialog', { name: 'Studio tools' }).getByRole('button', { name: 'Polls', exact: true }).click();
+      await openStudioTool(host, 'Polls');
       const viewer = await (await fixture.browser('viewer')).newPage();
       pages.set('viewer', viewer);
       // Local builds may keep the owner's production invite-base setting.
@@ -303,10 +301,8 @@ await scenario('a 150 KB logo is shared by id: the guest sees it and the host ne
       await assertPlayingRemoteHost(guest, fixture.artifactDir, 'after-talkback');
     });
 
-    // Budget capture + OPFS commit + finalization independently. A 75s outer
-    // deadline could cancel a healthy save before its selector wait expired.
     await scenario('on-screen chat shows a public guest message and never a backstage one', async () => {
-      await host.getByRole('button', { name: 'Chat', exact: true }).click();
+      await openStudioTool(host, /^Chat(?: · \S+ unread)?$/);
       const chat = host.locator('.studio-chat');
       await chat.getByRole('button', { name: 'Chat on screen: Off' }).click();
       await guest.getByRole('button', { name: /^Open chat/ }).click();
@@ -333,6 +329,8 @@ await scenario('a 150 KB logo is shared by id: the guest sees it and the host ne
       await guest.getByRole('button', { name: 'Close chat', exact: true }).click();
     });
 
+    // Budget capture, OPFS commit and finalization independently so the
+    // scenario deadline cannot cut off a healthy save.
     await scenario('thirty-second recording persists non-empty program and participant tracks in OPFS', { timeout: 210_000 }, async () => {
       // Exclude any earlier capability probes from recording evidence.
       await host.evaluate(() => { window.__e2eMedia.recorders = []; });
