@@ -1309,7 +1309,7 @@ export function useCompositor({
     // 1. Clear & stage background
     if (streamScreen) {
       const clip = mediaSource.querySelector<HTMLVideoElement>('video[data-broadcast-screen-video]');
-      if (clip && clip.style.visibility !== 'hidden' && canDrawMediaVideo(clip, window.location.href) && clip.readyState >= 2) {
+      if (clip && !clip.paused && !clip.ended && canDrawMediaVideo(clip, window.location.href) && clip.readyState >= clip.HAVE_CURRENT_DATA) {
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
         if (drawVideoElementFrame(ctx, clip, 0, 0, ctx.canvas.width, ctx.canvas.height, 'contain')) return;

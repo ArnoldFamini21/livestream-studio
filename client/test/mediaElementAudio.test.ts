@@ -40,6 +40,26 @@ describe('shared clip audio routing', () => {
     assert.equal(counts().activeRoutes, 0);
   });
 
+  it('defers a broadcast clip route and can disconnect it before resuming', async () => {
+    const { bus, routes, counts } = createBus();
+    const route = connectMediaElementAudio({} as HTMLMediaElement, bus, { duck: false, startConnected: false });
+    await route.resume();
+    assert.equal(counts().activeRoutes, 0);
+    route.connect();
+    route.connect();
+    assert.equal(counts().activeRoutes, 1);
+    route.disconnect();
+    route.disconnect();
+    assert.equal(counts().activeRoutes, 0);
+    route.connect();
+    assert.deepEqual(routes, [
+      { stream: true, monitor: true, duck: false },
+      { stream: true, monitor: true, duck: false },
+    ]);
+    assert.deepEqual(counts(), { sourceCount: 1, activeRoutes: 1, resumed: 1 });
+    route.disconnect();
+  });
+
   it('reuses the browser source when the same video is reattached', () => {
     const { bus, counts } = createBus();
     const element = {} as HTMLMediaElement;
