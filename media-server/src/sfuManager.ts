@@ -28,6 +28,8 @@ export interface SfuConnectOptions {
   issuedAtMs?: number;
   nowMs?: number;
   onRevoke?: (reason: string) => void;
+  /** Only an admitted stage identity can negotiate the auxiliary source. */
+  allowScreenSource?: boolean;
 }
 
 const MAX_SFU_ROOMS = 512;
@@ -48,6 +50,7 @@ export class SfuManager {
   private readonly sends = new Map<string, SfuParticipantSend>();
   private readonly participantRoom = new Map<string, string>();
   private readonly connections = new Map<string, symbol>();
+  private readonly screenSourceConnections = new Set<string>();
   private readonly onRevokeCallbacks = new Map<string, (reason: string) => void>();
   private readonly expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly expiresAtByParticipant = new Map<string, number>();
@@ -56,7 +59,8 @@ export class SfuManager {
 
   constructor(
     private readonly options: LayerSelectionOptions = {},
-    private readonly createTransport: SfuTransportFactory | null = null
+    private readonly createTransport: SfuTransportFactory | null = null,
+    private readonly screenSourceEnabled = false,
   ) {}
 
   getRoomCount(): number {
@@ -100,7 +104,7 @@ export class SfuManager {
         this.sends.get(participantId)?.(message);
       };
       const transport = this.createTransport ? this.createTransport(roomSend) : null;
-      const hub = new SfuSignalingHub(roomSend, this.options, transport);
+      const hub = new SfuSignalingHub(roomSend, this.options, transport, this.screenSourceEnabled);
       entry = { hub, participants: new Set(), transport };
       this.rooms.set(roomId, entry);
     }
@@ -141,6 +145,7 @@ export class SfuManager {
     const connection = Symbol(participantId);
     this.sends.set(participantId, send);
     this.connections.set(participantId, connection);
+    if (this.screenSourceEnabled && options.allowScreenSource === true) this.screenSourceConnections.add(participantId);
     this.participantRoom.set(participantId, roomId);
     if (options.onRevoke) {
       this.onRevokeCallbacks.set(participantId, options.onRevoke);
@@ -175,7 +180,7 @@ export class SfuManager {
     }
     const entry = this.rooms.get(roomId);
     if (!entry) return false;
-    return entry.hub.handleMessage(participantId, raw);
+    return entry.hub.handleMessage(participantId, raw, this.screenSourceConnections.has(participantId));
   }
 
   /**
@@ -229,6 +234,7 @@ export class SfuManager {
     const roomId = this.participantRoom.get(participantId);
     this.participantRoom.delete(participantId);
     this.connections.delete(participantId);
+    this.screenSourceConnections.delete(participantId);
     this.sends.delete(participantId);
     if (!roomId) return;
     const entry = this.rooms.get(roomId);

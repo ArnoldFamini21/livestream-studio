@@ -1,4 +1,5 @@
 import { SfuSessionCoordinator } from './sfuSession.js';
+import { sfuScreenProducerId, sfuScreenProducerOwner } from '@studio/shared';
 import type { LayerSelectionOptions, SimulcastLayer } from './sfuRouter.js';
 import type {
   SfuIceCandidatePayload,
@@ -18,11 +19,11 @@ import type {
  * applied to the transport's forwarding.
  */
 
-export type SfuTransportSideName = 'publish' | 'subscribe';
+export type SfuTransportSideName = 'publish' | 'subscribe' | 'screen-publish';
 
 /** The subset of SfuMediaTransport the hub drives (kept narrow so tests can fake it). */
 export interface SfuTransportLike {
-  createPublishOffer(participantId: string, rids: string[], hasAudio: boolean): Promise<SfuSessionDescription>;
+  createPublishOffer(participantId: string, rids: string[], hasAudio: boolean, requestId?: string): Promise<SfuSessionDescription>;
   closePublisher(participantId: string): Promise<void>;
   setPublishAnswer(participantId: string, answer: { sdp: string }): Promise<void>;
   addPublishIceCandidate(participantId: string, candidate: SfuIceCandidatePayload): Promise<void>;
@@ -33,17 +34,19 @@ export interface SfuTransportLike {
   setSubscribeAnswer(consumerId: string, answer: { sdp: string }): Promise<void>;
   addSubscribeIceCandidate(consumerId: string, candidate: SfuIceCandidatePayload): Promise<void>;
   setForwardedLayer(consumerId: string, producerId: string, rid: string | null): void;
-  removeProducer(producerId: string): void;
+  removeProducer(producerId: string, keepScreenReceiver?: boolean): void;
   closeParticipant(participantId: string): Promise<void>;
 }
 
 export type SfuClientMessage =
-  | { type: 'sfu-join'; downlinkKbps?: number }
+  | { type: 'sfu-join'; downlinkKbps?: number; supportsScreenSource?: true }
   | { type: 'sfu-publish'; layers: SimulcastLayer[]; audio: boolean }
+  | { type: 'sfu-publish-screen'; requestId: string; layers: SimulcastLayer[]; audio: boolean }
   | { type: 'sfu-unpublish' }
+  | { type: 'sfu-unpublish-screen'; requestId: string }
   | { type: 'sfu-downlink'; downlinkKbps: number }
-  | { type: 'sfu-transport-answer'; side: SfuTransportSideName; sdp: string }
-  | { type: 'sfu-transport-ice'; side: SfuTransportSideName; candidate: SfuIceCandidatePayload }
+  | { type: 'sfu-transport-answer'; side: SfuTransportSideName; sdp: string; requestId?: string }
+  | { type: 'sfu-transport-ice'; side: SfuTransportSideName; candidate: SfuIceCandidatePayload; requestId?: string }
   | { type: 'sfu-leave' };
 
 export type SfuServerMessage =
@@ -51,13 +54,16 @@ export type SfuServerMessage =
   | { type: 'sfu-producer-added'; producerId: string }
   | { type: 'sfu-producer-removed'; producerId: string }
   | { type: 'sfu-layer'; producerId: string; rid: string | null; reason: string }
+  | { type: 'sfu-screen-peers'; participantIds: string[] }
+  | { type: 'sfu-screen-error'; requestId: string; message: string }
   | {
     type: 'sfu-transport-offer';
     side: SfuTransportSideName;
     sdp: string;
+    requestId?: string;
     producerMids?: Record<string, SfuProducerMids>;
   }
-  | { type: 'sfu-transport-ice'; side: SfuTransportSideName; candidate: SfuIceCandidatePayload }
+  | { type: 'sfu-transport-ice'; side: SfuTransportSideName; candidate: SfuIceCandidatePayload; requestId?: string }
   | { type: 'sfu-error'; message: string };
 
 export type SfuSendFn = (participantId: string, message: SfuServerMessage) => void;
@@ -98,37 +104,53 @@ function parseLayer(value: unknown): SimulcastLayer | null {
   };
 }
 
+function validScreenRequestId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
+}
+
 export function parseSfuClientMessage(value: unknown): SfuClientMessage | null {
   if (!isRecord(value) || typeof value.type !== 'string') return null;
   switch (value.type) {
     case 'sfu-join':
-      return { type: 'sfu-join', downlinkKbps: normalizeDownlink(value.downlinkKbps) };
-    case 'sfu-publish': {
+      return { type: 'sfu-join', downlinkKbps: normalizeDownlink(value.downlinkKbps),
+        ...(value.supportsScreenSource === true ? { supportsScreenSource: true } : {}) };
+    case 'sfu-publish':
+    case 'sfu-publish-screen': {
       if (!Array.isArray(value.layers)) return null;
       const layers = value.layers
         .map(parseLayer)
         .filter((layer): layer is SimulcastLayer => layer !== null)
         .slice(0, MAX_LAYERS_PER_PRODUCER);
       const audio = value.audio === true;
+      if (value.type === 'sfu-publish-screen') {
+        if (layers.length === 0 || !validScreenRequestId(value.requestId)) return null;
+        return { type: 'sfu-publish-screen', requestId: value.requestId, layers, audio };
+      }
       if (layers.length === 0 && !audio) return null;
       return { type: 'sfu-publish', layers, audio };
     }
     case 'sfu-unpublish':
       return { type: 'sfu-unpublish' };
+    case 'sfu-unpublish-screen':
+      return validScreenRequestId(value.requestId) ? { type: 'sfu-unpublish-screen', requestId: value.requestId } : null;
     case 'sfu-downlink':
       return { type: 'sfu-downlink', downlinkKbps: normalizeDownlink(value.downlinkKbps) };
     case 'sfu-transport-answer': {
       const side = parseTransportSide(value.side);
       if (!side) return null;
       if (typeof value.sdp !== 'string' || value.sdp.length === 0 || value.sdp.length > MAX_SDP_LENGTH) return null;
-      return { type: 'sfu-transport-answer', side, sdp: value.sdp };
+      if (side === 'screen-publish' && !validScreenRequestId(value.requestId)) return null;
+      return { type: 'sfu-transport-answer', side, sdp: value.sdp,
+        ...(validScreenRequestId(value.requestId) ? { requestId: value.requestId } : {}) };
     }
     case 'sfu-transport-ice': {
       const side = parseTransportSide(value.side);
       if (!side) return null;
       const candidate = parseIceCandidate(value.candidate);
       if (!candidate) return null;
-      return { type: 'sfu-transport-ice', side, candidate };
+      if (side === 'screen-publish' && !validScreenRequestId(value.requestId)) return null;
+      return { type: 'sfu-transport-ice', side, candidate,
+        ...(validScreenRequestId(value.requestId) ? { requestId: value.requestId } : {}) };
     }
     case 'sfu-leave':
       return { type: 'sfu-leave' };
@@ -138,7 +160,7 @@ export function parseSfuClientMessage(value: unknown): SfuClientMessage | null {
 }
 
 function parseTransportSide(value: unknown): SfuTransportSideName | null {
-  return value === 'publish' || value === 'subscribe' ? value : null;
+  return value === 'publish' || value === 'subscribe' || value === 'screen-publish' ? value : null;
 }
 
 function parseIceCandidate(value: unknown): SfuIceCandidatePayload | null {
@@ -159,12 +181,14 @@ export class SfuSignalingHub {
   private readonly publishers = new Map<string, SfuProducerMedia>();
   private readonly generations = new Map<string, symbol>();
   private readonly publishNegotiations = new Map<string, symbol>();
+  private readonly screenRequests = new Map<string, string>();
   private readonly subscriptionNegotiations = new Map<string, SubscriptionNegotiation>();
 
   constructor(
     private readonly send: SfuSendFn,
     options: LayerSelectionOptions = {},
-    private readonly transport: SfuTransportLike | null = null
+    private readonly transport: SfuTransportLike | null = null,
+    private readonly screenSourceEnabled = false,
   ) {
     this.room = new SfuSessionCoordinator(options);
   }
@@ -174,7 +198,7 @@ export class SfuSignalingHub {
   }
 
   /** Handle a raw inbound message from a participant. Returns true when handled. */
-  handleMessage(participantId: string, raw: unknown): boolean {
+  handleMessage(participantId: string, raw: unknown, allowScreenSource = false): boolean {
     const message = parseSfuClientMessage(raw);
     if (!participantId || !message) {
       if (participantId) this.send(participantId, { type: 'sfu-error', message: 'Invalid SFU message' });
@@ -182,7 +206,7 @@ export class SfuSignalingHub {
     }
 
     try {
-      this.dispatch(participantId, message);
+      this.dispatch(participantId, message, allowScreenSource);
       return true;
     } catch (err) {
       this.send(participantId, {
@@ -198,16 +222,17 @@ export class SfuSignalingHub {
     this.removeParticipant(participantId);
   }
 
-  private dispatch(participantId: string, message: SfuClientMessage): void {
+  private dispatch(participantId: string, message: SfuClientMessage, allowScreenSource: boolean): void {
     switch (message.type) {
       case 'sfu-join': {
-        this.room.join(participantId, message.downlinkKbps);
+        this.room.join(participantId, message.downlinkKbps, allowScreenSource && this.screenSourceEnabled && message.supportsScreenSource === true);
         if (!this.generations.has(participantId)) this.generations.set(participantId, Symbol(participantId));
         // Tell the joiner which producers already exist.
         this.send(participantId, {
           type: 'sfu-producers',
-          producers: [...this.publishers.keys()].filter((id) => id !== participantId),
+          producers: [...this.publishers.keys()].filter((id) => this.canReceiveProducer(participantId, id)),
         });
+        this.broadcastScreenPeers();
         // A joiner in a room with publishers gets a subscribe transport offer.
         this.offerSubscription(participantId);
         this.flushLayers();
@@ -255,12 +280,22 @@ export class SfuSignalingHub {
         }
         return;
       }
+      case 'sfu-publish-screen':
+        this.publishScreen(participantId, message);
+        return;
+      case 'sfu-unpublish-screen':
+        if (this.screenRequests.get(participantId) === message.requestId) this.removeScreen(participantId);
+        return;
       case 'sfu-downlink': {
         this.room.setDownlink(participantId, message.downlinkKbps);
         this.flushLayers();
         return;
       }
       case 'sfu-transport-answer': {
+        if (message.side === 'screen-publish') {
+          this.runScreenOp(participantId, message.requestId, (transport, producerId) => transport.setPublishAnswer(producerId, { sdp: message.sdp }));
+          return;
+        }
         if (message.side === 'subscribe') {
           this.acceptSubscriptionAnswer(participantId, message.sdp);
           return;
@@ -271,6 +306,10 @@ export class SfuSignalingHub {
         return;
       }
       case 'sfu-transport-ice': {
+        if (message.side === 'screen-publish') {
+          this.runScreenOp(participantId, message.requestId, (transport, producerId) => transport.addPublishIceCandidate(producerId, message.candidate));
+          return;
+        }
         this.runTransportOp(participantId, async (transport) => {
           if (message.side === 'publish') {
             await transport.addPublishIceCandidate(participantId, message.candidate);
@@ -287,12 +326,80 @@ export class SfuSignalingHub {
     }
   }
 
+  private canReceiveProducer(consumerId: string, producerId: string): boolean {
+    const screenOwner = sfuScreenProducerOwner(producerId);
+    return screenOwner ? consumerId !== screenOwner && this.room.supportsScreenSource(consumerId) : consumerId !== producerId;
+  }
+
+  private broadcastScreenPeers(): void {
+    if (!this.screenSourceEnabled) return;
+    const ids = this.room.listParticipants().filter(({ supportsScreenSource }) => supportsScreenSource).map(({ participantId }) => participantId);
+    for (const id of ids) this.send(id, { type: 'sfu-screen-peers', participantIds: ids });
+  }
+
+  private publishScreen(owner: string, message: Extract<SfuClientMessage, { type: 'sfu-publish-screen' }>): void {
+    const { requestId, layers, audio } = message;
+    if (!this.transport || !this.room.supportsScreenSource(owner)) {
+      this.send(owner, { type: 'sfu-screen-error', requestId, message: 'Separate SFU screen sharing is unavailable.' });
+      return;
+    }
+    if (this.screenRequests.get(owner) === requestId) return;
+    this.removeScreen(owner);
+    const producerId = sfuScreenProducerId(owner);
+    this.room.publishScreen(owner, layers);
+    this.screenRequests.set(owner, requestId);
+    this.publishers.set(producerId, { producerId, hasVideo: true, hasAudio: audio });
+    for (const { participantId } of this.room.listParticipants()) {
+      if (!this.canReceiveProducer(participantId, producerId)) continue;
+      this.send(participantId, { type: 'sfu-producer-added', producerId });
+      this.offerSubscription(participantId);
+    }
+    this.runScreenOp(owner, requestId, async (transport, id, isCurrent) => {
+      const offer = await transport.createPublishOffer(id, layers.map(({ rid }) => rid), audio, requestId);
+      if (isCurrent()) this.send(owner, { type: 'sfu-transport-offer', side: 'screen-publish', requestId, sdp: offer.sdp });
+    });
+    this.flushLayers();
+  }
+
+  private runScreenOp(
+    owner: string,
+    requestId: string | undefined,
+    op: (transport: SfuTransportLike, producerId: string, isCurrent: () => boolean) => Promise<void>,
+  ): void {
+    const { transport } = this;
+    const generation = this.generations.get(owner);
+    const isCurrent = () => requestId !== undefined && this.screenRequests.get(owner) === requestId
+      && generation !== undefined && this.generations.get(owner) === generation;
+    if (!requestId || !transport || !isCurrent()) return;
+    void op(transport, sfuScreenProducerId(owner), isCurrent).catch((error) => {
+      if (!isCurrent()) return;
+      this.removeScreen(owner);
+      this.send(owner, { type: 'sfu-screen-error', requestId, message: error instanceof Error ? error.message : 'Separate SFU screen failed.' });
+    });
+  }
+
+  private removeScreen(owner: string, final = false): void {
+    const id = sfuScreenProducerId(owner);
+    const hadRequest = this.screenRequests.delete(owner);
+    this.room.unpublishScreen(owner);
+    const wasPublishing = this.publishers.delete(id);
+    if (hadRequest || final) {
+      this.transport?.removeProducer(id, !final);
+      void this.transport?.closePublisher(id).catch(() => undefined);
+    }
+    if (!wasPublishing) return;
+    for (const { participantId } of this.room.listParticipants()) {
+      if (this.canReceiveProducer(participantId, id)) this.send(participantId, { type: 'sfu-producer-removed', producerId: id });
+    }
+    this.flushLayers();
+  }
+
   /** Send (or renegotiate) a subscribe transport offer covering all current producers. */
   private offerSubscription(consumerId: string): void {
     if (!this.transport) return;
     const generation = this.generations.get(consumerId);
     if (!generation) return;
-    const producers = [...this.publishers.values()].filter((producer) => producer.producerId !== consumerId);
+    const producers = [...this.publishers.values()].filter((producer) => this.canReceiveProducer(consumerId, producer.producerId));
     if (producers.length === 0) return;
     const existing = this.subscriptionNegotiations.get(consumerId);
     if (existing) {
@@ -387,6 +494,7 @@ export class SfuSignalingHub {
     const negotiation = this.subscriptionNegotiations.get(participantId);
     if (negotiation?.timer) clearTimeout(negotiation.timer);
     this.subscriptionNegotiations.delete(participantId);
+    if (this.screenSourceEnabled) this.removeScreen(participantId, true);
     const wasPublishing = this.publishers.delete(participantId);
     this.room.leave(participantId);
     if (this.transport) {
@@ -396,6 +504,7 @@ export class SfuSignalingHub {
     if (wasPublishing) {
       this.broadcastExcept(participantId, { type: 'sfu-producer-removed', producerId: participantId });
     }
+    this.broadcastScreenPeers();
     this.flushLayers();
   }
 

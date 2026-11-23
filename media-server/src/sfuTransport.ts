@@ -5,13 +5,15 @@ import {
   RtpPacket,
   useSdesRTPStreamId,
   type RTCIceCandidate,
+  type RTCRtpSender,
 } from 'werift';
+import { sfuScreenProducerOwner } from '@studio/shared';
 import type { SfuIceConfig, SfuIceConfigProvider } from './sfuIceServers.js';
 
 /**
  * WebRTC media transport for the studio SFU.
  *
- * Terminates one publisher connection per participant with optional Opus
+ * Terminates one publisher connection per source with optional Opus
  * audio and VP8 simulcast video. Each subscriber receives one audio and/or
  * video forward track for every producer. Video follows the control plane's
  * selected simulcast layer; audio is always forwarded. Packets are cloned per
@@ -50,7 +52,8 @@ export interface SfuTransportEvents {
   onIceCandidate?: (
     participantId: string,
     side: SfuTransportSide,
-    candidate: SfuIceCandidatePayload
+    candidate: SfuIceCandidatePayload,
+    requestId?: string,
   ) => void;
 }
 
@@ -88,6 +91,8 @@ const MAX_RIDS_PER_PUBLISHER = 3;
 
 interface PublisherState {
   pc: RTCPeerConnection;
+  generation: symbol;
+  requestId?: string;
   rids: string[];
   packetCounts: Map<string, number>;
   audioPacketCount: number;
@@ -103,6 +108,12 @@ interface PublisherState {
 interface SubscriberMediaForward {
   track: MediaStreamTrack;
   mid: string | null;
+  screenClock?: {
+    sender: RTCRtpSender;
+    step: number;
+    generation?: symbol;
+    ssrc?: number;
+  };
 }
 
 interface SubscriberVideoForward extends SubscriberMediaForward {
@@ -112,6 +123,7 @@ interface SubscriberVideoForward extends SubscriberMediaForward {
 interface SubscriberForward {
   video?: SubscriberVideoForward;
   audio?: SubscriberMediaForward;
+  audioActive?: boolean;
 }
 
 interface SubscriberState {
@@ -231,11 +243,12 @@ export class SfuMediaTransport {
       if (!candidate) return;
       const current = side === 'publish' ? this.publishers.get(participantId) : this.subscribers.get(participantId);
       if (current?.pc !== pc) return;
+      const requestId = side === 'publish' ? this.publishers.get(participantId)?.requestId : undefined;
       this.events.onIceCandidate?.(participantId, side, {
         candidate: candidate.candidate,
         sdpMLineIndex: candidate.sdpMLineIndex ?? null,
         sdpMid: candidate.sdpMid ?? null,
-      });
+      }, requestId);
     });
   }
 
@@ -243,7 +256,8 @@ export class SfuMediaTransport {
   async createPublishOffer(
     participantId: string,
     rids: string[],
-    hasAudio = false
+    hasAudio = false,
+    requestId?: string,
   ): Promise<SfuSessionDescription> {
     const cleanRids = [...new Set(rids.filter((rid) => typeof rid === 'string' && rid.length > 0))]
       .slice(0, MAX_RIDS_PER_PUBLISHER);
@@ -264,6 +278,8 @@ export class SfuMediaTransport {
     const pc = this.newPeerConnection(true, ice);
     const state: PublisherState = {
       pc,
+      generation: attempt,
+      requestId,
       rids: cleanRids,
       packetCounts: new Map(),
       audioPacketCount: 0,
@@ -369,6 +385,7 @@ export class SfuMediaTransport {
     }
 
     for (const producer of producers) {
+      const isScreen = Boolean(sfuScreenProducerOwner(producer.producerId));
       let forward = state.forwards.get(producer.producerId);
       if (!forward) {
         forward = {};
@@ -377,7 +394,10 @@ export class SfuMediaTransport {
       if (producer.hasVideo && !forward.video) {
         const track = new MediaStreamTrack({ kind: 'video' });
         const transceiver = state.pc.addTransceiver(track, { direction: 'sendonly' });
-        const videoForward: SubscriberVideoForward = { track, mid: transceiver.mid ?? null, rid: null };
+        const videoForward: SubscriberVideoForward = {
+          track, mid: transceiver.mid ?? null, rid: null,
+          ...(isScreen ? { screenClock: { sender: transceiver.sender, step: 3_000 } } : {}),
+        };
         forward.video = videoForward;
         // The subscriber lost a picture (packet loss, decoder reset): pass its
         // PLI on to the publisher of the layer it is watching.
@@ -394,10 +414,14 @@ export class SfuMediaTransport {
       if (producer.hasAudio && !forward.audio) {
         const track = new MediaStreamTrack({ kind: 'audio' });
         const transceiver = state.pc.addTransceiver(track, { direction: 'sendonly' });
-        forward.audio = { track, mid: transceiver.mid ?? null };
-      } else if (!producer.hasAudio) {
+        forward.audio = {
+          track, mid: transceiver.mid ?? null,
+          ...(isScreen ? { screenClock: { sender: transceiver.sender, step: 960 } } : {}),
+        };
+      } else if (!producer.hasAudio && !isScreen) {
         forward.audio = undefined;
       }
+      forward.audioActive = producer.hasAudio;
     }
 
     const offer = await state.pc.createOffer();
@@ -408,14 +432,16 @@ export class SfuMediaTransport {
     if (!local) throw new Error('Failed to create subscribe offer');
 
     const producerMids: Record<string, SfuProducerMids> = {};
-    for (const [producerId, forward] of state.forwards) {
+    for (const { producerId, hasVideo, hasAudio } of producers) {
+      const forward = state.forwards.get(producerId);
+      if (!forward) continue;
       const mids: SfuProducerMids = {};
-      if (forward.video) {
+      if (hasVideo && forward.video) {
         const transceiver = state.pc.getTransceivers().find((t) => t.sender.track === forward.video?.track);
         forward.video.mid = transceiver?.mid ?? forward.video.mid;
         if (forward.video.mid) mids.video = forward.video.mid;
       }
-      if (forward.audio) {
+      if (hasAudio && forward.audio) {
         const transceiver = state.pc.getTransceivers().find((t) => t.sender.track === forward.audio?.track);
         forward.audio.mid = transceiver?.mid ?? forward.audio.mid;
         if (forward.audio.mid) mids.audio = forward.audio.mid;
@@ -452,7 +478,7 @@ export class SfuMediaTransport {
     const ssrc = rtp.header?.ssrc;
     if (typeof ssrc === 'number' && state.ridSsrcs.get(rid) !== ssrc) state.ridSsrcs.set(rid, ssrc);
     if (state.pendingKeyframes.delete(rid)) this.requestKeyframe(participantId, rid);
-    this.forwardPacket(participantId, rid, rtp);
+    this.forwardPacket(participantId, rid, rtp, state.generation);
   }
 
   /** Feed one publisher Opus RTP packet into the always-on audio fan-out. */
@@ -461,10 +487,11 @@ export class SfuMediaTransport {
     if (!state) return;
     state.audioPacketCount += 1;
     for (const subscriber of this.subscribers.values()) {
-      const forward = subscriber.forwards.get(participantId)?.audio;
+      const producer = subscriber.forwards.get(participantId);
+      const forward = producer?.audioActive ? producer.audio : undefined;
       if (!forward) continue;
       try {
-        forward.track.writeRtp(clonePacket(rtp));
+        this.writeForward(forward, rtp, state.generation);
       } catch {
         // A closing subscriber may race a write; the disconnect path cleans up.
       }
@@ -482,16 +509,32 @@ export class SfuMediaTransport {
     if (changed && rid) this.requestKeyframe(producerId, rid);
   }
 
-  private forwardPacket(producerId: string, rid: string, rtp: RtpPacket): void {
+  private forwardPacket(producerId: string, rid: string, rtp: RtpPacket, generation: symbol): void {
     for (const state of this.subscribers.values()) {
       const forward = state.forwards.get(producerId)?.video;
       if (!forward || forward.rid !== rid) continue;
       try {
-        forward.track.writeRtp(clonePacket(rtp));
+        this.writeForward(forward, rtp, generation);
       } catch {
         // A closing subscriber may race a write; the disconnect path cleans up.
       }
     }
+  }
+
+  private writeForward(forward: SubscriberMediaForward, rtp: RtpPacket, generation: symbol): void {
+    const { screenClock: clock } = forward;
+    if (clock && (clock.generation !== generation || clock.ssrc !== rtp.header.ssrc)) {
+      if (clock.generation !== undefined) {
+        // Keep the subscriber SSRC and MIDs while starting a new capture clock.
+        clock.sender.replaceRTP({
+          sequenceNumber: (rtp.header.sequenceNumber - 1) & 0xffff,
+          timestamp: (rtp.header.timestamp - clock.step) >>> 0,
+        });
+      }
+      clock.generation = generation;
+      clock.ssrc = rtp.header.ssrc;
+    }
+    forward.track.writeRtp(clonePacket(rtp));
   }
 
   async closePublisher(participantId: string): Promise<void> {
@@ -503,9 +546,16 @@ export class SfuMediaTransport {
   }
 
   /** Remove a producer's forwards from every subscriber (producer left). */
-  removeProducer(producerId: string): void {
+  removeProducer(producerId: string, keepScreenReceiver = false): void {
     for (const state of this.subscribers.values()) {
-      state.forwards.delete(producerId);
+      if (keepScreenReceiver) {
+        const forward = state.forwards.get(producerId);
+        if (!forward) continue;
+        forward.audioActive = false;
+        if (forward.video) forward.video.rid = null;
+      } else {
+        state.forwards.delete(producerId);
+      }
     }
   }
 

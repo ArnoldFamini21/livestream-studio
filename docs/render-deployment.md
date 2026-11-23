@@ -124,6 +124,14 @@ The media server gets 24-hour credentials the same way the signaling server does
 
 The SFU also asks a publisher for a keyframe (RTCP PLI) whenever a subscriber joins, connects, switches simulcast layer or reports a lost picture, so late joiners do not see frozen video, and each browser reports its downlink budget from its inbound stats so the SFU picks layers that fit.
 
+#### Native SFU screen sharing preview
+
+Set `SFU_NATIVE_SCREEN_ENABLED=true` on a test media server to enable a separate screen and system-audio publisher on the authenticated SFU socket. The flag defaults to off. The signaling and media servers still need the same `LIVE_STREAM_TOKEN_SECRET`. Set `MEDIA_SERVER_URL` on signaling to the media server so backstage moves, removal, and room closure also revoke the screen. Production-style Render tests also need the existing SFU TURN setup.
+
+An on-stage client receives the capability when it authenticates with a current SFU token. Screen video and available system audio use a separate connection while the camera and microphone remain on their original connection. Backstage and older clients continue receiving screens over mesh when connected. When a stage peer cannot receive the separate screen by SFU or mesh, the presenter returns to the combined screen and camera with mixed audio.
+
+For browser qualification, deploy the branch to isolated test endpoints or run both services on a CI runner. Put five independent Chromium clients on stage and supply a synthetic display stream with a distinct picture and tone. Confirm the receiver gets camera, microphone, screen, and system audio at the same time, with one audible copy of the screen audio. Repeat share, stop, and restart, then move the presenter backstage and verify both SFU sources stop. Repeat with the flag off and a receiver using the older protocol. Live multi-peer playback and TURN remain qualification steps before enabling the preview in production.
+
 **Fallback.** With no TURN settings at all, the server uses Metered's free Open Relay (`staticauth.openrelay.metered.ca`) and mints short-lived credentials from its published secret. The old static `openrelayproject` password no longer works. The free relay is shared by everyone and capped at 20 GB a month, so it is not treated as production ready by the health metadata.
 
 Use either a complete JSON config:

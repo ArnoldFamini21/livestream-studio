@@ -1,3 +1,4 @@
+import { sfuScreenProducerOwner } from '@studio/shared';
 import type {
   SfuClientOutbound,
   SfuIceCandidate,
@@ -37,6 +38,7 @@ export interface SfuWebRtcTransportOptions {
   createMediaStream?: (tracks: MediaStreamTrack[]) => MediaStream;
   onRemoteStream?: (producerId: string, stream: MediaStream) => void;
   onRemoteStreamRemoved?: (producerId: string) => void;
+  isScreenProducerActive?: (producerId: string) => boolean;
   onTransportReady?: (side: SfuTransportSide) => void;
   onError?: (message: string) => void;
   /**
@@ -49,6 +51,10 @@ export interface SfuWebRtcTransportOptions {
 }
 
 const MAX_PENDING_ICE = 50;
+const MAX_SCREEN_RECEIVERS = 128;
+
+type ProducerMedia = { producerId: string; kind: 'audio' | 'video' };
+type ScreenReceiver = ProducerMedia & { track?: MediaStreamTrack; detach?: () => void };
 
 function defaultPeerConnectionFactory(configuration?: RTCConfiguration): SfuPeerConnectionLike {
   return new RTCPeerConnection(configuration);
@@ -82,7 +88,10 @@ export class SfuWebRtcTransport {
     publish: [],
     subscribe: [],
   };
-  private readonly producerByMid = new Map<string, { producerId: string; kind: 'audio' | 'video' }>();
+  private readonly producerByMid = new Map<string, ProducerMedia>();
+  // Removed screen producers park their transceivers. A later offer can
+  // re-enable the same MID without causing another browser 'track' event.
+  private readonly screenReceivers = new Map<string, ScreenReceiver>();
   private readonly tracksByProducer = new Map<string, Map<'audio' | 'video', MediaStreamTrack>>();
   private readonly streamByProducer = new Map<string, MediaStream>();
   private readonly readyConnections = new WeakSet<SfuPeerConnectionLike>();
@@ -106,14 +115,14 @@ export class SfuWebRtcTransport {
       return;
     }
 
-    const pc = this.getOrCreatePeerConnection(offer.side);
-    if (offer.side === 'subscribe') this.setProducerMids(offer.producerMids);
-
     try {
+      const pc = this.getOrCreatePeerConnection(offer.side);
+      if (offer.side === 'subscribe') this.setProducerMids(offer.producerMids);
       // Only what we send changes with music mode; what we receive is untouched.
       const musicMode = offer.side === 'publish' && Boolean(this.options.musicMode);
       await pc.setRemoteDescription(transformDescriptionForMusicMode({ type: 'offer', sdp: offer.sdp }, musicMode));
       if (offer.side === 'publish') await this.attachPublishTrack(pc);
+      else if (this.subscribePc === pc) this.restoreScreenReceivers();
       await this.drainPendingIce(offer.side, pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(transformDescriptionForMusicMode(answer, musicMode));
@@ -181,6 +190,7 @@ export class SfuWebRtcTransport {
     this.streamByProducer.clear();
     this.tracksByProducer.clear();
     this.producerByMid.clear();
+    for (const mid of this.screenReceivers.keys()) this.forgetScreenReceiver(mid);
   }
 
   private getOrCreatePeerConnection(side: SfuTransportSide): SfuPeerConnectionLike {
@@ -214,7 +224,14 @@ export class SfuWebRtcTransport {
     };
     if (side === 'subscribe') {
       pc.ontrack = (event) => {
-        const mapped = event.transceiver.mid ? this.producerByMid.get(event.transceiver.mid) : undefined;
+        if (this.subscribePc !== pc) return;
+        const mid = event.transceiver.mid;
+        const screen = mid ? this.screenReceivers.get(mid) : undefined;
+        if (mid && screen) {
+          if (event.track.kind === screen.kind) this.setScreenReceiverTrack(mid, screen, event.track);
+          return;
+        }
+        const mapped = mid ? this.producerByMid.get(mid) : undefined;
         if (!mapped) {
           this.reportError('Received an SFU track without a producer mapping.');
           return;
@@ -266,12 +283,114 @@ export class SfuWebRtcTransport {
     for (const [producerId, rawMids] of Object.entries(producerMids)) {
       const mids = typeof rawMids === 'string' ? { video: rawMids } : rawMids;
       if (producerId && mids.video) {
-        this.producerByMid.set(mids.video, { producerId, kind: 'video' });
+        this.mapProducerMid(mids.video, { producerId, kind: 'video' });
       }
       if (producerId && mids.audio) {
-        this.producerByMid.set(mids.audio, { producerId, kind: 'audio' });
+        this.mapProducerMid(mids.audio, { producerId, kind: 'audio' });
       }
     }
+  }
+
+  private mapProducerMid(mid: string, media: ProducerMedia): void {
+    this.producerByMid.set(mid, media);
+    if (sfuScreenProducerOwner(media.producerId) === null) {
+      this.forgetScreenReceiver(mid);
+      return;
+    }
+    const prior = this.screenReceivers.get(mid);
+    if (prior?.producerId === media.producerId && prior.kind === media.kind) return;
+    for (const [cachedMid, cached] of this.screenReceivers) {
+      if (cachedMid === mid || (cached.producerId === media.producerId && cached.kind === media.kind)) {
+        this.forgetScreenReceiver(cachedMid);
+      }
+    }
+    if (this.screenReceivers.size >= MAX_SCREEN_RECEIVERS) {
+      const oldest = [...this.screenReceivers].find(([, receiver]) => (
+        this.options.isScreenProducerActive?.(receiver.producerId) === false
+      ))?.[0] ?? this.screenReceivers.keys().next().value;
+      if (oldest !== undefined) this.forgetScreenReceiver(oldest);
+    }
+    this.screenReceivers.set(mid, { ...media });
+  }
+
+  private setScreenReceiverTrack(mid: string, receiver: ScreenReceiver, track: MediaStreamTrack): void {
+    if (receiver.track === track) return;
+    receiver.detach?.();
+    receiver.track = track;
+
+    const deliver = () => {
+      if (receiver.track === track) this.deliverScreenReceiver(mid, receiver);
+    };
+    const onEnded = () => {
+      if (this.screenReceivers.get(mid) !== receiver || receiver.track !== track) return;
+      receiver.detach?.();
+      receiver.track = undefined;
+      receiver.detach = undefined;
+      const active = this.tracksByProducer.get(receiver.producerId);
+      if (active?.get(receiver.kind) !== track) return;
+      active.delete(receiver.kind);
+      this.updateScreenStream(receiver.producerId, active);
+    };
+    if (typeof track.addEventListener === 'function') {
+      track.addEventListener('unmute', deliver);
+      track.addEventListener('ended', onEnded, { once: true });
+      receiver.detach = () => {
+        track.removeEventListener?.('unmute', deliver);
+        track.removeEventListener?.('ended', onEnded);
+      };
+    }
+    deliver();
+  }
+
+  private deliverScreenReceiver(mid: string, receiver: ScreenReceiver): void {
+    const { track, producerId, kind } = receiver;
+    if (
+      this.screenReceivers.get(mid) !== receiver ||
+      !this.isActiveScreenReceiver(mid, receiver) ||
+      !track || track.readyState !== 'live' || track.muted
+    ) return;
+    let tracks = this.tracksByProducer.get(producerId);
+    if (!tracks) {
+      tracks = new Map();
+      this.tracksByProducer.set(producerId, tracks);
+    }
+    if (tracks.get(kind) === track) return;
+    tracks.set(kind, track);
+    this.emitRemoteStream(producerId);
+  }
+
+  private restoreScreenReceivers(): void {
+    const currentTracks = new Set<MediaStreamTrack>();
+    for (const [mid, receiver] of this.screenReceivers) {
+      if (receiver.track && this.isActiveScreenReceiver(mid, receiver)) currentTracks.add(receiver.track);
+    }
+    for (const [producerId, tracks] of this.tracksByProducer) {
+      if (sfuScreenProducerOwner(producerId) === null) continue;
+      const size = tracks.size;
+      for (const [kind, track] of tracks) if (!currentTracks.has(track)) tracks.delete(kind);
+      if (tracks.size !== size) this.updateScreenStream(producerId, tracks);
+    }
+    for (const [mid, receiver] of this.screenReceivers) this.deliverScreenReceiver(mid, receiver);
+  }
+
+  private isActiveScreenReceiver(mid: string, screen: ScreenReceiver): boolean {
+    const active = this.producerByMid.get(mid);
+    return active?.producerId === screen.producerId && active.kind === screen.kind &&
+      this.options.isScreenProducerActive?.(screen.producerId) !== false;
+  }
+
+  private updateScreenStream(producerId: string, tracks: Map<'audio' | 'video', MediaStreamTrack>): void {
+    if (tracks.size > 0) {
+      this.emitRemoteStream(producerId);
+      return;
+    }
+    this.tracksByProducer.delete(producerId);
+    if (this.streamByProducer.delete(producerId)) this.options.onRemoteStreamRemoved?.(producerId);
+  }
+
+  private forgetScreenReceiver(mid: string): void {
+    this.screenReceivers.get(mid)?.detach?.();
+    this.screenReceivers.delete(mid);
   }
 
   private async attachPublishTrack(pc: SfuPeerConnectionLike): Promise<void> {

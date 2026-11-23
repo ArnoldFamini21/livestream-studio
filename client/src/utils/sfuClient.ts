@@ -21,7 +21,7 @@ export interface SfuProducerMids {
 }
 
 export type SfuClientOutbound =
-  | { type: 'sfu-join'; downlinkKbps: number }
+  | { type: 'sfu-join'; downlinkKbps: number; supportsScreenSource?: true }
   | { type: 'sfu-publish'; layers: SfuWireLayer[]; audio: boolean }
   | { type: 'sfu-unpublish' }
   | { type: 'sfu-downlink'; downlinkKbps: number }
@@ -96,10 +96,14 @@ export class SfuClientSession {
     private readonly events: SfuClientEvents = {}
   ) {}
 
-  join(downlinkKbps: number): void {
+  join(downlinkKbps: number, supportsScreenSource = false): void {
     this.downlinkKbps = Math.max(0, Math.round(downlinkKbps) || 0);
     this.joined = true;
-    this.send({ type: 'sfu-join', downlinkKbps: this.downlinkKbps });
+    this.send({
+      type: 'sfu-join',
+      downlinkKbps: this.downlinkKbps,
+      ...(supportsScreenSource ? { supportsScreenSource: true as const } : {}),
+    });
   }
 
   publish(encodings: RTCRtpEncodingParameters[], audio = false): boolean {
