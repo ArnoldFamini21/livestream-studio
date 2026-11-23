@@ -352,14 +352,15 @@ sound...") instead of a dead slider. The value is kept per room in
   the first co-host while the host is away), so the volume that applies is the
   one set in that browser. A co-host who is not running the program sees a line
   saying so instead of a slider, and their own stored value is ignored.
-- Limits: a guest's share that arrives inside their camera stream (SFU
-  screen-replaces-camera) has its sound mixed into their voice at the source and
-  cannot be turned down separately; it shows no slider. The browser keeps playing
-  a shared tab's own sound on the host's computer: that part is not ours to
-  change, only the monitor of a guest's separate screen tile is. Accepted limit
-  (decided by the project lead): the slider sets how loud the share is for
-  viewers and in the recording; the host's own speakers play the host's own
-  shared tab straight from the browser, at the tab's own volume.
+- On an SFU stage, the screen and its audio use separate peer-to-peer tracks
+  when every on-stage peer has a connected path at the start of sharing. The SFU
+  continues to carry the camera and voice. Each peer receives its own copy of
+  the screen tracks. When a stage peer lacks a connected path at the start, the
+  studio uses the composed SFU feed for that share, with screen audio mixed
+  into the speaker's voice. Restarting the share rechecks the available paths.
+- The slider sets the share volume for viewers, the recording, and the host's
+  monitor of someone else's screen tile. The host's browser plays their own
+  shared tab at that tab's volume.
 
 **Music transport.** The background music panel shows the track name, elapsed
 time, total length and time remaining, and a scrub bar that seeks while playing

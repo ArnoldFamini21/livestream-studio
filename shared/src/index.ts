@@ -561,6 +561,8 @@ export interface RoomJoinedPayload {
   room: Room;
   participant: Participant;
   participants: Participant[];
+  /** Active independent screen streams from peers this seat may exchange media with. */
+  screenShareStreams?: Array<{ participantId: string; streamId: string }>;
   chatMessages?: ChatMessage[];
   qaQuestions?: QAQuestion[];
   polls?: LivePoll[];

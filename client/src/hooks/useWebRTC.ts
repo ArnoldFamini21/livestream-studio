@@ -867,6 +867,10 @@ export function useWebRTC({ localStream, myParticipantId, send, musicMode = fals
     forwardingExemptRef.current = exempt || (() => false);
   }, []);
 
+  const isMeshPeerConnected = useCallback((participantId: string) => (
+    peersRef.current.get(participantId)?.connection.connectionState === 'connected'
+  ), []);
+
   const refreshMeshForwarding = useCallback(async () => {
     await Promise.all([applyForwarding('audio'), applyForwarding('video')]);
   }, [applyForwarding]);
@@ -990,6 +994,7 @@ export function useWebRTC({ localStream, myParticipantId, send, musicMode = fals
     setVideoForwardingEnabled,
     setMeshForwardingExemption,
     refreshMeshForwarding,
+    isMeshPeerConnected,
     cleanup,
   };
 }

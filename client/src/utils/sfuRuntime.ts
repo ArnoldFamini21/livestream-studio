@@ -30,6 +30,22 @@ export function shouldUseSfuMedia(input: SfuEligibilityInput): boolean {
   return onStageCount >= threshold;
 }
 
+/**
+ * Keep the camera and mic on the SFU and use the existing screen senders
+ * when each on-stage peer also has a usable direct or relayed mesh path.
+ */
+export function shouldUseSeparateScreenShare(
+  hasSfuSession: boolean,
+  remoteParticipants: Iterable<Pick<Participant, 'id' | 'status'>>,
+  isMeshPeerConnected: (participantId: string) => boolean,
+): boolean {
+  if (!hasSfuSession) return true;
+  for (const participant of remoteParticipants) {
+    if (participant.status === 'on-stage' && !isMeshPeerConnected(participant.id)) return false;
+  }
+  return true;
+}
+
 /** A signaling rejoin changes the authenticated SFU identity even at the same stage size. */
 export function getSfuSessionParticipantId(input: SfuEligibilityInput): string | null {
   return shouldUseSfuMedia(input) ? input.localParticipant?.id || null : null;

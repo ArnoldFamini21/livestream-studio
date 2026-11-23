@@ -55,7 +55,7 @@ import { acquireAudioContext, releaseAudioContext } from '../utils/audioContext.
 import { reportClientError } from '../utils/clientErrorReporter.ts';
 import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts';
 import { SfuSocketSession } from '../utils/sfuSocket.ts';
-import { getSfuSessionParticipantId, mergeSfuMediaWithMeshFallback, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
+import { getSfuSessionParticipantId, mergeSfuMediaWithMeshFallback, shouldUseSeparateScreenShare, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
 import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
 import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
@@ -1446,6 +1446,7 @@ export function StudioRoom() {
     setVideoForwardingEnabled,
     setMeshForwardingExemption,
     refreshMeshForwarding,
+    isMeshPeerConnected,
     cleanup,
   } = useWebRTC({
     localStream: peerLocalStream,
@@ -1990,9 +1991,7 @@ export function StudioRoom() {
   setRemoteProgramReturnStreamIdRef.current = setRemoteProgramReturnStreamId;
   // Applies a co-host's slide command to our deck (stage owner only; set below).
   const stageControlHandlerRef = useRef<(payload: StageControlPayload) => void>(() => {});
-  // True while our screen goes out as a second track (mesh); false when it
-  // replaces the camera (SFU).
-  const separateScreenTrackRef = useRef(false);
+  const separateScreenStreamIdRef = useRef<string | null>(null);
   const startScreenShareRef = useRef(startScreenShare);
   const sendRef = useRef(send);
 
@@ -2944,6 +2943,7 @@ export function StudioRoom() {
               audioEnabled: localParticipant.audioEnabled,
               videoEnabled: localParticipant.videoEnabled,
               screenSharing: isScreenSharingRef.current,
+              ...(separateScreenStreamIdRef.current ? { screenStreamId: separateScreenStreamIdRef.current } : {}),
             },
           });
           if (resumingOwnBroadcast && !liveStreamState?.live) {
@@ -3005,6 +3005,10 @@ export function StudioRoom() {
           setSupportsCoordinatedRecording(Boolean(recordingSessionId));
           const map = new Map<string, Participant>();
           existing.forEach((p) => map.set(p.id, p));
+          if (message.payload.screenShareStreams) {
+            const screenIds = new Map(message.payload.screenShareStreams.map(({ participantId, streamId }) => [participantId, streamId]));
+            for (const p of existing) setRemoteScreenStreamIdRef.current(p.id, screenIds.get(p.id) ?? null);
+          }
           // A resumed seat keeps its peer connections; drop only those to
           // people who left while we were away (or whom we may no longer reach).
           for (const previousId of participantsForMeshRef.current.keys()) {
@@ -3068,7 +3072,7 @@ export function StudioRoom() {
           break;
         case 'media-state-changed': {
           const { participantId, audioEnabled: a, videoEnabled: v, screenSharing: s, screenStreamId } = message.payload;
-          setRemoteScreenStreamIdRef.current(participantId, s && screenStreamId ? screenStreamId : null);
+          if (!s || screenStreamId) setRemoteScreenStreamIdRef.current(participantId, s ? screenStreamId ?? null : null);
           setParticipants((prev) => {
             const next = new Map(prev);
             const e = next.get(participantId);
@@ -3539,7 +3543,7 @@ export function StudioRoom() {
       sfuSessionRef.current?.setLocalAudioTrack(screenMix ? screenMix.trackFor(audioTrack || null) : (audioTrack || null));
     }
 
-    if (!isScreenSharing && videoTrack?.id !== published.video) {
+    if ((!isScreenSharing || separateScreenStreamIdRef.current) && videoTrack?.id !== published.video) {
       published.video = videoTrack?.id;
       if (videoTrack) {
         publishedVideoTrackRef.current = videoTrack;
@@ -3655,7 +3659,7 @@ export function StudioRoom() {
   const onVideoDeviceChange = async (id: string) => {
     try {
       const t = await switchVideoDevice(id);
-      if (t && !isScreenSharingRef.current) {
+      if (t && (!isScreenSharingRef.current || separateScreenStreamIdRef.current)) {
         publishedVideoTrackRef.current = t;
         await replaceTrack(t);
         sfuSessionRef.current?.setLocalVideoTrack(t);
@@ -3666,7 +3670,7 @@ export function StudioRoom() {
   const onVideoQualityChange = async (next: VideoQualityPresetId) => {
     try {
       const t = await updateVideoQuality(next);
-      if (t && !isScreenSharingRef.current) {
+      if (t && (!isScreenSharingRef.current || separateScreenStreamIdRef.current)) {
         publishedVideoTrackRef.current = t;
         await replaceTrack(t);
         sfuSessionRef.current?.setLocalVideoTrack(t);
@@ -3674,12 +3678,12 @@ export function StudioRoom() {
     }
     catch (err) { console.error('Failed to update video quality:', err); }
   };
-  // Screen sharing publishes a screen+camera PiP track when possible so remote
-  // viewers keep seeing the presenter while screen content is shared.
+  // A separate screen keeps the presenter's camera and shared sound
+  // independently available to the program mixer.
   const onToggleScreenShare = useCallback(async () => {
     const restoreCameraAfterScreen = async () => {
-      if (separateScreenTrackRef.current) {
-        separateScreenTrackRef.current = false;
+      if (separateScreenStreamIdRef.current) {
+        separateScreenStreamIdRef.current = null;
         await publishScreenTrackRef.current(null);
         return;
       }
@@ -3718,14 +3722,16 @@ export function StudioRoom() {
       const screenTrack = stream.getVideoTracks()[0];
       const screenAudioTrack = stream.getAudioTracks()[0] || null;
       if (screenTrack) {
-        // Mesh peers take the screen as a second video track, so the camera
-        // stays on stage beside it. The SFU carries one video per publisher,
-        // so there the screen replaces the camera with a camera inset.
-        const separate = !sfuSessionRef.current;
-        separateScreenTrackRef.current = separate;
+        const separate = shouldUseSeparateScreenShare(
+          Boolean(sfuSessionRef.current),
+          participantsForMeshRef.current.values(),
+          isMeshPeerConnected,
+        );
+        separateScreenStreamIdRef.current = separate ? stream.id : null;
         try { screenTrack.contentHint = contentHint; } catch { /* Optional encoder hint. */ }
         if (separate) {
-          // The tab's or system's sound goes along as its own track.
+          // Name the stream before its tracks arrive, even on peers with no mesh camera track.
+          announce(true, stream.id);
           await publishScreenTrackRef.current(screenTrack, stream, screenAudioTrack);
         } else {
           const screenPip = createScreenPictureInPictureStream({
@@ -3771,7 +3777,7 @@ export function StudioRoom() {
           await restoreCameraAfterScreen();
           announce(false);
         });
-        announce(true, separate ? stream.id : undefined);
+        if (!separate) announce(true);
       } else {
         announce(true);
       }
@@ -3779,7 +3785,7 @@ export function StudioRoom() {
       // User cancelled screen share dialog or permission denied
       console.warn('Screen share cancelled or failed:', err);
     }
-  }, []); // All mutable values accessed via refs
+  }, [isMeshPeerConnected]);
 
   // "Optimize for: Text / Motion" applies to a share in progress too.
   useEffect(() => {

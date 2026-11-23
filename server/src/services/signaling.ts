@@ -126,6 +126,7 @@ interface ParticipantEntry {
   ws: WebSocket;
   joinSessionId?: string;
   stageUploadToken?: string;
+  screenShareStreamId?: string;
   /** Reads stage pictures; issued once the participant is admitted. */
   stageReadToken?: string;
   /** Reads the studio logo and nothing else; every participant has one, the green room included. */
@@ -1823,6 +1824,12 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
   const otherParticipants = Array.from(roomState.participants.values())
     .map((p) => p.participant)
     .filter((p) => p.id !== participant.id && (admitted || isOperatorRole(p.role)));
+  const screenShareStreams = [...roomState.participants.values()]
+    .filter((sender) => sender.participant.id !== participant.id
+      && sender.participant.screenSharing && canExchangeStudioMedia(sender.participant, participant))
+    .flatMap((sender) => sender.screenShareStreamId
+      ? [{ participantId: sender.participant.id, streamId: sender.screenShareStreamId }]
+      : []);
   const qaQuestions = admitted
     ? Array.from(roomState.qaQuestions.values())
       .filter((question) => operator || isPublicQAQuestion(question))
@@ -1853,6 +1860,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
       room: roomState.room,
       participant,
       participants: otherParticipants,
+      ...(admitted ? { screenShareStreams } : {}),
       chatMessages: getVisibleChatMessages(roomState, participant, participant.id),
       qaQuestions,
       polls,
@@ -2330,6 +2338,7 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       } else {
         target.participant.status = 'backstage';
         target.participant.screenSharing = false;
+        target.screenShareStreamId = undefined;
         notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to backstage');
       }
       if (admitting) {
@@ -2341,6 +2350,7 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     case 'move-to-green-room':
       target.participant.status = 'green-room';
       target.participant.screenSharing = false;
+      target.screenShareStreamId = undefined;
       target.stageReadToken = undefined;
       notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to green room');
       break;
@@ -3953,9 +3963,12 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
     entry.participant.screenSharing = screenSharing;
   }
 
-  const screenStreamId = screenSharing && typeof payload.screenStreamId === 'string' && /^[\w-]{1,80}$/.test(payload.screenStreamId)
+  // A mic or camera change omits the stream ID while the share stays active.
+  const announcedStreamId = typeof payload.screenStreamId === 'string' && /^[\w-]{1,80}$/.test(payload.screenStreamId)
     ? payload.screenStreamId
     : undefined;
+  const screenStreamId = screenSharing ? announcedStreamId ?? entry?.screenShareStreamId : undefined;
+  if (entry) entry.screenShareStreamId = screenStreamId;
   const authoritativePayload: MediaStatePayload = {
     participantId: mapping.participantId,
     audioEnabled: payload.audioEnabled,

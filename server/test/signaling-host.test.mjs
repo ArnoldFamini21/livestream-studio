@@ -1594,10 +1594,34 @@ describe('participant media moderation', () => {
           audioEnabled: true,
           videoEnabled: true,
           screenSharing: true,
+          screenStreamId: 'separate-screen-1',
         },
       });
-      await screenStarted;
+      assert.equal((await screenStarted).payload.screenStreamId, 'separate-screen-1');
       assert.equal(roomState.participants.get(backstageGuestState.payload.participant.id)?.participant.screenSharing, true);
+
+      const sharerId = backstageGuestState.payload.participant.id;
+      const screenWhileMuted = waitForMessage(host, 'media-state-changed', (message) => (
+        message.payload.participantId === sharerId && message.payload.audioEnabled === false
+      ));
+      sendSignal(backstageGuest, {
+        type: 'media-state-changed',
+        payload: { participantId: sharerId, audioEnabled: false, videoEnabled: true, screenSharing: true },
+      });
+      assert.equal((await screenWhileMuted).payload.screenStreamId, 'separate-screen-1');
+
+      const lateStageGuest = await connectClient(harness.url);
+      const lateStageGuestJoined = waitForMessage(lateStageGuest, 'room-joined');
+      joinRoom(lateStageGuest, { roomId: room.id, name: 'Late stage guest', role: 'guest' });
+      assert.deepEqual((await lateStageGuestJoined).payload.screenShareStreams, [
+        { participantId: sharerId, streamId: 'separate-screen-1' },
+      ]);
+
+      roomState.room.settings.greenRoomEnabled = true;
+      const waitingGuest = await connectClient(harness.url);
+      const waitingGuestJoined = waitForMessage(waitingGuest, 'room-joined');
+      joinRoom(waitingGuest, { roomId: room.id, name: 'Waiting guest', role: 'guest' });
+      assert.equal((await waitingGuestJoined).payload.screenShareStreams, undefined);
 
       const backstageUpdated = waitForMessage(backstageGuest, 'participant-updated', (message) => (
         message.payload.id === backstageGuestState.payload.participant.id &&
@@ -1680,6 +1704,7 @@ describe('participant media moderation', () => {
       });
       const normalizedClaim = await offStageScreenClaim;
       assert.equal(normalizedClaim.payload.screenSharing, false);
+      assert.equal(normalizedClaim.payload.screenStreamId, undefined);
       assert.equal(roomState.participants.get(backstageGuestState.payload.participant.id)?.participant.screenSharing, false);
     } finally {
       await harness.close();
