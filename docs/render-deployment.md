@@ -144,6 +144,8 @@ node --test e2e/sfu-native-screen.mjs
 
 The test uses a synthetic display stream while each guest's camera and microphone are active. It checks that the receiver gets four distinct media tracks, that restarting the screen reuses the same subscriber track IDs, and that moving a presenter backstage closes both their publishers while the other guests remain on SFU. Qualification before production also needs a flag-off and mixed-version browser run, a check for duplicate audible playback, and the same media checks over the deployed TURN route.
 
+The local Chromium run connected the SFU publish and subscribe transports and forwarded microphone audio. The same cameras decoded over mesh, while the SFU publishers reported zero outbound video RTP. The test stopped at its camera precondition before exercising native screen media. On failure it writes connection states, transceiver details, and RTP counters to `native-screen-transport.json` in its artifact directory. Keep the preview flag off until a run completes all four media checks.
+
 **Fallback.** With no TURN settings at all, the server uses Metered's free Open Relay (`staticauth.openrelay.metered.ca`) and mints short-lived credentials from its published secret. The old static `openrelayproject` password no longer works. The free relay is shared by everyone and capped at 20 GB a month, so it is not treated as production ready by the health metadata.
 
 Use either a complete JSON config:

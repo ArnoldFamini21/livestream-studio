@@ -22,7 +22,7 @@ export async function eventually(check, { timeout = 30_000, interval = 100, mess
 }
 
 /** Run the built application with no production accounts, credentials, or external services. */
-export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR || path.join(repoRoot, 'output/e2e'), apiPort = Number(process.env.E2E_API_PORT || 3001), port = Number(process.env.E2E_PORT || 5199), reuseServer = process.env.E2E_REUSE_SERVER === '1', distDir = path.join(repoRoot, 'client/dist'), loopbackMediaPort, liveTokenSecret, mediaMembershipControl = false } = {}) {
+export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR || path.join(repoRoot, 'output/e2e'), apiPort = Number(process.env.E2E_API_PORT || 3001), port = Number(process.env.E2E_PORT || 5199), reuseServer = process.env.E2E_REUSE_SERVER === '1', distDir = path.join(repoRoot, 'client/dist'), loopbackMediaPort, liveTokenSecret, mediaMembershipControl = false, sharedBrowserProcess = false } = {}) {
   assert.ok(!reuseServer || !process.env.CI, 'CI must start isolated application servers');
   assert.ok(loopbackMediaPort === undefined || (Number.isInteger(loopbackMediaPort) && loopbackMediaPort > 0 && loopbackMediaPort <= 65535));
   assert.ok(!mediaMembershipControl || (loopbackMediaPort && liveTokenSecret && !reuseServer), 'Membership control requires isolated signaling, media and a shared test secret');
@@ -32,6 +32,7 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   const url = `http://localhost:${port}`;
   const apiUrl = `http://localhost:${apiPort}`;
   const contexts = [];
+  let browserProcess;
   const pageErrors = [];
   const cspViolations = [];
   const serverLog = createWriteStream(path.join(artifactDir, 'server.log'));
@@ -68,6 +69,7 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   });
   const close = async () => {
     await Promise.allSettled(contexts.map(context => context.close()));
+    await browserProcess?.close().catch(() => undefined);
     if (!reuseServer) await new Promise(resolve => staticServer.close(resolve));
     if (server && !serverError && server.exitCode === null && server.signalCode === null) {
       const exited = new Promise(resolve => server.once('exit', resolve));
@@ -95,11 +97,16 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
       const profile = path.join(scratch, `profile-${name}`);
       const downloadsPath = path.join(artifactDir, 'downloads');
       await mkdir(downloadsPath, { recursive: true });
-      const context = await chromium.launchPersistentContext(profile, {
+      const launchOptions = {
         executablePath: process.env.E2E_CHROMIUM_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined),
-        headless: process.env.E2E_HEADED !== '1', viewport, permissions: ['camera', 'microphone'], acceptDownloads: true, downloadsPath,
-        args: ['--use-fake-device-for-media-stream=fps=30', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', `--disk-cache-dir=${path.join(scratch, `cache-${name}`)}`, ...extraArgs],
-      });
+        headless: process.env.E2E_HEADED !== '1', downloadsPath,
+        args: ['--use-fake-device-for-media-stream=fps=30', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', `--disk-cache-dir=${path.join(scratch, sharedBrowserProcess ? 'shared-cache' : `cache-${name}`)}`, ...extraArgs],
+      };
+      const contextOptions = { viewport, permissions: ['camera', 'microphone'], acceptDownloads: true };
+      if (sharedBrowserProcess) browserProcess ??= await chromium.launch(launchOptions);
+      const context = browserProcess
+        ? await browserProcess.newContext(contextOptions)
+        : await chromium.launchPersistentContext(profile, { ...launchOptions, ...contextOptions });
       contexts.push(context);
       await context.route(/^https?:\/\//, route => {
         const target = new URL(route.request().url());

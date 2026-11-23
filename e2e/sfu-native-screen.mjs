@@ -28,6 +28,10 @@ function installBrowserFixture() {
     }
   };
   if (!navigator.mediaDevices) return;
+  const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  navigator.mediaDevices.getUserMedia = (constraints) => capture(constraints.video ? {
+    ...constraints, video: { width: { ideal: 320, max: 480 }, height: { ideal: 180, max: 270 }, frameRate: { ideal: 15, max: 20 } },
+  } : constraints);
   Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
     configurable: true,
     value: async () => {
@@ -71,16 +75,20 @@ function installBrowserFixture() {
 function observeSfu(browser) {
   const received = [];
   const sent = [];
+  const warnings = [];
   const remember = (frames) => ({ payload }) => {
     const frame = JSON.parse(String(payload));
     if (frame.type !== 'sfu-auth') frames.push(frame);
   };
-  browser.on('page', (page) => page.on('websocket', (socket) => {
-    if (new URL(socket.url()).pathname !== '/sfu') return;
-    socket.on('framereceived', remember(received));
-    socket.on('framesent', remember(sent));
-  }));
-  return { received, sent };
+  browser.on('page', (page) => {
+    page.on('console', (message) => { if (message.text().startsWith('SFU media')) warnings.push(message.text()); });
+    page.on('websocket', (socket) => {
+      if (new URL(socket.url()).pathname !== '/sfu') return;
+      socket.on('framereceived', remember(received));
+      socket.on('framesent', remember(sent));
+    });
+  });
+  return { received, sent, warnings };
 }
 
 function subscribeOffer(frames, producerIds, after = 0) {
@@ -94,7 +102,8 @@ async function receiverStats(page, offer, requestedMids) {
   assert.ok(ice, 'the SFU subscription has an ICE identity');
   return page.evaluate(async ({ ice, requestedMids }) => {
     const pc = window.__nativeScreenFixturePeers.findLast((candidate) =>
-      candidate.connectionState !== 'closed' && candidate.remoteDescription?.sdp.includes(ice));
+      candidate.connectionState !== 'closed' && candidate.remoteDescription?.sdp.includes(ice)
+      && Object.values(requestedMids).every((mid) => candidate.getTransceivers().some((transceiver) => transceiver.mid === mid)));
     if (!pc) return null;
     const result = {};
     for (const [name, mid] of Object.entries(requestedMids)) {
@@ -109,6 +118,36 @@ async function receiverStats(page, offer, requestedMids) {
     }
     return result;
   }, { ice, requestedMids });
+}
+
+async function captureTransportDiagnostics(page, observer) {
+  const summarizeFrames = (frames) => {
+    const summary = {};
+    for (const frame of frames) {
+      const key = [frame.type, frame.side].filter(Boolean).join('/');
+      summary[key] = (summary[key] || 0) + 1;
+    }
+    return summary;
+  };
+  const peers = await page.evaluate(async () => Promise.all(window.__nativeScreenFixturePeers.map(async (pc) => {
+    const report = await pc.getStats().catch(() => new Map());
+    return {
+      signaling: pc.signalingState,
+      ice: pc.iceConnectionState,
+      dtls: pc.connectionState,
+      mids: pc.getTransceivers().map((item) => ({
+        mid: item.mid, direction: item.direction, currentDirection: item.currentDirection,
+        receiverKind: item.receiver.track.kind,
+        senderKind: item.sender.track?.kind, senderState: item.sender.track?.readyState,
+        encodings: item.sender.getParameters().encodings.map(({ rid, active }) => ({ rid, active })),
+      })),
+      streams: [...report.values()].filter((stat) => /^(inbound|outbound)-rtp$/.test(stat.type)).map((stat) => ({
+        type: stat.type, kind: stat.kind, mid: stat.mid,
+        packetsReceived: stat.packetsReceived, packetsSent: stat.packetsSent, framesDecoded: stat.framesDecoded,
+      })),
+    };
+  })));
+  return { sent: summarizeFrames(observer.sent), received: summarizeFrames(observer.received), warnings: observer.warnings, peers };
 }
 
 function waitForMedia(page, offer, requestedMids, baseline, message) {
@@ -147,11 +186,14 @@ test('the native SFU publishes camera, microphone, screen and system sound indep
   await mkdir(artifactDir, { recursive: true });
   const fixture = await startHarness({
     artifactDir, apiPort, port, loopbackMediaPort: mediaPort, liveTokenSecret: secret, mediaMembershipControl: true,
+    sharedBrowserProcess: true,
   });
   const media = startMedia(fixture.url);
   let launchError;
   media.once('error', (error) => { launchError = error; });
   let host;
+  let receiver;
+  let presenter;
   try {
     await eventually(async () => {
       if (launchError) throw launchError;
@@ -159,10 +201,14 @@ test('the native SFU publishes camera, microphone, screen and system sound indep
     }, { message: 'The local native-screen relay did not become healthy' });
 
     const openBrowser = async (name) => {
-      const browser = await fixture.browser(name, { initScript: installBrowserFixture, extraArgs: ['--disable-audio-output'] });
+      const browser = await fixture.browser(name, {
+        initScript: installBrowserFixture, viewport: { width: 1100, height: 720 },
+        // The test relay uses plain host ICE. Keep browser host candidates usable by the local relay.
+        extraArgs: ['--disable-audio-output', '--disable-features=WebRtcHideLocalIpsWithMdns'],
+      });
       return { browser, ...observeSfu(browser) };
     };
-    const receiver = await openBrowser('host');
+    receiver = await openBrowser('host');
     const studio = await createStudio(receiver.browser, { url: fixture.url, name: 'SFU screen qualification' });
     host = studio.page;
     const stage = async (name) => {
@@ -172,7 +218,7 @@ test('the native SFU publishes camera, microphone, screen and system sound indep
       await stageGuest(host, name);
       return { ...guest, page };
     };
-    const presenter = await stage('Screen Presenter');
+    presenter = await stage('Screen Presenter');
     await stage('Stage Guest Two');
     await stage('Stage Guest Three');
     await stage('Stage Guest Four');
@@ -248,6 +294,11 @@ test('the native SFU publishes camera, microphone, screen and system sound indep
     assert.deepEqual(fixture.pageErrors, []);
     assert.deepEqual(fixture.cspViolations, []);
   } catch (error) {
+    const transport = await Promise.allSettled([
+      ...(host && receiver ? [captureTransportDiagnostics(host, receiver)] : []),
+      ...(presenter ? [captureTransportDiagnostics(presenter.page, presenter)] : []),
+    ]);
+    await writeFile(path.join(artifactDir, 'native-screen-transport.json'), JSON.stringify(transport, null, 2)).catch(() => undefined);
     if (host && !host.isClosed()) await screenshot(host, artifactDir, 'native-screen-failure').catch(() => undefined);
     throw error;
   } finally {
