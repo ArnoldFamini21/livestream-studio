@@ -131,7 +131,7 @@ export async function createStudio(context, { url = 'http://localhost:5199', nam
   assert.equal(response.status(), 201);
   const room = await response.json();
   await page.waitForURL(target => target.pathname === `/join/${encodeURIComponent(room.id)}`);
-  await page.getByRole('button', { name: 'Enter studio', exact: true }).click();
+  await page.getByRole('button', { name: 'Enter studio', exact: true }).and(page.locator('.entry-submit')).click();
   await page.getByRole('button', { name: 'Start recording', exact: true }).waitFor();
   return { page, studioId: room.id, room };
 }
