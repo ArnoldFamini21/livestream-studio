@@ -44,6 +44,9 @@ import {
 } from '../utils/destinationHealth.ts';
 import {
   MAX_STREAM_SCREEN_COUNTDOWN_SECONDS,
+  MIN_CLOSING_SCREEN_SECONDS,
+  MAX_CLOSING_SCREEN_SECONDS,
+  getBroadcastScreenDuration,
   normalizeStreamScreenConfig,
   type StreamScreenConfig,
   type StreamScreenDraft,
@@ -70,6 +73,7 @@ interface StreamDestinationsProps {
   sceneCount?: number;
   streamScreenConfig: StreamScreenConfig;
   activeStreamScreenKind: StreamScreenKind | null;
+  broadcastScreenPhase?: 'preparing' | 'opening' | 'closing';
   onStreamScreenConfigChange: (config: StreamScreenConfig) => void;
   onApplyStreamScreen: (kind: StreamScreenKind) => void;
   onClearStreamScreen: () => void;
@@ -112,6 +116,7 @@ export function StreamDestinations({
   sceneCount = 0,
   streamScreenConfig,
   activeStreamScreenKind,
+  broadcastScreenPhase,
   onStreamScreenConfigChange,
   onApplyStreamScreen,
   onClearStreamScreen,
@@ -313,6 +318,7 @@ export function StreamDestinations({
   const renderStreamScreenCard = (kind: StreamScreenKind, label: string) => {
     const screen = normalizedStreamScreens[kind];
     const active = activeStreamScreenKind === kind;
+    const automated = Boolean(broadcastScreenPhase);
 
     return (
       <div key={kind} style={{ ...styles.screenCard, ...(active ? styles.screenCardActive : {}) }}>
@@ -363,6 +369,29 @@ export function StreamDestinations({
             Logo
           </label>
         </div>
+        <label style={styles.screenCheckbox}>
+          <input
+            type="checkbox"
+            checked={screen.automatic === true}
+            disabled={settingsLocked}
+            onChange={event => updateStreamScreen(kind, { automatic: event.target.checked })}
+          />
+          {kind === 'starting' ? 'Show when going live' : 'Show before ending stream'}
+        </label>
+        {kind === 'ending' && screen.automatic && (
+          <label style={styles.screenCountdownLabel}>
+            <span>Closing screen seconds</span>
+            <input
+              type="number"
+              min={MIN_CLOSING_SCREEN_SECONDS}
+              max={MAX_CLOSING_SCREEN_SECONDS}
+              style={styles.screenCountdownInput}
+              value={getBroadcastScreenDuration(normalizedStreamScreens, 'ending')}
+              disabled={settingsLocked}
+              onChange={event => updateStreamScreen(kind, { holdSeconds: event.currentTarget.valueAsNumber })}
+            />
+          </label>
+        )}
         {kind === 'starting' && (
           <label style={styles.screenCountdownLabel}>
             <span>Countdown</span>
@@ -370,7 +399,8 @@ export function StreamDestinations({
               type="number"
               min={0}
               max={MAX_STREAM_SCREEN_COUNTDOWN_SECONDS}
-              step={15}
+              step={1}
+              disabled={automated}
               style={styles.screenCountdownInput}
               value={screen.countdownSeconds ?? 0}
               onChange={(event) => updateStreamScreen(kind, { countdownSeconds: Number(event.target.value) })}
@@ -382,11 +412,12 @@ export function StreamDestinations({
             type="button"
             className="btn-secondary"
             style={{ ...styles.screenShowBtn, ...(active ? styles.screenShowBtnActive : {}) }}
+            disabled={automated}
             onClick={() => onApplyStreamScreen(kind)}
           >
             {active ? 'Refresh Screen' : 'Show Screen'}
           </button>
-          {active && (
+          {active && !automated && (
             <button type="button" className="btn-ghost" style={styles.screenClearBtn} onClick={onClearStreamScreen}>
               Clear
             </button>
@@ -792,10 +823,14 @@ export function StreamDestinations({
 
         {/* Go Live button */}
         <div style={styles.liveSection}>
+          {broadcastScreenPhase === 'opening' && (
+            <button type="button" className="btn-secondary" onClick={onClearStreamScreen}>Skip opening</button>
+          )}
+          {broadcastScreenPhase === 'closing' && <p role="status">Closing screen is on air.</p>}
           {isLive ? (
             <button className="btn-danger" style={styles.liveBtn} onClick={onStopLive}>
               <span style={styles.liveDotAnim} />
-              Stop Streaming ({enabledCount} destination{enabledCount !== 1 ? 's' : ''})
+              {broadcastScreenPhase === 'closing' ? 'End now' : `Stop Streaming (${enabledCount} destination${enabledCount !== 1 ? 's' : ''})`}
             </button>
           ) : (
             <button
@@ -954,7 +989,7 @@ export function StreamDestinations({
               <span style={styles.screenTitle}>Stream Screens</span>
               <p style={styles.screenSubtitle}>{activeStreamScreenKind ? `${activeStreamScreenKind} screen on stage` : 'No screen on stage'}</p>
             </div>
-            {activeStreamScreenKind && (
+            {activeStreamScreenKind && !broadcastScreenPhase && (
               <button type="button" className="btn-ghost" style={styles.screenHeaderClearBtn} onClick={onClearStreamScreen}>
                 Clear
               </button>

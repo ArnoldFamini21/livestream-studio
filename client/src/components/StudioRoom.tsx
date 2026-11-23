@@ -344,10 +344,11 @@ import {
 import {
   DEFAULT_STREAM_SCREEN_CONFIG,
   buildActiveStreamScreen,
+  getBroadcastScreenDuration,
   normalizeStreamScreenConfig,
   type StreamScreenConfig,
-  type StreamScreenKind,
 } from '../utils/streamScreens.ts';
+import { useBroadcastScreens } from '../hooks/useBroadcastScreens.ts';
 import { useToast } from './Toast.tsx';
 import { StudioMediaBanner } from './StudioMediaBanner.tsx';
 import { EmptyStageInvite } from './EmptyStageInvite.tsx';
@@ -529,11 +530,6 @@ interface SceneTransitionState {
   stingerClip?: SceneStingerClip | null;
   /** performance.now() at the switch; the program canvas animates from it. */
   startedAt: number;
-}
-
-interface ActiveStreamScreenState {
-  kind: StreamScreenKind;
-  activatedAtMs: number;
 }
 
 function getStudioStateKey(roomId: string): string {
@@ -1165,7 +1161,6 @@ export function StudioRoom() {
   /** Why the last Go Live attempt failed, for the "Go live now" message. */
   const goLiveFailureReasonRef = useRef<string | null>(null);
   const [streamScreenConfig, setStreamScreenConfig] = useState<StreamScreenConfig>(DEFAULT_STREAM_SCREEN_CONFIG);
-  const [activeStreamScreenState, setActiveStreamScreenState] = useState<ActiveStreamScreenState | null>(null);
   const [liveSessionSummary, setLiveSessionSummary] = useState<LiveSessionSummary | null>(null);
   const [liveBackupRecording, setLiveBackupRecording] = useState<RtmpRelayBackupRecordingPayload | null>(null);
   const [liveBackupDownloading, setLiveBackupDownloading] = useState(false);
@@ -1557,6 +1552,16 @@ export function StudioRoom() {
     screenVolume,
     localPresence: localProgramPresence,
   });
+  const {
+    screen: activeStreamScreenState,
+    current: broadcastScreenRef,
+    show: onApplyStreamScreen,
+    dismiss: onClearStreamScreen,
+    clear: clearBroadcastScreen,
+    prepareOpening,
+    confirmOpening,
+    playClosing,
+  } = useBroadcastScreens(programAudioMix.setStageMuted);
   // The program audio for backstage guests' program return: the on-stage
   // guests and their screens. Our own mic, screen sound and the media bus are
   // left out because the mesh already brings them to those guests directly;
@@ -1845,7 +1850,7 @@ export function StudioRoom() {
     stageOwnerId,
     captionsEnabled: captionsAllowed && captionsEnabled,
     captionLanguage,
-    watchPage: watchPageCaptions,
+    watchPage: watchPageCaptions && !activeStreamScreenState?.automation,
     admittedParticipantKey: onStageParticipantIds.join(','),
     localCaptionsBlocked,
     acceptRemoteCaption,
@@ -1883,24 +1888,19 @@ export function StudioRoom() {
   }), [brandColor, brandFontState.fontFamily]);
   const activeStreamScreen = useMemo(() => {
     if (!activeStreamScreenState) return null;
-    return buildActiveStreamScreen(
+    const screen = buildActiveStreamScreen(
       activeStreamScreenState.kind,
       streamScreenConfig,
       { brandColor, logoUrl: programLogoUrl, stageBackground: canvasBackground },
       activeStreamScreenState.activatedAtMs
     );
+    return activeStreamScreenState.automation === 'waiting' ? { ...screen, countdownSeconds: undefined } : screen;
   }, [activeStreamScreenState, brandColor, canvasBackground, programLogoUrl, streamScreenConfig]);
   const activeStreamScreenBackgroundStyle = useMemo(() => (
     activeStreamScreen ? getStageBackgroundStyle(activeStreamScreen.background) : {}
   ), [activeStreamScreen]);
   const onStreamScreenConfigChange = useCallback((next: StreamScreenConfig) => {
     setStreamScreenConfig(normalizeStreamScreenConfig(next));
-  }, []);
-  const onApplyStreamScreen = useCallback((kind: StreamScreenKind) => {
-    setActiveStreamScreenState({ kind, activatedAtMs: Date.now() });
-  }, []);
-  const onClearStreamScreen = useCallback(() => {
-    setActiveStreamScreenState(null);
   }, []);
 
   useEffect(() => {
@@ -2152,7 +2152,7 @@ export function StudioRoom() {
     liveStartedAtRef.current = null;
     setIsLive(false);
     setLiveStartedAt(null);
-    setActiveStreamScreenState(null);
+    clearBroadcastScreen();
     setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(false, sessionRecordingStartedAtRef.current) } : prev);
     send({
       type: 'live-stream-state-changed',
@@ -2166,7 +2166,7 @@ export function StudioRoom() {
         ? { ...destination, status: 'error', statusMessage }
         : { ...destination, status: 'idle', statusMessage: undefined }
     )));
-  }, [send, showLiveSessionSummary, stopSecondaryRelay]);
+  }, [clearBroadcastScreen, send, showLiveSessionSummary, stopSecondaryRelay]);
 
   // When the browser stops producing the broadcast: the sound check, the notices and the "Turn sound back on" marker.
   const soundGuard = useRelaySoundGuard({ bus: broadcastAudioBus, addToast });
@@ -3227,7 +3227,7 @@ export function StudioRoom() {
                 stoppedAt: message.payload.stoppedAt,
               });
             }
-            setActiveStreamScreenState(null);
+            clearBroadcastScreen();
             setDestinations((prev) => prev.map((destination) => ({ ...destination, status: 'idle', statusMessage: undefined })));
           }
           break;
@@ -5177,7 +5177,7 @@ export function StudioRoom() {
   };
 
   /** The real Go Live. True when the relay for the broadcast started. */
-  const startGoLive = async (): Promise<boolean> => {
+  const startGoLive = async ({ resume = false } = {}): Promise<boolean> => {
     // A new attempt never cites the reason of an older one, whichever way it ends.
     goLiveFailureReasonRef.current = null;
     if (liveStartOperationRef.current.active || isLiveRef.current) return false;
@@ -5237,6 +5237,8 @@ export function StudioRoom() {
         return false;
       }
 
+      const openingSeconds = resume ? 0 : getBroadcastScreenDuration(streamScreenConfig, 'starting');
+      if (openingSeconds) prepareOpening();
       setIsLive(true);
       setLiveStartedAt(null);
       setLiveSessionSummary(null);
@@ -5270,10 +5272,13 @@ export function StudioRoom() {
             });
           }
         },
-        () => send({
-          type: 'live-stream-state-changed',
-          payload: { live: true, performedBy: myParticipantRef.current?.id || '' },
-        }));
+        () => {
+          if (openingSeconds) confirmOpening(openingSeconds);
+          send({
+            type: 'live-stream-state-changed',
+            payload: { live: true, performedBy: myParticipantRef.current?.id || '' },
+          });
+        });
       return true;
     } catch (err) {
       if (!operation.active || isRelayOperationCancelled(err)) return false;
@@ -5281,7 +5286,7 @@ export function StudioRoom() {
       stopRelay();
       setIsLive(false);
       setLiveStartedAt(null);
-      setActiveStreamScreenState(null);
+      clearBroadcastScreen();
       const message = err instanceof Error ? err.message : 'Failed to start live stream.';
       goLiveFailureReasonRef.current = message;
       setDestinations((prev) => prev.map((d) => (
@@ -5373,10 +5378,11 @@ export function StudioRoom() {
       setIsLive(false);
       setLiveStartedAt(null);
     }
-    await onGoLive();
+    testStream.dismiss();
+    await startGoLive({ resume: true });
     return goLiveFailureReasonRef.current;
   };
-  const onStopLive = () => {
+  const stopLiveNow = () => {
     liveStartOperationRef.current.cancel();
     setIsStartingLive(false);
     if (liveStatusTimerRef.current) {
@@ -5394,7 +5400,7 @@ export function StudioRoom() {
     liveStartedAtRef.current = null;
     setIsLive(false);
     setLiveStartedAt(null);
-    setActiveStreamScreenState(null);
+    clearBroadcastScreen();
     send({
       type: 'live-stream-state-changed',
       payload: {
@@ -5403,6 +5409,15 @@ export function StudioRoom() {
       },
     });
     setDestinations((prev) => prev.map((d) => ({ ...d, status: 'idle', statusMessage: undefined })));
+  };
+  const onStopLive = () => {
+    const closingSeconds = getBroadcastScreenDuration(streamScreenConfig, 'ending');
+    if (!isStartingLive && relayStats.status === 'live' && closingSeconds
+      && !(broadcastScreenRef.current?.automation && broadcastScreenRef.current.kind === 'ending')) {
+      playClosing(closingSeconds, stopLiveNow);
+      return;
+    }
+    stopLiveNow();
   };
 
   // Stage actions (participant management)
@@ -8278,6 +8293,9 @@ export function StudioRoom() {
               sceneCount={scenes.length}
               streamScreenConfig={streamScreenConfig}
               activeStreamScreenKind={activeStreamScreenState?.kind || null}
+              broadcastScreenPhase={activeStreamScreenState?.automation
+                ? activeStreamScreenState.kind === 'ending' ? 'closing' : activeStreamScreenState.automation === 'waiting' ? 'preparing' : 'opening'
+                : undefined}
               onStreamScreenConfigChange={onStreamScreenConfigChange}
               onApplyStreamScreen={onApplyStreamScreen}
               onClearStreamScreen={onClearStreamScreen}

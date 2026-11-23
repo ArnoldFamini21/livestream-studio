@@ -72,6 +72,8 @@ export interface UseProgramAudioMixOptions {
 export interface ProgramAudioMix {
   /** A clone of the live program track; release it when the consumer stops. */
   acquire: () => ProgramAudioTrackLease | null;
+  /** Exclude live stage devices while continuing to pass the media bus. */
+  setStageMuted: (muted: boolean) => void;
 }
 
 /**
@@ -102,11 +104,12 @@ export function useProgramAudioMix(options: UseProgramAudioMixOptions): ProgramA
   const busRef = useRef(options.bus);
   busRef.current = options.bus;
 
+  const stageMuted = useRef(false);
   const controllerRef = useRef<ProgramAudioController<MediaStreamTrack> | null>(null);
   if (!controllerRef.current) {
     controllerRef.current = new ProgramAudioController<MediaStreamTrack>(
       () => createLiveAudioMix(busRef.current, { includeBus: options.includeBus !== false }),
-      () => buildProgramAudioInputs(stateRef.current)
+      () => stageMuted.current ? [] : buildProgramAudioInputs(stateRef.current)
     );
   }
 
@@ -139,7 +142,12 @@ export function useProgramAudioMix(options: UseProgramAudioMixOptions): ProgramA
   }, []);
 
   const acquire = useCallback(() => controllerRef.current?.acquire() ?? null, []);
-  return useMemo(() => ({ acquire }), [acquire]);
+  const setStageMuted = useCallback((muted: boolean) => {
+    if (stageMuted.current === muted) return;
+    stageMuted.current = muted;
+    controllerRef.current?.reconcile();
+  }, []);
+  return useMemo(() => ({ acquire, setStageMuted }), [acquire, setStageMuted]);
 }
 
 /**

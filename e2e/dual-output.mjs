@@ -123,6 +123,11 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
 
     await host.getByText('Output settings', { exact: true }).click();
     await host.getByRole('button', { name: /720p Smooth/ }).click();
+    await host.getByText('Stream screens', { exact: true }).first().click();
+    await host.getByLabel('Show when going live', { exact: true }).check();
+    await host.getByLabel('Countdown', { exact: true }).fill('8');
+    await host.getByLabel('Show before ending stream', { exact: true }).check();
+    await host.getByLabel('Closing screen seconds', { exact: true }).fill('12');
     for (const [index, { rtmpUrl, streamKey }] of savedDestinations.entries()) {
       const output = outputs[index];
       children.push(startProcess(ffmpeg, ['-hide_banner', '-v', 'info', '-listen', '1', '-timeout', '90', '-i', rtmpUrl + '/' + streamKey,
@@ -146,13 +151,22 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
     } finally {
       releaseHealth();
     }
+    await host.getByRole('heading', { name: 'Starting Soon', exact: true }).waitFor();
+    await host.getByRole('button', { name: 'Skip opening', exact: true }).waitFor();
     await Promise.all(savedDestinations.map(({ name }) =>
       host.locator('.participant-item').filter({ hasText: name }).getByText('live', { exact: true }).waitFor({ timeout: 32_000 })));
     assert.equal(await layout.isEnabled(), true, 'the alternate layout can be changed while live');
     // Require payload from both live outputs before ending the broadcast.
     await Promise.all(outputs.map((output) =>
       eventually(async () => (await stat(output)).size > 1000, { message: 'No capture for ' + output })));
-    await host.getByRole('button', { name: 'Stop Streaming (2 destinations)' }).click();
+    await host.getByRole('heading', { name: 'Starting Soon', exact: true }).waitFor({ state: 'detached' });
+    const stop = host.getByRole('button', { name: 'Stop Streaming (2 destinations)' });
+    await stop.click();
+    await host.getByRole('heading', { name: 'Thanks for watching', exact: true }).waitFor();
+    const endNow = host.getByRole('button', { name: 'End now', exact: true });
+    await endNow.waitFor();
+    await endNow.click();
+    await host.getByRole('button', { name: 'Go Live to 2 Destinations' }).waitFor();
 
     const [landscape, portrait] = outputs;
     assert.match(await readEncoding(landscape), /Video: h264.*1280x720/);
