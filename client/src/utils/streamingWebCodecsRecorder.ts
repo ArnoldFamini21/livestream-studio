@@ -4,12 +4,18 @@ type Mediabunny = typeof import('mediabunny');
 type VideoTrack = ConstructorParameters<Mediabunny['MediaStreamVideoTrackSource']>[0];
 type AudioTrack = ConstructorParameters<Mediabunny['MediaStreamAudioTrackSource']>[0];
 
-const MIME_TYPE = 'video/webm;codecs=vp9,opus';
+const ENCODER_PROFILES = {
+  vp9: { mimeType: 'video/webm;codecs=vp9,opus', video: 'vp9', audio: 'opus', hardwareAcceleration: 'no-preference' },
+  h264: { mimeType: 'video/mp4;codecs=avc1,mp4a.40.2', video: 'avc', audio: 'aac', hardwareAcceleration: 'prefer-hardware' },
+} as const;
+
+export type StreamingWebCodecsRecorderProfile = keyof typeof ENCODER_PROFILES;
 const MAX_BATCH_BYTES = 2 * 1024 * 1024;
 const MAX_UNWRITTEN_BYTES = 32 * 1024 * 1024;
 const MAX_TRACK_LEAD_SECONDS = 5;
 
 export interface StreamingWebCodecsRecorderOptions {
+  profile?: StreamingWebCodecsRecorderProfile;
   videoBitsPerSecond: number;
   audioBitsPerSecond: number;
 }
@@ -33,10 +39,14 @@ export async function prepareStreamingWebCodecsRecorder(
     // still uses the actual AudioData sample format when capture starts.
     const { sampleRate = 48_000, channelCount = 2 } = audio.getSettings();
     if (!width || !height) return null;
+    const profile = ENCODER_PROFILES[options.profile ?? 'vp9'];
+    if (!profile) return null;
     const library = await import('mediabunny');
     const [videoSupported, audioSupported] = await Promise.all([
-      library.canEncodeVideo('vp9', { width, height, frameRate, bitrate: options.videoBitsPerSecond, latencyMode: 'realtime' }),
-      library.canEncodeAudio('opus', { sampleRate, numberOfChannels: channelCount, bitrate: options.audioBitsPerSecond }),
+      library.canEncodeVideo(profile.video, {
+        width, height, frameRate, bitrate: options.videoBitsPerSecond, latencyMode: 'realtime', hardwareAcceleration: profile.hardwareAcceleration,
+      }),
+      library.canEncodeAudio(profile.audio, { sampleRate, numberOfChannels: channelCount, bitrate: options.audioBitsPerSecond }),
     ]);
     return videoSupported && audioSupported ? new StreamingWebCodecsRecorder(stream, video as VideoTrack, audio as AudioTrack, options, library) : null;
   } catch {
@@ -44,9 +54,10 @@ export async function prepareStreamingWebCodecsRecorder(
   }
 }
 
-/** Emits the append-only WebM bytes created from the actual input samples. */
+/** Emits the append-only container bytes created from the actual input samples. */
 export class StreamingWebCodecsRecorder extends EventTarget {
-  readonly mimeType = MIME_TYPE;
+  readonly mimeType: string;
+  private readonly profile: (typeof ENCODER_PROFILES)[StreamingWebCodecsRecorderProfile];
   state: RecordingState = 'inactive';
   onstart: ((event: Event) => void) | null = null;
   ondataavailable: ((event: BlobEvent) => void) | null = null;
@@ -72,6 +83,8 @@ export class StreamingWebCodecsRecorder extends EventTarget {
     private readonly library: Mediabunny,
   ) {
     super();
+    this.profile = ENCODER_PROFILES[options.profile ?? 'vp9'];
+    this.mimeType = this.profile.mimeType;
     this.addEventListener('start', (event) => this.onstart?.(event));
     this.addEventListener('dataavailable', (event) => this.ondataavailable?.(event as BlobEvent));
     this.addEventListener('stop', (event) => this.onstop?.(event));
@@ -83,19 +96,23 @@ export class StreamingWebCodecsRecorder extends EventTarget {
     if (this.videoTrack.readyState !== 'live' || this.audioTrack.readyState !== 'live') {
       throw new DOMException('The recording input ended before capture started.', 'NotSupportedError');
     }
-    const { Output, WebMOutputFormat, AppendOnlyStreamTarget, MediaStreamVideoTrackSource, MediaStreamAudioTrackSource } = this.library;
+    const { Output, Mp4OutputFormat, WebMOutputFormat, AppendOnlyStreamTarget, MediaStreamVideoTrackSource, MediaStreamAudioTrackSource } = this.library;
     const target = new AppendOnlyStreamTarget(new WritableStream({
       write: (bytes) => this.append(bytes),
     }));
-    const output = new Output({ format: new WebMOutputFormat({ appendOnly: true }), target });
+    const format = this.profile.video === 'avc'
+      ? new Mp4OutputFormat({ fastStart: 'fragmented', minimumFragmentDuration: 1 })
+      : new WebMOutputFormat({ appendOnly: true });
+    const output = new Output({ format, target });
     const video = new MediaStreamVideoTrackSource(this.videoTrack, {
-      codec: 'vp9',
+      codec: this.profile.video,
+      hardwareAcceleration: this.profile.hardwareAcceleration,
       bitrate: this.options.videoBitsPerSecond,
       keyFrameInterval: 1,
       onEncodedPacket: (packet) => this.notePacket('video', packet),
     }, { frameRate: null });
     const audio = new MediaStreamAudioTrackSource(this.audioTrack, {
-      codec: 'opus',
+      codec: this.profile.audio,
       bitrate: this.options.audioBitsPerSecond,
       onEncodedPacket: (packet) => this.notePacket('audio', packet),
     });
@@ -149,11 +166,19 @@ export class StreamingWebCodecsRecorder extends EventTarget {
     if (this.state === 'inactive') return;
     this.trackTime[lane] = Math.max(this.trackTime[lane], packet.timestamp + packet.duration);
     this.unwrittenBytes += packet.byteLength;
-    if (Math.abs(this.trackTime.video - this.trackTime.audio) <= MAX_TRACK_LEAD_SECONDS
-      && this.unwrittenBytes <= MAX_UNWRITTEN_BYTES) return;
+    const lead = this.trackTime.video - this.trackTime.audio;
+    let message: string;
+    if (Math.abs(lead) > MAX_TRACK_LEAD_SECONDS) {
+      const [ahead, behind] = lead > 0 ? ['Video', 'audio'] : ['Audio', 'video'];
+      message = `${ahead} is ${Math.abs(lead).toFixed(3)}s ahead of ${behind}, exceeding the ${MAX_TRACK_LEAD_SECONDS}s recording limit.`;
+    } else if (this.unwrittenBytes > MAX_UNWRITTEN_BYTES) {
+      message = `The recording muxer is holding ${this.unwrittenBytes} encoded bytes, exceeding the ${MAX_UNWRITTEN_BYTES}-byte limit.`;
+    } else {
+      return;
+    }
     // Leave the current encoder callback before asking it to drain.
     queueMicrotask(() => {
-      if (this.state !== 'inactive') this.fail(new Error('The recording encoder could not keep up with this input.'));
+      if (this.state !== 'inactive') this.fail(new Error(message));
     });
   }
 

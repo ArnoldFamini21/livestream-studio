@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
-import { prepareStreamingWebCodecsRecorder, StreamingWebCodecsRecorder } from '../src/utils/streamingWebCodecsRecorder.ts';
+import {
+  prepareStreamingWebCodecsRecorder,
+  StreamingWebCodecsRecorder,
+  type StreamingWebCodecsRecorderProfile,
+} from '../src/utils/streamingWebCodecsRecorder.ts';
 
 class TestBlobEvent extends Event {
   readonly data: Blob;
@@ -29,11 +33,15 @@ function provideGlobals(context: TestContext, values: Record<string, unknown>) {
   }
 }
 
-function fixture(context: TestContext) {
+function fixture(context: TestContext, profile?: StreamingWebCodecsRecorderProfile) {
   provideGlobals(context, { BlobEvent: TestBlobEvent, ErrorEvent: TestErrorEvent });
 
   type Packet = { timestamp: number; duration: number; byteLength: number };
-  type TrackSourceOptions = { onEncodedPacket: (packet: Packet) => void };
+  type TrackSourceOptions = {
+    codec: string;
+    hardwareAcceleration?: HardwareAcceleration;
+    onEncodedPacket: (packet: Packet) => void;
+  };
   const sources: FakeSource[] = [];
   class FakeSource {
     paused = false;
@@ -56,6 +64,11 @@ function fixture(context: TestContext) {
   let releaseDrain!: () => void;
   const allowDrain = new Promise<void>((resolve) => { releaseDrain = resolve; });
   let draining = false;
+  let formatOptions: unknown;
+  class FakeFormat {
+    constructor(options: unknown) { formatOptions = options; }
+  }
+
   class FakeOutput {
     private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
     constructor({ target }: { target: FakeTarget }) {
@@ -86,13 +99,14 @@ function fixture(context: TestContext) {
     MediaStreamVideoTrackSource: FakeSource,
     MediaStreamAudioTrackSource: FakeSource,
     AppendOnlyStreamTarget: FakeTarget,
-    WebMOutputFormat: class {},
+    WebMOutputFormat: FakeFormat,
+    Mp4OutputFormat: FakeFormat,
   };
   const recorder = new StreamingWebCodecsRecorder(
     {} as MediaStream,
     track('video') as unknown as ConstructorParameters<typeof StreamingWebCodecsRecorder>[1],
     track('audio') as unknown as ConstructorParameters<typeof StreamingWebCodecsRecorder>[2],
-    { videoBitsPerSecond: 5_000_000, audioBitsPerSecond: 256_000 },
+    { videoBitsPerSecond: 5_000_000, audioBitsPerSecond: 256_000, profile },
     library as unknown as typeof import('mediabunny'),
   );
   const chunks: Blob[] = [];
@@ -100,7 +114,7 @@ function fixture(context: TestContext) {
   const stopped = new Promise<void>((resolve) => { recorder.onstop = () => resolve(); });
   recorder.ondataavailable = ({ data }) => chunks.push(data);
   context.after(() => { recorder.stop(); releaseDrain(); });
-  return { recorder, sources, chunks, started, stopped, releaseDrain, isDraining: () => draining };
+  return { recorder, sources, chunks, started, stopped, releaseDrain, isDraining: () => draining, getFormatOptions: () => formatOptions };
 }
 
 test('streaming recorder forwards original bytes and waits for both encoder tails', { timeout: 5000 }, async (context) => {
@@ -130,11 +144,38 @@ test('streaming recorder reports excessive track holdback and drains existing ou
   run.recorder.start();
   await run.started;
   run.sources[0].options.onEncodedPacket({ timestamp: 6, duration: 0.033, byteLength: 42 });
-  assert.match(await error, /could not keep up/);
+  assert.match(await error, /Video is 6\.033s ahead of audio, exceeding the 5s recording limit/);
   assert.equal(run.recorder.state, 'inactive');
   run.releaseDrain();
   await run.stopped;
   assert.deepEqual([...new Uint8Array(await new Blob(run.chunks).arrayBuffer())], [1, 2, 3, 4, 5, 6]);
+});
+
+test('streaming recorder reports the amount of unwritten mux data when it hits the byte bound', { timeout: 5000 }, async (context) => {
+  const run = fixture(context);
+  const error = new Promise<string>((resolve) => { run.recorder.onerror = (event) => resolve(event.message); });
+  run.recorder.start();
+  await run.started;
+  run.sources[0].options.onEncodedPacket({ timestamp: 1, duration: 0.033, byteLength: 32 * 1024 * 1024 + 1 });
+  assert.match(await error, /holding 33554433 encoded bytes, exceeding the 33554432-byte limit/);
+  run.releaseDrain();
+  await run.stopped;
+});
+
+test('H.264 records AVC and AAC into append-only, one-second MP4 fragments', { timeout: 5000 }, async (context) => {
+  const run = fixture(context, 'h264');
+  run.recorder.start();
+  await run.started;
+  assert.equal(run.recorder.mimeType, 'video/mp4;codecs=avc1,mp4a.40.2');
+  assert.deepEqual(run.getFormatOptions(), { fastStart: 'fragmented', minimumFragmentDuration: 1 });
+  assert.equal(run.sources[0].options.codec, 'avc');
+  assert.equal(run.sources[0].options.hardwareAcceleration, 'prefer-hardware');
+  assert.equal(run.sources[0].captureOptions?.frameRate, null);
+  assert.equal(run.sources[1].options.codec, 'aac');
+  run.recorder.stop();
+  run.releaseDrain();
+  await run.stopped;
+  assert.equal(run.chunks[0].type, run.recorder.mimeType);
 });
 
 test('preparation passes the exact numeric encoder bitrates to the native support checks', async (context) => {
@@ -172,4 +213,17 @@ test('preparation passes the exact numeric encoder bitrates to the native suppor
   assert.equal(checkedAudio?.bitrate, 256_000);
   assert.equal(checkedAudio?.sampleRate, 48_000);
   assert.equal(checkedAudio?.numberOfChannels, 2);
+
+  const h264Recorder = await prepareStreamingWebCodecsRecorder(stream, {
+    profile: 'h264',
+    videoBitsPerSecond: 20_000_000,
+    audioBitsPerSecond: 256_000,
+  });
+
+  assert.equal(h264Recorder?.mimeType, 'video/mp4;codecs=avc1,mp4a.40.2');
+  assert.match(checkedVideo?.codec || '', /^avc1\./);
+  assert.equal(checkedVideo?.hardwareAcceleration, 'prefer-hardware');
+  assert.equal(checkedVideo?.bitrate, 20_000_000);
+  assert.equal(checkedAudio?.codec, 'mp4a.40.2');
+  assert.equal(checkedAudio?.bitrate, 256_000);
 });
