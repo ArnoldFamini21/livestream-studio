@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
-import { StreamingWebCodecsRecorder } from '../src/utils/streamingWebCodecsRecorder.ts';
+import { prepareStreamingWebCodecsRecorder, StreamingWebCodecsRecorder } from '../src/utils/streamingWebCodecsRecorder.ts';
 
 class TestBlobEvent extends Event {
   readonly data: Blob;
@@ -18,15 +18,19 @@ class TestErrorEvent extends Event {
   }
 }
 
-function fixture(context: TestContext) {
-  for (const [name, EventType] of Object.entries({ BlobEvent: TestBlobEvent, ErrorEvent: TestErrorEvent })) {
+function provideGlobals(context: TestContext, values: Record<string, unknown>) {
+  for (const [name, value] of Object.entries(values)) {
     const existing = Object.getOwnPropertyDescriptor(globalThis, name);
-    Object.defineProperty(globalThis, name, { value: EventType, configurable: true });
+    Object.defineProperty(globalThis, name, { value, configurable: true });
     context.after(() => {
       if (existing) Object.defineProperty(globalThis, name, existing);
       else Reflect.deleteProperty(globalThis, name);
     });
   }
+}
+
+function fixture(context: TestContext) {
+  provideGlobals(context, { BlobEvent: TestBlobEvent, ErrorEvent: TestErrorEvent });
 
   type Packet = { timestamp: number; duration: number; byteLength: number };
   type TrackSourceOptions = { onEncodedPacket: (packet: Packet) => void };
@@ -131,4 +135,41 @@ test('streaming recorder reports excessive track holdback and drains existing ou
   run.releaseDrain();
   await run.stopped;
   assert.deepEqual([...new Uint8Array(await new Blob(run.chunks).arrayBuffer())], [1, 2, 3, 4, 5, 6]);
+});
+
+test('preparation passes the exact numeric encoder bitrates to the native support checks', async (context) => {
+  let checkedVideo: VideoEncoderConfig | undefined;
+  let checkedAudio: AudioEncoderConfig | undefined;
+  provideGlobals(context, {
+    MediaStreamTrackProcessor: class {},
+    VideoEncoder: class {
+      static async isConfigSupported(config: VideoEncoderConfig) {
+        checkedVideo = config;
+        return { supported: true, config };
+      }
+    },
+    AudioEncoder: class {
+      static async isConfigSupported(config: AudioEncoderConfig) {
+        checkedAudio = config;
+        return { supported: true, config };
+      }
+    },
+  });
+  const stream = {
+    getVideoTracks: () => [{ kind: 'video', readyState: 'live', getSettings: () => ({ width: 1920, height: 1080, frameRate: 30 }) }],
+    getAudioTracks: () => [{ kind: 'audio', readyState: 'live', getSettings: () => ({}) }],
+  } as unknown as MediaStream;
+
+  const recorder = await prepareStreamingWebCodecsRecorder(stream, {
+    videoBitsPerSecond: 20_000_000,
+    audioBitsPerSecond: 256_000,
+  });
+
+  assert.equal(recorder?.stream, stream);
+  assert.equal(checkedVideo?.bitrate, 20_000_000);
+  assert.equal(checkedVideo?.width, 1920);
+  assert.equal(checkedVideo?.height, 1080);
+  assert.equal(checkedAudio?.bitrate, 256_000);
+  assert.equal(checkedAudio?.sampleRate, 48_000);
+  assert.equal(checkedAudio?.numberOfChannels, 2);
 });

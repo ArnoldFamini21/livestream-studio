@@ -20,8 +20,8 @@ export async function prepareStreamingWebCodecsRecorder(
   options: StreamingWebCodecsRecorderOptions,
 ): Promise<StreamingWebCodecsRecorder | null> {
   if (!('MediaStreamTrackProcessor' in globalThis) || typeof VideoEncoder !== 'function' || typeof AudioEncoder !== 'function') return null;
-  if (!Number.isFinite(options.videoBitsPerSecond) || options.videoBitsPerSecond <= 0
-    || !Number.isFinite(options.audioBitsPerSecond) || options.audioBitsPerSecond <= 0) return null;
+  if (!Number.isInteger(options.videoBitsPerSecond) || options.videoBitsPerSecond <= 0
+    || !Number.isInteger(options.audioBitsPerSecond) || options.audioBitsPerSecond <= 0) return null;
 
   const [video, extraVideo] = stream.getVideoTracks();
   const [audio, extraAudio] = stream.getAudioTracks();
@@ -35,8 +35,8 @@ export async function prepareStreamingWebCodecsRecorder(
     if (!width || !height) return null;
     const library = await import('mediabunny');
     const [videoSupported, audioSupported] = await Promise.all([
-      library.canEncodeVideo('vp9', { width, height, frameRate, quality: options.videoBitsPerSecond, latencyMode: 'realtime' }),
-      library.canEncodeAudio('opus', { sampleRate, numberOfChannels: channelCount, quality: options.audioBitsPerSecond }),
+      library.canEncodeVideo('vp9', { width, height, frameRate, bitrate: options.videoBitsPerSecond, latencyMode: 'realtime' }),
+      library.canEncodeAudio('opus', { sampleRate, numberOfChannels: channelCount, bitrate: options.audioBitsPerSecond }),
     ]);
     return videoSupported && audioSupported ? new StreamingWebCodecsRecorder(stream, video as VideoTrack, audio as AudioTrack, options, library) : null;
   } catch {
